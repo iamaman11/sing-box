@@ -228,10 +228,41 @@ jobs:
           }
           if (-not $?) { throw 'Windows first-use reconciliation did not finish' }
 
-  initial_first_use_reservation:
-    name: Windows / single-use durable candidate staging BEGIN
+  initial_first_use_preflight:
+    name: Windows / read-only installed-owner capability before BEGIN
     needs: resolve
     if: needs.resolve.outputs.operation == 'initial-pair-stage'
+    runs-on: [self-hosted, Windows, X64, sing-box-windows-lab]
+    timeout-minutes: 8
+    concurrency:
+      group: sing-box-windows-physical
+      cancel-in-progress: false
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact accepted control
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.accepted_revision }}
+          persist-credentials: false
+          clean: true
+      - name: Verify installed native CLI and private SYSTEM cursor before marker
+        shell: powershell
+        env:
+          EDGE_FIRST_USE_EXPECTED_MODE: ${{ needs.resolve.outputs.expected_mode }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          & (Join-Path $env:GITHUB_WORKSPACE 'edge-platform\\scripts\\windows-first-use-offline-handoff.ps1') \
+            -AcceptedRevision '${{ needs.resolve.outputs.accepted_revision }}' \
+            -ReleaseSetSha256 '${{ needs.resolve.outputs.release_set_sha256 }}' -Preflight
+          if ($LASTEXITCODE -ne 0 -or -not $?) {
+            throw 'FIRST_USE_PREBEGIN_BLOCKED: installed native capability not proven'
+          }
+
+  initial_first_use_reservation:
+    name: Windows / single-use durable candidate staging BEGIN
+    needs: [resolve, initial_first_use_preflight]
+    if: needs.resolve.outputs.operation == 'initial-pair-stage' && needs.initial_first_use_preflight.result == 'success'
     runs-on: ubuntu-24.04
     timeout-minutes: 6
     concurrency:

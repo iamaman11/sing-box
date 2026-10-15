@@ -3,7 +3,8 @@
 [CmdletBinding()]
 param(
   [Parameter(Mandatory)][string]$AcceptedRevision,
-  [Parameter(Mandatory)][string]$ReleaseSetSha256
+  [Parameter(Mandatory)][string]$ReleaseSetSha256,
+  [switch]$Preflight
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
@@ -57,6 +58,33 @@ function Require-DirectNetwork {
 }
 $before = Read-Owner
 Require-DirectNetwork
+$console = [string]$before['console_path']
+if (-not (Test-Path -LiteralPath $console -PathType Leaf)) {
+  throw 'FIRST_USE_OFFLINE_BLOCKED: exact installed native console missing'
+}
+$commands = @(& $console --help)
+if ($LASTEXITCODE -ne 0 -or -not ($commands | Where-Object { $_ -match '\\bprivileged-offline-activate\\b' })) {
+  throw 'FIRST_USE_OFFLINE_BLOCKED: installed owner has no native offline capability; BEGIN forbidden'
+}
+$evidence = @(& $console privileged-runtime-evidence --install-root $root)
+if ($LASTEXITCODE -ne 0) {
+  throw 'FIRST_USE_OFFLINE_BLOCKED: installed SYSTEM readonly evidence unavailable'
+}
+$details = @($evidence | Where-Object { [string]$_ -like 'detail=*' })
+if ($details.Count -ne 1 -or
+    [string]$details[0] -notmatch ';credential_cursor=ABSENT;' -or
+    [string]$details[0] -notmatch ';first_use_runtime=ABSENT;' -or
+    [string]$details[0] -notmatch ';first_use_config=ABSENT;' -or
+    [string]$details[0] -notmatch ';first_use_access_identity=PRESENT_NONEMPTY_UNVERIFIED(?:;|$)') {
+  throw 'FIRST_USE_OFFLINE_BLOCKED: credential cursor, runtime or permanent Access identity is unproven'
+}
+if ($Preflight) {
+  Write-Host 'windows_first_use_prebegin_preflight=PASS_READ_ONLY'
+  Write-Host "windows_installed_release=$([string]$before['release_set_sha256'])"
+  Write-Host 'windows_scm_state=Stopped'
+  Write-Host 'windows_credential_mutations=0'
+  return
+}
 if ([string]$before['release_set_sha256'] -cne $ReleaseSetSha256) {
   if ([string]$before['windows_datapath_mode'] -cne 'ManagedTun') {
     throw 'FIRST_USE_OFFLINE_BLOCKED: only stopped former ManagedTun may switch to ProxyOnly'

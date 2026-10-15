@@ -93,6 +93,10 @@ def main() -> None:
         and 'issues: write' in router
         and '"/windows initial-pair-stage "*' in windows_physical
         and 'operation="initial-pair-stage"' in windows_physical
+        and 'initial_first_use_preflight:' in windows_physical
+        and "Windows / read-only installed-owner capability before BEGIN" in windows_physical
+        and 'needs: [resolve, initial_first_use_preflight]' in windows_physical
+        and 'needs.initial_first_use_preflight.result == ' + "'success'" + ' ' in windows_physical
         and 'initial_first_use_reservation:' in windows_physical
         and 'first_use_stage_begin=COMMITTED_ONCE' in windows_physical
         and 'sing-box-windows-persistent-initial-stage/v1' in windows_physical
@@ -110,6 +114,12 @@ def main() -> None:
         and 'privileged-offline-activate' in windows_first_use_offline
         and 'FIRST_USE_OFFLINE_UNKNOWN:' in windows_first_use_offline
         and 'Require-DirectNetwork' in windows_first_use_offline
+        and 'windows_first_use_prebegin_preflight=PASS_READ_ONLY' in windows_first_use_offline
+        and 'first_use_access_identity=PRESENT_NONEMPTY_UNVERIFIED' in windows_first_use_offline
+        and 'installed owner has no native offline capability; BEGIN forbidden' in windows_first_use_offline
+        and 'first_use_access_identity={identity}' in windows_console
+        and 'offline_hold_controller_stopped(install_root, &before)?;' in windows_console
+        and 'start_type: ServiceStartType::OnDemand' in windows_console
         and 'managed_tun_present=false' in windows_first_use_offline
         and 'windows_first_use_offline_release=PASS_STOPPED_PROXY_ONLY' in windows_first_use_offline
         and 'Start-Service' not in windows_first_use_offline

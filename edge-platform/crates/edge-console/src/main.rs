@@ -1528,8 +1528,27 @@ fn read_bounded_windows_runtime_evidence(install_root: &Path) -> Result<String, 
     #[cfg(not(windows))]
     let external_owner = "external_owner_evidence=WINDOWS_ONLY".to_owned();
     let cursor = read_bounded_windows_credential_cursor(install_root)?;
+    // SYSTEM-only metadata, not an authentication claim. ENOENT is distinct
+    // from an ACL/read failure so GitHub cannot infer an empty first-use root.
+    let state_file = windows_runtime_state_path(install_root);
+    let config_file = local_singbox_config_path(install_root);
+    let identity_file = install_root.join("state").join("secrets").join(ACCESS_IDENTITY_FILE_NAME);
+    let known_file = |path: &Path| -> Result<Option<fs::Metadata>, String> {
+        match fs::metadata(path) {
+            Ok(metadata) => Ok(Some(metadata)),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err("persistent Windows first-use file status unreadable".to_owned()),
+        }
+    };
+    let runtime = if known_file(&state_file)?.is_none() { "ABSENT" } else { "PRESENT" };
+    let config = if known_file(&config_file)?.is_none() { "ABSENT" } else { "PRESENT" };
+    let identity = match known_file(&identity_file)? {
+        Some(metadata) if metadata.is_file() && metadata.len() > 0 => "PRESENT_NONEMPTY_UNVERIFIED",
+        Some(_) => "INVALID",
+        None => "ABSENT",
+    };
     let critical = format!(
-        "runtime_evidence=BOUNDED_READ_ONLY;{controller_error};{process_classification};{scheduled_tasks};{external_owner};{cursor}"
+        "runtime_evidence=BOUNDED_READ_ONLY;{controller_error};{process_classification};{scheduled_tasks};{external_owner};{cursor};first_use_runtime={runtime};first_use_config={config};first_use_access_identity={identity}"
     );
     if critical.len() > RUNTIME_EVIDENCE_RESULT_MAX_BYTES {
         return Err(format!(
@@ -2384,10 +2403,11 @@ fn require_offline_windows_owner_at(
     authority_path: &Path,
 ) -> Result<(), String> {
     let desired = canonical_production_desired_state()?;
-    if desired.windows_datapath_mode != WindowsDatapathMode::ManagedTun as i32 {
-        return Err(
-            "OFFLINE_HANDOFF_BLOCKED: only current ManagedTun authority is supported".to_owned(),
-        );
+    if !matches!(
+        WindowsDatapathMode::try_from(desired.windows_datapath_mode),
+        Ok(WindowsDatapathMode::ProxyOnly | WindowsDatapathMode::ManagedTun)
+    ) {
+        return Err("OFFLINE_HANDOFF_BLOCKED: canonical mode unsupported".to_owned());
     }
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
         .map_err(|err| format!("offline SCM manager unavailable: {err}"))?;
@@ -2414,9 +2434,14 @@ fn require_offline_windows_owner_at(
         .as_deref()
         .map(|v| v.to_string_lossy().into_owned())
         .unwrap_or_default();
+    // A stopped former ManagedTun may be safely retired into ProxyOnly only
+    // after this very owner proves zero TUN and processes. The new owner
+    // remains manual-start until separate accepted service activation.
+    let start_type_allowed = config.start_type == ServiceStartType::OnDemand
+        || config.start_type == ServiceStartType::AutoStart;
     let exact = config.executable_path.to_string_lossy() == expected_command
         && account.eq_ignore_ascii_case(WINDOWS_CONTROLLER_SERVICE_ACCOUNT)
-        && config.start_type == ServiceStartType::AutoStart;
+        && start_type_allowed;
     let no_processes = matches!(
         classify_runtime_process(&local_singbox_config_path(install_root)),
         RuntimeProcessClassification::Absent
@@ -2431,7 +2456,13 @@ fn require_offline_windows_owner_at(
     // not in its desired running state. Its exact OS observations remain useful.
     let doctor = String::from_utf8_lossy(&output.stdout);
     let has_field = |field: &str| doctor.lines().any(|line| line.trim() == field);
-    let no_tun = has_field("managed_tun_present=false")
+    let attested_mode = has_field("windows_datapath_mode=ManagedTun")
+        || (has_field("windows_datapath_mode=ProxyOnly")
+            && desired.windows_datapath_mode == WindowsDatapathMode::ProxyOnly as i32);
+    let exact_release = has_field(&format!("release_set_sha256={}", activation.release_set_sha256));
+    let no_tun = attested_mode
+        && exact_release
+        && has_field("managed_tun_present=false")
         && has_field("managed_singbox_process_count=0")
         && has_field("orphan_singbox_process_count=0")
         && has_field("conflicting_singbox_process_count=0")
@@ -2459,13 +2490,11 @@ fn offline_retarget_controller_service_checked(
     install_root: &Path,
     from: &WindowsActivationState,
     to: &WindowsActivationState,
-    restore_from_verified_snapshot: bool,
+    _restore_from_verified_snapshot: bool,
 ) -> Result<(), String> {
-    if restore_from_verified_snapshot {
-        require_offline_windows_owner_from_snapshot(install_root, from)?;
-    } else {
-        require_offline_windows_owner(install_root, from)?;
-    }
+    // current.pb already points at the newly installed version. Prove the
+    // outgoing owner against its immutable snapshot, not the new pointer.
+    require_offline_windows_owner_from_snapshot(install_root, from)?;
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
         .map_err(|err| format!("offline SCM manager unavailable: {err}"))?;
     let service = manager
@@ -2480,7 +2509,7 @@ fn offline_retarget_controller_service_checked(
         name: OsString::from(WINDOWS_CONTROLLER_SERVICE_NAME),
         display_name: OsString::from(WINDOWS_CONTROLLER_SERVICE_NAME),
         service_type: ServiceType::OWN_PROCESS,
-        start_type: ServiceStartType::AutoStart,
+        start_type: ServiceStartType::OnDemand,
         error_control: ServiceErrorControl::Normal,
         executable_path: PathBuf::from(&to.controller_path),
         launch_arguments: vec![
@@ -2508,7 +2537,7 @@ fn offline_retarget_controller_service_checked(
         INSTALLED_CONTROLLER_ADDR
     );
     if updated.executable_path.to_string_lossy() != expected
-        || updated.start_type != ServiceStartType::AutoStart
+        || updated.start_type != ServiceStartType::OnDemand
         || state.current_state != ServiceState::Stopped
         || state.process_id.is_some()
     {
@@ -2667,6 +2696,52 @@ fn restore_offline_release(
     Ok(())
 }
 
+#[cfg(windows)]
+fn offline_hold_controller_stopped(install_root: &Path, before: &WindowsActivationState) -> Result<(), String> {
+    require_offline_windows_owner(install_root, before)?;
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+        .map_err(|err| format!("offline SCM manager unavailable: {err}"))?;
+    let service = manager.open_service(
+        WINDOWS_CONTROLLER_SERVICE_NAME,
+        ServiceAccess::QUERY_CONFIG | ServiceAccess::QUERY_STATUS | ServiceAccess::CHANGE_CONFIG,
+    ).map_err(|err| format!("offline SCM owner unavailable: {err}"))?;
+    let config = service.query_config().map_err(|err| err.to_string())?;
+    let account = config.account_name.as_ref().map(|v| v.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if !account.eq_ignore_ascii_case(WINDOWS_CONTROLLER_SERVICE_ACCOUNT) {
+        return Err("OFFLINE_HANDOFF_BLOCKED: SCM identity changed".to_owned());
+    }
+    let next = ServiceInfo {
+        name: OsString::from(WINDOWS_CONTROLLER_SERVICE_NAME),
+        display_name: OsString::from(WINDOWS_CONTROLLER_SERVICE_NAME),
+        service_type: ServiceType::OWN_PROCESS,
+        start_type: ServiceStartType::OnDemand,
+        error_control: ServiceErrorControl::Normal,
+        executable_path: PathBuf::from(&before.controller_path),
+        launch_arguments: vec![
+            OsString::from("windows-service"),
+            install_root.as_os_str().to_owned(),
+            OsString::from(INSTALLED_CONTROLLER_ADDR),
+        ],
+        dependencies: Vec::new(),
+        account_name: Some(OsString::from(WINDOWS_CONTROLLER_SERVICE_ACCOUNT)),
+        account_password: None,
+    };
+    service.change_config(&next).map_err(|err| format!("offline SCM hold failed: {err}"))?;
+    let observed = service.query_config().map_err(|err| err.to_string())?;
+    let status = service.query_status().map_err(|err| err.to_string())?;
+    if observed.start_type != ServiceStartType::OnDemand
+        || status.current_state != ServiceState::Stopped || status.process_id.is_some() {
+        return Err("OFFLINE_HANDOFF_BLOCKED: stopped manual-start SCM readback failed".to_owned());
+    }
+    require_offline_windows_owner(install_root, before)
+}
+
+#[cfg(not(windows))]
+fn offline_hold_controller_stopped(_install_root: &Path, _before: &WindowsActivationState) -> Result<(), String> {
+    Err("offline SCM hold is Windows-only".to_owned())
+}
+
 fn offline_activate_privileged_release(
     install_root: &Path,
     request: &WindowsPrivilegedRequest,
@@ -2708,6 +2783,9 @@ fn offline_activate_privileged_release(
         load_verified_activation_path(install_root, &previous_path, "previous.pb")
             .map_err(|err| format!("OFFLINE_PREVIOUS_SNAPSHOT_BLOCKED: {err}"))?;
     }
+    // This is the first mutation. Hold SCM on manual start BEFORE modifying
+    // release pointers so an unexpected reboot cannot start ManagedTun.
+    offline_hold_controller_stopped(install_root, &before)?;
     let installer = install_root
         .join("bootstrap")
         .join("install-windows-release.ps1");
