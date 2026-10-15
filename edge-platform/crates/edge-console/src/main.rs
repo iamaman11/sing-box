@@ -99,7 +99,7 @@ const PRIVILEGED_SHORT_WAIT_SECS: u64 = 180;
 const PRIVILEGED_ACTIVATE_WAIT_SECS: u64 = 12 * 60;
 const RUNTIME_EVIDENCE_MAX_BYTES: u64 = 16 * 1024;
 const RUNTIME_EVIDENCE_MAX_LINES: usize = 80;
-const RUNTIME_EVIDENCE_RESULT_MAX_BYTES: usize = 960;
+const RUNTIME_EVIDENCE_RESULT_MAX_BYTES: usize = 1280;
 const PRIVILEGED_CHILD_EVIDENCE_MAX_BYTES: usize = 960;
 const WINDOWS_TRACE_REOBSERVE_ATTEMPTS: usize = 3;
 const WINDOWS_TRACE_REOBSERVE_DELAY: Duration = Duration::from_secs(1);
@@ -5199,6 +5199,25 @@ mod tests {
                 .unwrap_err()
                 .contains("rendered sing-box config")
         );
+    }
+
+    #[test]
+    fn persistent_windows_cursor_proof_refuses_torn_store_without_guessing_absence() {
+        let root = offline_test_root("first-use-cursor");
+        assert_eq!(
+            read_bounded_windows_credential_cursor(&root).unwrap(),
+            "credential_cursor=ABSENT"
+        );
+        let store = windows_credential_store_path(&root);
+        fs::create_dir_all(&store).unwrap();
+        assert!(
+            read_bounded_windows_credential_cursor(&root)
+                .unwrap_err()
+                .contains("no durable cursor")
+        );
+        fs::write(store.join("state.pb"), b"corrupt").unwrap();
+        assert!(read_bounded_windows_credential_cursor(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
