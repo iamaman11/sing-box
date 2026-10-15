@@ -1384,6 +1384,27 @@ def main() -> None:
     )
 
 
+    # Physical ProxyOnly stop regression: killing a child while SCM controller
+    # is still supervising races an immediate managed-child respawn. Let the
+    # exact SCM owner stop its own supervised child, and verify after Stopped.
+    proxy_stop = windows_console.split(
+        "fn proxy_only_controller_service_lifecycle(", 1
+    )[1].split("fn restart_controller_service(", 1)[0].split(
+        "ServiceState::Running\n                if before.process_id.is_some() && controller_is_listening(addr) =>", 1
+    )[-1].split('"PROXY_ONLY_SCM_STOPPED"', 1)[0]
+    require(
+        "service\n                    .stop()" in proxy_stop
+        and "ServiceState::Stopped" in proxy_stop
+        and "classify_runtime_process(&local_singbox_config_path(install_root))" in proxy_stop
+        and proxy_stop.index("service\n                    .stop()")
+            < proxy_stop.index("classify_runtime_process(&local_singbox_config_path(install_root))")
+        and "stop_runtime_process(&local_singbox_config_path(install_root), true)" not in proxy_stop
+        and "WINDOWS_SERVICE_STOP_REQUESTED.store(true, Ordering::Release);" in windows_controller_runtime
+        and "supervisor.abort();" in windows_controller_runtime
+        and "failed to stop exact managed runtime on controller exit" in windows_controller_runtime,
+        "ProxyOnly SCM must stop its own supervisor BEFORE verifying managed child exit",
+    )
+
     release_proto = RELEASE_PROTO.read_text(encoding="utf-8")
     windows_singbox = WINDOWS_SINGBOX.read_text(encoding="utf-8")
     windows_diagnostic = WINDOWS_DIAGNOSTIC.read_text(encoding="utf-8")

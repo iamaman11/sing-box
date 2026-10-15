@@ -4267,19 +4267,31 @@ fn proxy_only_controller_service_lifecycle(
             ServiceState::Running
                 if before.process_id.is_some() && controller_is_listening(addr) =>
             {
-                // Stop ONLY the exact managed child. Never kill external
-                // sing-box or touch CloudflareWARP DNS, TUN, or routes.
-                stop_runtime_process(&local_singbox_config_path(install_root), true)?;
+                // Stop the exact SCM owner FIRST. While the controller is
+                // Running its supervisor may relaunch a child immediately
+                // after a direct process stop (physically observed on Windows).
+                // SCM shutdown sets STOP_REQUESTED, aborts supervision and
+                // terminates only its owned child before reporting Stopped.
+                // Never kill a process from this caller or touch TUN, DNS,
+                // routes, foreign sing-box or CloudflareWARP.
+                service
+                    .stop()
+                    .map_err(|err| format!("PROXY_ONLY_SCM_STOP_UNKNOWN: {err}"))?;
+                wait_for_service_state(
+                    &service,
+                    ServiceState::Stopped,
+                    Duration::from_secs(WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS),
+                )
+                .map_err(|err| format!("PROXY_ONLY_SCM_STOP_UNKNOWN: {err}"))?;
                 if !matches!(
                     classify_runtime_process(&local_singbox_config_path(install_root)),
                     RuntimeProcessClassification::Absent
                 ) {
-                    return Err("PROXY_ONLY_SCM_STOP_UNKNOWN: managed child remains".to_owned());
+                    return Err(
+                        "PROXY_ONLY_SCM_STOP_UNKNOWN: managed child remains after SCM stop"
+                            .to_owned(),
+                    );
                 }
-                service
-                    .stop()
-                    .map_err(|err| format!("PROXY_ONLY_SCM_STOP_UNKNOWN: {err}"))?;
-                wait_for_service_state(&service, ServiceState::Stopped, Duration::from_secs(15))?;
                 "PROXY_ONLY_SCM_STOPPED"
             }
             other => {
