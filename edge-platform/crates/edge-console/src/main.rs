@@ -3042,7 +3042,7 @@ try {
     $phase = 'HASH_LOCAL_INSTALLER'
     $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $env:EDGE_BOOTSTRAP_TARGET_INSTALLER).Hash
     $phase = 'COMPARE_DIGEST'
-    if ($actual -cne $expected) { throw 'ZIP_INSTALLER_DIGEST_MISMATCH' }
+    if ($actual -cne $expected) { throw 'candidate installer hash differs from verified ZIP' }
 } catch {
     # Do not print paths, ZIP entries, credentials, or complete PowerShell
     # exception messages. The phase and stable error ID suffice for forensics.
