@@ -932,6 +932,27 @@ jobs:
           }
           if ($errors.Count -gt 0) { throw ($errors -join [Environment]::NewLine) }
 
+          # Prove Windows account-name localization is irrelevant: the OS
+          # resolves its own localized LocalSystem name back to S-1-5-18.
+          $systemSid = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-18')
+          $localizedSystemName = $systemSid.Translate([System.Security.Principal.NTAccount]).Value
+          $resolvedSystemSid = ([System.Security.Principal.NTAccount]::new($localizedSystemName)).Translate(
+            [System.Security.Principal.SecurityIdentifier]
+          ).Value
+          if ($resolvedSystemSid -cne 'S-1-5-18') {
+            throw 'LocalSystem well-known SID round-trip failed'
+          }
+          $localServiceSid = [System.Security.Principal.SecurityIdentifier]::new('S-1-5-19')
+          $localServiceName = $localServiceSid.Translate([System.Security.Principal.NTAccount]).Value
+          $resolvedForeignSid = ([System.Security.Principal.NTAccount]::new($localServiceName)).Translate(
+            [System.Security.Principal.SecurityIdentifier]
+          ).Value
+          if ($resolvedForeignSid -ceq 'S-1-5-18' -or $resolvedForeignSid -cne 'S-1-5-19') {
+            throw 'Foreign service account must never validate as LocalSystem'
+          }
+          Write-Host 'localized_system_sid_roundtrip=PASS'
+          Write-Host 'foreign_service_account_rejection=PASS'
+
           $legacy = git grep -n -E 'edge-platform-win-target|target\\debug\\edge-(controller|console)\.exe' -- edge-platform/scripts win/windows
           if ($LASTEXITCODE -eq 0) { throw ("Local debug binary path is forbidden in Windows operational scripts:" + [Environment]::NewLine + $legacy) }
           if ($LASTEXITCODE -ne 1) { throw "git grep failed with exit code $LASTEXITCODE" }
