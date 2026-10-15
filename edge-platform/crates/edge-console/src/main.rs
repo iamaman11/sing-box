@@ -5103,17 +5103,6 @@ mod tests {
     }
 
     #[test]
-    fn offline_bootstrap_installer_proof_is_independent_of_cli_and_never_mutates_authority() {
-        // An offline bootstrap must verify the staged script before any
-        // SCM/pointer mutation; source-level invariant complements Windows CI.
-        let text = include_str!("main.rs");
-        let entry = text.split("fn offline_bootstrap_privileged_release(").nth(1).unwrap();
-        let pre_mutation = entry.split("offline-bootstrap-intent-v1").next().unwrap();
-        assert!(pre_mutation.contains("require_offline_bootstrap_installer_archive_identity("));
-        assert!(text.contains("candidate installer hash differs from verified ZIP"));
-    }
-
-    #[test]
     fn offline_bootstrap_identifiers_require_exact_lowercase_immutable_values() {
         let revision = "a".repeat(40);
         let digest = "b".repeat(64);
