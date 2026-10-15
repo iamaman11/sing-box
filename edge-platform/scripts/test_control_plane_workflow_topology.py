@@ -1526,7 +1526,7 @@ def main() -> None:
         and "managed_tun_process_search_access_denied=ABSENT" in windows_physical
         and "foreign_cloudflarewarp_tun_dns_cleanup=PASS" in windows_physical
         and "Set-DnsClientServerAddress -InterfaceAlias 'CloudflareWARP'" not in windows_physical
-        and "stop-local $env:EDGE_CONTROLLER_ENDPOINT" in windows_physical
+        and "privileged-stop-proxy-only-controller --install-root" in windows_physical
         and "EDGE_CURRENT_EXACT_DIAGNOSTIC" in windows_physical
         and "Exact immutable post-state diagnostic path is unavailable" in windows_physical
         and "unknown_singbox_process_count" in windows_diagnostic
