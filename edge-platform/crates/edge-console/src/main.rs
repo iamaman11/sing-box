@@ -1411,6 +1411,68 @@ fn bounded_privileged_child_evidence(stdout: &[u8], stderr: &[u8]) -> String {
     truncate_runtime_evidence(&detail, PRIVILEGED_CHILD_EVIDENCE_MAX_BYTES)
 }
 
+// SYSTEM-owned, read-only projection of the persistent Windows cursor. A
+// partially created store is UNKNOWN, never treated as a fresh first-use slot.
+// The GitHub runner cannot read private state or any credential bundle.
+fn read_bounded_windows_credential_cursor(install_root: &Path) -> Result<String, String> {
+    let root = windows_credential_store_path(install_root);
+    let Some(store) = CredentialStore::open_existing(
+        root,
+        edge_shared_types::CredentialProjectionKind::Windows,
+    )? else {
+        return Ok("credential_cursor=ABSENT".to_owned());
+    };
+    let state = store.read_state()?.ok_or_else(|| {
+        "persistent Windows credential directory has no durable cursor; first-use is UNKNOWN"
+            .to_owned()
+    })?;
+    let active = state.active.as_ref();
+    let candidate = state.candidate.as_ref();
+    let previous = state.previous.as_ref();
+    Ok(format!(
+        "credential_cursor=VALID;credential_active_present={};credential_candidate_present={};credential_candidate_generation={};credential_previous_present={}",
+        active.is_some(),
+        candidate.is_some(),
+        candidate.map(|value| value.generation).unwrap_or(0),
+        previous.is_some()
+    ))
+}
+
+#[cfg(windows)]
+fn require_offline_first_use_stage_owner(install_root: &Path) -> Result<(), String> {
+    let target = canonical_production_desired_state()?;
+    if target.windows_datapath_mode != WindowsDatapathMode::ProxyOnly as i32
+        || !install_root.to_string_lossy().eq_ignore_ascii_case(r"C:\sing-box")
+    {
+        return Err("first-use persistent staging is confined to canonical ProxyOnly intent and C:\\sing-box".to_owned());
+    }
+    load_verified_activation(install_root)
+        .map_err(|_| "persistent first-use staging requires an exact installed ReleaseSet".to_owned())?;
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+        .map_err(|_| "first-use persistent staging cannot inspect SCM".to_owned())?;
+    let service = manager
+        .open_service(WINDOWS_CONTROLLER_SERVICE_NAME, ServiceAccess::QUERY_STATUS)
+        .map_err(|_| "first-use persistent staging cannot inspect owner service".to_owned())?;
+    let status = service.query_status()
+        .map_err(|_| "first-use persistent staging cannot read SCM status".to_owned())?;
+    if status.current_state != ServiceState::Stopped
+        || status.process_id.is_some()
+        || !matches!(
+            classify_runtime_process(&local_singbox_config_path(install_root)),
+            RuntimeProcessClassification::Absent
+        )
+    {
+        return Err("first-use persistent staging refuses a running or ambiguous Windows owner".to_owned());
+    }
+    if windows_runtime_state_path(install_root).exists()
+        || local_singbox_config_path(install_root).exists()
+        || windows_credential_store_path(install_root).exists()
+    {
+        return Err("first-use persistent staging refuses pre-existing or incomplete managed credential/runtime state".to_owned());
+    }
+    Ok(())
+}
+
 fn read_bounded_windows_runtime_evidence(install_root: &Path) -> Result<String, String> {
     let runtime_root = install_root.join("runtime");
     #[cfg(windows)]
@@ -1429,8 +1491,9 @@ fn read_bounded_windows_runtime_evidence(install_root: &Path) -> Result<String, 
     let external_owner = read_external_owner_restore_evidence(install_root)?;
     #[cfg(not(windows))]
     let external_owner = "external_owner_evidence=WINDOWS_ONLY".to_owned();
+    let cursor = read_bounded_windows_credential_cursor(install_root)?;
     let critical = format!(
-        "runtime_evidence=BOUNDED_READ_ONLY;{controller_error};{process_classification};{scheduled_tasks};{external_owner}"
+        "runtime_evidence=BOUNDED_READ_ONLY;{controller_error};{process_classification};{scheduled_tasks};{external_owner};{cursor}"
     );
     if critical.len() > RUNTIME_EVIDENCE_RESULT_MAX_BYTES {
         return Err(format!(
@@ -1957,6 +2020,15 @@ async fn stage_windows_credential_candidate_from_worker(
         &identity_path,
     )
     .await?;
+    if !windows_credential_store_path(install_root).exists() {
+        // Existing rotation is untouched. The first permanent candidate,
+        // however, is admitted only once by the original stopped SYSTEM
+        // owner, not by a disposable test root or unprivileged Windows runner.
+        #[cfg(windows)]
+        require_offline_first_use_stage_owner(install_root)?;
+        #[cfg(not(windows))]
+        return Err("persistent first-use staging requires Windows SYSTEM owner".to_owned());
+    }
     let store = CredentialStore::new(
         windows_credential_store_path(install_root),
         edge_shared_types::CredentialProjectionKind::Windows,
