@@ -258,8 +258,14 @@ jobs:
           history="$RUNNER_TEMP/initial-history.json"
           gh api --paginate "repos/$GITHUB_REPOSITORY/issues/26/comments?per_page=100" |
             jq -s 'add' > "$history"
-          jq -e '
-            [.[]|.body|select(startswith("<!-- sing-box-credential-initial-attempt/v1 -->"))]|length==1
+          jq -e --argjson original "$ORIGINAL_RUN" --arg slot "$SLOT" '
+            [.[]|.body|select(startswith("<!-- sing-box-credential-initial-attempt/v1 -->"))] |
+            if length==1 then .[0] else error("not exactly one original issue BEGIN") end |
+            split("\n") |
+            if length==2 then .[1]|fromjson else error("original BEGIN malformed") end |
+            .schema=="sing-box.credential-initial-attempt/v1" and
+            .phase=="BEGIN" and .generation==$original and
+            .github_run_id==$original and .slot==$slot
           ' "$history" >/dev/null
           jq -e '
             [.[]|.body|select(contains("<!-- sing-box-windows-persistent-initial-stage/"))]|length==0
