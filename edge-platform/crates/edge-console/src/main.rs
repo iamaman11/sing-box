@@ -396,6 +396,29 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             finish_privileged_result(&result)?;
             Ok(())
         }
+        #[cfg(windows)]
+        Command::OfflineBootstrap(args) => {
+            let install_root = PathBuf::from(args.install_root);
+            let request = WindowsPrivilegedRequest {
+                schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+                request_id: new_privileged_request_id()?,
+                operation: WindowsPrivilegedOperation::OfflineActivateRelease as i32,
+                accepted_revision: Some(args.accepted_revision),
+                release_set_sha256: Some(args.release_set_sha256),
+                credential_generation: None,
+                credential_transition_action: None,
+            };
+            let (code, detail, release) =
+                offline_bootstrap_privileged_release(&install_root, &request)
+                    .map_err(ConsoleError::Command)?;
+            println!("status=PASS");
+            println!("code={code}");
+            println!("detail={detail}");
+            if let Some(release) = release {
+                println!("active_release_set_sha256={release}");
+            }
+            Ok(())
+        }
         Command::PrivilegedOfflineActivate(args) => {
             let install_root = PathBuf::from(args.install_root);
             require_exact_immutable_activation_console(&install_root)
@@ -2778,6 +2801,14 @@ fn offline_activate_privileged_release(
     request: &WindowsPrivilegedRequest,
 ) -> Result<(String, String, Option<String>), String> {
     require_exact_immutable_activation_console(install_root)?;
+    offline_activate_privileged_release_with_installer(install_root, request, None)
+}
+
+fn offline_activate_privileged_release_with_installer(
+    install_root: &Path,
+    request: &WindowsPrivilegedRequest,
+    verified_bootstrap_installer: Option<&Path>,
+) -> Result<(String, String, Option<String>), String> {
     let before = load_verified_activation(install_root).map_err(|err| err.to_string())?;
     require_offline_windows_owner(install_root, &before)?;
     let revision = request
@@ -2817,9 +2848,9 @@ fn offline_activate_privileged_release(
     // This is the first mutation. Hold SCM on manual start BEFORE modifying
     // release pointers so an unexpected reboot cannot start ManagedTun.
     offline_hold_controller_stopped(install_root, &before)?;
-    let installer = install_root
-        .join("bootstrap")
-        .join("install-windows-release.ps1");
+    let installer = verified_bootstrap_installer
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| install_root.join("bootstrap").join("install-windows-release.ps1"));
     if !installer.is_file() {
         return Err("protected offline installer missing".to_owned());
     }
@@ -2900,6 +2931,144 @@ fn offline_activate_privileged_release(
         "exact ReleaseSet installed; SCM remains Stopped; no TUN/DNS/routes changed and no service started".to_owned(),
         Some(post.release_set_sha256),
     ))
+}
+
+fn offline_bootstrap_identifiers_valid(revision: &str, digest: &str) -> bool {
+    revision.len() == 40
+        && digest.len() == 64
+        && revision
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+#[cfg(windows)]
+fn offline_bootstrap_privileged_release(
+    install_root: &Path,
+    request: &WindowsPrivilegedRequest,
+) -> Result<(String, String, Option<String>), String> {
+    // One operator-authorized local admin invocation from the independently
+    // verified NEW immutable console. The installed legacy SYSTEM dispatcher
+    // never sees a wire operation it does not understand.
+    if install_root != Path::new(r"C:\sing-box") {
+        return Err("OFFLINE_BOOTSTRAP_BLOCKED: unexpected Windows root".to_owned());
+    }
+    let revision = request
+        .accepted_revision
+        .as_deref()
+        .ok_or_else(|| "OFFLINE_BOOTSTRAP_BLOCKED: accepted revision missing".to_owned())?;
+    let target = request
+        .release_set_sha256
+        .as_deref()
+        .ok_or_else(|| "OFFLINE_BOOTSTRAP_BLOCKED: ReleaseSet missing".to_owned())?;
+    if !offline_bootstrap_identifiers_valid(revision, target) {
+        return Err("OFFLINE_BOOTSTRAP_BLOCKED: malformed exact revision or digest".to_owned());
+    }
+    let desired = canonical_production_desired_state()?;
+    if desired.windows_datapath_mode != WindowsDatapathMode::ProxyOnly as i32 {
+        return Err("OFFLINE_BOOTSTRAP_BLOCKED: canonical target is not ProxyOnly".to_owned());
+    }
+    let before = load_verified_activation(install_root).map_err(|err| err.to_string())?;
+    if before.windows_datapath_mode != WindowsDatapathMode::ManagedTun as i32
+        || before.release_set_sha256 == target
+    {
+        return Err("OFFLINE_BOOTSTRAP_BLOCKED: exact previous ManagedTun owner required".to_owned());
+    }
+    require_offline_windows_owner(install_root, &before)?;
+
+    let candidate = install_root.join("releases").join(target);
+    let console = candidate.join("bin").join("edge-console.exe");
+    let current_exe = env::current_exe().map_err(|err| err.to_string())?;
+    if current_exe.canonicalize().map_err(|err| err.to_string())?
+        != console.canonicalize().map_err(|err| err.to_string())?
+    {
+        return Err("OFFLINE_BOOTSTRAP_BLOCKED: not exact verified target console".to_owned());
+    }
+    let stage_installer = candidate.join("bootstrap").join("install-windows-release.ps1");
+    if !stage_installer.is_file() {
+        return Err("OFFLINE_BOOTSTRAP_BLOCKED: target installer missing".to_owned());
+    }
+    // The native verifier checks manifest, ZIP and ALL exact target binaries.
+    // Never accept a caller-provided executable/installer or download command.
+    let verification = Command::new(candidate.join("bin").join("edge-release-set.exe"))
+        .args(["verify-windows", "--input"])
+        .arg(candidate.join("release-set.pb"))
+        .arg("--sha256-file")
+        .arg(candidate.join("release-set.pb.sha256"))
+        .arg("--windows-artifact")
+        .arg(candidate.join("edge-platform-windows.zip"))
+        .arg("--windows-controller")
+        .arg(candidate.join("bin").join("edge-controller.exe"))
+        .arg("--windows-console")
+        .arg(&console)
+        .arg("--windows-diagnostic")
+        .arg(candidate.join("bin").join("edge-diagnostic.exe"))
+        .arg("--windows-sing-box")
+        .arg(candidate.join("bin").join("sing-box.exe"))
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: verifier unavailable: {err}"))?;
+    if !verification.status.success() {
+        return Err("OFFLINE_BOOTSTRAP_BLOCKED: target ReleaseSet or binary verification failed".to_owned());
+    }
+
+    // Only an elevated local Windows admin can open CHANGE_CONFIG on this
+    // SCM owner. Prove permission before creating the non-replayable intent.
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+        .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: SCM unavailable: {err}"))?;
+    let _authorized_service = manager
+        .open_service(WINDOWS_CONTROLLER_SERVICE_NAME, ServiceAccess::CHANGE_CONFIG)
+        .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: local admin authorization absent: {err}"))?;
+
+    // The accepted protected main, immutable release tag, merge-parent source
+    // tree, and target package are verified by the existing installer BEFORE
+    // any SCM, current.pb or dispatcher mutation.
+    let root = install_root
+        .to_str()
+        .ok_or_else(|| "OFFLINE_BOOTSTRAP_BLOCKED: invalid Windows root".to_owned())?;
+    let preflight = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
+        .arg(&stage_installer)
+        .args([
+            "-AcceptedRevision",
+            revision,
+            "-ReleaseSetSha256",
+            target,
+            "-InstallRoot",
+            root,
+            "-Offline",
+            "-StageOnly",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: release preflight unavailable: {err}"))?;
+    if !preflight.status.success() {
+        return Err(format!(
+            "OFFLINE_BOOTSTRAP_BLOCKED: accepted release preflight failed: {}",
+            bounded_privileged_child_evidence(&preflight.stdout, &preflight.stderr)
+        ));
+    }
+    require_offline_windows_owner(install_root, &before)?;
+
+    // Create exactly one durable BEGIN before the first SCM mutation.
+    // Never replay after a lost result, even if the old release was restored.
+    let intent = install_root.join("offline-bootstrap-intent-v1");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&intent)
+        .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: intent already exists or cannot be created: {err}"))?;
+    let marker = format!(
+        "schema=sing-box.windows-offline-bootstrap/v1\nfrom={}\nto={target}\naccepted_revision={revision}\n",
+        before.release_set_sha256,
+    );
+    file.write_all(marker.as_bytes())
+        .and_then(|_| file.sync_all())
+        .map_err(|err| format!("OFFLINE_BOOTSTRAP_UNKNOWN: durable intent failure: {err}; do not replay"))?;
+    drop(file);
+    offline_activate_privileged_release_with_installer(install_root, request, Some(&stage_installer))
 }
 
 fn offline_rollback_privileged_release(
@@ -4833,6 +5002,17 @@ mod tests {
         );
         assert_eq!(fs::read(&current).unwrap(), b"torn-current");
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn offline_bootstrap_identifiers_require_exact_lowercase_immutable_values() {
+        let revision = "a".repeat(40);
+        let digest = "b".repeat(64);
+        assert!(offline_bootstrap_identifiers_valid(&revision, &digest));
+        assert!(!offline_bootstrap_identifiers_valid(&revision[..39], &digest));
+        assert!(!offline_bootstrap_identifiers_valid(&revision, &digest[..63]));
+        assert!(!offline_bootstrap_identifiers_valid(&revision.to_uppercase(), &digest));
+        assert!(!offline_bootstrap_identifiers_valid(&revision, &format!("{}g", &digest[..63])));
     }
 
     #[test]
