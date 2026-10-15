@@ -1428,8 +1428,14 @@ fn read_bounded_windows_credential_cursor(install_root: &Path) -> Result<String,
     let active = state.active.as_ref();
     let candidate = state.candidate.as_ref();
     let previous = state.previous.as_ref();
+    let slot = match candidate.map(|value| value.slot) {
+        Some(value) if value == edge_shared_types::CredentialDeliverySlot::A as i32 => "A",
+        Some(value) if value == edge_shared_types::CredentialDeliverySlot::B as i32 => "B",
+        Some(_) => "UNKNOWN",
+        None => "NONE",
+    };
     Ok(format!(
-        "credential_cursor=VALID;credential_active_present={};credential_candidate_present={};credential_candidate_generation={};credential_previous_present={}",
+        "credential_cursor=VALID;credential_active_present={};credential_candidate_present={};credential_candidate_generation={};credential_candidate_slot={slot};credential_previous_present={}",
         active.is_some(),
         candidate.is_some(),
         candidate.map(|value| value.generation).unwrap_or(0),
