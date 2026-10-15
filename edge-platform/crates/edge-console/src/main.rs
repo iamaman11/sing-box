@@ -4127,9 +4127,7 @@ fn proxy_only_controller_service_lifecycle(
         || !has("exact_release_files=PASS")
         || !has(&format!("release_set_sha256={}", active.release_set_sha256))
     {
-        return Err(
-            "PROXY_ONLY_SCM_BLOCKED: exact release / no-TUN evidence missing".to_owned(),
-        );
+        return Err("PROXY_ONLY_SCM_BLOCKED: exact release / no-TUN evidence missing".to_owned());
     }
     let observed = classify_runtime_process(&local_singbox_config_path(install_root));
     if matches!(observed, RuntimeProcessClassification::Conflicting(_)) {
@@ -4140,8 +4138,10 @@ fn proxy_only_controller_service_lifecycle(
     let service = manager
         .open_service(
             WINDOWS_CONTROLLER_SERVICE_NAME,
-            ServiceAccess::QUERY_CONFIG | ServiceAccess::QUERY_STATUS
-                | ServiceAccess::START | ServiceAccess::STOP,
+            ServiceAccess::QUERY_CONFIG
+                | ServiceAccess::QUERY_STATUS
+                | ServiceAccess::START
+                | ServiceAccess::STOP,
         )
         .map_err(|err| format!("PROXY_ONLY_SCM_BLOCKED: owner unavailable: {err}"))?;
     let config = service.query_config().map_err(|err| err.to_string())?;
@@ -4151,20 +4151,21 @@ fn proxy_only_controller_service_lifecycle(
         install_root.display(),
         INSTALLED_CONTROLLER_ADDR,
     );
-    let account = config.account_name.as_deref()
+    let account = config
+        .account_name
+        .as_deref()
         .map(|value| value.to_string_lossy().into_owned())
         .unwrap_or_default();
     if config.executable_path.to_string_lossy() != exact_command
         || !account.eq_ignore_ascii_case(WINDOWS_CONTROLLER_SERVICE_ACCOUNT)
         || config.start_type != ServiceStartType::OnDemand
     {
-        return Err(
-            "PROXY_ONLY_SCM_BLOCKED: exact immutable Manual SCM owner mismatch".to_owned(),
-        );
+        return Err("PROXY_ONLY_SCM_BLOCKED: exact immutable Manual SCM owner mismatch".to_owned());
     }
     let before = service.query_status().map_err(|err| err.to_string())?;
     let addr: SocketAddr = INSTALLED_CONTROLLER_ADDR
-        .parse().map_err(|err| err.to_string())?;
+        .parse()
+        .map_err(|err| err.to_string())?;
     let code = if start {
         match before.current_state {
             ServiceState::Stopped => {
@@ -4177,7 +4178,8 @@ fn proxy_only_controller_service_lifecycle(
                             .to_owned(),
                     );
                 }
-                service.start::<&str>(&[])
+                service
+                    .start::<&str>(&[])
                     .map_err(|err| format!("PROXY_ONLY_SCM_START_UNKNOWN: {err}"))?;
                 wait_for_service_state(
                     &service,
@@ -4186,17 +4188,29 @@ fn proxy_only_controller_service_lifecycle(
                 )?;
                 "PROXY_ONLY_SCM_STARTED"
             }
-            ServiceState::Running if before.process_id.is_some() && controller_is_listening(addr) => {
+            ServiceState::Running
+                if before.process_id.is_some() && controller_is_listening(addr) =>
+            {
                 "PROXY_ONLY_SCM_ALREADY_RUNNING"
             }
-            other => return Err(format!("PROXY_ONLY_SCM_BLOCKED: unsafe start state {other:?}")),
+            other => {
+                return Err(format!(
+                    "PROXY_ONLY_SCM_BLOCKED: unsafe start state {other:?}"
+                ));
+            }
         }
     } else {
         match before.current_state {
-            ServiceState::Stopped if before.process_id.is_none()
-                && matches!(observed, RuntimeProcessClassification::Absent)
-                && !controller_is_listening(addr) => "PROXY_ONLY_SCM_ALREADY_STOPPED",
-            ServiceState::Running if before.process_id.is_some() && controller_is_listening(addr) => {
+            ServiceState::Stopped
+                if before.process_id.is_none()
+                    && matches!(observed, RuntimeProcessClassification::Absent)
+                    && !controller_is_listening(addr) =>
+            {
+                "PROXY_ONLY_SCM_ALREADY_STOPPED"
+            }
+            ServiceState::Running
+                if before.process_id.is_some() && controller_is_listening(addr) =>
+            {
                 // Stop ONLY the exact managed child. Never kill external
                 // sing-box or touch CloudflareWARP DNS, TUN, or routes.
                 stop_runtime_process(&local_singbox_config_path(install_root), true)?;
@@ -4206,24 +4220,35 @@ fn proxy_only_controller_service_lifecycle(
                 ) {
                     return Err("PROXY_ONLY_SCM_STOP_UNKNOWN: managed child remains".to_owned());
                 }
-                service.stop()
+                service
+                    .stop()
                     .map_err(|err| format!("PROXY_ONLY_SCM_STOP_UNKNOWN: {err}"))?;
                 wait_for_service_state(&service, ServiceState::Stopped, Duration::from_secs(15))?;
                 "PROXY_ONLY_SCM_STOPPED"
             }
-            other => return Err(format!("PROXY_ONLY_SCM_BLOCKED: unsafe stop state {other:?}")),
+            other => {
+                return Err(format!(
+                    "PROXY_ONLY_SCM_BLOCKED: unsafe stop state {other:?}"
+                ));
+            }
         }
     };
     let after = service.query_status().map_err(|err| err.to_string())?;
     let after_config = service.query_config().map_err(|err| err.to_string())?;
-    let expected = if start { ServiceState::Running } else { ServiceState::Stopped };
+    let expected = if start {
+        ServiceState::Running
+    } else {
+        ServiceState::Stopped
+    };
     if after.current_state != expected
         || (start && (after.process_id.is_none() || !controller_is_listening(addr)))
-        || (!start && (after.process_id.is_some() || controller_is_listening(addr)
-            || !matches!(
-                classify_runtime_process(&local_singbox_config_path(install_root)),
-                RuntimeProcessClassification::Absent
-            )))
+        || (!start
+            && (after.process_id.is_some()
+                || controller_is_listening(addr)
+                || !matches!(
+                    classify_runtime_process(&local_singbox_config_path(install_root)),
+                    RuntimeProcessClassification::Absent
+                )))
         || after_config.start_type != ServiceStartType::OnDemand
     {
         return Err("PROXY_ONLY_SCM_UNKNOWN: SCM readback failed; do not replay".to_owned());
