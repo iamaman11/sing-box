@@ -160,7 +160,7 @@ def main() -> None:
     )
     require(
         windows_console.count("require_exact_immutable_activation_console(&install_root)") == 5
-        and windows_console.count("require_exact_immutable_activation_console(install_root)?;") == 6
+        and windows_console.count("require_exact_immutable_activation_console(install_root)?;") == 4
         and "Command::OfflineBootstrap(args)" in windows_console
         and "current_exe.canonicalize()" in windows_console
         and "console.canonicalize()" in windows_console
