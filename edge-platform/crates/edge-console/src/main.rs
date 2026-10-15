@@ -3109,6 +3109,8 @@ fn offline_bootstrap_privileged_release(
     }
     require_offline_windows_owner(install_root, &before)?;
 
+    offline_bootstrap_assert_task(&before.console_path)?;
+
     // Create exactly one durable BEGIN before the first SCM mutation.
     // Never replay after a lost result, even if the old release was restored.
     let intent = install_root.join("offline-bootstrap-intent-v1");
