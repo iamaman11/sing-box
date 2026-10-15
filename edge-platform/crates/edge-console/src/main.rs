@@ -2971,12 +2971,22 @@ fn offline_bootstrap_privileged_release(
         return Err("OFFLINE_BOOTSTRAP_BLOCKED: canonical target is not ProxyOnly".to_owned());
     }
     let before = load_verified_activation(install_root).map_err(|err| err.to_string())?;
-    if before.windows_datapath_mode != WindowsDatapathMode::ManagedTun as i32
-        || before.release_set_sha256 == target
-    {
-        return Err("OFFLINE_BOOTSTRAP_BLOCKED: exact previous ManagedTun owner required".to_owned());
+    if before.release_set_sha256 == target {
+        return Err("OFFLINE_BOOTSTRAP_BLOCKED: exact distinct legacy release required".to_owned());
     }
     require_offline_windows_owner(install_root, &before)?;
+    // Datapath mode belongs to the immutable release's compiled policy,
+    // not to WindowsActivationState. Prove the old binary's exact doctor.
+    let old_doctor = Command::new(&before.diagnostic_path)
+        .arg("doctor")
+        .arg(install_root.join("current.pb"))
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: old doctor missing: {err}"))?;
+    let old_readout = String::from_utf8_lossy(&old_doctor.stdout);
+    if !old_readout.lines().any(|line| line == "windows_datapath_mode=ManagedTun") {
+        return Err("OFFLINE_BOOTSTRAP_BLOCKED: exact stopped old ManagedTun source unproven".to_owned());
+    }
 
     let candidate = install_root.join("releases").join(target);
     let console = candidate.join("bin").join("edge-console.exe");
