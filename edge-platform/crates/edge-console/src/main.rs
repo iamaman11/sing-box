@@ -3048,9 +3048,25 @@ fn verify_offline_bootstrap_dispatcher(exact_console: &str) -> Result<(), String
     let proof = r#"
 $ErrorActionPreference = 'Stop'
 $task = Get-ScheduledTask -TaskName 'EdgePlatformPrivilegedDispatch' -ErrorAction Stop
-if ($null -eq $task -or [string]$task.State -cne 'Ready' -or
-    [string]$task.Principal.UserId -notin @('SYSTEM','NT AUTHORITY\SYSTEM','S-1-5-18') -or
+if ($null -eq $task) { throw 'existing SYSTEM dispatcher missing' }
+# Localized principal names (e.g. 'СИСТЕМА') are never authority:
+# resolve by Windows itself and compare only the immutable LocalSystem SID.
+$principalName = [string]$task.Principal.UserId
+try {
+    $principalSid = if ($principalName -ceq 'S-1-5-18') {
+        'S-1-5-18'
+    } else {
+        ([System.Security.Principal.NTAccount]::new($principalName)).Translate(
+            [System.Security.Principal.SecurityIdentifier]
+        ).Value
+    }
+} catch {
+    throw 'existing SYSTEM dispatcher principal SID cannot be resolved'
+}
+if ($principalSid -cne 'S-1-5-18' -or
+    [string]$task.State -cne 'Ready' -or
     [string]$task.Principal.RunLevel -cne 'Highest' -or
+    [string]$task.Principal.LogonType -cne 'ServiceAccount' -or
     @($task.Actions).Count -ne 1) {
     throw 'existing SYSTEM dispatcher principal/state changed'
 }

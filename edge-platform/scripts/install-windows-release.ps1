@@ -513,12 +513,30 @@ if ($StageOnly -or $BootstrapNow) {
     # Re-observe the ONLY existing SYSTEM/Highest dispatcher before calling
     # the native one-shot owner. Never retarget an unrelated task.
     $dispatch = Get-ScheduledTask -TaskName 'EdgePlatformPrivilegedDispatch' -ErrorAction Stop
-    if ($null -eq $dispatch -or
+    # UserId is localized (e.g. 'СИСТЕМА' on Russian Windows).
+    # Resolve to the immutable well-known LocalSystem SID; never trust a name.
+    if ($null -eq $dispatch) {
+        throw 'OFFLINE_BOOTSTRAP_BLOCKED: existing SYSTEM task missing'
+    }
+    $principalName = [string]$dispatch.Principal.UserId
+    try {
+        $principalSid = if ($principalName -ceq 'S-1-5-18') {
+            'S-1-5-18'
+        } else {
+            ([System.Security.Principal.NTAccount]::new($principalName)).Translate(
+                [System.Security.Principal.SecurityIdentifier]
+            ).Value
+        }
+    } catch {
+        throw 'OFFLINE_BOOTSTRAP_BLOCKED: task principal SID cannot be resolved'
+    }
+    if ($principalSid -cne 'S-1-5-18' -or
         [string]$dispatch.State -cne 'Ready' -or
-        [string]$dispatch.Principal.UserId -notin @('SYSTEM','NT AUTHORITY\SYSTEM','S-1-5-18') -or
         [string]$dispatch.Principal.RunLevel -cne 'Highest' -or
+        [string]$dispatch.Principal.LogonType -cne 'ServiceAccount' -or
         @($dispatch.Actions).Count -ne 1 -or
-        [string]@($dispatch.Actions)[0].Execute.Trim('"') -cne [string]$old['console_path']) {
+        [string]@($dispatch.Actions)[0].Execute.Trim('"') -cne [string]$old['console_path'] -or
+        [string]@($dispatch.Actions)[0].Arguments -notmatch '^privileged-dispatch --install-root "?C:\\sing-box"?$') {
         throw 'OFFLINE_BOOTSTRAP_BLOCKED: old exact SYSTEM task not proven'
     }
     Write-Output 'offline_bootstrap_task=EXACT_SYSTEM_OWNER'
