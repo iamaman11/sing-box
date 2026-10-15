@@ -2999,46 +2999,77 @@ fn offline_activate_privileged_release_with_installer(
 }
 
 #[cfg(windows)]
+fn encoded_powershell_command(script: &str) -> String {
+    // -EncodedCommand is the native PowerShell contract for programmatic
+    // invocation: UTF-16LE base64, with no ambiguity from Windows argv quoting.
+    use base64::Engine as _;
+    let bytes: Vec<u8> = script
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    base64::engine::general_purpose::STANDARD.encode(bytes)
+}
+
+#[cfg(windows)]
 fn require_offline_bootstrap_installer_archive_identity(
     verified_zip: &Path,
     candidate_installer: &Path,
 ) -> Result<(), String> {
-    // The target binary and ZIP have already passed verify-windows. The
-    // installer must ALSO be the exact script in that verified ZIP: otherwise
-    // a staged local file could execute arbitrary mutations before SCM hold.
-    // This is read-only and runs before the durable one-shot BEGIN.
+    // No install, SCM, task, or BEGIN mutation. The target ZIP and binaries
+    // have already passed verify-windows; prove installer identity separately.
+    // Phase-labelled evidence is bounded and never includes installer bytes.
     let verify_script = r#"
 $ErrorActionPreference = 'Stop'
-Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
-$archive = [IO.Compression.ZipFile]::OpenRead($env:EDGE_BOOTSTRAP_VERIFIED_ZIP)
+$phase = 'LOAD_COMPRESSION'
 try {
-    $entries = @($archive.Entries | Where-Object {
-        [string]$_.FullName.Replace('\','/') -ceq 'bootstrap/install-windows-release.ps1'
-    })
-    if ($entries.Count -ne 1) { throw 'ambiguous exact bootstrap installer entry' }
-    $stream = $entries[0].Open()
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+    $phase = 'OPEN_ZIP'
+    $archive = [IO.Compression.ZipFile]::OpenRead($env:EDGE_BOOTSTRAP_VERIFIED_ZIP)
     try {
-        $hasher = [Security.Cryptography.SHA256]::Create()
-        try { $expected = ([BitConverter]::ToString($hasher.ComputeHash($stream))).Replace('-','') }
-        finally { $hasher.Dispose() }
-    } finally { $stream.Dispose() }
-} finally { $archive.Dispose() }
-$actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $env:EDGE_BOOTSTRAP_TARGET_INSTALLER).Hash
-if ($actual -cne $expected) { throw 'candidate installer hash differs from verified ZIP' }
+        $phase = 'FIND_UNIQUE_ENTRY'
+        $entries = @($archive.Entries | Where-Object {
+            [string]$_.FullName.Replace('\','/') -ceq 'bootstrap/install-windows-release.ps1'
+        })
+        if ($entries.Count -ne 1) { throw 'ZIP_ENTRY_COUNT_INVALID' }
+        $phase = 'HASH_ZIP_ENTRY'
+        $stream = $entries[0].Open()
+        try {
+            $hasher = [Security.Cryptography.SHA256]::Create()
+            try { $expected = ([BitConverter]::ToString($hasher.ComputeHash($stream))).Replace('-','') }
+            finally { $hasher.Dispose() }
+        } finally { $stream.Dispose() }
+    } finally { $archive.Dispose() }
+    $phase = 'HASH_LOCAL_INSTALLER'
+    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $env:EDGE_BOOTSTRAP_TARGET_INSTALLER).Hash
+    $phase = 'COMPARE_DIGEST'
+    if ($actual -cne $expected) { throw 'ZIP_INSTALLER_DIGEST_MISMATCH' }
+} catch {
+    # Do not print paths, ZIP entries, credentials, or complete PowerShell
+    # exception messages. The phase and stable error ID suffice for forensics.
+    $id = [string]$_.FullyQualifiedErrorId
+    if ($id -notmatch '^[a-zA-Z0-9,._-]{1,96}$') { $id = 'UNCLASSIFIED' }
+    [Console]::Error.WriteLine("ZIP_PROOF_PHASE=$phase;ERROR_ID=$id")
+    exit 82
+}
 "#;
-    let exit = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", verify_script])
+    let output = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-EncodedCommand",
+            &encoded_powershell_command(verify_script),
+        ])
         .env("EDGE_BOOTSTRAP_VERIFIED_ZIP", verified_zip)
         .env("EDGE_BOOTSTRAP_TARGET_INSTALLER", candidate_installer)
         .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: archive proof cannot run: {err}"))?;
-    if !exit.success() {
-        return Err(
-            "OFFLINE_BOOTSTRAP_BLOCKED: exact ZIP-to-installer SHA256 proof failed".to_owned(),
-        );
+        .output()
+        .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: ZIP proof host unavailable: {err}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "OFFLINE_BOOTSTRAP_BLOCKED: ZIP-to-installer verification failed; child_exit={}; {}",
+            output.status.code().unwrap_or(-1),
+            bounded_privileged_child_evidence(&output.stdout, &output.stderr)
+        ));
     }
     Ok(())
 }
@@ -5300,6 +5331,96 @@ mod tests {
         ));
         fs::create_dir(&root).unwrap();
         root
+    }
+
+    #[cfg(windows)]
+    fn create_zip_identity_fixture(root: &Path, include_installer: bool) -> (PathBuf, PathBuf) {
+        let package = root.join("package");
+        let bootstrap = package.join("bootstrap");
+        fs::create_dir_all(&bootstrap).unwrap();
+        let expected_installer = bootstrap.join("install-windows-release.ps1");
+        fs::write(&expected_installer, b"Write-Output 'verified-archive-bytes'\r\n").unwrap();
+        if !include_installer {
+            fs::remove_file(&expected_installer).unwrap();
+            fs::write(package.join("different.txt"), b"not an installer").unwrap();
+        }
+        let zip = root.join("candidate.zip");
+        let fixture_script = r#"
+$ErrorActionPreference='Stop'
+Compress-Archive -Path (Join-Path $env:EDGE_ZIP_TEST_PACKAGE '*') -DestinationPath $env:EDGE_ZIP_TEST_DEST -CompressionLevel Optimal
+"#;
+        let output = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-EncodedCommand",
+                &encoded_powershell_command(fixture_script),
+            ])
+            .env("EDGE_ZIP_TEST_PACKAGE", &package)
+            .env("EDGE_ZIP_TEST_DEST", &zip)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "disposable ZIP fixture build failed: {}",
+            bounded_privileged_child_evidence(&output.stdout, &output.stderr)
+        );
+        (zip, expected_installer)
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn native_offline_zip_proof_uses_real_rust_child_and_rejects_all_mismatches() {
+        // No mocked PowerShell invocation: run this on the native Windows
+        // candidate runner, using the exact Rust -> powershell.exe argv/env.
+        // The root deliberately contains Unicode to exercise path encoding.
+        let root = offline_test_root("zip-unicode-кириллица");
+        let (zip, packaged) = create_zip_identity_fixture(&root, true);
+        assert!(require_offline_bootstrap_installer_archive_identity(&zip, &packaged).is_ok());
+        fs::write(&packaged, b"tampered packaged script").unwrap();
+        let mismatch = require_offline_bootstrap_installer_archive_identity(&zip, &packaged)
+            .unwrap_err();
+        assert!(mismatch.contains("COMPARE_DIGEST"), "{mismatch}");
+        fs::remove_file(&packaged).unwrap();
+        let missing = require_offline_bootstrap_installer_archive_identity(&zip, &packaged)
+            .unwrap_err();
+        assert!(missing.contains("HASH_LOCAL_INSTALLER"), "{missing}");
+
+        let empty_root = offline_test_root("zip-no-entry");
+        let (no_entry, _) = create_zip_identity_fixture(&empty_root, false);
+        let absent = require_offline_bootstrap_installer_archive_identity(&no_entry, &packaged)
+            .unwrap_err();
+        assert!(absent.contains("FIND_UNIQUE_ENTRY"), "{absent}");
+
+        let corrupt_zip = root.join("corrupt.zip");
+        fs::write(&corrupt_zip, b"not-a-zip").unwrap();
+        let corrupt = require_offline_bootstrap_installer_archive_identity(&corrupt_zip, &packaged)
+            .unwrap_err();
+        assert!(corrupt.contains("OPEN_ZIP"), "{corrupt}");
+
+        let _ = fs::remove_dir_all(root);
+        let _ = fs::remove_dir_all(empty_root);
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn encoded_powershell_command_survives_windows_command_quoting() {
+        let probe = r#"
+$ErrorActionPreference = 'Stop'
+if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and кириллица') {
+    throw 'argv encoding defect'
+}
+"#;
+        let output = Command::new("powershell.exe")
+            .args([
+                "-NoProfile",
+                "-NonInteractive",
+                "-EncodedCommand",
+                &encoded_powershell_command(probe),
+            ])
+            .output()
+            .unwrap();
+        assert!(output.status.success());
     }
 
     #[test]
