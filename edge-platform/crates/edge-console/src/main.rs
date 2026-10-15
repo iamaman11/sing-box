@@ -3019,9 +3019,9 @@ fn require_offline_bootstrap_installer_archive_identity(
 $ErrorActionPreference = 'Stop'
 $phase = 'LOAD_COMPRESSION'
 try {
-    # .NET assembly loading is native; do not require module-autoloaded
-    # PowerShell cmdlets such as Get-FileHash in a no-profile child.
-    [void][Reflection.Assembly]::Load('System.IO.Compression.FileSystem')
+    # Keep the verified host-specific ZIP assembly loader. The local digest
+    # below uses direct .NET streams instead of module-autoloaded Get-FileHash.
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
     $phase = 'OPEN_ZIP'
     $archive = [IO.Compression.ZipFile]::OpenRead($env:EDGE_BOOTSTRAP_VERIFIED_ZIP)
     try {
