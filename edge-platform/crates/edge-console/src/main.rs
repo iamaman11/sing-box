@@ -3003,10 +3003,7 @@ fn encoded_powershell_command(script: &str) -> String {
     // -EncodedCommand is the native PowerShell contract for programmatic
     // invocation: UTF-16LE base64, with no ambiguity from Windows argv quoting.
     use base64::Engine as _;
-    let bytes: Vec<u8> = script
-        .encode_utf16()
-        .flat_map(u16::to_le_bytes)
-        .collect();
+    let bytes: Vec<u8> = script.encode_utf16().flat_map(u16::to_le_bytes).collect();
     base64::engine::general_purpose::STANDARD.encode(bytes)
 }
 
@@ -5339,7 +5336,11 @@ mod tests {
         let bootstrap = package.join("bootstrap");
         fs::create_dir_all(&bootstrap).unwrap();
         let expected_installer = bootstrap.join("install-windows-release.ps1");
-        fs::write(&expected_installer, b"Write-Output 'verified-archive-bytes'\r\n").unwrap();
+        fs::write(
+            &expected_installer,
+            b"Write-Output 'verified-archive-bytes'\r\n",
+        )
+        .unwrap();
         if !include_installer {
             fs::remove_file(&expected_installer).unwrap();
             fs::write(package.join("different.txt"), b"not an installer").unwrap();
@@ -5378,18 +5379,18 @@ Compress-Archive -Path (Join-Path $env:EDGE_ZIP_TEST_PACKAGE '*') -DestinationPa
         let (zip, packaged) = create_zip_identity_fixture(&root, true);
         assert!(require_offline_bootstrap_installer_archive_identity(&zip, &packaged).is_ok());
         fs::write(&packaged, b"tampered packaged script").unwrap();
-        let mismatch = require_offline_bootstrap_installer_archive_identity(&zip, &packaged)
-            .unwrap_err();
+        let mismatch =
+            require_offline_bootstrap_installer_archive_identity(&zip, &packaged).unwrap_err();
         assert!(mismatch.contains("COMPARE_DIGEST"), "{mismatch}");
         fs::remove_file(&packaged).unwrap();
-        let missing = require_offline_bootstrap_installer_archive_identity(&zip, &packaged)
-            .unwrap_err();
+        let missing =
+            require_offline_bootstrap_installer_archive_identity(&zip, &packaged).unwrap_err();
         assert!(missing.contains("HASH_LOCAL_INSTALLER"), "{missing}");
 
         let empty_root = offline_test_root("zip-no-entry");
         let (no_entry, _) = create_zip_identity_fixture(&empty_root, false);
-        let absent = require_offline_bootstrap_installer_archive_identity(&no_entry, &packaged)
-            .unwrap_err();
+        let absent =
+            require_offline_bootstrap_installer_archive_identity(&no_entry, &packaged).unwrap_err();
         assert!(absent.contains("FIND_UNIQUE_ENTRY"), "{absent}");
 
         let corrupt_zip = root.join("corrupt.zip");
