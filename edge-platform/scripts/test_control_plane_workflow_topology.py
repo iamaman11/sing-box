@@ -89,7 +89,9 @@ def main() -> None:
     windows_controller_core = WINDOWS_CONTROLLER_CORE.read_text(encoding="utf-8")
     edge_local_runtime = EDGE_LOCAL_RUNTIME.read_text(encoding="utf-8")
     require(
-        '"/windows initial-pair-stage "*' in windows_physical
+        "startsWith(github.event.comment.body, '/windows initial-pair-stage ')" in router
+        and 'issues: write' in router
+        and '"/windows initial-pair-stage "*' in windows_physical
         and 'operation="initial-pair-stage"' in windows_physical
         and 'initial_first_use_reservation:' in windows_physical
         and 'first_use_stage_begin=COMMITTED_ONCE' in windows_physical
