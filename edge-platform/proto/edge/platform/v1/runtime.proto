@@ -163,6 +163,10 @@ enum WindowsPrivilegedOperation {
   // Offline handoff only; never starts EdgePlatformController or sing-box.
   WINDOWS_PRIVILEGED_OPERATION_OFFLINE_ACTIVATE_RELEASE = 12;
   WINDOWS_PRIVILEGED_OPERATION_OFFLINE_ROLLBACK_PREVIOUS_RELEASE = 13;
+  // Only the exact installed ProxyOnly release, through the existing SYSTEM
+  // dispatcher. No TUN, network authority, credential, or task mutation.
+  WINDOWS_PRIVILEGED_OPERATION_START_PROXY_ONLY_CONTROLLER = 14;
+  WINDOWS_PRIVILEGED_OPERATION_STOP_PROXY_ONLY_CONTROLLER = 15;
 }
 
 message WindowsPrivilegedRequest {
