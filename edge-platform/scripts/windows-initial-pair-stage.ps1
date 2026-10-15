@@ -105,7 +105,7 @@ if ([string]$before['release_set_sha256'] -cne [string]$second['release_set_sha2
 if ($LASTEXITCODE -ne 0) {
   throw 'FIRST_USE_STAGE_UNKNOWN: stage outcome failed or uncertain, do not replay'
 }
-$expected = ';credential_cursor=VALID;credential_active_present=false;credential_candidate_present=true;credential_candidate_generation=' + $Generation + ';credential_previous_present=false'
+$expected = ';credential_cursor=VALID;credential_active_present=false;credential_candidate_present=true;credential_candidate_generation=' + $Generation + ';credential_candidate_slot=' + $Slot + ';credential_previous_present=false'
 if (-not (Read-SystemCursor $console).Contains($expected)) {
   throw 'FIRST_USE_STAGE_UNKNOWN: candidate readback incomplete, do not replay'
 }
