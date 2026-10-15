@@ -340,27 +340,6 @@ def main() -> None:
         "offline install and rollback must be bounded typed SYSTEM operations and not bypass the existing protected issue router",
     )
 
-    require(
-        "WINDOWS_PRIVILEGED_OPERATION_START_PROXY_ONLY_CONTROLLER = 14" in runtime_proto
-        and "WINDOWS_PRIVILEGED_OPERATION_STOP_PROXY_ONLY_CONTROLLER = 15" in runtime_proto
-        and "PrivilegedStartProxyOnlyController" in windows_console_cli
-        and "PrivilegedStopProxyOnlyController" in windows_console_cli
-        and "WindowsPrivilegedOperation::StartProxyOnlyController" in windows_console
-        and "WindowsPrivilegedOperation::StopProxyOnlyController" in windows_console
-        and "fn proxy_only_controller_service_lifecycle(" in windows_console
-        and "ServiceStartType::OnDemand" in windows_console
-        and "managed_tun_present=false" in windows_console
-        and "PROXY_ONLY_SCM_BLOCKED: conflicting sing-box owner" in windows_console
-        and "privileged-start-proxy-only-controller" in windows_physical
-        and "privileged-stop-proxy-only-controller" in windows_physical
-        and "ProxyOnly" in windows_physical
-        and "ManagedTun stop remains blocked" in windows_physical
-        and "PROXY_ONLY_SCM_BLOCKED: converge cannot silently upgrade" in windows_physical
-        and "expectedScm = if ($env:EDGE_OPERATION -eq 'stop')" in windows_physical
-        and "Set-DnsClientServerAddress" not in windows_console,
-        "ProxyOnly start/stop must use one exact SYSTEM-owned no-TUN SCM lifecycle, preserve Manual startup, and never authorize ManagedTun teardown",
-    )
-
     # The protected issue operator has a separate exact-command allowlist.
     require(
         "github.event.comment.body == '/windows offline-preflight'" in router
@@ -1356,6 +1335,28 @@ def main() -> None:
     credential_store = CREDENTIAL_STORE.read_text(encoding="utf-8")
     credential_proto = CREDENTIAL_PROTO.read_text(encoding="utf-8")
     runtime_proto = RUNTIME_PROTO.read_text(encoding="utf-8")
+    require(
+        "WINDOWS_PRIVILEGED_OPERATION_START_PROXY_ONLY_CONTROLLER = 14" in runtime_proto
+        and "WINDOWS_PRIVILEGED_OPERATION_STOP_PROXY_ONLY_CONTROLLER = 15" in runtime_proto
+        and "PrivilegedStartProxyOnlyController" in windows_console_cli
+        and "PrivilegedStopProxyOnlyController" in windows_console_cli
+        and "WindowsPrivilegedOperation::StartProxyOnlyController" in windows_console
+        and "WindowsPrivilegedOperation::StopProxyOnlyController" in windows_console
+        and "fn proxy_only_controller_service_lifecycle(" in windows_console
+        and "ServiceStartType::OnDemand" in windows_console
+        and "managed_tun_present=false" in windows_console
+        and "PROXY_ONLY_SCM_BLOCKED: conflicting sing-box owner" in windows_console
+        and "privileged-start-proxy-only-controller" in windows_physical
+        and "privileged-stop-proxy-only-controller" in windows_physical
+        and "ProxyOnly" in windows_physical
+        and "ManagedTun stop remains blocked" in windows_physical
+        and "PROXY_ONLY_SCM_BLOCKED: converge cannot silently upgrade" in windows_physical
+        and "expectedScm = if ($env:EDGE_OPERATION -eq 'stop')" in windows_physical
+        and "Set-DnsClientServerAddress" not in windows_console,
+        "ProxyOnly start/stop must use one exact SYSTEM-owned no-TUN SCM lifecycle, preserve Manual startup, and never authorize ManagedTun teardown",
+    )
+
+
     release_proto = RELEASE_PROTO.read_text(encoding="utf-8")
     windows_singbox = WINDOWS_SINGBOX.read_text(encoding="utf-8")
     windows_diagnostic = WINDOWS_DIAGNOSTIC.read_text(encoding="utf-8")
