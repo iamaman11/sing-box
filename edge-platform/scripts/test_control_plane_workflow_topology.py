@@ -80,6 +80,7 @@ def main() -> None:
     windows_installer = WINDOWS_INSTALLER.read_text(encoding="utf-8")
     windows_runner_bootstrap = WINDOWS_RUNNER_BOOTSTRAP.read_text(encoding="utf-8")
     windows_first_use_stage = Path("edge-platform/scripts/windows-initial-pair-stage.ps1").read_text(encoding="utf-8")
+    windows_first_use_offline = Path("edge-platform/scripts/windows-first-use-offline-handoff.ps1").read_text(encoding="utf-8")
     windows_console = WINDOWS_CONSOLE.read_text(encoding="utf-8")
     windows_console_cli = WINDOWS_CONSOLE_CLI.read_text(encoding="utf-8")
     windows_controller = WINDOWS_CONTROLLER.read_text(encoding="utf-8")
@@ -96,6 +97,17 @@ def main() -> None:
         and 'initial_first_use_stage:' in windows_physical
         and "Windows / native persistent first-use candidate" in windows_physical
         and 'windows-initial-pair-stage.ps1' in windows_physical
+        and 'windows-first-use-offline-handoff.ps1' in windows_physical
+        and 'EDGE_FIRST_USE_TARGET_RELEASE' in windows_physical
+        and 'EDGE_FIRST_USE_TARGET_REVISION' in windows_physical
+        and 'privileged-offline-activate' in windows_first_use_offline
+        and 'FIRST_USE_OFFLINE_UNKNOWN:' in windows_first_use_offline
+        and 'Require-DirectNetwork' in windows_first_use_offline
+        and 'managed_tun_present=false' in windows_first_use_offline
+        and 'windows_first_use_offline_release=PASS_STOPPED_PROXY_ONLY' in windows_first_use_offline
+        and 'Start-Service' not in windows_first_use_offline
+        and 'Set-DnsClientServerAddress' not in windows_first_use_offline
+        and 'EDGE_FIRST_USE_TARGET_RELEASE' in windows_first_use_stage
         and "needs.resolve.outputs.operation != 'initial-pair-stage'" in windows_physical
         and 'require_offline_first_use_stage_owner(install_root)?' in windows_console
         and 'persistent first-use candidate already attempted or incomplete' in windows_console
