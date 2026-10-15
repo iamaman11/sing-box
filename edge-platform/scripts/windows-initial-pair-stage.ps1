@@ -50,15 +50,6 @@ function Observe-Owner {
   }
   return $values
 }
-function Require-IndependentDirectNetwork {
-  $dns = @(Resolve-DnsName 'www.gstatic.com' -DnsOnly -Type A -ErrorAction Stop |
-    Where-Object { $_.IPAddress })
-  if ($dns.Count -eq 0) { throw 'FIRST_USE_STAGE_BLOCKED: direct DNS not proved' }
-  $http = (& "$env:SystemRoot\System32\curl.exe" -q --noproxy '*' --silent --show-error --fail --connect-timeout 8 --max-time 15 --output NUL --write-out '%{http_code}' 'https://www.gstatic.com/generate_204').Trim()
-  if ($LASTEXITCODE -ne 0 -or $http -cne '204') {
-    throw 'FIRST_USE_STAGE_BLOCKED: direct HTTPS not proved'
-  }
-}
 function Read-SystemCursor([string]$console) {
   $output = @(& $console privileged-runtime-evidence --install-root $root)
   if ($LASTEXITCODE -ne 0) {
@@ -100,131 +91,12 @@ foreach ($dir in @('state','runtime','logs')) {
     throw 'FIRST_USE_STAGE_BLOCKED: runner unexpectedly reads SYSTEM private state'
   }
 }
-$target = [string]$env:EDGE_FIRST_USE_TARGET_RELEASE
-$revision = [string]$env:EDGE_FIRST_USE_TARGET_REVISION
-if ($target -notmatch '^[0-9a-f]{64}
-if ($cursorBefore -notmatch ';credential_cursor=ABSENT(?:;|$)') {
-  throw 'FIRST_USE_STAGE_BLOCKED: previous or incomplete candidate; no replay'
-}
-$second = Observe-Owner
-if ([string]$bound['release_set_sha256'] -cne [string]$second['release_set_sha256']) {
-  throw 'FIRST_USE_STAGE_BLOCKED: Windows release changed during preflight'
-}
-# Existing privilege boundary fetches one exact Worker generation and creates
-# the private cursor once. The GitHub runner never reads its payload or folder.
-& $console privileged-stage-credential ([UInt64]$Generation) --install-root $root
-if ($LASTEXITCODE -ne 0) {
-  throw 'FIRST_USE_STAGE_UNKNOWN: stage outcome failed or uncertain, do not replay'
-}
-$expected = ';credential_cursor=VALID;credential_active_present=false;credential_candidate_present=true;credential_candidate_generation=' + $Generation + ';credential_candidate_slot=' + $Slot + ';credential_previous_present=false'
-if (-not (Read-SystemCursor $console).Contains($expected)) {
-  throw 'FIRST_USE_STAGE_UNKNOWN: candidate readback incomplete, do not replay'
-}
-$after = Observe-Owner
-if ([string]$after['release_set_sha256'] -cne $target) {
-  throw 'FIRST_USE_STAGE_UNKNOWN: release changed, do not replay'
-}
-# Local native config validation only. No SCM/TUN, selector or network service.
-& $console credential-transition validate-candidate --install-root $root
-if ($LASTEXITCODE -ne 0) {
-  throw 'FIRST_USE_STAGE_NOT_ACCEPTED: candidate stored, sing-box config invalid; never restage'
-}
-if (-not (Read-SystemCursor $console).Contains($expected)) {
-  throw 'FIRST_USE_STAGE_UNKNOWN: candidate drifted after validation, do not replay'
-}
-$final = Observe-Owner
-if ([string]$final['release_set_sha256'] -cne $target) {
-  throw 'FIRST_USE_STAGE_UNKNOWN: offline source changed, do not replay'
-}
-Write-Host 'credential_initial_persistent_stage=PASS_CANDIDATE_ONLY'
-Write-Host "credential_candidate_generation=$Generation"
-Write-Host "credential_candidate_slot=$Slot"
-Write-Host 'windows_scm_state=Stopped'
-Write-Host 'windows_tun_mutations=0'
-Write-Host 'windows_dns_mutations=0'
-Write-Host 'windows_routes_mutations=0'
-Write-Host 'windows_release_handoff=EXACT_NATIVE_OFFLINE'
-Write-Host 'vm_credential_mutations=0'
-Write-Host 'credential_pair_committed=false'
-Write-Host 'windows_proxyonly_serving=NOT_STARTED'
- -or $revision -notmatch '^[0-9a-f]{40}
-if ($cursorBefore -notmatch ';credential_cursor=ABSENT(?:;|$)') {
-  throw 'FIRST_USE_STAGE_BLOCKED: previous or incomplete candidate; no replay'
-}
-$second = Observe-Owner
-if ([string]$bound['release_set_sha256'] -cne [string]$second['release_set_sha256']) {
-  throw 'FIRST_USE_STAGE_BLOCKED: Windows release changed during preflight'
-}
-# Existing privilege boundary fetches one exact Worker generation and creates
-# the private cursor once. The GitHub runner never reads its payload or folder.
-& $console privileged-stage-credential ([UInt64]$Generation) --install-root $root
-if ($LASTEXITCODE -ne 0) {
-  throw 'FIRST_USE_STAGE_UNKNOWN: stage outcome failed or uncertain, do not replay'
-}
-$expected = ';credential_cursor=VALID;credential_active_present=false;credential_candidate_present=true;credential_candidate_generation=' + $Generation + ';credential_candidate_slot=' + $Slot + ';credential_previous_present=false'
-if (-not (Read-SystemCursor $console).Contains($expected)) {
-  throw 'FIRST_USE_STAGE_UNKNOWN: candidate readback incomplete, do not replay'
-}
-$after = Observe-Owner
-if ([string]$after['release_set_sha256'] -cne $target) {
-  throw 'FIRST_USE_STAGE_UNKNOWN: release changed, do not replay'
-}
-# Local native config validation only. No SCM/TUN, selector or network service.
-& $console credential-transition validate-candidate --install-root $root
-if ($LASTEXITCODE -ne 0) {
-  throw 'FIRST_USE_STAGE_NOT_ACCEPTED: candidate stored, sing-box config invalid; never restage'
-}
-if (-not (Read-SystemCursor $console).Contains($expected)) {
-  throw 'FIRST_USE_STAGE_UNKNOWN: candidate drifted after validation, do not replay'
-}
-$final = Observe-Owner
-if ([string]$final['release_set_sha256'] -cne $target) {
-  throw 'FIRST_USE_STAGE_UNKNOWN: offline source changed, do not replay'
-}
-Write-Host 'credential_initial_persistent_stage=PASS_CANDIDATE_ONLY'
-Write-Host "credential_candidate_generation=$Generation"
-Write-Host "credential_candidate_slot=$Slot"
-Write-Host 'windows_scm_state=Stopped'
-Write-Host 'windows_tun_mutations=0'
-Write-Host 'windows_dns_mutations=0'
-Write-Host 'windows_routes_mutations=0'
-Write-Host 'windows_release_handoff=EXACT_NATIVE_OFFLINE'
-Write-Host 'vm_credential_mutations=0'
-Write-Host 'credential_pair_committed=false'
-Write-Host 'windows_proxyonly_serving=NOT_STARTED'
-) {
-  throw 'FIRST_USE_STAGE_BLOCKED: exact accepted revision/ReleaseSet unavailable'
-}
-Require-IndependentDirectNetwork
-if ([string]$before['release_set_sha256'] -cne $target) {
-  if ([string]$before['windows_datapath_mode'] -cne 'ManagedTun') {
-    throw 'FIRST_USE_STAGE_BLOCKED: only stopped former ManagedTun may enter native offline handoff'
-  }
-  & $console privileged-offline-activate $revision $target --install-root $root
-  if ($LASTEXITCODE -ne 0) {
-    throw 'FIRST_USE_STAGE_UNKNOWN: native offline handoff uncertain; do not replay'
-  }
-  $handoff = Observe-Owner
-  if ([string]$handoff['release_set_sha256'] -cne $target -or
-      [string]$handoff['windows_datapath_mode'] -cne 'ProxyOnly') {
-    throw 'FIRST_USE_STAGE_UNKNOWN: ProxyOnly release pointer not exact; do not replay'
-  }
-  Require-IndependentDirectNetwork
-  $console = [string]$handoff['console_path']
-} elseif ([string]$before['windows_datapath_mode'] -cne 'ProxyOnly') {
-  throw 'FIRST_USE_STAGE_BLOCKED: accepted current release not ProxyOnly'
-}
-$bound = Observe-Owner
-if ([string]$bound['release_set_sha256'] -cne $target -or
-    [string]$bound['windows_datapath_mode'] -cne 'ProxyOnly') {
-  throw 'FIRST_USE_STAGE_BLOCKED: immutable ProxyOnly runtime absent'
-}
 $cursorBefore = Read-SystemCursor $console
 if ($cursorBefore -notmatch ';credential_cursor=ABSENT(?:;|$)') {
   throw 'FIRST_USE_STAGE_BLOCKED: previous or incomplete candidate; no replay'
 }
 $second = Observe-Owner
-if ([string]$bound['release_set_sha256'] -cne [string]$second['release_set_sha256']) {
+if ([string]$before['release_set_sha256'] -cne [string]$second['release_set_sha256']) {
   throw 'FIRST_USE_STAGE_BLOCKED: Windows release changed during preflight'
 }
 # Existing privilege boundary fetches one exact Worker generation and creates
@@ -238,7 +110,7 @@ if (-not (Read-SystemCursor $console).Contains($expected)) {
   throw 'FIRST_USE_STAGE_UNKNOWN: candidate readback incomplete, do not replay'
 }
 $after = Observe-Owner
-if ([string]$after['release_set_sha256'] -cne $target) {
+if ([string]$after['release_set_sha256'] -cne [string]$before['release_set_sha256']) {
   throw 'FIRST_USE_STAGE_UNKNOWN: release changed, do not replay'
 }
 # Local native config validation only. No SCM/TUN, selector or network service.
@@ -250,7 +122,7 @@ if (-not (Read-SystemCursor $console).Contains($expected)) {
   throw 'FIRST_USE_STAGE_UNKNOWN: candidate drifted after validation, do not replay'
 }
 $final = Observe-Owner
-if ([string]$final['release_set_sha256'] -cne $target) {
+if ([string]$final['release_set_sha256'] -cne [string]$before['release_set_sha256']) {
   throw 'FIRST_USE_STAGE_UNKNOWN: offline source changed, do not replay'
 }
 Write-Host 'credential_initial_persistent_stage=PASS_CANDIDATE_ONLY'
@@ -260,7 +132,7 @@ Write-Host 'windows_scm_state=Stopped'
 Write-Host 'windows_tun_mutations=0'
 Write-Host 'windows_dns_mutations=0'
 Write-Host 'windows_routes_mutations=0'
-Write-Host 'windows_release_handoff=EXACT_NATIVE_OFFLINE'
+Write-Host 'windows_release_mutations=0'
 Write-Host 'vm_credential_mutations=0'
 Write-Host 'credential_pair_committed=false'
 Write-Host 'windows_proxyonly_serving=NOT_STARTED'
