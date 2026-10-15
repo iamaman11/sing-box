@@ -13,7 +13,10 @@ param(
     [UInt64]$ArchivedAcceptanceSourceRunId = 0,
     [switch]$Offline,
     # Exact candidate staging only. No pointer, SCM or task mutation.
-    [switch]$StageOnly
+    [switch]$StageOnly,
+    # Exactly one explicit locally elevated invocation after accepted promotion.
+    # Never callable through GitHub initial-pair-stage or the old SYSTEM task.
+    [switch]$BootstrapNow
 )
 
 Set-StrictMode -Version Latest
@@ -355,8 +358,10 @@ function Activate-ReleaseAuthority {
     }
 }
 
-if ($StageOnly -and (-not $Offline -or $ForceRematerialize -or $ArchivedAcceptanceSourceRunId -ne 0)) {
-    throw 'OFFLINE_BOOTSTRAP_BLOCKED: StageOnly requires exact ordinary offline candidate'
+if (($StageOnly -or $BootstrapNow) -and
+    (-not $Offline -or $ForceRematerialize -or $ArchivedAcceptanceSourceRunId -ne 0 -or
+     ($StageOnly -and $BootstrapNow))) {
+    throw 'OFFLINE_BOOTSTRAP_BLOCKED: one exact offline bootstrap mode required'
 }
 Assert-OfflineWindow
 
@@ -492,8 +497,8 @@ if ($LASTEXITCODE -ne 0) { throw "Installed Windows release failed exact Release
 Assert-AcceptedCandidateSource -VerificationOutput $verificationOutput -AcceptedRevision $AcceptedRevision
 $verificationOutput | Write-Output
 
-if ($StageOnly) {
-    # Does not touch current/previous authority or stable binaries/tasks/SCM.
+if ($StageOnly -or $BootstrapNow) {
+    # Staging does not touch current/previous authority or stable binaries/tasks/SCM.
     $stable = Join-Path $InstallRoot "bin\edge-diagnostic.exe"
     if (-not (Test-Path -LiteralPath $currentPath -PathType Leaf) -or
         -not (Test-Path -LiteralPath $stable -PathType Leaf)) {
@@ -589,6 +594,16 @@ Write-Output "automation_registered=false"
     Write-Output 'offline_bootstrap_script_hash=MATCH_VERIFIED_ZIP'
     Write-Output 'offline_bootstrap_candidate=VERIFIED_STAGE_ONLY'
     Write-Output "offline_bootstrap_console=$console"
+    if ($BootstrapNow) {
+        # New immutable Rust owner performs one journalled operation. Do not
+        # repeat after failure or missing ACK. This does NOT use old dispatch.
+        & $console offline-bootstrap $AcceptedRevision $ReleaseSetSha256 --install-root $InstallRoot
+        if ($LASTEXITCODE -ne 0) {
+            throw 'OFFLINE_BOOTSTRAP_UNKNOWN: native handoff failed or uncertain, DO NOT REPLAY'
+        }
+        Write-Output 'offline_bootstrap=RETURNED_FROM_NATIVE_OWNER'
+        exit 0
+    }
     Write-Output 'windows_service_mutations=0'
     Write-Output 'windows_authority_mutations=0'
     exit 0
