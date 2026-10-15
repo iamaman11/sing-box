@@ -25,6 +25,8 @@ jobs:
       premarker_authorized: ${{ steps.source.outputs.premarker_authorized }}
       release_set_sha256: ${{ steps.release.outputs.release_set_sha256 }}
       expected_mode: ${{ steps.mode.outputs.expected_mode }}
+      initial_generation: ${{ steps.initial_begin.outputs.generation }}
+      initial_slot: ${{ steps.initial_begin.outputs.slot }}
     steps:
       - name: Authorize fixed command on protected main
         id: auth
@@ -39,6 +41,20 @@ jobs:
           case "$COMMAND_BODY" in
             "/windows diagnose") operation="diagnose"; readonly_purpose="ordinary" ;;
             "/windows offline-preflight") operation="diagnose"; readonly_purpose="offline-preflight" ;;
+            "/windows initial-pair-stage "*)
+              remainder="${COMMAND_BODY#/windows initial-pair-stage }"
+              if [[ "$remainder" =~ ^[1-9][0-9]{7,18}$ ]]; then
+                operation="initial-pair-stage"
+                source_run_id="$remainder"
+              else
+                echo 'Windows first-use staging requires one original numeric GitHub run ID' >&2
+                exit 2
+              fi
+              if [[ "$GITHUB_RUN_ATTEMPT" != "1" ]]; then
+                echo 'initial Windows candidate stage replay forbidden; read-only reconciliation required' >&2
+                exit 1
+              fi
+              ;;
             "/windows quality-line1") operation="quality-line1" ;;
             "/windows converge"|"/windows smoke") operation="converge" ;;
             "/windows start") operation="start" ;;
@@ -143,6 +159,42 @@ jobs:
           . "${OUTPUT_DIR}/resolved.env"
           printf 'release_set_sha256=%s\n' "$EDGE_RELEASE_SET_SHA256" >> "$GITHUB_OUTPUT"
 
+      - name: Verify exact original one-shot BEGIN for permanent Windows consumer
+        id: initial_begin
+        if: steps.auth.outputs.operation == 'initial-pair-stage'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN: ${{ steps.auth.outputs.source_run_id }}
+        run: |
+          set -euo pipefail
+          test "$GITHUB_RUN_ATTEMPT" = "1"
+          test "$GITHUB_REPOSITORY" = "iamaman11/sing-box"
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$SOURCE_RUN" > "$RUNNER_TEMP/first-use-original.json"
+          jq -e --argjson source "$SOURCE_RUN" '
+            .id==$source and .name=="/vultr initial-vm-install" and
+            .status=="completed" and .conclusion=="failure" and
+            .run_attempt==1 and .event=="issue_comment" and
+            .head_branch=="main"
+          ' "$RUNNER_TEMP/first-use-original.json" >/dev/null
+          gh api --paginate "repos/$GITHUB_REPOSITORY/issues/26/comments?per_page=100" |
+            jq -s 'add' > "$RUNNER_TEMP/first-use-complete-history.json"
+          jq -e --argjson source "$SOURCE_RUN" '
+            [.[] | .body | select(startswith("<!-- sing-box-credential-initial-attempt/v1 -->"))] |
+            if length == 1 then .[0] else error("not exactly one original BEGIN") end |
+            split("\\n") |
+            if length == 2 then .[1] | fromjson else error("malformed BEGIN") end |
+            .schema=="sing-box.credential-initial-attempt/v1" and
+            .phase=="BEGIN" and .generation==$source and .github_run_id==$source and
+            (.slot=="A" or .slot=="B") and
+            (.release_set_sha256|test("^[0-9a-f]{64}$"))
+          ' "$RUNNER_TEMP/first-use-complete-history.json" >/dev/null
+          jq -r --argjson source "$SOURCE_RUN" '
+            [.[]|.body|select(startswith("<!-- sing-box-credential-initial-attempt/v1 -->"))] |
+            .[0]|split("\\n")[1]|fromjson|
+            "generation=\\(.generation)\\nslot=\\(.slot)"
+          ' "$RUNNER_TEMP/first-use-complete-history.json" >> "$GITHUB_OUTPUT"
+
   reconcile_first_use:
     name: Windows / reconcile exact aborted first-use root
     needs: resolve
@@ -178,7 +230,7 @@ jobs:
           if (-not $?) { throw 'Windows first-use reconciliation did not finish' }
 
   physical:
-    if: needs.resolve.outputs.operation != 'acceptance-reconcile'
+    if: needs.resolve.outputs.operation != 'acceptance-reconcile' && needs.resolve.outputs.operation != 'initial-pair-stage'
     name: Windows / ${{ needs.resolve.outputs.operation }}
     needs: resolve
     runs-on:
@@ -306,9 +358,12 @@ jobs:
             Write-Host 'direct_no_proxy_https=PASS'
           }
           if ($env:EDGE_READONLY_PURPOSE -ceq 'offline-preflight') {
-            if (-not $stoppedB -or $desired -cne 'DEGRADED_STOPPED' -or
+            if (-not $stoppedB -or
+                [string]$v['windows_datapath_mode'] -cne 'ManagedTun' -or
+                $env:EDGE_EXPECTED_MODE -cne 'ProxyOnly' -or
+                $desired -cne 'DEGRADED_INSTALLED_MODE' -or
                 [string]$v['scm_start_type'] -cne 'AutoStart') {
-              throw 'OFFLINE_PREFLIGHT_BLOCKED: owner must be exactly stopped ManagedTun before inspecting release handoff'
+              throw 'OFFLINE_PREFLIGHT_BLOCKED: requires exactly stopped old ManagedTun with no TUN and desired ProxyOnly'
             }
             $installed = [string]$v['release_set_sha256']
             $target = [string]$env:EDGE_RELEASE_SET_SHA256
