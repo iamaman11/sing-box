@@ -1446,8 +1446,31 @@ fn require_offline_first_use_stage_owner(install_root: &Path) -> Result<(), Stri
     {
         return Err("first-use persistent staging is confined to canonical ProxyOnly intent and C:\\sing-box".to_owned());
     }
-    load_verified_activation(install_root)
+    let activation = load_verified_activation(install_root)
         .map_err(|_| "persistent first-use staging requires an exact installed ReleaseSet".to_owned())?;
+    let doctor = Command::new(&activation.diagnostic_path)
+        .arg("doctor")
+        .arg(install_root.join("current.pb"))
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|_| "persistent first-use staging requires native read-only doctor".to_owned())?;
+    // A stopped old ManagedTun can cause a nonzero doctor exit. Require
+    // affirmative OS/file evidence, never treat that exit as permission.
+    let observation = String::from_utf8(doctor.stdout)
+        .map_err(|_| "persistent first-use doctor evidence is not UTF-8".to_owned())?;
+    for evidence in [
+        "exact_release_files=PASS",
+        "scm_state=Stopped",
+        "managed_tun_present=false",
+        "managed_singbox_process_count=0",
+        "orphan_singbox_process_count=0",
+        "conflicting_singbox_process_count=0",
+        "unknown_singbox_process_count=0",
+    ] {
+        if !observation.lines().any(|line| line == evidence) {
+            return Err("persistent first-use denies missing stopped/no-TUN native evidence".to_owned());
+        }
+    }
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
         .map_err(|_| "first-use persistent staging cannot inspect SCM".to_owned())?;
     let service = manager
@@ -2020,14 +2043,22 @@ async fn stage_windows_credential_candidate_from_worker(
         &identity_path,
     )
     .await?;
-    if !windows_credential_store_path(install_root).exists() {
-        // Existing rotation is untouched. The first permanent candidate,
-        // however, is admitted only once by the original stopped SYSTEM
-        // owner, not by a disposable test root or unprivileged Windows runner.
+    let store_root = windows_credential_store_path(install_root);
+    if !store_root.exists() {
+        // Existing rotation is untouched. First enrollment is one-shot and
+        // must remain stopped inside SYSTEM, irrespective of GitHub preflight.
         #[cfg(windows)]
         require_offline_first_use_stage_owner(install_root)?;
         #[cfg(not(windows))]
         return Err("persistent first-use staging requires Windows SYSTEM owner".to_owned());
+    } else {
+        let prior = CredentialStore::open_existing(
+            &store_root,
+            edge_shared_types::CredentialProjectionKind::Windows,
+        )?.ok_or_else(|| "Windows v2 store disappeared during staging".to_owned())?;
+        if prior.read_state()?.as_ref().and_then(|state| state.active.as_ref()).is_none() {
+            return Err("persistent first-use candidate already attempted or incomplete: never restage".to_owned());
+        }
     }
     let store = CredentialStore::new(
         windows_credential_store_path(install_root),
