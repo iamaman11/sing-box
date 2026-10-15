@@ -588,7 +588,6 @@ jobs:
             $env:EDGE_OPERATION -in @('start','stop','converge') -and
             $env:EDGE_EXPECTED_MODE -ceq 'ProxyOnly' -and
             [string]$bootstrapValues['windows_datapath_mode'] -ceq 'ProxyOnly' -and
-            [string]$bootstrapValues['release_set_sha256'] -ceq $env:EDGE_RELEASE_SET_SHA256 -and
             [string]$bootstrapValues['scm_state'] -ceq 'Stopped' -and
             [string]$bootstrapValues['scm_start_type'] -ceq 'OnDemand' -and
             [string]$bootstrapValues['managed_tun_present'] -ceq 'false' -and
@@ -817,7 +816,14 @@ jobs:
                 throw 'PROXY_ONLY_SCM_BLOCKED: expected immutable Manual-start owner with no TUN'
               }
               if ($env:EDGE_OPERATION -eq 'converge' -and $currentRelease -cne $env:EDGE_RELEASE_SET_SHA256) {
-                throw 'PROXY_ONLY_SCM_BLOCKED: converge cannot silently upgrade an installed ProxyOnly owner'
+                if ([string]$values['scm_state'] -cne 'Stopped' -or
+                    [int]$values['managed_singbox_process_count'] -ne 0 -or
+                    [int]$values['orphan_singbox_process_count'] -ne 0 -or
+                    [int]$values['conflicting_singbox_process_count'] -ne 0 -or
+                    [int]$values['unknown_singbox_process_count'] -ne 0) {
+                  throw 'PROXY_ONLY_SCM_BLOCKED: release upgrade requires explicitly Stopped clean ProxyOnly; stop first'
+                }
+                Write-Host 'proxy_only_upgrade=EXACT_OFFLINE_CURRENT_TO_ACCEPTED'
               }
             }
             'ManagedTun' {
@@ -967,9 +973,21 @@ jobs:
           switch ($env:EDGE_OPERATION) {
             'converge' {
               if ($env:EDGE_BEFORE_MODE -ceq 'ProxyOnly') {
-                & $env:EDGE_CURRENT_CONSOLE privileged-start-proxy-only-controller --install-root $env:EDGE_INSTALL_ROOT
+                $exactConsole = $env:EDGE_CURRENT_CONSOLE
+                if ($env:EDGE_BEFORE_RELEASE -cne $env:EDGE_RELEASE_SET_SHA256) {
+                  # Only a separately stopped exact ProxyOnly owner is eligible.
+                  # Native offline activation owns accepted release, SCM, task
+                  # and rollback; never use legacy privileged-activate here.
+                  & $exactConsole privileged-offline-activate $env:EDGE_ACCEPTED_REVISION $env:EDGE_RELEASE_SET_SHA256 --install-root $env:EDGE_INSTALL_ROOT
+                  if ($LASTEXITCODE -ne 0) { throw 'ProxyOnly offline upgrade outcome UNKNOWN; DO NOT REPLAY' }
+                  $exactConsole = Join-Path $env:EDGE_INSTALL_ROOT ("releases\" + $env:EDGE_RELEASE_SET_SHA256 + "\bin\edge-console.exe")
+                  if (-not (Test-Path -LiteralPath $exactConsole -PathType Leaf)) {
+                    throw 'ProxyOnly offline upgrade missing exact new immutable console; do not replay'
+                  }
+                }
+                & $exactConsole privileged-start-proxy-only-controller --install-root $env:EDGE_INSTALL_ROOT
                 if ($LASTEXITCODE -ne 0) { throw 'ProxyOnly SCM converge uncertain; do not replay' }
-                & $env:EDGE_CURRENT_CONSOLE start-local $env:EDGE_CONTROLLER_ENDPOINT
+                & $exactConsole start-local $env:EDGE_CONTROLLER_ENDPOINT
               } else {
                 & $env:EDGE_CURRENT_CONSOLE privileged-activate $env:EDGE_ACCEPTED_REVISION $env:EDGE_RELEASE_SET_SHA256 --install-root $env:EDGE_INSTALL_ROOT
               }
