@@ -117,6 +117,7 @@ def main() -> None:
         and 'windows_first_use_prebegin_preflight=PASS_READ_ONLY' in windows_first_use_offline
         and 'first_use_access_identity=PRESENT_NONEMPTY_UNVERIFIED' in windows_first_use_offline
         and 'installed owner has no native offline capability; BEGIN forbidden' in windows_first_use_offline
+        and r"-match '\bprivileged-offline-activate\b'" in windows_first_use_offline
         and 'first_use_access_identity={identity}' in windows_console
         and 'offline_hold_controller_stopped(install_root, &before)?;' in windows_console
         and 'start_type: ServiceStartType::OnDemand' in windows_console

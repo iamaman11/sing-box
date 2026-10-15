@@ -63,7 +63,7 @@ if (-not (Test-Path -LiteralPath $console -PathType Leaf)) {
   throw 'FIRST_USE_OFFLINE_BLOCKED: exact installed native console missing'
 }
 $commands = @(& $console --help)
-if ($LASTEXITCODE -ne 0 -or -not ($commands | Where-Object { $_ -match '\\bprivileged-offline-activate\\b' })) {
+if ($LASTEXITCODE -ne 0 -or -not ($commands | Where-Object { $_ -match '\bprivileged-offline-activate\b' })) {
   throw 'FIRST_USE_OFFLINE_BLOCKED: installed owner has no native offline capability; BEGIN forbidden'
 }
 $evidence = @(& $console privileged-runtime-evidence --install-root $root)
