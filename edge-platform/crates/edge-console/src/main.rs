@@ -3019,7 +3019,9 @@ fn require_offline_bootstrap_installer_archive_identity(
 $ErrorActionPreference = 'Stop'
 $phase = 'LOAD_COMPRESSION'
 try {
-    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+    # .NET assembly loading is native; do not require module-autoloaded
+    # PowerShell cmdlets such as Get-FileHash in a no-profile child.
+    [void][Reflection.Assembly]::Load('System.IO.Compression.FileSystem')
     $phase = 'OPEN_ZIP'
     $archive = [IO.Compression.ZipFile]::OpenRead($env:EDGE_BOOTSTRAP_VERIFIED_ZIP)
     try {
@@ -3037,7 +3039,12 @@ try {
         } finally { $stream.Dispose() }
     } finally { $archive.Dispose() }
     $phase = 'HASH_LOCAL_INSTALLER'
-    $actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $env:EDGE_BOOTSTRAP_TARGET_INSTALLER).Hash
+    $fileStream = [IO.File]::OpenRead($env:EDGE_BOOTSTRAP_TARGET_INSTALLER)
+    try {
+        $hasher = [Security.Cryptography.SHA256]::Create()
+        try { $actual = ([BitConverter]::ToString($hasher.ComputeHash($fileStream))).Replace('-','') }
+        finally { $hasher.Dispose() }
+    } finally { $fileStream.Dispose() }
     $phase = 'COMPARE_DIGEST'
     if ($actual -cne $expected) { throw 'candidate installer hash differs from verified ZIP' }
 } catch {
