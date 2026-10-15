@@ -96,7 +96,7 @@ if ($cursorBefore -notmatch ';credential_cursor=ABSENT(?:;|$)') {
   throw 'FIRST_USE_STAGE_BLOCKED: previous or incomplete candidate; no replay'
 }
 $second = Observe-Owner
-if ([string]$before['release_set_sha256'] -cne [string]$second['release_set_sha256']) {
+if ([string]$bound['release_set_sha256'] -cne [string]$second['release_set_sha256']) {
   throw 'FIRST_USE_STAGE_BLOCKED: Windows release changed during preflight'
 }
 # Existing privilege boundary fetches one exact Worker generation and creates
@@ -110,7 +110,7 @@ if (-not (Read-SystemCursor $console).Contains($expected)) {
   throw 'FIRST_USE_STAGE_UNKNOWN: candidate readback incomplete, do not replay'
 }
 $after = Observe-Owner
-if ([string]$after['release_set_sha256'] -cne [string]$before['release_set_sha256']) {
+if ([string]$after['release_set_sha256'] -cne $target) {
   throw 'FIRST_USE_STAGE_UNKNOWN: release changed, do not replay'
 }
 # Local native config validation only. No SCM/TUN, selector or network service.
@@ -122,7 +122,7 @@ if (-not (Read-SystemCursor $console).Contains($expected)) {
   throw 'FIRST_USE_STAGE_UNKNOWN: candidate drifted after validation, do not replay'
 }
 $final = Observe-Owner
-if ([string]$final['release_set_sha256'] -cne [string]$before['release_set_sha256']) {
+if ([string]$final['release_set_sha256'] -cne $target) {
   throw 'FIRST_USE_STAGE_UNKNOWN: offline source changed, do not replay'
 }
 Write-Host 'credential_initial_persistent_stage=PASS_CANDIDATE_ONLY'
@@ -132,7 +132,7 @@ Write-Host 'windows_scm_state=Stopped'
 Write-Host 'windows_tun_mutations=0'
 Write-Host 'windows_dns_mutations=0'
 Write-Host 'windows_routes_mutations=0'
-Write-Host 'windows_release_mutations=0'
+Write-Host 'windows_release_handoff=EXACT_NATIVE_OFFLINE'
 Write-Host 'vm_credential_mutations=0'
 Write-Host 'credential_pair_committed=false'
 Write-Host 'windows_proxyonly_serving=NOT_STARTED'
