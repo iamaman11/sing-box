@@ -1416,10 +1416,9 @@ fn bounded_privileged_child_evidence(stdout: &[u8], stderr: &[u8]) -> String {
 // The GitHub runner cannot read private state or any credential bundle.
 fn read_bounded_windows_credential_cursor(install_root: &Path) -> Result<String, String> {
     let root = windows_credential_store_path(install_root);
-    let Some(store) = CredentialStore::open_existing(
-        root,
-        edge_shared_types::CredentialProjectionKind::Windows,
-    )? else {
+    let Some(store) =
+        CredentialStore::open_existing(root, edge_shared_types::CredentialProjectionKind::Windows)?
+    else {
         return Ok("credential_cursor=ABSENT".to_owned());
     };
     let state = store.read_state()?.ok_or_else(|| {
@@ -1442,12 +1441,15 @@ fn read_bounded_windows_credential_cursor(install_root: &Path) -> Result<String,
 fn require_offline_first_use_stage_owner(install_root: &Path) -> Result<(), String> {
     let target = canonical_production_desired_state()?;
     if target.windows_datapath_mode != WindowsDatapathMode::ProxyOnly as i32
-        || !install_root.to_string_lossy().eq_ignore_ascii_case(r"C:\sing-box")
+        || !install_root
+            .to_string_lossy()
+            .eq_ignore_ascii_case(r"C:\sing-box")
     {
         return Err("first-use persistent staging is confined to canonical ProxyOnly intent and C:\\sing-box".to_owned());
     }
-    let activation = load_verified_activation(install_root)
-        .map_err(|_| "persistent first-use staging requires an exact installed ReleaseSet".to_owned())?;
+    let activation = load_verified_activation(install_root).map_err(|_| {
+        "persistent first-use staging requires an exact installed ReleaseSet".to_owned()
+    })?;
     let doctor = Command::new(&activation.diagnostic_path)
         .arg("doctor")
         .arg(install_root.join("current.pb"))
@@ -1468,7 +1470,9 @@ fn require_offline_first_use_stage_owner(install_root: &Path) -> Result<(), Stri
         "unknown_singbox_process_count=0",
     ] {
         if !observation.lines().any(|line| line == evidence) {
-            return Err("persistent first-use denies missing stopped/no-TUN native evidence".to_owned());
+            return Err(
+                "persistent first-use denies missing stopped/no-TUN native evidence".to_owned(),
+            );
         }
     }
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
@@ -1476,7 +1480,8 @@ fn require_offline_first_use_stage_owner(install_root: &Path) -> Result<(), Stri
     let service = manager
         .open_service(WINDOWS_CONTROLLER_SERVICE_NAME, ServiceAccess::QUERY_STATUS)
         .map_err(|_| "first-use persistent staging cannot inspect owner service".to_owned())?;
-    let status = service.query_status()
+    let status = service
+        .query_status()
         .map_err(|_| "first-use persistent staging cannot read SCM status".to_owned())?;
     if status.current_state != ServiceState::Stopped
         || status.process_id.is_some()
@@ -1485,7 +1490,9 @@ fn require_offline_first_use_stage_owner(install_root: &Path) -> Result<(), Stri
             RuntimeProcessClassification::Absent
         )
     {
-        return Err("first-use persistent staging refuses a running or ambiguous Windows owner".to_owned());
+        return Err(
+            "first-use persistent staging refuses a running or ambiguous Windows owner".to_owned(),
+        );
     }
     if windows_runtime_state_path(install_root).exists()
         || local_singbox_config_path(install_root).exists()
@@ -2055,9 +2062,18 @@ async fn stage_windows_credential_candidate_from_worker(
         let prior = CredentialStore::open_existing(
             &store_root,
             edge_shared_types::CredentialProjectionKind::Windows,
-        )?.ok_or_else(|| "Windows v2 store disappeared during staging".to_owned())?;
-        if prior.read_state()?.as_ref().and_then(|state| state.active.as_ref()).is_none() {
-            return Err("persistent first-use candidate already attempted or incomplete: never restage".to_owned());
+        )?
+        .ok_or_else(|| "Windows v2 store disappeared during staging".to_owned())?;
+        if prior
+            .read_state()?
+            .as_ref()
+            .and_then(|state| state.active.as_ref())
+            .is_none()
+        {
+            return Err(
+                "persistent first-use candidate already attempted or incomplete: never restage"
+                    .to_owned(),
+            );
         }
     }
     let store = CredentialStore::new(
