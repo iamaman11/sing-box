@@ -1350,7 +1350,10 @@ def main() -> None:
         and "privileged-stop-proxy-only-controller" in windows_physical
         and "ProxyOnly" in windows_physical
         and "ManagedTun stop remains blocked" in windows_physical
-        and "PROXY_ONLY_SCM_BLOCKED: converge cannot silently upgrade" in windows_physical
+        and "PROXY_ONLY_SCM_BLOCKED: release upgrade requires explicitly Stopped clean ProxyOnly" in windows_physical
+        and "privileged-offline-activate $env:EDGE_ACCEPTED_REVISION $env:EDGE_RELEASE_SET_SHA256" in windows_physical
+        and "ProxyOnly offline upgrade outcome UNKNOWN; DO NOT REPLAY" in windows_physical
+        and "releases\\" in windows_physical
         and "expectedScm = if ($env:EDGE_OPERATION -eq 'stop')" in windows_physical
         and "Set-DnsClientServerAddress" not in windows_console,
         "ProxyOnly start/stop must use one exact SYSTEM-owned no-TUN SCM lifecycle, preserve Manual startup, and never authorize ManagedTun teardown",
