@@ -250,13 +250,18 @@ jobs:
         shell: powershell
         env:
           EDGE_FIRST_USE_EXPECTED_MODE: ${{ needs.resolve.outputs.expected_mode }}
+          EDGE_FIRST_USE_TARGET_REVISION: ${{ needs.resolve.outputs.accepted_revision }}
+          EDGE_FIRST_USE_TARGET_RELEASE: ${{ needs.resolve.outputs.release_set_sha256 }}
           FIRST_USE_GENERATION: ${{ needs.resolve.outputs.initial_generation }}
           FIRST_USE_SLOT: ${{ needs.resolve.outputs.initial_slot }}
         run: |
           $ErrorActionPreference = 'Stop'
+          $handoff = Join-Path $env:GITHUB_WORKSPACE 'edge-platform\scripts\windows-first-use-offline-handoff.ps1'
+          & $handoff -AcceptedRevision $env:EDGE_FIRST_USE_TARGET_REVISION -ReleaseSetSha256 $env:EDGE_FIRST_USE_TARGET_RELEASE
+          if ($LASTEXITCODE -ne 0 -or -not $?) { throw 'Windows SYSTEM offline handoff unconfirmed; do not replay' }
           $script = Join-Path $env:GITHUB_WORKSPACE 'edge-platform\scripts\windows-initial-pair-stage.ps1'
           & $script -Generation ([long]$env:FIRST_USE_GENERATION) -Slot $env:FIRST_USE_SLOT
-          if (-not $?) { throw 'Windows initial stage ended without confirmed evidence' }
+          if ($LASTEXITCODE -ne 0 -or -not $?) { throw 'Windows initial stage ended without confirmed evidence' }
 
   physical:
     if: needs.resolve.outputs.operation != 'acceptance-reconcile' && needs.resolve.outputs.operation != 'initial-pair-stage'
