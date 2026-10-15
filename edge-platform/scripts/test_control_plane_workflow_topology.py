@@ -314,6 +314,18 @@ def main() -> None:
         and "[switch]$Offline" in windows_installer
         and "[switch]$StageOnly" in windows_installer
         and "offline_bootstrap_candidate=VERIFIED_STAGE_ONLY" in windows_installer
+        and "Principal.UserId -notin" not in windows_installer
+        and "Principal.UserId -notin" not in windows_console
+        and "NTAccount]::new($principalName)" in windows_installer
+        and "NTAccount]::new($principalName)" in windows_console
+        and "Translate(" in windows_installer
+        and "Translate(" in windows_console
+        and "$principalSid -cne 'S-1-5-18'" in windows_installer
+        and "$principalSid -cne 'S-1-5-18'" in windows_console
+        and "Principal.LogonType -cne 'ServiceAccount'" in windows_installer
+        and "Principal.LogonType -cne 'ServiceAccount'" in windows_console
+        and "Principal.RunLevel -cne 'Highest'" in windows_installer
+        and "Principal.RunLevel -cne 'Highest'" in windows_console
         and "OfflineBootstrap(PrivilegedActivateArgs)" in windows_console_cli
         and "fn require_offline_bootstrap_installer_archive_identity(" in windows_console
         and "fn verify_offline_bootstrap_dispatcher(" in windows_console
