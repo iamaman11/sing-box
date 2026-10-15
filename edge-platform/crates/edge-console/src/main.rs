@@ -5377,7 +5377,9 @@ Compress-Archive -Path (Join-Path $env:EDGE_ZIP_TEST_PACKAGE '*') -DestinationPa
         // The root deliberately contains Unicode to exercise path encoding.
         let root = offline_test_root("zip-unicode-кириллица");
         let (zip, packaged) = create_zip_identity_fixture(&root, true);
-        assert!(require_offline_bootstrap_installer_archive_identity(&zip, &packaged).is_ok());
+        if let Err(err) = require_offline_bootstrap_installer_archive_identity(&zip, &packaged) {
+            panic!("positive native ZIP proof failed: {err}");
+        }
         fs::write(&packaged, b"tampered packaged script").unwrap();
         let mismatch =
             require_offline_bootstrap_installer_archive_identity(&zip, &packaged).unwrap_err();
