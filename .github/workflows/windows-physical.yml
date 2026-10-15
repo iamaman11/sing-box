@@ -252,9 +252,8 @@ jobs:
           EDGE_FIRST_USE_EXPECTED_MODE: ${{ needs.resolve.outputs.expected_mode }}
         run: |
           $ErrorActionPreference = 'Stop'
-          & (Join-Path $env:GITHUB_WORKSPACE 'edge-platform\\scripts\\windows-first-use-offline-handoff.ps1') \
-            -AcceptedRevision '${{ needs.resolve.outputs.accepted_revision }}' \
-            -ReleaseSetSha256 '${{ needs.resolve.outputs.release_set_sha256 }}' -Preflight
+          $handoff = Join-Path $env:GITHUB_WORKSPACE 'edge-platform\scripts\windows-first-use-offline-handoff.ps1'
+          & $handoff -AcceptedRevision '${{ needs.resolve.outputs.accepted_revision }}' -ReleaseSetSha256 '${{ needs.resolve.outputs.release_set_sha256 }}' -Preflight
           if ($LASTEXITCODE -ne 0 -or -not $?) {
             throw 'FIRST_USE_PREBEGIN_BLOCKED: installed native capability not proven'
           }

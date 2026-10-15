@@ -96,7 +96,7 @@ def main() -> None:
         and 'initial_first_use_preflight:' in windows_physical
         and "Windows / read-only installed-owner capability before BEGIN" in windows_physical
         and 'needs: [resolve, initial_first_use_preflight]' in windows_physical
-        and 'needs.initial_first_use_preflight.result == ' + "'success'" + ' ' in windows_physical
+        and "needs.initial_first_use_preflight.result == 'success'" in windows_physical
         and 'initial_first_use_reservation:' in windows_physical
         and 'first_use_stage_begin=COMMITTED_ONCE' in windows_physical
         and 'sing-box-windows-persistent-initial-stage/v1' in windows_physical
