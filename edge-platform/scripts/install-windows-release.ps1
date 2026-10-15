@@ -506,6 +506,87 @@ if ($StageOnly) {
         [string]$old['managed_tun_present'] -cne 'false') {
         throw 'OFFLINE_BOOTSTRAP_BLOCKED: exact stopped former ManagedTun owner required'
     }
+    # Both proofs run BEFORE the native bootstrap writes its one-shot intent.
+    # The exact candidate ZIP has already passed ReleaseSet verify-windows.
+    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+    $archive = [IO.Compression.ZipFile]::OpenRead($packagePath)
+    try {
+        $embedded = @($archive.Entries | Where-Object { [string]$_.FullName -ceq 'bootstrap/install-windows-release.ps1' })
+        if ($embedded.Count -ne 1) { throw 'OFFLINE_BOOTSTRAP_BLOCKED: ambiguous ZIP installer' }
+        $stream = $embedded[0].Open()
+        try {
+            $hasher = [Security.Cryptography.SHA256]::Create()
+            try { $archiveDigest = ([BitConverter]::ToString($hasher.ComputeHash($stream))).Replace('-','') }
+            finally { $hasher.Dispose() }
+        } finally { $stream.Dispose() }
+    } finally { $archive.Dispose() }
+    if ($archiveDigest -cne (Get-FileHash -Algorithm SHA256 -LiteralPath $releaseInstaller).Hash) {
+        throw 'OFFLINE_BOOTSTRAP_BLOCKED: installed candidate script differs from verified ZIP'
+    }
+    $task = Get-ScheduledTask -TaskName 'EdgePlatformPrivilegedDispatch' -ErrorAction Stop
+    if ($null -eq $task -or
+        [string]$task.State -cne 'Ready' -or
+        [string]$task.Principal.UserId -notin @('SYSTEM','NT AUTHORITY\SYSTEM','S-1-5-18') -or
+        [string]$task.Principal.RunLevel -cne 'Highest' -or
+        @($task.Actions).Count -ne 1) {
+        throw 'OFFLINE_BOOTSTRAP_BLOCKED: existing SYSTEM/Highest task not proven'
+    }
+    $taskAction = @($task.Actions)[0]
+    if ([string]$taskAction.Execute.Trim('"') -cne [string]$old['console_path'] -or
+        [string]$taskAction.Arguments -notmatch '^privileged-dispatch --install-root "?C:\\sing-box"?
+    Write-Output "offline_bootstrap_console=$console"
+    Write-Output 'windows_service_mutations=0'
+    Write-Output 'windows_authority_mutations=0'
+    exit 0
+}
+
+if (Test-Path -LiteralPath $currentPath -PathType Leaf) {
+    $current = Invoke-Diagnostic -Diagnostic $diagnostic -State $currentPath
+    if (-not $ForceRematerialize -and $current["release_set_sha256"] -eq $ReleaseSetSha256) {
+        Assert-AcceptedCandidateSource -VerificationOutput @("source_revision=$($current["source_revision"])") -AcceptedRevision $AcceptedRevision
+        Refresh-StableBootstrapInstaller -Source $releaseInstaller -InstallRoot $InstallRoot
+        Write-Output "Windows ReleaseSet $ReleaseSetSha256 is already active"
+        Write-Output "activation=NOOP"
+        Write-Output "current_state=$currentPath"
+        Write-Output "console=$($current["console_path"])"
+        Write-Output "diagnostic=$($current["diagnostic_path"])"
+        Write-Output "runtime_state=NOT_CONFIGURED"
+        Write-Output "runtime_config=NOT_CONFIGURED"
+        Write-Output "automation_registered=false"
+        exit 0
+    }
+}
+
+Assert-OfflineWindow
+
+$activation = Activate-ReleaseAuthority `
+    -Tool $tool `
+    -ReleaseSetPath $releaseSetPath `
+    -ReleaseSetSidecar $releaseSetSidecar `
+    -ReleaseDir $releaseDir `
+    -Controller $controller `
+    -Console $console `
+    -Diagnostic $diagnostic `
+    -SingBox $singBox `
+    -InstallRoot $InstallRoot `
+    -PreservePrevious:$preservePrevious
+
+Refresh-StableBootstrapInstaller -Source $releaseInstaller -InstallRoot $InstallRoot
+if ($ForceRematerialize) {
+    Write-Output "rematerialization=PASS"
+}
+Write-Output "Activated exact Windows ReleaseSet $ReleaseSetSha256"
+Write-Output "current_state=$($activation["current_state"])"
+Write-Output "console=$($activation["console"])"
+Write-Output "diagnostic=$($activation["diagnostic"])"
+Write-Output "runtime_state=NOT_CONFIGURED"
+Write-Output "runtime_config=NOT_CONFIGURED"
+Write-Output "automation_registered=false"
+) {
+        throw 'OFFLINE_BOOTSTRAP_BLOCKED: dispatcher action differs from old exact owner'
+    }
+    Write-Output 'offline_bootstrap_task_owner=EXACT_SYSTEM_READY'
+    Write-Output 'offline_bootstrap_script_hash=MATCH_VERIFIED_ZIP'
     Write-Output 'offline_bootstrap_candidate=VERIFIED_STAGE_ONLY'
     Write-Output "offline_bootstrap_console=$console"
     Write-Output 'windows_service_mutations=0'
