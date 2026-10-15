@@ -99,7 +99,7 @@ const PRIVILEGED_SHORT_WAIT_SECS: u64 = 180;
 const PRIVILEGED_ACTIVATE_WAIT_SECS: u64 = 12 * 60;
 const RUNTIME_EVIDENCE_MAX_BYTES: u64 = 16 * 1024;
 const RUNTIME_EVIDENCE_MAX_LINES: usize = 80;
-const RUNTIME_EVIDENCE_RESULT_MAX_BYTES: usize = 960;
+const RUNTIME_EVIDENCE_RESULT_MAX_BYTES: usize = 1024;
 const PRIVILEGED_CHILD_EVIDENCE_MAX_BYTES: usize = 960;
 const WINDOWS_TRACE_REOBSERVE_ATTEMPTS: usize = 3;
 const WINDOWS_TRACE_REOBSERVE_DELAY: Duration = Duration::from_secs(1);
@@ -394,6 +394,29 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             )?;
             print_privileged_result(&result);
             finish_privileged_result(&result)?;
+            Ok(())
+        }
+        #[cfg(windows)]
+        Command::OfflineBootstrap(args) => {
+            let install_root = PathBuf::from(args.install_root);
+            let request = WindowsPrivilegedRequest {
+                schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+                request_id: new_privileged_request_id()?,
+                operation: WindowsPrivilegedOperation::OfflineActivateRelease as i32,
+                accepted_revision: Some(args.accepted_revision),
+                release_set_sha256: Some(args.release_set_sha256),
+                credential_generation: None,
+                credential_transition_action: None,
+            };
+            let (code, detail, release) =
+                offline_bootstrap_privileged_release(&install_root, &request)
+                    .map_err(ConsoleError::Command)?;
+            println!("status=PASS");
+            println!("code={code}");
+            println!("detail={detail}");
+            if let Some(release) = release {
+                println!("active_release_set_sha256={release}");
+            }
             Ok(())
         }
         Command::PrivilegedOfflineActivate(args) => {
@@ -1411,6 +1434,104 @@ fn bounded_privileged_child_evidence(stdout: &[u8], stderr: &[u8]) -> String {
     truncate_runtime_evidence(&detail, PRIVILEGED_CHILD_EVIDENCE_MAX_BYTES)
 }
 
+// SYSTEM-owned, read-only projection of the persistent Windows cursor. A
+// partially created store is UNKNOWN, never treated as a fresh first-use slot.
+// The GitHub runner cannot read private state or any credential bundle.
+fn read_bounded_windows_credential_cursor(install_root: &Path) -> Result<String, String> {
+    let root = windows_credential_store_path(install_root);
+    let Some(store) =
+        CredentialStore::open_existing(root, edge_shared_types::CredentialProjectionKind::Windows)?
+    else {
+        return Ok("credential_cursor=ABSENT".to_owned());
+    };
+    let state = store.read_state()?.ok_or_else(|| {
+        "persistent Windows credential directory has no durable cursor; first-use is UNKNOWN"
+            .to_owned()
+    })?;
+    let active = state.active.as_ref();
+    let candidate = state.candidate.as_ref();
+    let previous = state.previous.as_ref();
+    let slot = match candidate.map(|value| value.slot) {
+        Some(value) if value == edge_shared_types::CredentialDeliverySlot::A as i32 => "A",
+        Some(value) if value == edge_shared_types::CredentialDeliverySlot::B as i32 => "B",
+        Some(_) => "UNKNOWN",
+        None => "NONE",
+    };
+    Ok(format!(
+        "credential_cursor=VALID;credential_active_present={};credential_candidate_present={};credential_candidate_generation={};credential_candidate_slot={slot};credential_previous_present={}",
+        active.is_some(),
+        candidate.is_some(),
+        candidate.map(|value| value.generation).unwrap_or(0),
+        previous.is_some()
+    ))
+}
+
+#[cfg(windows)]
+fn require_offline_first_use_stage_owner(install_root: &Path) -> Result<(), String> {
+    let target = canonical_production_desired_state()?;
+    if target.windows_datapath_mode != WindowsDatapathMode::ProxyOnly as i32
+        || !install_root
+            .to_string_lossy()
+            .eq_ignore_ascii_case(r"C:\sing-box")
+    {
+        return Err("first-use persistent staging is confined to canonical ProxyOnly intent and C:\\sing-box".to_owned());
+    }
+    let activation = load_verified_activation(install_root).map_err(|_| {
+        "persistent first-use staging requires an exact installed ReleaseSet".to_owned()
+    })?;
+    let doctor = Command::new(&activation.diagnostic_path)
+        .arg("doctor")
+        .arg(install_root.join("current.pb"))
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|_| "persistent first-use staging requires native read-only doctor".to_owned())?;
+    // A stopped old ManagedTun can cause a nonzero doctor exit. Require
+    // affirmative OS/file evidence, never treat that exit as permission.
+    let observation = String::from_utf8(doctor.stdout)
+        .map_err(|_| "persistent first-use doctor evidence is not UTF-8".to_owned())?;
+    for evidence in [
+        "exact_release_files=PASS",
+        "scm_state=Stopped",
+        "managed_tun_present=false",
+        "managed_singbox_process_count=0",
+        "orphan_singbox_process_count=0",
+        "conflicting_singbox_process_count=0",
+        "unknown_singbox_process_count=0",
+    ] {
+        if !observation.lines().any(|line| line == evidence) {
+            return Err(
+                "persistent first-use denies missing stopped/no-TUN native evidence".to_owned(),
+            );
+        }
+    }
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+        .map_err(|_| "first-use persistent staging cannot inspect SCM".to_owned())?;
+    let service = manager
+        .open_service(WINDOWS_CONTROLLER_SERVICE_NAME, ServiceAccess::QUERY_STATUS)
+        .map_err(|_| "first-use persistent staging cannot inspect owner service".to_owned())?;
+    let status = service
+        .query_status()
+        .map_err(|_| "first-use persistent staging cannot read SCM status".to_owned())?;
+    if status.current_state != ServiceState::Stopped
+        || status.process_id.is_some()
+        || !matches!(
+            classify_runtime_process(&local_singbox_config_path(install_root)),
+            RuntimeProcessClassification::Absent
+        )
+    {
+        return Err(
+            "first-use persistent staging refuses a running or ambiguous Windows owner".to_owned(),
+        );
+    }
+    if windows_runtime_state_path(install_root).exists()
+        || local_singbox_config_path(install_root).exists()
+        || windows_credential_store_path(install_root).exists()
+    {
+        return Err("first-use persistent staging refuses pre-existing or incomplete managed credential/runtime state".to_owned());
+    }
+    Ok(())
+}
+
 fn read_bounded_windows_runtime_evidence(install_root: &Path) -> Result<String, String> {
     let runtime_root = install_root.join("runtime");
     #[cfg(windows)]
@@ -1429,8 +1550,39 @@ fn read_bounded_windows_runtime_evidence(install_root: &Path) -> Result<String, 
     let external_owner = read_external_owner_restore_evidence(install_root)?;
     #[cfg(not(windows))]
     let external_owner = "external_owner_evidence=WINDOWS_ONLY".to_owned();
+    let cursor = read_bounded_windows_credential_cursor(install_root)?;
+    // SYSTEM-only metadata, not an authentication claim. ENOENT is distinct
+    // from an ACL/read failure so GitHub cannot infer an empty first-use root.
+    let state_file = windows_runtime_state_path(install_root);
+    let config_file = local_singbox_config_path(install_root);
+    let identity_file = install_root
+        .join("state")
+        .join("secrets")
+        .join(ACCESS_IDENTITY_FILE_NAME);
+    let known_file = |path: &Path| -> Result<Option<fs::Metadata>, String> {
+        match fs::metadata(path) {
+            Ok(metadata) => Ok(Some(metadata)),
+            Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(_) => Err("persistent Windows first-use file status unreadable".to_owned()),
+        }
+    };
+    let runtime = if known_file(&state_file)?.is_none() {
+        "ABSENT"
+    } else {
+        "PRESENT"
+    };
+    let config = if known_file(&config_file)?.is_none() {
+        "ABSENT"
+    } else {
+        "PRESENT"
+    };
+    let identity = match known_file(&identity_file)? {
+        Some(metadata) if metadata.is_file() && metadata.len() > 0 => "PRESENT_NONEMPTY_UNVERIFIED",
+        Some(_) => "INVALID",
+        None => "ABSENT",
+    };
     let critical = format!(
-        "runtime_evidence=BOUNDED_READ_ONLY;{controller_error};{process_classification};{scheduled_tasks};{external_owner}"
+        "runtime_evidence=BOUNDED_READ_ONLY;{controller_error};{process_classification};{scheduled_tasks};{external_owner};{cursor};first_use_runtime={runtime};first_use_config={config};first_use_access_identity={identity}"
     );
     if critical.len() > RUNTIME_EVIDENCE_RESULT_MAX_BYTES {
         return Err(format!(
@@ -1957,6 +2109,32 @@ async fn stage_windows_credential_candidate_from_worker(
         &identity_path,
     )
     .await?;
+    let store_root = windows_credential_store_path(install_root);
+    if !store_root.exists() {
+        // Existing rotation is untouched. First enrollment is one-shot and
+        // must remain stopped inside SYSTEM, irrespective of GitHub preflight.
+        #[cfg(windows)]
+        require_offline_first_use_stage_owner(install_root)?;
+        #[cfg(not(windows))]
+        return Err("persistent first-use staging requires Windows SYSTEM owner".to_owned());
+    } else {
+        let prior = CredentialStore::open_existing(
+            &store_root,
+            edge_shared_types::CredentialProjectionKind::Windows,
+        )?
+        .ok_or_else(|| "Windows v2 store disappeared during staging".to_owned())?;
+        if prior
+            .read_state()?
+            .as_ref()
+            .and_then(|state| state.active.as_ref())
+            .is_none()
+        {
+            return Err(
+                "persistent first-use candidate already attempted or incomplete: never restage"
+                    .to_owned(),
+            );
+        }
+    }
     let store = CredentialStore::new(
         windows_credential_store_path(install_root),
         edge_shared_types::CredentialProjectionKind::Windows,
@@ -2259,10 +2437,11 @@ fn require_offline_windows_owner_at(
     authority_path: &Path,
 ) -> Result<(), String> {
     let desired = canonical_production_desired_state()?;
-    if desired.windows_datapath_mode != WindowsDatapathMode::ManagedTun as i32 {
-        return Err(
-            "OFFLINE_HANDOFF_BLOCKED: only current ManagedTun authority is supported".to_owned(),
-        );
+    if !matches!(
+        WindowsDatapathMode::try_from(desired.windows_datapath_mode),
+        Ok(WindowsDatapathMode::ProxyOnly | WindowsDatapathMode::ManagedTun)
+    ) {
+        return Err("OFFLINE_HANDOFF_BLOCKED: canonical mode unsupported".to_owned());
     }
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
         .map_err(|err| format!("offline SCM manager unavailable: {err}"))?;
@@ -2289,9 +2468,14 @@ fn require_offline_windows_owner_at(
         .as_deref()
         .map(|v| v.to_string_lossy().into_owned())
         .unwrap_or_default();
+    // A stopped former ManagedTun may be safely retired into ProxyOnly only
+    // after this very owner proves zero TUN and processes. The new owner
+    // remains manual-start until separate accepted service activation.
+    let start_type_allowed = config.start_type == ServiceStartType::OnDemand
+        || config.start_type == ServiceStartType::AutoStart;
     let exact = config.executable_path.to_string_lossy() == expected_command
         && account.eq_ignore_ascii_case(WINDOWS_CONTROLLER_SERVICE_ACCOUNT)
-        && config.start_type == ServiceStartType::AutoStart;
+        && start_type_allowed;
     let no_processes = matches!(
         classify_runtime_process(&local_singbox_config_path(install_root)),
         RuntimeProcessClassification::Absent
@@ -2306,7 +2490,16 @@ fn require_offline_windows_owner_at(
     // not in its desired running state. Its exact OS observations remain useful.
     let doctor = String::from_utf8_lossy(&output.stdout);
     let has_field = |field: &str| doctor.lines().any(|line| line.trim() == field);
-    let no_tun = has_field("managed_tun_present=false")
+    let attested_mode = has_field("windows_datapath_mode=ManagedTun")
+        || (has_field("windows_datapath_mode=ProxyOnly")
+            && desired.windows_datapath_mode == WindowsDatapathMode::ProxyOnly as i32);
+    let exact_release = has_field(&format!(
+        "release_set_sha256={}",
+        activation.release_set_sha256
+    ));
+    let no_tun = attested_mode
+        && exact_release
+        && has_field("managed_tun_present=false")
         && has_field("managed_singbox_process_count=0")
         && has_field("orphan_singbox_process_count=0")
         && has_field("conflicting_singbox_process_count=0")
@@ -2334,13 +2527,11 @@ fn offline_retarget_controller_service_checked(
     install_root: &Path,
     from: &WindowsActivationState,
     to: &WindowsActivationState,
-    restore_from_verified_snapshot: bool,
+    _restore_from_verified_snapshot: bool,
 ) -> Result<(), String> {
-    if restore_from_verified_snapshot {
-        require_offline_windows_owner_from_snapshot(install_root, from)?;
-    } else {
-        require_offline_windows_owner(install_root, from)?;
-    }
+    // current.pb already points at the newly installed version. Prove the
+    // outgoing owner against its immutable snapshot, not the new pointer.
+    require_offline_windows_owner_from_snapshot(install_root, from)?;
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
         .map_err(|err| format!("offline SCM manager unavailable: {err}"))?;
     let service = manager
@@ -2355,7 +2546,7 @@ fn offline_retarget_controller_service_checked(
         name: OsString::from(WINDOWS_CONTROLLER_SERVICE_NAME),
         display_name: OsString::from(WINDOWS_CONTROLLER_SERVICE_NAME),
         service_type: ServiceType::OWN_PROCESS,
-        start_type: ServiceStartType::AutoStart,
+        start_type: ServiceStartType::OnDemand,
         error_control: ServiceErrorControl::Normal,
         executable_path: PathBuf::from(&to.controller_path),
         launch_arguments: vec![
@@ -2383,7 +2574,7 @@ fn offline_retarget_controller_service_checked(
         INSTALLED_CONTROLLER_ADDR
     );
     if updated.executable_path.to_string_lossy() != expected
-        || updated.start_type != ServiceStartType::AutoStart
+        || updated.start_type != ServiceStartType::OnDemand
         || state.current_state != ServiceState::Stopped
         || state.process_id.is_some()
     {
@@ -2542,11 +2733,82 @@ fn restore_offline_release(
     Ok(())
 }
 
+#[cfg(windows)]
+fn offline_hold_controller_stopped(
+    install_root: &Path,
+    before: &WindowsActivationState,
+) -> Result<(), String> {
+    require_offline_windows_owner(install_root, before)?;
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+        .map_err(|err| format!("offline SCM manager unavailable: {err}"))?;
+    let service = manager
+        .open_service(
+            WINDOWS_CONTROLLER_SERVICE_NAME,
+            ServiceAccess::QUERY_CONFIG
+                | ServiceAccess::QUERY_STATUS
+                | ServiceAccess::CHANGE_CONFIG,
+        )
+        .map_err(|err| format!("offline SCM owner unavailable: {err}"))?;
+    let config = service.query_config().map_err(|err| err.to_string())?;
+    let account = config
+        .account_name
+        .as_ref()
+        .map(|v| v.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if !account.eq_ignore_ascii_case(WINDOWS_CONTROLLER_SERVICE_ACCOUNT) {
+        return Err("OFFLINE_HANDOFF_BLOCKED: SCM identity changed".to_owned());
+    }
+    let next = ServiceInfo {
+        name: OsString::from(WINDOWS_CONTROLLER_SERVICE_NAME),
+        display_name: OsString::from(WINDOWS_CONTROLLER_SERVICE_NAME),
+        service_type: ServiceType::OWN_PROCESS,
+        start_type: ServiceStartType::OnDemand,
+        error_control: ServiceErrorControl::Normal,
+        executable_path: PathBuf::from(&before.controller_path),
+        launch_arguments: vec![
+            OsString::from("windows-service"),
+            install_root.as_os_str().to_owned(),
+            OsString::from(INSTALLED_CONTROLLER_ADDR),
+        ],
+        dependencies: Vec::new(),
+        account_name: Some(OsString::from(WINDOWS_CONTROLLER_SERVICE_ACCOUNT)),
+        account_password: None,
+    };
+    service
+        .change_config(&next)
+        .map_err(|err| format!("offline SCM hold failed: {err}"))?;
+    let observed = service.query_config().map_err(|err| err.to_string())?;
+    let status = service.query_status().map_err(|err| err.to_string())?;
+    if observed.start_type != ServiceStartType::OnDemand
+        || status.current_state != ServiceState::Stopped
+        || status.process_id.is_some()
+    {
+        return Err("OFFLINE_HANDOFF_BLOCKED: stopped manual-start SCM readback failed".to_owned());
+    }
+    require_offline_windows_owner(install_root, before)
+}
+
+#[cfg(not(windows))]
+fn offline_hold_controller_stopped(
+    _install_root: &Path,
+    _before: &WindowsActivationState,
+) -> Result<(), String> {
+    Err("offline SCM hold is Windows-only".to_owned())
+}
+
 fn offline_activate_privileged_release(
     install_root: &Path,
     request: &WindowsPrivilegedRequest,
 ) -> Result<(String, String, Option<String>), String> {
     require_exact_immutable_activation_console(install_root)?;
+    offline_activate_privileged_release_with_installer(install_root, request, None)
+}
+
+fn offline_activate_privileged_release_with_installer(
+    install_root: &Path,
+    request: &WindowsPrivilegedRequest,
+    verified_bootstrap_installer: Option<&Path>,
+) -> Result<(String, String, Option<String>), String> {
     let before = load_verified_activation(install_root).map_err(|err| err.to_string())?;
     require_offline_windows_owner(install_root, &before)?;
     let revision = request
@@ -2583,9 +2845,16 @@ fn offline_activate_privileged_release(
         load_verified_activation_path(install_root, &previous_path, "previous.pb")
             .map_err(|err| format!("OFFLINE_PREVIOUS_SNAPSHOT_BLOCKED: {err}"))?;
     }
-    let installer = install_root
-        .join("bootstrap")
-        .join("install-windows-release.ps1");
+    // This is the first mutation. Hold SCM on manual start BEFORE modifying
+    // release pointers so an unexpected reboot cannot start ManagedTun.
+    offline_hold_controller_stopped(install_root, &before)?;
+    let installer = verified_bootstrap_installer
+        .map(Path::to_path_buf)
+        .unwrap_or_else(|| {
+            install_root
+                .join("bootstrap")
+                .join("install-windows-release.ps1")
+        });
     if !installer.is_file() {
         return Err("protected offline installer missing".to_owned());
     }
@@ -2636,7 +2905,14 @@ fn offline_activate_privileged_release(
         ));
     }
     let handoff = offline_retarget_controller_service(install_root, &before, &post)
-        .and_then(|_| retarget_privileged_task(install_root, &post.console_path));
+        .and_then(|_| retarget_privileged_task(install_root, &post.console_path))
+        .and_then(|_| {
+            #[cfg(windows)]
+            if verified_bootstrap_installer.is_some() {
+                verify_offline_bootstrap_dispatcher(&post.console_path)?;
+            }
+            Ok(())
+        });
     if let Err(err) = handoff {
         let restore = restore_offline_release(
             install_root,
@@ -2666,6 +2942,275 @@ fn offline_activate_privileged_release(
         "exact ReleaseSet installed; SCM remains Stopped; no TUN/DNS/routes changed and no service started".to_owned(),
         Some(post.release_set_sha256),
     ))
+}
+
+#[cfg(windows)]
+fn require_offline_bootstrap_installer_archive_identity(
+    verified_zip: &Path,
+    candidate_installer: &Path,
+) -> Result<(), String> {
+    // The target binary and ZIP have already passed verify-windows. The
+    // installer must ALSO be the exact script in that verified ZIP: otherwise
+    // a staged local file could execute arbitrary mutations before SCM hold.
+    // This is read-only and runs before the durable one-shot BEGIN.
+    let verify_script = r#"
+$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+$archive = [IO.Compression.ZipFile]::OpenRead($env:EDGE_BOOTSTRAP_VERIFIED_ZIP)
+try {
+    $entries = @($archive.Entries | Where-Object {
+        [string]$_.FullName.Replace('\','/') -ceq 'bootstrap/install-windows-release.ps1'
+    })
+    if ($entries.Count -ne 1) { throw 'ambiguous exact bootstrap installer entry' }
+    $stream = $entries[0].Open()
+    try {
+        $hasher = [Security.Cryptography.SHA256]::Create()
+        try { $expected = ([BitConverter]::ToString($hasher.ComputeHash($stream))).Replace('-','') }
+        finally { $hasher.Dispose() }
+    } finally { $stream.Dispose() }
+} finally { $archive.Dispose() }
+$actual = (Get-FileHash -Algorithm SHA256 -LiteralPath $env:EDGE_BOOTSTRAP_TARGET_INSTALLER).Hash
+if ($actual -cne $expected) { throw 'candidate installer hash differs from verified ZIP' }
+"#;
+    let exit = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", verify_script])
+        .env("EDGE_BOOTSTRAP_VERIFIED_ZIP", verified_zip)
+        .env("EDGE_BOOTSTRAP_TARGET_INSTALLER", candidate_installer)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: archive proof cannot run: {err}"))?;
+    if !exit.success() {
+        return Err(
+            "OFFLINE_BOOTSTRAP_BLOCKED: exact ZIP-to-installer SHA256 proof failed".to_owned(),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn verify_offline_bootstrap_dispatcher(exact_console: &str) -> Result<(), String> {
+    // Readback after retargeting the ONE existing task is required before
+    // committing a successful offline handoff; never trust schtasks exit alone.
+    let proof = r#"
+$ErrorActionPreference = 'Stop'
+$task = Get-ScheduledTask -TaskName 'EdgePlatformPrivilegedDispatch' -ErrorAction Stop
+if ($null -eq $task -or [string]$task.State -cne 'Ready' -or
+    [string]$task.Principal.UserId -notin @('SYSTEM','NT AUTHORITY\SYSTEM','S-1-5-18') -or
+    [string]$task.Principal.RunLevel -cne 'Highest' -or
+    @($task.Actions).Count -ne 1) {
+    throw 'existing SYSTEM dispatcher principal/state changed'
+}
+$action = @($task.Actions)[0]
+if ([string]$action.Execute.Trim('"') -cne $env:EDGE_BOOTSTRAP_EXPECTED_CONSOLE -or
+    [string]$action.Arguments -notmatch '^privileged-dispatch --install-root "?C:\\sing-box"?$') {
+    throw 'exact immutable dispatcher action/arguments changed'
+}
+"#;
+    let status = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", proof])
+        .env("EDGE_BOOTSTRAP_EXPECTED_CONSOLE", exact_console)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: dispatcher proof unavailable: {err}"))?;
+    if !status.success() {
+        return Err(
+            "OFFLINE_BOOTSTRAP_BLOCKED: exact SYSTEM dispatcher readback failed".to_owned(),
+        );
+    }
+    Ok(())
+}
+
+fn offline_bootstrap_identifiers_valid(revision: &str, digest: &str) -> bool {
+    revision.len() == 40
+        && digest.len() == 64
+        && revision
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+}
+
+#[cfg(windows)]
+fn offline_bootstrap_privileged_release(
+    install_root: &Path,
+    request: &WindowsPrivilegedRequest,
+) -> Result<(String, String, Option<String>), String> {
+    // One operator-authorized local admin invocation from the independently
+    // verified NEW immutable console. The installed legacy SYSTEM dispatcher
+    // never sees a wire operation it does not understand.
+    if install_root != Path::new(r"C:\sing-box") {
+        return Err("OFFLINE_BOOTSTRAP_BLOCKED: unexpected Windows root".to_owned());
+    }
+    let revision = request
+        .accepted_revision
+        .as_deref()
+        .ok_or_else(|| "OFFLINE_BOOTSTRAP_BLOCKED: accepted revision missing".to_owned())?;
+    let target = request
+        .release_set_sha256
+        .as_deref()
+        .ok_or_else(|| "OFFLINE_BOOTSTRAP_BLOCKED: ReleaseSet missing".to_owned())?;
+    if !offline_bootstrap_identifiers_valid(revision, target) {
+        return Err("OFFLINE_BOOTSTRAP_BLOCKED: malformed exact revision or digest".to_owned());
+    }
+    let desired = canonical_production_desired_state()?;
+    if desired.windows_datapath_mode != WindowsDatapathMode::ProxyOnly as i32 {
+        return Err("OFFLINE_BOOTSTRAP_BLOCKED: canonical target is not ProxyOnly".to_owned());
+    }
+    let before = load_verified_activation(install_root).map_err(|err| err.to_string())?;
+    if before.release_set_sha256 == target {
+        return Err("OFFLINE_BOOTSTRAP_BLOCKED: exact distinct legacy release required".to_owned());
+    }
+    require_offline_windows_owner(install_root, &before)?;
+    // Datapath mode belongs to the immutable release's compiled policy,
+    // not to WindowsActivationState. Prove the old binary's exact doctor.
+    let old_doctor = Command::new(&before.diagnostic_path)
+        .arg("doctor")
+        .arg(install_root.join("current.pb"))
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: old doctor missing: {err}"))?;
+    let old_readout = String::from_utf8_lossy(&old_doctor.stdout);
+    if !old_readout
+        .lines()
+        .any(|line| line == "windows_datapath_mode=ManagedTun")
+    {
+        return Err(
+            "OFFLINE_BOOTSTRAP_BLOCKED: exact stopped old ManagedTun source unproven".to_owned(),
+        );
+    }
+
+    let candidate = install_root.join("releases").join(target);
+    let console = candidate.join("bin").join("edge-console.exe");
+    let current_exe = env::current_exe().map_err(|err| err.to_string())?;
+    if current_exe.canonicalize().map_err(|err| err.to_string())?
+        != console.canonicalize().map_err(|err| err.to_string())?
+    {
+        return Err("OFFLINE_BOOTSTRAP_BLOCKED: not exact verified target console".to_owned());
+    }
+    let stage_installer = candidate
+        .join("bootstrap")
+        .join("install-windows-release.ps1");
+    if !stage_installer.is_file() {
+        return Err("OFFLINE_BOOTSTRAP_BLOCKED: target installer missing".to_owned());
+    }
+    // The native verifier checks manifest, ZIP and ALL exact target binaries.
+    // Never accept a caller-provided executable/installer or download command.
+    let verification = Command::new(candidate.join("bin").join("edge-release-set.exe"))
+        .args(["verify-windows", "--input"])
+        .arg(candidate.join("release-set.pb"))
+        .arg("--sha256-file")
+        .arg(candidate.join("release-set.pb.sha256"))
+        .arg("--windows-artifact")
+        .arg(candidate.join("edge-platform-windows.zip"))
+        .arg("--windows-controller")
+        .arg(candidate.join("bin").join("edge-controller.exe"))
+        .arg("--windows-console")
+        .arg(&console)
+        .arg("--windows-diagnostic")
+        .arg(candidate.join("bin").join("edge-diagnostic.exe"))
+        .arg("--windows-sing-box")
+        .arg(candidate.join("bin").join("sing-box.exe"))
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: verifier unavailable: {err}"))?;
+    if !verification.status.success() {
+        return Err(
+            "OFFLINE_BOOTSTRAP_BLOCKED: target ReleaseSet or binary verification failed".to_owned(),
+        );
+    }
+    require_offline_bootstrap_installer_archive_identity(
+        &candidate.join("edge-platform-windows.zip"),
+        &stage_installer,
+    )?;
+
+    // Only an elevated local Windows admin can open CHANGE_CONFIG on this
+    // SCM owner. Prove permission before creating the non-replayable intent.
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+        .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: SCM unavailable: {err}"))?;
+    let _authorized_service = manager
+        .open_service(
+            WINDOWS_CONTROLLER_SERVICE_NAME,
+            ServiceAccess::CHANGE_CONFIG,
+        )
+        .map_err(|err| {
+            format!("OFFLINE_BOOTSTRAP_BLOCKED: local admin authorization absent: {err}")
+        })?;
+
+    // The accepted protected main, immutable release tag, merge-parent source
+    // tree, and target package are verified by the existing installer BEFORE
+    // any SCM, current.pb or dispatcher mutation.
+    let root = install_root
+        .to_str()
+        .ok_or_else(|| "OFFLINE_BOOTSTRAP_BLOCKED: invalid Windows root".to_owned())?;
+    let preflight = Command::new("powershell.exe")
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+        ])
+        .arg(&stage_installer)
+        .args([
+            "-AcceptedRevision",
+            revision,
+            "-ReleaseSetSha256",
+            target,
+            "-InstallRoot",
+            root,
+            "-Offline",
+            "-StageOnly",
+        ])
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|err| {
+            format!("OFFLINE_BOOTSTRAP_BLOCKED: release preflight unavailable: {err}")
+        })?;
+    if !preflight.status.success() {
+        return Err(format!(
+            "OFFLINE_BOOTSTRAP_BLOCKED: accepted release preflight failed: {}",
+            bounded_privileged_child_evidence(&preflight.stdout, &preflight.stderr)
+        ));
+    }
+    require_offline_windows_owner(install_root, &before)?;
+
+    require_offline_bootstrap_installer_archive_identity(
+        &candidate.join("edge-platform-windows.zip"),
+        &stage_installer,
+    )?;
+
+    verify_offline_bootstrap_dispatcher(&before.console_path)?;
+
+    // Create exactly one durable BEGIN before the first SCM mutation.
+    // Never replay after a lost result, even if the old release was restored.
+    let intent = install_root.join("offline-bootstrap-intent-v1");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&intent)
+        .map_err(|err| {
+            format!("OFFLINE_BOOTSTRAP_BLOCKED: intent already exists or cannot be created: {err}")
+        })?;
+    let marker = format!(
+        "schema=sing-box.windows-offline-bootstrap/v1\nfrom={}\nto={target}\naccepted_revision={revision}\n",
+        before.release_set_sha256,
+    );
+    file.write_all(marker.as_bytes())
+        .and_then(|_| file.sync_all())
+        .map_err(|err| {
+            format!("OFFLINE_BOOTSTRAP_UNKNOWN: durable intent failure: {err}; do not replay")
+        })?;
+    drop(file);
+    offline_activate_privileged_release_with_installer(
+        install_root,
+        request,
+        Some(&stage_installer),
+    )
 }
 
 fn offline_rollback_privileged_release(
@@ -4602,6 +5147,29 @@ mod tests {
     }
 
     #[test]
+    fn offline_bootstrap_identifiers_require_exact_lowercase_immutable_values() {
+        let revision = "a".repeat(40);
+        let digest = "b".repeat(64);
+        assert!(offline_bootstrap_identifiers_valid(&revision, &digest));
+        assert!(!offline_bootstrap_identifiers_valid(
+            &revision[..39],
+            &digest
+        ));
+        assert!(!offline_bootstrap_identifiers_valid(
+            &revision,
+            &digest[..63]
+        ));
+        assert!(!offline_bootstrap_identifiers_valid(
+            &revision.to_uppercase(),
+            &digest
+        ));
+        assert!(!offline_bootstrap_identifiers_valid(
+            &revision,
+            &format!("{}g", &digest[..63])
+        ));
+    }
+
+    #[test]
     fn offline_release_handoff_refuses_running_scm_any_child_tun_or_wrong_owner() {
         assert!(offline_handoff_gate(true, true, true, true).is_ok());
         for (stopped, zero_process, no_tun, exact_owner) in [
@@ -5127,6 +5695,25 @@ mod tests {
                 .unwrap_err()
                 .contains("rendered sing-box config")
         );
+    }
+
+    #[test]
+    fn persistent_windows_cursor_proof_refuses_torn_store_without_guessing_absence() {
+        let root = offline_test_root("first-use-cursor");
+        assert_eq!(
+            read_bounded_windows_credential_cursor(&root).unwrap(),
+            "credential_cursor=ABSENT"
+        );
+        let store = windows_credential_store_path(&root);
+        fs::create_dir_all(&store).unwrap();
+        assert!(
+            read_bounded_windows_credential_cursor(&root)
+                .unwrap_err()
+                .contains("no durable cursor")
+        );
+        fs::write(store.join("state.pb"), b"corrupt").unwrap();
+        assert!(read_bounded_windows_credential_cursor(&root).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

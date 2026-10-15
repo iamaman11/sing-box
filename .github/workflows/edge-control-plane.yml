@@ -75,11 +75,15 @@ jobs:
         github.event.comment.body == '/windows restart-controller' ||
         github.event.comment.body == '/windows repair' ||
         github.event.comment.body == '/windows rollback' ||
-        startsWith(github.event.comment.body, '/windows acceptance-reconcile ')
+        startsWith(github.event.comment.body, '/windows acceptance-reconcile ') ||
+        startsWith(github.event.comment.body, '/windows initial-pair-stage ')
       )
     permissions:
       contents: read
       actions: read
+      # Only the exact durable initial-stage journal owner actually uses WRITE;
+      # unrelated Windows physical jobs retain their own job-level read-only scope.
+      issues: write
     uses: ./.github/workflows/windows-physical.yml
     with:
       command_body: ${{ github.event.comment.body }}

@@ -79,6 +79,8 @@ def main() -> None:
     windows_input = WINDOWS_INPUT.read_text(encoding="utf-8")
     windows_installer = WINDOWS_INSTALLER.read_text(encoding="utf-8")
     windows_runner_bootstrap = WINDOWS_RUNNER_BOOTSTRAP.read_text(encoding="utf-8")
+    windows_first_use_stage = Path("edge-platform/scripts/windows-initial-pair-stage.ps1").read_text(encoding="utf-8")
+    windows_first_use_offline = Path("edge-platform/scripts/windows-first-use-offline-handoff.ps1").read_text(encoding="utf-8")
     windows_console = WINDOWS_CONSOLE.read_text(encoding="utf-8")
     windows_console_cli = WINDOWS_CONSOLE_CLI.read_text(encoding="utf-8")
     windows_controller = WINDOWS_CONTROLLER.read_text(encoding="utf-8")
@@ -86,6 +88,68 @@ def main() -> None:
     windows_controller_cli = WINDOWS_CONTROLLER_CLI.read_text(encoding="utf-8")
     windows_controller_core = WINDOWS_CONTROLLER_CORE.read_text(encoding="utf-8")
     edge_local_runtime = EDGE_LOCAL_RUNTIME.read_text(encoding="utf-8")
+    require(
+        "startsWith(github.event.comment.body, '/windows initial-pair-stage ')" in router
+        and 'issues: write' in router
+        and '"/windows initial-pair-stage "*' in windows_physical
+        and 'operation="initial-pair-stage"' in windows_physical
+        and 'initial_first_use_preflight:' in windows_physical
+        and "Windows / read-only installed-owner capability before BEGIN" in windows_physical
+        and 'needs: [resolve, initial_first_use_preflight]' in windows_physical
+        and "needs.initial_first_use_preflight.result == 'success'" in windows_physical
+        and 'initial_first_use_reservation:' in windows_physical
+        and 'first_use_stage_begin=COMMITTED_ONCE' in windows_physical
+        and 'sing-box-windows-persistent-initial-stage/v1' in windows_physical
+        and 'needs: [resolve, initial_first_use_reservation]' in windows_physical
+        and "needs.initial_first_use_reservation.result == 'success'" in windows_physical
+        and 'test "$GITHUB_RUN_ATTEMPT" = "1"' in windows_physical
+        and 'original BEGIN count is not one' in windows_physical
+        and 'generation=\\(.generation)' in windows_physical
+        and 'initial_first_use_stage:' in windows_physical
+        and "Windows / native persistent first-use candidate" in windows_physical
+        and 'windows-initial-pair-stage.ps1' in windows_physical
+        and 'windows-first-use-offline-handoff.ps1' in windows_physical
+        and 'EDGE_FIRST_USE_TARGET_RELEASE' in windows_physical
+        and 'EDGE_FIRST_USE_TARGET_REVISION' in windows_physical
+        and 'privileged-offline-activate' in windows_first_use_offline
+        and 'FIRST_USE_OFFLINE_UNKNOWN:' in windows_first_use_offline
+        and 'Require-DirectNetwork' in windows_first_use_offline
+        and 'windows_first_use_prebegin_preflight=PASS_READ_ONLY' in windows_first_use_offline
+        and 'first_use_access_identity=PRESENT_NONEMPTY_UNVERIFIED' in windows_first_use_offline
+        and 'installed owner has no native offline capability; BEGIN forbidden' in windows_first_use_offline
+        and r"-match '\bprivileged-offline-activate\b'" in windows_first_use_offline
+        and 'first_use_access_identity={identity}' in windows_console
+        and 'offline_hold_controller_stopped(install_root, &before)?;' in windows_console
+        and 'start_type: ServiceStartType::OnDemand' in windows_console
+        and 'managed_tun_present=false' in windows_first_use_offline
+        and 'windows_first_use_offline_release=PASS_STOPPED_PROXY_ONLY' in windows_first_use_offline
+        and 'Start-Service' not in windows_first_use_offline
+        and 'Set-DnsClientServerAddress' not in windows_first_use_offline
+        and 'EDGE_FIRST_USE_TARGET_RELEASE' in windows_first_use_stage
+        and "needs.resolve.outputs.operation != 'initial-pair-stage'" in windows_physical
+        and 'require_offline_first_use_stage_owner(install_root)?' in windows_console
+        and 'persistent first-use candidate already attempted or incomplete' in windows_console
+        and 'persistent_windows_cursor_proof_refuses_torn_store_without_guessing_absence' in windows_console
+        and 'fn read_bounded_windows_credential_cursor(' in windows_console
+        and 'credential_cursor=ABSENT' in windows_console
+        and 'credential_cursor=VALID;credential_active_present=' in windows_console
+        and 'credential_candidate_slot={slot}' in windows_console
+        and "';credential_candidate_slot=' + $Slot" in windows_first_use_stage
+        and 'CredentialStore::open_existing(' in windows_console
+        and 'privileged-stage-credential' in windows_first_use_stage
+        and 'privileged-runtime-evidence' in windows_first_use_stage
+        and 'credential-transition validate-candidate' in windows_first_use_stage
+        and 'credential_cursor=ABSENT' in windows_first_use_stage
+        and 'credential_pair_committed=false' in windows_first_use_stage
+        and "windows_scm_state=Stopped" in windows_first_use_stage
+        and 'windows_tun_mutations=0' in windows_first_use_stage
+        and 'windows_dns_mutations=0' in windows_first_use_stage
+        and 'FIRST_USE_STAGE_UNKNOWN:' in windows_first_use_stage
+        and 'Start-Service' not in windows_first_use_stage
+        and 'Start-Process' not in windows_first_use_stage
+        and 'Set-DnsClientServerAddress' not in windows_first_use_stage,
+        "first-use permanent Windows stage must be the exact BEGIN-bound SYSTEM one-shot while SCM/TUN/DNS remain untouched",
+    )
     require(
         "Set-DnsClientServerAddress" not in edge_local_runtime
         and "restore_windows_dns_if_owned" not in windows_controller
@@ -97,6 +161,10 @@ def main() -> None:
     require(
         windows_console.count("require_exact_immutable_activation_console(&install_root)") == 5
         and windows_console.count("require_exact_immutable_activation_console(install_root)?;") == 4
+        and "Command::OfflineBootstrap(args)" in windows_console
+        and "current_exe.canonicalize()" in windows_console
+        and "console.canonicalize()" in windows_console
+        and "offline-bootstrap-intent-v1" in windows_console
         and "fn require_exact_immutable_activation_console(install_root: &Path)" in windows_console
         and "let expected = Path::new(&active.console_path)" in windows_console
         and "if running != expected {" in windows_console
@@ -244,6 +312,20 @@ def main() -> None:
         and "retarget_privileged_task(install_root, &post.console_path)" in windows_console
         and "-Offline" in windows_console
         and "[switch]$Offline" in windows_installer
+        and "[switch]$StageOnly" in windows_installer
+        and "offline_bootstrap_candidate=VERIFIED_STAGE_ONLY" in windows_installer
+        and "OfflineBootstrap(PrivilegedActivateArgs)" in windows_console_cli
+        and "fn require_offline_bootstrap_installer_archive_identity(" in windows_console
+        and "fn verify_offline_bootstrap_dispatcher(" in windows_console
+        and "verify_offline_bootstrap_dispatcher(&post.console_path)" in windows_console
+        and "verify_offline_bootstrap_dispatcher(&before.console_path)" in windows_console
+        and "candidate installer hash differs from verified ZIP" in windows_console
+        and windows_console.split("fn offline_bootstrap_privileged_release(", 1)[1].split(
+            "offline-bootstrap-intent-v1", 1
+        )[0].count("require_offline_bootstrap_installer_archive_identity(") == 2
+        and "fn offline_bootstrap_privileged_release(" in windows_console
+        and "offline-bootstrap-intent-v1" in windows_console
+        and "offline_activate_privileged_release_with_installer(" in windows_console
         and windows_installer.count("Assert-OfflineWindow") == 3
         and "Get-CimInstance -ClassName Win32_Service" not in windows_installer
         and "Get-CimInstance -ClassName Win32_Process" in windows_installer

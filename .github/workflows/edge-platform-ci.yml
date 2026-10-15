@@ -115,7 +115,9 @@ jobs:
           $ErrorActionPreference = "Stop"
           foreach ($path in @(
             "edge-platform/scripts/install-windows-release.ps1",
-            "edge-platform/scripts/bootstrap-windows-runner.ps1"
+            "edge-platform/scripts/bootstrap-windows-runner.ps1",
+            "edge-platform/scripts/windows-first-use-offline-handoff.ps1",
+            "edge-platform/scripts/windows-initial-pair-stage.ps1"
           )) {
             $tokens = $null
             $errors = $null

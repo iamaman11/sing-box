@@ -11,7 +11,10 @@ param(
     # Historical ReleaseSet is permitted ONLY for one already-published
     # first-use acceptance, never for the installed serving application.
     [UInt64]$ArchivedAcceptanceSourceRunId = 0,
-    [switch]$Offline
+    [switch]$Offline,
+    # Exact candidate staging only. No pointer, SCM or task mutation.
+    [switch]$StageOnly,
+    [switch]$BootstrapNow
 )
 
 Set-StrictMode -Version Latest
@@ -353,6 +356,12 @@ function Activate-ReleaseAuthority {
     }
 }
 
+if (($StageOnly -or $BootstrapNow) -and (-not $Offline -or $ForceRematerialize -or $ArchivedAcceptanceSourceRunId -ne 0 -or ($StageOnly -and $BootstrapNow))) {
+    throw 'OFFLINE_BOOTSTRAP_BLOCKED: StageOnly requires exact ordinary offline candidate'
+}
+if (($StageOnly -or $BootstrapNow) -and $Repository -cne 'iamaman11/sing-box') {
+    throw 'OFFLINE_BOOTSTRAP_BLOCKED: only canonical protected GitHub repository is allowed'
+}
 Assert-OfflineWindow
 
 $binDir = Join-Path $InstallRoot "bin"
@@ -486,6 +495,45 @@ $verificationOutput = @(& $tool @verifyArgs)
 if ($LASTEXITCODE -ne 0) { throw "Installed Windows release failed exact ReleaseSet verification" }
 Assert-AcceptedCandidateSource -VerificationOutput $verificationOutput -AcceptedRevision $AcceptedRevision
 $verificationOutput | Write-Output
+
+if ($StageOnly -or $BootstrapNow) {
+    # Does not touch current/previous authority or stable binaries/tasks/SCM.
+    $stable = Join-Path $InstallRoot "bin\edge-diagnostic.exe"
+    if (-not (Test-Path -LiteralPath $currentPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $stable -PathType Leaf)) {
+        throw 'OFFLINE_BOOTSTRAP_BLOCKED: installed stable authority absent'
+    }
+    $old = Invoke-Diagnostic -Diagnostic $stable -State $currentPath
+    if ([string]$old['release_set_sha256'] -ceq $ReleaseSetSha256 -or
+        [string]$old['windows_datapath_mode'] -cne 'ManagedTun' -or
+        [string]$old['scm_state'] -cne 'Stopped' -or
+        [string]$old['managed_tun_present'] -cne 'false') {
+        throw 'OFFLINE_BOOTSTRAP_BLOCKED: exact stopped former ManagedTun owner required'
+    }
+    # Re-observe the ONLY existing SYSTEM/Highest dispatcher before calling
+    # the native one-shot owner. Never retarget an unrelated task.
+    $dispatch = Get-ScheduledTask -TaskName 'EdgePlatformPrivilegedDispatch' -ErrorAction Stop
+    if ($null -eq $dispatch -or
+        [string]$dispatch.State -cne 'Ready' -or
+        [string]$dispatch.Principal.UserId -notin @('SYSTEM','NT AUTHORITY\SYSTEM','S-1-5-18') -or
+        [string]$dispatch.Principal.RunLevel -cne 'Highest' -or
+        @($dispatch.Actions).Count -ne 1 -or
+        [string]@($dispatch.Actions)[0].Execute.Trim('"') -cne [string]$old['console_path']) {
+        throw 'OFFLINE_BOOTSTRAP_BLOCKED: old exact SYSTEM task not proven'
+    }
+    Write-Output 'offline_bootstrap_task=EXACT_SYSTEM_OWNER'
+    Write-Output 'offline_bootstrap_candidate=VERIFIED_STAGE_ONLY'
+    Write-Output "offline_bootstrap_console=$console"
+    if ($BootstrapNow) {
+        & $console offline-bootstrap $AcceptedRevision $ReleaseSetSha256 --install-root $InstallRoot
+        if ($LASTEXITCODE -ne 0) { throw 'OFFLINE_BOOTSTRAP_UNKNOWN: native result uncertain, DO NOT REPLAY' }
+        Write-Output 'offline_bootstrap=RETURNED_FROM_NATIVE_OWNER'
+        exit 0
+    }
+    Write-Output 'windows_service_mutations=0'
+    Write-Output 'windows_authority_mutations=0'
+    exit 0
+}
 
 if (Test-Path -LiteralPath $currentPath -PathType Leaf) {
     $current = Invoke-Diagnostic -Diagnostic $diagnostic -State $currentPath
