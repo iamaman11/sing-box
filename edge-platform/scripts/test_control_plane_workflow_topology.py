@@ -1703,7 +1703,14 @@ def main() -> None:
         and 'line1_authenticated_generation=UNPROVEN_WITHOUT_EXTERNAL_WITNESS' in vm_agent_runtime
         and 'fn verify_running_container_config_binding(' in vm_docker_observation
         and '/proc/{pid}/root{CONTAINER_CONFIG}' in vm_docker_observation
-        and 'mount.rw != Some(false)' in vm_docker_observation
+        and 'require_exact_readonly_config_bind(name, mount.typ.as_deref(), mount.rw)?;' in vm_docker_observation
+        and 'fn require_exact_readonly_config_bind(' in vm_docker_observation
+        and 'Some("bind") => {}' in vm_docker_observation
+        and 'Some(true) => Err(' in vm_docker_observation
+        and 'config mount writable=TRUE' in vm_docker_observation
+        and 'config mount type=NON_BIND' in vm_docker_observation
+        and 'bollard_inspect_string_mount_type_is_exactly_bind_without_debug_quotes' in vm_docker_observation
+        and 'format!("{kind:?}")' not in vm_docker_observation
         and 'running container restarted during config-source attestation' in vm_docker_observation
         and '"credential-runtime-source", "credential-initial-probe",' in application
         and 'diagnose|quality-line2|credential-runtime-source|credential-initial-probe)' in application
