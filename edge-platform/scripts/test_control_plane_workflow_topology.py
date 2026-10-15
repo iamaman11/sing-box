@@ -95,7 +95,7 @@ def main() -> None:
         and 'first_use_stage_begin=COMMITTED_ONCE' in windows_physical
         and 'sing-box-windows-persistent-initial-stage/v1' in windows_physical
         and 'needs: [resolve, initial_first_use_reservation]' in windows_physical
-        and 'needs.initial_first_use_reservation.result == ' + "'success'" + ' in windows_physical
+        and "needs.initial_first_use_reservation.result == 'success'" in windows_physical
         and 'test "$GITHUB_RUN_ATTEMPT" = "1"' in windows_physical
         and 'original BEGIN count is not one' in windows_physical
         and 'generation=\\(.generation)' in windows_physical
