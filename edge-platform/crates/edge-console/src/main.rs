@@ -2850,7 +2850,11 @@ fn offline_activate_privileged_release_with_installer(
     offline_hold_controller_stopped(install_root, &before)?;
     let installer = verified_bootstrap_installer
         .map(Path::to_path_buf)
-        .unwrap_or_else(|| install_root.join("bootstrap").join("install-windows-release.ps1"));
+        .unwrap_or_else(|| {
+            install_root
+                .join("bootstrap")
+                .join("install-windows-release.ps1")
+        });
     if !installer.is_file() {
         return Err("protected offline installer missing".to_owned());
     }
@@ -2984,8 +2988,13 @@ fn offline_bootstrap_privileged_release(
         .output()
         .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: old doctor missing: {err}"))?;
     let old_readout = String::from_utf8_lossy(&old_doctor.stdout);
-    if !old_readout.lines().any(|line| line == "windows_datapath_mode=ManagedTun") {
-        return Err("OFFLINE_BOOTSTRAP_BLOCKED: exact stopped old ManagedTun source unproven".to_owned());
+    if !old_readout
+        .lines()
+        .any(|line| line == "windows_datapath_mode=ManagedTun")
+    {
+        return Err(
+            "OFFLINE_BOOTSTRAP_BLOCKED: exact stopped old ManagedTun source unproven".to_owned(),
+        );
     }
 
     let candidate = install_root.join("releases").join(target);
@@ -2996,7 +3005,9 @@ fn offline_bootstrap_privileged_release(
     {
         return Err("OFFLINE_BOOTSTRAP_BLOCKED: not exact verified target console".to_owned());
     }
-    let stage_installer = candidate.join("bootstrap").join("install-windows-release.ps1");
+    let stage_installer = candidate
+        .join("bootstrap")
+        .join("install-windows-release.ps1");
     if !stage_installer.is_file() {
         return Err("OFFLINE_BOOTSTRAP_BLOCKED: target installer missing".to_owned());
     }
@@ -3021,7 +3032,9 @@ fn offline_bootstrap_privileged_release(
         .output()
         .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: verifier unavailable: {err}"))?;
     if !verification.status.success() {
-        return Err("OFFLINE_BOOTSTRAP_BLOCKED: target ReleaseSet or binary verification failed".to_owned());
+        return Err(
+            "OFFLINE_BOOTSTRAP_BLOCKED: target ReleaseSet or binary verification failed".to_owned(),
+        );
     }
 
     // Only an elevated local Windows admin can open CHANGE_CONFIG on this
@@ -3029,8 +3042,13 @@ fn offline_bootstrap_privileged_release(
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
         .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: SCM unavailable: {err}"))?;
     let _authorized_service = manager
-        .open_service(WINDOWS_CONTROLLER_SERVICE_NAME, ServiceAccess::CHANGE_CONFIG)
-        .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: local admin authorization absent: {err}"))?;
+        .open_service(
+            WINDOWS_CONTROLLER_SERVICE_NAME,
+            ServiceAccess::CHANGE_CONFIG,
+        )
+        .map_err(|err| {
+            format!("OFFLINE_BOOTSTRAP_BLOCKED: local admin authorization absent: {err}")
+        })?;
 
     // The accepted protected main, immutable release tag, merge-parent source
     // tree, and target package are verified by the existing installer BEFORE
@@ -3039,7 +3057,13 @@ fn offline_bootstrap_privileged_release(
         .to_str()
         .ok_or_else(|| "OFFLINE_BOOTSTRAP_BLOCKED: invalid Windows root".to_owned())?;
     let preflight = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-File"])
+        .args([
+            "-NoProfile",
+            "-NonInteractive",
+            "-ExecutionPolicy",
+            "Bypass",
+            "-File",
+        ])
         .arg(&stage_installer)
         .args([
             "-AcceptedRevision",
@@ -3053,7 +3077,9 @@ fn offline_bootstrap_privileged_release(
         ])
         .stdin(Stdio::null())
         .output()
-        .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: release preflight unavailable: {err}"))?;
+        .map_err(|err| {
+            format!("OFFLINE_BOOTSTRAP_BLOCKED: release preflight unavailable: {err}")
+        })?;
     if !preflight.status.success() {
         return Err(format!(
             "OFFLINE_BOOTSTRAP_BLOCKED: accepted release preflight failed: {}",
@@ -3069,16 +3095,24 @@ fn offline_bootstrap_privileged_release(
         .write(true)
         .create_new(true)
         .open(&intent)
-        .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: intent already exists or cannot be created: {err}"))?;
+        .map_err(|err| {
+            format!("OFFLINE_BOOTSTRAP_BLOCKED: intent already exists or cannot be created: {err}")
+        })?;
     let marker = format!(
         "schema=sing-box.windows-offline-bootstrap/v1\nfrom={}\nto={target}\naccepted_revision={revision}\n",
         before.release_set_sha256,
     );
     file.write_all(marker.as_bytes())
         .and_then(|_| file.sync_all())
-        .map_err(|err| format!("OFFLINE_BOOTSTRAP_UNKNOWN: durable intent failure: {err}; do not replay"))?;
+        .map_err(|err| {
+            format!("OFFLINE_BOOTSTRAP_UNKNOWN: durable intent failure: {err}; do not replay")
+        })?;
     drop(file);
-    offline_activate_privileged_release_with_installer(install_root, request, Some(&stage_installer))
+    offline_activate_privileged_release_with_installer(
+        install_root,
+        request,
+        Some(&stage_installer),
+    )
 }
 
 fn offline_rollback_privileged_release(
@@ -5019,10 +5053,22 @@ mod tests {
         let revision = "a".repeat(40);
         let digest = "b".repeat(64);
         assert!(offline_bootstrap_identifiers_valid(&revision, &digest));
-        assert!(!offline_bootstrap_identifiers_valid(&revision[..39], &digest));
-        assert!(!offline_bootstrap_identifiers_valid(&revision, &digest[..63]));
-        assert!(!offline_bootstrap_identifiers_valid(&revision.to_uppercase(), &digest));
-        assert!(!offline_bootstrap_identifiers_valid(&revision, &format!("{}g", &digest[..63])));
+        assert!(!offline_bootstrap_identifiers_valid(
+            &revision[..39],
+            &digest
+        ));
+        assert!(!offline_bootstrap_identifiers_valid(
+            &revision,
+            &digest[..63]
+        ));
+        assert!(!offline_bootstrap_identifiers_valid(
+            &revision.to_uppercase(),
+            &digest
+        ));
+        assert!(!offline_bootstrap_identifiers_valid(
+            &revision,
+            &format!("{}g", &digest[..63])
+        ));
     }
 
     #[test]
