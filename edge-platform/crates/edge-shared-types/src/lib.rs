@@ -1000,14 +1000,16 @@ pub fn validate_windows_privileged_request(
                 return Err("RUNTIME_EVIDENCE request must carry no mutation authority".to_owned());
             }
         }
-        WindowsPrivilegedOperation::RestartControllerService => {
+        WindowsPrivilegedOperation::RestartControllerService
+        | WindowsPrivilegedOperation::StartProxyOnlyController
+        | WindowsPrivilegedOperation::StopProxyOnlyController => {
             if request.accepted_revision.is_some()
                 || request.release_set_sha256.is_some()
                 || request.credential_generation.is_some()
                 || request.credential_transition_action.is_some()
             {
                 return Err(
-                    "RESTART_CONTROLLER_SERVICE request must carry no caller-selected authority"
+                    "SCM lifecycle request must carry no caller-selected release or credential authority"
                         .to_owned(),
                 );
             }
