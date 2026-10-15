@@ -3017,7 +3017,9 @@ if ([string]$action.Execute.Trim('"') -cne $env:EDGE_BOOTSTRAP_EXPECTED_CONSOLE 
         .status()
         .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: dispatcher proof unavailable: {err}"))?;
     if !status.success() {
-        return Err("OFFLINE_BOOTSTRAP_BLOCKED: exact SYSTEM dispatcher readback failed".to_owned());
+        return Err(
+            "OFFLINE_BOOTSTRAP_BLOCKED: exact SYSTEM dispatcher readback failed".to_owned(),
+        );
     }
     Ok(())
 }
