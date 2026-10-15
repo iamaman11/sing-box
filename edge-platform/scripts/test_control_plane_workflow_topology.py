@@ -159,7 +159,7 @@ def main() -> None:
         "local runtime must never reset foreign Cloudflare One Client DNS by resolver IP",
     )
     require(
-        windows_console.count("require_exact_immutable_activation_console(&install_root)") == 5
+        windows_console.count("require_exact_immutable_activation_console(&install_root)") == 7
         and windows_console.count("require_exact_immutable_activation_console(install_root)?;") == 4
         and "Command::OfflineBootstrap(args)" in windows_console
         and "current_exe.canonicalize()" in windows_console
@@ -338,6 +338,27 @@ def main() -> None:
         and "offline mutation is not routed until the installed SYSTEM bootstrap can dispatch it"
             not in router,
         "offline install and rollback must be bounded typed SYSTEM operations and not bypass the existing protected issue router",
+    )
+
+    require(
+        "WINDOWS_PRIVILEGED_OPERATION_START_PROXY_ONLY_CONTROLLER = 14" in runtime_proto
+        and "WINDOWS_PRIVILEGED_OPERATION_STOP_PROXY_ONLY_CONTROLLER = 15" in runtime_proto
+        and "PrivilegedStartProxyOnlyController" in windows_console_cli
+        and "PrivilegedStopProxyOnlyController" in windows_console_cli
+        and "WindowsPrivilegedOperation::StartProxyOnlyController" in windows_console
+        and "WindowsPrivilegedOperation::StopProxyOnlyController" in windows_console
+        and "fn proxy_only_controller_service_lifecycle(" in windows_console
+        and "ServiceStartType::OnDemand" in windows_console
+        and "managed_tun_present=false" in windows_console
+        and "PROXY_ONLY_SCM_BLOCKED: conflicting sing-box owner" in windows_console
+        and "privileged-start-proxy-only-controller" in windows_physical
+        and "privileged-stop-proxy-only-controller" in windows_physical
+        and "ProxyOnly" in windows_physical
+        and "ManagedTun stop remains blocked" in windows_physical
+        and "PROXY_ONLY_SCM_BLOCKED: converge cannot silently upgrade" in windows_physical
+        and "expectedScm = if ($env:EDGE_OPERATION -eq 'stop')" in windows_physical
+        and "Set-DnsClientServerAddress" not in windows_console,
+        "ProxyOnly start/stop must use one exact SYSTEM-owned no-TUN SCM lifecycle, preserve Manual startup, and never authorize ManagedTun teardown",
     )
 
     # The protected issue operator has a separate exact-command allowlist.
