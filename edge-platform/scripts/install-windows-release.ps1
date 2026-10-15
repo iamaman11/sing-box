@@ -110,12 +110,32 @@ function Test-TransientGitHubReadFailure {
     return @(408, 425, 429, 500, 502, 503, 504) -contains $statusCode
 }
 
+
+function Get-GitHubTransportOptions {
+    param([Parameter(Mandatory)] [string]$Uri)
+
+    if (-not $Offline) { return @{} }
+    # First-use offline bootstrap has an independently proven direct GitHub
+    # route. Ignore ambient HTTP(S)_PROXY only for bounded official GitHub
+    # reads; normal installations retain their existing transport policy.
+    if ($PSVersionTable.PSVersion.Major -lt 7) {
+        throw 'OFFLINE_BOOTSTRAP_BLOCKED: PowerShell 7 required for direct GitHub transport'
+    }
+    $target = [Uri]$Uri
+    if ($target.Scheme -cne 'https' -or $target.Host -cne 'api.github.com' -or
+        $target.Port -ne 443 -or $target.UserInfo) {
+        throw 'OFFLINE_BOOTSTRAP_BLOCKED: only HTTPS GitHub API downloads permitted'
+    }
+    return @{ NoProxy = $true }
+}
+
 function Invoke-GitHubJsonGet {
     param([Parameter(Mandatory)] [string]$Uri)
+    $transport = Get-GitHubTransportOptions -Uri $Uri
 
     for ($attempt = 1; $attempt -le $GitHubReadAttempts; $attempt++) {
         try {
-            return Invoke-RestMethod -Method Get -Uri $Uri -Headers (Get-GitHubHeaders) -TimeoutSec $GitHubReadTimeoutSec
+            return Invoke-RestMethod @transport -Method Get -Uri $Uri -Headers (Get-GitHubHeaders) -TimeoutSec $GitHubReadTimeoutSec
         } catch {
             $transient = Test-TransientGitHubReadFailure -ErrorRecord $_
             if (-not $transient -or $attempt -ge $GitHubReadAttempts) { throw }
@@ -132,11 +152,12 @@ function Invoke-GitHubAssetGet {
         [Parameter(Mandatory)] [string]$Uri,
         [Parameter(Mandatory)] [string]$Destination
     )
+    $transport = Get-GitHubTransportOptions -Uri $Uri
 
     for ($attempt = 1; $attempt -le $GitHubReadAttempts; $attempt++) {
         Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
         try {
-            Invoke-WebRequest -UseBasicParsing -Method Get -Uri $Uri -Headers (Get-GitHubHeaders "application/octet-stream") -OutFile $Destination -TimeoutSec $GitHubAssetTimeoutSec
+            Invoke-WebRequest @transport -UseBasicParsing -Method Get -Uri $Uri -Headers (Get-GitHubHeaders "application/octet-stream") -OutFile $Destination -TimeoutSec $GitHubAssetTimeoutSec
             return
         } catch {
             Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue

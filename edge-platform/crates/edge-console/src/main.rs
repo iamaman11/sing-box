@@ -2910,7 +2910,9 @@ fn offline_activate_privileged_release_with_installer(
     if !installer.is_file() {
         return Err("protected offline installer missing".to_owned());
     }
-    let output = Command::new("powershell.exe")
+    // Revalidation after the offline handoff must use the same direct
+    // GitHub policy; Windows PowerShell 5.1 lacks -NoProxy.
+    let output = Command::new("pwsh.exe")
         .args([
             "-NoProfile",
             "-NonInteractive",
@@ -3215,7 +3217,10 @@ fn offline_bootstrap_privileged_release(
     let root = install_root
         .to_str()
         .ok_or_else(|| "OFFLINE_BOOTSTRAP_BLOCKED: invalid Windows root".to_owned())?;
-    let preflight = Command::new("powershell.exe")
+    // The canonical offline installer requires PowerShell 7 -NoProxy.
+    // Reject an unavailable pwsh before its irreversible BEGIN, never fall
+    // back to Windows PowerShell 5.1 or the broken ambient proxy path.
+    let preflight = Command::new("pwsh.exe")
         .args([
             "-NoProfile",
             "-NonInteractive",
