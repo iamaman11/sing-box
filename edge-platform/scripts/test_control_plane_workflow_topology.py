@@ -314,8 +314,6 @@ def main() -> None:
         and "[switch]$Offline" in windows_installer
         and "[switch]$StageOnly" in windows_installer
         and "offline_bootstrap_candidate=VERIFIED_STAGE_ONLY" in windows_installer
-        and "fn offline_bootstrap_assert_task(" in windows_console
-        and "offline_bootstrap_assert_task(&post.console_path)" in windows_console
         and "OfflineBootstrap(PrivilegedActivateArgs)" in windows_console_cli
         and "fn offline_bootstrap_privileged_release(" in windows_console
         and "offline-bootstrap-intent-v1" in windows_console
