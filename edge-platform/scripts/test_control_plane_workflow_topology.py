@@ -316,6 +316,9 @@ def main() -> None:
         and "offline_bootstrap_candidate=VERIFIED_STAGE_ONLY" in windows_installer
         and "OfflineBootstrap(PrivilegedActivateArgs)" in windows_console_cli
         and "fn require_offline_bootstrap_installer_archive_identity(" in windows_console
+        and "fn verify_offline_bootstrap_dispatcher(" in windows_console
+        and "verify_offline_bootstrap_dispatcher(&post.console_path)" in windows_console
+        and "verify_offline_bootstrap_dispatcher(&before.console_path)" in windows_console
         and "candidate installer hash differs from verified ZIP" in windows_console
         and windows_console.split("fn offline_bootstrap_privileged_release(", 1)[1].split(
             "offline-bootstrap-intent-v1", 1
