@@ -90,8 +90,16 @@ function Get-GitHubHeaders {
 function Test-TransientGitHubReadFailure {
     param([Parameter(Mandatory)] [System.Management.Automation.ErrorRecord]$ErrorRecord)
 
-    $response = $ErrorRecord.Exception.Response
-    if ($null -eq $response) { return $true }
+    # PowerShell 7 transport failures may have no HTTP Response property.
+    # StrictMode must not replace the original IOException/HttpRequestException
+    # with a missing-property RuntimeException. A response-less failure keeps
+    # the pre-existing bounded read-retry policy; the caller rethrows the
+    # ORIGINAL ErrorRecord verbatim on the final attempt.
+    $responseProperty = $ErrorRecord.Exception.PSObject.Properties['Response']
+    if ($null -eq $responseProperty -or $null -eq $responseProperty.Value) {
+        return $true
+    }
+    $response = $responseProperty.Value
 
     try {
         $statusCode = [int]$response.StatusCode
