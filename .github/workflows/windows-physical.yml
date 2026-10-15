@@ -582,6 +582,20 @@ jobs:
             throw 'Stable diagnostic could not verify exact active release files'
           }
 
+          # A verified installed ProxyOnly release can be intentionally Stopped;
+          # unlike ManagedTun this never requires host TUN teardown.
+          $proxyOnlyStopped = (
+            $env:EDGE_OPERATION -in @('start','stop','converge') -and
+            $env:EDGE_EXPECTED_MODE -ceq 'ProxyOnly' -and
+            [string]$bootstrapValues['windows_datapath_mode'] -ceq 'ProxyOnly' -and
+            [string]$bootstrapValues['scm_state'] -ceq 'Stopped' -and
+            [string]$bootstrapValues['scm_start_type'] -ceq 'OnDemand' -and
+            [string]$bootstrapValues['managed_tun_present'] -ceq 'false' -and
+            [int]$bootstrapValues['managed_singbox_process_count'] -eq 0 -and
+            [int]$bootstrapValues['orphan_singbox_process_count'] -eq 0 -and
+            [int]$bootstrapValues['conflicting_singbox_process_count'] -eq 0 -and
+            [int]$bootstrapValues['unknown_singbox_process_count'] -eq 0
+          )
           $stoppedOwnerRecovery = $false
           $cleanStoppedBootstrap = $false
           $runningLegacyDiagnosticRecovery = $false
@@ -645,7 +659,7 @@ jobs:
               }
               Write-Host 'legacy_managed_tun_os_readonly=PASS'
             }
-            if (-not $boundedStoppedOwner -and -not $boundedCleanStopped -and -not $boundedRunningLegacy) {
+            if (-not $proxyOnlyStopped -and -not $boundedStoppedOwner -and -not $boundedCleanStopped -and -not $boundedRunningLegacy) {
               throw "Stable pre-state diagnostic failed: $bootstrapExit"
             }
 
@@ -682,6 +696,8 @@ jobs:
               $legacyManagedPid = [string]$parts[0]
               $runningLegacyDiagnosticRecovery = $true
               Write-Host 'running_legacy_diagnostic=PRIVILEGED_EXACT_PROOF'
+            } elseif ($proxyOnlyStopped) {
+              Write-Host 'proxy_only_stopped_owner=VERIFIED_NO_TUN'
             } elseif ($boundedStoppedOwner) {
               $stoppedOwnerRecovery = $true
               "EDGE_STOPPED_OWNER_RECOVERY=YES" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
@@ -704,7 +720,7 @@ jobs:
             $parts = ([string]$line).Split('=', 2)
             if ($parts.Count -eq 2) { $values[$parts[0]] = $parts[1] }
           }
-          if ($doctorExit -ne 0 -and -not $stoppedOwnerRecovery -and -not $cleanStoppedBootstrap -and -not $runningLegacyDiagnosticRecovery) {
+          if ($doctorExit -ne 0 -and -not $proxyOnlyStopped -and -not $stoppedOwnerRecovery -and -not $cleanStoppedBootstrap -and -not $runningLegacyDiagnosticRecovery) {
             throw "Exact pre-state diagnostic failed: $doctorExit"
           }
           if ($stoppedOwnerRecovery) {
@@ -764,8 +780,8 @@ jobs:
           # Independent ProxyOnly/no-TUN teardown remains unsupported. A strictly
           # managed-TUN previous-release rollback is an explicit release handoff,
           # not permission to stop the host TUN or mutate foreign DNS ownership.
-          if ($env:EDGE_OPERATION -eq 'stop') {
-            throw 'PRE_MUTATION_TUN_TEARDOWN_BLOCKED: stop requires independently proven CloudflareWARP DNS and control-channel restoration'
+          if ($env:EDGE_OPERATION -eq 'stop' -and $currentMode -cne 'ProxyOnly') {
+            throw 'PRE_MUTATION_TUN_TEARDOWN_BLOCKED: ManagedTun stop requires independent DNS/control restoration'
           }
           if ($env:EDGE_OPERATION -eq 'rollback') {
             if ($currentMode -cne 'ManagedTun' -or $env:EDGE_EXPECTED_MODE -cne 'ManagedTun' -or
@@ -793,7 +809,22 @@ jobs:
           }
           switch ($currentMode) {
             'ProxyOnly' {
-              if ($currentTun -cne 'false') { throw 'ProxyOnly state unexpectedly owns managed TUN' }
+              if ($currentTun -cne 'false' -or
+                  [string]$values['scm_start_type'] -cne 'OnDemand' -or
+                  [string]$values['scm_executable_matches_release'] -cne 'true' -or
+                  [string]$values['scm_state'] -notin @('Stopped','Running')) {
+                throw 'PROXY_ONLY_SCM_BLOCKED: expected immutable Manual-start owner with no TUN'
+              }
+              if ($env:EDGE_OPERATION -eq 'converge' -and $currentRelease -cne $env:EDGE_RELEASE_SET_SHA256) {
+                if ([string]$values['scm_state'] -cne 'Stopped' -or
+                    [int]$values['managed_singbox_process_count'] -ne 0 -or
+                    [int]$values['orphan_singbox_process_count'] -ne 0 -or
+                    [int]$values['conflicting_singbox_process_count'] -ne 0 -or
+                    [int]$values['unknown_singbox_process_count'] -ne 0) {
+                  throw 'PROXY_ONLY_SCM_BLOCKED: release upgrade requires explicitly Stopped clean ProxyOnly; stop first'
+                }
+                Write-Host 'proxy_only_upgrade=EXACT_OFFLINE_CURRENT_TO_ACCEPTED'
+              }
             }
             'ManagedTun' {
               # Incident 2026-10-10: never recapture host routes from a stopped,
@@ -868,7 +899,8 @@ jobs:
           }
           "EDGE_BEFORE_CONTROLLER_PID=$([string]$values['scm_process_id'])" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           "EDGE_BEFORE_MANAGED_PID=$($managedBefore -join ',')" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
-          if ($env:EDGE_OPERATION -eq 'start' -and $managedBefore.Count -eq 1) {
+          if ($env:EDGE_OPERATION -eq 'start' -and $managedBefore.Count -eq 1 -and
+              [string]$values['scm_state'] -ceq 'Running') {
             "EDGE_START_NOOP=YES" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           }
           if ($env:EDGE_OPERATION -eq 'restart-controller') {
@@ -940,18 +972,43 @@ jobs:
           $ErrorActionPreference = 'Stop'
           switch ($env:EDGE_OPERATION) {
             'converge' {
-              & $env:EDGE_CURRENT_CONSOLE privileged-activate $env:EDGE_ACCEPTED_REVISION $env:EDGE_RELEASE_SET_SHA256 --install-root $env:EDGE_INSTALL_ROOT
+              if ($env:EDGE_BEFORE_MODE -ceq 'ProxyOnly') {
+                $exactConsole = $env:EDGE_CURRENT_CONSOLE
+                if ($env:EDGE_BEFORE_RELEASE -cne $env:EDGE_RELEASE_SET_SHA256) {
+                  # Only a separately stopped exact ProxyOnly owner is eligible.
+                  # Native offline activation owns accepted release, SCM, task
+                  # and rollback; never use legacy privileged-activate here.
+                  & $exactConsole privileged-offline-activate $env:EDGE_ACCEPTED_REVISION $env:EDGE_RELEASE_SET_SHA256 --install-root $env:EDGE_INSTALL_ROOT
+                  if ($LASTEXITCODE -ne 0) { throw 'ProxyOnly offline upgrade outcome UNKNOWN; DO NOT REPLAY' }
+                  $exactConsole = Join-Path $env:EDGE_INSTALL_ROOT ("releases\" + $env:EDGE_RELEASE_SET_SHA256 + "\bin\edge-console.exe")
+                  if (-not (Test-Path -LiteralPath $exactConsole -PathType Leaf)) {
+                    throw 'ProxyOnly offline upgrade missing exact new immutable console; do not replay'
+                  }
+                }
+                & $exactConsole privileged-start-proxy-only-controller --install-root $env:EDGE_INSTALL_ROOT
+                if ($LASTEXITCODE -ne 0) { throw 'ProxyOnly SCM converge uncertain; do not replay' }
+                & $exactConsole start-local $env:EDGE_CONTROLLER_ENDPOINT
+              } else {
+                & $env:EDGE_CURRENT_CONSOLE privileged-activate $env:EDGE_ACCEPTED_REVISION $env:EDGE_RELEASE_SET_SHA256 --install-root $env:EDGE_INSTALL_ROOT
+              }
             }
             'start' {
               if ($env:EDGE_START_NOOP -ceq 'YES') {
                 Write-Host 'runtime_start=NOOP_ALREADY_RUNNING'
                 $LASTEXITCODE = 0
               } else {
+                if ($env:EDGE_BEFORE_MODE -ceq 'ProxyOnly') {
+                  & $env:EDGE_CURRENT_CONSOLE privileged-start-proxy-only-controller --install-root $env:EDGE_INSTALL_ROOT
+                  if ($LASTEXITCODE -ne 0) { throw 'ProxyOnly SCM start uncertain; do not replay' }
+                }
                 & $env:EDGE_CURRENT_CONSOLE start-local $env:EDGE_CONTROLLER_ENDPOINT
               }
             }
             'stop' {
-              & $env:EDGE_CURRENT_CONSOLE stop-local $env:EDGE_CONTROLLER_ENDPOINT
+              if ($env:EDGE_BEFORE_MODE -cne 'ProxyOnly') {
+                throw 'ManagedTun stop remains blocked until independent DNS recovery is proven'
+              }
+              & $env:EDGE_CURRENT_CONSOLE privileged-stop-proxy-only-controller --install-root $env:EDGE_INSTALL_ROOT
             }
             'restart-controller' {
               & $env:EDGE_CURRENT_CONSOLE privileged-restart-controller-service --install-root $env:EDGE_INSTALL_ROOT
@@ -976,7 +1033,7 @@ jobs:
           $bootstrapDoctor = @(& $stableDiagnostic doctor $current)
           $bootstrapExit = $LASTEXITCODE
           $bootstrapDoctor | Write-Host
-          if ($bootstrapExit -ne 0) { throw "Stable post-state diagnostic failed: $bootstrapExit" }
+          if ($bootstrapExit -ne 0 -and $env:EDGE_OPERATION -ne 'stop') { throw "Stable post-state diagnostic failed: $bootstrapExit" }
           $bootstrapValues = @{}
           foreach ($line in $bootstrapDoctor) {
             $parts = ([string]$line).Split('=', 2)
@@ -992,7 +1049,7 @@ jobs:
           $doctor = @(& $diagnostic doctor $current)
           $doctorExit = $LASTEXITCODE
           $doctor | Write-Host
-          if ($doctorExit -ne 0) { throw "Exact post-state diagnostic failed: $doctorExit" }
+          if ($doctorExit -ne 0 -and $env:EDGE_OPERATION -ne 'stop') { throw "Exact post-state diagnostic failed: $doctorExit" }
           $values = @{}
           foreach ($line in $doctor) {
             $parts = ([string]$line).Split('=', 2)
@@ -1098,8 +1155,13 @@ jobs:
           "EDGE_AFTER_MODE=$afterMode" | Add-Content -Encoding UTF8 -LiteralPath $env:GITHUB_ENV
           if ([string]$values['scm_service_name'] -cne 'EdgePlatformController') { throw 'SCM controller is missing' }
           if ([string]$values['scm_account'] -cne 'NT SERVICE\EdgePlatformController') { throw 'Unexpected SCM identity' }
-          if ([string]$values['scm_state'] -cne 'Running') { throw 'SCM controller is not running' }
-          if ([string]$values['scm_start_type'] -cne 'AutoStart') { throw 'SCM controller is not automatic' }
+          $expectedScm = if ($env:EDGE_OPERATION -eq 'stop') { 'Stopped' } else { 'Running' }
+          $expectedStartup = if ($afterMode -ceq 'ProxyOnly') { 'OnDemand' } else { 'AutoStart' }
+          if ([string]$values['scm_state'] -cne $expectedScm) { throw "SCM not $expectedScm" }
+          if ([string]$values['scm_start_type'] -cne $expectedStartup) { throw "SCM startup not $expectedStartup" }
+          if ($env:EDGE_OPERATION -eq 'stop' -and [string]$values['scm_process_id'] -cne 'ABSENT') {
+            throw 'Stopped SCM has a process'
+          }
           if ([string]$values['scm_executable_matches_release'] -cne 'true') { throw 'SCM binary does not match the active release' }
           $authority = ([Uri]$env:EDGE_CONTROLLER_ENDPOINT).Authority
           $expected = "$controller windows-service $env:EDGE_INSTALL_ROOT $authority"
@@ -1345,7 +1407,7 @@ jobs:
             throw 'Exact active diagnostic is unavailable for final verification'
           }
           $doctor = @(& $diagnostic doctor $current)
-          if ($LASTEXITCODE -ne 0) { throw "Final diagnostic failed: $LASTEXITCODE" }
+          if ($LASTEXITCODE -ne 0 -and $env:EDGE_OPERATION -ne 'stop') { throw "Final diagnostic failed: $LASTEXITCODE" }
           $values = @{}
           foreach ($line in $doctor) {
             $parts = ([string]$line).Split('=', 2)

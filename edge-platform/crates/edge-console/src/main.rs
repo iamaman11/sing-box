@@ -521,6 +521,46 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             finish_privileged_result(&result)?;
             Ok(())
         }
+        Command::PrivilegedStartProxyOnlyController(args) => {
+            let install_root = PathBuf::from(args.install_root);
+            require_exact_immutable_activation_console(&install_root)
+                .map_err(ConsoleError::Command)?;
+            let result = submit_privileged_request(
+                &install_root,
+                WindowsPrivilegedRequest {
+                    schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+                    request_id: new_privileged_request_id()?,
+                    operation: WindowsPrivilegedOperation::StartProxyOnlyController as i32,
+                    accepted_revision: None,
+                    release_set_sha256: None,
+                    credential_generation: None,
+                    credential_transition_action: None,
+                },
+            )?;
+            print_privileged_result(&result);
+            finish_privileged_result(&result)?;
+            Ok(())
+        }
+        Command::PrivilegedStopProxyOnlyController(args) => {
+            let install_root = PathBuf::from(args.install_root);
+            require_exact_immutable_activation_console(&install_root)
+                .map_err(ConsoleError::Command)?;
+            let result = submit_privileged_request(
+                &install_root,
+                WindowsPrivilegedRequest {
+                    schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+                    request_id: new_privileged_request_id()?,
+                    operation: WindowsPrivilegedOperation::StopProxyOnlyController as i32,
+                    accepted_revision: None,
+                    release_set_sha256: None,
+                    credential_generation: None,
+                    credential_transition_action: None,
+                },
+            )?;
+            print_privileged_result(&result);
+            finish_privileged_result(&result)?;
+            Ok(())
+        }
         Command::PrivilegedStageCredential(args) => {
             let install_root = PathBuf::from(args.install_root);
             let result = submit_privileged_request(
@@ -1393,6 +1433,18 @@ async fn process_privileged_request(
             {
                 Err("RESTART_CONTROLLER_SERVICE is Windows-only".to_owned())
             }
+        }
+        Ok(WindowsPrivilegedOperation::StartProxyOnlyController) => {
+            #[cfg(windows)]
+            { proxy_only_controller_service_lifecycle(install_root, true) }
+            #[cfg(not(windows))]
+            { Err("ProxyOnly SCM start is Windows-only".to_owned()) }
+        }
+        Ok(WindowsPrivilegedOperation::StopProxyOnlyController) => {
+            #[cfg(windows)]
+            { proxy_only_controller_service_lifecycle(install_root, false) }
+            #[cfg(not(windows))]
+            { Err("ProxyOnly SCM stop is Windows-only".to_owned()) }
         }
         Ok(WindowsPrivilegedOperation::Unspecified) | Err(_) => {
             Err("unsupported privileged Windows operation".to_owned())
@@ -4048,6 +4100,164 @@ fn controller_service_binary_path(command: &Path) -> PathBuf {
         return PathBuf::from(&rest[..end]);
     }
     PathBuf::from(text.split_whitespace().next().unwrap_or_default())
+}
+
+#[cfg(windows)]
+fn proxy_only_controller_service_lifecycle(
+    install_root: &Path,
+    start: bool,
+) -> Result<(String, String, Option<String>), String> {
+    // Exactly one SYSTEM dispatcher owns the SCM mutation. A GitHub runner
+    // never gets SCM privileges and the normal console cannot start a service.
+    let desired = canonical_production_desired_state()?;
+    if desired.windows_datapath_mode != WindowsDatapathMode::ProxyOnly as i32 {
+        return Err("PROXY_ONLY_SCM_BLOCKED: accepted desired mode is not ProxyOnly".to_owned());
+    }
+    let active = load_verified_activation(install_root).map_err(|err| err.to_string())?;
+    let diagnostic = Command::new(&active.diagnostic_path)
+        .arg("doctor")
+        .arg(install_root.join("current.pb"))
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|err| format!("PROXY_ONLY_SCM_BLOCKED: exact diagnostic failed: {err}"))?;
+    let fields = String::from_utf8_lossy(&diagnostic.stdout);
+    let has = |line: &str| fields.lines().any(|value| value.trim() == line);
+    if !has("windows_datapath_mode=ProxyOnly")
+        || !has("managed_tun_present=false")
+        || !has("exact_release_files=PASS")
+        || !has(&format!("release_set_sha256={}", active.release_set_sha256))
+    {
+        return Err("PROXY_ONLY_SCM_BLOCKED: exact release / no-TUN evidence missing".to_owned());
+    }
+    let observed = classify_runtime_process(&local_singbox_config_path(install_root));
+    if matches!(observed, RuntimeProcessClassification::Conflicting(_)) {
+        return Err("PROXY_ONLY_SCM_BLOCKED: conflicting sing-box owner".to_owned());
+    }
+    let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+        .map_err(|err| format!("PROXY_ONLY_SCM_BLOCKED: SCM unavailable: {err}"))?;
+    let service = manager
+        .open_service(
+            WINDOWS_CONTROLLER_SERVICE_NAME,
+            ServiceAccess::QUERY_CONFIG
+                | ServiceAccess::QUERY_STATUS
+                | ServiceAccess::START
+                | ServiceAccess::STOP,
+        )
+        .map_err(|err| format!("PROXY_ONLY_SCM_BLOCKED: owner unavailable: {err}"))?;
+    let config = service.query_config().map_err(|err| err.to_string())?;
+    let exact_command = format!(
+        "{} windows-service {} {}",
+        active.controller_path,
+        install_root.display(),
+        INSTALLED_CONTROLLER_ADDR,
+    );
+    let account = config
+        .account_name
+        .as_deref()
+        .map(|value| value.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    if config.executable_path.to_string_lossy() != exact_command
+        || !account.eq_ignore_ascii_case(WINDOWS_CONTROLLER_SERVICE_ACCOUNT)
+        || config.start_type != ServiceStartType::OnDemand
+    {
+        return Err("PROXY_ONLY_SCM_BLOCKED: exact immutable Manual SCM owner mismatch".to_owned());
+    }
+    let before = service.query_status().map_err(|err| err.to_string())?;
+    let addr: SocketAddr = INSTALLED_CONTROLLER_ADDR
+        .parse::<SocketAddr>()
+        .map_err(|err| err.to_string())?;
+    let code = if start {
+        match before.current_state {
+            ServiceState::Stopped => {
+                if before.process_id.is_some()
+                    || !matches!(observed, RuntimeProcessClassification::Absent)
+                    || controller_is_listening(addr)
+                {
+                    return Err(
+                        "PROXY_ONLY_SCM_BLOCKED: stopped owner has residual runtime/listener"
+                            .to_owned(),
+                    );
+                }
+                service
+                    .start::<&str>(&[])
+                    .map_err(|err| format!("PROXY_ONLY_SCM_START_UNKNOWN: {err}"))?;
+                wait_for_service_state(
+                    &service,
+                    ServiceState::Running,
+                    Duration::from_secs(WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS),
+                )?;
+                "PROXY_ONLY_SCM_STARTED"
+            }
+            ServiceState::Running
+                if before.process_id.is_some() && controller_is_listening(addr) =>
+            {
+                "PROXY_ONLY_SCM_ALREADY_RUNNING"
+            }
+            other => {
+                return Err(format!(
+                    "PROXY_ONLY_SCM_BLOCKED: unsafe start state {other:?}"
+                ));
+            }
+        }
+    } else {
+        match before.current_state {
+            ServiceState::Stopped
+                if before.process_id.is_none()
+                    && matches!(observed, RuntimeProcessClassification::Absent)
+                    && !controller_is_listening(addr) =>
+            {
+                "PROXY_ONLY_SCM_ALREADY_STOPPED"
+            }
+            ServiceState::Running
+                if before.process_id.is_some() && controller_is_listening(addr) =>
+            {
+                // Stop ONLY the exact managed child. Never kill external
+                // sing-box or touch CloudflareWARP DNS, TUN, or routes.
+                stop_runtime_process(&local_singbox_config_path(install_root), true)?;
+                if !matches!(
+                    classify_runtime_process(&local_singbox_config_path(install_root)),
+                    RuntimeProcessClassification::Absent
+                ) {
+                    return Err("PROXY_ONLY_SCM_STOP_UNKNOWN: managed child remains".to_owned());
+                }
+                service
+                    .stop()
+                    .map_err(|err| format!("PROXY_ONLY_SCM_STOP_UNKNOWN: {err}"))?;
+                wait_for_service_state(&service, ServiceState::Stopped, Duration::from_secs(15))?;
+                "PROXY_ONLY_SCM_STOPPED"
+            }
+            other => {
+                return Err(format!(
+                    "PROXY_ONLY_SCM_BLOCKED: unsafe stop state {other:?}"
+                ));
+            }
+        }
+    };
+    let after = service.query_status().map_err(|err| err.to_string())?;
+    let after_config = service.query_config().map_err(|err| err.to_string())?;
+    let expected = if start {
+        ServiceState::Running
+    } else {
+        ServiceState::Stopped
+    };
+    if after.current_state != expected
+        || (start && (after.process_id.is_none() || !controller_is_listening(addr)))
+        || (!start
+            && (after.process_id.is_some()
+                || controller_is_listening(addr)
+                || !matches!(
+                    classify_runtime_process(&local_singbox_config_path(install_root)),
+                    RuntimeProcessClassification::Absent
+                )))
+        || after_config.start_type != ServiceStartType::OnDemand
+    {
+        return Err("PROXY_ONLY_SCM_UNKNOWN: SCM readback failed; do not replay".to_owned());
+    }
+    Ok((
+        code.to_owned(),
+        format!("mode=ProxyOnly;scm={expected:?};startup=OnDemand;tun=ABSENT;network_mutations=0"),
+        Some(active.release_set_sha256),
+    ))
 }
 
 #[cfg(windows)]

@@ -45,6 +45,9 @@ pub(crate) enum Command {
     PrivilegedOfflineRollbackPrevious(InstallRootArgs),
     PrivilegedReinstallAccepted(PrivilegedActivateArgs),
     PrivilegedRestartControllerService(InstallRootArgs),
+    // Explicit ProxyOnly SCM lifecycle: only existing SYSTEM dispatcher may mutate.
+    PrivilegedStartProxyOnlyController(InstallRootArgs),
+    PrivilegedStopProxyOnlyController(InstallRootArgs),
     PrivilegedStageCredential(PrivilegedCredentialStageArgs),
     CredentialTransition(CredentialTransitionArgs),
     RestartVerifyRuntime,
@@ -102,6 +105,8 @@ impl Command {
             Self::PrivilegedOfflineRollbackPrevious(_) => "privileged-offline-rollback-previous",
             Self::PrivilegedReinstallAccepted(_) => "privileged-reinstall-accepted",
             Self::PrivilegedRestartControllerService(_) => "privileged-restart-controller-service",
+            Self::PrivilegedStartProxyOnlyController(_) => "privileged-start-proxy-only-controller",
+            Self::PrivilegedStopProxyOnlyController(_) => "privileged-stop-proxy-only-controller",
             Self::PrivilegedStageCredential(_) => "privileged-stage-credential",
             Self::CredentialTransition(_) => "credential-transition",
             Self::RestartVerifyRuntime => "restart-verify-runtime",
