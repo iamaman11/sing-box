@@ -425,7 +425,7 @@ def main() -> None:
     require(
         "[string]$v['scm_start_type'] -notin @('AutoStart','OnDemand','Disabled')" in read_only
         and "[string]$v['scm_start_type'] -notin @('AutoStart','Manual','Disabled')" not in read_only
-        and 'println!("scm_start_type={:?}", config.start_type);' in windows_diagnostic
+        and 'println!("scm_start_type={:?}", config.start_type);' in WINDOWS_DIAGNOSTIC.read_text(encoding="utf-8")
         and "[string]$bootstrapValues['scm_start_type'] -ceq 'OnDemand'" in windows_physical
         and "$expectedStartup = if ($afterMode -ceq 'ProxyOnly') { 'OnDemand' } else { 'AutoStart' }" in windows_physical,
         "read-only Windows diagnose must accept native OnDemand for stopped ProxyOnly",
