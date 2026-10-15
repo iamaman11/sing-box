@@ -79,6 +79,7 @@ def main() -> None:
     windows_input = WINDOWS_INPUT.read_text(encoding="utf-8")
     windows_installer = WINDOWS_INSTALLER.read_text(encoding="utf-8")
     windows_runner_bootstrap = WINDOWS_RUNNER_BOOTSTRAP.read_text(encoding="utf-8")
+    windows_first_use_stage = Path("edge-platform/scripts/windows-initial-pair-stage.ps1").read_text(encoding="utf-8")
     windows_console = WINDOWS_CONSOLE.read_text(encoding="utf-8")
     windows_console_cli = WINDOWS_CONSOLE_CLI.read_text(encoding="utf-8")
     windows_controller = WINDOWS_CONTROLLER.read_text(encoding="utf-8")
@@ -86,6 +87,37 @@ def main() -> None:
     windows_controller_cli = WINDOWS_CONTROLLER_CLI.read_text(encoding="utf-8")
     windows_controller_core = WINDOWS_CONTROLLER_CORE.read_text(encoding="utf-8")
     edge_local_runtime = EDGE_LOCAL_RUNTIME.read_text(encoding="utf-8")
+    require(
+        '"/windows initial-pair-stage "*' in windows_physical
+        and 'operation="initial-pair-stage"' in windows_physical
+        and 'test "$GITHUB_RUN_ATTEMPT" = "1"' in windows_physical
+        and 'original BEGIN count is not one' in windows_physical
+        and 'generation=\\(.generation)' in windows_physical
+        and 'initial_first_use_stage:' in windows_physical
+        and "Windows / native persistent first-use candidate" in windows_physical
+        and 'windows-initial-pair-stage.ps1' in windows_physical
+        and "needs.resolve.outputs.operation != 'initial-pair-stage'" in windows_physical
+        and 'require_offline_first_use_stage_owner(install_root)?' in windows_console
+        and 'persistent first-use candidate already attempted or incomplete' in windows_console
+        and 'persistent_windows_cursor_proof_refuses_torn_store_without_guessing_absence' in windows_console
+        and 'fn read_bounded_windows_credential_cursor(' in windows_console
+        and 'credential_cursor=ABSENT' in windows_console
+        and 'credential_cursor=VALID;credential_active_present=' in windows_console
+        and 'CredentialStore::open_existing(' in windows_console
+        and 'privileged-stage-credential' in windows_first_use_stage
+        and 'privileged-runtime-evidence' in windows_first_use_stage
+        and 'credential-transition validate-candidate' in windows_first_use_stage
+        and 'credential_cursor=ABSENT' in windows_first_use_stage
+        and 'credential_pair_committed=false' in windows_first_use_stage
+        and "windows_scm_state=Stopped" in windows_first_use_stage
+        and 'windows_tun_mutations=0' in windows_first_use_stage
+        and 'windows_dns_mutations=0' in windows_first_use_stage
+        and 'FIRST_USE_STAGE_UNKNOWN:' in windows_first_use_stage
+        and 'Start-Service' not in windows_first_use_stage
+        and 'Start-Process' not in windows_first_use_stage
+        and 'Set-DnsClientServerAddress' not in windows_first_use_stage,
+        "first-use permanent Windows stage must be the exact BEGIN-bound SYSTEM one-shot while SCM/TUN/DNS remain untouched",
+    )
     require(
         "Set-DnsClientServerAddress" not in edge_local_runtime
         and "restore_windows_dns_if_owned" not in windows_controller
