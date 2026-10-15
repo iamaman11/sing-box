@@ -132,6 +132,10 @@ jobs:
             }
           }
 
+      - name: Test canonical Windows installer network exceptions (no network calls)
+        shell: pwsh
+        run: pwsh -NoProfile -File edge-platform/scripts/test_windows_installer_error_handler.ps1
+
       - name: Enforce protobuf-first JSON policy
         shell: bash
         run: python3 edge-platform/scripts/test_json_contract_policy.py
@@ -975,6 +979,10 @@ jobs:
           if ($LASTEXITCODE -eq 0) { throw ("Typed Windows runtime boundary regressed to PowerShell/text observation:" + [Environment]::NewLine + $runtimeBoundary) }
           if ($LASTEXITCODE -ne 1) { throw "git grep failed with exit code $LASTEXITCODE" }
           $global:LASTEXITCODE = 0
+
+      - name: Test canonical Windows installer network exceptions on native Windows
+        shell: pwsh
+        run: pwsh -NoProfile -File edge-platform/scripts/test_windows_installer_error_handler.ps1
 
       - name: Validate Stage 4B.1 Windows code proof with exact sing-box
         if: needs.dependencies.outputs.windows_reuse != 'true'
