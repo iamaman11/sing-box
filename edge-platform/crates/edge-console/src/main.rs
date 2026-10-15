@@ -4164,7 +4164,7 @@ fn proxy_only_controller_service_lifecycle(
     }
     let before = service.query_status().map_err(|err| err.to_string())?;
     let addr: SocketAddr = INSTALLED_CONTROLLER_ADDR
-        .parse()
+        .parse::<SocketAddr>()
         .map_err(|err| err.to_string())?;
     let code = if start {
         match before.current_state {
