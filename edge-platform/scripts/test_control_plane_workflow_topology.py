@@ -308,6 +308,12 @@ def main() -> None:
         and "retarget_privileged_task(install_root, &post.console_path)" in windows_console
         and "-Offline" in windows_console
         and "[switch]$Offline" in windows_installer
+        and "[switch]$StageOnly" in windows_installer
+        and "offline_bootstrap_candidate=VERIFIED_STAGE_ONLY" in windows_installer
+        and "OfflineBootstrap(PrivilegedActivateArgs)" in windows_console_cli
+        and "fn offline_bootstrap_privileged_release(" in windows_console
+        and "offline-bootstrap-intent-v1" in windows_console
+        and "offline_activate_privileged_release_with_installer(" in windows_console
         and windows_installer.count("Assert-OfflineWindow") == 3
         and "Get-CimInstance -ClassName Win32_Service" not in windows_installer
         and "Get-CimInstance -ClassName Win32_Process" in windows_installer

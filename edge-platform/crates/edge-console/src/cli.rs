@@ -40,6 +40,8 @@ pub(crate) enum Command {
     PrivilegedActivate(PrivilegedActivateArgs),
     PrivilegedRollbackPrevious(InstallRootArgs),
     PrivilegedOfflineActivate(PrivilegedActivateArgs),
+    #[cfg(windows)]
+    OfflineBootstrap(PrivilegedActivateArgs),
     PrivilegedOfflineRollbackPrevious(InstallRootArgs),
     PrivilegedReinstallAccepted(PrivilegedActivateArgs),
     PrivilegedRestartControllerService(InstallRootArgs),
@@ -95,6 +97,8 @@ impl Command {
             Self::PrivilegedActivate(_) => "privileged-activate",
             Self::PrivilegedRollbackPrevious(_) => "privileged-rollback-previous",
             Self::PrivilegedOfflineActivate(_) => "privileged-offline-activate",
+            #[cfg(windows)]
+            Self::OfflineBootstrap(_) => "offline-bootstrap",
             Self::PrivilegedOfflineRollbackPrevious(_) => "privileged-offline-rollback-previous",
             Self::PrivilegedReinstallAccepted(_) => "privileged-reinstall-accepted",
             Self::PrivilegedRestartControllerService(_) => "privileged-restart-controller-service",

@@ -11,7 +11,9 @@ param(
     # Historical ReleaseSet is permitted ONLY for one already-published
     # first-use acceptance, never for the installed serving application.
     [UInt64]$ArchivedAcceptanceSourceRunId = 0,
-    [switch]$Offline
+    [switch]$Offline,
+    # Exact candidate staging only. No pointer, SCM or task mutation.
+    [switch]$StageOnly
 )
 
 Set-StrictMode -Version Latest
@@ -353,6 +355,9 @@ function Activate-ReleaseAuthority {
     }
 }
 
+if ($StageOnly -and (-not $Offline -or $ForceRematerialize -or $ArchivedAcceptanceSourceRunId -ne 0)) {
+    throw 'OFFLINE_BOOTSTRAP_BLOCKED: StageOnly requires exact ordinary offline candidate'
+}
 Assert-OfflineWindow
 
 $binDir = Join-Path $InstallRoot "bin"
@@ -486,6 +491,27 @@ $verificationOutput = @(& $tool @verifyArgs)
 if ($LASTEXITCODE -ne 0) { throw "Installed Windows release failed exact ReleaseSet verification" }
 Assert-AcceptedCandidateSource -VerificationOutput $verificationOutput -AcceptedRevision $AcceptedRevision
 $verificationOutput | Write-Output
+
+if ($StageOnly) {
+    # Does not touch current/previous authority or stable binaries/tasks/SCM.
+    $stable = Join-Path $InstallRoot "bin\edge-diagnostic.exe"
+    if (-not (Test-Path -LiteralPath $currentPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $stable -PathType Leaf)) {
+        throw 'OFFLINE_BOOTSTRAP_BLOCKED: installed stable authority absent'
+    }
+    $old = Invoke-Diagnostic -Diagnostic $stable -State $currentPath
+    if ([string]$old['release_set_sha256'] -ceq $ReleaseSetSha256 -or
+        [string]$old['windows_datapath_mode'] -cne 'ManagedTun' -or
+        [string]$old['scm_state'] -cne 'Stopped' -or
+        [string]$old['managed_tun_present'] -cne 'false') {
+        throw 'OFFLINE_BOOTSTRAP_BLOCKED: exact stopped former ManagedTun owner required'
+    }
+    Write-Output 'offline_bootstrap_candidate=VERIFIED_STAGE_ONLY'
+    Write-Output "offline_bootstrap_console=$console"
+    Write-Output 'windows_service_mutations=0'
+    Write-Output 'windows_authority_mutations=0'
+    exit 0
+}
 
 if (Test-Path -LiteralPath $currentPath -PathType Leaf) {
     $current = Invoke-Diagnostic -Diagnostic $diagnostic -State $currentPath
