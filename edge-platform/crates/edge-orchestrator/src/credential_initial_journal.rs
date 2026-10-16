@@ -605,6 +605,165 @@ pub(crate) fn reconcile_paired_commit(
     }
 }
 
+// Recovery is NOT a second first-use issuance or an ordinary PROMOTE.
+// It records one new non-secret decision after independently observing an
+// already persisted paired COMMIT_INTENT and a partial VM/Windows state.
+const PAIRED_RECOVERY_MARKER_FAMILY: &str = "<!-- sing-box-credential-paired-recovery/";
+const PAIRED_RECOVERY_MARKER: &str = "<!-- sing-box-credential-paired-recovery/v1 -->";
+const PAIRED_RECOVERY_SCHEMA: &str = "sing-box.credential-paired-recovery/v1";
+
+#[derive(Debug, Clone)]
+pub(crate) struct PairedRecoveryPlan {
+    pub(crate) pair: PairedCommitPlan,
+    pub(crate) recovery_run_id: u64,
+    pub(crate) vm_active_sha256: String,
+    pub(crate) windows_candidate_sha256: String,
+    pub(crate) original_intent_sha256: String,
+    pub(crate) vm: PairedHostReadback,
+    pub(crate) windows: PairedHostReadback,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
+struct PairedRecoveryRecord {
+    schema: String,
+    phase: String,
+    original_run_id: u64,
+    commit_run_id: u64,
+    recovery_run_id: u64,
+    generation: u64,
+    slot: String,
+    accepted_revision: String,
+    release_set_sha256: String,
+    original_intent_sha256: String,
+    vm_prepared_sha256: String,
+    windows_prepared_sha256: String,
+    vm_active_sha256: String,
+    windows_candidate_sha256: String,
+}
+
+fn validate_recovery_plan(
+    plan: &PairedRecoveryPlan,
+    history: &str,
+    original_begin: &str,
+    original_intent: &str,
+) -> Result<(), String> {
+    verify_paired_commit_intent(&plan.pair, history, original_begin, original_intent)?;
+    if plan.recovery_run_id == 0
+        || plan.recovery_run_id == plan.pair.original_run_id
+        || plan.recovery_run_id == plan.pair.commit_run_id
+        || !valid_sha256(&plan.vm_active_sha256)
+        || !valid_sha256(&plan.windows_candidate_sha256)
+        || !valid_sha256(&plan.original_intent_sha256)
+        || plan.vm_active_sha256 == plan.windows_candidate_sha256
+        || plan.original_intent_sha256
+            != {
+                use ring::digest::{SHA256, digest};
+                digest(&SHA256, original_intent.as_bytes())
+                    .as_ref()
+                    .iter()
+                    .map(|byte| format!("{byte:02x}"))
+                    .collect::<String>()
+            }
+    {
+        return Err("paired recovery refuses invalid run, bundle, or original intent identity".to_owned());
+    }
+    if plan.vm.generation != plan.pair.generation
+        || plan.windows.generation != plan.pair.generation
+        || plan.vm.slot != plan.pair.slot
+        || plan.windows.slot != plan.pair.slot
+        || plan.vm.cursor != PairedHostCursor::Active
+        || plan.windows.cursor != PairedHostCursor::Candidate
+        || !plan.vm.owner_origin_verified
+        || !plan.windows.owner_origin_verified
+        || !plan.vm.runtime_verified
+    {
+        return Err("paired recovery requires independently proven VM ACTIVE / Windows CANDIDATE".to_owned());
+    }
+    // This read-only policy receives owner-origin declarations; real host
+    // authentication is strictly the responsibility of the protected job.
+    // It never authorizes a write merely from a self-asserted JSON Boolean.
+    Ok(())
+}
+
+fn recovery_records(history: &str) -> Result<Vec<String>, String> {
+    let comments: Vec<IssueComment> = serde_json::from_str(history)
+        .map_err(|_| "paired recovery requires complete GitHub issue history".to_owned())?;
+    let mut records = Vec::new();
+    for comment in comments {
+        if comment.body.trim().is_empty() {
+            return Err("paired recovery refuses empty history entries".to_owned());
+        }
+        if comment.body.contains(PAIRED_RECOVERY_MARKER_FAMILY) {
+            if !comment.body.starts_with(&format!("{PAIRED_RECOVERY_MARKER}\n")) {
+                return Err("paired recovery rejects displaced or unknown marker".to_owned());
+            }
+            records.push(comment.body);
+        }
+    }
+    Ok(records)
+}
+
+fn recovery_record(plan: &PairedRecoveryPlan) -> PairedRecoveryRecord {
+    PairedRecoveryRecord {
+        schema: PAIRED_RECOVERY_SCHEMA.to_owned(),
+        phase: "RECOVERY_INTENT".to_owned(),
+        original_run_id: plan.pair.original_run_id,
+        commit_run_id: plan.pair.commit_run_id,
+        recovery_run_id: plan.recovery_run_id,
+        generation: plan.pair.generation,
+        slot: plan.pair.slot.clone(),
+        accepted_revision: plan.pair.accepted_revision.clone(),
+        release_set_sha256: plan.pair.release_set_sha256.clone(),
+        original_intent_sha256: plan.original_intent_sha256.clone(),
+        vm_prepared_sha256: plan.pair.vm_prepared_sha256.clone(),
+        windows_prepared_sha256: plan.pair.windows_prepared_sha256.clone(),
+        vm_active_sha256: plan.vm_active_sha256.clone(),
+        windows_candidate_sha256: plan.windows_candidate_sha256.clone(),
+    }
+}
+
+/// Pure policy, not a provider or host mutation. The caller must have
+/// physically authenticated BOTH source owners and verified their exact
+/// immutable binaries, first-use receipts and current cursor digests.
+pub(crate) fn plan_paired_recovery(
+    plan: &PairedRecoveryPlan,
+    history: &str,
+    original_begin: &str,
+    original_intent: &str,
+) -> Result<String, String> {
+    validate_recovery_plan(plan, history, original_begin, original_intent)?;
+    if !recovery_records(history)?.is_empty() {
+        return Err("paired recovery already has an intent: no replay".to_owned());
+    }
+    let encoded = serde_json::to_string(&recovery_record(plan))
+        .map_err(|_| "paired recovery record encoding failed".to_owned())?;
+    Ok(format!("{PAIRED_RECOVERY_MARKER}\n{encoded}"))
+}
+
+pub(crate) fn verify_paired_recovery(
+    plan: &PairedRecoveryPlan,
+    history: &str,
+    original_begin: &str,
+    original_intent: &str,
+    exact_recovery: &str,
+) -> Result<(), String> {
+    validate_recovery_plan(plan, history, original_begin, original_intent)?;
+    let actual = exact_recovery
+        .strip_prefix(&format!("{PAIRED_RECOVERY_MARKER}\n"))
+        .ok_or_else(|| "paired recovery readback requires exact record marker".to_owned())?;
+    let record: PairedRecoveryRecord = serde_json::from_str(actual)
+        .map_err(|_| "paired recovery readback record malformed".to_owned())?;
+    if record != recovery_record(plan) {
+        return Err("paired recovery differs from paired identity and exact two hosts".to_owned());
+    }
+    let records = recovery_records(history)?;
+    if records.len() != 1 || records[0] != exact_recovery {
+        return Err("paired recovery must be durable exactly once".to_owned());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -835,6 +994,89 @@ mod tests {
             ]),
         ] {
             assert!(plan_paired_commit(&upgraded, &altered, &original).is_err());
+        }
+    }
+
+    #[test]
+    fn paired_recovery_needs_exact_partial_pair_and_single_journal_decision() {
+        use ring::digest::{SHA256, digest};
+        let (original, history) = persisted_original();
+        let request = prepared_commit();
+        let intent = plan_paired_commit(&request, &history, &original).unwrap();
+        let recorded = serde_json::json!([{"body": original}, {"body": intent}]).to_string();
+        let intent_sha = digest(&SHA256, intent.as_bytes())
+            .as_ref()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let vm = PairedHostReadback {
+            generation: request.generation,
+            slot: request.slot.clone(),
+            cursor: PairedHostCursor::Active,
+            runtime_verified: true,
+            owner_origin_verified: true,
+        };
+        let windows = PairedHostReadback {
+            cursor: PairedHostCursor::Candidate,
+            runtime_verified: false,
+            ..vm.clone()
+        };
+        let plan = PairedRecoveryPlan {
+            pair: request.clone(),
+            recovery_run_id: 3033,
+            vm_active_sha256: "5".repeat(64),
+            windows_candidate_sha256: "6".repeat(64),
+            original_intent_sha256: intent_sha,
+            vm,
+            windows,
+        };
+        let recovery = plan_paired_recovery(&plan, &recorded, &original, &intent).unwrap();
+        let committed = serde_json::json!([
+            {"body": original},
+            {"body": intent},
+            {"body": recovery}
+        ]).to_string();
+        verify_paired_recovery(&plan, &committed, &original, &intent, &recovery).unwrap();
+        assert!(plan_paired_recovery(&plan, &committed, &original, &intent).is_err());
+
+        let mut wrong = plan.clone();
+        wrong.vm.cursor = PairedHostCursor::Candidate;
+        assert!(plan_paired_recovery(&wrong, &recorded, &original, &intent).is_err());
+        let mut wrong = plan.clone();
+        wrong.windows.cursor = PairedHostCursor::Active;
+        assert!(plan_paired_recovery(&wrong, &recorded, &original, &intent).is_err());
+        let mut wrong = plan.clone();
+        wrong.windows.owner_origin_verified = false;
+        assert!(plan_paired_recovery(&wrong, &recorded, &original, &intent).is_err());
+        let mut wrong = plan.clone();
+        wrong.vm.runtime_verified = false;
+        assert!(plan_paired_recovery(&wrong, &recorded, &original, &intent).is_err());
+        let mut wrong = plan.clone();
+        wrong.original_intent_sha256 = "7".repeat(64);
+        assert!(plan_paired_recovery(&wrong, &recorded, &original, &intent).is_err());
+        let mut wrong = plan.clone();
+        wrong.recovery_run_id = request.commit_run_id;
+        assert!(plan_paired_recovery(&wrong, &recorded, &original, &intent).is_err());
+
+        for tampered in [
+            serde_json::json!([
+                {"body": original},
+                {"body": intent},
+                {"body": recovery},
+                {"body": recovery}
+            ]).to_string(),
+            serde_json::json!([
+                {"body": original},
+                {"body": intent},
+                {"body": format!("prefix {recovery}")}
+            ]).to_string(),
+            serde_json::json!([
+                {"body": original},
+                {"body": intent},
+                {"body": recovery.replace("RECOVERY_INTENT", "RECOVERY_COMPLETE")}
+            ]).to_string(),
+        ] {
+            assert!(verify_paired_recovery(&plan, &tampered, &original, &intent, &recovery).is_err());
         }
     }
 
