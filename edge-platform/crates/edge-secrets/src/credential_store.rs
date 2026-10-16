@@ -528,18 +528,22 @@ impl CredentialStore {
             || source.generation == 0
             || source.generation == candidate.generation
         {
-            return Err("Windows join prepare requires distinct exact source A and target B".to_owned());
+            return Err(
+                "Windows join prepare requires distinct exact source A and target B".to_owned(),
+            );
         }
-        let state = self.read_state()?.ok_or_else(|| {
-            "Windows join prepare cursor missing".to_owned()
-        })?;
+        let state = self
+            .read_state()?
+            .ok_or_else(|| "Windows join prepare cursor missing".to_owned())?;
         if state.active.as_ref() != Some(source)
             || state.candidate.as_ref() != Some(candidate)
             || state.previous.is_some()
             || self.read_existing_join_receipt()?.is_some()
             || self.read_windows_existing_join_prepare_receipt()?.is_some()
         {
-            return Err("Windows join prepare already attempted or state differs; no replay".to_owned());
+            return Err(
+                "Windows join prepare already attempted or state differs; no replay".to_owned(),
+            );
         }
         self.read_bundle(source)?;
         self.read_bundle(candidate)?;
@@ -586,7 +590,9 @@ impl CredentialStore {
             fields.get(index)?.strip_prefix(prefix)?.parse::<u64>().ok()
         };
         let sha = |index: usize, prefix: &str| -> bool {
-            fields.get(index).and_then(|v| v.strip_prefix(prefix))
+            fields
+                .get(index)
+                .and_then(|v| v.strip_prefix(prefix))
                 .is_some_and(valid_first_use_digest)
         };
         if fields.len() != 10
@@ -1807,12 +1813,7 @@ mod tests {
         store.promote_candidate().unwrap();
         store.stage_candidate(&b).unwrap();
         store
-            .prepare_windows_existing_join(
-                &source,
-                &target,
-                &"d".repeat(64),
-                &"e".repeat(64),
-            )
+            .prepare_windows_existing_join(&source, &target, &"d".repeat(64), &"e".repeat(64))
             .unwrap();
         assert!(
             store
@@ -1826,12 +1827,7 @@ mod tests {
         assert!(state.previous.is_none());
         assert!(
             store
-                .prepare_windows_existing_join(
-                    &source,
-                    &target,
-                    &"d".repeat(64),
-                    &"e".repeat(64),
-                )
+                .prepare_windows_existing_join(&source, &target, &"d".repeat(64), &"e".repeat(64),)
                 .is_err()
         );
         fs::remove_dir_all(root).unwrap();
@@ -1852,12 +1848,7 @@ mod tests {
         assert!(store.read_windows_existing_join_prepare_receipt().is_err());
         assert!(
             store
-                .prepare_windows_existing_join(
-                    &source,
-                    &target,
-                    &"d".repeat(64),
-                    &"e".repeat(64),
-                )
+                .prepare_windows_existing_join(&source, &target, &"d".repeat(64), &"e".repeat(64),)
                 .is_err()
         );
         assert!(store.read_state().unwrap().unwrap().active.is_some());

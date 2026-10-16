@@ -995,12 +995,11 @@ pub fn validate_windows_privileged_request(
         operation,
         WindowsPrivilegedOperation::ExistingCredentialJoin
             | WindowsPrivilegedOperation::ExistingCredentialPrepare
-    )
-        && (request.existing_join_vm_candidate_sha256.is_some()
-            || request.existing_join_windows_active_sha256.is_some()
-            || request.existing_join_windows_candidate_sha256.is_some()
-            || request.existing_join_intent_sha256.is_some()
-            || request.existing_join_slot.is_some())
+    ) && (request.existing_join_vm_candidate_sha256.is_some()
+        || request.existing_join_windows_active_sha256.is_some()
+        || request.existing_join_windows_candidate_sha256.is_some()
+        || request.existing_join_intent_sha256.is_some()
+        || request.existing_join_slot.is_some())
     {
         return Err("existing join witnesses forbidden on unrelated operation".to_owned());
     }
