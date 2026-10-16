@@ -14,7 +14,7 @@ use edge_local_runtime::{
 };
 use edge_observability::init as init_observability;
 use edge_secrets::{
-    ACCESS_IDENTITY_FILE_NAME, CredentialStore, CredentialOriginSelection,
+    ACCESS_IDENTITY_FILE_NAME, CredentialOriginSelection, CredentialStore,
     attest_worker_credential_origin, fetch_canonical_credential_bundle,
     verify_canonical_dummy_ab_slots, verify_initial_selected_dummy_slot,
 };
@@ -5940,14 +5940,23 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
             schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
             request_id: "worker-origin".to_owned(),
             operation: WindowsPrivilegedOperation::CredentialOrigin as i32,
-            accepted_revision: None, release_set_sha256: None,
-            credential_generation: None, credential_transition_action: None,
-            initial_commit_intent_sha256: None, initial_commit_slot: None,
-            initial_recovery_intent_sha256: None, initial_candidate_sha256: None,
+            accepted_revision: None,
+            release_set_sha256: None,
+            credential_generation: None,
+            credential_transition_action: None,
+            initial_commit_intent_sha256: None,
+            initial_commit_slot: None,
+            initial_recovery_intent_sha256: None,
+            initial_candidate_sha256: None,
         };
-        assert_eq!(decode_windows_privileged_request(
-            &encode_windows_privileged_request(&request).unwrap()
-        ).unwrap().operation, 18);
+        assert_eq!(
+            decode_windows_privileged_request(
+                &encode_windows_privileged_request(&request).unwrap()
+            )
+            .unwrap()
+            .operation,
+            18
+        );
         assert_eq!(privileged_wait_secs(&request), PRIVILEGED_SHORT_WAIT_SECS);
     }
 
