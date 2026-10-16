@@ -220,7 +220,12 @@ impl CredentialStore {
             .write_all(data.as_bytes())
             .and_then(|_| handle.sync_all())
             .map_err(|err| format!("initial pair receipt write uncertain, do not replay: {err}"))?;
+        drop(handle);
         set_private_file_permissions(&receipt)?;
+        // Persist the directory entry as well as the receipt contents before
+        // recording ACTIVE. Without this barrier, a Unix power loss could
+        // leave ACTIVE durable while the one-shot receipt disappears.
+        sync_directory(&self.root)?;
         // Atomic pointer write only after durable receipt, no legacy fallback.
         // The final ACTIVE label requires independent paired readback, not this return.
         self.promote_candidate()
