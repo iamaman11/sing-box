@@ -497,7 +497,7 @@ pub(crate) fn reconcile_paired_commit(
     use PairedHostCursor::{Active, Candidate};
     match (vm.cursor, windows.cursor) {
         (Active, Active) if vm.runtime_verified && windows.runtime_verified => {
-            Ok("PAIR_ACTIVE_VERIFIED")
+            Ok("PAIR_ACTIVE_DECLARED_NEEDS_INDEPENDENT_ORIGIN_PROOF")
         }
         (Candidate, Candidate) => Ok("PAIR_INTENT_RECORDED_NO_MUTATION"),
         (Active, Candidate) | (Candidate, Active) => Ok("PAIR_PARTIAL_BLOCKED_NO_REPLAY"),
@@ -656,7 +656,7 @@ mod tests {
             "PAIR_PARTIAL_BLOCKED_NO_REPLAY"
         );
         windows.cursor = PairedHostCursor::Active;
-        assert_eq!(classify(&vm, &windows).unwrap(), "PAIR_ACTIVE_VERIFIED");
+        assert_eq!(classify(&vm, &windows).unwrap(), "PAIR_ACTIVE_DECLARED_NEEDS_INDEPENDENT_ORIGIN_PROOF");
         vm.runtime_verified = false;
         assert_eq!(
             classify(&vm, &windows).unwrap(),
