@@ -232,11 +232,10 @@ pub(crate) fn initial_commit(
     // First durable non-replayable receipt, then atomic ACTIVE pointer.
     // If runtime rendering fails afterwards, ACTIVE exists but SERVING remains
     // blocked until independent exact read-only reconciliation.
-    let committed = store.promote_initial_paired_candidate(
-        generation, slot, intent_sha256
-    )?;
+    let committed = store.promote_initial_paired_candidate(generation, slot, intent_sha256)?;
     if committed.active.as_ref().map(|v| v.generation) != Some(generation)
-        || committed.previous.is_some() || committed.candidate.is_some()
+        || committed.previous.is_some()
+        || committed.candidate.is_some()
     {
         return Err("Windows initial commit pointer result UNKNOWN; no replay".to_owned());
     }
@@ -244,12 +243,16 @@ pub(crate) fn initial_commit(
         format!("Windows first-use pointer committed but runtime materialization is UNKNOWN; no replay: {err}")
     })?;
     verify_exact_active_runtime(
-        install_root, activation, &store,
+        install_root,
+        activation,
+        &store,
         committed.active.as_ref().unwrap(),
     )?;
     Ok((
         "INITIAL_CREDENTIAL_COMMIT_LOCAL_ONLY".to_owned(),
-        format!("Windows generation {generation} slot {slot} active; paired/serving proof still required"),
+        format!(
+            "Windows generation {generation} slot {slot} active; paired/serving proof still required"
+        ),
     ))
 }
 
