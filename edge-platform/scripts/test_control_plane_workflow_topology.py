@@ -714,8 +714,18 @@ def main() -> None:
             "initial pair digest shell validator accepted malformed evidence or rejected valid evidence",
         )
     require(
-        'if operation in {"rotate-application", "host-bootstrap-converge", "initial-pair-commit"}:' in credentials
+        'if operation in {"rotate-application", "host-bootstrap-converge", "initial-pair-commit", "initial-pair-recover"}:' in credentials
         and '"initial-pair-commit"' in credentials
+        and '"initial-pair-recover"' in credentials
+        and "initial_pair_recovery_source:" in credentials
+        and "initial_pair_recovery_vm:" in credentials
+        and "initial_pair_recovery_windows:" in credentials
+        and "initial_pair_recovery_intent:" in credentials
+        and "initial_pair_recovery_apply_windows:" in credentials
+        and "initial_pair_recovery_local_verdict:" in credentials
+        and "privileged-initial-credential-recover" in credentials
+        and "paired_recovery_local_pointers=UNKNOWN_BLOCKED_NO_REPLAY" in credentials
+        and "paired_serving_network=NOT_ACCEPTED" in credentials
         and "initial_pair_vm_prepared:" in credentials
         and "initial_pair_windows_prepared:" in credentials
         and "initial_pair_intent:" in credentials
