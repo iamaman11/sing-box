@@ -22,11 +22,33 @@ write access. Reconciliation classifies `CANDIDATE/CANDIDATE` as
 pointers as `PAIR_ACTIVE_DECLARED_NEEDS_INDEPENDENT_ORIGIN_PROOF`.
 The CLI cannot issue a final active PASS based only on caller-provided
 booleans; independent owner provenance and actual authenticated traffic
-must be checked outside this read-only policy. There is intentionally **no** replay,
-fallback, generic first-use promote or serving permission. The paired commit
-executor, independently proven real host-origin receipts, and physical
-two-host ACTIVE acceptance remain UNIMPLEMENTED; no first-use credentials
-mutation is authorized by source-only policy.
+must be checked outside this read-only policy. There is intentionally **no**
+replay, fallback, generic first-use promote or serving permission.
+
+**Same-owner paired executor (unaccepted source implementation):** The
+existing protected `/credentials initial-pair-commit <original_run_id>`
+workflow, sharing the single credential transaction lock, resolves the exact
+canonical application VM, verifies the original GitHub first-use run and
+immutable BEGIN, and gathers new run-scoped receipts from that VM's exact
+SHA256-pinned root-owned agent and the Windows installed SYSTEM-owned
+credential cursor. A separate hosted job creates one non-secret COMMIT_INTENT,
+posts it once to the existing Issue #26 journal and verifies an exact readback.
+Only then may the two existing native owners perform one first-use local
+pointer commit each, sequentially. The common projection-specific credential
+store writes and fsyncs a create-new protected `initial-paired-commit-receipt-v1`
+**before** its atomic ACTIVE pointer. A partial or uncertain result cannot
+replay or write a different receipt. Windows verifies stopped ProxyOnly,
+validates and materializes its native sing-box config before spending the
+irreversible receipt, without SCM/TUN/DNS mutation. VM verifies the existing
+candidate against the real six Line2 endpoints. The final workflow verdict
+reports **LOCAL_POINTERS_ONLY**, never full network acceptance.
+
+This protocol remains DRAFT until exact source CI, exact immutable owner
+deployment on both hosts, authenticated journal/runner evidence and bounded
+physical paired acceptance. Any partial active pointer, unknown ACK or
+mismatched receipt is **BLOCKED**, not rollback by inventing previous v2.
+External Line1 DIRECT/WARP, Windows ProxyOnly service start and Cloudflare
+One independent no-TUN recovery remain separately NOT_ACCEPTED.
 
 **First-use immutable program upgrade BEFORE credentials (16 October 2026):**
 Use the existing protected GitHub command `/windows initial-pair-prepare <original_run_id>`
