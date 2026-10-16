@@ -294,15 +294,27 @@ jobs:
           }
           $url = "repos/$env:GITHUB_REPOSITORY/issues/26/comments?per_page=100"
           function Read-CompleteJournal {
-            $raw = (& gh api --paginate --slurp --jq 'add' $url) -join "`n"
+            # gh explicitly forbids --slurp combined with --jq. Fetch every
+            # page as JSON without filtering, then validate all nested pages.
+            # A partial/malformed page must never be interpreted as EMPTY.
+            $raw = (& gh api --paginate --slurp $url) -join "`n"
             if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($raw)) {
-              throw 'WINDOWS_APPLY_BLOCKED: durable issue history unavailable'
+              throw 'WINDOWS_APPLY_BLOCKED: complete durable issue history unavailable'
             }
-            $history = @(ConvertFrom-Json -InputObject $raw)
-            if ($history.Count -eq 0 -or @($history | Where-Object { $null -eq $_ -or $null -eq $_.body }).Count -ne 0) {
-              throw 'WINDOWS_APPLY_BLOCKED: incomplete journal'
+            $pages = ConvertFrom-Json -InputObject $raw -NoEnumerate
+            if ($pages -isnot [array]) { throw 'WINDOWS_APPLY_BLOCKED: malformed journal page collection' }
+            $entries = [Collections.Generic.List[object]]::new()
+            foreach ($page in $pages) {
+              if ($page -isnot [array]) { throw 'WINDOWS_APPLY_BLOCKED: incomplete or malformed journal page' }
+              foreach ($entry in $page) {
+                if ($null -eq $entry -or $null -eq $entry.body -or $null -eq $entry.id) {
+                  throw 'WINDOWS_APPLY_BLOCKED: incomplete journal entry'
+                }
+                [void]$entries.Add($entry)
+              }
             }
-            return $history
+            if ($entries.Count -eq 0) { throw 'WINDOWS_APPLY_BLOCKED: durable journal is empty' }
+            return $entries.ToArray()
           }
           $history = @(Read-CompleteJournal)
           $marker = '<!-- sing-box-windows-active-release-apply/v1 -->'
@@ -390,19 +402,27 @@ jobs:
           if ($env:GITHUB_RUN_ATTEMPT -cne '1') { throw 'FIRST_USE_UPGRADE_BLOCKED: replay forbidden' }
           $url = "repos/$env:GITHUB_REPOSITORY/issues/26/comments?per_page=100"
           function Read-AllJournalPages {
-            # Issue #26 has multiple pages. A single syntactically valid JSON
-            # array is required; partial/parsing failures cannot mean EMPTY.
-            # gh's built-in jq combines every fully fetched page into one
-            # canonical array. No shell jq process or page-by-page guesses.
-            $raw = (& gh api --paginate --slurp --jq 'add' $url) -join "`n"
+            # gh explicitly forbids --slurp combined with --jq. Fetch every
+            # page as JSON without filtering, then validate all nested pages.
+            # A partial/malformed page must never be interpreted as EMPTY.
+            $raw = (& gh api --paginate --slurp $url) -join "`n"
             if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($raw)) {
-              throw 'FIRST_USE_UPGRADE_BLOCKED: complete durable history unavailable'
+              throw 'FIRST_USE_UPGRADE_BLOCKED: complete durable issue history unavailable'
             }
-            $entries = @(ConvertFrom-Json -InputObject $raw)
-            if ($entries.Count -eq 0 -or @($entries | Where-Object { $null -eq $_ -or $null -eq $_.body }).Count -ne 0) {
-              throw 'FIRST_USE_UPGRADE_BLOCKED: durable issue journal is empty or malformed'
+            $pages = ConvertFrom-Json -InputObject $raw -NoEnumerate
+            if ($pages -isnot [array]) { throw 'FIRST_USE_UPGRADE_BLOCKED: malformed journal page collection' }
+            $entries = [Collections.Generic.List[object]]::new()
+            foreach ($page in $pages) {
+              if ($page -isnot [array]) { throw 'FIRST_USE_UPGRADE_BLOCKED: incomplete or malformed journal page' }
+              foreach ($entry in $page) {
+                if ($null -eq $entry -or $null -eq $entry.body -or $null -eq $entry.id) {
+                  throw 'FIRST_USE_UPGRADE_BLOCKED: incomplete journal entry'
+                }
+                [void]$entries.Add($entry)
+              }
             }
-            return $entries
+            if ($entries.Count -eq 0) { throw 'FIRST_USE_UPGRADE_BLOCKED: durable journal is empty' }
+            return $entries.ToArray()
           }
           $history = @(Read-AllJournalPages)
           $staging = @($history | Where-Object { [string]$_.body -like '*<!-- sing-box-windows-persistent-initial-stage/*' })
