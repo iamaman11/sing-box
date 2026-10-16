@@ -2290,8 +2290,9 @@ def main() -> None:
     require(
         "issues: read" not in vultr
         and vultr.count("issues: write") == 3
-        and "issues: read" not in credentials
-        and "issues: write" not in credentials
+        and "issues: read" not in credentials.split("  execute:\n", 1)[1].split("\n  rotate_release:", 1)[0]
+        and credentials.count("issues: write") == 1
+        and "issues: write" in credentials.split("  initial_pair_intent:\n", 1)[1].split("\n  initial_pair_vm_commit:", 1)[0]
         and "  vultr:" in router
         and "    permissions:\n      contents: read\n      actions: read\n      issues: write" in router
         and "    uses: ./.github/workflows/vultr-acceptance-resume.yml" in vultr
