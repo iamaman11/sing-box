@@ -977,8 +977,7 @@ pub fn validate_windows_privileged_request(
     let operation = WindowsPrivilegedOperation::try_from(request.operation)
         .map_err(|_| "WindowsPrivilegedRequest.operation is invalid".to_owned())?;
     if operation != WindowsPrivilegedOperation::InitialCredentialCommit
-        && (request.initial_commit_intent_sha256.is_some()
-            || request.initial_commit_slot.is_some())
+        && (request.initial_commit_intent_sha256.is_some() || request.initial_commit_slot.is_some())
     {
         return Err("paired commit fields are forbidden on non-initial operations".to_owned());
     }
@@ -1079,16 +1078,25 @@ pub fn validate_windows_privileged_request(
                 || request.release_set_sha256.is_some()
                 || request.credential_transition_action.is_some()
             {
-                return Err("first-use paired commit must not carry ordinary release or rotation authority".to_owned());
+                return Err(
+                    "first-use paired commit must not carry ordinary release or rotation authority"
+                        .to_owned(),
+                );
             }
             if request.credential_generation.unwrap_or(0) == 0 {
-                return Err("first-use paired commit requires exact candidate generation".to_owned());
+                return Err(
+                    "first-use paired commit requires exact candidate generation".to_owned(),
+                );
             }
             if !matches!(request.initial_commit_slot, Some(1 | 2)) {
                 return Err("first-use paired commit requires exact A/B slot".to_owned());
             }
-            let digest = request.initial_commit_intent_sha256.as_deref()
-                .ok_or_else(|| "first-use paired commit requires exact COMMIT_INTENT digest".to_owned())?;
+            let digest = request
+                .initial_commit_intent_sha256
+                .as_deref()
+                .ok_or_else(|| {
+                    "first-use paired commit requires exact COMMIT_INTENT digest".to_owned()
+                })?;
             validate_lower_hex("initial_commit_intent_sha256", digest, 64)?;
         }
         WindowsPrivilegedOperation::StageCredential => {
