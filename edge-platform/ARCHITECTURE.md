@@ -1018,6 +1018,17 @@ Final diagnostics must provide secret-safe read-only evidence for:
 
 A diagnostic result does not repair the machine.
 
+**Read-only control-plane liveness (16 October 2026):** `/production diagnose`,
+`/vm diagnose <manifest>` and native read-only Vultr provider observations
+have per-run concurrency groups; an offline VM runner cannot block inventory
+or hold the serialized credentials mutation lock. All writes retain the old
+single-owner lock. Vultr inventory now preserves `provider_status`,
+`server_status` and `power_status` as observations, not proof of guest readiness
+or authorization to mutate. For N1/N2 use the Git-owned target
+`/vm diagnose infra/application/disposable-acceptance.json`, not the historical
+`/production diagnose` alias with its separate `production-1` runner. Old
+queued runs are neither implicitly cancelled nor safe to replay.
+
 ### Accepted native read-only production diagnosis (2026-10-11)
 
 The existing `/production diagnose` GitHub operation is the canonical one-command entry point
