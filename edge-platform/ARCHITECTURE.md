@@ -1029,6 +1029,15 @@ or authorization to mutate. For N1/N2 use the Git-owned target
 `/production diagnose` alias with its separate `production-1` runner. Old
 queued runs are neither implicitly cancelled nor safe to replay.
 
+**VM runtime single-owner scheduling:** The physical self-hosted VM runtime
+job must serialize per canonical `needs.authorize.outputs.runtime_machine`,
+not across unrelated Git-owned machines. A stale queued job for legacy
+`production-1` must not block `application-acceptance-1`. Runner labels
+and root-owned local owner checks still bind each command to that exact VM;
+provider and credential mutations keep the global transaction locks. Existing
+queued jobs keep their original concurrency key until explicitly cancelled
+or completed, and this change does not cancel or replay them.
+
 ### Accepted native read-only production diagnosis (2026-10-11)
 
 The existing `/production diagnose` GitHub operation is the canonical one-command entry point

@@ -614,7 +614,10 @@ jobs:
         )
       )
     concurrency:
-      group: sing-box-production-runtime
+      # Lock only the exact Git-selected VM. An absent legacy production-1
+      # runner must not block a healthy application-acceptance-1 runner.
+      # All mutating workflows still use the global credential/provider lock.
+      group: sing-box-production-runtime-${{ needs.authorize.outputs.runtime_machine }}
       cancel-in-progress: false
     runs-on:
       - self-hosted

@@ -2898,6 +2898,9 @@ def main() -> None:
         and "- X64" in production_runtime
         and "- sing-box-production-vm" in production_runtime
         and "- ${{ needs.authorize.outputs.runtime_machine }}" in production_runtime
+        and "group: sing-box-production-runtime-${{ needs.authorize.outputs.runtime_machine }}" in production_runtime
+        and "group: sing-box-production-runtime\n" not in production_runtime
+        and "cancel-in-progress: false" in production_runtime
         and 'owner="/usr/local/libexec/sing-box/edge-agent"' in production_runtime
         and "PROVIDER_APPLICATION_BUNDLE_SHA256" in production_runtime
         and "PROVIDER_APPLICATION_BUNDLE_ASSET_ID" in production_runtime
