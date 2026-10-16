@@ -1756,10 +1756,10 @@ async fn process_privileged_request(
                         &activation,
                         generation,
                         slot as i32,
-                        intent,
                         source,
                         target,
                         vm,
+                        intent,
                     )?;
                     Ok((code, detail, Some(activation.release_set_sha256)))
                 }.await
