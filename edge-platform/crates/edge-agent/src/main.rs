@@ -255,9 +255,11 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
                     let digest = text
                         .lines()
                         .find_map(|line| line.strip_prefix("recovery_intent_sha256="))
-                        .ok_or_else(|| AgentError::Command(
-                            "initial VM recovery receipt missing digest".to_owned()
-                        ))?;
+                        .ok_or_else(|| {
+                            AgentError::Command(
+                                "initial VM recovery receipt missing digest".to_owned(),
+                            )
+                        })?;
                     println!("credential_initial_recovery_intent_sha256={digest}");
                 }
                 if let Some(text) = receipt {
