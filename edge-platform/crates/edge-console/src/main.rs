@@ -99,7 +99,10 @@ const PRIVILEGED_SHORT_WAIT_SECS: u64 = 180;
 const PRIVILEGED_ACTIVATE_WAIT_SECS: u64 = 12 * 60;
 const RUNTIME_EVIDENCE_MAX_BYTES: u64 = 16 * 1024;
 const RUNTIME_EVIDENCE_MAX_LINES: usize = 80;
-const RUNTIME_EVIDENCE_RESULT_MAX_BYTES: usize = 1024;
+// Fixed bounded protobuf evidence, including a persistent first-use credential cursor.
+// The former 1024-byte cap rejected valid stopped Windows candidates when the
+// exact four scheduled-task hashes and recovered credential proof coexisted.
+const RUNTIME_EVIDENCE_RESULT_MAX_BYTES: usize = 2048;
 const PRIVILEGED_CHILD_EVIDENCE_MAX_BYTES: usize = 960;
 const WINDOWS_TRACE_REOBSERVE_ATTEMPTS: usize = 3;
 const WINDOWS_TRACE_REOBSERVE_DELAY: Duration = Duration::from_secs(1);
@@ -6363,6 +6366,36 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
         fs::write(store.join("state.pb"), b"corrupt").unwrap();
         assert!(read_bounded_windows_credential_cursor(&root).is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn first_use_recovery_proof_and_full_task_hashes_fit_bounded_result() {
+        let tasks = format!(
+            "tasks=EdgePlatformController|1|3|{},EdgePlatformReconcile|1|3|{},EdgePlatformShutdown|1|3|{},EdgePlatformPrivilegedDispatch|1|4|{}",
+            "a".repeat(64),
+            "b".repeat(64),
+            "c".repeat(64),
+            "d".repeat(64)
+        );
+        let cursor = format!(
+            "credential_cursor=VALID;credential_active_present=false;credential_candidate_present=true;credential_candidate_generation=38503639351;credential_candidate_slot=B;credential_previous_present=false;credential_active_generation=0;credential_active_slot=NONE;credential_active_sha256=ABSENT;credential_candidate_sha256={};credential_initial_commit_receipt_present=true;credential_initial_commit_intent_sha256={};credential_initial_recovery_receipt_present=false;credential_initial_recovery_intent_sha256=ABSENT",
+            "e".repeat(64),
+            "f".repeat(64),
+        );
+        let critical = format!(
+            "runtime_evidence=BOUNDED_READ_ONLY;controller_service_error=ABSENT;process_classification=ABSENT;process_evidence_complete=true;process_count=0;managed_pid=ABSENT;managed_parent_pid=ABSENT;controller_pid=ABSENT;{tasks};external_owner_evidence=INCOMPLETE;external_count=0;{cursor};first_use_runtime=PRESENT;first_use_config=PRESENT;first_use_access_identity=PRESENT_NONEMPTY_UNVERIFIED"
+        );
+        assert!(critical.len() > 1024, "the original cap made initial recovery unobservable");
+        assert!(critical.len() <= RUNTIME_EVIDENCE_RESULT_MAX_BYTES);
+        let result = WindowsPrivilegedResult {
+            schema_version: PRIVILEGED_RESULT_SCHEMA_VERSION,
+            request_id: "exact-first-use-recovery-evidence".to_owned(),
+            success: true,
+            code: "RUNTIME_EVIDENCE_READ".to_owned(),
+            detail: critical,
+            active_release_set_sha256: None,
+        };
+        assert!(encode_windows_privileged_result(&result).is_ok());
     }
 
     #[test]
