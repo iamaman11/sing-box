@@ -199,6 +199,18 @@ impl CredentialDeliverySlotArg {
 #[derive(Debug, Clone, Subcommand)]
 pub(crate) enum CredentialDeliveryCommand {
     ContractVerify,
+    // Native read-only plan/readback for ONE durable existing-ACTIVE -> B
+    // join. Never accepts credentials or grants mutation authority.
+    ExistingJoinPlan {
+        spec_path: std::path::PathBuf,
+        journal_history_path: std::path::PathBuf,
+        record_output_path: std::path::PathBuf,
+    },
+    ExistingJoinReadback {
+        spec_path: std::path::PathBuf,
+        journal_history_path: std::path::PathBuf,
+        exact_record_path: std::path::PathBuf,
+    },
     /// Bounded independent GitHub-runner vantage; public VM port probes only.
     InitialLine2ExternalWitness {
         generation: u64,

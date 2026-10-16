@@ -136,6 +136,18 @@ pub async fn run_delivery(
         // These calls neither open a Cloudflare write token nor POST to GitHub.
         return run_readonly_paired_commit(command, release_context);
     }
+    if matches!(
+        &command,
+        CredentialDeliveryCommand::ExistingJoinPlan { .. }
+            | CredentialDeliveryCommand::ExistingJoinReadback { .. }
+    ) {
+        let release = release_context.release();
+        return crate::credential_existing_join::dispatch(
+            &command,
+            &release.accepted_revision,
+            &release.release_set_sha256,
+        );
+    }
     // Independent Github-runner network probe. It has Worker VM read
     // identity only, never a Cloudflare provider mutation token.
     if let CredentialDeliveryCommand::InitialLine2ExternalWitness {
@@ -170,6 +182,10 @@ pub async fn run_delivery(
 
     match command {
         CredentialDeliveryCommand::ContractVerify => verify(&control_token, &desired).await,
+        CredentialDeliveryCommand::ExistingJoinPlan { .. }
+        | CredentialDeliveryCommand::ExistingJoinReadback { .. } => {
+            unreachable!("existing join runs before provider authority")
+        },
         CredentialDeliveryCommand::InitialLine2ExternalWitness { .. } => {
             unreachable!("independent witness is dispatched before provider authority")
         }
