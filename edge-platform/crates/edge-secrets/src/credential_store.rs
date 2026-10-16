@@ -280,7 +280,10 @@ impl CredentialStore {
             || !parts[5].starts_with("recovery_intent_sha256=")
             || !parts[6].starts_with("candidate_sha256=")
             || [4, 5, 6].into_iter().any(|index| {
-                let hex = parts[index].split_once('=').map(|(_, value)| value).unwrap_or("");
+                let hex = parts[index]
+                    .split_once('=')
+                    .map(|(_, value)| value)
+                    .unwrap_or("");
                 !valid_first_use_digest(hex)
             })
         {
@@ -1014,10 +1017,34 @@ mod tests {
             let original = "a".repeat(64);
             let recovery = "b".repeat(64);
             for (generation, slot, original_sha, recovery_sha, candidate_sha) in [
-                (102, 2, original.as_str(), recovery.as_str(), expected_sha.as_str()),
-                (101, 1, original.as_str(), recovery.as_str(), expected_sha.as_str()),
-                (101, 2, original.as_str(), original.as_str(), expected_sha.as_str()),
-                (101, 2, original.as_str(), recovery.as_str(), &"0".repeat(64)),
+                (
+                    102,
+                    2,
+                    original.as_str(),
+                    recovery.as_str(),
+                    expected_sha.as_str(),
+                ),
+                (
+                    101,
+                    1,
+                    original.as_str(),
+                    recovery.as_str(),
+                    expected_sha.as_str(),
+                ),
+                (
+                    101,
+                    2,
+                    original.as_str(),
+                    original.as_str(),
+                    expected_sha.as_str(),
+                ),
+                (
+                    101,
+                    2,
+                    original.as_str(),
+                    recovery.as_str(),
+                    &"0".repeat(64),
+                ),
                 (101, 2, original.as_str(), "INVALID", expected_sha.as_str()),
             ] {
                 assert!(
@@ -1031,7 +1058,12 @@ mod tests {
                         )
                         .is_err()
                 );
-                assert!(store.read_initial_pair_recovery_receipt().unwrap().is_none());
+                assert!(
+                    store
+                        .read_initial_pair_recovery_receipt()
+                        .unwrap()
+                        .is_none()
+                );
             }
             let result = store
                 .recover_initial_paired_candidate(101, 2, &original, &recovery, &expected_sha)
@@ -1074,7 +1106,12 @@ mod tests {
                 .recover_initial_paired_candidate(101, 2, &original, &recovery, &sha)
                 .is_err()
         );
-        assert!(store.read_initial_pair_recovery_receipt().unwrap().is_none());
+        assert!(
+            store
+                .read_initial_pair_recovery_receipt()
+                .unwrap()
+                .is_none()
+        );
         fs::write(
             root.join(INITIAL_PAIR_COMMIT_RECEIPT),
             format!(
@@ -1089,7 +1126,12 @@ mod tests {
                 .recover_initial_paired_candidate(101, 2, &original, &recovery, &sha)
                 .is_err()
         );
-        assert!(store.read_initial_pair_recovery_receipt().unwrap().is_none());
+        assert!(
+            store
+                .read_initial_pair_recovery_receipt()
+                .unwrap()
+                .is_none()
+        );
         fs::remove_file(root.join(INITIAL_PAIR_COMMIT_RECEIPT)).unwrap();
         fs::write(root.join(INITIAL_PAIR_RECOVERY_RECEIPT), "incomplete").unwrap();
         assert!(
@@ -1120,7 +1162,9 @@ mod tests {
     fn initial_recovery_completes_only_exact_original_receipt_candidate() {
         let root = unique_root("paired-recovery-receipt");
         let store = CredentialStore::new(&root, CredentialProjectionKind::Vm).unwrap();
-        let state = store.stage_candidate(&vm_bundle(101, CredentialDeliverySlot::B)).unwrap();
+        let state = store
+            .stage_candidate(&vm_bundle(101, CredentialDeliverySlot::B))
+            .unwrap();
         let sha = state.candidate.unwrap().sha256;
         let original = "a".repeat(64);
         let recovery = "b".repeat(64);
@@ -1137,7 +1181,12 @@ mod tests {
             .recover_initial_paired_candidate(101, 2, &original, &recovery, &sha)
             .unwrap();
         assert_eq!(result.active.unwrap().sha256, sha);
-        assert!(store.read_initial_pair_recovery_receipt().unwrap().is_some());
+        assert!(
+            store
+                .read_initial_pair_recovery_receipt()
+                .unwrap()
+                .is_some()
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
