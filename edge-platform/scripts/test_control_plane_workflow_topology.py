@@ -293,6 +293,50 @@ def test_windows_gh_journal_pages(source: str) -> None:
         raise SystemExit("Windows GH pagination contract regression went undetected")
 
 
+def verify_credential_observation_lane(source: str) -> None:
+    expected = (
+        "group: ${{ (inputs.command_body == '/credentials verify' || "
+        "startsWith(inputs.command_body, '/credentials initial-pair-preflight ')) && "
+        "format('credential-observe-{0}', github.run_id) || "
+        "format('credential-transaction-{0}', github.repository_id) }}"
+    )
+    require(source.count(expected) == 1,
+            "credential read-only lane must be isolated while every mutation retains the exact global lock")
+    require("cancel-in-progress: false" in source,
+            "credential operations must never cancel an unresolved earlier run")
+    read_only_job = source.split("  execute:\n", 1)
+    require(len(read_only_job) == 2, "credential read-only verify job missing")
+    read_only_job = read_only_job[1].split("\n  rotate_release:\n", 1)[0]
+    require("needs.authorize.outputs.operation == 'verify'" in read_only_job
+            and "needs.authorize.outputs.operation == 'initial-pair-preflight'" in read_only_job,
+            "credential read-only job must have exact operation authorization")
+    require("group: vultr-control-plane-production" not in read_only_job
+            and "    concurrency:" not in read_only_job,
+            "credential read-only Worker verify must not inherit production mutation job lock")
+    require(source.count("group: vultr-control-plane-production") >= 1,
+            "credential mutating provider operations must retain production job lock")
+
+
+def test_credential_observation_lane(source: str) -> None:
+    verify_credential_observation_lane(source)
+    replacements = (
+        ("inputs.command_body == '/credentials verify'", "inputs.command_body == '/credentials rotate'"),
+        ("startsWith(inputs.command_body, '/credentials initial-pair-preflight ')", "startsWith(inputs.command_body, '/credentials initial-pair-commit ')"),
+        ("format('credential-observe-{0}', github.run_id)", "format('credential-transaction-{0}', github.repository_id)"),
+        ("format('credential-transaction-{0}', github.repository_id)", "format('credential-observe-{0}', github.run_id)"),
+        ("    runs-on: ubuntu-24.04\n    environment:",
+         "    concurrency:\n      group: vultr-control-plane-production\n      cancel-in-progress: false\n    runs-on: ubuntu-24.04\n    environment:"),
+    )
+    for before, after in replacements:
+        require(before in source, "credential observation lane test fixture missing")
+        broken = source.replace(before, after, 1)
+        try:
+            verify_credential_observation_lane(broken)
+        except SystemExit:
+            continue
+        raise SystemExit("credential isolation regression was not detected")
+
+
 def main() -> None:
     router = ROUTER.read_text(encoding="utf-8")
     application = APPLICATION.read_text(encoding="utf-8")
@@ -301,6 +345,7 @@ def main() -> None:
     test_windows_gh_journal_pages(windows_physical)
     test_windows_operation_owners(windows_physical)
     credentials = CREDENTIALS.read_text(encoding="utf-8")
+    test_credential_observation_lane(credentials)
     test_workflow_job_boundaries(credentials)
     vpc = VPC.read_text(encoding="utf-8")
     edge_platform_ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
@@ -1111,10 +1156,16 @@ def main() -> None:
         "format('vultr-observe-{0}', github.run_id) || "
         "format('credential-transaction-{0}', github.repository_id) }}"
     )
+    credential_observation_group = (
+        "group: ${{ (inputs.command_body == '/credentials verify' || "
+        "startsWith(inputs.command_body, '/credentials initial-pair-preflight ')) && "
+        "format('credential-observe-{0}', github.run_id) || "
+        "format('credential-transaction-{0}', github.repository_id) }}"
+    )
     require(
         vm_observation_group in application
         and vultr_observation_group in vultr
-        and "group: credential-transaction-${{ github.repository_id }}" in credentials
+        and credential_observation_group in credentials
         and application.count("format('credential-transaction-{0}', github.repository_id)") == 1
         and vultr.count("format('credential-transaction-{0}', github.repository_id)") == 1
         and "cancel-in-progress: false" in vultr
@@ -1122,6 +1173,10 @@ def main() -> None:
         and "cancel-in-progress: false" in credentials,
         "diagnostics must bypass stale runner locks without relaxing single-writer credential/provider transactions",
     )
+    # All mutating credential commands must keep the global writer lock.
+    # A HEAD-OF-LINE stalled mutation must not block the pure Worker proof.
+    verify_credential_observation_lane(credentials)
+
     # CI must validate the *actual public network* reachability contract.
     # Docker port publication is not enough if Vultr blocks the packet.
     acceptance_firewalls = json.loads(
@@ -2650,7 +2705,7 @@ def main() -> None:
         and "credential-transition promote" in credentials
         and "credential-transition rollback-previous" in credentials
         and "group: vultr-control-plane-production" in credentials
-        and "group: credential-transaction-${{ github.repository_id }}" in credentials
+        and credential_observation_group in credentials
         and "cancel-in-progress: false" in credentials
         and "CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN" in credentials
         and "credential_rotation_delivery=CLASS_SCOPED_DELTA" in credentials
