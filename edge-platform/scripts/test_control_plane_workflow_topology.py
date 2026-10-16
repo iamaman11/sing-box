@@ -374,6 +374,29 @@ def main() -> None:
         "offline install and rollback must be bounded typed SYSTEM operations and not bypass the existing protected issue router",
     )
 
+    # Paired commit source policy is read-only, has separate real-owner
+    # proof requirements, and cannot be mistaken for a rotation promotion.
+    paired_journal = Path("edge-platform/crates/edge-orchestrator/src/credential_initial_journal.rs").read_text(encoding="utf-8")
+    paired_cli = Path("edge-platform/crates/edge-orchestrator/src/cli.rs").read_text(encoding="utf-8")
+    paired_owner = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs").read_text(encoding="utf-8")
+    require(
+        "sing-box-credential-paired-commit/v1" in paired_journal
+        and "PAIR_PARTIAL_BLOCKED_NO_REPLAY" in paired_journal
+        and "PAIR_INTENT_RECORDED_NO_MUTATION" in paired_journal
+        and "PAIR_POINTERS_ACTIVE_RUNTIME_UNPROVEN" in paired_journal
+        and "verify_recorded_initial_attempt(history, exact_original)?" in paired_journal
+        and "paired_commit_reconciliation_never_replays_partial_or_unknown" in paired_journal
+        and "InitialPairCommitPlan" in paired_cli
+        and "InitialPairCommitReadback" in paired_cli
+        and "InitialPairCommitReconcile" in paired_cli
+        and "run_readonly_paired_commit(command, release_context)" in paired_owner
+        and "credential_replay_authorized=false" in paired_owner
+        and "credential_pair_committed=false" in paired_owner
+        and "create_new(true)" in paired_owner
+        and "CredentialTransitionAction::Promote" not in paired_journal,
+        "one durable non-mutating paired commit intent must never promote either host or replay uncertain state",
+    )
+
     # First-use is a single native owner chain, not two installers. Neither
     # network/download nor release activation may occur after credential BEGIN.
     # Validate the order in the ACTUAL workflow, not just the presence of tags.
