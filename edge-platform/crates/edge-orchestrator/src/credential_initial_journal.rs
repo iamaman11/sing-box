@@ -308,7 +308,8 @@ pub(crate) enum PairedHostCursor {
     Unknown,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub(crate) struct PairedHostReadback {
     pub(crate) generation: u64,
     pub(crate) slot: String,
