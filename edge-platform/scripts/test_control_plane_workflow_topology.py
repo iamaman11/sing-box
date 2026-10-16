@@ -374,6 +374,31 @@ def main() -> None:
         "offline install and rollback must be bounded typed SYSTEM operations and not bypass the existing protected issue router",
     )
 
+    # First-use is a single native owner chain, not two installers. Neither
+    # network/download nor release activation may occur after credential BEGIN.
+    # Validate the order in the ACTUAL workflow, not just the presence of tags.
+    program_prepare = windows_physical.split("  initial_first_use_prepare:\n", 1)[1].split(
+        "\n  initial_first_use_preflight:", 1
+    )[0]
+    stage_once = windows_physical.split("  initial_first_use_stage:\n", 1)[1].split(
+        "\n  physical:", 1
+    )[0]
+    require(
+        program_prepare.index("Verify installed native capability and all preconditions before journalling")
+        < program_prepare.index("Persist exactly one immutable program-upgrade intent BEFORE native mutation")
+        < program_prepare.index("Execute one stopped native offline ReleaseSet upgrade with bounded readback")
+        and program_prepare.count("gh api -X POST") == 1
+        and "gh api --paginate --slurp" in program_prepare
+        and "first_use_upgrade_intent=COMMITTED_ONCE" in program_prepare
+        and "install-windows-release.ps1" not in program_prepare
+        and stage_once.count("-Preflight -RequireCurrentRelease") == 1
+        and " -Preflight -RequireCurrentRelease" in stage_once
+        and " & $handoff -AcceptedRevision $env:EDGE_FIRST_USE_TARGET_REVISION -ReleaseSetSha256 $env:EDGE_FIRST_USE_TARGET_RELEASE\n" not in stage_once
+        and "Windows SYSTEM offline handoff unconfirmed" not in stage_once
+        and "windows-initial-pair-stage.ps1" in stage_once,
+        "initial pair must install exact binaries before credential BEGIN with a single native owner and no mutation replay",
+    )
+
     # The protected issue operator has a separate exact-command allowlist.
     require(
         "github.event.comment.body == '/windows offline-preflight'" in router
