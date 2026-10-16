@@ -1588,8 +1588,13 @@ fn read_bounded_windows_credential_cursor(install_root: &Path) -> Result<String,
         None => "NONE",
     };
     let receipt = store.read_initial_pair_receipt()?;
-    let receipt_sha = receipt.as_deref()
-        .and_then(|value| value.lines().find_map(|line| line.strip_prefix("intent_sha256=")))
+    let receipt_sha = receipt
+        .as_deref()
+        .and_then(|value| {
+            value
+                .lines()
+                .find_map(|line| line.strip_prefix("intent_sha256="))
+        })
         .unwrap_or("ABSENT");
     Ok(format!(
         "credential_cursor=VALID;credential_active_present={};credential_candidate_present={};credential_candidate_generation={};credential_candidate_slot={slot};credential_previous_present={};credential_active_generation={};credential_active_slot={active_slot};credential_active_sha256={};credential_candidate_sha256={};credential_initial_commit_receipt_present={};credential_initial_commit_intent_sha256={receipt_sha}",
@@ -1598,8 +1603,12 @@ fn read_bounded_windows_credential_cursor(install_root: &Path) -> Result<String,
         candidate.map(|value| value.generation).unwrap_or(0),
         previous.is_some(),
         active.map(|value| value.generation).unwrap_or(0),
-        active.map(|value| value.sha256.as_str()).unwrap_or("ABSENT"),
-        candidate.map(|value| value.sha256.as_str()).unwrap_or("ABSENT"),
+        active
+            .map(|value| value.sha256.as_str())
+            .unwrap_or("ABSENT"),
+        candidate
+            .map(|value| value.sha256.as_str())
+            .unwrap_or("ABSENT"),
         receipt.is_some(),
     ))
 }
@@ -1608,12 +1617,15 @@ fn read_bounded_windows_credential_cursor(install_root: &Path) -> Result<String,
 fn require_stopped_proxy_only_initial_commit_owner(install_root: &Path) -> Result<(), String> {
     let target = canonical_production_desired_state()?;
     if target.windows_datapath_mode != WindowsDatapathMode::ProxyOnly as i32
-        || !install_root.to_string_lossy().eq_ignore_ascii_case(r"C:\sing-box")
+        || !install_root
+            .to_string_lossy()
+            .eq_ignore_ascii_case(r"C:\sing-box")
     {
         return Err("initial Windows paired commit requires canonical ProxyOnly root".to_owned());
     }
-    let activation = load_verified_activation(install_root)
-        .map_err(|_| "initial Windows commit requires exact immutable installed release".to_owned())?;
+    let activation = load_verified_activation(install_root).map_err(|_| {
+        "initial Windows commit requires exact immutable installed release".to_owned()
+    })?;
     let doctor = Command::new(&activation.diagnostic_path)
         .arg("doctor")
         .arg(install_root.join("current.pb"))
@@ -1634,14 +1646,18 @@ fn require_stopped_proxy_only_initial_commit_owner(install_root: &Path) -> Resul
         "unknown_singbox_process_count=0",
     ] {
         if !evidence.lines().any(|line| line == expected) {
-            return Err(format!("initial Windows paired commit missing native stopped owner evidence: {expected}"));
+            return Err(format!(
+                "initial Windows paired commit missing native stopped owner evidence: {expected}"
+            ));
         }
     }
     let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
         .map_err(|_| "initial Windows commit cannot inspect SCM".to_owned())?;
-    let service = manager.open_service(WINDOWS_CONTROLLER_SERVICE_NAME, ServiceAccess::QUERY_STATUS)
+    let service = manager
+        .open_service(WINDOWS_CONTROLLER_SERVICE_NAME, ServiceAccess::QUERY_STATUS)
         .map_err(|_| "initial Windows commit cannot inspect owner service".to_owned())?;
-    let status = service.query_status()
+    let status = service
+        .query_status()
         .map_err(|_| "initial Windows commit SCM status uncertain".to_owned())?;
     if status.current_state != ServiceState::Stopped
         || status.process_id.is_some()
@@ -1650,7 +1666,9 @@ fn require_stopped_proxy_only_initial_commit_owner(install_root: &Path) -> Resul
             RuntimeProcessClassification::Absent
         )
     {
-        return Err("initial Windows paired commit requires exact stopped/zero-process SCM".to_owned());
+        return Err(
+            "initial Windows paired commit requires exact stopped/zero-process SCM".to_owned(),
+        );
     }
     Ok(())
 }
