@@ -533,22 +533,11 @@ if ($StageOnly -or $BootstrapNow) {
         throw 'OFFLINE_BOOTSTRAP_BLOCKED: installed stable authority absent'
     }
     $old = Invoke-Diagnostic -Diagnostic $stable -State $currentPath
-    # Only download/hash-verify an inactive immutable release. It is safe for
-    # the CURRENT stopped former ManagedTun and stopped manual ProxyOnly.
-    # Never retarget live SCM, current.pb or credential pointers in StageOnly.
-    $stoppedFormerTun = (
-        [string]$old['windows_datapath_mode'] -ceq 'ManagedTun' -and
-        [string]$old['scm_start_type'] -ceq 'AutoStart'
-    )
-    $stoppedProxyOnly = (
-        [string]$old['windows_datapath_mode'] -ceq 'ProxyOnly' -and
-        [string]$old['scm_start_type'] -ceq 'OnDemand'
-    )
     if ([string]$old['release_set_sha256'] -ceq $ReleaseSetSha256 -or
-        (-not $stoppedFormerTun -and -not $stoppedProxyOnly) -or
+        [string]$old['windows_datapath_mode'] -cne 'ManagedTun' -or
         [string]$old['scm_state'] -cne 'Stopped' -or
         [string]$old['managed_tun_present'] -cne 'false') {
-        throw 'OFFLINE_BOOTSTRAP_BLOCKED: exact stopped owner with safe SCM startup mode required'
+        throw 'OFFLINE_BOOTSTRAP_BLOCKED: exact stopped former ManagedTun owner required'
     }
     # Re-observe the ONLY existing SYSTEM/Highest dispatcher before calling
     # the native one-shot owner. Never retarget an unrelated task.
