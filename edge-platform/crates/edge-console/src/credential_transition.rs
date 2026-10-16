@@ -224,8 +224,12 @@ pub(crate) fn existing_join(
     }
     verify_exact_candidate_runtime(install_root, activation, &store, candidate)?;
     let next = store.promote_windows_existing_join(
-        generation, slot, windows_a_sha256, windows_b_sha256,
-        vm_b_sha256, intent_sha256,
+        generation,
+        slot,
+        windows_a_sha256,
+        windows_b_sha256,
+        vm_b_sha256,
+        intent_sha256,
     )?;
     if next.active.as_ref().map(|v| v.sha256.as_str()) != Some(windows_b_sha256)
         || next.previous.as_ref().map(|v| v.sha256.as_str()) != Some(windows_a_sha256)
@@ -241,7 +245,9 @@ pub(crate) fn existing_join(
     )?;
     Ok((
         "WINDOWS_EXISTING_JOIN_ACTIVE_LOCAL_ONLY".to_owned(),
-        format!("Windows generation {generation} slot {slot} ACTIVE, source A retained as PREVIOUS"),
+        format!(
+            "Windows generation {generation} slot {slot} ACTIVE, source A retained as PREVIOUS"
+        ),
     ))
 }
 

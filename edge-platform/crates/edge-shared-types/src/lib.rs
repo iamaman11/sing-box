@@ -1166,10 +1166,22 @@ pub fn validate_windows_privileged_request(
                 );
             }
             let digests = [
-                ("join_intent", request.initial_commit_intent_sha256.as_deref()),
-                ("join_vm_candidate", request.existing_join_vm_candidate_sha256.as_deref()),
-                ("join_windows_active", request.existing_join_windows_active_sha256.as_deref()),
-                ("join_windows_candidate", request.existing_join_windows_candidate_sha256.as_deref()),
+                (
+                    "join_intent",
+                    request.initial_commit_intent_sha256.as_deref(),
+                ),
+                (
+                    "join_vm_candidate",
+                    request.existing_join_vm_candidate_sha256.as_deref(),
+                ),
+                (
+                    "join_windows_active",
+                    request.existing_join_windows_active_sha256.as_deref(),
+                ),
+                (
+                    "join_windows_candidate",
+                    request.existing_join_windows_candidate_sha256.as_deref(),
+                ),
             ];
             for (name, value) in digests {
                 validate_lower_hex(name, value.ok_or_else(|| format!("{name} absent"))?, 64)?;
