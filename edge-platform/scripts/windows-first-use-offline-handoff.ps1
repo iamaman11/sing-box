@@ -75,6 +75,16 @@ $commands = @(& $console --help)
 if ($LASTEXITCODE -ne 0 -or -not ($commands | Where-Object { $_ -match '\bprivileged-offline-activate\b' })) {
   throw 'FIRST_USE_OFFLINE_BLOCKED: installed owner has no native offline capability; BEGIN forbidden'
 }
+if ([string]$before['release_set_sha256'] -cne $ReleaseSetSha256) {
+  # This is the exact installer path consumed by the installed Rust offline
+  # owner. Refuse a missing/reparse prerequisite BEFORE writing the one-shot
+  # GitHub BEGIN rather than discovering it after a VM/Windows transaction.
+  $bootstrap = Join-Path $root 'bootstrap\install-windows-release.ps1'
+  if (-not (Test-Path -LiteralPath $bootstrap -PathType Leaf) -or
+      ((Get-Item -LiteralPath $bootstrap -ErrorAction Stop).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+    throw 'FIRST_USE_OFFLINE_BLOCKED: protected native offline installer prerequisite missing before BEGIN'
+  }
+}
 $evidence = @(& $console privileged-runtime-evidence --install-root $root)
 if ($LASTEXITCODE -ne 0) {
   throw 'FIRST_USE_OFFLINE_BLOCKED: installed SYSTEM readonly evidence unavailable'
