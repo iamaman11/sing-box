@@ -1994,6 +1994,18 @@ fn read_bounded_windows_credential_cursor(install_root: &Path) -> Result<String,
     };
     let receipt = store.read_initial_pair_receipt()?;
     let recovery = store.read_initial_pair_recovery_receipt()?;
+    // Only sanitized durable hashes; malformed or torn receipts yield
+    // UNKNOWN, never an invented "not attempted" state.
+    let existing_prepare = store.read_windows_existing_join_prepare_receipt()?;
+    let existing_join = store.read_existing_join_receipt()?;
+    let existing_prepare_begin = existing_prepare
+        .as_deref()
+        .and_then(|text| text.lines().find_map(|line| line.strip_prefix("begin_sha256=")))
+        .unwrap_or("ABSENT");
+    let existing_commit_intent = existing_join
+        .as_deref()
+        .and_then(|text| text.lines().find_map(|line| line.strip_prefix("intent_sha256=")))
+        .unwrap_or("ABSENT");
     let recovery_sha = recovery
         .as_deref()
         .and_then(|value| {
@@ -2011,7 +2023,7 @@ fn read_bounded_windows_credential_cursor(install_root: &Path) -> Result<String,
         })
         .unwrap_or("ABSENT");
     Ok(format!(
-        "credential_cursor=VALID;credential_active_present={};credential_candidate_present={};credential_candidate_generation={};credential_candidate_slot={slot};credential_previous_present={};credential_active_generation={};credential_active_slot={active_slot};credential_active_sha256={};credential_candidate_sha256={};credential_initial_commit_receipt_present={};credential_initial_commit_intent_sha256={receipt_sha};credential_initial_recovery_receipt_present={};credential_initial_recovery_intent_sha256={recovery_sha}",
+        "credential_cursor=VALID;credential_active_present={};credential_candidate_present={};credential_candidate_generation={};credential_candidate_slot={slot};credential_previous_present={};credential_active_generation={};credential_active_slot={active_slot};credential_active_sha256={};credential_candidate_sha256={};credential_initial_commit_receipt_present={};credential_initial_commit_intent_sha256={receipt_sha};credential_initial_recovery_receipt_present={};credential_initial_recovery_intent_sha256={recovery_sha};credential_existing_join_prepare_receipt_present={};credential_existing_join_prepare_begin_sha256={existing_prepare_begin};credential_existing_join_receipt_present={};credential_existing_join_intent_sha256={existing_commit_intent};credential_previous_generation={};credential_previous_slot={};credential_previous_sha256={}",
         active.is_some(),
         candidate.is_some(),
         candidate.map(|value| value.generation).unwrap_or(0),
@@ -2025,6 +2037,11 @@ fn read_bounded_windows_credential_cursor(install_root: &Path) -> Result<String,
             .unwrap_or("ABSENT"),
         receipt.is_some(),
         recovery.is_some(),
+        existing_prepare.is_some(),
+        existing_join.is_some(),
+        previous.map(|value| value.generation).unwrap_or(0),
+        previous.map(|value| value.slot).unwrap_or(0),
+        previous.map(|value| value.sha256.as_str()).unwrap_or("ABSENT"),
     ))
 }
 

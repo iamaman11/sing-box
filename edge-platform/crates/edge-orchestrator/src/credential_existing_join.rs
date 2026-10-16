@@ -289,6 +289,8 @@ pub(crate) struct ExistingJoinSnapshot {
     pub(crate) vm_active: Option<Witness>,
     pub(crate) vm_candidate: Option<Witness>,
     pub(crate) vm_join_receipt_intent_sha256: Option<String>,
+    pub(crate) windows_join_receipt_intent_sha256: Option<String>,
+    pub(crate) windows_prepare_begin_sha256: Option<String>,
     pub(crate) windows_worker_origin_verified: bool,
     pub(crate) vm_worker_origin_verified: bool,
     pub(crate) windows_stopped_proxy_only: bool,
@@ -308,6 +310,18 @@ pub(crate) fn reconcile(
     snapshot: &ExistingJoinSnapshot,
 ) -> Result<&'static str, String> {
     readback(spec, history, exact, revision, release)?;
+    let begin = begin_records(history)?;
+    if begin.len() != 1 {
+        return Ok("UNKNOWN_SAFE_BLOCKED_NO_REPLAY");
+    }
+    let begin_digest = {
+        use ring::digest::{SHA256, digest};
+        digest(&SHA256, begin[0].as_bytes())
+            .as_ref()
+            .iter()
+            .map(|v| format!("{v:02x}"))
+            .collect::<String>()
+    };
     let expected_digest = {
         use ring::digest::{SHA256, digest};
         digest(&SHA256, exact.as_bytes())
@@ -334,12 +348,26 @@ pub(crate) fn reconcile(
     let receipt_correct =
         snapshot.vm_join_receipt_intent_sha256.as_deref() == Some(expected_digest.as_str());
     let receipt_absent = snapshot.vm_join_receipt_intent_sha256.is_none();
+    let windows_receipt_correct =
+        snapshot.windows_join_receipt_intent_sha256.as_deref() == Some(expected_digest.as_str());
+    let windows_receipt_absent = snapshot.windows_join_receipt_intent_sha256.is_none();
+    let prepare_correct =
+        snapshot.windows_prepare_begin_sha256.as_deref() == Some(begin_digest.as_str());
+    let prepare_absent = snapshot.windows_prepare_begin_sha256.is_none();
+    if (!windows_receipt_absent && !windows_receipt_correct)
+        || (!receipt_absent && !receipt_correct)
+        || (!prepare_absent && !prepare_correct)
+    {
+        return Ok("UNKNOWN_SAFE_BLOCKED_NO_REPLAY");
+    }
     if win_is_a
         && snapshot.windows_candidate.as_ref() == Some(b)
         && snapshot.windows_previous.is_none()
         && snapshot.vm_active.is_none()
         && vm_candidate_b
         && receipt_absent
+        && windows_receipt_absent
+        && prepare_absent
     {
         return Ok("INTENT_DURABLE_PREPARED_NO_AUTO_APPLY");
     }
@@ -349,12 +377,16 @@ pub(crate) fn reconcile(
         && vm_is_b
         && snapshot.vm_candidate.is_none()
         && receipt_correct
+        && windows_receipt_correct
+        && prepare_correct
     {
         return Ok("POINTERS_COMPLETE_REQUIRES_INDEPENDENT_ACCEPTANCE");
     }
     if (win_is_a || win_is_b)
         && (vm_is_b || vm_candidate_b)
-        && (snapshot.vm_join_receipt_intent_sha256.is_none() || receipt_correct)
+        && (receipt_absent || receipt_correct)
+        && (windows_receipt_absent || windows_receipt_correct)
+        && (prepare_absent || prepare_correct)
     {
         return Ok("PARTIAL_SAFE_BLOCKED_NO_REPLAY");
     }
@@ -712,6 +744,8 @@ mod tests {
             vm_active: None,
             vm_candidate: Some(spec.vm_candidate.clone()),
             vm_join_receipt_intent_sha256: None,
+            windows_join_receipt_intent_sha256: None,
+            windows_prepare_begin_sha256: None,
             windows_worker_origin_verified: true,
             vm_worker_origin_verified: true,
             windows_stopped_proxy_only: true,
@@ -738,6 +772,18 @@ mod tests {
             state,
         )
         .unwrap()
+    }
+
+    fn beginning_digest_for_test(spec: &ExistingJoinIntent) -> String {
+        use ring::digest::{SHA256, digest};
+        let history: Vec<serde_json::Value> =
+            serde_json::from_str(&history_begin(spec)).unwrap();
+        let body = history[0]["body"].as_str().unwrap();
+        digest(&SHA256, body.as_bytes())
+            .as_ref()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
     }
 
     #[test]
@@ -798,7 +844,10 @@ mod tests {
         s.windows_previous = Some(g.windows_active.clone());
         s.vm_active = Some(g.vm_candidate.clone());
         s.vm_candidate = None;
-        s.vm_join_receipt_intent_sha256 = Some(digest);
+        s.vm_join_receipt_intent_sha256 = Some(digest.clone());
+        s.windows_join_receipt_intent_sha256 = Some(digest);
+        let begin = beginning_digest_for_test(&g);
+        s.windows_prepare_begin_sha256 = Some(begin);
         assert_eq!(
             classify(&g, &s),
             "POINTERS_COMPLETE_REQUIRES_INDEPENDENT_ACCEPTANCE"
@@ -807,6 +856,18 @@ mod tests {
         assert_eq!(classify(&g, &s), "UNKNOWN_SAFE_BLOCKED_NO_REPLAY");
     }
 
+
+    #[test]
+    fn vm_and_windows_receipts_must_match_the_exact_same_begin_and_commit() {
+        let g = good();
+        let mut s = snapshot(&g);
+        s.windows_prepare_begin_sha256 = Some("d".repeat(64));
+        assert_eq!(classify(&g, &s), "UNKNOWN_SAFE_BLOCKED_NO_REPLAY");
+        s.windows_prepare_begin_sha256 = Some(beginning_digest_for_test(&g));
+        assert_eq!(classify(&g, &s), "PARTIAL_SAFE_BLOCKED_NO_REPLAY");
+        s.windows_join_receipt_intent_sha256 = Some("e".repeat(64));
+        assert_eq!(classify(&g, &s), "UNKNOWN_SAFE_BLOCKED_NO_REPLAY");
+    }
     #[test]
     fn incomplete_or_unproven_snapshot_is_blocked() {
         let g = good();
