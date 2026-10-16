@@ -1147,7 +1147,9 @@ mod tests {
     fn initial_commit_cannot_bypass_unknown_recovery_marker() {
         let root = unique_root("recover-original-block");
         let store = CredentialStore::new(&root, CredentialProjectionKind::Vm).unwrap();
-        store.stage_candidate(&vm_bundle(101, CredentialDeliverySlot::B)).unwrap();
+        store
+            .stage_candidate(&vm_bundle(101, CredentialDeliverySlot::B))
+            .unwrap();
         fs::write(root.join(INITIAL_PAIR_RECOVERY_RECEIPT), "incomplete").unwrap();
         assert!(
             store
