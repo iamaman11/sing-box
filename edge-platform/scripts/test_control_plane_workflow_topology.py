@@ -725,6 +725,8 @@ def main() -> None:
         and "initial_pair_recovery_local_verdict:" in credentials
         and "privileged-initial-credential-recover" in credentials
         and "paired_recovery_local_pointers=UNKNOWN_BLOCKED_NO_REPLAY" in credentials
+        and 'test "$original_prepared" = "$ORIGINAL_PREPARED"' in credentials
+        and "if ($prepared -cne $env:ORIGINAL_PREPARED)" in credentials
         and "paired_serving_network=NOT_ACCEPTED" in credentials
         and "initial_pair_vm_prepared:" in credentials
         and "initial_pair_windows_prepared:" in credentials
