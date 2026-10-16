@@ -173,6 +173,8 @@ enum WindowsPrivilegedOperation {
   // Separately journalled recovery of a proven PARTIAL first-use pair.
   // Not a retry, ordinary PROMOTE, or new credential issuance.
   WINDOWS_PRIVILEGED_OPERATION_INITIAL_CREDENTIAL_RECOVER = 17;
+  // Read-only, exact Worker/local ACTIVE comparison inside existing SYSTEM dispatch.
+  WINDOWS_PRIVILEGED_OPERATION_CREDENTIAL_ORIGIN = 18;
 }
 
 message WindowsPrivilegedRequest {

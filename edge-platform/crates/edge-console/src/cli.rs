@@ -28,6 +28,8 @@ pub(crate) enum Command {
     CredentialState(EndpointArgs),
     // Read-only first-enrollment proof; never applies credentials or changes TUN.
     CredentialInitialProbe(InstallRootArgs),
+    // Native SYSTEM-only authenticated Worker equality, never commits a pair.
+    PrivilegedCredentialOrigin(InstallRootArgs),
     CredentialInitialAttest(InitialCredentialAttestArgs),
     CredentialInitialAcceptanceBootstrap(IsolatedAcceptanceRootArgs),
     CredentialInitialAcceptanceStage(InitialLine1WitnessArgs),
@@ -90,6 +92,7 @@ impl Command {
             Self::Doctor(_) => "doctor",
             Self::CredentialState(_) => "credential-state",
             Self::CredentialInitialProbe(_) => "credential-initial-probe",
+            Self::PrivilegedCredentialOrigin(_) => "privileged-credential-origin",
             Self::CredentialInitialAttest(_) => "credential-initial-attest",
             Self::CredentialInitialAcceptanceBootstrap(_) => {
                 "credential-initial-acceptance-bootstrap"

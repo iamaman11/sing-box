@@ -14,7 +14,8 @@ use edge_local_runtime::{
 };
 use edge_observability::init as init_observability;
 use edge_secrets::{
-    ACCESS_IDENTITY_FILE_NAME, CredentialStore, fetch_canonical_credential_bundle,
+    ACCESS_IDENTITY_FILE_NAME, CredentialStore, CredentialOriginSelection,
+    attest_worker_credential_origin, fetch_canonical_credential_bundle,
     verify_canonical_dummy_ab_slots, verify_initial_selected_dummy_slot,
 };
 use edge_singbox::{STAGE2_CLASH_API_PORT, STAGE2_DESKTOP_PROXY_PORT, STAGE2_WSL_PROXY_PORT};
@@ -202,6 +203,30 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     "doctor reported failing checks".to_owned(),
                 ))
             }
+        }
+        Command::PrivilegedCredentialOrigin(args) => {
+            let install_root = PathBuf::from(args.install_root);
+            require_exact_immutable_activation_console(&install_root)
+                .map_err(ConsoleError::Command)?;
+            let result = submit_privileged_request(
+                &install_root,
+                WindowsPrivilegedRequest {
+                    schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+                    request_id: new_privileged_request_id()?,
+                    operation: WindowsPrivilegedOperation::CredentialOrigin as i32,
+                    accepted_revision: None,
+                    release_set_sha256: None,
+                    credential_generation: None,
+                    credential_transition_action: None,
+                    initial_commit_intent_sha256: None,
+                    initial_commit_slot: None,
+                    initial_recovery_intent_sha256: None,
+                    initial_candidate_sha256: None,
+                },
+            )?;
+            print_privileged_result(&result);
+            finish_privileged_result(&result)?;
+            Ok(())
         }
         Command::CredentialInitialProbe(args) => {
             run_windows_initial_credential_probe(Path::new(&args.install_root))
@@ -1581,6 +1606,36 @@ async fn process_privileged_request(
                     Ok((code, detail, Some(release)))
                 });
             action
+        }
+        Ok(WindowsPrivilegedOperation::CredentialOrigin) => {
+            #[cfg(windows)]
+            {
+                if require_stopped_proxy_only_initial_commit_owner(install_root).is_err() {
+                    Err("WORKER_ORIGIN_BLOCKED: stopped ProxyOnly owner unproven".to_owned())
+                } else {
+                    match load_verified_activation(install_root) {
+                        Err(_) => Err("WORKER_ORIGIN_BLOCKED: immutable release unproven".to_owned()),
+                        Ok(activation) => {
+                            let identity = install_root.join("state").join("secrets").join(ACCESS_IDENTITY_FILE_NAME);
+                            attest_worker_credential_origin(
+                                &windows_credential_store_path(install_root),
+                                &identity,
+                                edge_shared_types::CredentialProjectionKind::Windows,
+                                CredentialOriginSelection::Active,
+                            ).await.map(|proof| (
+                                "CREDENTIAL_WORKER_ORIGIN_READ_ONLY".to_owned(),
+                                format!("credential_origin=WORKER_EXACT_CURRENT_ACTIVE;credential_active_generation={};credential_active_slot={};credential_active_sha256={};credential_pair_committed=false;credential_provider_mutations=0;credential_runtime_mutations=0;windows_tun_mutations=0;windows_dns_mutations=0",
+                                    proof.generation,proof.slot,proof.bundle_sha256),
+                                Some(activation.release_set_sha256),
+                            ))
+                        }
+                    }
+                }
+            }
+            #[cfg(not(windows))]
+            {
+                Err("WORKER_ORIGIN_BLOCKED: Windows SYSTEM owner required".to_owned())
+            }
         }
         Ok(WindowsPrivilegedOperation::RuntimeEvidence) => {
             let active = load_verified_activation(install_root)
@@ -5876,6 +5931,24 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
                     .contains("OFFLINE_HANDOFF_BLOCKED")
             );
         }
+    }
+
+    #[test]
+    fn credential_origin_is_dedicated_read_only_wire_operation() {
+        assert_eq!(WindowsPrivilegedOperation::CredentialOrigin as i32, 18);
+        let request = WindowsPrivilegedRequest {
+            schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+            request_id: "worker-origin".to_owned(),
+            operation: WindowsPrivilegedOperation::CredentialOrigin as i32,
+            accepted_revision: None, release_set_sha256: None,
+            credential_generation: None, credential_transition_action: None,
+            initial_commit_intent_sha256: None, initial_commit_slot: None,
+            initial_recovery_intent_sha256: None, initial_candidate_sha256: None,
+        };
+        assert_eq!(decode_windows_privileged_request(
+            &encode_windows_privileged_request(&request).unwrap()
+        ).unwrap().operation, 18);
+        assert_eq!(privileged_wait_secs(&request), PRIVILEGED_SHORT_WAIT_SECS);
     }
 
     #[test]
