@@ -2747,7 +2747,11 @@ def main() -> None:
 
     require(
         "proven_unchanged: ${{ steps.promote.outputs.proven_unchanged }}" in rotation_workflow
-        and "VM_ROTATION_PROMOTE=PROVEN_UNCHANGED_AFTER_BOUNDED_RETRY" in rotation_workflow
+        and "VM_ROTATION_PROMOTE=PROVEN_UNCHANGED_NO_REPLAY" in rotation_workflow
+        and "ORIGINAL_ACTIVE_GENERATION" in rotation_workflow
+        and "ORIGINAL_ACTIVE_SLOT" in rotation_workflow
+        and "BOUNDED_RETRY_AFTER_OBSERVE" not in rotation_workflow
+        and "OBSERVED_COMMITTED_AFTER_RETRY" not in rotation_workflow
         and "needs.rotate_vm_promote.outputs.proven_unchanged == 'true'" in rotation_workflow
         and "no automatic cross-host compensation is authorized" in rotation_workflow,
         "cross-host credential promotion compensation must run only after the VM owner proves the promotion remained unchanged; uncertain outcomes must fail closed",

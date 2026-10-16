@@ -14,9 +14,9 @@ use edge_local_runtime::{
 };
 use edge_observability::init as init_observability;
 use edge_secrets::{
-    ACCESS_IDENTITY_FILE_NAME, CredentialStore, fetch_canonical_credential_bundle,
+    ACCESS_IDENTITY_FILE_NAME, CredentialOriginSelection, CredentialStore,
+    attest_worker_credential_origin, fetch_canonical_credential_bundle,
     verify_canonical_dummy_ab_slots, verify_initial_selected_dummy_slot,
-    CredentialOriginSelection, attest_worker_credential_origin,
 };
 use edge_singbox::{STAGE2_CLASH_API_PORT, STAGE2_DESKTOP_PROXY_PORT, STAGE2_WSL_PROXY_PORT};
 use error::ConsoleError;
