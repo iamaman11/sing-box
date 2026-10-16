@@ -1735,6 +1735,76 @@ mod tests {
     }
 
     #[test]
+    fn windows_existing_join_accepts_matching_historical_a_first_use_receipt_only() {
+        let root = unique_root("windows-join-original-lineage");
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Windows).unwrap();
+        let a = windows_bundle(101, CredentialDeliverySlot::A);
+        let b = windows_bundle(202, CredentialDeliverySlot::B);
+        let source = local_credential_bundle_ref(&a).unwrap();
+        let target = local_credential_bundle_ref(&b).unwrap();
+        store.stage_candidate(&a).unwrap();
+        store
+            .promote_initial_paired_candidate(101, 1, &"c".repeat(64))
+            .unwrap();
+        store.stage_candidate(&b).unwrap();
+        let result = store
+            .promote_windows_existing_join(
+                202,
+                2,
+                &source.sha256,
+                &target.sha256,
+                &"d".repeat(64),
+                &"e".repeat(64),
+            )
+            .unwrap();
+        assert_eq!(result.previous, Some(source));
+        assert_eq!(result.active, Some(target));
+        assert!(store.read_existing_join_receipt().unwrap().is_some());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_existing_join_rejects_conflicting_historical_a_receipt() {
+        let root = unique_root("windows-join-history-conflict");
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Windows).unwrap();
+        let a = windows_bundle(101, CredentialDeliverySlot::A);
+        let b = windows_bundle(202, CredentialDeliverySlot::B);
+        let source = local_credential_bundle_ref(&a).unwrap();
+        let target = local_credential_bundle_ref(&b).unwrap();
+        store.stage_candidate(&a).unwrap();
+        store
+            .promote_initial_paired_candidate(101, 1, &"c".repeat(64))
+            .unwrap();
+        store.stage_candidate(&b).unwrap();
+        fs::write(
+            root.join(INITIAL_PAIR_COMMIT_RECEIPT),
+            format!(
+                "sing-box.initial-paired-commit/v1\nprojection={}\ngeneration=100\nslot=1\nintent_sha256={}\n",
+                CredentialProjectionKind::Windows as i32,
+                "c".repeat(64),
+            ),
+        )
+        .unwrap();
+        assert!(
+            store
+                .promote_windows_existing_join(
+                    202,
+                    2,
+                    &source.sha256,
+                    &target.sha256,
+                    &"d".repeat(64),
+                    &"e".repeat(64),
+                )
+                .is_err()
+        );
+        assert!(store.read_existing_join_receipt().unwrap().is_none());
+        let state = store.read_state().unwrap().unwrap();
+        assert_eq!(state.active, Some(source));
+        assert_eq!(state.candidate, Some(target));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn windows_existing_join_torn_receipt_blocks_pointer_mutation() {
         let root = unique_root("windows-join-torn");
         let store = CredentialStore::new(&root, CredentialProjectionKind::Windows).unwrap();
