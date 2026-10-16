@@ -170,19 +170,26 @@ impl CredentialStore {
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         {
-            return Err("initial pair commit requires exact generation/slot/intent digest".to_owned());
+            return Err(
+                "initial pair commit requires exact generation/slot/intent digest".to_owned(),
+            );
         }
         let current = self.read_state()?.ok_or_else(|| {
             "initial pair commit requires existing validated candidate cursor".to_owned()
         })?;
         if current.active.is_some() || current.previous.is_some() {
-            return Err("initial pair commit refuses pre-existing active/previous credential".to_owned());
+            return Err(
+                "initial pair commit refuses pre-existing active/previous credential".to_owned(),
+            );
         }
-        let candidate = current.candidate.as_ref().ok_or_else(|| {
-            "initial pair commit requires one local candidate".to_owned()
-        })?;
+        let candidate = current
+            .candidate
+            .as_ref()
+            .ok_or_else(|| "initial pair commit requires one local candidate".to_owned())?;
         if candidate.generation != generation || candidate.slot != slot {
-            return Err("initial pair commit rejects candidate generation/slot mismatch".to_owned());
+            return Err(
+                "initial pair commit rejects candidate generation/slot mismatch".to_owned(),
+            );
         }
         let _bundle = self.read_bundle(candidate)?;
         let receipt = self.root.join(INITIAL_PAIR_COMMIT_RECEIPT);
@@ -195,13 +202,16 @@ impl CredentialStore {
             use std::os::unix::fs::OpenOptionsExt;
             options.mode(0o600);
         }
-        let mut handle = options.open(&receipt)
-            .map_err(|err| format!("initial pair commit receipt already attempted or uncertain: {err}"))?;
+        let mut handle = options.open(&receipt).map_err(|err| {
+            format!("initial pair commit receipt already attempted or uncertain: {err}")
+        })?;
         let data = format!(
             "sing-box.initial-paired-commit/v1\nprojection={}\ngeneration={generation}\nslot={slot}\nintent_sha256={commit_intent_sha256}\n",
             self.projection as i32,
         );
-        handle.write_all(data.as_bytes()).and_then(|_| handle.sync_all())
+        handle
+            .write_all(data.as_bytes())
+            .and_then(|_| handle.sync_all())
             .map_err(|err| format!("initial pair receipt write uncertain, do not replay: {err}"))?;
         set_private_file_permissions(&receipt)?;
         // Atomic pointer write only after durable receipt, no legacy fallback.
@@ -229,12 +239,15 @@ impl CredentialStore {
             || !matches!(parts[3]["slot=".len()..].parse::<i32>(), Ok(1 | 2))
             || {
                 let hex = &parts[4]["intent_sha256=".len()..];
-                hex.len() != 64 || !hex
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                hex.len() != 64
+                    || !hex
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
             }
         {
-            return Err("initial pair receipt is incomplete or malformed; outcome UNKNOWN".to_owned());
+            return Err(
+                "initial pair receipt is incomplete or malformed; outcome UNKNOWN".to_owned(),
+            );
         }
         Ok(Some(text))
     }
@@ -784,7 +797,10 @@ mod tests {
 
     #[test]
     fn paired_initial_commit_is_single_use_with_durable_receipt_and_no_replay() {
-        for projection in [CredentialProjectionKind::Windows, CredentialProjectionKind::Vm] {
+        for projection in [
+            CredentialProjectionKind::Windows,
+            CredentialProjectionKind::Vm,
+        ] {
             let root = unique_root("first-pair");
             let store = CredentialStore::new(&root, projection).unwrap();
             let candidate = if projection == CredentialProjectionKind::Windows {
@@ -793,18 +809,43 @@ mod tests {
                 vm_bundle(101, CredentialDeliverySlot::B)
             };
             store.stage_candidate(&candidate).unwrap();
-            assert!(store.promote_initial_paired_candidate(102, 2, &"a".repeat(64)).is_err());
-            assert!(store.promote_initial_paired_candidate(101, 1, &"a".repeat(64)).is_err());
-            assert!(store.promote_initial_paired_candidate(101, 2, "BAD").is_err());
+            assert!(
+                store
+                    .promote_initial_paired_candidate(102, 2, &"a".repeat(64))
+                    .is_err()
+            );
+            assert!(
+                store
+                    .promote_initial_paired_candidate(101, 1, &"a".repeat(64))
+                    .is_err()
+            );
+            assert!(
+                store
+                    .promote_initial_paired_candidate(101, 2, "BAD")
+                    .is_err()
+            );
             assert!(store.read_initial_pair_receipt().unwrap().is_none());
-            let result = store.promote_initial_paired_candidate(101, 2, &"a".repeat(64)).unwrap();
+            let result = store
+                .promote_initial_paired_candidate(101, 2, &"a".repeat(64))
+                .unwrap();
             assert_eq!(result.active.as_ref().unwrap().generation, 101);
             assert!(result.candidate.is_none());
             assert!(result.previous.is_none());
-            let reopened = CredentialStore::open_existing(&root, projection).unwrap().unwrap();
-            assert!(reopened.read_initial_pair_receipt().unwrap().unwrap()
-                .contains("intent_sha256="));
-            assert!(reopened.promote_initial_paired_candidate(101, 2, &"a".repeat(64)).is_err());
+            let reopened = CredentialStore::open_existing(&root, projection)
+                .unwrap()
+                .unwrap();
+            assert!(
+                reopened
+                    .read_initial_pair_receipt()
+                    .unwrap()
+                    .unwrap()
+                    .contains("intent_sha256=")
+            );
+            assert!(
+                reopened
+                    .promote_initial_paired_candidate(101, 2, &"a".repeat(64))
+                    .is_err()
+            );
             fs::remove_dir_all(root).unwrap();
         }
     }
@@ -813,11 +854,17 @@ mod tests {
     fn paired_initial_commit_interrupted_receipt_never_auto_replays_pointer() {
         let root = unique_root("first-pair-unknown");
         let store = CredentialStore::new(&root, CredentialProjectionKind::Vm).unwrap();
-        store.stage_candidate(&vm_bundle(101, CredentialDeliverySlot::B)).unwrap();
+        store
+            .stage_candidate(&vm_bundle(101, CredentialDeliverySlot::B))
+            .unwrap();
         store.prepare_directories().unwrap();
         fs::write(root.join(INITIAL_PAIR_COMMIT_RECEIPT), "incomplete").unwrap();
         assert!(store.read_initial_pair_receipt().is_err());
-        assert!(store.promote_initial_paired_candidate(101, 2, &"a".repeat(64)).is_err());
+        assert!(
+            store
+                .promote_initial_paired_candidate(101, 2, &"a".repeat(64))
+                .is_err()
+        );
         let state = store.read_state().unwrap().unwrap();
         assert!(state.active.is_none());
         assert_eq!(state.candidate.as_ref().unwrap().generation, 101);
