@@ -723,6 +723,12 @@ def main() -> None:
         and "initial_pair_recovery_intent:" in credentials
         and "initial_pair_recovery_apply_windows:" in credentials
         and "initial_pair_recovery_local_verdict:" in credentials
+        and "initial_pair_recovery_vm_readback:" in credentials
+        and "initial_pair_recovery_windows_readback:" in credentials
+        and "paired_vm_post_recovery=ACTIVE_ORIGIN_READBACK_PASS" in credentials
+        and "paired_windows_post_recovery=ACTIVE_SYSTEM_READBACK_PASS" in credentials
+        and '"$VM_READBACK" = success && "$WINDOWS_READBACK" = success' in credentials
+        and "credential_initial_recovery_receipt_present=true;" in credentials
         and "privileged-initial-credential-recover" in credentials
         and "paired_recovery_local_pointers=UNKNOWN_BLOCKED_NO_REPLAY" in credentials
         and 'test "$original_prepared" = "$ORIGINAL_PREPARED"' in credentials
