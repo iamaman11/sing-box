@@ -1796,6 +1796,75 @@ mod tests {
     }
 
     #[test]
+    fn windows_join_prepare_is_one_shot_and_keeps_original_cursor() {
+        let root = unique_root("windows-join-prepared");
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Windows).unwrap();
+        let a = windows_bundle(101, CredentialDeliverySlot::A);
+        let b = windows_bundle(202, CredentialDeliverySlot::B);
+        let source = local_credential_bundle_ref(&a).unwrap();
+        let target = local_credential_bundle_ref(&b).unwrap();
+        store.stage_candidate(&a).unwrap();
+        store.promote_candidate().unwrap();
+        store.stage_candidate(&b).unwrap();
+        store
+            .prepare_windows_existing_join(
+                &source,
+                &target,
+                &"d".repeat(64),
+                &"e".repeat(64),
+            )
+            .unwrap();
+        assert!(
+            store
+                .read_windows_existing_join_prepare_receipt()
+                .unwrap()
+                .is_some()
+        );
+        let state = store.read_state().unwrap().unwrap();
+        assert_eq!(state.active, Some(source.clone()));
+        assert_eq!(state.candidate, Some(target.clone()));
+        assert!(state.previous.is_none());
+        assert!(
+            store
+                .prepare_windows_existing_join(
+                    &source,
+                    &target,
+                    &"d".repeat(64),
+                    &"e".repeat(64),
+                )
+                .is_err()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_join_prepare_torn_receipt_is_unknown_not_retryable() {
+        let root = unique_root("windows-join-prepare-torn");
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Windows).unwrap();
+        let a = windows_bundle(101, CredentialDeliverySlot::A);
+        let b = windows_bundle(202, CredentialDeliverySlot::B);
+        let source = local_credential_bundle_ref(&a).unwrap();
+        let target = local_credential_bundle_ref(&b).unwrap();
+        store.stage_candidate(&a).unwrap();
+        store.promote_candidate().unwrap();
+        store.stage_candidate(&b).unwrap();
+        fs::write(root.join(EXISTING_JOIN_PREPARE_RECEIPT), b"partial").unwrap();
+        assert!(store.read_windows_existing_join_prepare_receipt().is_err());
+        assert!(
+            store
+                .prepare_windows_existing_join(
+                    &source,
+                    &target,
+                    &"d".repeat(64),
+                    &"e".repeat(64),
+                )
+                .is_err()
+        );
+        assert!(store.read_state().unwrap().unwrap().active.is_some());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn windows_existing_join_is_one_shot_preserving_a_as_previous() {
         let root = unique_root("windows-join");
         let store = CredentialStore::new(&root, CredentialProjectionKind::Windows).unwrap();
