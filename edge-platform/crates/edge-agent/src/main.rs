@@ -233,6 +233,20 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
         cli::LocalCommand::CredentialState => {
             let state = observe_vm_credential_state(&stack_dir).map_err(AgentError::Command)?;
             print_credential_state_evidence(state.as_ref());
+            let root = vm_credential_store_root(&stack_dir).map_err(AgentError::Command)?;
+            if let Some(store) = CredentialStore::open_existing(root, CredentialProjectionKind::Vm)
+                .map_err(AgentError::Command)?
+            {
+                let receipt = store.read_initial_pair_receipt().map_err(AgentError::Command)?;
+                println!("credential_initial_commit_receipt_present={}", receipt.is_some());
+                if let Some(text) = receipt {
+                    let digest = text.lines().find_map(|line| line.strip_prefix("intent_sha256="))
+                        .ok_or_else(|| AgentError::Command("initial VM commit receipt missing digest".to_owned()))?;
+                    println!("credential_initial_commit_intent_sha256={digest}");
+                }
+            } else {
+                println!("credential_initial_commit_receipt_present=false");
+            }
             Ok(())
         }
         cli::LocalCommand::CredentialInitialProbe => {
