@@ -115,6 +115,8 @@ def main() -> None:
         and 'FIRST_USE_OFFLINE_UNKNOWN:' in windows_first_use_offline
         and "stopped ProxyOnly must be manual-start before BEGIN" in windows_first_use_offline
         and "windows_offline_source_mode=" in windows_first_use_offline
+        and "protected native offline installer prerequisite missing before BEGIN" in windows_first_use_offline
+        and "bootstrap\\install-windows-release.ps1" in windows_first_use_offline
         and "only stopped former ManagedTun may switch to ProxyOnly" not in windows_first_use_offline
         and "if ([string]$before['release_set_sha256'] -cne $ReleaseSetSha256)" in windows_first_use_offline
         and 'Require-DirectNetwork' in windows_first_use_offline
