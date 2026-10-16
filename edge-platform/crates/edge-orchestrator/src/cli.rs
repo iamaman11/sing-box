@@ -211,6 +211,13 @@ pub(crate) enum CredentialDeliveryCommand {
         journal_history_path: std::path::PathBuf,
         exact_record_path: std::path::PathBuf,
     },
+    // Existing native status/recover policy, read-only regardless of result.
+    ExistingJoinReconcile {
+        spec_path: std::path::PathBuf,
+        journal_history_path: std::path::PathBuf,
+        exact_record_path: std::path::PathBuf,
+        snapshot_path: std::path::PathBuf,
+    },
     /// Bounded independent GitHub-runner vantage; public VM port probes only.
     InitialLine2ExternalWitness {
         generation: u64,

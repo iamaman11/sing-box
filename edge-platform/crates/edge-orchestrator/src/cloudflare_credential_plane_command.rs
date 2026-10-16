@@ -140,6 +140,7 @@ pub async fn run_delivery(
         &command,
         CredentialDeliveryCommand::ExistingJoinPlan { .. }
             | CredentialDeliveryCommand::ExistingJoinReadback { .. }
+            | CredentialDeliveryCommand::ExistingJoinReconcile { .. }
     ) {
         let release = release_context.release();
         return crate::credential_existing_join::dispatch(
@@ -183,7 +184,8 @@ pub async fn run_delivery(
     match command {
         CredentialDeliveryCommand::ContractVerify => verify(&control_token, &desired).await,
         CredentialDeliveryCommand::ExistingJoinPlan { .. }
-        | CredentialDeliveryCommand::ExistingJoinReadback { .. } => {
+        | CredentialDeliveryCommand::ExistingJoinReadback { .. }
+        | CredentialDeliveryCommand::ExistingJoinReconcile { .. } => {
             unreachable!("existing join runs before provider authority")
         }
         CredentialDeliveryCommand::InitialLine2ExternalWitness { .. } => {

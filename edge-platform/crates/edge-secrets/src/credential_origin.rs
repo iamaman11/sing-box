@@ -85,7 +85,9 @@ where
         .read_state()
         .map_err(|_| "WORKER_ORIGIN_BLOCKED: local cursor invalid")?
         .ok_or("WORKER_ORIGIN_BLOCKED: local cursor missing")?;
-    if before.previous.is_some() || (before.active.is_none() && before.candidate.is_none()) {
+    if (before.active.is_none() && before.candidate.is_none())
+        || (before.previous.is_some() && before.candidate.is_some())
+    {
         return Err("WORKER_ORIGIN_BLOCKED: ambiguous cursor; reconcile read-only".to_owned());
     }
     // ACTIVE plus a staged opposite-slot CANDIDATE is a normal, valid A/B

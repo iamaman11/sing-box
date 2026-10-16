@@ -143,6 +143,90 @@ pub(crate) fn readback(
     Ok(())
 }
 
+/// Independently collected NON-SECRET post-state. The trusted GitHub owner
+/// must reconstruct this from the actual SYSTEM/root process; this JSON is
+/// untrusted when supplied by an operator. This classifier NEVER mutates.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ExistingJoinSnapshot {
+    pub(crate) windows_active: Witness,
+    pub(crate) windows_candidate: Option<Witness>,
+    pub(crate) windows_previous: Option<Witness>,
+    pub(crate) vm_active: Option<Witness>,
+    pub(crate) vm_candidate: Option<Witness>,
+    pub(crate) vm_join_receipt_intent_sha256: Option<String>,
+    pub(crate) windows_worker_origin_verified: bool,
+    pub(crate) vm_worker_origin_verified: bool,
+    pub(crate) windows_stopped_proxy_only: bool,
+    pub(crate) line1_authenticated_endpoints: u8,
+    pub(crate) line2_authenticated_endpoints: u8,
+}
+
+/// A single, bounded status/recovery decision, never an instruction to replay.
+/// Full paired ACTIVE still requires independent network acceptance after the
+/// cursor readback; a lost ACK is not a new mutation authorization.
+pub(crate) fn reconcile(
+    spec: &ExistingJoinIntent,
+    history: &str,
+    exact: &str,
+    revision: &str,
+    release: &str,
+    snapshot: &ExistingJoinSnapshot,
+) -> Result<&'static str, String> {
+    readback(spec, history, exact, revision, release)?;
+    let expected_digest = {
+        use ring::digest::{SHA256, digest};
+        digest(&SHA256, exact.as_bytes())
+            .as_ref()
+            .iter()
+            .map(|v| format!("{v:02x}"))
+            .collect::<String>()
+    };
+    if !snapshot.windows_worker_origin_verified
+        || !snapshot.vm_worker_origin_verified
+        || !snapshot.windows_stopped_proxy_only
+        || snapshot.line1_authenticated_endpoints != 4
+        || snapshot.line2_authenticated_endpoints != 6
+    {
+        return Ok("SAFE_BLOCKED_UNPROVEN_OWNER_OR_NETWORK");
+    }
+    let a = &spec.windows_active;
+    let b = &spec.windows_candidate;
+    let vm = &spec.vm_candidate;
+    let win_is_a = &snapshot.windows_active == a;
+    let win_is_b = &snapshot.windows_active == b;
+    let vm_is_b = snapshot.vm_active.as_ref() == Some(vm);
+    let vm_candidate_b = snapshot.vm_candidate.as_ref() == Some(vm);
+    let receipt_correct =
+        snapshot.vm_join_receipt_intent_sha256.as_deref() == Some(expected_digest.as_str());
+    let receipt_absent = snapshot.vm_join_receipt_intent_sha256.is_none();
+    if win_is_a
+        && snapshot.windows_candidate.as_ref() == Some(b)
+        && snapshot.windows_previous.is_none()
+        && snapshot.vm_active.is_none()
+        && vm_candidate_b
+        && receipt_absent
+    {
+        return Ok("INTENT_DURABLE_PREPARED_NO_AUTO_APPLY");
+    }
+    if win_is_b
+        && snapshot.windows_candidate.is_none()
+        && snapshot.windows_previous.as_ref() == Some(a)
+        && vm_is_b
+        && snapshot.vm_candidate.is_none()
+        && receipt_correct
+    {
+        return Ok("POINTERS_COMPLETE_REQUIRES_INDEPENDENT_ACCEPTANCE");
+    }
+    if (win_is_a || win_is_b)
+        && (vm_is_b || vm_candidate_b)
+        && (snapshot.vm_join_receipt_intent_sha256.is_none() || receipt_correct)
+    {
+        return Ok("PARTIAL_SAFE_BLOCKED_NO_REPLAY");
+    }
+    Ok("UNKNOWN_SAFE_BLOCKED_NO_REPLAY")
+}
+
 pub(crate) fn dispatch(
     command: &crate::cli::CredentialDeliveryCommand,
     revision: &str,
@@ -197,6 +281,32 @@ pub(crate) fn dispatch(
                 .map_err(|_| "existing join exact record unavailable")?;
             readback(&spec, &history, &exact, revision, release)?;
             println!("existing_join_intent=EXACT_DURABLE_ONCE");
+            println!("credential_provider_mutations=0");
+            println!("credential_runtime_mutations=0");
+            Ok(())
+        }
+        CredentialDeliveryCommand::ExistingJoinReconcile {
+            spec_path,
+            journal_history_path,
+            exact_record_path,
+            snapshot_path,
+        } => {
+            let spec: ExistingJoinIntent = serde_json::from_slice(
+                &fs::read(spec_path).map_err(|_| "existing join spec unavailable")?,
+            )
+            .map_err(|_| "existing join spec invalid")?;
+            let snapshot: ExistingJoinSnapshot = serde_json::from_slice(
+                &fs::read(snapshot_path).map_err(|_| "existing join owner snapshot unavailable")?,
+            )
+            .map_err(|_| "existing join owner snapshot invalid")?;
+            let history = fs::read_to_string(journal_history_path)
+                .map_err(|_| "existing join history unavailable")?;
+            let exact = fs::read_to_string(exact_record_path)
+                .map_err(|_| "existing join exact intent unavailable")?;
+            let decision = reconcile(&spec, &history, &exact, revision, release, &snapshot)?;
+            println!("existing_join_state={decision}");
+            println!("credential_mutation_allowed=false");
+            println!("credential_mutation_replayed=false");
             println!("credential_provider_mutations=0");
             println!("credential_runtime_mutations=0");
             Ok(())
@@ -296,4 +406,93 @@ mod tests {
             .to_string();
         assert!(plan(&g, &partial, &g.accepted_revision, &g.release_set_sha256).is_err());
     }
+
+    fn snapshot(spec: &ExistingJoinIntent) -> ExistingJoinSnapshot {
+        ExistingJoinSnapshot {
+            windows_active: spec.windows_active.clone(),
+            windows_candidate: Some(spec.windows_candidate.clone()),
+            windows_previous: None,
+            vm_active: None,
+            vm_candidate: Some(spec.vm_candidate.clone()),
+            vm_join_receipt_intent_sha256: None,
+            windows_worker_origin_verified: true,
+            vm_worker_origin_verified: true,
+            windows_stopped_proxy_only: true,
+            line1_authenticated_endpoints: 4,
+            line2_authenticated_endpoints: 6,
+        }
+    }
+
+    fn classify(spec: &ExistingJoinIntent, state: &ExistingJoinSnapshot) -> &'static str {
+        let record = plan(spec, "[]", &spec.accepted_revision, &spec.release_set_sha256).unwrap();
+        let history = serde_json::json!([{"body":record}]).to_string();
+        reconcile(
+            spec, &history, &record, &spec.accepted_revision,
+            &spec.release_set_sha256, state,
+        ).unwrap()
+    }
+
+    #[test]
+    fn exact_durable_prepared_state_does_not_automatically_apply() {
+        let g = good();
+        assert_eq!(
+            classify(&g, &snapshot(&g)),
+            "INTENT_DURABLE_PREPARED_NO_AUTO_APPLY"
+        );
+    }
+
+    #[test]
+    fn half_committed_vm_join_refuses_automatic_replay() {
+        let g = good();
+        let intent = plan(&g, "[]", &g.accepted_revision, &g.release_set_sha256).unwrap();
+        let digest = {
+            use ring::digest::{SHA256, digest};
+            digest(&SHA256, intent.as_bytes())
+                .as_ref()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        let mut s = snapshot(&g);
+        s.vm_candidate = None;
+        s.vm_active = Some(g.vm_candidate.clone());
+        s.vm_join_receipt_intent_sha256 = Some(digest);
+        assert_eq!(classify(&g, &s), "PARTIAL_SAFE_BLOCKED_NO_REPLAY");
+    }
+
+    #[test]
+    fn completed_pointers_still_require_independent_acceptance() {
+        let g = good();
+        let record = plan(&g, "[]", &g.accepted_revision, &g.release_set_sha256).unwrap();
+        let digest = {
+            use ring::digest::{SHA256, digest};
+            digest(&SHA256, record.as_bytes())
+                .as_ref()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        };
+        let mut s = snapshot(&g);
+        s.windows_active = g.windows_candidate.clone();
+        s.windows_candidate = None;
+        s.windows_previous = Some(g.windows_active.clone());
+        s.vm_active = Some(g.vm_candidate.clone());
+        s.vm_candidate = None;
+        s.vm_join_receipt_intent_sha256 = Some(digest);
+        assert_eq!(classify(&g, &s), "POINTERS_COMPLETE_REQUIRES_INDEPENDENT_ACCEPTANCE");
+        s.vm_join_receipt_intent_sha256 = Some("e".repeat(64));
+        assert_eq!(classify(&g, &s), "UNKNOWN_SAFE_BLOCKED_NO_REPLAY");
+    }
+
+    #[test]
+    fn incomplete_or_unproven_snapshot_is_blocked() {
+        let g = good();
+        let mut s = snapshot(&g);
+        s.windows_worker_origin_verified = false;
+        assert_eq!(classify(&g, &s), "SAFE_BLOCKED_UNPROVEN_OWNER_OR_NETWORK");
+        s.windows_worker_origin_verified = true;
+        s.line2_authenticated_endpoints = 5;
+        assert_eq!(classify(&g, &s), "SAFE_BLOCKED_UNPROVEN_OWNER_OR_NETWORK");
+    }
+
 }
