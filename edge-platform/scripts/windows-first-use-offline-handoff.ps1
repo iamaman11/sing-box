@@ -76,6 +76,18 @@ function Require-DirectNetwork {
     throw 'FIRST_USE_OFFLINE_BLOCKED: independent no-proxy HTTPS unproven'
   }
 }
+function Read-NetworkOwner {
+  # No changes to an independently owned WARP client or direct DNS route.
+  $route = Get-NetRoute -AddressFamily IPv4 -DestinationPrefix '0.0.0.0/0' -ErrorAction Stop |
+    Sort-Object RouteMetric,InterfaceMetric | Select-Object -First 1
+  if ($null -eq $route) { throw 'WINDOWS_APPLY_BLOCKED: default IPv4 route missing' }
+  $dns = @(Get-DnsClientServerAddress -InterfaceIndex ([int]$route.InterfaceIndex) -AddressFamily IPv4 -ErrorAction Stop |
+    ForEach-Object ServerAddresses)
+  if ($dns.Count -eq 0) { throw 'WINDOWS_APPLY_BLOCKED: direct IPv4 resolver absent' }
+  $warp = Get-CimInstance Win32_Service -Filter "Name='CloudflareWARP'" -ErrorAction Stop
+  if ($null -eq $warp) { throw 'WINDOWS_APPLY_BLOCKED: Cloudflare One service unobservable' }
+  return ('{0}|{1}|{2}|{3}|{4}' -f $route.InterfaceIndex,$route.NextHop,($dns -join ','),$warp.State,$warp.StartMode)
+}
 $before = Read-Owner
 if ($ExistingActive -and [string]$before['windows_datapath_mode'] -cne 'ProxyOnly') {
   throw 'WINDOWS_APPLY_BLOCKED: stopped ProxyOnly required'
@@ -84,6 +96,7 @@ if ($ExistingActive -and -not $Preflight -and [string]$before['release_set_sha25
   throw 'WINDOWS_APPLY_BLOCKED: old ReleaseSet drift after BEGIN'
 }
 Require-DirectNetwork
+$networkBefore = if ($ExistingActive) { Read-NetworkOwner } else { '' }
 $console = [string]$before['console_path']
 if (-not (Test-Path -LiteralPath $console -PathType Leaf)) {
   throw 'FIRST_USE_OFFLINE_BLOCKED: exact installed native console missing'
@@ -169,13 +182,16 @@ if ($ExistingActive) {
       throw 'WINDOWS_APPLY_UNKNOWN: credential metadata changed; no replay'
     }
   }
+  if ($networkBefore -cne (Read-NetworkOwner)) {
+    throw 'WINDOWS_APPLY_UNKNOWN: route, DNS or Cloudflare One owner drift; no replay'
+  }
 }
 if ([string]$after['release_set_sha256'] -cne $ReleaseSetSha256 -or
     [string]$after['windows_datapath_mode'] -cne 'ProxyOnly') {
   throw 'FIRST_USE_OFFLINE_UNKNOWN: exact stopped ProxyOnly target not proven; no replay'
 }
 Require-DirectNetwork
-Write-Host "windows_release_only_result=$(if ($ExistingActive) { 'PASS_EXISTING_ACTIVE_UNMODIFIED' } else { 'NOT_APPLICABLE_FIRST_USE' })"
+Write-Host "windows_release_only_result=$(if ($ExistingActive) { 'PASS_ACTIVE_CURSOR_AND_NETWORK_PARITY_ORIGIN_UNPROVEN' } else { 'NOT_APPLICABLE_FIRST_USE' })"
 Write-Host 'windows_first_use_offline_release=PASS_STOPPED_PROXY_ONLY'
 Write-Host "windows_release_set_sha256=$ReleaseSetSha256"
 Write-Host 'windows_scm_state=Stopped'
