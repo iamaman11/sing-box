@@ -53,6 +53,7 @@ pub(crate) enum Command {
     PrivilegedInitialCredentialCommit(PrivilegedInitialCredentialCommitArgs),
     // Exact separately authorized recovery of a previously failed paired first-use.
     PrivilegedInitialCredentialRecover(PrivilegedInitialCredentialRecoverArgs),
+    PrivilegedExistingPrepare(PrivilegedExistingJoinArgs),
     PrivilegedExistingJoin(PrivilegedExistingJoinArgs),
     CredentialTransition(CredentialTransitionArgs),
     RestartVerifyRuntime,
@@ -115,6 +116,7 @@ impl Command {
             Self::PrivilegedStageCredential(_) => "privileged-stage-credential",
             Self::PrivilegedInitialCredentialCommit(_) => "privileged-initial-credential-commit",
             Self::PrivilegedInitialCredentialRecover(_) => "privileged-initial-credential-recover",
+            Self::PrivilegedExistingPrepare(_) => "privileged-existing-prepare",
             Self::PrivilegedExistingJoin(_) => "privileged-existing-join",
             Self::CredentialTransition(_) => "credential-transition",
             Self::RestartVerifyRuntime => "restart-verify-runtime",

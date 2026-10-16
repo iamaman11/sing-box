@@ -192,6 +192,51 @@ pub(crate) fn transition(
     }
 }
 
+/// Protected GH BEGIN must be independently verified by the submitting
+/// workflow. SYSTEM uses stopped ProxyOnly and persists a no-replay receipt
+/// BEFORE applying candidate B to the two managed files. It never starts SCM.
+pub(crate) fn existing_prepare(
+    install_root: &Path,
+    activation: &WindowsActivationState,
+    generation: u64,
+    slot: i32,
+    source_sha256: &str,
+    target_sha256: &str,
+    vm_sha256: &str,
+    begin_sha256: &str,
+) -> Result<(String, String), String> {
+    verify_windows_activation_files(activation)?;
+    let store = open_store(install_root)?;
+    let state = store.read_state()?
+        .ok_or_else(|| "Windows existing join prepare cursor missing".to_owned())?;
+    require_active_v2_for_rotation(&state)?;
+    require_candidate_without_previous(&state)?;
+    let source = state.active.as_ref()
+        .ok_or_else(|| "Windows join prepare ACTIVE missing".to_owned())?;
+    let candidate = state.candidate.as_ref()
+        .ok_or_else(|| "Windows join prepare candidate missing".to_owned())?;
+    if source.sha256 != source_sha256
+        || candidate.sha256 != target_sha256
+        || candidate.generation != generation
+        || candidate.slot != slot
+    {
+        return Err("Windows join prepare source or candidate changed".to_owned());
+    }
+    verify_exact_active_runtime(install_root, activation, &store, source)?;
+    let bundle = store.read_bundle(candidate)?;
+    let rendered = windows_runtime_state_from_canonical_production_bundle(&bundle)?;
+    // No irreversible managed-runtime write before durable begin receipt.
+    store.prepare_windows_existing_join(
+        source, candidate, vm_sha256, begin_sha256,
+    )?;
+    apply_runtime_state(install_root, activation, &rendered)?;
+    verify_exact_candidate_runtime(install_root, activation, &store, candidate)?;
+    Ok((
+        "WINDOWS_EXISTING_JOIN_CANDIDATE_APPLIED_NO_REPLAY".to_owned(),
+        format!("Windows candidate generation {generation} applied while ACTIVE A is unchanged"),
+    ))
+}
+
 /// Existing ACTIVE A -> selected B only. The protected GitHub owner must
 /// authenticate the exact durable A/B/VM intent before SYSTEM dispatch.
 /// This native action is one-shot and keeps A as PREVIOUS. SCM/TUN stay stopped.
@@ -223,6 +268,20 @@ pub(crate) fn existing_join(
         return Err("Windows existing join target differs from immutable intent".to_owned());
     }
     verify_exact_candidate_runtime(install_root, activation, &store, candidate)?;
+    // A candidate config is not permission to promote: require the exact
+    // one-shot BEGIN-bound preparation receipt before COMMIT pointer mutation.
+    let prepare = store.read_windows_existing_join_prepare_receipt()?
+        .ok_or_else(|| "Windows existing join prepare receipt missing; no replay".to_owned())?;
+    let fields: Vec<_> = prepare.lines().collect();
+    if fields.get(4).and_then(|v| v.strip_prefix("source_sha256="))
+        != Some(windows_a_sha256)
+        || fields.get(7).and_then(|v| v.strip_prefix("target_sha256="))
+            != Some(windows_b_sha256)
+        || fields.get(8).and_then(|v| v.strip_prefix("vm_sha256="))
+            != Some(vm_b_sha256)
+    {
+        return Err("Windows existing join prepare differs from COMMIT; no replay".to_owned());
+    }
     let next = store.promote_windows_existing_join(
         generation,
         slot,

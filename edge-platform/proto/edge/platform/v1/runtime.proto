@@ -175,6 +175,8 @@ enum WindowsPrivilegedOperation {
   WINDOWS_PRIVILEGED_OPERATION_INITIAL_CREDENTIAL_RECOVER = 17;
   // One-shot Windows ACTIVE A -> prepared B, existing SYSTEM authority only.
   WINDOWS_PRIVILEGED_OPERATION_EXISTING_CREDENTIAL_JOIN = 18;
+  // SYSTEM-only stopped ProxyOnly BEGIN-bound candidate application.
+  WINDOWS_PRIVILEGED_OPERATION_EXISTING_CREDENTIAL_PREPARE = 19;
 }
 
 message WindowsPrivilegedRequest {

@@ -991,7 +991,11 @@ pub fn validate_windows_privileged_request(
     {
         return Err("paired recovery fields are forbidden on unrelated operations".to_owned());
     }
-    if operation != WindowsPrivilegedOperation::ExistingCredentialJoin
+    if !matches!(
+        operation,
+        WindowsPrivilegedOperation::ExistingCredentialJoin
+            | WindowsPrivilegedOperation::ExistingCredentialPrepare
+    )
         && (request.existing_join_vm_candidate_sha256.is_some()
             || request.existing_join_windows_active_sha256.is_some()
             || request.existing_join_windows_candidate_sha256.is_some()
@@ -1152,7 +1156,8 @@ pub fn validate_windows_privileged_request(
                 return Err("paired recovery decision must differ from original commit".to_owned());
             }
         }
-        WindowsPrivilegedOperation::ExistingCredentialJoin => {
+        WindowsPrivilegedOperation::ExistingCredentialJoin
+        | WindowsPrivilegedOperation::ExistingCredentialPrepare => {
             if request.accepted_revision.is_some()
                 || request.release_set_sha256.is_some()
                 || request.credential_transition_action.is_some()

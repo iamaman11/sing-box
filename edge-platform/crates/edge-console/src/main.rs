@@ -749,6 +749,35 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             finish_privileged_result(&result)?;
             Ok(())
         }
+        Command::PrivilegedExistingPrepare(args) => {
+            let install_root = PathBuf::from(args.install_root);
+            require_exact_immutable_activation_console(&install_root)
+                .map_err(ConsoleError::Command)?;
+            let result = submit_privileged_request(
+                &install_root,
+                WindowsPrivilegedRequest {
+                    schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+                    request_id: new_privileged_request_id()?,
+                    operation: WindowsPrivilegedOperation::ExistingCredentialPrepare as i32,
+                    accepted_revision: None,
+                    release_set_sha256: None,
+                    credential_generation: Some(args.generation),
+                    credential_transition_action: None,
+                    initial_commit_intent_sha256: None,
+                    initial_commit_slot: None,
+                    initial_recovery_intent_sha256: None,
+                    initial_candidate_sha256: None,
+                    existing_join_vm_candidate_sha256: Some(args.vm_candidate_sha256),
+                    existing_join_windows_active_sha256: Some(args.windows_active_sha256),
+                    existing_join_windows_candidate_sha256: Some(args.windows_candidate_sha256),
+                    existing_join_intent_sha256: Some(args.intent_sha256),
+                    existing_join_slot: Some(args.slot),
+                },
+            )?;
+            print_privileged_result(&result);
+            finish_privileged_result(&result)?;
+            Ok(())
+        }
         Command::PrivilegedExistingJoin(args) => {
             let install_root = PathBuf::from(args.install_root);
             require_exact_immutable_activation_console(&install_root)
@@ -1675,6 +1704,69 @@ async fn process_privileged_request(
             #[cfg(not(windows))]
             {
                 Err("initial paired credential recovery requires Windows SYSTEM owner".to_owned())
+            }
+        }
+        Ok(WindowsPrivilegedOperation::ExistingCredentialPrepare) => {
+            #[cfg(windows)]
+            {
+                async {
+                    require_stopped_proxy_only_initial_commit_owner(install_root)?;
+                    let activation = load_verified_activation(install_root)
+                        .map_err(|err| err.to_string())?;
+                    let generation = request.credential_generation
+                        .ok_or_else(|| "existing join generation missing".to_owned())?;
+                    let slot = request.existing_join_slot
+                        .ok_or_else(|| "existing join slot missing".to_owned())?;
+                    let intent = request.existing_join_intent_sha256.as_deref()
+                        .ok_or_else(|| "existing join durable intent missing".to_owned())?;
+                    let vm = request.existing_join_vm_candidate_sha256.as_deref()
+                        .ok_or_else(|| "existing join VM witness missing".to_owned())?;
+                    let source = request.existing_join_windows_active_sha256.as_deref()
+                        .ok_or_else(|| "existing join Windows A witness missing".to_owned())?;
+                    let target = request.existing_join_windows_candidate_sha256.as_deref()
+                        .ok_or_else(|| "existing join Windows B witness missing".to_owned())?;
+                    let identity = install_root.join("state").join("secrets")
+                        .join(ACCESS_IDENTITY_FILE_NAME);
+                    let root = windows_credential_store_path(install_root);
+                    let a = attest_worker_credential_origin(
+                        &root, &identity,
+                        edge_shared_types::CredentialProjectionKind::Windows,
+                        CredentialOriginSelection::Active,
+                    ).await?;
+                    let b = attest_worker_credential_origin(
+                        &root, &identity,
+                        edge_shared_types::CredentialProjectionKind::Windows,
+                        CredentialOriginSelection::Candidate,
+                    ).await?;
+                    let selected_slot = match slot {
+                        1 => "A",
+                        2 => "B",
+                        _ => return Err("existing Windows join selected slot invalid".to_owned()),
+                    };
+                    if a.bundle_sha256 != source
+                        || a.slot == selected_slot
+                        || b.bundle_sha256 != target
+                        || b.generation != generation
+                        || b.slot != selected_slot
+                    {
+                        return Err("existing join exact Worker Windows A/B witnesses drifted".to_owned());
+                    }
+                    let (code, detail) = credential_transition::existing_prepare(
+                        install_root,
+                        &activation,
+                        generation,
+                        slot as i32,
+                        intent,
+                        source,
+                        target,
+                        vm,
+                    )?;
+                    Ok((code, detail, Some(activation.release_set_sha256)))
+                }.await
+            }
+            #[cfg(not(windows))]
+            {
+                Err("existing paired join requires Windows SYSTEM owner".to_owned())
             }
         }
         Ok(WindowsPrivilegedOperation::ExistingCredentialJoin) => {

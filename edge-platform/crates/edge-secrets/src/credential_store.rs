@@ -16,6 +16,7 @@ const BUNDLES_DIR: &str = "bundles";
 const INITIAL_PAIR_COMMIT_RECEIPT: &str = "initial-paired-commit-receipt-v1";
 const INITIAL_PAIR_RECOVERY_RECEIPT: &str = "initial-paired-recovery-receipt-v1";
 const EXISTING_JOIN_RECEIPT: &str = "existing-active-join-receipt-v1";
+const EXISTING_JOIN_PREPARE_RECEIPT: &str = "existing-active-prepare-receipt-v1";
 
 #[derive(Debug, Clone)]
 pub struct CredentialStore {
@@ -502,6 +503,106 @@ impl CredentialStore {
             || !hex(9, "intent_sha256=")
         {
             return Err("existing-active join receipt malformed; outcome UNKNOWN".to_owned());
+        }
+        Ok(Some(text))
+    }
+
+    /// One-shot Windows A+B preparation before touching the managed files.
+    /// Receipt MUST be durable before an uncertain candidate runtime write.
+    /// BEGIN authority is independently verified by protected GitHub first.
+    pub fn prepare_windows_existing_join(
+        &self,
+        source: &LocalCredentialBundleRef,
+        candidate: &LocalCredentialBundleRef,
+        vm_sha256: &str,
+        begin_sha256: &str,
+    ) -> Result<(), String> {
+        if self.projection != CredentialProjectionKind::Windows
+            || !valid_first_use_digest(vm_sha256)
+            || !valid_first_use_digest(begin_sha256)
+            || source.sha256 == candidate.sha256
+            || source.sha256 == vm_sha256
+            || candidate.sha256 == vm_sha256
+            || source.slot != 1
+            || candidate.slot != 2
+            || source.generation == 0
+            || source.generation == candidate.generation
+        {
+            return Err("Windows join prepare requires distinct exact source A and target B".to_owned());
+        }
+        let state = self.read_state()?.ok_or_else(|| {
+            "Windows join prepare cursor missing".to_owned()
+        })?;
+        if state.active.as_ref() != Some(source)
+            || state.candidate.as_ref() != Some(candidate)
+            || state.previous.is_some()
+            || self.read_existing_join_receipt()?.is_some()
+            || self.read_windows_existing_join_prepare_receipt()?.is_some()
+        {
+            return Err("Windows join prepare already attempted or state differs; no replay".to_owned());
+        }
+        self.read_bundle(source)?;
+        self.read_bundle(candidate)?;
+        let text = format!(
+            "sing-box.existing-active-prepare/v1\nprojection={}\nsource_generation={}\nsource_slot={}\nsource_sha256={}\ntarget_generation={}\ntarget_slot={}\ntarget_sha256={}\nvm_sha256={vm_sha256}\nbegin_sha256={begin_sha256}\n",
+            self.projection as i32,
+            source.generation,
+            source.slot,
+            source.sha256,
+            candidate.generation,
+            candidate.slot,
+            candidate.sha256,
+        );
+        let path = self.root.join(EXISTING_JOIN_PREPARE_RECEIPT);
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&path).map_err(|err| {
+            format!("Windows join prepare receipt already exists or UNKNOWN: {err}")
+        })?;
+        file.write_all(text.as_bytes())
+            .and_then(|_| file.sync_all())
+            .map_err(|err| format!("Windows join prepare receipt write UNKNOWN: {err}"))?;
+        drop(file);
+        set_private_file_permissions(&path)?;
+        sync_directory(&self.root)?;
+        Ok(())
+    }
+
+    /// Exact private readback. A torn receipt is UNKNOWN, never unattempted.
+    pub fn read_windows_existing_join_prepare_receipt(&self) -> Result<Option<String>, String> {
+        let path = self.root.join(EXISTING_JOIN_PREPARE_RECEIPT);
+        let text = match fs::read_to_string(&path) {
+            Ok(value) => value,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(format!("Windows join prepare receipt unreadable: {err}")),
+        };
+        let fields: Vec<_> = text.lines().collect();
+        let number = |index: usize, prefix: &str| -> Option<u64> {
+            fields.get(index)?.strip_prefix(prefix)?.parse::<u64>().ok()
+        };
+        let sha = |index: usize, prefix: &str| -> bool {
+            fields.get(index).and_then(|v| v.strip_prefix(prefix))
+                .is_some_and(valid_first_use_digest)
+        };
+        if fields.len() != 10
+            || fields[0] != "sing-box.existing-active-prepare/v1"
+            || fields[1] != format!("projection={}", CredentialProjectionKind::Windows as i32)
+            || number(2, "source_generation=").is_none_or(|v| v == 0)
+            || number(3, "source_slot=") != Some(1)
+            || !sha(4, "source_sha256=")
+            || number(5, "target_generation=").is_none_or(|v| v == 0)
+            || number(6, "target_slot=") != Some(2)
+            || number(2, "source_generation=") == number(5, "target_generation=")
+            || !sha(7, "target_sha256=")
+            || !sha(8, "vm_sha256=")
+            || !sha(9, "begin_sha256=")
+        {
+            return Err("Windows join prepare receipt malformed; outcome UNKNOWN".to_owned());
         }
         Ok(Some(text))
     }
