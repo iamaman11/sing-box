@@ -445,22 +445,29 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
                 || origin.bundle_sha256 != candidate_sha256
             {
                 return Err(AgentError::Command(
-                    "existing-active join Worker origin differs from selected VM candidate".to_owned()
+                    "existing-active join Worker origin differs from selected VM candidate"
+                        .to_owned(),
                 ));
             }
             let store = open_vm_credential_store(&stack_dir).map_err(AgentError::Command)?;
-            let committed = store.promote_existing_active_join(
-                generation, slot as i32, &candidate_sha256,
-                windows_active_generation, windows_active_slot as i32,
-                &windows_active_sha256, &intent_sha256,
-            ).map_err(AgentError::Command)?;
+            let committed = store
+                .promote_existing_active_join(
+                    generation,
+                    slot as i32,
+                    &candidate_sha256,
+                    windows_active_generation,
+                    windows_active_slot as i32,
+                    &windows_active_sha256,
+                    &intent_sha256,
+                )
+                .map_err(AgentError::Command)?;
             if committed.active.as_ref().map(|v| v.sha256.as_str())
                 != Some(candidate_sha256.as_str())
                 || committed.previous.is_some()
                 || committed.candidate.is_some()
             {
                 return Err(AgentError::Command(
-                    "existing-active join pointer UNKNOWN; no replay".to_owned()
+                    "existing-active join pointer UNKNOWN; no replay".to_owned(),
                 ));
             }
             println!("operation=CREDENTIAL_EXISTING_JOIN");

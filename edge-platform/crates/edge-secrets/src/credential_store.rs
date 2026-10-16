@@ -405,7 +405,10 @@ impl CredentialStore {
             || !valid_first_use_digest(intent_sha256)
             || candidate_sha256 == source_windows_sha256
         {
-            return Err("existing-active join requires distinct exact A/B owner and intent witnesses".to_owned());
+            return Err(
+                "existing-active join requires distinct exact A/B owner and intent witnesses"
+                    .to_owned(),
+            );
         }
         let state = self
             .read_state()?
@@ -413,9 +416,10 @@ impl CredentialStore {
         if state.active.is_some() || state.previous.is_some() {
             return Err("existing-active join refuses VM ACTIVE/PREVIOUS".to_owned());
         }
-        let candidate = state.candidate.as_ref().ok_or_else(|| {
-            "existing-active join candidate absent".to_owned()
-        })?;
+        let candidate = state
+            .candidate
+            .as_ref()
+            .ok_or_else(|| "existing-active join candidate absent".to_owned())?;
         if candidate.generation != generation
             || candidate.slot != slot
             || candidate.sha256 != candidate_sha256
@@ -470,7 +474,9 @@ impl CredentialStore {
             fields.get(i)?.strip_prefix(key)?.parse::<u64>().ok()
         };
         let hex = |i: usize, key: &str| -> bool {
-            fields.get(i).and_then(|v| v.strip_prefix(key))
+            fields
+                .get(i)
+                .and_then(|v| v.strip_prefix(key))
                 .is_some_and(valid_first_use_digest)
         };
         let w = n(2, "windows_generation=");
@@ -1492,15 +1498,33 @@ mod tests {
         let bundle = vm_bundle(202, CredentialDeliverySlot::B);
         let reference = local_credential_bundle_ref(&bundle).unwrap();
         store.stage_candidate(&bundle).unwrap();
-        let result = store.promote_existing_active_join(
-            202, 2, &reference.sha256, 101, 1, &"a".repeat(64), &"b".repeat(64)
-        ).unwrap();
+        let result = store
+            .promote_existing_active_join(
+                202,
+                2,
+                &reference.sha256,
+                101,
+                1,
+                &"a".repeat(64),
+                &"b".repeat(64),
+            )
+            .unwrap();
         assert_eq!(result.active, Some(reference.clone()));
         assert!(result.previous.is_none() && result.candidate.is_none());
         assert!(store.read_existing_join_receipt().unwrap().is_some());
-        assert!(store.promote_existing_active_join(
-            202, 2, &reference.sha256, 101, 1, &"a".repeat(64), &"b".repeat(64)
-        ).is_err());
+        assert!(
+            store
+                .promote_existing_active_join(
+                    202,
+                    2,
+                    &reference.sha256,
+                    101,
+                    1,
+                    &"a".repeat(64),
+                    &"b".repeat(64)
+                )
+                .is_err()
+        );
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -1513,9 +1537,19 @@ mod tests {
         store.stage_candidate(&bundle).unwrap();
         fs::write(root.join(EXISTING_JOIN_RECEIPT), b"partial").unwrap();
         assert!(store.read_existing_join_receipt().is_err());
-        assert!(store.promote_existing_active_join(
-            202, 2, &reference.sha256, 101, 1, &"a".repeat(64), &"b".repeat(64)
-        ).is_err());
+        assert!(
+            store
+                .promote_existing_active_join(
+                    202,
+                    2,
+                    &reference.sha256,
+                    101,
+                    1,
+                    &"a".repeat(64),
+                    &"b".repeat(64)
+                )
+                .is_err()
+        );
         assert!(store.read_state().unwrap().unwrap().active.is_none());
         fs::remove_dir_all(root).unwrap();
     }
@@ -1533,14 +1567,22 @@ mod tests {
             (202, 2, reference.sha256.clone(), 202, 1),
             (203, 2, reference.sha256.clone(), 101, 1),
         ] {
-            assert!(store.promote_existing_active_join(
-                generation, slot, &candidate, win_generation, win_slot,
-                &"a".repeat(64), &"b".repeat(64)
-            ).is_err());
+            assert!(
+                store
+                    .promote_existing_active_join(
+                        generation,
+                        slot,
+                        &candidate,
+                        win_generation,
+                        win_slot,
+                        &"a".repeat(64),
+                        &"b".repeat(64)
+                    )
+                    .is_err()
+            );
         }
         assert!(!root.join(EXISTING_JOIN_RECEIPT).exists());
         assert!(store.read_state().unwrap().unwrap().active.is_none());
         fs::remove_dir_all(root).unwrap();
     }
-
 }
