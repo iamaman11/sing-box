@@ -363,6 +363,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     existing_join_vm_candidate_sha256: None,
                     existing_join_windows_active_sha256: None,
                     existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -388,6 +390,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     existing_join_vm_candidate_sha256: None,
                     existing_join_windows_active_sha256: None,
                     existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -415,6 +419,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     existing_join_vm_candidate_sha256: None,
                     existing_join_windows_active_sha256: None,
                     existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -439,6 +445,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                 existing_join_vm_candidate_sha256: None,
                 existing_join_windows_active_sha256: None,
                 existing_join_windows_candidate_sha256: None,
+                existing_join_intent_sha256: None,
+                existing_join_slot: None,
             };
             let (code, detail, release) =
                 offline_bootstrap_privileged_release(&install_root, &request)
@@ -472,6 +480,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     existing_join_vm_candidate_sha256: None,
                     existing_join_windows_active_sha256: None,
                     existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -501,6 +511,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     existing_join_vm_candidate_sha256: None,
                     existing_join_windows_active_sha256: None,
                     existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -530,6 +542,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     existing_join_vm_candidate_sha256: None,
                     existing_join_windows_active_sha256: None,
                     existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -557,6 +571,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     existing_join_vm_candidate_sha256: None,
                     existing_join_windows_active_sha256: None,
                     existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -582,6 +598,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     existing_join_vm_candidate_sha256: None,
                     existing_join_windows_active_sha256: None,
                     existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -609,6 +627,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     existing_join_vm_candidate_sha256: None,
                     existing_join_windows_active_sha256: None,
                     existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -636,6 +656,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     existing_join_vm_candidate_sha256: None,
                     existing_join_windows_active_sha256: None,
                     existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -661,6 +683,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     existing_join_vm_candidate_sha256: None,
                     existing_join_windows_active_sha256: None,
                     existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -688,6 +712,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     existing_join_vm_candidate_sha256: None,
                     existing_join_windows_active_sha256: None,
                     existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -715,6 +741,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     existing_join_vm_candidate_sha256: None,
                     existing_join_windows_active_sha256: None,
                     existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -735,13 +763,15 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     release_set_sha256: None,
                     credential_generation: Some(args.generation),
                     credential_transition_action: None,
-                    initial_commit_intent_sha256: Some(args.intent_sha256),
-                    initial_commit_slot: Some(args.slot),
+                    initial_commit_intent_sha256: None,
+                    initial_commit_slot: None,
                     initial_recovery_intent_sha256: None,
                     initial_candidate_sha256: None,
                     existing_join_vm_candidate_sha256: Some(args.vm_candidate_sha256),
                     existing_join_windows_active_sha256: Some(args.windows_active_sha256),
                     existing_join_windows_candidate_sha256: Some(args.windows_candidate_sha256),
+                    existing_join_intent_sha256: Some(args.intent_sha256),
+                    existing_join_slot: Some(args.slot),
                 },
             )?;
             print_privileged_result(&result);
@@ -867,6 +897,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     existing_join_vm_candidate_sha256: None,
                     existing_join_windows_active_sha256: None,
                     existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -892,6 +924,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     existing_join_vm_candidate_sha256: None,
                     existing_join_windows_active_sha256: None,
                     existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -1652,9 +1686,9 @@ async fn process_privileged_request(
                         .map_err(|err| err.to_string())?;
                     let generation = request.credential_generation
                         .ok_or_else(|| "existing join generation missing".to_owned())?;
-                    let slot = request.initial_commit_slot
+                    let slot = request.existing_join_slot
                         .ok_or_else(|| "existing join slot missing".to_owned())?;
-                    let intent = request.initial_commit_intent_sha256.as_deref()
+                    let intent = request.existing_join_intent_sha256.as_deref()
                         .ok_or_else(|| "existing join durable intent missing".to_owned())?;
                     let vm = request.existing_join_vm_candidate_sha256.as_deref()
                         .ok_or_else(|| "existing join VM witness missing".to_owned())?;
@@ -4061,6 +4095,8 @@ fn submit_windows_credential_transition(
             existing_join_vm_candidate_sha256: None,
             existing_join_windows_active_sha256: None,
             existing_join_windows_candidate_sha256: None,
+            existing_join_intent_sha256: None,
+            existing_join_slot: None,
         },
     )
     .map_err(|err| err.to_string())
@@ -6096,6 +6132,8 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
                 existing_join_vm_candidate_sha256: None,
                 existing_join_windows_active_sha256: None,
                 existing_join_windows_candidate_sha256: None,
+                existing_join_intent_sha256: None,
+                existing_join_slot: None,
             };
             let encoded = encode_windows_privileged_request(&req).unwrap();
             assert_eq!(
@@ -6345,6 +6383,8 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
             existing_join_vm_candidate_sha256: None,
             existing_join_windows_active_sha256: None,
             existing_join_windows_candidate_sha256: None,
+            existing_join_intent_sha256: None,
+            existing_join_slot: None,
         };
         // The immutable authority pair is checked in both build modes.
         // Actual release rollback remains forbidden on first-install ProxyOnly.
@@ -6532,6 +6572,8 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
             existing_join_vm_candidate_sha256: None,
             existing_join_windows_active_sha256: None,
             existing_join_windows_candidate_sha256: None,
+            existing_join_intent_sha256: None,
+            existing_join_slot: None,
         };
         let ping = WindowsPrivilegedRequest {
             schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
@@ -6548,6 +6590,8 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
             existing_join_vm_candidate_sha256: None,
             existing_join_windows_active_sha256: None,
             existing_join_windows_candidate_sha256: None,
+            existing_join_intent_sha256: None,
+            existing_join_slot: None,
         };
 
         assert_eq!(

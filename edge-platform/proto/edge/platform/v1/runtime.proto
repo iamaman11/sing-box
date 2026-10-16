@@ -193,6 +193,8 @@ message WindowsPrivilegedRequest {
   optional string existing_join_vm_candidate_sha256 = 12;
   optional string existing_join_windows_active_sha256 = 13;
   optional string existing_join_windows_candidate_sha256 = 14;
+  optional string existing_join_intent_sha256 = 15;
+  optional uint32 existing_join_slot = 16;
 }
 
 message WindowsPrivilegedResult {
