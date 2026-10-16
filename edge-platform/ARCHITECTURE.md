@@ -2,6 +2,22 @@
 
 This file defines the stable ownership/invariant model and steady-state target. **Physical N1/N2 external Line1 4/4 + Line2 6/6, before and after one VM reboot, is accepted** in [GitHub Actions #38627187731](https://github.com/iamaman11/sing-box/actions/runs/38627187731). The unchanged Worker credential generation and exact transient Windows/Access cleanup were also proven. **Do not infer that the reused VM was disposed, that its staged candidate has been promoted to an active credential pointer, or that an already-running container's credential source has been cryptographically attributed.** These remain N1/N2 lifecycle closure gates; Windows bidirectional mode changes remain N3, and production lifecycle N4 is unaccepted. Current operational evidence and ordering are in Issue #26, not older historical passages below.
 
+**First-use immutable program upgrade BEFORE credentials (16 October 2026):**
+Use the existing protected GitHub command `/windows initial-pair-prepare <original_run_id>`
+to run the exact native offline ReleaseSet owner on Windows while ProxyOnly
+is Stopped/OnDemand, zero TUN/processes, direct no-proxy DNS/HTTPS PASS,
+private cursor absent. It must re-attest the original immutable first-use
+source and require **zero** persisted Windows staging BEGIN entries. This
+prepares the binaries, not credentials, then readback proves the new
+installed immutable ReleaseSet before a separate once-only
+`/windows initial-pair-stage <original_run_id>`. The latter must require
+the exact ReleaseSet both in its pre-BEGIN preflight and again after the
+durable staging BEGIN; it must **never perform a release download or
+offline SCM retarget after BEGIN**. Any unknown offline upgrade result
+requires read-only reconciliation, not a second install. No second
+service, bootstrap transport or credential issuer. This is an
+architectural ordering invariant, not proof that a pair is ACTIVE.
+
 **First-use stopped Windows source (16 October 2026):** Pre-BEGIN
 `windows-first-use-offline-handoff.ps1 -Preflight` and actual stage must
 accept the **same exact stopped, zero-TUN/no-process** old source state:
