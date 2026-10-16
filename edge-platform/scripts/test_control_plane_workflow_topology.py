@@ -317,6 +317,19 @@ def verify_credential_observation_lane(source: str) -> None:
             and "credential_mutations=0" in source
             and "BEGIN_NOT_DURABLE_LINE1_UNPROVEN_APPLY_FORBIDDEN" in source,
             "native status must never grant cross-host mutation authority")
+    require(
+        "  existing_join_begin:\n" in source
+        and "  existing_join_recover_readonly:\n" in source
+        and "needs.authorize.outputs.operation == 'apply'" in source
+        and "needs.authorize.outputs.operation == 'recover'" in source
+        and "credentials existing-join-begin-plan" in source
+        and "credentials existing-join-begin-readback" in source
+        and "existing_join_next=BLOCKED_UNTIL_OWNER_STAGE_AND_PHYSICAL_LINE1_4_OF_4" in source
+        and "recovery=SAFE_BLOCKED_READ_ONLY" in source
+        and "credential_mutation_replayed=false" in source
+        and "test \"$GITHUB_RUN_ATTEMPT\" = 1" in source,
+        "native BEGIN must be sourced from protected Windows/VM proof and read-only recover never replay",
+    )
     read_only_job = source.split("  execute:\n", 1)
     require(len(read_only_job) == 2, "credential read-only verify job missing")
     read_only_job = read_only_job[1].split("\n  rotate_release:\n", 1)[0]
@@ -1008,7 +1021,7 @@ def main() -> None:
             "initial pair digest shell validator accepted malformed evidence or rejected valid evidence",
         )
     require(
-        'if operation in {"rotate-application", "host-bootstrap-converge", "initial-pair-commit", "initial-pair-recover"}:' in credentials
+        'if operation in {"rotate-application", "host-bootstrap-converge", "initial-pair-commit", "initial-pair-recover", "apply"}:' in credentials
         and '"initial-pair-commit"' in credentials
         and '"initial-pair-recover"' in credentials
         and "initial_pair_recovery_source:" in credentials
