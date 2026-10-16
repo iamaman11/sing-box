@@ -29,6 +29,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use edge_observability::init as init_observability;
 use edge_secrets::{
     ACCESS_IDENTITY_FILE_NAME, ApplicationRuntimeSecrets, CredentialStore, InitialDummySlotProof,
+    CredentialOriginSelection, attest_worker_credential_origin,
     fetch_canonical_credential_bundle, verify_canonical_dummy_ab_slots,
     verify_initial_selected_dummy_slot,
 };
@@ -277,6 +278,45 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
                 println!("credential_initial_commit_receipt_present=false");
                 println!("credential_initial_recovery_receipt_present=false");
             }
+            // Existing root owner; a single authenticated read-only GET
+            // proves the selected local projection without exporting secrets.
+            // Failed/ambiguous evidence is never treated as migration authority.
+            let role = match state.as_ref() {
+                Some(cursor)
+                    if cursor.active.is_none()
+                        && cursor.candidate.is_some()
+                        && cursor.previous.is_none() =>
+                {
+                    Some(CredentialOriginSelection::Candidate)
+                }
+                Some(cursor)
+                    if cursor.active.is_some()
+                        && cursor.candidate.is_none()
+                        && cursor.previous.is_none() =>
+                {
+                    Some(CredentialOriginSelection::Active)
+                }
+                _ => None,
+            };
+            let exact = if let Some(role) = role {
+                let root = vm_credential_store_root(&stack_dir).map_err(AgentError::Command)?;
+                let identity =
+                    vm_credential_access_identity_path(&stack_dir).map_err(AgentError::Command)?;
+                attest_worker_credential_origin(
+                    &root,
+                    &identity,
+                    CredentialProjectionKind::Vm,
+                    role,
+                )
+                .await
+                .is_ok()
+            } else {
+                false
+            };
+            println!(
+                "credential_worker_origin={}",
+                if exact { "WORKER_OK" } else { "UNPROVEN" }
+            );
             Ok(())
         }
         cli::LocalCommand::CredentialInitialProbe => {

@@ -40,7 +40,6 @@ jobs:
           set -euo pipefail
           case "$COMMAND_BODY" in
             "/windows diagnose"|"/windows status") operation="diagnose"; readonly_purpose="ordinary" ;;
-            "/windows credential-origin") operation="credential-origin" ;;
             "/windows offline-preflight") operation="diagnose"; readonly_purpose="offline-preflight" ;;
             "/windows apply") operation="apply" ;;
             "/windows initial-pair-prepare "*|"/windows initial-pair-stage "*)
@@ -628,35 +627,6 @@ jobs:
       EDGE_READONLY_PURPOSE: ${{ needs.resolve.outputs.readonly_purpose }}
       EDGE_EXPECTED_MODE: ${{ needs.resolve.outputs.expected_mode }}
     steps:
-      - name: Read-only credential origin through native Windows SYSTEM
-        if: ${{ needs.resolve.outputs.operation == 'credential-origin' }}
-        shell: powershell
-        run: |
-          $ErrorActionPreference = 'Stop'
-          $root = [IO.Path]::GetFullPath($env:EDGE_INSTALL_ROOT)
-          if ($root -cne 'C:\sing-box') { throw 'WORKER_ORIGIN_BLOCKED: root' }
-          $diag = Join-Path $root 'bin\edge-diagnostic.exe'
-          $doctor = @(& $diag doctor (Join-Path $root 'current.pb'))
-          $v = @{}
-          foreach ($line in $doctor) {
-            $parts = ([string]$line).Split('=', 2)
-            if ($parts.Count -eq 2) { $v[$parts[0]] = $parts[1] }
-          }
-          foreach ($required in @(@('exact_release_files','PASS'),@('windows_datapath_mode','ProxyOnly'),@('scm_state','Stopped'),@('scm_start_type','OnDemand'),@('managed_tun_present','false'),@('managed_singbox_process_count','0'),@('orphan_singbox_process_count','0'),@('conflicting_singbox_process_count','0'),@('unknown_singbox_process_count','0'))) {
-            if ([string]$v[$required[0]] -cne $required[1]) { throw 'WORKER_ORIGIN_BLOCKED: owner preflight' }
-          }
-          $console = [string]$v['console_path']
-          if (-not (Test-Path -LiteralPath $console -PathType Leaf)) { throw 'WORKER_ORIGIN_BLOCKED: exact console' }
-          $proof = @(& $console privileged-credential-origin --install-root $root)
-          if ($LASTEXITCODE -ne 0) { throw 'WORKER_ORIGIN_BLOCKED: native SYSTEM proof failed' }
-          $codes = @($proof | Where-Object { $_ -ceq 'code=CREDENTIAL_WORKER_ORIGIN_READ_ONLY' })
-          $details = @($proof | Where-Object { $_ -cmatch '^detail=credential_origin=WORKER_EXACT_CURRENT_ACTIVE;' })
-          if ($codes.Count -ne 1 -or $details.Count -ne 1 -or
-              $details[0] -cnotmatch '^detail=credential_origin=WORKER_EXACT_CURRENT_ACTIVE;credential_active_generation=[1-9][0-9]*;credential_active_slot=[AB];credential_active_sha256=[0-9a-f]{64};credential_pair_committed=false;credential_provider_mutations=0;credential_runtime_mutations=0;windows_tun_mutations=0;windows_dns_mutations=0$') {
-            throw 'WORKER_ORIGIN_BLOCKED: malformed evidence'
-          }
-          Write-Host $details[0]
-          Write-Host 'windows_origin_proof=PASS_WORKER_EXACT_LOCAL_ONLY'
       - name: Observe safe Windows state (read-only)
         if: ${{ needs.resolve.outputs.operation == 'diagnose' }}
         shell: powershell

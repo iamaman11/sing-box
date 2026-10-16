@@ -364,18 +364,6 @@ def main() -> None:
     windows_controller_core = WINDOWS_CONTROLLER_CORE.read_text(encoding="utf-8")
     edge_local_runtime = EDGE_LOCAL_RUNTIME.read_text(encoding="utf-8")
     require(
-        "github.event.comment.body == '/windows credential-origin'" in router
-        and '"/windows credential-origin") operation="credential-origin"' in windows_physical
-        and "Read-only credential origin through native Windows SYSTEM" in windows_physical
-        and "$console privileged-credential-origin --install-root $root" in windows_physical
-        and "credential_pair_committed=false" in windows_physical
-        and "WINDOWS_PRIVILEGED_OPERATION_CREDENTIAL_ORIGIN = 18" in
-            Path("edge-platform/proto/edge/platform/v1/runtime.proto").read_text(encoding="utf-8")
-        and "attest_worker_credential_origin(" in windows_console
-        and "CredentialOriginSelection::Active" in windows_console,
-        "credential origin must remain explicit read-only Worker/SYSTEM-owned",
-    )
-    require(
         "startsWith(github.event.comment.body, '/windows initial-pair-stage ')" in router
         and "startsWith(github.event.comment.body, '/windows initial-pair-prepare ')" in router
         and '"/windows initial-pair-prepare "*|' in windows_physical
@@ -468,7 +456,7 @@ def main() -> None:
         "local runtime must never reset foreign Cloudflare One Client DNS by resolver IP",
     )
     require(
-        windows_console.count("require_exact_immutable_activation_console(&install_root)") == 10
+        windows_console.count("require_exact_immutable_activation_console(&install_root)") == 9
         and "Command::PrivilegedInitialCredentialCommit(args)" in windows_console
         and "Command::PrivilegedInitialCredentialRecover(args)" in windows_console
         and "WindowsPrivilegedOperation::InitialCredentialRecover" in windows_console

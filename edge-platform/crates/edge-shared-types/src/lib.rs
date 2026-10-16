@@ -1006,17 +1006,6 @@ pub fn validate_windows_privileged_request(
                 );
             }
         }
-        WindowsPrivilegedOperation::CredentialOrigin => {
-            // A read-only SYSTEM→Worker comparison cannot carry any caller-
-            // selected release, generation, pointer or mutation authority.
-            if request.accepted_revision.is_some()
-                || request.release_set_sha256.is_some()
-                || request.credential_generation.is_some()
-                || request.credential_transition_action.is_some()
-            {
-                return Err("CREDENTIAL_ORIGIN request must carry no mutation authority".to_owned());
-            }
-        }
         WindowsPrivilegedOperation::RuntimeEvidence => {
             if request.accepted_revision.is_some()
                 || request.release_set_sha256.is_some()
