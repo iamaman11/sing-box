@@ -562,13 +562,20 @@ impl CredentialStore {
         }
         self.read_bundle(active)?;
         self.read_bundle(candidate)?;
-        if self.read_initial_pair_receipt()?.is_some()
-            || self.read_initial_pair_recovery_receipt()?.is_some()
+        if self.read_initial_pair_recovery_receipt()?.is_some()
             || self.read_existing_join_receipt()?.is_some()
         {
-            return Err(
-                "Windows existing join already attempted or collides with first-use".to_owned(),
-            );
+            return Err("Windows existing join recovery or duplicate attempt; no replay".to_owned());
+        }
+        if let Some(first_use) = self.read_initial_pair_receipt()? {
+            let lines: Vec<_> = first_use.lines().collect();
+            if lines.get(2).and_then(|s| s.strip_prefix("generation="))
+                != Some(active.generation.to_string().as_str())
+                || lines.get(3).and_then(|s| s.strip_prefix("slot="))
+                    != Some(active.slot.to_string().as_str())
+            {
+                return Err("Windows first-use receipt does not match existing ACTIVE A".to_owned());
+            }
         }
         let receipt = self.root.join(EXISTING_JOIN_RECEIPT);
         let mut options = OpenOptions::new();

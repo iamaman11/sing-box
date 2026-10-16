@@ -534,7 +534,7 @@ mod tests {
     #[test]
     fn missing_duplicate_or_drifted_begin_never_authorizes_commit() {
         let g = good();
-        assert!(plan(&g, &history_begin(&g), &g.accepted_revision, &g.release_set_sha256).is_err());
+        assert!(plan(&g, "[]", &g.accepted_revision, &g.release_set_sha256).is_err());
         let begin = source_begin(&g);
         let orig = plan_begin(&begin, "[]", &g.accepted_revision, &g.release_set_sha256).unwrap();
         let duplicated = serde_json::json!([{"body":orig},{"body":orig}]).to_string();
