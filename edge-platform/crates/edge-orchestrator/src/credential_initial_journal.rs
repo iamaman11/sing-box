@@ -409,8 +409,9 @@ fn require_paired_release_lineage(
             let raw = comment.body.strip_prefix(PREPARE_MARKER).ok_or_else(|| {
                 "paired release lineage rejects displaced program-prepare marker".to_owned()
             })?;
-            let record: WindowsProgramPrepare = serde_json::from_str(raw)
-                .map_err(|_| "paired release lineage rejects malformed program-prepare".to_owned())?;
+            let record: WindowsProgramPrepare = serde_json::from_str(raw).map_err(|_| {
+                "paired release lineage rejects malformed program-prepare".to_owned()
+            })?;
             if prepare_index.is_some()
                 || record.schema != "sing-box.windows-program-prepare/v1"
                 || record.phase != "BEGIN"
@@ -428,8 +429,9 @@ fn require_paired_release_lineage(
             let raw = comment.body.strip_prefix(STAGE_MARKER).ok_or_else(|| {
                 "paired release lineage rejects displaced persistent-stage marker".to_owned()
             })?;
-            let record: WindowsPersistentStage = serde_json::from_str(raw)
-                .map_err(|_| "paired release lineage rejects malformed persistent-stage".to_owned())?;
+            let record: WindowsPersistentStage = serde_json::from_str(raw).map_err(|_| {
+                "paired release lineage rejects malformed persistent-stage".to_owned()
+            })?;
             if stage_index.is_some()
                 || record.schema != "sing-box.windows-persistent-initial-stage/v1"
                 || record.phase != "BEGIN"
@@ -787,15 +789,30 @@ mod tests {
         assert!(
             verify_paired_commit_intent(
                 &upgraded,
-                &history(&[original.clone(), prepare.clone(), stage.clone(), intent.clone()]),
+                &history(&[
+                    original.clone(),
+                    prepare.clone(),
+                    stage.clone(),
+                    intent.clone()
+                ]),
                 &original,
                 &intent,
             )
             .is_ok()
         );
         for altered in [
-            history(&[original.clone(), prepare.clone(), prepare.clone(), stage.clone()]),
-            history(&[original.clone(), prepare.clone(), stage.clone(), stage.clone()]),
+            history(&[
+                original.clone(),
+                prepare.clone(),
+                prepare.clone(),
+                stage.clone(),
+            ]),
+            history(&[
+                original.clone(),
+                prepare.clone(),
+                stage.clone(),
+                stage.clone(),
+            ]),
             history(&[
                 original.clone(),
                 prepare.replace("3033", "0"),
