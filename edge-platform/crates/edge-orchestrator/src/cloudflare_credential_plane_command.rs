@@ -2,8 +2,10 @@ use crate::cli::{
     CredentialDeliveryCommand, CredentialDeliverySlotArg, CredentialRotationClassArg,
 };
 use crate::credential_initial_journal::{
-    InitialPairJournalPlan, plan_initial_pair_reservation, require_empty_initial_history,
-    verify_expected_initial_attempt, verify_recorded_initial_attempt,
+    InitialPairJournalPlan, PairedCommitPlan, PairedHostReadback,
+    plan_initial_pair_reservation, plan_paired_commit, reconcile_paired_commit,
+    require_empty_initial_history, verify_expected_initial_attempt,
+    verify_paired_commit_intent, verify_recorded_initial_attempt,
 };
 use edge_controller_core::production::{ProductionComposition, ProductionCredentialPlaneOwnership};
 use edge_orchestrator::credential_snapshot::{
@@ -123,6 +125,15 @@ pub async fn run_delivery(
     ) {
         return run_readonly_journal(command);
     }
+    if matches!(
+        &command,
+        CredentialDeliveryCommand::InitialPairCommitPlan { .. }
+            | CredentialDeliveryCommand::InitialPairCommitReadback { .. }
+            | CredentialDeliveryCommand::InitialPairCommitReconcile { .. }
+    ) {
+        // These calls neither open a Cloudflare write token nor POST to GitHub.
+        return run_readonly_paired_commit(command, release_context);
+    }
     // Independent Github-runner network probe. It has Worker VM read
     // identity only, never a Cloudflare provider mutation token.
     if let CredentialDeliveryCommand::InitialLine2ExternalWitness {
@@ -194,8 +205,11 @@ pub async fn run_delivery(
             initial_pair_preflight(&control_token, &desired, generation, slot).await
         }
         CredentialDeliveryCommand::InitialPairJournalObserve { .. }
-        | CredentialDeliveryCommand::InitialPairJournalReadback { .. } => {
-            unreachable!("read-only journal is dispatched before acquiring provider authority")
+        | CredentialDeliveryCommand::InitialPairJournalReadback { .. }
+        | CredentialDeliveryCommand::InitialPairCommitPlan { .. }
+        | CredentialDeliveryCommand::InitialPairCommitReadback { .. }
+        | CredentialDeliveryCommand::InitialPairCommitReconcile { .. } => {
+            unreachable!("read-only journal and paired-commit policy dispatch before provider authority")
         }
         CredentialDeliveryCommand::InitialPairJournalPlan {
             generation,
@@ -574,6 +588,132 @@ fn write_new_initial_record(path: &Path, record: &str) -> Result<(), String> {
     file.write_all(record.as_bytes())
         .and_then(|_| file.sync_all())
         .map_err(|err| format!("initial BEGIN record was not durably written: {err}"))
+}
+
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PairedHostObservations {
+    vm: PairedHostReadback,
+    windows: PairedHostReadback,
+}
+
+fn commit_request_from_cli(
+    original_run_id: u64,
+    commit_run_id: u64,
+    generation: u64,
+    slot: CredentialDeliverySlotArg,
+    vm_prepared_sha256: String,
+    windows_prepared_sha256: String,
+    release: &edge_orchestrator::OrchestrationContext,
+) -> PairedCommitPlan {
+    PairedCommitPlan {
+        original_run_id,
+        commit_run_id,
+        generation,
+        slot: slot.as_str().to_owned(),
+        accepted_revision: release.release().accepted_revision.clone(),
+        release_set_sha256: release.release().release_set_sha256.clone(),
+        vm_prepared_sha256,
+        windows_prepared_sha256,
+    }
+}
+
+fn read_exact_file(path: &Path, label: &str) -> Result<String, String> {
+    fs::read_to_string(path).map_err(|err| format!("{label}: {err}"))
+}
+
+/// Read-only policy and exact local output creation. Not a GitHub POST and
+/// never a credential writer. Host origin boolean values in an input file
+/// are NOT cryptographic authentication: the independent owner provenance
+/// must be proven by the workflow before any separate commit executor exists.
+fn run_readonly_paired_commit(
+    command: CredentialDeliveryCommand,
+    release: &edge_orchestrator::OrchestrationContext,
+) -> Result<(), String> {
+    match command {
+        CredentialDeliveryCommand::InitialPairCommitPlan {
+            original_run_id, commit_run_id, generation, slot,
+            vm_prepared_sha256, windows_prepared_sha256,
+            journal_history_path, original_begin_path, record_output_path,
+        } => {
+            let request = commit_request_from_cli(
+                original_run_id, commit_run_id, generation, slot,
+                vm_prepared_sha256, windows_prepared_sha256, release,
+            );
+            let history = read_exact_file(&journal_history_path, "paired commit plan history unavailable")?;
+            let original = read_exact_file(&original_begin_path, "paired commit original BEGIN unavailable")?;
+            let intended = plan_paired_commit(&request, &history, &original)?;
+            if intended.len() > 4096
+                || !intended.starts_with("<!-- sing-box-credential-paired-commit/v1 -->\n")
+            {
+                return Err("paired commit planned record is malformed or too large".to_owned());
+            }
+            let mut options = OpenOptions::new();
+            options.create_new(true).write(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&record_output_path)
+                .map_err(|err| format!("paired commit intent file must be create-new: {err}"))?;
+            file.write_all(intended.as_bytes()).and_then(|_| file.sync_all())
+                .map_err(|err| format!("paired intent file write uncertain: {err}"))?;
+            println!("credential_paired_commit_policy=INTENT_PLANNED_LOCAL_ONLY");
+            println!("credential_paired_commit_sha256={}", sha256_hex(intended.as_bytes()));
+            println!("credential_pair_committed=false");
+            println!("credential_provider_mutations=0");
+            println!("credential_runtime_mutations=0");
+            println!("credential_journal_mutations=0");
+            Ok(())
+        }
+        CredentialDeliveryCommand::InitialPairCommitReadback {
+            original_run_id, commit_run_id, generation, slot,
+            vm_prepared_sha256, windows_prepared_sha256,
+            journal_history_path, original_begin_path, exact_intent_path,
+        } => {
+            let request = commit_request_from_cli(
+                original_run_id, commit_run_id, generation, slot,
+                vm_prepared_sha256, windows_prepared_sha256, release,
+            );
+            let history = read_exact_file(&journal_history_path, "paired commit readback history unavailable")?;
+            let original = read_exact_file(&original_begin_path, "paired commit original BEGIN unavailable")?;
+            let intent = read_exact_file(&exact_intent_path, "paired commit intended record unavailable")?;
+            verify_paired_commit_intent(&request, &history, &original, &intent)?;
+            println!("credential_paired_commit_intent=EXACT_DURABLE_ONCE");
+            println!("credential_pair_committed=false");
+            println!("credential_provider_mutations=0");
+            println!("credential_runtime_mutations=0");
+            Ok(())
+        }
+        CredentialDeliveryCommand::InitialPairCommitReconcile {
+            original_run_id, commit_run_id, generation, slot,
+            vm_prepared_sha256, windows_prepared_sha256,
+            journal_history_path, original_begin_path, exact_intent_path,
+            host_readback_path,
+        } => {
+            let request = commit_request_from_cli(
+                original_run_id, commit_run_id, generation, slot,
+                vm_prepared_sha256, windows_prepared_sha256, release,
+            );
+            let history = read_exact_file(&journal_history_path, "paired commit reconcile history unavailable")?;
+            let original = read_exact_file(&original_begin_path, "paired commit original BEGIN unavailable")?;
+            let intent = read_exact_file(&exact_intent_path, "paired commit intended record unavailable")?;
+            let observation = read_exact_file(&host_readback_path, "paired commit read-only host cursors unavailable")?;
+            let reports: PairedHostObservations = serde_json::from_str(&observation)
+                .map_err(|_| "paired commit host report is malformed or incomplete".to_owned())?;
+            let verdict = reconcile_paired_commit(
+                &request, &history, &original, &intent, &reports.vm, &reports.windows
+            )?;
+            println!("credential_paired_commit_reconcile={verdict}");
+            println!("credential_replay_authorized=false");
+            println!("credential_provider_mutations=0");
+            println!("credential_runtime_mutations=0");
+            Ok(())
+        }
+        _ => Err("read-only paired commit policy refuses unrelated command".to_owned()),
+    }
 }
 
 fn run_readonly_journal(command: CredentialDeliveryCommand) -> Result<(), String> {
