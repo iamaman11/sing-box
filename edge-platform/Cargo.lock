@@ -528,6 +528,7 @@ version = "0.1.0"
 dependencies = [
  "edge-shared-types",
  "reqwest",
+ "tokio",
 ]
 
 [[package]]
