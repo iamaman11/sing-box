@@ -1588,29 +1588,41 @@ async fn process_privileged_request(
                 .ok()
                 .map(|state| state.release_set_sha256);
             let evidence = read_bounded_windows_runtime_evidence(install_root);
-            // The ordinary SYSTEM-owned status path also verifies the local
-            // ACTIVE against Worker-v2 when the installed client is safely
-            // stopped. This is not a separate operator command or permission
-            // to promote VM candidate B.
             #[cfg(windows)]
             let evidence = match evidence {
                 Ok(detail)
-                    if detail.contains("credential_lifecycle_state=EXISTING_ACTIVE_UNVERIFIED")
+                    if (detail.contains("credential_lifecycle_state=EXISTING_ACTIVE_UNVERIFIED")
+                        || detail.contains("credential_lifecycle_state=EXISTING_TRANSITION_UNVERIFIED"))
                         && require_stopped_proxy_only_initial_commit_owner(install_root).is_ok() =>
                 {
                     let identity = install_root
                         .join("state")
                         .join("secrets")
                         .join(ACCESS_IDENTITY_FILE_NAME);
-                    if attest_worker_credential_origin(
-                        &windows_credential_store_path(install_root),
+                    let store = windows_credential_store_path(install_root);
+                    // For a staged A/B transition BOTH immutable projections
+                    // must remain exact Worker-v2. No read-only result grants
+                    // local or cross-host mutation authority.
+                    let active_proof = attest_worker_credential_origin(
+                        &store,
                         &identity,
                         edge_shared_types::CredentialProjectionKind::Windows,
                         CredentialOriginSelection::Active,
-                    )
-                    .await
-                    .is_ok()
-                    {
+                    ).await;
+                    let staged = detail.contains(
+                        "credential_lifecycle_state=EXISTING_TRANSITION_UNVERIFIED"
+                    );
+                    let candidate_ok = if staged && active_proof.is_ok() {
+                        attest_worker_credential_origin(
+                            &store,
+                            &identity,
+                            edge_shared_types::CredentialProjectionKind::Windows,
+                            CredentialOriginSelection::Candidate,
+                        ).await.is_ok()
+                    } else {
+                        !staged
+                    };
+                    if active_proof.is_ok() && candidate_ok {
                         Ok(detail
                             .replace("credential_origin=UNPROVEN", "credential_origin=WORKER_OK")
                             .replace(

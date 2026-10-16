@@ -391,6 +391,7 @@ impl CredentialStore {
         source_windows_generation: u64,
         source_windows_slot: i32,
         source_windows_sha256: &str,
+        windows_candidate_sha256: &str,
         intent_sha256: &str,
     ) -> Result<LocalCredentialState, String> {
         if self.projection != CredentialProjectionKind::Vm
@@ -402,8 +403,11 @@ impl CredentialStore {
             || slot == source_windows_slot
             || !valid_first_use_digest(candidate_sha256)
             || !valid_first_use_digest(source_windows_sha256)
+            || !valid_first_use_digest(windows_candidate_sha256)
             || !valid_first_use_digest(intent_sha256)
             || candidate_sha256 == source_windows_sha256
+            || windows_candidate_sha256 == source_windows_sha256
+            || windows_candidate_sha256 == candidate_sha256
         {
             return Err(
                 "existing-active join requires distinct exact A/B owner and intent witnesses"
@@ -447,7 +451,7 @@ impl CredentialStore {
             format!("existing-active join receipt already exists or UNKNOWN: {err}")
         })?;
         let text = format!(
-            "sing-box.existing-active-join/v1\nprojection={}\nwindows_generation={source_windows_generation}\nwindows_slot={source_windows_slot}\nwindows_sha256={source_windows_sha256}\nvm_generation={generation}\nvm_slot={slot}\nvm_sha256={candidate_sha256}\nintent_sha256={intent_sha256}\n",
+            "sing-box.existing-active-join/v1\nprojection={}\nwindows_generation={source_windows_generation}\nwindows_slot={source_windows_slot}\nwindows_sha256={source_windows_sha256}\nvm_generation={generation}\nvm_slot={slot}\nvm_sha256={candidate_sha256}\nwindows_candidate_sha256={windows_candidate_sha256}\nintent_sha256={intent_sha256}\n",
             self.projection as i32,
         );
         handle
@@ -483,7 +487,7 @@ impl CredentialStore {
         let v = n(5, "vm_generation=");
         let ws = n(3, "windows_slot=");
         let vs = n(6, "vm_slot=");
-        if fields.len() != 9
+        if fields.len() != 10
             || fields[0] != "sing-box.existing-active-join/v1"
             || fields[1] != format!("projection={}", CredentialProjectionKind::Vm as i32)
             || w.is_none_or(|x| x == 0)
@@ -494,7 +498,8 @@ impl CredentialStore {
             || ws == vs
             || !hex(4, "windows_sha256=")
             || !hex(7, "vm_sha256=")
-            || !hex(8, "intent_sha256=")
+            || !hex(8, "windows_candidate_sha256=")
+            || !hex(9, "intent_sha256=")
         {
             return Err("existing-active join receipt malformed; outcome UNKNOWN".to_owned());
         }
@@ -1506,6 +1511,7 @@ mod tests {
                 101,
                 1,
                 &"a".repeat(64),
+                &"c".repeat(64),
                 &"b".repeat(64),
             )
             .unwrap();
@@ -1521,6 +1527,7 @@ mod tests {
                     101,
                     1,
                     &"a".repeat(64),
+                    &"c".repeat(64),
                     &"b".repeat(64)
                 )
                 .is_err()
@@ -1546,6 +1553,7 @@ mod tests {
                     101,
                     1,
                     &"a".repeat(64),
+                    &"c".repeat(64),
                     &"b".repeat(64)
                 )
                 .is_err()

@@ -238,6 +238,10 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             if let Some(store) = CredentialStore::open_existing(root, CredentialProjectionKind::Vm)
                 .map_err(AgentError::Command)?
             {
+                let join = store
+                    .read_existing_join_receipt()
+                    .map_err(AgentError::Command)?;
+                println!("credential_existing_join_receipt_present={}", join.is_some());
                 let receipt = store
                     .read_initial_pair_receipt()
                     .map_err(AgentError::Command)?;
@@ -277,6 +281,7 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             } else {
                 println!("credential_initial_commit_receipt_present=false");
                 println!("credential_initial_recovery_receipt_present=false");
+                println!("credential_existing_join_receipt_present=false");
             }
             // Existing root owner; a single authenticated read-only GET
             // proves the selected local projection without exporting secrets.
@@ -419,6 +424,7 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             windows_active_generation,
             windows_active_slot,
             windows_active_sha256,
+            windows_candidate_sha256,
             intent_sha256,
         } => {
             // Protected GitHub caller verifies the original Windows A owner and
@@ -458,6 +464,7 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
                     windows_active_generation,
                     windows_active_slot as i32,
                     &windows_active_sha256,
+                    &windows_candidate_sha256,
                     &intent_sha256,
                 )
                 .map_err(AgentError::Command)?;

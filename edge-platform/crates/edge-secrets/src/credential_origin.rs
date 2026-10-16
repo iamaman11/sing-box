@@ -85,9 +85,12 @@ where
         .read_state()
         .map_err(|_| "WORKER_ORIGIN_BLOCKED: local cursor invalid")?
         .ok_or("WORKER_ORIGIN_BLOCKED: local cursor missing")?;
-    if before.previous.is_some() || before.active.is_some() == before.candidate.is_some() {
+    if before.previous.is_some() || (before.active.is_none() && before.candidate.is_none()) {
         return Err("WORKER_ORIGIN_BLOCKED: ambiguous cursor; reconcile read-only".to_owned());
     }
+    // ACTIVE plus a staged opposite-slot CANDIDATE is a normal, valid A/B
+    // transition. The selected role is still authenticated independently;
+    // a read-only origin proof never authorizes candidate promotion.
     let reference = match selection {
         CredentialOriginSelection::Active => before.active.as_ref(),
         CredentialOriginSelection::Candidate => before.candidate.as_ref(),
@@ -339,4 +342,33 @@ mod tests {
         );
         std::fs::remove_dir_all(root).unwrap();
     }
+
+    #[test]
+    fn staged_windows_b_can_prove_origin_without_discarding_active_a() {
+        let a = valid_bundle(123, CredentialDeliverySlot::A);
+        let b = valid_bundle(124, CredentialDeliverySlot::B);
+        let root = active_store("existing-ab", &a);
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Windows).unwrap();
+        store.stage_candidate(&b).unwrap();
+        let expected = local_credential_bundle_ref(&b).unwrap();
+        let proof = ready(attest_worker_credential_origin_with(
+            &root,
+            CredentialProjectionKind::Windows,
+            CredentialOriginSelection::Candidate,
+            |kind, generation| async move {
+                assert_eq!(kind, CredentialProjectionKind::Windows);
+                assert_eq!(generation, 124);
+                Ok(b)
+            },
+        ))
+        .unwrap();
+        assert_eq!(proof.generation, 124);
+        assert_eq!(proof.slot, "B");
+        assert_eq!(proof.bundle_sha256, expected.sha256);
+        let cursor = store.read_state().unwrap().unwrap();
+        assert_eq!(cursor.active.unwrap().generation, 123);
+        assert_eq!(cursor.candidate.unwrap().generation, 124);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
 }

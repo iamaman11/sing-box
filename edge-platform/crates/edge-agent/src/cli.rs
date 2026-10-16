@@ -89,6 +89,7 @@ pub(crate) enum LocalCommand {
         windows_active_generation: u64,
         windows_active_slot: u32,
         windows_active_sha256: String,
+        windows_candidate_sha256: String,
         intent_sha256: String,
     },
     CredentialStage {
