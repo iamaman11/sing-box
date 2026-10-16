@@ -1455,7 +1455,8 @@ async fn process_privileged_request(
         Ok(WindowsPrivilegedOperation::InitialCredentialCommit) => {
             #[cfg(windows)]
             {
-                require_stopped_proxy_only_initial_commit_owner(install_root)?;
+                (|| -> Result<(String, String, Option<String>), String> {
+                    require_stopped_proxy_only_initial_commit_owner(install_root)?;
                 let activation = load_verified_activation(install_root)
                     .map_err(|err| err.to_string())?;
                 let generation = request.credential_generation
@@ -1467,7 +1468,8 @@ async fn process_privileged_request(
                 let (code, detail) = credential_transition::initial_commit(
                     install_root, &activation, generation, slot as i32, intent
                 )?;
-                Ok((code, detail, Some(activation.release_set_sha256)))
+                    Ok((code, detail, Some(activation.release_set_sha256)))
+                })()
             }
             #[cfg(not(windows))]
             {
