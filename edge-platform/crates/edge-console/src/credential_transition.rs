@@ -307,7 +307,10 @@ pub(crate) fn initial_recover(
         recovery_intent_sha256,
         candidate_sha256,
     )?;
-    if committed.active.as_ref().map(|reference| reference.sha256.as_str())
+    if committed
+        .active
+        .as_ref()
+        .map(|reference| reference.sha256.as_str())
         != Some(candidate_sha256)
         || committed.candidate.is_some()
         || committed.previous.is_some()
@@ -322,7 +325,9 @@ pub(crate) fn initial_recover(
     )?;
     Ok((
         "INITIAL_CREDENTIAL_RECOVERED_LOCAL_ONLY".to_owned(),
-        format!("Windows exact generation {generation} slot {slot} recovered; no paired network PASS"),
+        format!(
+            "Windows exact generation {generation} slot {slot} recovered; no paired network PASS"
+        ),
     ))
 }
 
