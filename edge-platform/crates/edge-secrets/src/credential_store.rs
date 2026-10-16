@@ -1584,6 +1584,7 @@ mod tests {
                         win_generation,
                         win_slot,
                         &"a".repeat(64),
+                        &"c".repeat(64),
                         &"b".repeat(64)
                     )
                     .is_err()
