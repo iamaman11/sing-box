@@ -2,7 +2,8 @@ use crate::cli::{
     CredentialDeliveryCommand, CredentialDeliverySlotArg, CredentialRotationClassArg,
 };
 use crate::credential_initial_journal::{
-    InitialPairJournalPlan, PairedCommitPlan, PairedHostReadback, plan_initial_pair_reservation,
+    InitialPairJournalPlan, PairedCommitPlan, PairedHostReadback, PairedRecoveryPlan,
+    plan_paired_recovery, verify_paired_recovery, plan_initial_pair_reservation,
     plan_paired_commit, reconcile_paired_commit, require_empty_initial_history,
     verify_expected_initial_attempt, verify_paired_commit_intent, verify_recorded_initial_attempt,
 };
@@ -129,6 +130,8 @@ pub async fn run_delivery(
         CredentialDeliveryCommand::InitialPairCommitPlan { .. }
             | CredentialDeliveryCommand::InitialPairCommitReadback { .. }
             | CredentialDeliveryCommand::InitialPairCommitReconcile { .. }
+            | CredentialDeliveryCommand::InitialPairRecoveryPlan { .. }
+            | CredentialDeliveryCommand::InitialPairRecoveryReadback { .. }
     ) {
         // These calls neither open a Cloudflare write token nor POST to GitHub.
         return run_readonly_paired_commit(command, release_context);
@@ -207,7 +210,9 @@ pub async fn run_delivery(
         | CredentialDeliveryCommand::InitialPairJournalReadback { .. }
         | CredentialDeliveryCommand::InitialPairCommitPlan { .. }
         | CredentialDeliveryCommand::InitialPairCommitReadback { .. }
-        | CredentialDeliveryCommand::InitialPairCommitReconcile { .. } => {
+        | CredentialDeliveryCommand::InitialPairCommitReconcile { .. }
+        | CredentialDeliveryCommand::InitialPairRecoveryPlan { .. }
+        | CredentialDeliveryCommand::InitialPairRecoveryReadback { .. } => {
             unreachable!(
                 "read-only journal and paired-commit policy dispatch before provider authority"
             )
@@ -780,6 +785,118 @@ fn run_readonly_paired_commit(
             println!("credential_replay_authorized=false");
             println!("credential_provider_mutations=0");
             println!("credential_runtime_mutations=0");
+            Ok(())
+        }
+        CredentialDeliveryCommand::InitialPairRecoveryPlan {
+            original_run_id,
+            commit_run_id,
+            recovery_run_id,
+            generation,
+            slot,
+            vm_prepared_sha256,
+            windows_prepared_sha256,
+            vm_active_sha256,
+            windows_candidate_sha256,
+            journal_history_path,
+            original_begin_path,
+            original_intent_path,
+            host_readback_path,
+            recovery_output_path,
+        } => {
+            let pair = commit_request_from_cli(
+                original_run_id,
+                commit_run_id,
+                generation,
+                slot,
+                vm_prepared_sha256,
+                windows_prepared_sha256,
+                release,
+            );
+            let history = read_exact_file(&journal_history_path, "recovery history unavailable")?;
+            let original = read_exact_file(&original_begin_path, "recovery original BEGIN unavailable")?;
+            let intent = read_exact_file(&original_intent_path, "recovery original COMMIT_INTENT unavailable")?;
+            let observation = read_exact_file(&host_readback_path, "recovery host proofs unavailable")?;
+            let reports: PairedHostObservations = serde_json::from_str(&observation)
+                .map_err(|_| "paired recovery host report invalid".to_owned())?;
+            let plan = PairedRecoveryPlan {
+                original_intent_sha256: sha256_hex(intent.as_bytes()),
+                pair,
+                recovery_run_id,
+                vm_active_sha256,
+                windows_candidate_sha256,
+                vm: reports.vm,
+                windows: reports.windows,
+            };
+            let output = plan_paired_recovery(&plan, &history, &original, &intent)?;
+            if output.len() > 4096
+                || !output.starts_with("<!-- sing-box-credential-paired-recovery/v1 -->\n")
+            {
+                return Err("paired recovery intent must be exact nonsecret record".to_owned());
+            }
+            let mut options = OpenOptions::new();
+            options.create_new(true).write(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&recovery_output_path)
+                .map_err(|err| format!("recovery intent file already exists or unknown: {err}"))?;
+            file.write_all(output.as_bytes())
+                .and_then(|_| file.sync_all())
+                .map_err(|err| format!("paired recovery output write uncertain: {err}"))?;
+            println!("paired_recovery_policy=LOCAL_INTENT_ONLY");
+            println!("paired_recovery_intent_sha256={}", sha256_hex(output.as_bytes()));
+            println!("paired_recovery_provider_mutations=0");
+            println!("paired_recovery_host_mutations=0");
+            println!("paired_recovery_journal_mutations=0");
+            Ok(())
+        }
+        CredentialDeliveryCommand::InitialPairRecoveryReadback {
+            original_run_id,
+            commit_run_id,
+            recovery_run_id,
+            generation,
+            slot,
+            vm_prepared_sha256,
+            windows_prepared_sha256,
+            vm_active_sha256,
+            windows_candidate_sha256,
+            journal_history_path,
+            original_begin_path,
+            original_intent_path,
+            host_readback_path,
+            recovery_output_path,
+        } => {
+            let pair = commit_request_from_cli(
+                original_run_id,
+                commit_run_id,
+                generation,
+                slot,
+                vm_prepared_sha256,
+                windows_prepared_sha256,
+                release,
+            );
+            let history = read_exact_file(&journal_history_path, "recovery history unavailable")?;
+            let original = read_exact_file(&original_begin_path, "recovery original BEGIN unavailable")?;
+            let intent = read_exact_file(&original_intent_path, "recovery original COMMIT_INTENT unavailable")?;
+            let observation = read_exact_file(&host_readback_path, "recovery host proofs unavailable")?;
+            let reports: PairedHostObservations = serde_json::from_str(&observation)
+                .map_err(|_| "paired recovery host report invalid".to_owned())?;
+            let plan = PairedRecoveryPlan {
+                original_intent_sha256: sha256_hex(intent.as_bytes()),
+                pair,
+                recovery_run_id,
+                vm_active_sha256,
+                windows_candidate_sha256,
+                vm: reports.vm,
+                windows: reports.windows,
+            };
+            let exact = read_exact_file(&recovery_output_path, "recovery intent readback unavailable")?;
+            verify_paired_recovery(&plan, &history, &original, &intent, &exact)?;
+            println!("paired_recovery_intent=EXACT_DURABLE_ONCE");
+            println!("paired_recovery_provider_mutations=0");
+            println!("paired_recovery_host_mutations=0");
             Ok(())
         }
         _ => Err("read-only paired commit policy refuses unrelated command".to_owned()),
