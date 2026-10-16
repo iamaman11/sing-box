@@ -41,10 +41,15 @@ jobs:
           case "$COMMAND_BODY" in
             "/windows diagnose") operation="diagnose"; readonly_purpose="ordinary" ;;
             "/windows offline-preflight") operation="diagnose"; readonly_purpose="offline-preflight" ;;
-            "/windows initial-pair-stage "*)
-              remainder="${COMMAND_BODY#/windows initial-pair-stage }"
-              if [[ "$remainder" =~ ^[1-9][0-9]{7,18}$ ]]; then
+            "/windows initial-pair-prepare "*|"/windows initial-pair-stage "*)
+              if [[ "$COMMAND_BODY" == "/windows initial-pair-prepare "* ]]; then
+                remainder="${COMMAND_BODY#/windows initial-pair-prepare }"
+                operation="initial-pair-prepare"
+              else
+                remainder="${COMMAND_BODY#/windows initial-pair-stage }"
                 operation="initial-pair-stage"
+              fi
+              if [[ "$remainder" =~ ^[1-9][0-9]{7,18}$ ]]; then
                 source_run_id="$remainder"
               else
                 echo 'Windows permanent first-use stage requires original GitHub run ID' >&2
@@ -161,7 +166,7 @@ jobs:
 
       - name: Read exact original first-use BEGIN
         id: initial_begin
-        if: steps.auth.outputs.operation == 'initial-pair-stage'
+        if: steps.auth.outputs.operation == 'initial-pair-stage' || steps.auth.outputs.operation == 'initial-pair-prepare'
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
@@ -228,6 +233,54 @@ jobs:
           }
           if (-not $?) { throw 'Windows first-use reconciliation did not finish' }
 
+  initial_first_use_prepare:
+    name: Windows / exactly stopped immutable upgrade BEFORE first-use BEGIN
+    needs: resolve
+    if: needs.resolve.outputs.operation == 'initial-pair-prepare'
+    runs-on: [self-hosted, Windows, X64, sing-box-windows-lab]
+    timeout-minutes: 18
+    concurrency:
+      group: sing-box-windows-physical
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - name: Checkout exact accepted native release owner
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.accepted_revision }}
+          persist-credentials: false
+          clean: true
+      - name: Prove no Windows one-shot staging BEGIN exists before updating binaries
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ needs.resolve.outputs.source_run_id }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_RUN_ATTEMPT -cne '1') { throw 'FIRST_USE_UPGRADE_BLOCKED: replay forbidden' }
+          $history = & gh api --paginate "repos/$env:GITHUB_REPOSITORY/issues/26/comments?per_page=100" |
+            ConvertFrom-Json
+          if ($LASTEXITCODE -ne 0 -or $null -eq $history) { throw 'FIRST_USE_UPGRADE_BLOCKED: complete durable history unavailable' }
+          $staging = @($history | Where-Object { [string]$_.body -like '*<!-- sing-box-windows-persistent-initial-stage/*' })
+          if ($staging.Count -ne 0) { throw 'FIRST_USE_UPGRADE_BLOCKED: staging already begun; reconcile instead' }
+          Write-Host 'first_use_upgrade_journal=NO_WINDOWS_STAGE_BEGIN'
+      - name: Execute one stopped native offline ReleaseSet upgrade with bounded readback
+        shell: powershell
+        env:
+          EDGE_FIRST_USE_EXPECTED_MODE: ${{ needs.resolve.outputs.expected_mode }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = Join-Path $env:GITHUB_WORKSPACE 'edge-platform\scripts\windows-first-use-offline-handoff.ps1'
+          & $script -AcceptedRevision '${{ needs.resolve.outputs.accepted_revision }}' -ReleaseSetSha256 '${{ needs.resolve.outputs.release_set_sha256 }}' -Preflight
+          if ($LASTEXITCODE -ne 0 -or -not $?) { throw 'FIRST_USE_UPGRADE_BLOCKED: preflight failed before any mutation' }
+          & $script -AcceptedRevision '${{ needs.resolve.outputs.accepted_revision }}' -ReleaseSetSha256 '${{ needs.resolve.outputs.release_set_sha256 }}'
+          if ($LASTEXITCODE -ne 0 -or -not $?) { throw 'FIRST_USE_UPGRADE_UNKNOWN: native offline handoff incomplete; do not replay' }
+          Write-Host 'first_use_binary_prepare=EXACT_STOPPED_RELEASE_ACCEPTED'
+          Write-Host 'first_use_staging_begin=NOT_WRITTEN'
+          Write-Host 'credential_pair_committed=false'
+
   initial_first_use_preflight:
     name: Windows / read-only installed-owner capability before BEGIN
     needs: resolve
@@ -253,7 +306,7 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $handoff = Join-Path $env:GITHUB_WORKSPACE 'edge-platform\scripts\windows-first-use-offline-handoff.ps1'
-          & $handoff -AcceptedRevision '${{ needs.resolve.outputs.accepted_revision }}' -ReleaseSetSha256 '${{ needs.resolve.outputs.release_set_sha256 }}' -Preflight
+          & $handoff -AcceptedRevision '${{ needs.resolve.outputs.accepted_revision }}' -ReleaseSetSha256 '${{ needs.resolve.outputs.release_set_sha256 }}' -Preflight -RequireCurrentRelease
           if ($LASTEXITCODE -ne 0 -or -not $?) {
             throw 'FIRST_USE_PREBEGIN_BLOCKED: installed native capability not proven'
           }
@@ -346,14 +399,16 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           $handoff = Join-Path $env:GITHUB_WORKSPACE 'edge-platform\scripts\windows-first-use-offline-handoff.ps1'
-          & $handoff -AcceptedRevision $env:EDGE_FIRST_USE_TARGET_REVISION -ReleaseSetSha256 $env:EDGE_FIRST_USE_TARGET_RELEASE
-          if ($LASTEXITCODE -ne 0 -or -not $?) { throw 'Windows SYSTEM offline handoff unconfirmed; do not replay' }
+          # The irreversible GitHub BEGIN is already persisted. No release
+          # download/install, SCM retarget or fallback is permitted after BEGIN.
+          & $handoff -AcceptedRevision $env:EDGE_FIRST_USE_TARGET_REVISION -ReleaseSetSha256 $env:EDGE_FIRST_USE_TARGET_RELEASE -Preflight -RequireCurrentRelease
+          if ($LASTEXITCODE -ne 0 -or -not $?) { throw 'FIRST_USE_STAGE_BLOCKED: exact previously prepared Windows release was not preserved' }
           $script = Join-Path $env:GITHUB_WORKSPACE 'edge-platform\scripts\windows-initial-pair-stage.ps1'
           & $script -Generation ([long]$env:FIRST_USE_GENERATION) -Slot $env:FIRST_USE_SLOT
           if ($LASTEXITCODE -ne 0 -or -not $?) { throw 'Windows initial stage ended without confirmed evidence' }
 
   physical:
-    if: needs.resolve.outputs.operation != 'acceptance-reconcile' && needs.resolve.outputs.operation != 'initial-pair-stage'
+    if: needs.resolve.outputs.operation != 'acceptance-reconcile' && needs.resolve.outputs.operation != 'initial-pair-stage' && needs.resolve.outputs.operation != 'initial-pair-prepare'
     name: Windows / ${{ needs.resolve.outputs.operation }}
     needs: resolve
     runs-on:
