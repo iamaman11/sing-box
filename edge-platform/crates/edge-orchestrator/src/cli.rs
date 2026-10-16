@@ -201,6 +201,16 @@ pub(crate) enum CredentialDeliveryCommand {
     ContractVerify,
     // Native read-only plan/readback for ONE durable existing-ACTIVE -> B
     // join. Never accepts credentials or grants mutation authority.
+    ExistingJoinBeginPlan {
+        spec_path: std::path::PathBuf,
+        journal_history_path: std::path::PathBuf,
+        record_output_path: std::path::PathBuf,
+    },
+    ExistingJoinBeginReadback {
+        spec_path: std::path::PathBuf,
+        journal_history_path: std::path::PathBuf,
+        exact_record_path: std::path::PathBuf,
+    },
     ExistingJoinPlan {
         spec_path: std::path::PathBuf,
         journal_history_path: std::path::PathBuf,

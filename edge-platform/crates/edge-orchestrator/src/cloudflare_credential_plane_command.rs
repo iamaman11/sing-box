@@ -138,7 +138,9 @@ pub async fn run_delivery(
     }
     if matches!(
         &command,
-        CredentialDeliveryCommand::ExistingJoinPlan { .. }
+        CredentialDeliveryCommand::ExistingJoinBeginPlan { .. }
+            | CredentialDeliveryCommand::ExistingJoinBeginReadback { .. }
+            | CredentialDeliveryCommand::ExistingJoinPlan { .. }
             | CredentialDeliveryCommand::ExistingJoinReadback { .. }
             | CredentialDeliveryCommand::ExistingJoinReconcile { .. }
     ) {
@@ -183,7 +185,9 @@ pub async fn run_delivery(
 
     match command {
         CredentialDeliveryCommand::ContractVerify => verify(&control_token, &desired).await,
-        CredentialDeliveryCommand::ExistingJoinPlan { .. }
+        CredentialDeliveryCommand::ExistingJoinBeginPlan { .. }
+        | CredentialDeliveryCommand::ExistingJoinBeginReadback { .. }
+        | CredentialDeliveryCommand::ExistingJoinPlan { .. }
         | CredentialDeliveryCommand::ExistingJoinReadback { .. }
         | CredentialDeliveryCommand::ExistingJoinReconcile { .. } => {
             unreachable!("existing join runs before provider authority")
