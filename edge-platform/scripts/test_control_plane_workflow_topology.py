@@ -90,6 +90,22 @@ def main() -> None:
     edge_local_runtime = EDGE_LOCAL_RUNTIME.read_text(encoding="utf-8")
     require(
         "startsWith(github.event.comment.body, '/windows initial-pair-stage ')" in router
+        and "startsWith(github.event.comment.body, '/windows initial-pair-prepare ')" in router
+        and '"/windows initial-pair-prepare "*|' in windows_physical
+        and "operation=\"initial-pair-prepare\"" in windows_physical
+        and "initial_first_use_prepare:" in windows_physical
+        and "FIRST_USE_UPGRADE_BLOCKED: staging already begun; reconcile instead" in windows_physical
+        and "FIRST_USE_UPGRADE_BLOCKED: program-upgrade intent already recorded; reconcile only" in windows_physical
+        and "sing-box-windows-program-prepare/v1" in windows_physical
+        and "first_use_upgrade_intent=COMMITTED_ONCE" in windows_physical
+        and "FIRST_USE_UPGRADE_UNKNOWN: exactly-one durable intent readback unproven; no replay" in windows_physical
+        and "Verify installed native capability and all preconditions before journalling" in windows_physical
+        and "first_use_binary_prepare=EXACT_STOPPED_RELEASE_ACCEPTED" in windows_physical
+        and "first_use_staging_begin=NOT_WRITTEN" in windows_physical
+        and "FIRST_USE_STAGE_BLOCKED: exact previously prepared Windows release was not preserved" in windows_physical
+        and "-Preflight -RequireCurrentRelease" in windows_physical
+        and "FIRST_USE_PREBEGIN_BLOCKED: exact accepted Windows ReleaseSet must be installed BEFORE durable BEGIN" in windows_first_use_offline
+        and "if ($RequireCurrentRelease -and -not $Preflight)" in windows_first_use_offline
         and 'issues: write' in router
         and '"/windows initial-pair-stage "*' in windows_physical
         and 'operation="initial-pair-stage"' in windows_physical
@@ -165,7 +181,12 @@ def main() -> None:
         "local runtime must never reset foreign Cloudflare One Client DNS by resolver IP",
     )
     require(
-        windows_console.count("require_exact_immutable_activation_console(&install_root)") == 7
+        windows_console.count("require_exact_immutable_activation_console(&install_root)") == 9
+        and "Command::PrivilegedInitialCredentialCommit(args)" in windows_console
+        and "Command::PrivilegedInitialCredentialRecover(args)" in windows_console
+        and "WindowsPrivilegedOperation::InitialCredentialRecover" in windows_console
+        and "credential_transition::initial_recover(" in windows_console
+        and "require_stopped_proxy_only_initial_commit_owner(install_root)?;" in windows_console
         and windows_console.count("require_exact_immutable_activation_console(install_root)?;") == 4
         and "Command::OfflineBootstrap(args)" in windows_console
         and "current_exe.canonicalize()" in windows_console
@@ -356,6 +377,56 @@ def main() -> None:
         and "offline mutation is not routed until the installed SYSTEM bootstrap can dispatch it"
             not in router,
         "offline install and rollback must be bounded typed SYSTEM operations and not bypass the existing protected issue router",
+    )
+
+    # Paired commit source policy is read-only, has separate real-owner
+    # proof requirements, and cannot be mistaken for a rotation promotion.
+    paired_journal = Path("edge-platform/crates/edge-orchestrator/src/credential_initial_journal.rs").read_text(encoding="utf-8")
+    paired_cli = Path("edge-platform/crates/edge-orchestrator/src/cli.rs").read_text(encoding="utf-8")
+    paired_owner = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs").read_text(encoding="utf-8")
+    require(
+        "sing-box-credential-paired-commit/v1" in paired_journal
+        and "PAIR_PARTIAL_BLOCKED_NO_REPLAY" in paired_journal
+        and "PAIR_ACTIVE_DECLARED_NEEDS_INDEPENDENT_ORIGIN_PROOF" in paired_journal
+        and "PAIR_ACTIVE_VERIFIED" not in paired_journal
+        and "PAIR_INTENT_RECORDED_NO_MUTATION" in paired_journal
+        and "PAIR_POINTERS_ACTIVE_RUNTIME_UNPROVEN" in paired_journal
+        and "verify_recorded_initial_attempt(history, exact_original)?" in paired_journal
+        and "paired_commit_reconciliation_never_replays_partial_or_unknown" in paired_journal
+        and "InitialPairCommitPlan" in paired_cli
+        and "InitialPairCommitReadback" in paired_cli
+        and "InitialPairCommitReconcile" in paired_cli
+        and "run_readonly_paired_commit(command, release_context)" in paired_owner
+        and "credential_replay_authorized=false" in paired_owner
+        and "credential_pair_committed=false" in paired_owner
+        and "create_new(true)" in paired_owner
+        and "CredentialTransitionAction::Promote" not in paired_journal,
+        "one durable non-mutating paired commit intent must never promote either host or replay uncertain state",
+    )
+
+    # First-use is a single native owner chain, not two installers. Neither
+    # network/download nor release activation may occur after credential BEGIN.
+    # Validate the order in the ACTUAL workflow, not just the presence of tags.
+    program_prepare = windows_physical.split("  initial_first_use_prepare:\n", 1)[1].split(
+        "\n  initial_first_use_preflight:", 1
+    )[0]
+    stage_once = windows_physical.split("  initial_first_use_stage:\n", 1)[1].split(
+        "\n  physical:", 1
+    )[0]
+    require(
+        program_prepare.index("Verify installed native capability and all preconditions before journalling")
+        < program_prepare.index("Persist exactly one immutable program-upgrade intent BEFORE native mutation")
+        < program_prepare.index("Execute one stopped native offline ReleaseSet upgrade with bounded readback")
+        and program_prepare.count("gh api -X POST") == 1
+        and "gh api --paginate --slurp" in program_prepare
+        and "first_use_upgrade_intent=COMMITTED_ONCE" in program_prepare
+        and "install-windows-release.ps1" not in program_prepare
+        and stage_once.count("-Preflight -RequireCurrentRelease") == 1
+        and " -Preflight -RequireCurrentRelease" in stage_once
+        and " & $handoff -AcceptedRevision $env:EDGE_FIRST_USE_TARGET_REVISION -ReleaseSetSha256 $env:EDGE_FIRST_USE_TARGET_RELEASE\n" not in stage_once
+        and "Windows SYSTEM offline handoff unconfirmed" not in stage_once
+        and "windows-initial-pair-stage.ps1" in stage_once,
+        "initial pair must install exact binaries before credential BEGIN with a single native owner and no mutation replay",
     )
 
     # The protected issue operator has a separate exact-command allowlist.
@@ -595,7 +666,9 @@ def main() -> None:
         and 'credential-initial-pair-provider-intent/v1' in credential_provider
         and "credentials initial-pair-journal-observe" in credentials
         and "gh api --paginate" in credentials
-        and "issues: read" not in credentials
+        and "issues: read" not in credentials.split("  execute:\n", 1)[1].split("\n  rotate_release:", 1)[0]
+        and "issues: write" in credentials.split("  initial_pair_intent:\n", 1)[1].split("\n  initial_pair_vm_commit:", 1)[0]
+        and "issues: write" in router.split("  credentials:\n", 1)[1].split("\n  windows:", 1)[0]
         and "credential_initial_journal_empty=true" in credentials
         and "credential_journal_mutations=0" in credentials
         and "require_empty_initial_history(&history)?" in credential_provider
@@ -641,7 +714,34 @@ def main() -> None:
             "initial pair digest shell validator accepted malformed evidence or rejected valid evidence",
         )
     require(
-        'if operation in {"rotate-application", "host-bootstrap-converge"}:' in credentials
+        'if operation in {"rotate-application", "host-bootstrap-converge", "initial-pair-commit", "initial-pair-recover"}:' in credentials
+        and '"initial-pair-commit"' in credentials
+        and '"initial-pair-recover"' in credentials
+        and "initial_pair_recovery_source:" in credentials
+        and "initial_pair_recovery_vm:" in credentials
+        and "initial_pair_recovery_windows:" in credentials
+        and "initial_pair_recovery_intent:" in credentials
+        and "initial_pair_recovery_apply_windows:" in credentials
+        and "initial_pair_recovery_local_verdict:" in credentials
+        and "initial_pair_recovery_vm_readback:" in credentials
+        and "initial_pair_recovery_windows_readback:" in credentials
+        and "paired_vm_post_recovery=ACTIVE_ORIGIN_READBACK_PASS" in credentials
+        and "paired_windows_post_recovery=ACTIVE_SYSTEM_READBACK_PASS" in credentials
+        and '"$VM_READBACK" = success && "$WINDOWS_READBACK" = success' in credentials
+        and "credential_initial_recovery_receipt_present=true;" in credentials
+        and "privileged-initial-credential-recover" in credentials
+        and "paired_recovery_local_pointers=UNKNOWN_BLOCKED_NO_REPLAY" in credentials
+        and 'test "$original_prepared" = "$ORIGINAL_PREPARED"' in credentials
+        and "if ($prepared -cne $env:ORIGINAL_PREPARED)" in credentials
+        and "paired_serving_network=NOT_ACCEPTED" in credentials
+        and "initial_pair_vm_prepared:" in credentials
+        and "initial_pair_windows_prepared:" in credentials
+        and "initial_pair_intent:" in credentials
+        and "initial_pair_vm_commit:" in credentials
+        and "initial_pair_windows_commit:" in credentials
+        and "initial_pair_local_verdict:" in credentials
+        and "paired_serving_network=NOT_ACCEPTED" in credentials
+        and "paired_automatic_replay=false" in credentials
         and 'os.environ.get("GITHUB_RUN_ATTEMPT") != "1"' in credentials
         and "credential mutation replay forbidden: read-only reconciliation required" in credentials,
         "GitHub credential mutation must fail closed before host preparation on a run re-attempt",
@@ -2211,8 +2311,11 @@ def main() -> None:
     require(
         "issues: read" not in vultr
         and vultr.count("issues: write") == 3
-        and "issues: read" not in credentials
-        and "issues: write" not in credentials
+        and "issues: read" not in credentials.split("  execute:\n", 1)[1].split("\n  rotate_release:", 1)[0]
+        and credentials.count("issues: write") == 2
+        and "issues: write" in credentials.split("  initial_pair_intent:\n", 1)[1].split("\n  initial_pair_vm_commit:", 1)[0]
+        and "issues: write" in credentials.split("  initial_pair_recovery_intent:\n", 1)[1].split("\n  initial_pair_recovery_apply_windows:", 1)[0]
+        and "issues: write" not in credentials.split("  initial_pair_recovery_source:\n", 1)[1].split("\n  initial_pair_recovery_intent:", 1)[0]
         and "  vultr:" in router
         and "    permissions:\n      contents: read\n      actions: read\n      issues: write" in router
         and "    uses: ./.github/workflows/vultr-acceptance-resume.yml" in vultr
@@ -2376,7 +2479,9 @@ def main() -> None:
         "steady-state credential rotation must keep cross-host barriers explicit without expanding into redundant admission/recovery micro-jobs",
     )
 
-    host_bootstrap_workflow = credentials.split("  host_bootstrap_release:\n", 1)[1]
+    host_bootstrap_workflow = credentials.split("  host_bootstrap_release:\n", 1)[1].split(
+        "\n  initial_pair_release:\n", 1
+    )[0]
     host_bootstrap_start = credential_command.index("async fn host_bootstrap_converge(")
     host_bootstrap_end = credential_command.index("fn plan(", host_bootstrap_start)
     host_bootstrap = credential_command[host_bootstrap_start:host_bootstrap_end]

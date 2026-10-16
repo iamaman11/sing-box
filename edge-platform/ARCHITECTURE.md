@@ -2,6 +2,113 @@
 
 This file defines the stable ownership/invariant model and steady-state target. **Physical N1/N2 external Line1 4/4 + Line2 6/6, before and after one VM reboot, is accepted** in [GitHub Actions #38627187731](https://github.com/iamaman11/sing-box/actions/runs/38627187731). The unchanged Worker credential generation and exact transient Windows/Access cleanup were also proven. **Do not infer that the reused VM was disposed, that its staged candidate has been promoted to an active credential pointer, or that an already-running container's credential source has been cryptographically attributed.** These remain N1/N2 lifecycle closure gates; Windows bidirectional mode changes remain N3, and production lifecycle N4 is unaccepted. Current operational evidence and ordering are in Issue #26, not older historical passages below.
 
+**Paired COMMIT_INTENT native read-only policy (16 October 2026):** The
+existing Rust `edge-orchestrator credentials initial-pair-commit-plan`,
+`initial-pair-commit-readback`, and `initial-pair-commit-reconcile` functions
+are deliberately non-mutating. They reuse the original, exact GitHub Issue #26
+credential BEGIN, and validate a **different** one-time commit-run identity,
+exact accepted immutable ReleaseSet, generation/slot, and separate VM/Windows
+prepared-owner evidence digests. The complete issue history may contain
+**exactly one** new `credential-paired-commit/v1` COMMIT_INTENT; duplicate,
+unknown-version, changed, displaced or missing records reject. This is a
+policy-level proof only: a digest or a JSON field claiming
+`owner_origin_verified=true` does NOT authenticate the real VM or Windows
+runner. The protected workflow must bind actual read-only local owner reports
+and physical credentials before POST/host mutation is allowed. CLI plan
+creates only a local new file; it never posts to GitHub or requests Cloudflare
+write access. Reconciliation classifies `CANDIDATE/CANDIDATE` as
+`PAIR_INTENT_RECORDED_NO_MUTATION`, mixed `ACTIVE/CANDIDATE` as
+`PAIR_PARTIAL_BLOCKED_NO_REPLAY`, and two exact active/runtime verified
+pointers as `PAIR_ACTIVE_DECLARED_NEEDS_INDEPENDENT_ORIGIN_PROOF`.
+The CLI cannot issue a final active PASS based only on caller-provided
+booleans; independent owner provenance and actual authenticated traffic
+must be checked outside this read-only policy. There is intentionally **no**
+replay, fallback, generic first-use promote or serving permission.
+
+**Same-owner paired executor (unaccepted source implementation):** The
+existing protected `/credentials initial-pair-commit <original_run_id>`
+workflow, sharing the single credential transaction lock, resolves the exact
+canonical application VM, verifies the original GitHub first-use run and
+immutable BEGIN, and gathers new run-scoped receipts from that VM's exact
+SHA256-pinned root-owned agent and the Windows installed SYSTEM-owned
+credential cursor. A separate hosted job creates one non-secret COMMIT_INTENT,
+posts it once to the existing Issue #26 journal and verifies an exact readback.
+Only then may the two existing native owners perform one first-use local
+pointer commit each, sequentially. The common projection-specific credential
+store writes and fsyncs a create-new protected `initial-paired-commit-receipt-v1`
+**before** its atomic ACTIVE pointer. A partial or uncertain result cannot
+replay or write a different receipt. Windows verifies stopped ProxyOnly,
+validates and materializes its native sing-box config before spending the
+irreversible receipt, without SCM/TUN/DNS mutation. VM verifies the existing
+candidate against the real six Line2 endpoints. The final workflow verdict
+reports **LOCAL_POINTERS_ONLY**, never full network acceptance.
+
+**Bounded first-use recovery (source-only until physical acceptance):**
+The separate protected GitHub command
+`/credentials initial-pair-recover <original_run_id> <failed_commit_run_id>`
+is **not a retry** of `initial-pair-commit` or ordinary rotation.
+It is admitted only for the original failed immutable run and a separately
+failed initial-pair-commit, matching the exact accepted main ReleaseSet.
+The same GitHub credential transaction lock verifies pinned VM root owner
+ACTIVE with original commit receipt and six local authenticated Line2 endpoints,
+and pinned Windows SYSTEM owner CANDIDATE with stopped/OnDemand ProxyOnly,
+zero sing-box/TUN, exact candidate and no prior recovery attempt. Malformed,
+partially written or mismatched receipts fail closed. These are read-only
+host observations and cannot issue another Worker credential generation.
+
+Only after two independently proven owner origins does the existing Rust
+orchestrator create one non-secret `credential-paired-recovery/v1`
+RECOVERY_INTENT tied to the original COMMIT_INTENT, both original prepared
+digests, generation, slot, immutable release and current VM ACTIVE / Windows
+CANDIDATE bundle hashes. GitHub Issue #26 writes and reads it back exactly
+once. The original commit record is NEVER rewritten or replayed. One existing
+Windows SYSTEM dispatcher action may then re-materialize only the already
+authenticated Windows candidate config while SCM is STOPPED, fsync a
+create-new private `initial-paired-recovery-receipt-v1` and atomically
+complete its local ACTIVE pointer. Any crash/lost ACK after this receipt
+means UNKNOWN/NO_REPLAY, not a new recovery or fallback. The original
+first-use commit is fenced when any recovery receipt exists.
+
+This recovery does not enable TUN, start services, alter One Client DNS,
+change Workers or claim final pair network acceptance. The final workflow
+reports LOCAL_POINTERS_ONLY even when both jobs succeed. Independent
+read-only VM/Windows ACTIVE-origin reconciliation and actual external
+Line1 DIRECT/WARP authenticated HTTPS/TLS, Windows ProxyOnly traffic and
+no-TUN Cloudflare One recovery remain required for physical N1/N2 PASS.
+A failed recovery may require explicitly audited manual rescue; do not
+infer automatic atomic commit across two computers.
+
+This protocol remains DRAFT until exact source CI, exact immutable owner
+deployment on both hosts, authenticated journal/runner evidence and bounded
+physical paired acceptance. Any partial active pointer, unknown ACK or
+mismatched receipt is **BLOCKED**, not rollback by inventing previous v2.
+External Line1 DIRECT/WARP, Windows ProxyOnly service start and Cloudflare
+One independent no-TUN recovery remain separately NOT_ACCEPTED.
+
+**First-use immutable program upgrade BEFORE credentials (16 October 2026):**
+Use the existing protected GitHub command `/windows initial-pair-prepare <original_run_id>`
+to run the exact native offline ReleaseSet owner on Windows while ProxyOnly
+is Stopped/OnDemand, zero TUN/processes, direct no-proxy DNS/HTTPS PASS,
+private cursor absent. It must re-attest the original immutable first-use
+source and require **zero** persisted Windows staging BEGIN entries.
+The existing installed Rust `privileged-offline-activate` is the ONLY owner
+that may call the protected release installer and rebind SCM. The GitHub
+workflow must never invoke the PowerShell installer directly. After
+read-only installed-owner preflight and before any serving authority mutation
+it records exactly one immutable
+`windows-program-prepare/v1` BEGIN in the existing GitHub Issue #26 journal,
+reads back exact one, and refuses any later attempt. This is not a second
+desired-state store; if an ACK is lost, only read-only reconciliation is
+authorized. It prepares binaries, not credentials, then readback proves the new
+installed immutable ReleaseSet before a separate once-only
+`/windows initial-pair-stage <original_run_id>`. The latter must require
+the exact ReleaseSet both in its pre-BEGIN preflight and again after the
+durable staging BEGIN; it must **never perform a release download or
+offline SCM retarget after BEGIN**. Any unknown offline upgrade result
+requires read-only reconciliation, not a second install. No second
+service, bootstrap transport or credential issuer. This is an
+architectural ordering invariant, not proof that a pair is ACTIVE.
+
 **First-use stopped Windows source (16 October 2026):** Pre-BEGIN
 `windows-first-use-offline-handoff.ps1 -Preflight` and actual stage must
 accept the **same exact stopped, zero-TUN/no-process** old source state:

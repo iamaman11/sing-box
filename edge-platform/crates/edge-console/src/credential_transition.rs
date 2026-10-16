@@ -192,6 +192,145 @@ pub(crate) fn transition(
     }
 }
 
+/// First-use ONLY: preserve the existing SYSTEM-only single-owner boundary.
+/// A protected GitHub paired commit intent must be independently verified
+/// before this request reaches SYSTEM. This function NEVER starts SCM/TUN.
+pub(crate) fn initial_commit(
+    install_root: &Path,
+    activation: &WindowsActivationState,
+    generation: u64,
+    slot: i32,
+    intent_sha256: &str,
+) -> Result<(String, String), String> {
+    verify_windows_activation_files(activation)?;
+    let store = open_store(install_root)?;
+    let state = store.read_state()?.ok_or_else(|| {
+        "Windows initial commit requires existing protected candidate state".to_owned()
+    })?;
+    if state.active.is_some() || state.previous.is_some() {
+        return Err("Windows initial commit refuses existing active or previous v2".to_owned());
+    }
+    let candidate = state.candidate.as_ref().ok_or_else(|| {
+        "Windows initial commit requires exactly one unpromoted candidate".to_owned()
+    })?;
+    if candidate.generation != generation || candidate.slot != slot {
+        return Err("Windows initial commit candidate differs from paired intent".to_owned());
+    }
+    if windows_runtime_state_path(install_root).exists()
+        || local_singbox_config_path(install_root).exists()
+    {
+        return Err(
+            "Windows initial commit refuses previously applied or incomplete managed runtime"
+                .to_owned(),
+        );
+    }
+    let bundle = store.read_bundle(candidate)?;
+    let next = windows_runtime_state_from_canonical_production_bundle(&bundle)?;
+    // Validate the exact signed-release sing-box config BEFORE recording
+    // irreversible local commit intent. This only creates/removes a scratch.
+    let _validated_config = validate_rendered_state(install_root, activation, &next)?;
+    // Materialize verified candidate files while SCM is proven STOPPED,
+    // BEFORE consuming the irreversible receipt. Failure here cannot create
+    // ACTIVE or spend first-use commit authority. No TUN/SCM start.
+    apply_runtime_state(install_root, activation, &next)?;
+    verify_exact_candidate_runtime(install_root, activation, &store, candidate)?;
+    // Exactly one protected non-replayable receipt, then atomic ACTIVE pointer.
+    let committed = store.promote_initial_paired_candidate(generation, slot, intent_sha256)?;
+    if committed.active.as_ref().map(|v| v.generation) != Some(generation)
+        || committed.previous.is_some()
+        || committed.candidate.is_some()
+    {
+        return Err("Windows initial commit pointer result UNKNOWN; no replay".to_owned());
+    }
+    verify_exact_active_runtime(
+        install_root,
+        activation,
+        &store,
+        committed.active.as_ref().unwrap(),
+    )?;
+    Ok((
+        "INITIAL_CREDENTIAL_COMMIT_LOCAL_ONLY".to_owned(),
+        format!(
+            "Windows generation {generation} slot {slot} active; paired/serving proof still required"
+        ),
+    ))
+}
+
+/// Only the existing SYSTEM owner may perform this after the protected
+/// coordinator has independently proven the recorded RECOVERY_INTENT,
+/// VM ACTIVE exact receipt and Windows CANDIDATE exact digest. This is NOT
+/// a replay of the failed first-use COMMIT request. SCM/TUN remain stopped.
+pub(crate) fn initial_recover(
+    install_root: &Path,
+    activation: &WindowsActivationState,
+    generation: u64,
+    slot: i32,
+    original_intent_sha256: &str,
+    recovery_intent_sha256: &str,
+    candidate_sha256: &str,
+) -> Result<(String, String), String> {
+    verify_windows_activation_files(activation)?;
+    let store = open_store(install_root)?;
+    if store.read_initial_pair_recovery_receipt()?.is_some() {
+        return Err("Windows paired recovery already attempted; read-only reconcile".to_owned());
+    }
+    let state = store
+        .read_state()?
+        .ok_or_else(|| "Windows paired recovery cursor missing or UNKNOWN".to_owned())?;
+    if state.active.is_some() || state.previous.is_some() {
+        return Err("Windows paired recovery refuses non-candidate cursor".to_owned());
+    }
+    let candidate = state
+        .candidate
+        .as_ref()
+        .ok_or_else(|| "Windows paired recovery candidate absent".to_owned())?;
+    if candidate.generation != generation
+        || candidate.slot != slot
+        || candidate.sha256 != candidate_sha256
+    {
+        return Err("Windows paired recovery candidate changed since journal readback".to_owned());
+    }
+    // A previous failed attempt may have materialized exactly one or both
+    // managed files. While SCM is STOPPED, rebuild only the exact already
+    // verified immutable candidate; no fallback, runtime start or rerender
+    // from a new secret source. This operation has its OWN durable GitHub
+    // recovery decision and never calls initial_commit a second time.
+    let bundle = store.read_bundle(candidate)?;
+    let next = windows_runtime_state_from_canonical_production_bundle(&bundle)?;
+    validate_rendered_state(install_root, activation, &next)?;
+    apply_runtime_state(install_root, activation, &next)?;
+    verify_exact_candidate_runtime(install_root, activation, &store, candidate)?;
+    let committed = store.recover_initial_paired_candidate(
+        generation,
+        slot,
+        original_intent_sha256,
+        recovery_intent_sha256,
+        candidate_sha256,
+    )?;
+    if committed
+        .active
+        .as_ref()
+        .map(|reference| reference.sha256.as_str())
+        != Some(candidate_sha256)
+        || committed.candidate.is_some()
+        || committed.previous.is_some()
+    {
+        return Err("Windows paired recovery cursor UNKNOWN; no replay".to_owned());
+    }
+    verify_exact_active_runtime(
+        install_root,
+        activation,
+        &store,
+        committed.active.as_ref().unwrap(),
+    )?;
+    Ok((
+        "INITIAL_CREDENTIAL_RECOVERED_LOCAL_ONLY".to_owned(),
+        format!(
+            "Windows exact generation {generation} slot {slot} recovered; no paired network PASS"
+        ),
+    ))
+}
+
 fn require_active_v2_for_rotation(state: &LocalCredentialState) -> Result<(), String> {
     if state.active.is_none() {
         return Err(

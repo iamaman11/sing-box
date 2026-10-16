@@ -6,11 +6,15 @@
 param(
   [Parameter(Mandatory)][string]$AcceptedRevision,
   [Parameter(Mandatory)][string]$ReleaseSetSha256,
-  [switch]$Preflight
+  [switch]$Preflight,
+  [switch]$RequireCurrentRelease
 )
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $root = 'C:\sing-box'
+if ($RequireCurrentRelease -and -not $Preflight) {
+  throw 'FIRST_USE_OFFLINE_BLOCKED: exact-current guard is read-only preflight only'
+}
 if ($env:GITHUB_REPOSITORY -cne 'iamaman11/sing-box' -or
     $env:GITHUB_REF -cne 'refs/heads/main' -or
     $env:GITHUB_RUN_ATTEMPT -cne '1' -or
@@ -98,6 +102,11 @@ if ($details.Count -ne 1 -or
   throw 'FIRST_USE_OFFLINE_BLOCKED: credential cursor, runtime or permanent Access identity is unproven'
 }
 if ($Preflight) {
+  # A once-only credential BEGIN may be written only after native offline
+  # ReleaseSet upgrade already completed and exact owner readback is stable.
+  if ($RequireCurrentRelease -and [string]$before['release_set_sha256'] -cne $ReleaseSetSha256) {
+    throw 'FIRST_USE_PREBEGIN_BLOCKED: exact accepted Windows ReleaseSet must be installed BEFORE durable BEGIN'
+  }
   Write-Host 'windows_first_use_prebegin_preflight=PASS_READ_ONLY'
   Write-Host "windows_offline_source_mode=$([string]$before['windows_datapath_mode'])"
   Write-Host "windows_offline_source_release=$([string]$before['release_set_sha256'])"

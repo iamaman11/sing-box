@@ -13,6 +13,8 @@ use std::path::{Path, PathBuf};
 
 const STATE_FILE: &str = "state.pb";
 const BUNDLES_DIR: &str = "bundles";
+const INITIAL_PAIR_COMMIT_RECEIPT: &str = "initial-paired-commit-receipt-v1";
+const INITIAL_PAIR_RECOVERY_RECEIPT: &str = "initial-paired-recovery-receipt-v1";
 
 #[derive(Debug, Clone)]
 pub struct CredentialStore {
@@ -148,6 +150,232 @@ impl CredentialStore {
         self.write_state(&next)?;
         self.gc_unreferenced_bundles(&next)?;
         Ok(next)
+    }
+
+    /// One-shot first-use ONLY. The protected coordinator must already have
+    /// persisted and independently read back the exact two-host COMMIT_INTENT.
+    /// Caller authenticates that provider, release and BOTH prepared host
+    /// witnesses match the intent. This store records a private non-secret
+    /// receipt BEFORE changing the candidate pointer. An interrupted commit
+    /// is UNKNOWN and may NEVER be repeated by this same mutation method.
+    pub fn promote_initial_paired_candidate(
+        &self,
+        generation: u64,
+        slot: i32,
+        commit_intent_sha256: &str,
+    ) -> Result<LocalCredentialState, String> {
+        if generation == 0
+            || !matches!(slot, 1 | 2)
+            || commit_intent_sha256.len() != 64
+            || !commit_intent_sha256
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(
+                "initial pair commit requires exact generation/slot/intent digest".to_owned(),
+            );
+        }
+        let current = self.read_state()?.ok_or_else(|| {
+            "initial pair commit requires existing validated candidate cursor".to_owned()
+        })?;
+        if current.active.is_some() || current.previous.is_some() {
+            return Err(
+                "initial pair commit refuses pre-existing active/previous credential".to_owned(),
+            );
+        }
+        let candidate = current
+            .candidate
+            .as_ref()
+            .ok_or_else(|| "initial pair commit requires one local candidate".to_owned())?;
+        if candidate.generation != generation || candidate.slot != slot {
+            return Err(
+                "initial pair commit rejects candidate generation/slot mismatch".to_owned(),
+            );
+        }
+        let _bundle = self.read_bundle(candidate)?;
+        if self.read_initial_pair_recovery_receipt()?.is_some() {
+            return Err(
+                "initial pair commit refuses an already attempted recovery; reconcile only"
+                    .to_owned(),
+            );
+        }
+        let receipt = self.root.join(INITIAL_PAIR_COMMIT_RECEIPT);
+        // Validate and never replace an existing (even incomplete) receipt.
+        // An IO failure here can be unknown: reconciliation is read-only.
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut handle = options.open(&receipt).map_err(|err| {
+            format!("initial pair commit receipt already attempted or uncertain: {err}")
+        })?;
+        let data = format!(
+            "sing-box.initial-paired-commit/v1\nprojection={}\ngeneration={generation}\nslot={slot}\nintent_sha256={commit_intent_sha256}\n",
+            self.projection as i32,
+        );
+        handle
+            .write_all(data.as_bytes())
+            .and_then(|_| handle.sync_all())
+            .map_err(|err| format!("initial pair receipt write uncertain, do not replay: {err}"))?;
+        drop(handle);
+        set_private_file_permissions(&receipt)?;
+        // Persist the directory entry as well as the receipt contents before
+        // recording ACTIVE. Without this barrier, a Unix power loss could
+        // leave ACTIVE durable while the one-shot receipt disappears.
+        sync_directory(&self.root)?;
+        // Atomic pointer write only after durable receipt, no legacy fallback.
+        // The final ACTIVE label requires independent paired readback, not this return.
+        self.promote_candidate()
+    }
+
+    /// Non-secret local readback for an authenticated owner. Never treats an
+    /// incomplete or malformed receipt as absence, and never repairs it.
+    pub fn read_initial_pair_receipt(&self) -> Result<Option<String>, String> {
+        let path = self.root.join(INITIAL_PAIR_COMMIT_RECEIPT);
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(format!("initial pair receipt readback failed: {err}")),
+        };
+        let parts = text.lines().collect::<Vec<_>>();
+        if parts.len() != 5
+            || parts[0] != "sing-box.initial-paired-commit/v1"
+            || parts[1] != format!("projection={}", self.projection as i32)
+            || !parts[2].starts_with("generation=")
+            || !parts[3].starts_with("slot=")
+            || !parts[4].starts_with("intent_sha256=")
+            || parts[2]["generation=".len()..].parse::<u64>().unwrap_or(0) == 0
+            || !matches!(parts[3]["slot=".len()..].parse::<i32>(), Ok(1 | 2))
+            || {
+                let hex = &parts[4]["intent_sha256=".len()..];
+                hex.len() != 64
+                    || !hex
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+            }
+        {
+            return Err(
+                "initial pair receipt is incomplete or malformed; outcome UNKNOWN".to_owned(),
+            );
+        }
+        Ok(Some(text))
+    }
+
+    /// Read-only, exact evidence for a previously authorized initial pair.
+    /// No cursor or network mutation occurs, and malformed receipts are UNKNOWN.
+    pub fn read_initial_pair_recovery_receipt(&self) -> Result<Option<String>, String> {
+        let path = self.root.join(INITIAL_PAIR_RECOVERY_RECEIPT);
+        let text = match fs::read_to_string(&path) {
+            Ok(text) => text,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(format!("initial pair recovery receipt unavailable: {err}")),
+        };
+        let parts = text.lines().collect::<Vec<_>>();
+        if parts.len() != 7
+            || parts[0] != "sing-box.initial-paired-recovery/v1"
+            || parts[1] != format!("projection={}", self.projection as i32)
+            || !parts[2].starts_with("generation=")
+            || parts[2]["generation=".len()..].parse::<u64>().unwrap_or(0) == 0
+            || !parts[3].starts_with("slot=")
+            || !matches!(parts[3]["slot=".len()..].parse::<i32>(), Ok(1 | 2))
+            || !parts[4].starts_with("original_intent_sha256=")
+            || !parts[5].starts_with("recovery_intent_sha256=")
+            || !parts[6].starts_with("candidate_sha256=")
+            || [4, 5, 6].into_iter().any(|index| {
+                let hex = parts[index]
+                    .split_once('=')
+                    .map(|(_, value)| value)
+                    .unwrap_or("");
+                !valid_first_use_digest(hex)
+            })
+        {
+            return Err("initial pair recovery receipt malformed; outcome UNKNOWN".to_owned());
+        }
+        Ok(Some(text))
+    }
+
+    /// The ORIGINAL first-use commit is never replayed. This is a distinct,
+    /// separately authorized and journalled recovery of the same immutable
+    /// candidate after independently authenticated read-only VM/Windows
+    /// reconciliation. A recovery digest is an identifier, not authorization:
+    /// the protected caller must verify its GitHub RECOVERY_INTENT and both
+    /// host receipts before invoking this root/SYSTEM-owned operation.
+    /// Creating a durable recovery receipt BEFORE the pointer makes an
+    /// unknown ACK strictly non-replayable, including across a restart.
+    pub fn recover_initial_paired_candidate(
+        &self,
+        generation: u64,
+        slot: i32,
+        original_intent_sha256: &str,
+        recovery_intent_sha256: &str,
+        expected_candidate_sha256: &str,
+    ) -> Result<LocalCredentialState, String> {
+        if generation == 0
+            || !matches!(slot, 1 | 2)
+            || !valid_first_use_digest(original_intent_sha256)
+            || !valid_first_use_digest(recovery_intent_sha256)
+            || !valid_first_use_digest(expected_candidate_sha256)
+            || original_intent_sha256 == recovery_intent_sha256
+        {
+            return Err("initial pair recovery requires distinct exact intent digests".to_owned());
+        }
+        // Inspect BOTH receipts before any write. A torn original receipt
+        // cannot be treated as "absent", and another recovery cannot run.
+        if self.read_initial_pair_recovery_receipt()?.is_some() {
+            return Err("initial pair recovery already attempted; reconcile only".to_owned());
+        }
+        if let Some(original) = self.read_initial_pair_receipt()? {
+            let expected = format!(
+                "sing-box.initial-paired-commit/v1\nprojection={}\ngeneration={generation}\nslot={slot}\nintent_sha256={original_intent_sha256}\n",
+                self.projection as i32,
+            );
+            if original != expected {
+                return Err("initial pair recovery rejects mismatched original receipt".to_owned());
+            }
+        }
+        let current = self.read_state()?.ok_or_else(|| {
+            "initial pair recovery requires the existing complete local state".to_owned()
+        })?;
+        if current.active.is_some() || current.previous.is_some() {
+            return Err("initial pair recovery refuses already active/previous state".to_owned());
+        }
+        let candidate = current
+            .candidate
+            .as_ref()
+            .ok_or_else(|| "initial pair recovery requires exact candidate".to_owned())?;
+        if candidate.generation != generation
+            || candidate.slot != slot
+            || candidate.sha256 != expected_candidate_sha256
+        {
+            return Err("initial pair recovery refuses candidate provenance drift".to_owned());
+        }
+        let _ = self.read_bundle(candidate)?;
+        let receipt = self.root.join(INITIAL_PAIR_RECOVERY_RECEIPT);
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&receipt).map_err(|err| {
+            format!("initial pair recovery already attempted or uncertain: {err}")
+        })?;
+        let content = format!(
+            "sing-box.initial-paired-recovery/v1\nprojection={}\ngeneration={generation}\nslot={slot}\noriginal_intent_sha256={original_intent_sha256}\nrecovery_intent_sha256={recovery_intent_sha256}\ncandidate_sha256={expected_candidate_sha256}\n",
+            self.projection as i32,
+        );
+        file.write_all(content.as_bytes())
+            .and_then(|_| file.sync_all())
+            .map_err(|err| format!("initial pair recovery receipt write uncertain: {err}"))?;
+        drop(file);
+        set_private_file_permissions(&receipt)?;
+        sync_directory(&self.root)?;
+        // Atomic cursor write only. No fallback, service start, DNS, or TUN.
+        self.promote_candidate()
     }
 
     pub fn promote_candidate(&self) -> Result<LocalCredentialState, String> {
@@ -456,6 +684,13 @@ fn require_projection(projection: CredentialProjectionKind) -> Result<(), String
     }
 }
 
+fn valid_first_use_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 pub fn write_atomic_private(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let parent = path
         .parent()
@@ -691,6 +926,275 @@ mod tests {
         invalid.dummy_non_secret = true;
         assert!(store.stage_delivery_candidate(&invalid).is_err());
         assert!(!root.exists());
+    }
+
+    #[test]
+    fn paired_initial_commit_is_single_use_with_durable_receipt_and_no_replay() {
+        for projection in [
+            CredentialProjectionKind::Windows,
+            CredentialProjectionKind::Vm,
+        ] {
+            let root = unique_root("first-pair");
+            let store = CredentialStore::new(&root, projection).unwrap();
+            let candidate = if projection == CredentialProjectionKind::Windows {
+                windows_bundle(101, CredentialDeliverySlot::B)
+            } else {
+                vm_bundle(101, CredentialDeliverySlot::B)
+            };
+            store.stage_candidate(&candidate).unwrap();
+            assert!(
+                store
+                    .promote_initial_paired_candidate(102, 2, &"a".repeat(64))
+                    .is_err()
+            );
+            assert!(
+                store
+                    .promote_initial_paired_candidate(101, 1, &"a".repeat(64))
+                    .is_err()
+            );
+            assert!(
+                store
+                    .promote_initial_paired_candidate(101, 2, "BAD")
+                    .is_err()
+            );
+            assert!(store.read_initial_pair_receipt().unwrap().is_none());
+            let result = store
+                .promote_initial_paired_candidate(101, 2, &"a".repeat(64))
+                .unwrap();
+            assert_eq!(result.active.as_ref().unwrap().generation, 101);
+            assert!(result.candidate.is_none());
+            assert!(result.previous.is_none());
+            let reopened = CredentialStore::open_existing(&root, projection)
+                .unwrap()
+                .unwrap();
+            assert!(
+                reopened
+                    .read_initial_pair_receipt()
+                    .unwrap()
+                    .unwrap()
+                    .contains("intent_sha256=")
+            );
+            assert!(
+                reopened
+                    .promote_initial_paired_candidate(101, 2, &"a".repeat(64))
+                    .is_err()
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn paired_initial_commit_interrupted_receipt_never_auto_replays_pointer() {
+        let root = unique_root("first-pair-unknown");
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Vm).unwrap();
+        store
+            .stage_candidate(&vm_bundle(101, CredentialDeliverySlot::B))
+            .unwrap();
+        store.prepare_directories().unwrap();
+        fs::write(root.join(INITIAL_PAIR_COMMIT_RECEIPT), "incomplete").unwrap();
+        assert!(store.read_initial_pair_receipt().is_err());
+        assert!(
+            store
+                .promote_initial_paired_candidate(101, 2, &"a".repeat(64))
+                .is_err()
+        );
+        let state = store.read_state().unwrap().unwrap();
+        assert!(state.active.is_none());
+        assert_eq!(state.candidate.as_ref().unwrap().generation, 101);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn initial_recovery_requires_distinct_authority_and_exact_candidate() {
+        for projection in [
+            CredentialProjectionKind::Vm,
+            CredentialProjectionKind::Windows,
+        ] {
+            let root = unique_root("paired-recovery");
+            let store = CredentialStore::new(&root, projection).unwrap();
+            let candidate = if projection == CredentialProjectionKind::Vm {
+                vm_bundle(101, CredentialDeliverySlot::B)
+            } else {
+                windows_bundle(101, CredentialDeliverySlot::B)
+            };
+            let state = store.stage_candidate(&candidate).unwrap();
+            let expected_sha = state.candidate.unwrap().sha256;
+            let original = "a".repeat(64);
+            let recovery = "b".repeat(64);
+            for (generation, slot, original_sha, recovery_sha, candidate_sha) in [
+                (
+                    102,
+                    2,
+                    original.as_str(),
+                    recovery.as_str(),
+                    expected_sha.as_str(),
+                ),
+                (
+                    101,
+                    1,
+                    original.as_str(),
+                    recovery.as_str(),
+                    expected_sha.as_str(),
+                ),
+                (
+                    101,
+                    2,
+                    original.as_str(),
+                    original.as_str(),
+                    expected_sha.as_str(),
+                ),
+                (
+                    101,
+                    2,
+                    original.as_str(),
+                    recovery.as_str(),
+                    &"0".repeat(64),
+                ),
+                (101, 2, original.as_str(), "INVALID", expected_sha.as_str()),
+            ] {
+                assert!(
+                    store
+                        .recover_initial_paired_candidate(
+                            generation,
+                            slot,
+                            original_sha,
+                            recovery_sha,
+                            candidate_sha,
+                        )
+                        .is_err()
+                );
+                assert!(
+                    store
+                        .read_initial_pair_recovery_receipt()
+                        .unwrap()
+                        .is_none()
+                );
+            }
+            let result = store
+                .recover_initial_paired_candidate(101, 2, &original, &recovery, &expected_sha)
+                .unwrap();
+            assert_eq!(result.active.as_ref().unwrap().sha256, expected_sha);
+            assert!(result.candidate.is_none());
+            assert!(result.previous.is_none());
+            let reopened = CredentialStore::open_existing(&root, projection)
+                .unwrap()
+                .unwrap();
+            assert!(
+                reopened
+                    .read_initial_pair_recovery_receipt()
+                    .unwrap()
+                    .unwrap()
+                    .contains(&format!("recovery_intent_sha256={recovery}"))
+            );
+            assert!(
+                reopened
+                    .recover_initial_paired_candidate(101, 2, &original, &recovery, &expected_sha)
+                    .is_err()
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn initial_recovery_rejects_corrupt_or_different_original_receipt() {
+        let root = unique_root("paired-recovery-unknown");
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Windows).unwrap();
+        let state = store
+            .stage_candidate(&windows_bundle(101, CredentialDeliverySlot::B))
+            .unwrap();
+        let sha = state.candidate.unwrap().sha256;
+        let original = "a".repeat(64);
+        let recovery = "b".repeat(64);
+        fs::write(root.join(INITIAL_PAIR_COMMIT_RECEIPT), "incomplete").unwrap();
+        assert!(
+            store
+                .recover_initial_paired_candidate(101, 2, &original, &recovery, &sha)
+                .is_err()
+        );
+        assert!(
+            store
+                .read_initial_pair_recovery_receipt()
+                .unwrap()
+                .is_none()
+        );
+        fs::write(
+            root.join(INITIAL_PAIR_COMMIT_RECEIPT),
+            format!(
+                "sing-box.initial-paired-commit/v1\nprojection={}\ngeneration=101\nslot=2\nintent_sha256={}\n",
+                CredentialProjectionKind::Windows as i32,
+                "c".repeat(64)
+            ),
+        )
+        .unwrap();
+        assert!(
+            store
+                .recover_initial_paired_candidate(101, 2, &original, &recovery, &sha)
+                .is_err()
+        );
+        assert!(
+            store
+                .read_initial_pair_recovery_receipt()
+                .unwrap()
+                .is_none()
+        );
+        fs::remove_file(root.join(INITIAL_PAIR_COMMIT_RECEIPT)).unwrap();
+        fs::write(root.join(INITIAL_PAIR_RECOVERY_RECEIPT), "incomplete").unwrap();
+        assert!(
+            store
+                .recover_initial_paired_candidate(101, 2, &original, &recovery, &sha)
+                .is_err()
+        );
+        assert_eq!(store.read_state().unwrap().unwrap().active, None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn initial_commit_cannot_bypass_unknown_recovery_marker() {
+        let root = unique_root("recover-original-block");
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Vm).unwrap();
+        store
+            .stage_candidate(&vm_bundle(101, CredentialDeliverySlot::B))
+            .unwrap();
+        fs::write(root.join(INITIAL_PAIR_RECOVERY_RECEIPT), "incomplete").unwrap();
+        assert!(
+            store
+                .promote_initial_paired_candidate(101, 2, &"a".repeat(64))
+                .is_err()
+        );
+        assert!(store.read_state().unwrap().unwrap().active.is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn initial_recovery_completes_only_exact_original_receipt_candidate() {
+        let root = unique_root("paired-recovery-receipt");
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Vm).unwrap();
+        let state = store
+            .stage_candidate(&vm_bundle(101, CredentialDeliverySlot::B))
+            .unwrap();
+        let sha = state.candidate.unwrap().sha256;
+        let original = "a".repeat(64);
+        let recovery = "b".repeat(64);
+        store.prepare_directories().unwrap();
+        fs::write(
+            root.join(INITIAL_PAIR_COMMIT_RECEIPT),
+            format!(
+                "sing-box.initial-paired-commit/v1\nprojection={}\ngeneration=101\nslot=2\nintent_sha256={original}\n",
+                CredentialProjectionKind::Vm as i32,
+            ),
+        )
+        .unwrap();
+        let result = store
+            .recover_initial_paired_candidate(101, 2, &original, &recovery, &sha)
+            .unwrap();
+        assert_eq!(result.active.unwrap().sha256, sha);
+        assert!(
+            store
+                .read_initial_pair_recovery_receipt()
+                .unwrap()
+                .is_some()
+        );
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

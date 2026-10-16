@@ -237,6 +237,83 @@ pub(crate) enum CredentialDeliveryCommand {
         journal_history_path: std::path::PathBuf,
         exact_record_path: std::path::PathBuf,
     },
+    // Non-secret local policy ONLY: no Worker token, no GitHub POST, no
+    // VM/Windows credential pointer mutation. The protected workflow must
+    // separately authenticate each real host's prepared-state evidence.
+    InitialPairCommitPlan {
+        original_run_id: u64,
+        commit_run_id: u64,
+        generation: u64,
+        #[arg(value_enum)]
+        slot: CredentialDeliverySlotArg,
+        vm_prepared_sha256: String,
+        windows_prepared_sha256: String,
+        journal_history_path: std::path::PathBuf,
+        original_begin_path: std::path::PathBuf,
+        record_output_path: std::path::PathBuf,
+    },
+    InitialPairCommitReadback {
+        original_run_id: u64,
+        commit_run_id: u64,
+        generation: u64,
+        #[arg(value_enum)]
+        slot: CredentialDeliverySlotArg,
+        vm_prepared_sha256: String,
+        windows_prepared_sha256: String,
+        journal_history_path: std::path::PathBuf,
+        original_begin_path: std::path::PathBuf,
+        exact_intent_path: std::path::PathBuf,
+    },
+    InitialPairCommitReconcile {
+        original_run_id: u64,
+        commit_run_id: u64,
+        generation: u64,
+        #[arg(value_enum)]
+        slot: CredentialDeliverySlotArg,
+        vm_prepared_sha256: String,
+        windows_prepared_sha256: String,
+        journal_history_path: std::path::PathBuf,
+        original_begin_path: std::path::PathBuf,
+        exact_intent_path: std::path::PathBuf,
+        host_readback_path: std::path::PathBuf,
+    },
+    // No provider, GitHub, or host mutation. A SECOND one-shot recovery
+    // journal decision requires independently authenticated partial host
+    // readback after the FIRST paired COMMIT_INTENT has already been recorded.
+    InitialPairRecoveryPlan {
+        original_run_id: u64,
+        commit_run_id: u64,
+        recovery_run_id: u64,
+        generation: u64,
+        #[arg(value_enum)]
+        slot: CredentialDeliverySlotArg,
+        vm_prepared_sha256: String,
+        windows_prepared_sha256: String,
+        vm_active_sha256: String,
+        windows_candidate_sha256: String,
+        journal_history_path: std::path::PathBuf,
+        original_begin_path: std::path::PathBuf,
+        original_intent_path: std::path::PathBuf,
+        host_readback_path: std::path::PathBuf,
+        recovery_output_path: std::path::PathBuf,
+    },
+    InitialPairRecoveryReadback {
+        original_run_id: u64,
+        commit_run_id: u64,
+        recovery_run_id: u64,
+        generation: u64,
+        #[arg(value_enum)]
+        slot: CredentialDeliverySlotArg,
+        vm_prepared_sha256: String,
+        windows_prepared_sha256: String,
+        vm_active_sha256: String,
+        windows_candidate_sha256: String,
+        journal_history_path: std::path::PathBuf,
+        original_begin_path: std::path::PathBuf,
+        original_intent_path: std::path::PathBuf,
+        host_readback_path: std::path::PathBuf,
+        recovery_output_path: std::path::PathBuf,
+    },
     InitialPairJournalPlan {
         generation: u64,
         #[arg(value_enum)]
@@ -1148,6 +1225,90 @@ mod tests {
         }
         assert!(Cli::try_parse_from(["edge-orchestrator", "production", "rollback"]).is_err());
         assert!(Cli::try_parse_from(["edge-orchestrator", "production", "dns-noop"]).is_ok());
+    }
+
+    #[test]
+    fn paired_commit_policy_has_only_exact_nonmutating_cli_commands() {
+        let sha = "a".repeat(64);
+        let windows_sha = "b".repeat(64);
+        let base = [
+            "edge-orchestrator",
+            "credentials",
+            "initial-pair-commit-plan",
+            "1011",
+            "2022",
+            "101",
+            "a",
+            &sha,
+            &windows_sha,
+            "history.json",
+            "original-begin.txt",
+            "intended-record.txt",
+        ];
+        assert!(Cli::try_parse_from(base).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "edge-orchestrator",
+                "credentials",
+                "initial-pair-commit-readback",
+                "1011",
+                "2022",
+                "101",
+                "a",
+                &sha,
+                &windows_sha,
+                "history.json",
+                "original-begin.txt",
+                "intended-record.txt",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "edge-orchestrator",
+                "credentials",
+                "initial-pair-commit-reconcile",
+                "1011",
+                "2022",
+                "101",
+                "a",
+                &sha,
+                &windows_sha,
+                "history.json",
+                "original-begin.txt",
+                "intended-record.txt",
+                "host-readback.json",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "edge-orchestrator",
+                "credentials",
+                "initial-pair-commit",
+                "1011",
+                "2022",
+            ])
+            .is_err(),
+            "there is no direct paired host credential mutation command"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "edge-orchestrator",
+                "credentials",
+                "initial-pair-commit-plan",
+                "1011",
+                "2022",
+                "101",
+                "c",
+                &sha,
+                &windows_sha,
+                "history.json",
+                "original-begin.txt",
+                "intended-record.txt",
+            ])
+            .is_err()
+        );
     }
 
     #[test]

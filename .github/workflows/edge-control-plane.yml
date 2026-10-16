@@ -50,6 +50,10 @@ jobs:
       github.actor_id == '44100369' &&
       github.run_attempt == 1 &&
       startsWith(github.event.comment.body, '/credentials ')
+    permissions:
+      contents: read
+      actions: read
+      issues: write
     uses: ./.github/workflows/credential-lifecycle.yml
     with:
       command_body: ${{ github.event.comment.body }}
@@ -76,7 +80,8 @@ jobs:
         github.event.comment.body == '/windows repair' ||
         github.event.comment.body == '/windows rollback' ||
         startsWith(github.event.comment.body, '/windows acceptance-reconcile ') ||
-        startsWith(github.event.comment.body, '/windows initial-pair-stage ')
+        startsWith(github.event.comment.body, '/windows initial-pair-stage ') ||
+        startsWith(github.event.comment.body, '/windows initial-pair-prepare ')
       )
     permissions:
       contents: read

@@ -74,6 +74,13 @@ pub(crate) enum LocalCommand {
     CredentialInitialVerify {
         generation: u64,
     },
+    // First-use ONLY: protected two-host coordinator must have independently
+    // proven and durably journalled one exact GitHub COMMIT_INTENT.
+    CredentialInitialCommit {
+        generation: u64,
+        slot: u32,
+        intent_sha256: String,
+    },
     CredentialStage {
         generation: u64,
     },
@@ -104,6 +111,7 @@ impl LocalCommand {
             Self::CredentialInitialAttest { .. } => "local-credential-initial-attest",
             Self::CredentialInitialApply { .. } => "local-credential-initial-apply",
             Self::CredentialInitialVerify { .. } => "local-credential-initial-verify",
+            Self::CredentialInitialCommit { .. } => "local-credential-initial-commit",
             Self::CredentialStage { .. } => "local-credential-stage",
             Self::CredentialTransition { .. } => "local-credential-transition",
         }

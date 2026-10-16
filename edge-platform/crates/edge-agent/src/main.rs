@@ -233,6 +233,50 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
         cli::LocalCommand::CredentialState => {
             let state = observe_vm_credential_state(&stack_dir).map_err(AgentError::Command)?;
             print_credential_state_evidence(state.as_ref());
+            let root = vm_credential_store_root(&stack_dir).map_err(AgentError::Command)?;
+            if let Some(store) = CredentialStore::open_existing(root, CredentialProjectionKind::Vm)
+                .map_err(AgentError::Command)?
+            {
+                let receipt = store
+                    .read_initial_pair_receipt()
+                    .map_err(AgentError::Command)?;
+                println!(
+                    "credential_initial_commit_receipt_present={}",
+                    receipt.is_some()
+                );
+                let recovery = store
+                    .read_initial_pair_recovery_receipt()
+                    .map_err(AgentError::Command)?;
+                println!(
+                    "credential_initial_recovery_receipt_present={}",
+                    recovery.is_some()
+                );
+                if let Some(text) = recovery {
+                    let digest = text
+                        .lines()
+                        .find_map(|line| line.strip_prefix("recovery_intent_sha256="))
+                        .ok_or_else(|| {
+                            AgentError::Command(
+                                "initial VM recovery receipt missing digest".to_owned(),
+                            )
+                        })?;
+                    println!("credential_initial_recovery_intent_sha256={digest}");
+                }
+                if let Some(text) = receipt {
+                    let digest = text
+                        .lines()
+                        .find_map(|line| line.strip_prefix("intent_sha256="))
+                        .ok_or_else(|| {
+                            AgentError::Command(
+                                "initial VM commit receipt missing digest".to_owned(),
+                            )
+                        })?;
+                    println!("credential_initial_commit_intent_sha256={digest}");
+                }
+            } else {
+                println!("credential_initial_commit_receipt_present=false");
+                println!("credential_initial_recovery_receipt_present=false");
+            }
             Ok(())
         }
         cli::LocalCommand::CredentialInitialProbe => {
@@ -305,6 +349,26 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             println!("credential_generation={generation}");
             println!("credential_initial_state=APPLIED_NOT_PROMOTED");
             println!("credential_initial_authentication=UNPROVEN");
+            println!("runner_secret_access=false");
+            Ok(())
+        }
+        cli::LocalCommand::CredentialInitialCommit {
+            generation,
+            slot,
+            intent_sha256,
+        } => {
+            // The protected GitHub caller must verify original BEGIN,
+            // both prepared host origins and exactly-one COMMIT_INTENT before
+            // this root-owned local first-use pointer mutation. The hash alone
+            // is NOT authorization and no runtime restart/secret export occurs.
+            initial_commit_vm_credential(&stack_dir, generation, slot, &intent_sha256)
+                .await
+                .map_err(AgentError::Command)?;
+            println!("operation=CREDENTIAL_INITIAL_COMMIT");
+            println!("credential_generation={generation}");
+            println!("credential_slot={slot}");
+            println!("credential_initial_pointer_commit=ACTIVE_LOCAL_ONLY");
+            println!("credential_pair_committed=false");
             println!("runner_secret_access=false");
             Ok(())
         }
@@ -1896,6 +1960,39 @@ async fn verify_initial_vm_credential_functional(
     }
     verify_vm_candidate_runtime_materialized(stack_dir, &bundle)?;
     Ok(endpoints)
+}
+
+async fn initial_commit_vm_credential(
+    stack_dir: &Path,
+    generation: u64,
+    slot: u32,
+    intent_sha256: &str,
+) -> Result<(), String> {
+    // Verify the existing UNPROMOTED candidate is actually serving the real
+    // Line2-proxy HTTPS quality path with no drift before the one-shot write.
+    let _proof = verify_initial_vm_credential_functional(stack_dir, generation).await?;
+    let store = open_vm_credential_store(stack_dir)?;
+    let state = store
+        .read_state()?
+        .ok_or_else(|| "initial VM commit missing local candidate".to_owned())?;
+    validate_unpromoted_vm_initial_state(&state, generation)?;
+    let candidate = state
+        .candidate
+        .as_ref()
+        .ok_or_else(|| "initial VM commit lost candidate".to_owned())?;
+    if candidate.slot != slot as i32 || !matches!(slot, 1 | 2) {
+        return Err(
+            "initial VM commit candidate slot does not match durable paired intent".to_owned(),
+        );
+    }
+    let post = store.promote_initial_paired_candidate(generation, slot as i32, intent_sha256)?;
+    if post.active.as_ref().map(|ref_| ref_.generation) != Some(generation)
+        || post.candidate.is_some()
+        || post.previous.is_some()
+    {
+        return Err("initial VM commit pointer outcome UNKNOWN; no replay".to_owned());
+    }
+    Ok(())
 }
 
 async fn initial_apply_vm_credential(stack_dir: &Path, generation: u64) -> Result<(), String> {
