@@ -261,6 +261,17 @@ jobs:
           $script = Join-Path $env:GITHUB_WORKSPACE 'edge-platform\scripts\windows-first-use-offline-handoff.ps1'
           & $script -AcceptedRevision '${{ needs.resolve.outputs.accepted_revision }}' -ReleaseSetSha256 '${{ needs.resolve.outputs.release_set_sha256 }}' -Preflight
           if ($LASTEXITCODE -ne 0 -or -not $?) { throw 'FIRST_USE_UPGRADE_BLOCKED: native preflight failed before durable intent' }
+      - name: Stage and verify immutable Windows release without changing serving authority
+        shell: pwsh
+        env:
+          EDGE_FIRST_USE_EXPECTED_MODE: ${{ needs.resolve.outputs.expected_mode }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $source = Join-Path $env:GITHUB_WORKSPACE 'edge-platform\scripts\install-windows-release.ps1'
+          & $source -Offline -StageOnly -InstallRoot 'C:\sing-box' -AcceptedRevision '${{ needs.resolve.outputs.accepted_revision }}' -ReleaseSetSha256 '${{ needs.resolve.outputs.release_set_sha256 }}'
+          if ($LASTEXITCODE -ne 0 -or -not $?) { throw 'FIRST_USE_PREPARE_BLOCKED: inert immutable release staging failed; no durable intent written' }
+          Write-Host 'first_use_inactive_release=EXACT_STAGE_ONLY_PASS'
+          Write-Host 'first_use_serving_authority_mutations=0'
       - name: Persist exactly one immutable program-upgrade intent BEFORE native mutation
         shell: pwsh
         env:
