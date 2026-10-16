@@ -424,12 +424,23 @@ mod tests {
     }
 
     fn classify(spec: &ExistingJoinIntent, state: &ExistingJoinSnapshot) -> &'static str {
-        let record = plan(spec, "[]", &spec.accepted_revision, &spec.release_set_sha256).unwrap();
+        let record = plan(
+            spec,
+            "[]",
+            &spec.accepted_revision,
+            &spec.release_set_sha256,
+        )
+        .unwrap();
         let history = serde_json::json!([{"body":record}]).to_string();
         reconcile(
-            spec, &history, &record, &spec.accepted_revision,
-            &spec.release_set_sha256, state,
-        ).unwrap()
+            spec,
+            &history,
+            &record,
+            &spec.accepted_revision,
+            &spec.release_set_sha256,
+            state,
+        )
+        .unwrap()
     }
 
     #[test]
@@ -479,7 +490,10 @@ mod tests {
         s.vm_active = Some(g.vm_candidate.clone());
         s.vm_candidate = None;
         s.vm_join_receipt_intent_sha256 = Some(digest);
-        assert_eq!(classify(&g, &s), "POINTERS_COMPLETE_REQUIRES_INDEPENDENT_ACCEPTANCE");
+        assert_eq!(
+            classify(&g, &s),
+            "POINTERS_COMPLETE_REQUIRES_INDEPENDENT_ACCEPTANCE"
+        );
         s.vm_join_receipt_intent_sha256 = Some("e".repeat(64));
         assert_eq!(classify(&g, &s), "UNKNOWN_SAFE_BLOCKED_NO_REPLAY");
     }
@@ -494,5 +508,4 @@ mod tests {
         s.line2_authenticated_endpoints = 5;
         assert_eq!(classify(&g, &s), "SAFE_BLOCKED_UNPROVEN_OWNER_OR_NETWORK");
     }
-
 }
