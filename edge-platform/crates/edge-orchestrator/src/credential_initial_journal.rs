@@ -656,17 +656,18 @@ fn validate_recovery_plan(
         || !valid_sha256(&plan.windows_candidate_sha256)
         || !valid_sha256(&plan.original_intent_sha256)
         || plan.vm_active_sha256 == plan.windows_candidate_sha256
-        || plan.original_intent_sha256
-            != {
-                use ring::digest::{SHA256, digest};
-                digest(&SHA256, original_intent.as_bytes())
-                    .as_ref()
-                    .iter()
-                    .map(|byte| format!("{byte:02x}"))
-                    .collect::<String>()
-            }
+        || plan.original_intent_sha256 != {
+            use ring::digest::{SHA256, digest};
+            digest(&SHA256, original_intent.as_bytes())
+                .as_ref()
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>()
+        }
     {
-        return Err("paired recovery refuses invalid run, bundle, or original intent identity".to_owned());
+        return Err(
+            "paired recovery refuses invalid run, bundle, or original intent identity".to_owned(),
+        );
     }
     if plan.vm.generation != plan.pair.generation
         || plan.windows.generation != plan.pair.generation
@@ -678,7 +679,10 @@ fn validate_recovery_plan(
         || !plan.windows.owner_origin_verified
         || !plan.vm.runtime_verified
     {
-        return Err("paired recovery requires independently proven VM ACTIVE / Windows CANDIDATE".to_owned());
+        return Err(
+            "paired recovery requires independently proven VM ACTIVE / Windows CANDIDATE"
+                .to_owned(),
+        );
     }
     // This read-only policy receives owner-origin declarations; real host
     // authentication is strictly the responsibility of the protected job.
@@ -695,7 +699,10 @@ fn recovery_records(history: &str) -> Result<Vec<String>, String> {
             return Err("paired recovery refuses empty history entries".to_owned());
         }
         if comment.body.contains(PAIRED_RECOVERY_MARKER_FAMILY) {
-            if !comment.body.starts_with(&format!("{PAIRED_RECOVERY_MARKER}\n")) {
+            if !comment
+                .body
+                .starts_with(&format!("{PAIRED_RECOVERY_MARKER}\n"))
+            {
                 return Err("paired recovery rejects displaced or unknown marker".to_owned());
             }
             records.push(comment.body);
@@ -1035,7 +1042,8 @@ mod tests {
             {"body": original},
             {"body": intent},
             {"body": recovery}
-        ]).to_string();
+        ])
+        .to_string();
         verify_paired_recovery(&plan, &committed, &original, &intent, &recovery).unwrap();
         assert!(plan_paired_recovery(&plan, &committed, &original, &intent).is_err());
 
@@ -1064,19 +1072,24 @@ mod tests {
                 {"body": intent},
                 {"body": recovery},
                 {"body": recovery}
-            ]).to_string(),
+            ])
+            .to_string(),
             serde_json::json!([
                 {"body": original},
                 {"body": intent},
                 {"body": format!("prefix {recovery}")}
-            ]).to_string(),
+            ])
+            .to_string(),
             serde_json::json!([
                 {"body": original},
                 {"body": intent},
                 {"body": recovery.replace("RECOVERY_INTENT", "RECOVERY_COMPLETE")}
-            ]).to_string(),
+            ])
+            .to_string(),
         ] {
-            assert!(verify_paired_recovery(&plan, &tampered, &original, &intent, &recovery).is_err());
+            assert!(
+                verify_paired_recovery(&plan, &tampered, &original, &intent, &recovery).is_err()
+            );
         }
     }
 
