@@ -263,9 +263,340 @@ pub(crate) fn plan_initial_pair_reservation(
     Ok(format!("{MARKER}\n{encoded}"))
 }
 
+// One non-secret paired-commit DECISION, not a second secret writer or an
+// automatic permission to transition either host. The durable record is
+// immutable GitHub Issue #26 history; the authenticated GitHub workflow must
+// independently prove which VM and Windows owner produced each input.
+const PAIRED_COMMIT_MARKER_FAMILY: &str = "<!-- sing-box-credential-paired-commit/";
+const PAIRED_COMMIT_MARKER: &str = "<!-- sing-box-credential-paired-commit/v1 -->";
+const PAIRED_COMMIT_SCHEMA: &str = "sing-box.credential-paired-commit/v1";
+
+#[derive(Debug, Clone)]
+pub(crate) struct PairedCommitPlan {
+    pub(crate) original_run_id: u64,
+    pub(crate) commit_run_id: u64,
+    pub(crate) generation: u64,
+    pub(crate) slot: String,
+    pub(crate) accepted_revision: String,
+    pub(crate) release_set_sha256: String,
+    pub(crate) vm_prepared_sha256: String,
+    pub(crate) windows_prepared_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct PairedCommitRecord {
+    schema: String,
+    phase: String,
+    original_run_id: u64,
+    commit_run_id: u64,
+    generation: u64,
+    slot: String,
+    accepted_revision: String,
+    release_set_sha256: String,
+    original_begin_sha256: String,
+    vm_prepared_sha256: String,
+    windows_prepared_sha256: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+pub(crate) enum PairedHostCursor {
+    Candidate,
+    Active,
+    Missing,
+    Unknown,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct PairedHostReadback {
+    pub(crate) generation: u64,
+    pub(crate) slot: String,
+    pub(crate) cursor: PairedHostCursor,
+    pub(crate) runtime_verified: bool,
+    pub(crate) owner_origin_verified: bool,
+}
+
+fn validate_commit_request(request: &PairedCommitPlan) -> Result<(), String> {
+    if request.original_run_id == 0
+        || request.commit_run_id == 0
+        || request.original_run_id == request.commit_run_id
+        || request.generation == 0
+        || (request.slot != "A" && request.slot != "B")
+        || !valid_git_revision(&request.accepted_revision)
+        || !valid_sha256(&request.release_set_sha256)
+        || !valid_sha256(&request.vm_prepared_sha256)
+        || !valid_sha256(&request.windows_prepared_sha256)
+        || request.vm_prepared_sha256 == request.windows_prepared_sha256
+    {
+        return Err("paired commit requires distinct run IDs, exact release, slot, and two distinct prepared owner hashes".to_owned());
+    }
+    Ok(())
+}
+
+fn original_begin_for_commit(history: &str, exact_original: &str) -> Result<AttemptRecord, String> {
+    verify_recorded_initial_attempt(history, exact_original)?;
+    let (_, body) = exact_original.split_once('\n')
+        .ok_or_else(|| "paired commit requires canonical original BEGIN".to_owned())?;
+    serde_json::from_str(body)
+        .map_err(|_| "paired commit requires validated original BEGIN".to_owned())
+}
+
+fn matching_original_begin(
+    original: &AttemptRecord,
+    request: &PairedCommitPlan,
+) -> Result<(), String> {
+    if original.generation != request.generation
+        || original.slot != request.slot
+        || original.github_run_id != request.original_run_id
+    {
+        return Err("paired commit rejects generation/slot/original run mismatch".to_owned());
+    }
+    Ok(())
+}
+
+fn commit_records(history: &str) -> Result<Vec<String>, String> {
+    let comments: Vec<IssueComment> = serde_json::from_str(history)
+        .map_err(|_| "paired commit requires complete JSON issue history".to_owned())?;
+    let mut records = Vec::new();
+    for comment in comments {
+        if comment.body.trim().is_empty() {
+            return Err("paired commit refuses incomplete/empty issue comment".to_owned());
+        }
+        if comment.body.contains(PAIRED_COMMIT_MARKER_FAMILY) {
+            if !comment.body.starts_with(PAIRED_COMMIT_MARKER)
+                || !comment.body.starts_with(&format!("{PAIRED_COMMIT_MARKER}\n"))
+            {
+                return Err("paired commit refuses displaced or unknown-version marker".to_owned());
+            }
+            records.push(comment.body);
+        }
+    }
+    Ok(records)
+}
+
+fn paired_commit_record(
+    request: &PairedCommitPlan,
+    original_begin: &str,
+) -> PairedCommitRecord {
+    use ring::digest::{digest, SHA256};
+    let original_sha = digest(&SHA256, original_begin.as_bytes())
+        .as_ref().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+    PairedCommitRecord {
+        schema: PAIRED_COMMIT_SCHEMA.to_owned(),
+        phase: "COMMIT_INTENT".to_owned(),
+        original_run_id: request.original_run_id,
+        commit_run_id: request.commit_run_id,
+        generation: request.generation,
+        slot: request.slot.clone(),
+        accepted_revision: request.accepted_revision.clone(),
+        release_set_sha256: request.release_set_sha256.clone(),
+        original_begin_sha256: original_sha,
+        vm_prepared_sha256: request.vm_prepared_sha256.clone(),
+        windows_prepared_sha256: request.windows_prepared_sha256.clone(),
+    }
+}
+
+/// Produce a non-secret INTENT file only after an existing exact first-use
+/// BEGIN, two separately authenticated prepared host witnesses, and a fresh
+/// fully paginated history were supplied by the caller. This pure policy
+/// cannot authenticate a hash or actually write GitHub history.
+pub(crate) fn plan_paired_commit(
+    request: &PairedCommitPlan,
+    history: &str,
+    original_begin: &str,
+) -> Result<String, String> {
+    validate_commit_request(request)?;
+    let original = original_begin_for_commit(history, original_begin)?;
+    matching_original_begin(&original, request)?;
+    if !commit_records(history)?.is_empty() {
+        return Err("paired commit already has an intent; no replay after uncertain result".to_owned());
+    }
+    let record = paired_commit_record(request, original_begin);
+    Ok(format!(
+        "{PAIRED_COMMIT_MARKER}\n{}",
+        serde_json::to_string(&record).map_err(|err| format!("paired intent encoding failed: {err}"))?
+    ))
+}
+
+/// Verify the exact and ONLY durable COMMIT_INTENT, including the immutable
+/// original BEGIN. Unknown/duplicate/different records fail closed.
+pub(crate) fn verify_paired_commit_intent(
+    request: &PairedCommitPlan,
+    history: &str,
+    original_begin: &str,
+    exact_intent: &str,
+) -> Result<(), String> {
+    validate_commit_request(request)?;
+    let original = original_begin_for_commit(history, original_begin)?;
+    matching_original_begin(&original, request)?;
+    let expected = paired_commit_record(request, original_begin);
+    let (marker, body) = exact_intent.split_once('\n')
+        .ok_or_else(|| "paired intent readback requires marker and record".to_owned())?;
+    if marker != PAIRED_COMMIT_MARKER {
+        return Err("paired intent readback refuses different marker".to_owned());
+    }
+    let actual: PairedCommitRecord = serde_json::from_str(body)
+        .map_err(|_| "paired intent readback rejects malformed record".to_owned())?;
+    if actual.schema != PAIRED_COMMIT_SCHEMA || actual.phase != "COMMIT_INTENT"
+        || actual.original_run_id != expected.original_run_id
+        || actual.commit_run_id != expected.commit_run_id
+        || actual.generation != expected.generation
+        || actual.slot != expected.slot
+        || actual.accepted_revision != expected.accepted_revision
+        || actual.release_set_sha256 != expected.release_set_sha256
+        || actual.original_begin_sha256 != expected.original_begin_sha256
+        || actual.vm_prepared_sha256 != expected.vm_prepared_sha256
+        || actual.windows_prepared_sha256 != expected.windows_prepared_sha256
+    {
+        return Err("paired commit readback differs from exact original and both prepared owners".to_owned());
+    }
+    let records = commit_records(history)?;
+    if records.len() != 1 || records[0] != exact_intent {
+        return Err("paired commit readback requires exactly one matching durable intent".to_owned());
+    }
+    Ok(())
+}
+
+/// Read-only status classification: deliberately NEVER returns an instruction
+/// to replay or promote either half. A partial/unknown state is terminal
+/// BLOCKED until a separately authenticated operator reconciliation.
+pub(crate) fn reconcile_paired_commit(
+    request: &PairedCommitPlan,
+    history: &str,
+    original_begin: &str,
+    exact_intent: &str,
+    vm: &PairedHostReadback,
+    windows: &PairedHostReadback,
+) -> Result<&'static str, String> {
+    verify_paired_commit_intent(request, history, original_begin, exact_intent)?;
+    for (role, host) in [("VM", vm), ("WINDOWS", windows)] {
+        if host.generation != request.generation || host.slot != request.slot
+            || !host.owner_origin_verified
+        {
+            return Err(format!("paired commit {role} origin/generation/slot is unproven"));
+        }
+    }
+    use PairedHostCursor::{Active, Candidate};
+    match (vm.cursor, windows.cursor) {
+        (Active, Active) if vm.runtime_verified && windows.runtime_verified =>
+            Ok("PAIR_ACTIVE_VERIFIED"),
+        (Candidate, Candidate) => Ok("PAIR_INTENT_RECORDED_NO_MUTATION"),
+        (Active, Candidate) | (Candidate, Active) =>
+            Ok("PAIR_PARTIAL_BLOCKED_NO_REPLAY"),
+        (Active, Active) => Ok("PAIR_POINTERS_ACTIVE_RUNTIME_UNPROVEN"),
+        _ => Ok("PAIR_UNKNOWN_BLOCKED_NO_REPLAY"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn prepared_commit() -> PairedCommitPlan {
+        PairedCommitPlan {
+            original_run_id: 1011,
+            commit_run_id: 2022,
+            generation: 101,
+            slot: "A".to_owned(),
+            accepted_revision: "1".repeat(40),
+            release_set_sha256: "2".repeat(64),
+            vm_prepared_sha256: "3".repeat(64),
+            windows_prepared_sha256: "4".repeat(64),
+        }
+    }
+
+    fn persisted_original() -> (String, String) {
+        let original = plan_initial_pair_reservation(&request(), "[]").unwrap();
+        let history = serde_json::json!([{"body": original}]).to_string();
+        (original, history)
+    }
+
+    #[test]
+    fn paired_commit_requires_original_and_exact_distinct_prepared_hosts() {
+        let (original, history) = persisted_original();
+        let req = prepared_commit();
+        let planned = plan_paired_commit(&req, &history, &original).unwrap();
+        assert!(planned.starts_with(PAIRED_COMMIT_MARKER));
+        assert!(!planned.contains("secret_text"));
+        assert!(!planned.contains("password"));
+        let committed = serde_json::json!([{"body": original},{"body": planned}]).to_string();
+        verify_paired_commit_intent(&req, &committed, &original, &planned).unwrap();
+        assert!(plan_paired_commit(&req, &committed, &original)
+            .unwrap_err().contains("no replay"));
+        assert!(plan_paired_commit(&req, "[]", &original).is_err());
+        assert!(plan_paired_commit(&PairedCommitPlan {
+            windows_prepared_sha256: "3".repeat(64), ..req.clone()
+        }, &history, &original).is_err());
+        assert!(plan_paired_commit(&PairedCommitPlan {
+            generation: 102, ..req.clone()
+        }, &history, &original).is_err());
+        assert!(plan_paired_commit(&PairedCommitPlan {
+            original_run_id: req.commit_run_id, ..req.clone()
+        }, &history, &original).is_err());
+    }
+
+    #[test]
+    fn paired_commit_rejects_all_corrupted_replayed_or_displaced_records() {
+        let (original, history) = persisted_original();
+        let req = prepared_commit();
+        let planned = plan_paired_commit(&req, &history, &original).unwrap();
+        for corrupt in [
+            serde_json::json!([{"body": original},{"body": planned},{"body": planned}]).to_string(),
+            serde_json::json!([{"body": original},{"body": planned},{"body": "<!-- sing-box-credential-paired-commit/v2 -->"}]).to_string(),
+            serde_json::json!([{"body": original},{"body": format!("comment {planned}")}]).to_string(),
+            serde_json::json!([{"body": original},{"body": format!("{planned}extra")}]).to_string(),
+            serde_json::json!([{"body": original},{"body": null}]).to_string(),
+            "[]".to_owned(),
+        ] {
+            assert!(verify_paired_commit_intent(&req, &corrupt, &original, &planned).is_err());
+        }
+        for different in [
+            PairedCommitPlan {commit_run_id: req.commit_run_id + 1, ..req.clone()},
+            PairedCommitPlan {vm_prepared_sha256: "5".repeat(64), ..req.clone()},
+            PairedCommitPlan {windows_prepared_sha256: "5".repeat(64), ..req.clone()},
+            PairedCommitPlan {release_set_sha256: "5".repeat(64), ..req.clone()},
+            PairedCommitPlan {accepted_revision: "5".repeat(40), ..req.clone()},
+            PairedCommitPlan {slot: "B".to_owned(), ..req.clone()},
+        ] {
+            let committed = serde_json::json!([{"body": original},{"body": planned}]).to_string();
+            assert!(verify_paired_commit_intent(&different, &committed, &original, &planned).is_err());
+        }
+    }
+
+    #[test]
+    fn paired_commit_reconciliation_never_replays_partial_or_unknown() {
+        let (original, history) = persisted_original();
+        let req = prepared_commit();
+        let planned = plan_paired_commit(&req, &history, &original).unwrap();
+        let committed = serde_json::json!([{"body": original},{"body": planned}]).to_string();
+        let valid = PairedHostReadback {
+            generation: req.generation, slot: req.slot.clone(),
+            cursor: PairedHostCursor::Candidate,
+            runtime_verified: true, owner_origin_verified: true,
+        };
+        let mut vm = valid.clone();
+        let mut windows = valid.clone();
+        let classify = |vm: &PairedHostReadback, windows: &PairedHostReadback| {
+            reconcile_paired_commit(&req, &committed, &original, &planned, vm, windows)
+        };
+        assert_eq!(classify(&vm,&windows).unwrap(), "PAIR_INTENT_RECORDED_NO_MUTATION");
+        vm.cursor = PairedHostCursor::Active;
+        assert_eq!(classify(&vm,&windows).unwrap(), "PAIR_PARTIAL_BLOCKED_NO_REPLAY");
+        windows.cursor = PairedHostCursor::Active;
+        assert_eq!(classify(&vm,&windows).unwrap(), "PAIR_ACTIVE_VERIFIED");
+        vm.runtime_verified = false;
+        assert_eq!(classify(&vm,&windows).unwrap(), "PAIR_POINTERS_ACTIVE_RUNTIME_UNPROVEN");
+        vm.cursor = PairedHostCursor::Unknown;
+        assert_eq!(classify(&vm,&windows).unwrap(), "PAIR_UNKNOWN_BLOCKED_NO_REPLAY");
+        vm.owner_origin_verified = false;
+        assert!(classify(&vm,&windows).is_err());
+        vm.owner_origin_verified = true;
+        vm.generation += 1;
+        assert!(classify(&vm,&windows).is_err());
+        windows.slot = "B".to_owned();
+        assert!(classify(&vm,&windows).is_err());
+    }
 
     #[test]
     fn vm_runtime_requires_exact_durable_begin_for_run_and_release() {
