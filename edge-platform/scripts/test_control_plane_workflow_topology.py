@@ -67,12 +67,78 @@ def require(condition: bool, message: str) -> None:
         raise SystemExit(message)
 
 
+def verify_workflow_job_boundaries(source: str) -> None:
+    """Reject duplicate GitHub job keys and torn run block boundaries.
+
+    GitHub's reusable-workflow validator runs only after an accepted main
+    merge. This standard-library gate must catch malformed shell block
+    indentation BEFORE publishing a candidate. It is intentionally scoped
+    to YAML structure rather than trying to interpret workflow expressions.
+    """
+    active = False
+    job = ""
+    seen_jobs = set()
+    seen_keys = set()
+    block_scalar_indent = None
+    for lineno, line in enumerate(source.splitlines(), 1):
+        if not line.strip() or line.lstrip().startswith("#"):
+            continue
+        indentation = len(line) - len(line.lstrip(" "))
+        if "\t" in line[:indentation]:
+            raise ValueError(f"workflow YAML contains tab indentation at line {lineno}")
+        if block_scalar_indent is not None:
+            if indentation > block_scalar_indent:
+                continue
+            block_scalar_indent = None
+        if line == "jobs:":
+            active = True
+            continue
+        if not active:
+            continue
+        if indentation == 2:
+            found = re.fullmatch(r"  ([a-z][a-z0-9_]*):", line)
+            if not found:
+                raise ValueError(f"workflow job declaration invalid at line {lineno}")
+            job = found.group(1)
+            if job in seen_jobs:
+                raise ValueError(f"duplicate workflow job {job} at line {lineno}")
+            seen_jobs.add(job)
+            seen_keys = set()
+        elif indentation == 4:
+            found = re.match(r"    ([a-z][a-z0-9_-]*):(?:\s|$)", line)
+            if not found or not job:
+                raise ValueError(f"workflow job property malformed at line {lineno}")
+            key = found.group(1)
+            if key in seen_keys:
+                raise ValueError(f"duplicate {job}.{key} at line {lineno}")
+            seen_keys.add(key)
+        elif indentation < 2:
+            raise ValueError(f"stray workflow content outside job at line {lineno}")
+        if re.match(r"^\s+(?:run|if|env|with|name|description):\s*[|>][-+]?\s*$", line):
+            block_scalar_indent = indentation
+
+
+def test_workflow_job_boundaries(source: str) -> None:
+    verify_workflow_job_boundaries(source)
+    for broken in (
+        "jobs:\n  one:\n    name: first\n    name: duplicate\n",
+        "jobs:\n  one:\n    steps:\n      - run: |\n          echo safe\n) unexpected\n",
+        "jobs:\n  one:\n    name: okay\n  one:\n    name: duplicate\n",
+    ):
+        try:
+            verify_workflow_job_boundaries(broken)
+        except ValueError:
+            continue
+        raise SystemExit("workflow boundary validator missed malformed YAML regression")
+
+
 def main() -> None:
     router = ROUTER.read_text(encoding="utf-8")
     application = APPLICATION.read_text(encoding="utf-8")
     vultr = VULTR.read_text(encoding="utf-8")
     windows_physical = WINDOWS_PHYSICAL.read_text(encoding="utf-8")
     credentials = CREDENTIALS.read_text(encoding="utf-8")
+    test_workflow_job_boundaries(credentials)
     vpc = VPC.read_text(encoding="utf-8")
     edge_platform_ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
     runtime_input = RUNTIME_INPUT.read_text(encoding="utf-8")
