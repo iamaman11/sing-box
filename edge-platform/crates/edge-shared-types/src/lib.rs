@@ -2959,6 +2959,53 @@ mod tests {
     }
 
     #[test]
+    fn windows_first_use_pair_commit_is_one_typed_authority_and_never_rotation() {
+        let valid = WindowsPrivilegedRequest {
+            schema_version: 1,
+            request_id: "request-initial-paired-commit".to_owned(),
+            operation: WindowsPrivilegedOperation::InitialCredentialCommit as i32,
+            accepted_revision: None,
+            release_set_sha256: None,
+            credential_generation: Some(101),
+            credential_transition_action: None,
+            initial_commit_intent_sha256: Some("a".repeat(64)),
+            initial_commit_slot: Some(2),
+        };
+        let bytes = encode_windows_privileged_request(&valid).unwrap();
+        assert_eq!(decode_windows_privileged_request(&bytes).unwrap(), valid);
+
+        let mut wrong = valid.clone();
+        wrong.credential_generation = Some(0);
+        assert!(encode_windows_privileged_request(&wrong).is_err());
+        let mut wrong = valid.clone();
+        wrong.initial_commit_slot = Some(3);
+        assert!(encode_windows_privileged_request(&wrong).is_err());
+        let mut wrong = valid.clone();
+        wrong.initial_commit_intent_sha256 = Some("B".repeat(64));
+        assert!(encode_windows_privileged_request(&wrong).is_err());
+        let mut wrong = valid.clone();
+        wrong.initial_commit_intent_sha256 = None;
+        assert!(encode_windows_privileged_request(&wrong).is_err());
+        let mut wrong = valid.clone();
+        wrong.accepted_revision = Some("b".repeat(40));
+        assert!(encode_windows_privileged_request(&wrong).is_err());
+        let mut wrong = valid.clone();
+        wrong.credential_transition_action = Some(CredentialTransitionAction::Promote as i32);
+        assert!(encode_windows_privileged_request(&wrong).is_err());
+
+        for forbidden in [
+            WindowsPrivilegedOperation::CredentialTransition,
+            WindowsPrivilegedOperation::StageCredential,
+            WindowsPrivilegedOperation::Ping,
+            WindowsPrivilegedOperation::OfflineActivateRelease,
+        ] {
+            let mut wrong = valid.clone();
+            wrong.operation = forbidden as i32;
+            assert!(encode_windows_privileged_request(&wrong).is_err());
+        }
+    }
+
+    #[test]
     fn credential_transition_parser_and_windows_request_share_one_closed_action_set() {
         for (name, action) in [
             (
