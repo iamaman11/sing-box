@@ -7,8 +7,12 @@ Use the existing protected GitHub command `/windows initial-pair-prepare <origin
 to run the exact native offline ReleaseSet owner on Windows while ProxyOnly
 is Stopped/OnDemand, zero TUN/processes, direct no-proxy DNS/HTTPS PASS,
 private cursor absent. It must re-attest the original immutable first-use
-source and require **zero** persisted Windows staging BEGIN entries. This
-prepares the binaries, not credentials, then readback proves the new
+source and require **zero** persisted Windows staging BEGIN entries. After
+preflight and before any release mutation it records exactly one immutable
+`windows-program-prepare/v1` BEGIN in the existing GitHub Issue #26 journal,
+reads back exact one, and refuses any later attempt. This is not a second
+desired-state store; if an ACK is lost, only read-only reconciliation is
+authorized. It prepares binaries, not credentials, then readback proves the new
 installed immutable ReleaseSet before a separate once-only
 `/windows initial-pair-stage <original_run_id>`. The latter must require
 the exact ReleaseSet both in its pre-BEGIN preflight and again after the
