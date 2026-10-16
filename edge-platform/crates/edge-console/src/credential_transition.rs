@@ -229,9 +229,12 @@ pub(crate) fn initial_commit(
     // Validate the exact signed-release sing-box config BEFORE recording
     // irreversible local commit intent. This only creates/removes a scratch.
     let _validated_config = validate_rendered_state(install_root, activation, &next)?;
-    // First durable non-replayable receipt, then atomic ACTIVE pointer.
-    // If runtime rendering fails afterwards, ACTIVE exists but SERVING remains
-    // blocked until independent exact read-only reconciliation.
+    // Materialize verified candidate files while SCM is proven STOPPED,
+    // BEFORE consuming the irreversible receipt. Failure here cannot create
+    // ACTIVE or spend first-use commit authority. No TUN/SCM start.
+    apply_runtime_state(install_root, activation, &next)?;
+    verify_exact_candidate_runtime(install_root, activation, &store, candidate)?;
+    // Exactly one protected non-replayable receipt, then atomic ACTIVE pointer.
     let committed = store.promote_initial_paired_candidate(generation, slot, intent_sha256)?;
     if committed.active.as_ref().map(|v| v.generation) != Some(generation)
         || committed.previous.is_some()
@@ -239,9 +242,6 @@ pub(crate) fn initial_commit(
     {
         return Err("Windows initial commit pointer result UNKNOWN; no replay".to_owned());
     }
-    apply_runtime_state(install_root, activation, &next).map_err(|err| {
-        format!("Windows first-use pointer committed but runtime materialization is UNKNOWN; no replay: {err}")
-    })?;
     verify_exact_active_runtime(
         install_root,
         activation,
