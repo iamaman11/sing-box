@@ -315,7 +315,7 @@ def verify_credential_observation_lane(source: str) -> None:
                 "native status must collect exactly one canonical two-host read-only verdict")
     require("inputs.command_body == '/credentials status'" in source
             and "credential_mutations=0" in source
-            and "GH_INTENT_AND_FIRST_ATTEMPT_APPLY_STILL_REQUIRED" in source,
+            and "BEGIN_NOT_DURABLE_LINE1_UNPROVEN_APPLY_FORBIDDEN" in source,
             "native status must never grant cross-host mutation authority")
     read_only_job = source.split("  execute:\n", 1)
     require(len(read_only_job) == 2, "credential read-only verify job missing")
