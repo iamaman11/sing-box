@@ -14,8 +14,10 @@ permissions: {}
 # host attestations, GitHub BEGIN, paired Workers and two consumers.
 # Share the existing credential workflow's lock so no concurrent rotation
 # can interleave with an irreversible first-use PATCH.
+# Read-only provider observations cannot be held hostage by a missing
+# guest runner. Provider and credential writes retain the global owner lock.
 concurrency:
-  group: credential-transaction-${{ github.repository_id }}
+  group: ${{ (startsWith(inputs.command_body, '/vultr inventory ') || startsWith(inputs.command_body, '/vultr doctor ') || startsWith(inputs.command_body, '/vultr plan ') || startsWith(inputs.command_body, '/vultr action-plan ') || startsWith(inputs.command_body, '/vultr cleanup-plan ') || startsWith(inputs.command_body, '/vultr destroy-plan ')) && format('vultr-observe-{0}', github.run_id) || format('credential-transaction-{0}', github.repository_id) }}
   cancel-in-progress: false
 
 jobs:
