@@ -1116,7 +1116,9 @@ pub fn validate_windows_privileged_request(
                 || request.credential_generation.unwrap_or(0) == 0
                 || !matches!(request.initial_commit_slot, Some(1 | 2))
             {
-                return Err("paired recovery requires exact initial-only generation/slot".to_owned());
+                return Err(
+                    "paired recovery requires exact initial-only generation/slot".to_owned(),
+                );
             }
             let original = request
                 .initial_commit_intent_sha256
@@ -3079,7 +3081,10 @@ mod tests {
             initial_candidate_sha256: Some("c".repeat(64)),
         };
         let encoded = encode_windows_privileged_request(&request).unwrap();
-        assert_eq!(decode_windows_privileged_request(&encoded).unwrap(), request);
+        assert_eq!(
+            decode_windows_privileged_request(&encoded).unwrap(),
+            request
+        );
         for modify in 0..7 {
             let mut wrong = request.clone();
             match modify {
@@ -3132,8 +3137,8 @@ mod tests {
                 credential_transition_action: Some(action as i32),
                 initial_commit_intent_sha256: None,
                 initial_commit_slot: None,
-            initial_recovery_intent_sha256: None,
-            initial_candidate_sha256: None,
+                initial_recovery_intent_sha256: None,
+                initial_candidate_sha256: None,
             };
             assert!(encode_windows_privileged_request(&request).is_ok());
         }
@@ -3172,8 +3177,8 @@ mod tests {
                 credential_transition_action: None,
                 initial_commit_intent_sha256: None,
                 initial_commit_slot: None,
-            initial_recovery_intent_sha256: None,
-            initial_candidate_sha256: None,
+                initial_recovery_intent_sha256: None,
+                initial_candidate_sha256: None,
             };
             assert!(encode_windows_privileged_request(&request).is_ok());
 
