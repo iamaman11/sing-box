@@ -13,8 +13,10 @@ permissions: {}
 # Acceptance/production application operations share the same managed VM and
 # Cloudflare DNS/Worker ownership as disposable first-use. Never interleave
 # another application operation between GitHub BEGIN and consumer verification.
+# A read-only diagnose must not hold the credentials mutation lock when
+# the selected VM self-hosted runner is offline. All writes retain that lock.
 concurrency:
-  group: credential-transaction-${{ github.repository_id }}
+  group: ${{ (inputs.command_body == '/production diagnose' || startsWith(inputs.command_body, '/vm diagnose ')) && format('vm-observe-{0}', github.run_id) || format('credential-transaction-{0}', github.repository_id) }}
   cancel-in-progress: false
 
 jobs:

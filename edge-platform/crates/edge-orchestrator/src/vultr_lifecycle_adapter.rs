@@ -27,6 +27,9 @@ pub fn normalize_vultr_instance_with_firewall_profiles(
         ownership: decoded.ownership,
         region: instance.region.clone(),
         plan: instance.plan.clone(),
+        provider_status: nonempty(&instance.status),
+        server_status: nonempty(&instance.server_status),
+        power_status: nonempty(&instance.power_status),
         main_ip: nonempty(&instance.main_ip),
         v6_main_ip: nonempty(&instance.v6_main_ip),
         firewall_group_id,
@@ -110,6 +113,9 @@ mod tests {
         let machine = &desired.machines[0];
         let mut instance = mock_instance("edge-1", "waw", "vc2-1c-1gb", "203.0.113.10");
         instance.os_id = 2625;
+        instance.status = "active".to_owned();
+        instance.server_status = "ok".to_owned();
+        instance.power_status = "stopped".to_owned();
         instance.tags = managed_provider_tags(&desired, machine).unwrap();
 
         let inventory = normalize_vultr_inventory(&desired, &[instance]).unwrap();
@@ -123,6 +129,9 @@ mod tests {
             Some("production")
         );
         assert_eq!(observed.ownership.logical_id.as_deref(), Some("edge-1"));
+        assert_eq!(observed.provider_status.as_deref(), Some("active"));
+        assert_eq!(observed.server_status.as_deref(), Some("ok"));
+        assert_eq!(observed.power_status.as_deref(), Some("stopped"));
         assert_eq!(observed.tags, vec!["primary".to_owned()]);
 
         let plan = plan_machine(&desired, machine, &inventory).unwrap();

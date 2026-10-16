@@ -745,12 +745,36 @@ def main() -> None:
         and "CREDENTIAL_INITIAL_HOST_PROBE" in vultr_lifecycle_command,
         "first-use must either stage exact root-only VM Access identity once or re-attest existing bytes without replay",
     )
+    # Mutation/rotation must keep exactly one serialized global owner; strictly
+    # read-only observations must not hold that lock while a guest runner is down.
+    # Assert the FULL selector: accepting any extra mutation verb here would
+    # break the irreversible first-use / credential single-writer invariant.
+    vm_observation_group = (
+        "group: ${{ (inputs.command_body == '/production diagnose' || "
+        "startsWith(inputs.command_body, '/vm diagnose ')) && "
+        "format('vm-observe-{0}', github.run_id) || "
+        "format('credential-transaction-{0}', github.repository_id) }}"
+    )
+    vultr_observation_group = (
+        "group: ${{ (startsWith(inputs.command_body, '/vultr inventory ') || "
+        "startsWith(inputs.command_body, '/vultr doctor ') || "
+        "startsWith(inputs.command_body, '/vultr plan ') || "
+        "startsWith(inputs.command_body, '/vultr action-plan ') || "
+        "startsWith(inputs.command_body, '/vultr cleanup-plan ') || "
+        "startsWith(inputs.command_body, '/vultr destroy-plan ')) && "
+        "format('vultr-observe-{0}', github.run_id) || "
+        "format('credential-transaction-{0}', github.repository_id) }}"
+    )
     require(
-        "group: credential-transaction-${{ github.repository_id }}" in vultr
+        vm_observation_group in application
+        and vultr_observation_group in vultr
         and "group: credential-transaction-${{ github.repository_id }}" in credentials
-        and "group: credential-transaction-${{ github.repository_id }}" in application
-        and "cancel-in-progress: false" in vultr,
-        "Vultr and credential workflows must share one non-cancelling initial-pair transaction lock",
+        and application.count("format('credential-transaction-{0}', github.repository_id)") == 1
+        and vultr.count("format('credential-transaction-{0}', github.repository_id)") == 1
+        and "cancel-in-progress: false" in vultr
+        and "cancel-in-progress: false" in application
+        and "cancel-in-progress: false" in credentials,
+        "diagnostics must bypass stale runner locks without relaxing single-writer credential/provider transactions",
     )
     # CI must validate the *actual public network* reachability contract.
     # Docker port publication is not enough if Vultr blocks the packet.

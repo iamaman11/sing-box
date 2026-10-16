@@ -324,6 +324,13 @@ pub struct ObservedMachine {
     pub ownership: ObservedOwnership,
     pub region: String,
     pub plan: String,
+    // Provider state is observational: not proof of guest health or mutation authority.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub server_status: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub power_status: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub main_ip: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -962,6 +969,9 @@ mod tests {
             },
             region: machine.provider.region.clone(),
             plan: machine.provider.plan.clone(),
+            provider_status: Some("active".to_owned()),
+            server_status: Some("ok".to_owned()),
+            power_status: Some("running".to_owned()),
             main_ip: Some("203.0.113.10".to_owned()),
             v6_main_ip: None,
             firewall_group_id: Some("firewall-1".to_owned()),
