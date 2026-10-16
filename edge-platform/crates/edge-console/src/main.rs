@@ -6385,7 +6385,10 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
         let critical = format!(
             "runtime_evidence=BOUNDED_READ_ONLY;controller_service_error=ABSENT;process_classification=ABSENT;process_evidence_complete=true;process_count=0;managed_pid=ABSENT;managed_parent_pid=ABSENT;controller_pid=ABSENT;{tasks};external_owner_evidence=INCOMPLETE;external_count=0;{cursor};first_use_runtime=PRESENT;first_use_config=PRESENT;first_use_access_identity=PRESENT_NONEMPTY_UNVERIFIED"
         );
-        assert!(critical.len() > 1024, "the original cap made initial recovery unobservable");
+        assert!(
+            critical.len() > 1024,
+            "the original cap made initial recovery unobservable"
+        );
         assert!(critical.len() <= RUNTIME_EVIDENCE_RESULT_MAX_BYTES);
         let result = WindowsPrivilegedResult {
             schema_version: PRIVILEGED_RESULT_SCHEMA_VERSION,
