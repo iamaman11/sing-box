@@ -533,7 +533,7 @@ jobs:
             if (-not $offlineCommandAdvertised) {
               throw 'OFFLINE_PREFLIGHT_BLOCKED: immutable installed native owner cannot perform offline upgrade'
             }
-            Write-Host 'offline_source_mode=' ([string]$v['windows_datapath_mode'])
+            Write-Host "offline_source_mode=$([string]$v['windows_datapath_mode'])"
             Write-Host 'offline_preflight_observation=PASS'
             Write-Host 'offline_privileged_task_readonly=PASS'
             Write-Host "offline_command_advertised=$offlineCommandAdvertised"
