@@ -268,6 +268,8 @@ def verify_windows_gh_journal_pages(source: str) -> None:
             and source.count("if ($page -isnot [array])") == 2
             and source.count("return $entries.ToArray()") == 2,
             "Windows journal readers must reject missing or malformed pages")
+    require(source.count('[long]$issue.comments -ne $entries.Count') == 2,
+            "both Windows journal readers must reject a valid but incomplete page set")
     for forbidden in (
         "--slurp --jq 'add'",
         "--paginate --jq 'add'",
@@ -281,6 +283,7 @@ def test_windows_gh_journal_pages(source: str) -> None:
         source.replace("--slurp $url", "--slurp --jq 'add' $url", 1),
         source.replace("-NoEnumerate", "", 1),
         source.replace("if ($page -isnot [array])", "if ($false)", 1),
+        source.replace('[long]$issue.comments -ne $entries.Count', '$false', 1),
     ):
         require(broken != source, "Windows gh journal negative fixture missing")
         try:

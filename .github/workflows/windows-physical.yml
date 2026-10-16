@@ -314,6 +314,15 @@ jobs:
               }
             }
             if ($entries.Count -eq 0) { throw 'WINDOWS_APPLY_BLOCKED: durable journal is empty' }
+            $issueRaw = (& gh api "repos/$env:GITHUB_REPOSITORY/issues/26") -join "`n"
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($issueRaw)) {
+              throw 'WINDOWS_APPLY_BLOCKED: journal count authority unavailable'
+            }
+            $issue = ConvertFrom-Json -InputObject $issueRaw
+            if ($null -eq $issue -or [string]$issue.comments -notmatch '^[0-9]+$' -or
+                [long]$issue.comments -ne $entries.Count) {
+              throw 'WINDOWS_APPLY_BLOCKED: incomplete or concurrently changed journal count'
+            }
             return $entries.ToArray()
           }
           $history = @(Read-CompleteJournal)
@@ -422,6 +431,15 @@ jobs:
               }
             }
             if ($entries.Count -eq 0) { throw 'FIRST_USE_UPGRADE_BLOCKED: durable journal is empty' }
+            $issueRaw = (& gh api "repos/$env:GITHUB_REPOSITORY/issues/26") -join "`n"
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($issueRaw)) {
+              throw 'FIRST_USE_UPGRADE_BLOCKED: journal count authority unavailable'
+            }
+            $issue = ConvertFrom-Json -InputObject $issueRaw
+            if ($null -eq $issue -or [string]$issue.comments -notmatch '^[0-9]+$' -or
+                [long]$issue.comments -ne $entries.Count) {
+              throw 'FIRST_USE_UPGRADE_BLOCKED: incomplete or concurrently changed journal count'
+            }
             return $entries.ToArray()
           }
           $history = @(Read-AllJournalPages)
