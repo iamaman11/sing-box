@@ -304,6 +304,17 @@ def verify_credential_observation_lane(source: str) -> None:
             "credential read-only lane must be isolated while every mutation retains the exact global lock")
     require("cancel-in-progress: false" in source,
             "credential operations must never cancel an unresolved earlier run")
+    read_only_job = source.split("  execute:\n", 1)
+    require(len(read_only_job) == 2, "credential read-only verify job missing")
+    read_only_job = read_only_job[1].split("\n  rotate_release:\n", 1)[0]
+    require("needs.authorize.outputs.operation == 'verify'" in read_only_job
+            and "needs.authorize.outputs.operation == 'initial-pair-preflight'" in read_only_job,
+            "credential read-only job must have exact operation authorization")
+    require("group: vultr-control-plane-production" not in read_only_job
+            and "    concurrency:" not in read_only_job,
+            "credential read-only Worker verify must not inherit production mutation job lock")
+    require(source.count("group: vultr-control-plane-production") >= 1,
+            "credential mutating provider operations must retain production job lock")
 
 
 def test_credential_observation_lane(source: str) -> None:
@@ -313,6 +324,8 @@ def test_credential_observation_lane(source: str) -> None:
         ("startsWith(inputs.command_body, '/credentials initial-pair-preflight ')", "startsWith(inputs.command_body, '/credentials initial-pair-commit ')"),
         ("format('credential-observe-{0}', github.run_id)", "format('credential-transaction-{0}', github.repository_id)"),
         ("format('credential-transaction-{0}', github.repository_id)", "format('credential-observe-{0}', github.run_id)"),
+        ("    runs-on: ubuntu-24.04\n    environment:",
+         "    concurrency:\n      group: vultr-control-plane-production\n      cancel-in-progress: false\n    runs-on: ubuntu-24.04\n    environment:"),
     )
     for before, after in replacements:
         require(before in source, "credential observation lane test fixture missing")
