@@ -1731,6 +1731,11 @@ def main() -> None:
         and "/windows cutover" not in windows_physical
         and "github.event.comment.body == '/windows diagnose'" in router
         and "github.event.comment.body == '/windows converge'" in router
+        and "github.event.comment.body == '/windows apply'" in router
+        and 'operation="apply"' in windows_physical
+        and "EXISTING_ACTIVE_RELEASE_ONLY" in windows_physical
+        and "sing-box-windows-active-release-apply/v1" in windows_physical
+        and "Single native SYSTEM offline release apply and bounded readback" in windows_physical
         and "github.event.comment.body == '/windows start'" in router
         and "github.event.comment.body == '/windows stop'" in router
         and "github.event.comment.body == '/windows restart-controller'" in router
