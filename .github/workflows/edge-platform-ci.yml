@@ -109,6 +109,19 @@ jobs:
         shell: bash
         run: python3 edge-platform/scripts/test_control_plane_workflow_topology.py
 
+      - name: Parse exact GitHub Actions YAML before protected main merge
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Ruby Psych is bundled with the Ubuntu GitHub Actions image;
+          # parsing requires no new service, network download or runtime.
+          ruby -ryaml -e '
+            ARGV.each do |path|
+              abort("empty workflow: #{path}") unless YAML.parse_file(path)
+              puts("workflow_yaml_syntax=PASS #{path}")
+            end
+          ' .github/workflows/*.yml
+
       - name: Parse critical Windows activation scripts
         shell: pwsh
         run: |
