@@ -347,6 +347,7 @@ fn original_begin_for_commit(history: &str, exact_original: &str) -> Result<Atte
 fn matching_original_begin(
     original: &AttemptRecord,
     request: &PairedCommitPlan,
+    history: &str,
 ) -> Result<(), String> {
     if original.generation != request.generation
         || original.slot != request.slot
@@ -354,7 +355,103 @@ fn matching_original_begin(
     {
         return Err("paired commit rejects generation/slot/original run mismatch".to_owned());
     }
-    Ok(())
+    require_paired_release_lineage(original, request, history)
+}
+
+// The first-use credential BEGIN may legitimately refer to an older ReleaseSet:
+// the stopped Windows program must be upgraded BEFORE the irreversible candidate
+// stage. Require both exact GitHub-owned milestones in their original order,
+// rather than permitting an arbitrary new release merely because a later
+// workflow claimed that it was accepted.
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WindowsProgramPrepare {
+    schema: String,
+    phase: String,
+    original_run_id: u64,
+    github_run_id: u64,
+    source_revision: String,
+    release_set_sha256: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WindowsPersistentStage {
+    schema: String,
+    phase: String,
+    original_run_id: u64,
+    github_run_id: u64,
+    slot: String,
+    release_set_sha256: String,
+    source_revision: String,
+}
+
+fn require_paired_release_lineage(
+    original: &AttemptRecord,
+    request: &PairedCommitPlan,
+    history: &str,
+) -> Result<(), String> {
+    if original.release_source_revision == request.accepted_revision
+        && original.release_set_sha256 == request.release_set_sha256
+    {
+        return Ok(());
+    }
+    const PREPARE_FAMILY: &str = "<!-- sing-box-windows-program-prepare/";
+    const PREPARE_MARKER: &str = "<!-- sing-box-windows-program-prepare/v1 -->\n";
+    const STAGE_FAMILY: &str = "<!-- sing-box-windows-persistent-initial-stage/";
+    const STAGE_MARKER: &str = "<!-- sing-box-windows-persistent-initial-stage/v1 -->\n";
+    let comments: Vec<IssueComment> = serde_json::from_str(history)
+        .map_err(|_| "paired release lineage requires complete issue history".to_owned())?;
+    let mut prepare_index = None;
+    let mut stage_index = None;
+    for (index, comment) in comments.iter().enumerate() {
+        if comment.body.contains(PREPARE_FAMILY) {
+            let raw = comment.body.strip_prefix(PREPARE_MARKER).ok_or_else(|| {
+                "paired release lineage rejects displaced program-prepare marker".to_owned()
+            })?;
+            let record: WindowsProgramPrepare = serde_json::from_str(raw)
+                .map_err(|_| "paired release lineage rejects malformed program-prepare".to_owned())?;
+            if prepare_index.is_some()
+                || record.schema != "sing-box.windows-program-prepare/v1"
+                || record.phase != "BEGIN"
+                || record.original_run_id != request.original_run_id
+                || record.github_run_id == 0
+                || record.github_run_id == request.original_run_id
+                || record.source_revision != request.accepted_revision
+                || record.release_set_sha256 != request.release_set_sha256
+            {
+                return Err("paired release lineage rejects unrelated program-prepare".to_owned());
+            }
+            prepare_index = Some(index);
+        }
+        if comment.body.contains(STAGE_FAMILY) {
+            let raw = comment.body.strip_prefix(STAGE_MARKER).ok_or_else(|| {
+                "paired release lineage rejects displaced persistent-stage marker".to_owned()
+            })?;
+            let record: WindowsPersistentStage = serde_json::from_str(raw)
+                .map_err(|_| "paired release lineage rejects malformed persistent-stage".to_owned())?;
+            if stage_index.is_some()
+                || record.schema != "sing-box.windows-persistent-initial-stage/v1"
+                || record.phase != "BEGIN"
+                || record.original_run_id != request.original_run_id
+                || record.github_run_id == 0
+                || record.github_run_id == request.original_run_id
+                || record.slot != request.slot
+                || record.source_revision != request.accepted_revision
+                || record.release_set_sha256 != request.release_set_sha256
+            {
+                return Err("paired release lineage rejects unrelated persistent-stage".to_owned());
+            }
+            stage_index = Some(index);
+        }
+    }
+    match (prepare_index, stage_index) {
+        (Some(prepare), Some(stage)) if prepare < stage => Ok(()),
+        _ => Err(
+            "paired release lineage requires one ordered program-prepare then persistent-stage"
+                .to_owned(),
+        ),
+    }
 }
 
 fn commit_records(history: &str) -> Result<Vec<String>, String> {
@@ -412,7 +509,7 @@ pub(crate) fn plan_paired_commit(
 ) -> Result<String, String> {
     validate_commit_request(request)?;
     let original = original_begin_for_commit(history, original_begin)?;
-    matching_original_begin(&original, request)?;
+    matching_original_begin(&original, request, history)?;
     if !commit_records(history)?.is_empty() {
         return Err(
             "paired commit already has an intent; no replay after uncertain result".to_owned(),
@@ -436,7 +533,7 @@ pub(crate) fn verify_paired_commit_intent(
 ) -> Result<(), String> {
     validate_commit_request(request)?;
     let original = original_begin_for_commit(history, original_begin)?;
-    matching_original_begin(&original, request)?;
+    matching_original_begin(&original, request, history)?;
     let expected = paired_commit_record(request, original_begin);
     let (marker, body) = exact_intent
         .split_once('\n')
@@ -516,8 +613,8 @@ mod tests {
             commit_run_id: 2022,
             generation: 101,
             slot: "A".to_owned(),
-            accepted_revision: "1".repeat(40),
-            release_set_sha256: "2".repeat(64),
+            accepted_revision: "d".repeat(40),
+            release_set_sha256: "e".repeat(64),
             vm_prepared_sha256: "3".repeat(64),
             windows_prepared_sha256: "4".repeat(64),
         }
@@ -625,6 +722,102 @@ mod tests {
             assert!(
                 verify_paired_commit_intent(&different, &committed, &original, &planned).is_err()
             );
+        }
+    }
+
+    #[test]
+    fn paired_commit_release_upgrade_requires_exact_ordered_program_and_stage() {
+        let (original, _) = persisted_original();
+        let upgraded = PairedCommitPlan {
+            accepted_revision: "1".repeat(40),
+            release_set_sha256: "2".repeat(64),
+            ..prepared_commit()
+        };
+        let prepare = format!(
+            "<!-- sing-box-windows-program-prepare/v1 -->\n{}",
+            serde_json::json!({
+                "schema": "sing-box.windows-program-prepare/v1",
+                "phase": "BEGIN",
+                "original_run_id": upgraded.original_run_id,
+                "github_run_id": 3033,
+                "source_revision": upgraded.accepted_revision,
+                "release_set_sha256": upgraded.release_set_sha256
+            })
+        );
+        let stage = format!(
+            "<!-- sing-box-windows-persistent-initial-stage/v1 -->\n{}",
+            serde_json::json!({
+                "schema": "sing-box.windows-persistent-initial-stage/v1",
+                "phase": "BEGIN",
+                "original_run_id": upgraded.original_run_id,
+                "github_run_id": 4044,
+                "slot": upgraded.slot,
+                "source_revision": upgraded.accepted_revision,
+                "release_set_sha256": upgraded.release_set_sha256
+            })
+        );
+        let history = |entries: &[String]| {
+            serde_json::to_string(
+                &entries
+                    .iter()
+                    .map(|body| serde_json::json!({"body": body}))
+                    .collect::<Vec<_>>(),
+            )
+            .unwrap()
+        };
+        assert!(plan_paired_commit(&upgraded, &history(&[original.clone()]), &original).is_err());
+        assert!(
+            plan_paired_commit(
+                &upgraded,
+                &history(&[original.clone(), prepare.clone()]),
+                &original
+            )
+            .is_err()
+        );
+        assert!(
+            plan_paired_commit(
+                &upgraded,
+                &history(&[original.clone(), stage.clone(), prepare.clone()]),
+                &original
+            )
+            .is_err()
+        );
+        let exact = history(&[original.clone(), prepare.clone(), stage.clone()]);
+        let intent = plan_paired_commit(&upgraded, &exact, &original).unwrap();
+        assert!(
+            verify_paired_commit_intent(
+                &upgraded,
+                &history(&[original.clone(), prepare.clone(), stage.clone(), intent.clone()]),
+                &original,
+                &intent,
+            )
+            .is_ok()
+        );
+        for altered in [
+            history(&[original.clone(), prepare.clone(), prepare.clone(), stage.clone()]),
+            history(&[original.clone(), prepare.clone(), stage.clone(), stage.clone()]),
+            history(&[
+                original.clone(),
+                prepare.replace("3033", "0"),
+                stage.clone(),
+            ]),
+            history(&[
+                original.clone(),
+                prepare.clone(),
+                stage.replace("4044", "0"),
+            ]),
+            history(&[
+                original.clone(),
+                prepare.clone(),
+                stage.replace("persistent-initial-stage/v1", "persistent-initial-stage/v2"),
+            ]),
+            history(&[
+                original.clone(),
+                prepare.clone(),
+                stage.replace("source_revision", "wrong_source_revision"),
+            ]),
+        ] {
+            assert!(plan_paired_commit(&upgraded, &altered, &original).is_err());
         }
     }
 
