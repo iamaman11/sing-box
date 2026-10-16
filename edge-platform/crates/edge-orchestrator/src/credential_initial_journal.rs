@@ -656,7 +656,10 @@ mod tests {
             "PAIR_PARTIAL_BLOCKED_NO_REPLAY"
         );
         windows.cursor = PairedHostCursor::Active;
-        assert_eq!(classify(&vm, &windows).unwrap(), "PAIR_ACTIVE_DECLARED_NEEDS_INDEPENDENT_ORIGIN_PROOF");
+        assert_eq!(
+            classify(&vm, &windows).unwrap(),
+            "PAIR_ACTIVE_DECLARED_NEEDS_INDEPENDENT_ORIGIN_PROOF"
+        );
         vm.runtime_verified = false;
         assert_eq!(
             classify(&vm, &windows).unwrap(),
