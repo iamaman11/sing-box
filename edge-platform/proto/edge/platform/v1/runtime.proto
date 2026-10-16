@@ -181,7 +181,7 @@ message WindowsPrivilegedRequest {
   optional uint64 credential_generation = 6;
   optional CredentialTransitionAction credential_transition_action = 7;
   optional string initial_commit_intent_sha256 = 8;
-  optional CredentialDeliverySlot initial_commit_slot = 9;
+  optional uint32 initial_commit_slot = 9; // fixed A=1, B=2; no external proto import
 }
 
 message WindowsPrivilegedResult {
