@@ -565,7 +565,9 @@ impl CredentialStore {
         if self.read_initial_pair_recovery_receipt()?.is_some()
             || self.read_existing_join_receipt()?.is_some()
         {
-            return Err("Windows existing join recovery or duplicate attempt; no replay".to_owned());
+            return Err(
+                "Windows existing join recovery or duplicate attempt; no replay".to_owned(),
+            );
         }
         if let Some(first_use) = self.read_initial_pair_receipt()? {
             let lines: Vec<_> = first_use.lines().collect();

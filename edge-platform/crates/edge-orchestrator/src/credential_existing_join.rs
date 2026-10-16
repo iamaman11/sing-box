@@ -31,17 +31,24 @@ pub(crate) struct ExistingJoinBegin {
 }
 
 fn validate_begin(value: &ExistingJoinBegin, revision: &str, release: &str) -> Result<(), String> {
-    if value.schema != BEGIN_SCHEMA || value.run_id == 0
-        || value.accepted_revision != revision || !lower_hex(revision, 40)
-        || value.release_set_sha256 != release || !lower_hex(release, 64)
-        || value.windows_active.generation == 0 || value.vm_candidate.generation == 0
+    if value.schema != BEGIN_SCHEMA
+        || value.run_id == 0
+        || value.accepted_revision != revision
+        || !lower_hex(revision, 40)
+        || value.release_set_sha256 != release
+        || !lower_hex(release, 64)
+        || value.windows_active.generation == 0
+        || value.vm_candidate.generation == 0
         || value.windows_active.generation == value.vm_candidate.generation
-        || value.windows_active.slot != "A" || value.vm_candidate.slot != "B"
+        || value.windows_active.slot != "A"
+        || value.vm_candidate.slot != "B"
         || !lower_hex(&value.windows_active.sha256, 64)
         || !lower_hex(&value.vm_candidate.sha256, 64)
         || value.windows_active.sha256 == value.vm_candidate.sha256
-        || !value.windows_worker_origin_exact || !value.vm_worker_origin_exact
-        || !value.vm_line2_six_authenticated || !value.windows_stopped_proxy_only
+        || !value.windows_worker_origin_exact
+        || !value.vm_worker_origin_exact
+        || !value.vm_line2_six_authenticated
+        || !value.windows_stopped_proxy_only
     {
         return Err("existing join BEGIN original A/VM B owner proof absent".to_owned());
     }
@@ -53,7 +60,9 @@ fn begin_records(history: &str) -> Result<Vec<String>, String> {
         .map_err(|_| "existing join BEGIN GitHub history malformed".to_owned())?;
     let mut found = Vec::new();
     for row in rows {
-        let body = row.get("body").and_then(|v| v.as_str())
+        let body = row
+            .get("body")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| "existing join BEGIN GitHub history unreadable".to_owned())?;
         if body.contains(BEGIN_FAMILY) {
             if !body.starts_with(&format!("{BEGIN_MARKER}\n")) {
@@ -66,7 +75,10 @@ fn begin_records(history: &str) -> Result<Vec<String>, String> {
 }
 
 pub(crate) fn plan_begin(
-    value: &ExistingJoinBegin, history: &str, revision: &str, release: &str,
+    value: &ExistingJoinBegin,
+    history: &str,
+    revision: &str,
+    release: &str,
 ) -> Result<String, String> {
     validate_begin(value, revision, release)?;
     if !begin_records(history)?.is_empty() || !records(history)?.is_empty() {
@@ -78,15 +90,22 @@ pub(crate) fn plan_begin(
 }
 
 pub(crate) fn readback_begin(
-    value: &ExistingJoinBegin, history: &str, exact: &str, revision: &str, release: &str,
+    value: &ExistingJoinBegin,
+    history: &str,
+    exact: &str,
+    revision: &str,
+    release: &str,
 ) -> Result<(), String> {
     validate_begin(value, revision, release)?;
-    let body = exact.strip_prefix(&format!("{BEGIN_MARKER}\n"))
+    let body = exact
+        .strip_prefix(&format!("{BEGIN_MARKER}\n"))
         .ok_or_else(|| "existing join BEGIN exact marker missing".to_owned())?;
     let decoded: ExistingJoinBegin = serde_json::from_str(body)
         .map_err(|_| "existing join BEGIN content malformed".to_owned())?;
     if &decoded != value || serde_json::to_string(&decoded).ok().as_deref() != Some(body) {
-        return Err("existing join BEGIN differs from original authenticated owner proof".to_owned());
+        return Err(
+            "existing join BEGIN differs from original authenticated owner proof".to_owned(),
+        );
     }
     let stored = begin_records(history)?;
     if stored.len() != 1 || stored[0] != exact || !records(history)?.is_empty() {
@@ -96,13 +115,17 @@ pub(crate) fn readback_begin(
 }
 
 fn require_matching_begin(
-    spec: &ExistingJoinIntent, history: &str, revision: &str, release: &str,
+    spec: &ExistingJoinIntent,
+    history: &str,
+    revision: &str,
+    release: &str,
 ) -> Result<(), String> {
     let stored = begin_records(history)?;
     if stored.len() != 1 {
         return Err("existing join COMMIT requires exactly one original BEGIN".to_owned());
     }
-    let body = stored[0].strip_prefix(&format!("{BEGIN_MARKER}\n"))
+    let body = stored[0]
+        .strip_prefix(&format!("{BEGIN_MARKER}\n"))
         .ok_or_else(|| "existing join BEGIN marker malformed".to_owned())?;
     let original: ExistingJoinBegin = serde_json::from_str(body)
         .map_err(|_| "existing join BEGIN original data malformed".to_owned())?;
@@ -118,7 +141,6 @@ fn require_matching_begin(
     }
     Ok(())
 }
-
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -347,11 +369,14 @@ pub(crate) fn dispatch(
     use crate::cli::CredentialDeliveryCommand;
     match command {
         CredentialDeliveryCommand::ExistingJoinBeginPlan {
-            spec_path, journal_history_path, record_output_path,
+            spec_path,
+            journal_history_path,
+            record_output_path,
         } => {
             let spec: ExistingJoinBegin = serde_json::from_slice(
                 &fs::read(spec_path).map_err(|_| "existing join BEGIN spec unreadable")?,
-            ).map_err(|_| "existing join BEGIN spec malformed")?;
+            )
+            .map_err(|_| "existing join BEGIN spec malformed")?;
             let history = fs::read_to_string(journal_history_path)
                 .map_err(|_| "existing join BEGIN GitHub history unavailable")?;
             let record = plan_begin(&spec, &history, revision, release)?;
@@ -362,20 +387,25 @@ pub(crate) fn dispatch(
                 use std::os::unix::fs::OpenOptionsExt;
                 options.mode(0o600);
             }
-            let mut file = options.open(record_output_path)
+            let mut file = options
+                .open(record_output_path)
                 .map_err(|_| "existing join BEGIN local record exists or UNKNOWN")?;
-            file.write_all(record.as_bytes()).and_then(|_| file.sync_all())
+            file.write_all(record.as_bytes())
+                .and_then(|_| file.sync_all())
                 .map_err(|_| "existing join BEGIN local write UNKNOWN")?;
             println!("existing_join_begin=PLANNED_LOCAL_ONLY");
             println!("credential_mutations=0");
             Ok(())
         }
         CredentialDeliveryCommand::ExistingJoinBeginReadback {
-            spec_path, journal_history_path, exact_record_path,
+            spec_path,
+            journal_history_path,
+            exact_record_path,
         } => {
             let spec: ExistingJoinBegin = serde_json::from_slice(
                 &fs::read(spec_path).map_err(|_| "existing join BEGIN spec unreadable")?,
-            ).map_err(|_| "existing join BEGIN spec malformed")?;
+            )
+            .map_err(|_| "existing join BEGIN spec malformed")?;
             let history = fs::read_to_string(journal_history_path)
                 .map_err(|_| "existing join BEGIN GitHub history unavailable")?;
             let exact = fs::read_to_string(exact_record_path)
@@ -513,7 +543,13 @@ mod tests {
     }
     fn history_begin(spec: &ExistingJoinIntent) -> String {
         let begin = source_begin(spec);
-        let exact = plan_begin(&begin, "[]", &spec.accepted_revision, &spec.release_set_sha256).unwrap();
+        let exact = plan_begin(
+            &begin,
+            "[]",
+            &spec.accepted_revision,
+            &spec.release_set_sha256,
+        )
+        .unwrap();
         serde_json::json!([{"body":exact}]).to_string()
     }
     fn history_commit(spec: &ExistingJoinIntent, exact: &str) -> String {
@@ -524,12 +560,35 @@ mod tests {
     fn original_begin_is_durable_before_staged_windows_b_and_commit() {
         let g = good();
         let begin = source_begin(&g);
-        let recorded = plan_begin(&begin, "[]", &g.accepted_revision, &g.release_set_sha256).unwrap();
+        let recorded =
+            plan_begin(&begin, "[]", &g.accepted_revision, &g.release_set_sha256).unwrap();
         let history = history_begin(&g);
-        readback_begin(&begin, &history, &recorded, &g.accepted_revision, &g.release_set_sha256).unwrap();
-        assert!(plan_begin(&begin, &history, &g.accepted_revision, &g.release_set_sha256).is_err());
+        readback_begin(
+            &begin,
+            &history,
+            &recorded,
+            &g.accepted_revision,
+            &g.release_set_sha256,
+        )
+        .unwrap();
+        assert!(
+            plan_begin(
+                &begin,
+                &history,
+                &g.accepted_revision,
+                &g.release_set_sha256
+            )
+            .is_err()
+        );
         let commit = plan(&g, &history, &g.accepted_revision, &g.release_set_sha256).unwrap();
-        readback(&g, &history_commit(&g, &commit), &commit, &g.accepted_revision, &g.release_set_sha256).unwrap();
+        readback(
+            &g,
+            &history_commit(&g, &commit),
+            &commit,
+            &g.accepted_revision,
+            &g.release_set_sha256,
+        )
+        .unwrap();
     }
     #[test]
     fn missing_duplicate_or_drifted_begin_never_authorizes_commit() {
@@ -541,15 +600,39 @@ mod tests {
         assert!(plan(&g, &duplicated, &g.accepted_revision, &g.release_set_sha256).is_err());
         let mut drift = g.clone();
         drift.windows_active.generation += 1;
-        assert!(plan(&drift, &history_begin(&g), &g.accepted_revision, &g.release_set_sha256).is_err());
-        let unsupported = serde_json::json!([{"body":"<!-- sing-box-credential-existing-join-begin/v2 -->"}]).to_string();
-        assert!(plan_begin(&begin, &unsupported, &g.accepted_revision, &g.release_set_sha256).is_err());
+        assert!(
+            plan(
+                &drift,
+                &history_begin(&g),
+                &g.accepted_revision,
+                &g.release_set_sha256
+            )
+            .is_err()
+        );
+        let unsupported =
+            serde_json::json!([{"body":"<!-- sing-box-credential-existing-join-begin/v2 -->"}])
+                .to_string();
+        assert!(
+            plan_begin(
+                &begin,
+                &unsupported,
+                &g.accepted_revision,
+                &g.release_set_sha256
+            )
+            .is_err()
+        );
     }
 
     #[test]
     fn positive_plan_and_exact_history_readback() {
         let g = good();
-        let record = plan(&g, &history_begin(&g), &g.accepted_revision, &g.release_set_sha256).unwrap();
+        let record = plan(
+            &g,
+            &history_begin(&g),
+            &g.accepted_revision,
+            &g.release_set_sha256,
+        )
+        .unwrap();
         let history = history_commit(&g, &record);
         let expected = format!("{MARKER}\n{}", serde_json::to_string(&g).unwrap());
         readback(
@@ -583,13 +666,27 @@ mod tests {
                 ..g.clone()
             },
         ] {
-            assert!(plan(&changed, &history_begin(&g), &g.accepted_revision, &g.release_set_sha256).is_err());
+            assert!(
+                plan(
+                    &changed,
+                    &history_begin(&g),
+                    &g.accepted_revision,
+                    &g.release_set_sha256
+                )
+                .is_err()
+            );
         }
     }
     #[test]
     fn torn_or_duplicate_intent_blocks_and_no_implicit_retry() {
         let g = good();
-        let record = plan(&g, &history_begin(&g), &g.accepted_revision, &g.release_set_sha256).unwrap();
+        let record = plan(
+            &g,
+            &history_begin(&g),
+            &g.accepted_revision,
+            &g.release_set_sha256,
+        )
+        .unwrap();
         let duplicate = serde_json::json!([{"body":record},{"body":record}]).to_string();
         assert!(
             readback(
@@ -655,7 +752,13 @@ mod tests {
     #[test]
     fn half_committed_vm_join_refuses_automatic_replay() {
         let g = good();
-        let intent = plan(&g, &history_begin(&g), &g.accepted_revision, &g.release_set_sha256).unwrap();
+        let intent = plan(
+            &g,
+            &history_begin(&g),
+            &g.accepted_revision,
+            &g.release_set_sha256,
+        )
+        .unwrap();
         let digest = {
             use ring::digest::{SHA256, digest};
             digest(&SHA256, intent.as_bytes())
@@ -674,7 +777,13 @@ mod tests {
     #[test]
     fn completed_pointers_still_require_independent_acceptance() {
         let g = good();
-        let record = plan(&g, &history_begin(&g), &g.accepted_revision, &g.release_set_sha256).unwrap();
+        let record = plan(
+            &g,
+            &history_begin(&g),
+            &g.accepted_revision,
+            &g.release_set_sha256,
+        )
+        .unwrap();
         let digest = {
             use ring::digest::{SHA256, digest};
             digest(&SHA256, record.as_bytes())
