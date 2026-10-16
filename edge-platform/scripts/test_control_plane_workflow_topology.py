@@ -91,7 +91,7 @@ def main() -> None:
     require(
         "startsWith(github.event.comment.body, '/windows initial-pair-stage ')" in router
         and "startsWith(github.event.comment.body, '/windows initial-pair-prepare ')" in router
-        and '"\/windows initial-pair-prepare "*|' in windows_physical
+        and '"/windows initial-pair-prepare "*|' in windows_physical
         and "operation=\"initial-pair-prepare\"" in windows_physical
         and "initial_first_use_prepare:" in windows_physical
         and "FIRST_USE_UPGRADE_BLOCKED: staging already begun; reconcile instead" in windows_physical
