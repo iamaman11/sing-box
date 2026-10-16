@@ -13,9 +13,12 @@ Worker origin. Preserve the exact immutable ReleaseSet, protected GitHub
 journal, unknown-ACK no-replay boundary, One Client independence and zero-TUN
 Windows baseline. The existing lower-level commands remain until safe
 equivalence is established; do not alias apply to the current /windows converge
-(which starts SCM). Current implementation incrementally adds a nonsecret
-native cursor classification plus /windows status alias; cross-host status and
-apply/recover convergence remain NOT_ACCEPTED until end-to-end tests.
+(which starts SCM). Current implementation adds nonsecret native cursor classification,
+/windows status and an explicit /windows apply for an existing stopped
+ProxyOnly ACTIVE cursor. This is program-only: exact source/target ReleaseSet,
+one durable GitHub BEGIN, and SCM/credential metadata readback. Unknown Worker
+origin cannot authorize changes to credentials. Cross-host status and full
+apply/recover remain NOT_ACCEPTED until physical end-to-end tests.
 
 This file defines the stable ownership/invariant model and steady-state target. **Physical N1/N2 external Line1 4/4 + Line2 6/6, before and after one VM reboot, is accepted** in [GitHub Actions #38627187731](https://github.com/iamaman11/sing-box/actions/runs/38627187731). The unchanged Worker credential generation and exact transient Windows/Access cleanup were also proven. **Do not infer that the reused VM was disposed, that its staged candidate has been promoted to an active credential pointer, or that an already-running container's credential source has been cryptographically attributed.** These remain N1/N2 lifecycle closure gates; Windows bidirectional mode changes remain N3, and production lifecycle N4 is unaccepted. Current operational evidence and ordering are in Issue #26, not older historical passages below.
 
