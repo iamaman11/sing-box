@@ -90,6 +90,17 @@ def main() -> None:
     edge_local_runtime = EDGE_LOCAL_RUNTIME.read_text(encoding="utf-8")
     require(
         "startsWith(github.event.comment.body, '/windows initial-pair-stage ')" in router
+        and "startsWith(github.event.comment.body, '/windows initial-pair-prepare ')" in router
+        and '"\/windows initial-pair-prepare "*|' in windows_physical
+        and "operation=\"initial-pair-prepare\"" in windows_physical
+        and "initial_first_use_prepare:" in windows_physical
+        and "FIRST_USE_UPGRADE_BLOCKED: staging already begun; reconcile instead" in windows_physical
+        and "first_use_binary_prepare=EXACT_STOPPED_RELEASE_ACCEPTED" in windows_physical
+        and "first_use_staging_begin=NOT_WRITTEN" in windows_physical
+        and "FIRST_USE_STAGE_BLOCKED: exact previously prepared Windows release was not preserved" in windows_physical
+        and "-Preflight -RequireCurrentRelease" in windows_physical
+        and "FIRST_USE_PREBEGIN_BLOCKED: exact accepted Windows ReleaseSet must be installed BEFORE durable BEGIN" in windows_first_use_offline
+        and "if ($RequireCurrentRelease -and -not $Preflight)" in windows_first_use_offline
         and 'issues: write' in router
         and '"/windows initial-pair-stage "*' in windows_physical
         and 'operation="initial-pair-stage"' in windows_physical
