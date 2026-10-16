@@ -3,9 +3,9 @@ use crate::cli::{
 };
 use crate::credential_initial_journal::{
     InitialPairJournalPlan, PairedCommitPlan, PairedHostReadback, PairedRecoveryPlan,
-    plan_paired_recovery, verify_paired_recovery, plan_initial_pair_reservation,
-    plan_paired_commit, reconcile_paired_commit, require_empty_initial_history,
-    verify_expected_initial_attempt, verify_paired_commit_intent, verify_recorded_initial_attempt,
+    plan_initial_pair_reservation, plan_paired_commit, plan_paired_recovery,
+    reconcile_paired_commit, require_empty_initial_history, verify_expected_initial_attempt,
+    verify_paired_commit_intent, verify_paired_recovery, verify_recorded_initial_attempt,
 };
 use edge_controller_core::production::{ProductionComposition, ProductionCredentialPlaneOwnership};
 use edge_orchestrator::credential_snapshot::{
@@ -813,9 +813,14 @@ fn run_readonly_paired_commit(
                 release,
             );
             let history = read_exact_file(&journal_history_path, "recovery history unavailable")?;
-            let original = read_exact_file(&original_begin_path, "recovery original BEGIN unavailable")?;
-            let intent = read_exact_file(&original_intent_path, "recovery original COMMIT_INTENT unavailable")?;
-            let observation = read_exact_file(&host_readback_path, "recovery host proofs unavailable")?;
+            let original =
+                read_exact_file(&original_begin_path, "recovery original BEGIN unavailable")?;
+            let intent = read_exact_file(
+                &original_intent_path,
+                "recovery original COMMIT_INTENT unavailable",
+            )?;
+            let observation =
+                read_exact_file(&host_readback_path, "recovery host proofs unavailable")?;
             let reports: PairedHostObservations = serde_json::from_str(&observation)
                 .map_err(|_| "paired recovery host report invalid".to_owned())?;
             let plan = PairedRecoveryPlan {
@@ -840,13 +845,17 @@ fn run_readonly_paired_commit(
                 use std::os::unix::fs::OpenOptionsExt;
                 options.mode(0o600);
             }
-            let mut file = options.open(&recovery_output_path)
+            let mut file = options
+                .open(&recovery_output_path)
                 .map_err(|err| format!("recovery intent file already exists or unknown: {err}"))?;
             file.write_all(output.as_bytes())
                 .and_then(|_| file.sync_all())
                 .map_err(|err| format!("paired recovery output write uncertain: {err}"))?;
             println!("paired_recovery_policy=LOCAL_INTENT_ONLY");
-            println!("paired_recovery_intent_sha256={}", sha256_hex(output.as_bytes()));
+            println!(
+                "paired_recovery_intent_sha256={}",
+                sha256_hex(output.as_bytes())
+            );
             println!("paired_recovery_provider_mutations=0");
             println!("paired_recovery_host_mutations=0");
             println!("paired_recovery_journal_mutations=0");
@@ -878,9 +887,14 @@ fn run_readonly_paired_commit(
                 release,
             );
             let history = read_exact_file(&journal_history_path, "recovery history unavailable")?;
-            let original = read_exact_file(&original_begin_path, "recovery original BEGIN unavailable")?;
-            let intent = read_exact_file(&original_intent_path, "recovery original COMMIT_INTENT unavailable")?;
-            let observation = read_exact_file(&host_readback_path, "recovery host proofs unavailable")?;
+            let original =
+                read_exact_file(&original_begin_path, "recovery original BEGIN unavailable")?;
+            let intent = read_exact_file(
+                &original_intent_path,
+                "recovery original COMMIT_INTENT unavailable",
+            )?;
+            let observation =
+                read_exact_file(&host_readback_path, "recovery host proofs unavailable")?;
             let reports: PairedHostObservations = serde_json::from_str(&observation)
                 .map_err(|_| "paired recovery host report invalid".to_owned())?;
             let plan = PairedRecoveryPlan {
@@ -892,7 +906,10 @@ fn run_readonly_paired_commit(
                 vm: reports.vm,
                 windows: reports.windows,
             };
-            let exact = read_exact_file(&recovery_output_path, "recovery intent readback unavailable")?;
+            let exact = read_exact_file(
+                &recovery_output_path,
+                "recovery intent readback unavailable",
+            )?;
             verify_paired_recovery(&plan, &history, &original, &intent, &exact)?;
             println!("paired_recovery_intent=EXACT_DURABLE_ONCE");
             println!("paired_recovery_provider_mutations=0");
