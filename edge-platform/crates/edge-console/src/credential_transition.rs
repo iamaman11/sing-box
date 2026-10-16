@@ -192,6 +192,67 @@ pub(crate) fn transition(
     }
 }
 
+/// First-use ONLY: preserve the existing SYSTEM-only single-owner boundary.
+/// A protected GitHub paired commit intent must be independently verified
+/// before this request reaches SYSTEM. This function NEVER starts SCM/TUN.
+pub(crate) fn initial_commit(
+    install_root: &Path,
+    activation: &WindowsActivationState,
+    generation: u64,
+    slot: i32,
+    intent_sha256: &str,
+) -> Result<(String, String), String> {
+    verify_windows_activation_files(activation)?;
+    let store = open_store(install_root)?;
+    let state = store.read_state()?.ok_or_else(|| {
+        "Windows initial commit requires existing protected candidate state".to_owned()
+    })?;
+    if state.active.is_some() || state.previous.is_some() {
+        return Err("Windows initial commit refuses existing active or previous v2".to_owned());
+    }
+    let candidate = state.candidate.as_ref().ok_or_else(|| {
+        "Windows initial commit requires exactly one unpromoted candidate".to_owned()
+    })?;
+    if candidate.generation != generation || candidate.slot != slot {
+        return Err("Windows initial commit candidate differs from paired intent".to_owned());
+    }
+    if windows_runtime_state_path(install_root).exists()
+        || local_singbox_config_path(install_root).exists()
+    {
+        return Err(
+            "Windows initial commit refuses previously applied or incomplete managed runtime"
+                .to_owned(),
+        );
+    }
+    let bundle = store.read_bundle(candidate)?;
+    let next = windows_runtime_state_from_canonical_production_bundle(&bundle)?;
+    // Validate the exact signed-release sing-box config BEFORE recording
+    // irreversible local commit intent. This only creates/removes a scratch.
+    let _validated_config = validate_rendered_state(install_root, activation, &next)?;
+    // First durable non-replayable receipt, then atomic ACTIVE pointer.
+    // If runtime rendering fails afterwards, ACTIVE exists but SERVING remains
+    // blocked until independent exact read-only reconciliation.
+    let committed = store.promote_initial_paired_candidate(
+        generation, slot, intent_sha256
+    )?;
+    if committed.active.as_ref().map(|v| v.generation) != Some(generation)
+        || committed.previous.is_some() || committed.candidate.is_some()
+    {
+        return Err("Windows initial commit pointer result UNKNOWN; no replay".to_owned());
+    }
+    apply_runtime_state(install_root, activation, &next).map_err(|err| {
+        format!("Windows first-use pointer committed but runtime materialization is UNKNOWN; no replay: {err}")
+    })?;
+    verify_exact_active_runtime(
+        install_root, activation, &store,
+        committed.active.as_ref().unwrap(),
+    )?;
+    Ok((
+        "INITIAL_CREDENTIAL_COMMIT_LOCAL_ONLY".to_owned(),
+        format!("Windows generation {generation} slot {slot} active; paired/serving proof still required"),
+    ))
+}
+
 fn require_active_v2_for_rotation(state: &LocalCredentialState) -> Result<(), String> {
     if state.active.is_none() {
         return Err(
