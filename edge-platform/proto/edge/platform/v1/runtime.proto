@@ -170,6 +170,9 @@ enum WindowsPrivilegedOperation {
   // Exact two-host first-use COMMIT_INTENT; distinct from rotation PROMOTE.
   // The native SYSTEM owner must preserve stopped/no-TUN ProxyOnly.
   WINDOWS_PRIVILEGED_OPERATION_INITIAL_CREDENTIAL_COMMIT = 16;
+  // Separately journalled recovery of a proven PARTIAL first-use pair.
+  // Not a retry, ordinary PROMOTE, or new credential issuance.
+  WINDOWS_PRIVILEGED_OPERATION_INITIAL_CREDENTIAL_RECOVER = 17;
 }
 
 message WindowsPrivilegedRequest {
@@ -182,6 +185,8 @@ message WindowsPrivilegedRequest {
   optional CredentialTransitionAction credential_transition_action = 7;
   optional string initial_commit_intent_sha256 = 8;
   optional uint32 initial_commit_slot = 9; // fixed A=1, B=2; no external proto import
+  optional string initial_recovery_intent_sha256 = 10;
+  optional string initial_candidate_sha256 = 11;
 }
 
 message WindowsPrivilegedResult {
