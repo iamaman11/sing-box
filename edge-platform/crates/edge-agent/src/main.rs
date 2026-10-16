@@ -244,6 +244,22 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
                     "credential_initial_commit_receipt_present={}",
                     receipt.is_some()
                 );
+                let recovery = store
+                    .read_initial_pair_recovery_receipt()
+                    .map_err(AgentError::Command)?;
+                println!(
+                    "credential_initial_recovery_receipt_present={}",
+                    recovery.is_some()
+                );
+                if let Some(text) = recovery {
+                    let digest = text
+                        .lines()
+                        .find_map(|line| line.strip_prefix("recovery_intent_sha256="))
+                        .ok_or_else(|| AgentError::Command(
+                            "initial VM recovery receipt missing digest".to_owned()
+                        ))?;
+                    println!("credential_initial_recovery_intent_sha256={digest}");
+                }
                 if let Some(text) = receipt {
                     let digest = text
                         .lines()
@@ -257,6 +273,7 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
                 }
             } else {
                 println!("credential_initial_commit_receipt_present=false");
+                println!("credential_initial_recovery_receipt_present=false");
             }
             Ok(())
         }
