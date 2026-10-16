@@ -275,23 +275,15 @@ jobs:
           function Read-AllJournalPages {
             # Issue #26 has multiple pages. A single syntactically valid JSON
             # array is required; partial/parsing failures cannot mean EMPTY.
-            $raw = (& gh api --paginate --slurp $url) -join "`n"
+            # gh's built-in jq combines every fully fetched page into one
+            # canonical array. No shell jq process or page-by-page guesses.
+            $raw = (& gh api --paginate --slurp --jq 'add' $url) -join "`n"
             if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($raw)) {
               throw 'FIRST_USE_UPGRADE_BLOCKED: complete durable history unavailable'
             }
-            $pages = @((ConvertFrom-Json -InputObject $raw -NoEnumerate))
-            $entries = @(
-              foreach ($page in $pages) {
-                foreach ($entry in @($page)) {
-                  if ($null -eq $entry -or $null -eq $entry.body) {
-                    throw 'FIRST_USE_UPGRADE_BLOCKED: malformed issue comment page'
-                  }
-                  $entry
-                }
-              }
-            )
-            if ($entries.Count -eq 0) {
-              throw 'FIRST_USE_UPGRADE_BLOCKED: durable issue journal is empty or incomplete'
+            $entries = @(ConvertFrom-Json -InputObject $raw)
+            if ($entries.Count -eq 0 -or @($entries | Where-Object { $null -eq $_ -or $null -eq $_.body }).Count -ne 0) {
+              throw 'FIRST_USE_UPGRADE_BLOCKED: durable issue journal is empty or malformed'
             }
             return $entries
           }
