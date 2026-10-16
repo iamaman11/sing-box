@@ -8,12 +8,11 @@ to run the exact native offline ReleaseSet owner on Windows while ProxyOnly
 is Stopped/OnDemand, zero TUN/processes, direct no-proxy DNS/HTTPS PASS,
 private cursor absent. It must re-attest the original immutable first-use
 source and require **zero** persisted Windows staging BEGIN entries.
-It first uses the existing native `install-windows-release.ps1 -Offline -StageOnly`
-to download and verify the inactive immutable release with zero current.pb,
-SCM, DNS, routes or credential mutation; this supports only exact stopped
-former ManagedTun or manual ProxyOnly. If network/asset validation fails here,
-no single-use intent is spent. After inactive staging and before live
-authority mutation it records exactly one immutable
+The existing installed Rust `privileged-offline-activate` is the ONLY owner
+that may call the protected release installer and rebind SCM. The GitHub
+workflow must never invoke the PowerShell installer directly. After
+read-only installed-owner preflight and before any serving authority mutation
+it records exactly one immutable
 `windows-program-prepare/v1` BEGIN in the existing GitHub Issue #26 journal,
 reads back exact one, and refuses any later attempt. This is not a second
 desired-state store; if an ACK is lost, only read-only reconciliation is
