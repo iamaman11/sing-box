@@ -277,6 +277,43 @@ pub(crate) enum CredentialDeliveryCommand {
         exact_intent_path: std::path::PathBuf,
         host_readback_path: std::path::PathBuf,
     },
+    // No provider, GitHub, or host mutation. A SECOND one-shot recovery
+    // journal decision requires independently authenticated partial host
+    // readback after the FIRST paired COMMIT_INTENT has already been recorded.
+    InitialPairRecoveryPlan {
+        original_run_id: u64,
+        commit_run_id: u64,
+        recovery_run_id: u64,
+        generation: u64,
+        #[arg(value_enum)]
+        slot: CredentialDeliverySlotArg,
+        vm_prepared_sha256: String,
+        windows_prepared_sha256: String,
+        vm_active_sha256: String,
+        windows_candidate_sha256: String,
+        journal_history_path: std::path::PathBuf,
+        original_begin_path: std::path::PathBuf,
+        original_intent_path: std::path::PathBuf,
+        host_readback_path: std::path::PathBuf,
+        recovery_output_path: std::path::PathBuf,
+    },
+    InitialPairRecoveryReadback {
+        original_run_id: u64,
+        commit_run_id: u64,
+        recovery_run_id: u64,
+        generation: u64,
+        #[arg(value_enum)]
+        slot: CredentialDeliverySlotArg,
+        vm_prepared_sha256: String,
+        windows_prepared_sha256: String,
+        vm_active_sha256: String,
+        windows_candidate_sha256: String,
+        journal_history_path: std::path::PathBuf,
+        original_begin_path: std::path::PathBuf,
+        original_intent_path: std::path::PathBuf,
+        host_readback_path: std::path::PathBuf,
+        recovery_output_path: std::path::PathBuf,
+    },
     InitialPairJournalPlan {
         generation: u64,
         #[arg(value_enum)]
