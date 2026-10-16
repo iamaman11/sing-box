@@ -1195,31 +1195,83 @@ mod tests {
         let sha = "a".repeat(64);
         let windows_sha = "b".repeat(64);
         let base = [
-            "edge-orchestrator", "credentials", "initial-pair-commit-plan",
-            "1011", "2022", "101", "a", &sha, &windows_sha,
-            "history.json", "original-begin.txt", "intended-record.txt",
+            "edge-orchestrator",
+            "credentials",
+            "initial-pair-commit-plan",
+            "1011",
+            "2022",
+            "101",
+            "a",
+            &sha,
+            &windows_sha,
+            "history.json",
+            "original-begin.txt",
+            "intended-record.txt",
         ];
         assert!(Cli::try_parse_from(base).is_ok());
-        assert!(Cli::try_parse_from([
-            "edge-orchestrator", "credentials", "initial-pair-commit-readback",
-            "1011", "2022", "101", "a", &sha, &windows_sha,
-            "history.json", "original-begin.txt", "intended-record.txt",
-        ]).is_ok());
-        assert!(Cli::try_parse_from([
-            "edge-orchestrator", "credentials", "initial-pair-commit-reconcile",
-            "1011", "2022", "101", "a", &sha, &windows_sha,
-            "history.json", "original-begin.txt", "intended-record.txt",
-            "host-readback.json",
-        ]).is_ok());
-        assert!(Cli::try_parse_from([
-            "edge-orchestrator", "credentials", "initial-pair-commit",
-            "1011", "2022",
-        ]).is_err(), "there is no direct paired host credential mutation command");
-        assert!(Cli::try_parse_from([
-            "edge-orchestrator", "credentials", "initial-pair-commit-plan",
-            "1011", "2022", "101", "c", &sha, &windows_sha,
-            "history.json", "original-begin.txt", "intended-record.txt",
-        ]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "edge-orchestrator",
+                "credentials",
+                "initial-pair-commit-readback",
+                "1011",
+                "2022",
+                "101",
+                "a",
+                &sha,
+                &windows_sha,
+                "history.json",
+                "original-begin.txt",
+                "intended-record.txt",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "edge-orchestrator",
+                "credentials",
+                "initial-pair-commit-reconcile",
+                "1011",
+                "2022",
+                "101",
+                "a",
+                &sha,
+                &windows_sha,
+                "history.json",
+                "original-begin.txt",
+                "intended-record.txt",
+                "host-readback.json",
+            ])
+            .is_ok()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "edge-orchestrator",
+                "credentials",
+                "initial-pair-commit",
+                "1011",
+                "2022",
+            ])
+            .is_err(),
+            "there is no direct paired host credential mutation command"
+        );
+        assert!(
+            Cli::try_parse_from([
+                "edge-orchestrator",
+                "credentials",
+                "initial-pair-commit-plan",
+                "1011",
+                "2022",
+                "101",
+                "c",
+                &sha,
+                &windows_sha,
+                "history.json",
+                "original-begin.txt",
+                "intended-record.txt",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
