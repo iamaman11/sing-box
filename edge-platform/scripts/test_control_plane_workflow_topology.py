@@ -181,8 +181,11 @@ def main() -> None:
         "local runtime must never reset foreign Cloudflare One Client DNS by resolver IP",
     )
     require(
-        windows_console.count("require_exact_immutable_activation_console(&install_root)") == 8
+        windows_console.count("require_exact_immutable_activation_console(&install_root)") == 9
         and "Command::PrivilegedInitialCredentialCommit(args)" in windows_console
+        and "Command::PrivilegedInitialCredentialRecover(args)" in windows_console
+        and "WindowsPrivilegedOperation::InitialCredentialRecover" in windows_console
+        and "credential_transition::initial_recover(" in windows_console
         and "require_stopped_proxy_only_initial_commit_owner(install_root)?;" in windows_console
         and windows_console.count("require_exact_immutable_activation_console(install_root)?;") == 4
         and "Command::OfflineBootstrap(args)" in windows_console
