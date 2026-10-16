@@ -382,6 +382,8 @@ def main() -> None:
     require(
         "sing-box-credential-paired-commit/v1" in paired_journal
         and "PAIR_PARTIAL_BLOCKED_NO_REPLAY" in paired_journal
+        and "PAIR_ACTIVE_DECLARED_NEEDS_INDEPENDENT_ORIGIN_PROOF" in paired_journal
+        and "PAIR_ACTIVE_VERIFIED" not in paired_journal
         and "PAIR_INTENT_RECORDED_NO_MUTATION" in paired_journal
         and "PAIR_POINTERS_ACTIVE_RUNTIME_UNPROVEN" in paired_journal
         and "verify_recorded_initial_attempt(history, exact_original)?" in paired_journal
