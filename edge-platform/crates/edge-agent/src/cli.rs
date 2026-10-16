@@ -81,6 +81,16 @@ pub(crate) enum LocalCommand {
         slot: u32,
         intent_sha256: String,
     },
+    // Internal, GitHub-authorized existing Windows ACTIVE -> VM B join.
+    CredentialExistingJoin {
+        generation: u64,
+        slot: u32,
+        candidate_sha256: String,
+        windows_active_generation: u64,
+        windows_active_slot: u32,
+        windows_active_sha256: String,
+        intent_sha256: String,
+    },
     CredentialStage {
         generation: u64,
     },
@@ -112,6 +122,7 @@ impl LocalCommand {
             Self::CredentialInitialApply { .. } => "local-credential-initial-apply",
             Self::CredentialInitialVerify { .. } => "local-credential-initial-verify",
             Self::CredentialInitialCommit { .. } => "local-credential-initial-commit",
+            Self::CredentialExistingJoin { .. } => "local-credential-existing-join",
             Self::CredentialStage { .. } => "local-credential-stage",
             Self::CredentialTransition { .. } => "local-credential-transition",
         }

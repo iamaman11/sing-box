@@ -412,6 +412,66 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             println!("runner_secret_access=false");
             Ok(())
         }
+        cli::LocalCommand::CredentialExistingJoin {
+            generation,
+            slot,
+            candidate_sha256,
+            windows_active_generation,
+            windows_active_slot,
+            windows_active_sha256,
+            intent_sha256,
+        } => {
+            // Protected GitHub caller verifies the original Windows A owner and
+            // exactly-one join intent. This local operation cannot infer either
+            // authorization from user-supplied digests.
+            verify_initial_vm_credential_functional(&stack_dir, generation)
+                .await
+                .map_err(AgentError::Command)?;
+            let origin = attest_worker_credential_origin(
+                &vm_credential_store_root(&stack_dir).map_err(AgentError::Command)?,
+                &vm_credential_access_identity_path(&stack_dir).map_err(AgentError::Command)?,
+                CredentialProjectionKind::Vm,
+                CredentialOriginSelection::Candidate,
+            )
+            .await
+            .map_err(AgentError::Command)?;
+            let slot_name = match slot {
+                1 => "A",
+                2 => "B",
+                _ => return Err(AgentError::Command("join VM slot invalid".to_owned())),
+            };
+            if origin.generation != generation
+                || origin.slot != slot_name
+                || origin.bundle_sha256 != candidate_sha256
+            {
+                return Err(AgentError::Command(
+                    "existing-active join Worker origin differs from selected VM candidate".to_owned()
+                ));
+            }
+            let store = open_vm_credential_store(&stack_dir).map_err(AgentError::Command)?;
+            let committed = store.promote_existing_active_join(
+                generation, slot as i32, &candidate_sha256,
+                windows_active_generation, windows_active_slot as i32,
+                &windows_active_sha256, &intent_sha256,
+            ).map_err(AgentError::Command)?;
+            if committed.active.as_ref().map(|v| v.sha256.as_str())
+                != Some(candidate_sha256.as_str())
+                || committed.previous.is_some()
+                || committed.candidate.is_some()
+            {
+                return Err(AgentError::Command(
+                    "existing-active join pointer UNKNOWN; no replay".to_owned()
+                ));
+            }
+            println!("operation=CREDENTIAL_EXISTING_JOIN");
+            println!("vm_credential_generation={generation}");
+            println!("vm_credential_slot={slot}");
+            println!("vm_credential_join=ACTIVE_LOCAL_ONLY");
+            println!("windows_mutations=0");
+            println!("credential_pair_committed=false");
+            println!("credential_replay_authorized=false");
+            Ok(())
+        }
         cli::LocalCommand::CredentialStage { generation } => {
             let state = fetch_and_stage_vm_credential_candidate(&stack_dir, generation)
                 .await

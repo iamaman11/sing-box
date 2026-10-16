@@ -15,6 +15,7 @@ const STATE_FILE: &str = "state.pb";
 const BUNDLES_DIR: &str = "bundles";
 const INITIAL_PAIR_COMMIT_RECEIPT: &str = "initial-paired-commit-receipt-v1";
 const INITIAL_PAIR_RECOVERY_RECEIPT: &str = "initial-paired-recovery-receipt-v1";
+const EXISTING_JOIN_RECEIPT: &str = "existing-active-join-receipt-v1";
 
 #[derive(Debug, Clone)]
 pub struct CredentialStore {
@@ -376,6 +377,122 @@ impl CredentialStore {
         sync_directory(&self.root)?;
         // Atomic cursor write only. No fallback, service start, DNS, or TUN.
         self.promote_candidate()
+    }
+
+    /// VM half of a separately authorized existing Windows ACTIVE A -> VM B
+    /// join. The root caller must have authenticated both owners and the exact
+    /// durable GitHub intent. An intent digest alone is not authorization.
+    /// Receipt is durable before the atomic pointer; NEVER retry if uncertain.
+    pub fn promote_existing_active_join(
+        &self,
+        generation: u64,
+        slot: i32,
+        candidate_sha256: &str,
+        source_windows_generation: u64,
+        source_windows_slot: i32,
+        source_windows_sha256: &str,
+        intent_sha256: &str,
+    ) -> Result<LocalCredentialState, String> {
+        if self.projection != CredentialProjectionKind::Vm
+            || generation == 0
+            || source_windows_generation == 0
+            || generation == source_windows_generation
+            || !matches!(slot, 1 | 2)
+            || !matches!(source_windows_slot, 1 | 2)
+            || slot == source_windows_slot
+            || !valid_first_use_digest(candidate_sha256)
+            || !valid_first_use_digest(source_windows_sha256)
+            || !valid_first_use_digest(intent_sha256)
+            || candidate_sha256 == source_windows_sha256
+        {
+            return Err("existing-active join requires distinct exact A/B owner and intent witnesses".to_owned());
+        }
+        let state = self
+            .read_state()?
+            .ok_or_else(|| "existing-active join requires persisted VM candidate".to_owned())?;
+        if state.active.is_some() || state.previous.is_some() {
+            return Err("existing-active join refuses VM ACTIVE/PREVIOUS".to_owned());
+        }
+        let candidate = state.candidate.as_ref().ok_or_else(|| {
+            "existing-active join candidate absent".to_owned()
+        })?;
+        if candidate.generation != generation
+            || candidate.slot != slot
+            || candidate.sha256 != candidate_sha256
+        {
+            return Err("existing-active join candidate differs from intent".to_owned());
+        }
+        self.read_bundle(candidate)?;
+        if self.read_initial_pair_receipt()?.is_some()
+            || self.read_initial_pair_recovery_receipt()?.is_some()
+        {
+            return Err("existing-active join refuses first-use receipt history".to_owned());
+        }
+        if self.read_existing_join_receipt()?.is_some() {
+            return Err("existing-active join already attempted; no replay".to_owned());
+        }
+        let receipt = self.root.join(EXISTING_JOIN_RECEIPT);
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut handle = options.open(&receipt).map_err(|err| {
+            format!("existing-active join receipt already exists or UNKNOWN: {err}")
+        })?;
+        let text = format!(
+            "sing-box.existing-active-join/v1\nprojection={}\nwindows_generation={source_windows_generation}\nwindows_slot={source_windows_slot}\nwindows_sha256={source_windows_sha256}\nvm_generation={generation}\nvm_slot={slot}\nvm_sha256={candidate_sha256}\nintent_sha256={intent_sha256}\n",
+            self.projection as i32,
+        );
+        handle
+            .write_all(text.as_bytes())
+            .and_then(|_| handle.sync_all())
+            .map_err(|err| format!("existing-active join receipt uncertain: {err}; no replay"))?;
+        drop(handle);
+        set_private_file_permissions(&receipt)?;
+        sync_directory(&self.root)?;
+        self.promote_candidate()
+    }
+
+    /// Sanitized receipt readback. A malformed receipt means UNKNOWN, never
+    /// no attempt. No secret payloads are stored here.
+    pub fn read_existing_join_receipt(&self) -> Result<Option<String>, String> {
+        let path = self.root.join(EXISTING_JOIN_RECEIPT);
+        let text = match fs::read_to_string(&path) {
+            Ok(value) => value,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(format!("existing-active join receipt read failed: {err}")),
+        };
+        let fields: Vec<_> = text.lines().collect();
+        let n = |i: usize, key: &str| -> Option<u64> {
+            fields.get(i)?.strip_prefix(key)?.parse::<u64>().ok()
+        };
+        let hex = |i: usize, key: &str| -> bool {
+            fields.get(i).and_then(|v| v.strip_prefix(key))
+                .is_some_and(valid_first_use_digest)
+        };
+        let w = n(2, "windows_generation=");
+        let v = n(5, "vm_generation=");
+        let ws = n(3, "windows_slot=");
+        let vs = n(6, "vm_slot=");
+        if fields.len() != 9
+            || fields[0] != "sing-box.existing-active-join/v1"
+            || fields[1] != format!("projection={}", CredentialProjectionKind::Vm as i32)
+            || w.is_none_or(|x| x == 0)
+            || v.is_none_or(|x| x == 0)
+            || w == v
+            || !matches!(ws, Some(1 | 2))
+            || !matches!(vs, Some(1 | 2))
+            || ws == vs
+            || !hex(4, "windows_sha256=")
+            || !hex(7, "vm_sha256=")
+            || !hex(8, "intent_sha256=")
+        {
+            return Err("existing-active join receipt malformed; outcome UNKNOWN".to_owned());
+        }
+        Ok(Some(text))
     }
 
     pub fn promote_candidate(&self) -> Result<LocalCredentialState, String> {
@@ -1368,4 +1485,62 @@ mod tests {
         );
         fs::remove_dir_all(root).unwrap();
     }
+    #[test]
+    fn existing_join_one_shot_vm_candidate_to_active() {
+        let root = unique_root("join-positive");
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Vm).unwrap();
+        let bundle = vm_bundle(202, CredentialDeliverySlot::B);
+        let reference = local_credential_bundle_ref(&bundle).unwrap();
+        store.stage_candidate(&bundle).unwrap();
+        let result = store.promote_existing_active_join(
+            202, 2, &reference.sha256, 101, 1, &"a".repeat(64), &"b".repeat(64)
+        ).unwrap();
+        assert_eq!(result.active, Some(reference.clone()));
+        assert!(result.previous.is_none() && result.candidate.is_none());
+        assert!(store.read_existing_join_receipt().unwrap().is_some());
+        assert!(store.promote_existing_active_join(
+            202, 2, &reference.sha256, 101, 1, &"a".repeat(64), &"b".repeat(64)
+        ).is_err());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn existing_join_torn_receipt_blocks_replay() {
+        let root = unique_root("join-torn");
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Vm).unwrap();
+        let bundle = vm_bundle(202, CredentialDeliverySlot::B);
+        let reference = local_credential_bundle_ref(&bundle).unwrap();
+        store.stage_candidate(&bundle).unwrap();
+        fs::write(root.join(EXISTING_JOIN_RECEIPT), b"partial").unwrap();
+        assert!(store.read_existing_join_receipt().is_err());
+        assert!(store.promote_existing_active_join(
+            202, 2, &reference.sha256, 101, 1, &"a".repeat(64), &"b".repeat(64)
+        ).is_err());
+        assert!(store.read_state().unwrap().unwrap().active.is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn existing_join_invalid_source_target_is_noop() {
+        let root = unique_root("join-invalid");
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Vm).unwrap();
+        let bundle = vm_bundle(202, CredentialDeliverySlot::B);
+        let reference = local_credential_bundle_ref(&bundle).unwrap();
+        store.stage_candidate(&bundle).unwrap();
+        for (generation, slot, candidate, win_generation, win_slot) in [
+            (202, 2, "f".repeat(64), 101, 1),
+            (202, 2, reference.sha256.clone(), 101, 2),
+            (202, 2, reference.sha256.clone(), 202, 1),
+            (203, 2, reference.sha256.clone(), 101, 1),
+        ] {
+            assert!(store.promote_existing_active_join(
+                generation, slot, &candidate, win_generation, win_slot,
+                &"a".repeat(64), &"b".repeat(64)
+            ).is_err());
+        }
+        assert!(!root.join(EXISTING_JOIN_RECEIPT).exists());
+        assert!(store.read_state().unwrap().unwrap().active.is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
 }
