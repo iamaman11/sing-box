@@ -41,6 +41,7 @@ jobs:
           case "$COMMAND_BODY" in
             "/windows diagnose"|"/windows status") operation="diagnose"; readonly_purpose="ordinary" ;;
             "/windows offline-preflight") operation="diagnose"; readonly_purpose="offline-preflight" ;;
+            "/windows apply") operation="apply" ;;
             "/windows initial-pair-prepare "*|"/windows initial-pair-stage "*)
               if [[ "$COMMAND_BODY" == "/windows initial-pair-prepare "* ]]; then
                 remainder="${COMMAND_BODY#/windows initial-pair-prepare }"
@@ -232,6 +233,122 @@ jobs:
             & $script -SourceRunId $env:SOURCE_RUN_ID -ReleaseSetSha256 $env:SOURCE_RELEASE_SHA256 -RemoveOwned
           }
           if (-not $?) { throw 'Windows first-use reconciliation did not finish' }
+
+
+  apply_existing_active:
+    name: Windows / stopped ACTIVE program-only apply
+    needs: resolve
+    if: needs.resolve.outputs.operation == 'apply'
+    runs-on: [self-hosted, Windows, X64, sing-box-windows-lab]
+    timeout-minutes: 18
+    concurrency:
+      group: sing-box-windows-physical
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Checkout exact accepted native release
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.resolve.outputs.accepted_revision }}
+          persist-credentials: false
+          clean: true
+      - name: Observe existing ACTIVE and plan exact stopped release-only change
+        id: active_preflight
+        shell: pwsh
+        env:
+          EDGE_FIRST_USE_EXPECTED_MODE: ${{ needs.resolve.outputs.expected_mode }}
+          EDGE_WINDOWS_APPLY_POLICY: EXISTING_ACTIVE_RELEASE_ONLY
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = Join-Path $env:GITHUB_WORKSPACE 'edge-platform\scripts\windows-first-use-offline-handoff.ps1'
+          $observed = @(& $script -AcceptedRevision '${{ needs.resolve.outputs.accepted_revision }}' -ReleaseSetSha256 '${{ needs.resolve.outputs.release_set_sha256 }}' -ExistingActive -Preflight)
+          if (-not $?) { throw 'WINDOWS_APPLY_BLOCKED: native SYSTEM ACTIVE preflight failed' }
+          $from = @($observed | Where-Object { [string]$_ -cmatch '^windows_offline_source_release=[0-9a-f]{64}$' })
+          $needed = @($observed | Where-Object { [string]$_ -cmatch '^windows_offline_transition_needed=(True|False)$' })
+          if ($from.Count -ne 1 -or $needed.Count -ne 1 -or
+              @($observed | Where-Object { [string]$_ -ceq 'windows_credential_policy=EXISTING_ACTIVE_RELEASE_ONLY' }).Count -ne 1) {
+            throw 'WINDOWS_APPLY_BLOCKED: ambiguous status/plan result'
+          }
+          $source = ([string]$from[0]).Split('=',2)[1]
+          $upgrade = ([string]$needed[0]).Split('=',2)[1] -ceq 'True'
+          "source_release=$source" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          "needs_upgrade=$($upgrade.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+          if (-not $upgrade) { Write-Host 'windows_apply=NOOP_CURRENT_RELEASE_ACTIVE_UNCHANGED' }
+      - name: Record immutable release-only BEGIN once before SYSTEM mutation
+        if: steps.active_preflight.outputs.needs_upgrade == 'true'
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RELEASE: ${{ steps.active_preflight.outputs.source_release }}
+          TARGET_RELEASE: ${{ needs.resolve.outputs.release_set_sha256 }}
+          TARGET_REVISION: ${{ needs.resolve.outputs.accepted_revision }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_RUN_ATTEMPT -cne '1' -or
+              $env:SOURCE_RELEASE -notmatch '^[0-9a-f]{64}$' -or
+              $env:TARGET_RELEASE -notmatch '^[0-9a-f]{64}$' -or
+              $env:SOURCE_RELEASE -ceq $env:TARGET_RELEASE) {
+            throw 'WINDOWS_APPLY_BLOCKED: exact first-attempt source and target required'
+          }
+          $url = "repos/$env:GITHUB_REPOSITORY/issues/26/comments?per_page=100"
+          function Read-CompleteJournal {
+            $raw = (& gh api --paginate --slurp --jq 'add' $url) -join "`n"
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($raw)) {
+              throw 'WINDOWS_APPLY_BLOCKED: durable issue history unavailable'
+            }
+            $history = @(ConvertFrom-Json -InputObject $raw)
+            if ($history.Count -eq 0 -or @($history | Where-Object { $null -eq $_ -or $null -eq $_.body }).Count -ne 0) {
+              throw 'WINDOWS_APPLY_BLOCKED: incomplete journal'
+            }
+            return $history
+          }
+          $history = @(Read-CompleteJournal)
+          $marker = '<!-- sing-box-windows-active-release-apply/v1 -->'
+          foreach ($prior in @($history | Where-Object { [string]$_.body -like "*$marker*" })) {
+            $body = [string]$prior.body
+            if (-not $body.StartsWith("$marker`n")) { throw 'WINDOWS_APPLY_BLOCKED: malformed earlier intent' }
+            $record = ConvertFrom-Json -InputObject $body.Substring($marker.Length + 1)
+            if ([string]$record.schema -cne 'sing-box.windows-active-release-apply/v1') {
+              throw 'WINDOWS_APPLY_BLOCKED: mismatched intent schema'
+            }
+            if ([string]$record.source_release_set_sha256 -ceq $env:SOURCE_RELEASE -or
+                [string]$record.target_release_set_sha256 -ceq $env:TARGET_RELEASE) {
+              throw 'WINDOWS_APPLY_BLOCKED: prior unresolved source or target attempt; read-only reconcile'
+            }
+          }
+          $record = [ordered]@{
+            schema = 'sing-box.windows-active-release-apply/v1'
+            phase = 'BEGIN'
+            github_run_id = [long]$env:GITHUB_RUN_ID
+            source_release_set_sha256 = $env:SOURCE_RELEASE
+            target_release_set_sha256 = $env:TARGET_RELEASE
+            target_revision = $env:TARGET_REVISION
+            mutation_scope = 'PROGRAM_ONLY_EXISTING_ACTIVE'
+          }
+          $body = $marker + "`n" + ($record | ConvertTo-Json -Compress)
+          & gh api -X POST "repos/$env:GITHUB_REPOSITORY/issues/26/comments" --raw-field "body=$body" > $null
+          if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_APPLY_UNKNOWN: journal write uncertain; no replay' }
+          $readback = @(Read-CompleteJournal)
+          if (@($readback | Where-Object { [string]$_.body -ceq $body }).Count -ne 1) {
+            throw 'WINDOWS_APPLY_UNKNOWN: exact once-only intent not confirmed; no replay'
+          }
+          Write-Host 'windows_release_only_intent=COMMITTED_ONCE'
+      - name: Single native SYSTEM offline release apply and bounded readback
+        if: steps.active_preflight.outputs.needs_upgrade == 'true'
+        shell: pwsh
+        env:
+          EDGE_FIRST_USE_EXPECTED_MODE: ${{ needs.resolve.outputs.expected_mode }}
+          EDGE_WINDOWS_APPLY_POLICY: EXISTING_ACTIVE_RELEASE_ONLY
+          SOURCE_RELEASE: ${{ steps.active_preflight.outputs.source_release }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = Join-Path $env:GITHUB_WORKSPACE 'edge-platform\scripts\windows-first-use-offline-handoff.ps1'
+          & $script -AcceptedRevision '${{ needs.resolve.outputs.accepted_revision }}' -ReleaseSetSha256 '${{ needs.resolve.outputs.release_set_sha256 }}' -ExistingActive -ExpectedSourceReleaseSet $env:SOURCE_RELEASE
+          if (-not $?) { throw 'WINDOWS_APPLY_UNKNOWN: native result uncertain; do not replay' }
+          Write-Host 'windows_apply=PASS_STOPPED_PROGRAM_ONLY'
+          Write-Host 'credential_origin=UNPROVEN_NOT_CREDENTIAL_MUTATION_AUTHORITY'
 
   initial_first_use_prepare:
     name: Windows / exactly stopped immutable upgrade BEFORE first-use BEGIN
