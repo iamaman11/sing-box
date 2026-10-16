@@ -279,7 +279,7 @@ mod tests {
             &root,
             CredentialProjectionKind::Windows,
             CredentialOriginSelection::Active,
-            |projection, generation| async {
+            |projection, generation| async move {
                 assert_eq!(projection, CredentialProjectionKind::Windows);
                 assert_eq!(generation, 123);
                 Ok(bundle)
@@ -312,7 +312,7 @@ mod tests {
             &root,
             CredentialProjectionKind::Windows,
             CredentialOriginSelection::Active,
-            |_, _| async { Ok(modified) },
+            |_, _| async move { Ok(modified) },
         ));
         assert!(result.unwrap_err().starts_with("WORKER_ORIGIN_BLOCKED:"));
         std::fs::remove_dir_all(root).unwrap();
@@ -328,7 +328,7 @@ mod tests {
             &root,
             CredentialProjectionKind::Windows,
             CredentialOriginSelection::Active,
-            |_, _| async {
+            |_, _| async move {
                 store.stage_candidate(&next).unwrap();
                 Ok(bundle)
             },
