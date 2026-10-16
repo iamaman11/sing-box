@@ -51,6 +51,8 @@ pub(crate) enum Command {
     PrivilegedStageCredential(PrivilegedCredentialStageArgs),
     // First-use-only, single immutable COMMIT_INTENT, SYSTEM dispatch.
     PrivilegedInitialCredentialCommit(PrivilegedInitialCredentialCommitArgs),
+    // Exact separately authorized recovery of a previously failed paired first-use.
+    PrivilegedInitialCredentialRecover(PrivilegedInitialCredentialRecoverArgs),
     CredentialTransition(CredentialTransitionArgs),
     RestartVerifyRuntime,
     VerifyRuntime,
@@ -111,6 +113,7 @@ impl Command {
             Self::PrivilegedStopProxyOnlyController(_) => "privileged-stop-proxy-only-controller",
             Self::PrivilegedStageCredential(_) => "privileged-stage-credential",
             Self::PrivilegedInitialCredentialCommit(_) => "privileged-initial-credential-commit",
+            Self::PrivilegedInitialCredentialRecover(_) => "privileged-initial-credential-recover",
             Self::CredentialTransition(_) => "credential-transition",
             Self::RestartVerifyRuntime => "restart-verify-runtime",
             Self::VerifyRuntime => "verify-runtime",
@@ -216,6 +219,17 @@ pub(crate) struct PrivilegedInitialCredentialCommitArgs {
     pub generation: u64,
     pub slot: u32,
     pub intent_sha256: String,
+    #[arg(long, default_value = r"C:\sing-box")]
+    pub install_root: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PrivilegedInitialCredentialRecoverArgs {
+    pub generation: u64,
+    pub slot: u32,
+    pub original_intent_sha256: String,
+    pub recovery_intent_sha256: String,
+    pub candidate_sha256: String,
     #[arg(long, default_value = r"C:\sing-box")]
     pub install_root: String,
 }
