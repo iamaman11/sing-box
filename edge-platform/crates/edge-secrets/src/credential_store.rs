@@ -531,7 +531,9 @@ impl CredentialStore {
             || windows_active_sha256 == vm_candidate_sha256
             || windows_candidate_sha256 == vm_candidate_sha256
         {
-            return Err("Windows existing join requires exact distinct A/B and VM witnesses".to_owned());
+            return Err(
+                "Windows existing join requires exact distinct A/B and VM witnesses".to_owned(),
+            );
         }
         let state = self
             .read_state()?
@@ -554,7 +556,9 @@ impl CredentialStore {
             || active.slot == slot
             || active.sha256 != windows_active_sha256
         {
-            return Err("Windows existing join source or target no longer matches intent".to_owned());
+            return Err(
+                "Windows existing join source or target no longer matches intent".to_owned(),
+            );
         }
         self.read_bundle(active)?;
         self.read_bundle(candidate)?;
@@ -562,7 +566,9 @@ impl CredentialStore {
             || self.read_initial_pair_recovery_receipt()?.is_some()
             || self.read_existing_join_receipt()?.is_some()
         {
-            return Err("Windows existing join already attempted or collides with first-use".to_owned());
+            return Err(
+                "Windows existing join already attempted or collides with first-use".to_owned(),
+            );
         }
         let receipt = self.root.join(EXISTING_JOIN_RECEIPT);
         let mut options = OpenOptions::new();
@@ -581,7 +587,9 @@ impl CredentialStore {
         );
         file.write_all(text.as_bytes())
             .and_then(|_| file.sync_all())
-            .map_err(|err| format!("Windows existing join receipt write UNKNOWN; no replay: {err}"))?;
+            .map_err(|err| {
+                format!("Windows existing join receipt write UNKNOWN; no replay: {err}")
+            })?;
         drop(file);
         set_private_file_permissions(&receipt)?;
         sync_directory(&self.root)?;
@@ -1733,8 +1741,12 @@ mod tests {
         assert!(
             store
                 .promote_windows_existing_join(
-                    202, 2, &source.sha256, &target.sha256,
-                    &"d".repeat(64), &"e".repeat(64),
+                    202,
+                    2,
+                    &source.sha256,
+                    &target.sha256,
+                    &"d".repeat(64),
+                    &"e".repeat(64),
                 )
                 .is_err()
         );
@@ -1744,5 +1756,4 @@ mod tests {
         assert!(state.previous.is_none());
         fs::remove_dir_all(root).unwrap();
     }
-
 }
