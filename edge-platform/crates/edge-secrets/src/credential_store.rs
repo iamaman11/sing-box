@@ -193,6 +193,12 @@ impl CredentialStore {
             );
         }
         let _bundle = self.read_bundle(candidate)?;
+        if self.read_initial_pair_recovery_receipt()?.is_some() {
+            return Err(
+                "initial pair commit refuses an already attempted recovery; reconcile only"
+                    .to_owned(),
+            );
+        }
         let receipt = self.root.join(INITIAL_PAIR_COMMIT_RECEIPT);
         // Validate and never replace an existing (even incomplete) receipt.
         // An IO failure here can be unknown: reconciliation is read-only.
@@ -1092,6 +1098,21 @@ mod tests {
                 .is_err()
         );
         assert_eq!(store.read_state().unwrap().unwrap().active, None);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn initial_commit_cannot_bypass_unknown_recovery_marker() {
+        let root = unique_root("recover-original-block");
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Vm).unwrap();
+        store.stage_candidate(&vm_bundle(101, CredentialDeliverySlot::B)).unwrap();
+        fs::write(root.join(INITIAL_PAIR_RECOVERY_RECEIPT), "incomplete").unwrap();
+        assert!(
+            store
+                .promote_initial_paired_candidate(101, 2, &"a".repeat(64))
+                .is_err()
+        );
+        assert!(store.read_state().unwrap().unwrap().active.is_none());
         fs::remove_dir_all(root).unwrap();
     }
 
