@@ -2456,7 +2456,9 @@ def main() -> None:
         "steady-state credential rotation must keep cross-host barriers explicit without expanding into redundant admission/recovery micro-jobs",
     )
 
-    host_bootstrap_workflow = credentials.split("  host_bootstrap_release:\n", 1)[1]
+    host_bootstrap_workflow = credentials.split("  host_bootstrap_release:\n", 1)[1].split(
+        "\n  initial_pair_release:\n", 1
+    )[0]
     host_bootstrap_start = credential_command.index("async fn host_bootstrap_converge(")
     host_bootstrap_end = credential_command.index("fn plan(", host_bootstrap_start)
     host_bootstrap = credential_command[host_bootstrap_start:host_bootstrap_end]
