@@ -337,7 +337,8 @@ fn validate_commit_request(request: &PairedCommitPlan) -> Result<(), String> {
 
 fn original_begin_for_commit(history: &str, exact_original: &str) -> Result<AttemptRecord, String> {
     verify_recorded_initial_attempt(history, exact_original)?;
-    let (_, body) = exact_original.split_once('\n')
+    let (_, body) = exact_original
+        .split_once('\n')
         .ok_or_else(|| "paired commit requires canonical original BEGIN".to_owned())?;
     serde_json::from_str(body)
         .map_err(|_| "paired commit requires validated original BEGIN".to_owned())
@@ -366,7 +367,9 @@ fn commit_records(history: &str) -> Result<Vec<String>, String> {
         }
         if comment.body.contains(PAIRED_COMMIT_MARKER_FAMILY) {
             if !comment.body.starts_with(PAIRED_COMMIT_MARKER)
-                || !comment.body.starts_with(&format!("{PAIRED_COMMIT_MARKER}\n"))
+                || !comment
+                    .body
+                    .starts_with(&format!("{PAIRED_COMMIT_MARKER}\n"))
             {
                 return Err("paired commit refuses displaced or unknown-version marker".to_owned());
             }
@@ -376,13 +379,13 @@ fn commit_records(history: &str) -> Result<Vec<String>, String> {
     Ok(records)
 }
 
-fn paired_commit_record(
-    request: &PairedCommitPlan,
-    original_begin: &str,
-) -> PairedCommitRecord {
-    use ring::digest::{digest, SHA256};
+fn paired_commit_record(request: &PairedCommitPlan, original_begin: &str) -> PairedCommitRecord {
+    use ring::digest::{SHA256, digest};
     let original_sha = digest(&SHA256, original_begin.as_bytes())
-        .as_ref().iter().map(|byte| format!("{byte:02x}")).collect::<String>();
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     PairedCommitRecord {
         schema: PAIRED_COMMIT_SCHEMA.to_owned(),
         phase: "COMMIT_INTENT".to_owned(),
@@ -411,12 +414,15 @@ pub(crate) fn plan_paired_commit(
     let original = original_begin_for_commit(history, original_begin)?;
     matching_original_begin(&original, request)?;
     if !commit_records(history)?.is_empty() {
-        return Err("paired commit already has an intent; no replay after uncertain result".to_owned());
+        return Err(
+            "paired commit already has an intent; no replay after uncertain result".to_owned(),
+        );
     }
     let record = paired_commit_record(request, original_begin);
     Ok(format!(
         "{PAIRED_COMMIT_MARKER}\n{}",
-        serde_json::to_string(&record).map_err(|err| format!("paired intent encoding failed: {err}"))?
+        serde_json::to_string(&record)
+            .map_err(|err| format!("paired intent encoding failed: {err}"))?
     ))
 }
 
@@ -432,14 +438,16 @@ pub(crate) fn verify_paired_commit_intent(
     let original = original_begin_for_commit(history, original_begin)?;
     matching_original_begin(&original, request)?;
     let expected = paired_commit_record(request, original_begin);
-    let (marker, body) = exact_intent.split_once('\n')
+    let (marker, body) = exact_intent
+        .split_once('\n')
         .ok_or_else(|| "paired intent readback requires marker and record".to_owned())?;
     if marker != PAIRED_COMMIT_MARKER {
         return Err("paired intent readback refuses different marker".to_owned());
     }
     let actual: PairedCommitRecord = serde_json::from_str(body)
         .map_err(|_| "paired intent readback rejects malformed record".to_owned())?;
-    if actual.schema != PAIRED_COMMIT_SCHEMA || actual.phase != "COMMIT_INTENT"
+    if actual.schema != PAIRED_COMMIT_SCHEMA
+        || actual.phase != "COMMIT_INTENT"
         || actual.original_run_id != expected.original_run_id
         || actual.commit_run_id != expected.commit_run_id
         || actual.generation != expected.generation
@@ -450,11 +458,16 @@ pub(crate) fn verify_paired_commit_intent(
         || actual.vm_prepared_sha256 != expected.vm_prepared_sha256
         || actual.windows_prepared_sha256 != expected.windows_prepared_sha256
     {
-        return Err("paired commit readback differs from exact original and both prepared owners".to_owned());
+        return Err(
+            "paired commit readback differs from exact original and both prepared owners"
+                .to_owned(),
+        );
     }
     let records = commit_records(history)?;
     if records.len() != 1 || records[0] != exact_intent {
-        return Err("paired commit readback requires exactly one matching durable intent".to_owned());
+        return Err(
+            "paired commit readback requires exactly one matching durable intent".to_owned(),
+        );
     }
     Ok(())
 }
@@ -472,19 +485,22 @@ pub(crate) fn reconcile_paired_commit(
 ) -> Result<&'static str, String> {
     verify_paired_commit_intent(request, history, original_begin, exact_intent)?;
     for (role, host) in [("VM", vm), ("WINDOWS", windows)] {
-        if host.generation != request.generation || host.slot != request.slot
+        if host.generation != request.generation
+            || host.slot != request.slot
             || !host.owner_origin_verified
         {
-            return Err(format!("paired commit {role} origin/generation/slot is unproven"));
+            return Err(format!(
+                "paired commit {role} origin/generation/slot is unproven"
+            ));
         }
     }
     use PairedHostCursor::{Active, Candidate};
     match (vm.cursor, windows.cursor) {
-        (Active, Active) if vm.runtime_verified && windows.runtime_verified =>
-            Ok("PAIR_ACTIVE_VERIFIED"),
+        (Active, Active) if vm.runtime_verified && windows.runtime_verified => {
+            Ok("PAIR_ACTIVE_VERIFIED")
+        }
         (Candidate, Candidate) => Ok("PAIR_INTENT_RECORDED_NO_MUTATION"),
-        (Active, Candidate) | (Candidate, Active) =>
-            Ok("PAIR_PARTIAL_BLOCKED_NO_REPLAY"),
+        (Active, Candidate) | (Candidate, Active) => Ok("PAIR_PARTIAL_BLOCKED_NO_REPLAY"),
         (Active, Active) => Ok("PAIR_POINTERS_ACTIVE_RUNTIME_UNPROVEN"),
         _ => Ok("PAIR_UNKNOWN_BLOCKED_NO_REPLAY"),
     }
@@ -523,18 +539,45 @@ mod tests {
         assert!(!planned.contains("password"));
         let committed = serde_json::json!([{"body": original},{"body": planned}]).to_string();
         verify_paired_commit_intent(&req, &committed, &original, &planned).unwrap();
-        assert!(plan_paired_commit(&req, &committed, &original)
-            .unwrap_err().contains("no replay"));
+        assert!(
+            plan_paired_commit(&req, &committed, &original)
+                .unwrap_err()
+                .contains("no replay")
+        );
         assert!(plan_paired_commit(&req, "[]", &original).is_err());
-        assert!(plan_paired_commit(&PairedCommitPlan {
-            windows_prepared_sha256: "3".repeat(64), ..req.clone()
-        }, &history, &original).is_err());
-        assert!(plan_paired_commit(&PairedCommitPlan {
-            generation: 102, ..req.clone()
-        }, &history, &original).is_err());
-        assert!(plan_paired_commit(&PairedCommitPlan {
-            original_run_id: req.commit_run_id, ..req.clone()
-        }, &history, &original).is_err());
+        assert!(
+            plan_paired_commit(
+                &PairedCommitPlan {
+                    windows_prepared_sha256: "3".repeat(64),
+                    ..req.clone()
+                },
+                &history,
+                &original
+            )
+            .is_err()
+        );
+        assert!(
+            plan_paired_commit(
+                &PairedCommitPlan {
+                    generation: 102,
+                    ..req.clone()
+                },
+                &history,
+                &original
+            )
+            .is_err()
+        );
+        assert!(
+            plan_paired_commit(
+                &PairedCommitPlan {
+                    original_run_id: req.commit_run_id,
+                    ..req.clone()
+                },
+                &history,
+                &original
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -553,15 +596,35 @@ mod tests {
             assert!(verify_paired_commit_intent(&req, &corrupt, &original, &planned).is_err());
         }
         for different in [
-            PairedCommitPlan {commit_run_id: req.commit_run_id + 1, ..req.clone()},
-            PairedCommitPlan {vm_prepared_sha256: "5".repeat(64), ..req.clone()},
-            PairedCommitPlan {windows_prepared_sha256: "5".repeat(64), ..req.clone()},
-            PairedCommitPlan {release_set_sha256: "5".repeat(64), ..req.clone()},
-            PairedCommitPlan {accepted_revision: "5".repeat(40), ..req.clone()},
-            PairedCommitPlan {slot: "B".to_owned(), ..req.clone()},
+            PairedCommitPlan {
+                commit_run_id: req.commit_run_id + 1,
+                ..req.clone()
+            },
+            PairedCommitPlan {
+                vm_prepared_sha256: "5".repeat(64),
+                ..req.clone()
+            },
+            PairedCommitPlan {
+                windows_prepared_sha256: "5".repeat(64),
+                ..req.clone()
+            },
+            PairedCommitPlan {
+                release_set_sha256: "5".repeat(64),
+                ..req.clone()
+            },
+            PairedCommitPlan {
+                accepted_revision: "5".repeat(40),
+                ..req.clone()
+            },
+            PairedCommitPlan {
+                slot: "B".to_owned(),
+                ..req.clone()
+            },
         ] {
             let committed = serde_json::json!([{"body": original},{"body": planned}]).to_string();
-            assert!(verify_paired_commit_intent(&different, &committed, &original, &planned).is_err());
+            assert!(
+                verify_paired_commit_intent(&different, &committed, &original, &planned).is_err()
+            );
         }
     }
 
@@ -572,31 +635,45 @@ mod tests {
         let planned = plan_paired_commit(&req, &history, &original).unwrap();
         let committed = serde_json::json!([{"body": original},{"body": planned}]).to_string();
         let valid = PairedHostReadback {
-            generation: req.generation, slot: req.slot.clone(),
+            generation: req.generation,
+            slot: req.slot.clone(),
             cursor: PairedHostCursor::Candidate,
-            runtime_verified: true, owner_origin_verified: true,
+            runtime_verified: true,
+            owner_origin_verified: true,
         };
         let mut vm = valid.clone();
         let mut windows = valid.clone();
         let classify = |vm: &PairedHostReadback, windows: &PairedHostReadback| {
             reconcile_paired_commit(&req, &committed, &original, &planned, vm, windows)
         };
-        assert_eq!(classify(&vm,&windows).unwrap(), "PAIR_INTENT_RECORDED_NO_MUTATION");
+        assert_eq!(
+            classify(&vm, &windows).unwrap(),
+            "PAIR_INTENT_RECORDED_NO_MUTATION"
+        );
         vm.cursor = PairedHostCursor::Active;
-        assert_eq!(classify(&vm,&windows).unwrap(), "PAIR_PARTIAL_BLOCKED_NO_REPLAY");
+        assert_eq!(
+            classify(&vm, &windows).unwrap(),
+            "PAIR_PARTIAL_BLOCKED_NO_REPLAY"
+        );
         windows.cursor = PairedHostCursor::Active;
-        assert_eq!(classify(&vm,&windows).unwrap(), "PAIR_ACTIVE_VERIFIED");
+        assert_eq!(classify(&vm, &windows).unwrap(), "PAIR_ACTIVE_VERIFIED");
         vm.runtime_verified = false;
-        assert_eq!(classify(&vm,&windows).unwrap(), "PAIR_POINTERS_ACTIVE_RUNTIME_UNPROVEN");
+        assert_eq!(
+            classify(&vm, &windows).unwrap(),
+            "PAIR_POINTERS_ACTIVE_RUNTIME_UNPROVEN"
+        );
         vm.cursor = PairedHostCursor::Unknown;
-        assert_eq!(classify(&vm,&windows).unwrap(), "PAIR_UNKNOWN_BLOCKED_NO_REPLAY");
+        assert_eq!(
+            classify(&vm, &windows).unwrap(),
+            "PAIR_UNKNOWN_BLOCKED_NO_REPLAY"
+        );
         vm.owner_origin_verified = false;
-        assert!(classify(&vm,&windows).is_err());
+        assert!(classify(&vm, &windows).is_err());
         vm.owner_origin_verified = true;
         vm.generation += 1;
-        assert!(classify(&vm,&windows).is_err());
+        assert!(classify(&vm, &windows).is_err());
         windows.slot = "B".to_owned();
-        assert!(classify(&vm,&windows).is_err());
+        assert!(classify(&vm, &windows).is_err());
     }
 
     #[test]
