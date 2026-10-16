@@ -2,10 +2,9 @@ use crate::cli::{
     CredentialDeliveryCommand, CredentialDeliverySlotArg, CredentialRotationClassArg,
 };
 use crate::credential_initial_journal::{
-    InitialPairJournalPlan, PairedCommitPlan, PairedHostReadback,
-    plan_initial_pair_reservation, plan_paired_commit, reconcile_paired_commit,
-    require_empty_initial_history, verify_expected_initial_attempt,
-    verify_paired_commit_intent, verify_recorded_initial_attempt,
+    InitialPairJournalPlan, PairedCommitPlan, PairedHostReadback, plan_initial_pair_reservation,
+    plan_paired_commit, reconcile_paired_commit, require_empty_initial_history,
+    verify_expected_initial_attempt, verify_paired_commit_intent, verify_recorded_initial_attempt,
 };
 use edge_controller_core::production::{ProductionComposition, ProductionCredentialPlaneOwnership};
 use edge_orchestrator::credential_snapshot::{
@@ -209,7 +208,9 @@ pub async fn run_delivery(
         | CredentialDeliveryCommand::InitialPairCommitPlan { .. }
         | CredentialDeliveryCommand::InitialPairCommitReadback { .. }
         | CredentialDeliveryCommand::InitialPairCommitReconcile { .. } => {
-            unreachable!("read-only journal and paired-commit policy dispatch before provider authority")
+            unreachable!(
+                "read-only journal and paired-commit policy dispatch before provider authority"
+            )
         }
         CredentialDeliveryCommand::InitialPairJournalPlan {
             generation,
@@ -590,7 +591,6 @@ fn write_new_initial_record(path: &Path, record: &str) -> Result<(), String> {
         .map_err(|err| format!("initial BEGIN record was not durably written: {err}"))
 }
 
-
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct PairedHostObservations {
@@ -633,16 +633,33 @@ fn run_readonly_paired_commit(
 ) -> Result<(), String> {
     match command {
         CredentialDeliveryCommand::InitialPairCommitPlan {
-            original_run_id, commit_run_id, generation, slot,
-            vm_prepared_sha256, windows_prepared_sha256,
-            journal_history_path, original_begin_path, record_output_path,
+            original_run_id,
+            commit_run_id,
+            generation,
+            slot,
+            vm_prepared_sha256,
+            windows_prepared_sha256,
+            journal_history_path,
+            original_begin_path,
+            record_output_path,
         } => {
             let request = commit_request_from_cli(
-                original_run_id, commit_run_id, generation, slot,
-                vm_prepared_sha256, windows_prepared_sha256, release,
+                original_run_id,
+                commit_run_id,
+                generation,
+                slot,
+                vm_prepared_sha256,
+                windows_prepared_sha256,
+                release,
             );
-            let history = read_exact_file(&journal_history_path, "paired commit plan history unavailable")?;
-            let original = read_exact_file(&original_begin_path, "paired commit original BEGIN unavailable")?;
+            let history = read_exact_file(
+                &journal_history_path,
+                "paired commit plan history unavailable",
+            )?;
+            let original = read_exact_file(
+                &original_begin_path,
+                "paired commit original BEGIN unavailable",
+            )?;
             let intended = plan_paired_commit(&request, &history, &original)?;
             if intended.len() > 4096
                 || !intended.starts_with("<!-- sing-box-credential-paired-commit/v1 -->\n")
@@ -656,12 +673,17 @@ fn run_readonly_paired_commit(
                 use std::os::unix::fs::OpenOptionsExt;
                 options.mode(0o600);
             }
-            let mut file = options.open(&record_output_path)
+            let mut file = options
+                .open(&record_output_path)
                 .map_err(|err| format!("paired commit intent file must be create-new: {err}"))?;
-            file.write_all(intended.as_bytes()).and_then(|_| file.sync_all())
+            file.write_all(intended.as_bytes())
+                .and_then(|_| file.sync_all())
                 .map_err(|err| format!("paired intent file write uncertain: {err}"))?;
             println!("credential_paired_commit_policy=INTENT_PLANNED_LOCAL_ONLY");
-            println!("credential_paired_commit_sha256={}", sha256_hex(intended.as_bytes()));
+            println!(
+                "credential_paired_commit_sha256={}",
+                sha256_hex(intended.as_bytes())
+            );
             println!("credential_pair_committed=false");
             println!("credential_provider_mutations=0");
             println!("credential_runtime_mutations=0");
@@ -669,17 +691,37 @@ fn run_readonly_paired_commit(
             Ok(())
         }
         CredentialDeliveryCommand::InitialPairCommitReadback {
-            original_run_id, commit_run_id, generation, slot,
-            vm_prepared_sha256, windows_prepared_sha256,
-            journal_history_path, original_begin_path, exact_intent_path,
+            original_run_id,
+            commit_run_id,
+            generation,
+            slot,
+            vm_prepared_sha256,
+            windows_prepared_sha256,
+            journal_history_path,
+            original_begin_path,
+            exact_intent_path,
         } => {
             let request = commit_request_from_cli(
-                original_run_id, commit_run_id, generation, slot,
-                vm_prepared_sha256, windows_prepared_sha256, release,
+                original_run_id,
+                commit_run_id,
+                generation,
+                slot,
+                vm_prepared_sha256,
+                windows_prepared_sha256,
+                release,
             );
-            let history = read_exact_file(&journal_history_path, "paired commit readback history unavailable")?;
-            let original = read_exact_file(&original_begin_path, "paired commit original BEGIN unavailable")?;
-            let intent = read_exact_file(&exact_intent_path, "paired commit intended record unavailable")?;
+            let history = read_exact_file(
+                &journal_history_path,
+                "paired commit readback history unavailable",
+            )?;
+            let original = read_exact_file(
+                &original_begin_path,
+                "paired commit original BEGIN unavailable",
+            )?;
+            let intent = read_exact_file(
+                &exact_intent_path,
+                "paired commit intended record unavailable",
+            )?;
             verify_paired_commit_intent(&request, &history, &original, &intent)?;
             println!("credential_paired_commit_intent=EXACT_DURABLE_ONCE");
             println!("credential_pair_committed=false");
@@ -688,23 +730,51 @@ fn run_readonly_paired_commit(
             Ok(())
         }
         CredentialDeliveryCommand::InitialPairCommitReconcile {
-            original_run_id, commit_run_id, generation, slot,
-            vm_prepared_sha256, windows_prepared_sha256,
-            journal_history_path, original_begin_path, exact_intent_path,
+            original_run_id,
+            commit_run_id,
+            generation,
+            slot,
+            vm_prepared_sha256,
+            windows_prepared_sha256,
+            journal_history_path,
+            original_begin_path,
+            exact_intent_path,
             host_readback_path,
         } => {
             let request = commit_request_from_cli(
-                original_run_id, commit_run_id, generation, slot,
-                vm_prepared_sha256, windows_prepared_sha256, release,
+                original_run_id,
+                commit_run_id,
+                generation,
+                slot,
+                vm_prepared_sha256,
+                windows_prepared_sha256,
+                release,
             );
-            let history = read_exact_file(&journal_history_path, "paired commit reconcile history unavailable")?;
-            let original = read_exact_file(&original_begin_path, "paired commit original BEGIN unavailable")?;
-            let intent = read_exact_file(&exact_intent_path, "paired commit intended record unavailable")?;
-            let observation = read_exact_file(&host_readback_path, "paired commit read-only host cursors unavailable")?;
+            let history = read_exact_file(
+                &journal_history_path,
+                "paired commit reconcile history unavailable",
+            )?;
+            let original = read_exact_file(
+                &original_begin_path,
+                "paired commit original BEGIN unavailable",
+            )?;
+            let intent = read_exact_file(
+                &exact_intent_path,
+                "paired commit intended record unavailable",
+            )?;
+            let observation = read_exact_file(
+                &host_readback_path,
+                "paired commit read-only host cursors unavailable",
+            )?;
             let reports: PairedHostObservations = serde_json::from_str(&observation)
                 .map_err(|_| "paired commit host report is malformed or incomplete".to_owned())?;
             let verdict = reconcile_paired_commit(
-                &request, &history, &original, &intent, &reports.vm, &reports.windows
+                &request,
+                &history,
+                &original,
+                &intent,
+                &reports.vm,
+                &reports.windows,
             )?;
             println!("credential_paired_commit_reconcile={verdict}");
             println!("credential_replay_authorized=false");
