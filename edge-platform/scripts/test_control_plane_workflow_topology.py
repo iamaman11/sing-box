@@ -663,7 +663,9 @@ def main() -> None:
         and 'credential-initial-pair-provider-intent/v1' in credential_provider
         and "credentials initial-pair-journal-observe" in credentials
         and "gh api --paginate" in credentials
-        and "issues: read" not in credentials
+        and "issues: read" not in credentials.split("  execute:\n", 1)[1].split("\n  rotate_release:", 1)[0]
+        and "issues: write" in credentials.split("  initial_pair_intent:\n", 1)[1].split("\n  initial_pair_vm_commit:", 1)[0]
+        and "issues: write" in router.split("  credentials:\n", 1)[1].split("\n  windows:", 1)[0]
         and "credential_initial_journal_empty=true" in credentials
         and "credential_journal_mutations=0" in credentials
         and "require_empty_initial_history(&history)?" in credential_provider
