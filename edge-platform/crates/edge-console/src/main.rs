@@ -1883,12 +1883,14 @@ fn classify_windows_credential_lifecycle(
         (Some("true"), Some("false")) if runtime == "PRESENT" && config == "PRESENT" => {
             ("EXISTING_ACTIVE_UNVERIFIED", "READ_ONLY_ORIGIN_RECONCILE")
         }
-        (Some("false"), Some("true")) => {
-            ("EXISTING_CANDIDATE_UNVERIFIED", "READ_ONLY_ORIGIN_RECONCILE")
-        }
-        (Some("true"), Some("true")) => {
-            ("EXISTING_TRANSITION_UNVERIFIED", "READ_ONLY_ORIGIN_RECONCILE")
-        }
+        (Some("false"), Some("true")) => (
+            "EXISTING_CANDIDATE_UNVERIFIED",
+            "READ_ONLY_ORIGIN_RECONCILE",
+        ),
+        (Some("true"), Some("true")) => (
+            "EXISTING_TRANSITION_UNVERIFIED",
+            "READ_ONLY_ORIGIN_RECONCILE",
+        ),
         _ => ("PARTIAL", "READ_ONLY_RECONCILE"),
     }
 }
@@ -6467,7 +6469,10 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
                 "ABSENT",
                 "PRESENT_NONEMPTY_UNVERIFIED"
             ),
-            ("EXISTING_CANDIDATE_UNVERIFIED", "READ_ONLY_ORIGIN_RECONCILE")
+            (
+                "EXISTING_CANDIDATE_UNVERIFIED",
+                "READ_ONLY_ORIGIN_RECONCILE"
+            )
         );
         assert_eq!(
             classify_windows_credential_lifecycle(
