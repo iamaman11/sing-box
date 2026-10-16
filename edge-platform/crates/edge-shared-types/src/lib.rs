@@ -976,10 +976,20 @@ pub fn validate_windows_privileged_request(
     )?;
     let operation = WindowsPrivilegedOperation::try_from(request.operation)
         .map_err(|_| "WindowsPrivilegedRequest.operation is invalid".to_owned())?;
-    if operation != WindowsPrivilegedOperation::InitialCredentialCommit
-        && (request.initial_commit_intent_sha256.is_some() || request.initial_commit_slot.is_some())
+    if !matches!(
+        operation,
+        WindowsPrivilegedOperation::InitialCredentialCommit
+            | WindowsPrivilegedOperation::InitialCredentialRecover
+    ) && (request.initial_commit_intent_sha256.is_some()
+        || request.initial_commit_slot.is_some())
     {
         return Err("paired commit fields are forbidden on non-initial operations".to_owned());
+    }
+    if operation != WindowsPrivilegedOperation::InitialCredentialRecover
+        && (request.initial_recovery_intent_sha256.is_some()
+            || request.initial_candidate_sha256.is_some())
+    {
+        return Err("paired recovery fields are forbidden on unrelated operations".to_owned());
     }
     match operation {
         WindowsPrivilegedOperation::Unspecified => {
@@ -1098,6 +1108,38 @@ pub fn validate_windows_privileged_request(
                     "first-use paired commit requires exact COMMIT_INTENT digest".to_owned()
                 })?;
             validate_lower_hex("initial_commit_intent_sha256", digest, 64)?;
+        }
+        WindowsPrivilegedOperation::InitialCredentialRecover => {
+            if request.accepted_revision.is_some()
+                || request.release_set_sha256.is_some()
+                || request.credential_transition_action.is_some()
+                || request.credential_generation.unwrap_or(0) == 0
+                || !matches!(request.initial_commit_slot, Some(1 | 2))
+            {
+                return Err("paired recovery requires exact initial-only generation/slot".to_owned());
+            }
+            let original = request
+                .initial_commit_intent_sha256
+                .as_deref()
+                .ok_or_else(|| "paired recovery original intent missing".to_owned())?;
+            let recovery = request
+                .initial_recovery_intent_sha256
+                .as_deref()
+                .ok_or_else(|| "paired recovery decision missing".to_owned())?;
+            let candidate = request
+                .initial_candidate_sha256
+                .as_deref()
+                .ok_or_else(|| "paired recovery candidate evidence missing".to_owned())?;
+            for (name, value) in [
+                ("initial_commit_intent_sha256", original),
+                ("initial_recovery_intent_sha256", recovery),
+                ("initial_candidate_sha256", candidate),
+            ] {
+                validate_lower_hex(name, value, 64)?;
+            }
+            if original == recovery {
+                return Err("paired recovery decision must differ from original commit".to_owned());
+            }
         }
         WindowsPrivilegedOperation::StageCredential => {
             if request.accepted_revision.is_some()
@@ -2795,6 +2837,8 @@ mod tests {
             credential_transition_action: None,
             initial_commit_intent_sha256: None,
             initial_commit_slot: None,
+            initial_recovery_intent_sha256: None,
+            initial_candidate_sha256: None,
         };
         let bytes = encode_windows_privileged_request(&request).unwrap();
         assert_eq!(decode_windows_privileged_request(&bytes).unwrap(), request);
@@ -2816,6 +2860,8 @@ mod tests {
             credential_transition_action: None,
             initial_commit_intent_sha256: None,
             initial_commit_slot: None,
+            initial_recovery_intent_sha256: None,
+            initial_candidate_sha256: None,
         };
         assert!(encode_windows_privileged_request(&request).is_ok());
 
@@ -2836,6 +2882,8 @@ mod tests {
             credential_transition_action: None,
             initial_commit_intent_sha256: None,
             initial_commit_slot: None,
+            initial_recovery_intent_sha256: None,
+            initial_candidate_sha256: None,
         };
         let encoded = encode_windows_privileged_request(&request).unwrap();
         assert_eq!(
@@ -2874,6 +2922,8 @@ mod tests {
             credential_transition_action: None,
             initial_commit_intent_sha256: None,
             initial_commit_slot: None,
+            initial_recovery_intent_sha256: None,
+            initial_candidate_sha256: None,
         };
         assert!(encode_windows_privileged_request(&request).is_ok());
 
@@ -2894,6 +2944,8 @@ mod tests {
             credential_transition_action: None,
             initial_commit_intent_sha256: None,
             initial_commit_slot: None,
+            initial_recovery_intent_sha256: None,
+            initial_candidate_sha256: None,
         };
         assert!(encode_windows_privileged_request(&request).is_ok());
 
@@ -2914,6 +2966,8 @@ mod tests {
             credential_transition_action: None,
             initial_commit_intent_sha256: None,
             initial_commit_slot: None,
+            initial_recovery_intent_sha256: None,
+            initial_candidate_sha256: None,
         };
         assert!(encode_windows_privileged_request(&request).is_ok());
 
@@ -2946,6 +3000,8 @@ mod tests {
             credential_transition_action: None,
             initial_commit_intent_sha256: None,
             initial_commit_slot: None,
+            initial_recovery_intent_sha256: None,
+            initial_candidate_sha256: None,
         };
         assert!(encode_windows_privileged_request(&request).is_ok());
 
@@ -2970,6 +3026,8 @@ mod tests {
             credential_transition_action: None,
             initial_commit_intent_sha256: Some("a".repeat(64)),
             initial_commit_slot: Some(2),
+            initial_recovery_intent_sha256: None,
+            initial_candidate_sha256: None,
         };
         let bytes = encode_windows_privileged_request(&valid).unwrap();
         assert_eq!(decode_windows_privileged_request(&bytes).unwrap(), valid);
@@ -3001,6 +3059,39 @@ mod tests {
         ] {
             let mut wrong = valid.clone();
             wrong.operation = forbidden as i32;
+            assert!(encode_windows_privileged_request(&wrong).is_err());
+        }
+    }
+
+    #[test]
+    fn windows_paired_recovery_is_distinct_from_commit_and_rotation() {
+        let request = WindowsPrivilegedRequest {
+            schema_version: 1,
+            request_id: "request-paired-recovery".to_owned(),
+            operation: WindowsPrivilegedOperation::InitialCredentialRecover as i32,
+            accepted_revision: None,
+            release_set_sha256: None,
+            credential_generation: Some(101),
+            credential_transition_action: None,
+            initial_commit_intent_sha256: Some("a".repeat(64)),
+            initial_commit_slot: Some(2),
+            initial_recovery_intent_sha256: Some("b".repeat(64)),
+            initial_candidate_sha256: Some("c".repeat(64)),
+        };
+        let encoded = encode_windows_privileged_request(&request).unwrap();
+        assert_eq!(decode_windows_privileged_request(&encoded).unwrap(), request);
+        for modify in 0..7 {
+            let mut wrong = request.clone();
+            match modify {
+                0 => wrong.initial_recovery_intent_sha256 = None,
+                1 => wrong.initial_candidate_sha256 = None,
+                2 => wrong.initial_recovery_intent_sha256 = Some("a".repeat(64)),
+                3 => wrong.initial_candidate_sha256 = Some("Z".repeat(64)),
+                4 => wrong.operation = WindowsPrivilegedOperation::InitialCredentialCommit as i32,
+                5 => wrong.operation = WindowsPrivilegedOperation::CredentialTransition as i32,
+                6 => wrong.initial_commit_slot = Some(3),
+                _ => unreachable!(),
+            }
             assert!(encode_windows_privileged_request(&wrong).is_err());
         }
     }
@@ -3041,6 +3132,8 @@ mod tests {
                 credential_transition_action: Some(action as i32),
                 initial_commit_intent_sha256: None,
                 initial_commit_slot: None,
+            initial_recovery_intent_sha256: None,
+            initial_candidate_sha256: None,
             };
             assert!(encode_windows_privileged_request(&request).is_ok());
         }
@@ -3056,6 +3149,8 @@ mod tests {
             credential_transition_action: None,
             initial_commit_intent_sha256: None,
             initial_commit_slot: None,
+            initial_recovery_intent_sha256: None,
+            initial_candidate_sha256: None,
         };
         assert!(encode_windows_privileged_request(&invalid).is_err());
     }
@@ -3077,6 +3172,8 @@ mod tests {
                 credential_transition_action: None,
                 initial_commit_intent_sha256: None,
                 initial_commit_slot: None,
+            initial_recovery_intent_sha256: None,
+            initial_candidate_sha256: None,
             };
             assert!(encode_windows_privileged_request(&request).is_ok());
 
