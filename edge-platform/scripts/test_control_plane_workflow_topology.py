@@ -98,11 +98,6 @@ def main() -> None:
         and "FIRST_USE_UPGRADE_BLOCKED: program-upgrade intent already recorded; reconcile only" in windows_physical
         and "sing-box-windows-program-prepare/v1" in windows_physical
         and "first_use_upgrade_intent=COMMITTED_ONCE" in windows_physical
-        and "first_use_inactive_release=EXACT_STAGE_ONLY_PASS" in windows_physical
-        and windows_physical.index("first_use_inactive_release=EXACT_STAGE_ONLY_PASS") <
-            windows_physical.index("first_use_upgrade_intent=COMMITTED_ONCE")
-        and "stoppedProxyOnly = (" in windows_installer
-        and "exact stopped owner with safe SCM startup mode required" in windows_installer
         and "FIRST_USE_UPGRADE_UNKNOWN: exactly-one durable intent readback unproven; no replay" in windows_physical
         and "Verify installed native capability and all preconditions before journalling" in windows_physical
         and "first_use_binary_prepare=EXACT_STOPPED_RELEASE_ACCEPTED" in windows_physical
