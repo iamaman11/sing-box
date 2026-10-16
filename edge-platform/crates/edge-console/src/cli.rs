@@ -49,6 +49,8 @@ pub(crate) enum Command {
     PrivilegedStartProxyOnlyController(InstallRootArgs),
     PrivilegedStopProxyOnlyController(InstallRootArgs),
     PrivilegedStageCredential(PrivilegedCredentialStageArgs),
+    // First-use-only, single immutable COMMIT_INTENT, SYSTEM dispatch.
+    PrivilegedInitialCredentialCommit(PrivilegedInitialCredentialCommitArgs),
     CredentialTransition(CredentialTransitionArgs),
     RestartVerifyRuntime,
     VerifyRuntime,
@@ -108,6 +110,7 @@ impl Command {
             Self::PrivilegedStartProxyOnlyController(_) => "privileged-start-proxy-only-controller",
             Self::PrivilegedStopProxyOnlyController(_) => "privileged-stop-proxy-only-controller",
             Self::PrivilegedStageCredential(_) => "privileged-stage-credential",
+            Self::PrivilegedInitialCredentialCommit(_) => "privileged-initial-credential-commit",
             Self::CredentialTransition(_) => "credential-transition",
             Self::RestartVerifyRuntime => "restart-verify-runtime",
             Self::VerifyRuntime => "verify-runtime",
@@ -204,6 +207,15 @@ pub(crate) struct PrivilegedActivateArgs {
 #[derive(Debug, Args)]
 pub(crate) struct PrivilegedCredentialStageArgs {
     pub generation: u64,
+    #[arg(long, default_value = r"C:\sing-box")]
+    pub install_root: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PrivilegedInitialCredentialCommitArgs {
+    pub generation: u64,
+    pub slot: u32,
+    pub intent_sha256: String,
     #[arg(long, default_value = r"C:\sing-box")]
     pub install_root: String,
 }
