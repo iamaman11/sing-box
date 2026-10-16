@@ -272,10 +272,30 @@ jobs:
           $ErrorActionPreference = 'Stop'
           if ($env:GITHUB_RUN_ATTEMPT -cne '1') { throw 'FIRST_USE_UPGRADE_BLOCKED: replay forbidden' }
           $url = "repos/$env:GITHUB_REPOSITORY/issues/26/comments?per_page=100"
-          $history = @(& gh api --paginate $url | ConvertFrom-Json)
-          if ($LASTEXITCODE -ne 0 -or $history.Count -eq 0) {
-            throw 'FIRST_USE_UPGRADE_BLOCKED: complete durable history unavailable'
+          function Read-AllJournalPages {
+            # Issue #26 has multiple pages. A single syntactically valid JSON
+            # array is required; partial/parsing failures cannot mean EMPTY.
+            $raw = (& gh api --paginate --slurp $url) -join "`n"
+            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($raw)) {
+              throw 'FIRST_USE_UPGRADE_BLOCKED: complete durable history unavailable'
+            }
+            $pages = @((ConvertFrom-Json -InputObject $raw -NoEnumerate))
+            $entries = @(
+              foreach ($page in $pages) {
+                foreach ($entry in @($page)) {
+                  if ($null -eq $entry -or $null -eq $entry.body) {
+                    throw 'FIRST_USE_UPGRADE_BLOCKED: malformed issue comment page'
+                  }
+                  $entry
+                }
+              }
+            )
+            if ($entries.Count -eq 0) {
+              throw 'FIRST_USE_UPGRADE_BLOCKED: durable issue journal is empty or incomplete'
+            }
+            return $entries
           }
+          $history = @(Read-AllJournalPages)
           $staging = @($history | Where-Object { [string]$_.body -like '*<!-- sing-box-windows-persistent-initial-stage/*' })
           if ($staging.Count -ne 0) { throw 'FIRST_USE_UPGRADE_BLOCKED: staging already begun; reconcile instead' }
           $attempts = @($history | Where-Object { [string]$_.body -like '*<!-- sing-box-windows-program-prepare/*' })
@@ -292,8 +312,8 @@ jobs:
           $body = $marker + "`n" + ($record | ConvertTo-Json -Compress)
           & gh api -X POST "repos/$env:GITHUB_REPOSITORY/issues/26/comments" --raw-field "body=$body" > $null
           if ($LASTEXITCODE -ne 0) { throw 'FIRST_USE_UPGRADE_UNKNOWN: durable intent write uncertain; no replay' }
-          $readback = @(& gh api --paginate $url | ConvertFrom-Json)
-          if ($LASTEXITCODE -ne 0 -or @($readback | Where-Object { [string]$_.body -ceq $body }).Count -ne 1) {
+          $readback = @(Read-AllJournalPages)
+          if (@($readback | Where-Object { [string]$_.body -ceq $body }).Count -ne 1) {
             throw 'FIRST_USE_UPGRADE_UNKNOWN: exactly-one durable intent readback unproven; no replay'
           }
           Write-Host 'first_use_upgrade_intent=COMMITTED_ONCE'
