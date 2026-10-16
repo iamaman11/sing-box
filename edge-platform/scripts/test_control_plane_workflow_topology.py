@@ -711,7 +711,16 @@ def main() -> None:
             "initial pair digest shell validator accepted malformed evidence or rejected valid evidence",
         )
     require(
-        'if operation in {"rotate-application", "host-bootstrap-converge"}:' in credentials
+        'if operation in {"rotate-application", "host-bootstrap-converge", "initial-pair-commit"}:' in credentials
+        and '"initial-pair-commit"' in credentials
+        and "initial_pair_vm_prepared:" in credentials
+        and "initial_pair_windows_prepared:" in credentials
+        and "initial_pair_intent:" in credentials
+        and "initial_pair_vm_commit:" in credentials
+        and "initial_pair_windows_commit:" in credentials
+        and "initial_pair_local_verdict:" in credentials
+        and "paired_serving_network=NOT_ACCEPTED" in credentials
+        and "paired_automatic_replay=false" in credentials
         and 'os.environ.get("GITHUB_RUN_ATTEMPT") != "1"' in credentials
         and "credential mutation replay forbidden: read-only reconciliation required" in credentials,
         "GitHub credential mutation must fail closed before host preparation on a run re-attempt",
