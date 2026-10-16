@@ -43,6 +43,41 @@ irreversible receipt, without SCM/TUN/DNS mutation. VM verifies the existing
 candidate against the real six Line2 endpoints. The final workflow verdict
 reports **LOCAL_POINTERS_ONLY**, never full network acceptance.
 
+**Bounded first-use recovery (source-only until physical acceptance):**
+The separate protected GitHub command
+`/credentials initial-pair-recover <original_run_id> <failed_commit_run_id>`
+is **not a retry** of `initial-pair-commit` or ordinary rotation.
+It is admitted only for the original failed immutable run and a separately
+failed initial-pair-commit, matching the exact accepted main ReleaseSet.
+The same GitHub credential transaction lock verifies pinned VM root owner
+ACTIVE with original commit receipt and six local authenticated Line2 endpoints,
+and pinned Windows SYSTEM owner CANDIDATE with stopped/OnDemand ProxyOnly,
+zero sing-box/TUN, exact candidate and no prior recovery attempt. Malformed,
+partially written or mismatched receipts fail closed. These are read-only
+host observations and cannot issue another Worker credential generation.
+
+Only after two independently proven owner origins does the existing Rust
+orchestrator create one non-secret `credential-paired-recovery/v1`
+RECOVERY_INTENT tied to the original COMMIT_INTENT, both original prepared
+digests, generation, slot, immutable release and current VM ACTIVE / Windows
+CANDIDATE bundle hashes. GitHub Issue #26 writes and reads it back exactly
+once. The original commit record is NEVER rewritten or replayed. One existing
+Windows SYSTEM dispatcher action may then re-materialize only the already
+authenticated Windows candidate config while SCM is STOPPED, fsync a
+create-new private `initial-paired-recovery-receipt-v1` and atomically
+complete its local ACTIVE pointer. Any crash/lost ACK after this receipt
+means UNKNOWN/NO_REPLAY, not a new recovery or fallback. The original
+first-use commit is fenced when any recovery receipt exists.
+
+This recovery does not enable TUN, start services, alter One Client DNS,
+change Workers or claim final pair network acceptance. The final workflow
+reports LOCAL_POINTERS_ONLY even when both jobs succeed. Independent
+read-only VM/Windows ACTIVE-origin reconciliation and actual external
+Line1 DIRECT/WARP authenticated HTTPS/TLS, Windows ProxyOnly traffic and
+no-TUN Cloudflare One recovery remain required for physical N1/N2 PASS.
+A failed recovery may require explicitly audited manual rescue; do not
+infer automatic atomic commit across two computers.
+
 This protocol remains DRAFT until exact source CI, exact immutable owner
 deployment on both hosts, authenticated journal/runner evidence and bounded
 physical paired acceptance. Any partial active pointer, unknown ACK or
