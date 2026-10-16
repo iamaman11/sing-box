@@ -1681,7 +1681,11 @@ fn read_bounded_windows_credential_cursor(install_root: &Path) -> Result<String,
     let recovery = store.read_initial_pair_recovery_receipt()?;
     let recovery_sha = recovery
         .as_deref()
-        .and_then(|value| value.lines().find_map(|line| line.strip_prefix("recovery_intent_sha256=")))
+        .and_then(|value| {
+            value
+                .lines()
+                .find_map(|line| line.strip_prefix("recovery_intent_sha256="))
+        })
         .unwrap_or("ABSENT");
     let receipt_sha = receipt
         .as_deref()
