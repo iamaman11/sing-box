@@ -2,6 +2,29 @@
 
 This file defines the stable ownership/invariant model and steady-state target. **Physical N1/N2 external Line1 4/4 + Line2 6/6, before and after one VM reboot, is accepted** in [GitHub Actions #38627187731](https://github.com/iamaman11/sing-box/actions/runs/38627187731). The unchanged Worker credential generation and exact transient Windows/Access cleanup were also proven. **Do not infer that the reused VM was disposed, that its staged candidate has been promoted to an active credential pointer, or that an already-running container's credential source has been cryptographically attributed.** These remain N1/N2 lifecycle closure gates; Windows bidirectional mode changes remain N3, and production lifecycle N4 is unaccepted. Current operational evidence and ordering are in Issue #26, not older historical passages below.
 
+**Paired COMMIT_INTENT native read-only policy (16 October 2026):** The
+existing Rust `edge-orchestrator credentials initial-pair-commit-plan`,
+`initial-pair-commit-readback`, and `initial-pair-commit-reconcile` functions
+are deliberately non-mutating. They reuse the original, exact GitHub Issue #26
+credential BEGIN, and validate a **different** one-time commit-run identity,
+exact accepted immutable ReleaseSet, generation/slot, and separate VM/Windows
+prepared-owner evidence digests. The complete issue history may contain
+**exactly one** new `credential-paired-commit/v1` COMMIT_INTENT; duplicate,
+unknown-version, changed, displaced or missing records reject. This is a
+policy-level proof only: a digest or a JSON field claiming
+`owner_origin_verified=true` does NOT authenticate the real VM or Windows
+runner. The protected workflow must bind actual read-only local owner reports
+and physical credentials before POST/host mutation is allowed. CLI plan
+creates only a local new file; it never posts to GitHub or requests Cloudflare
+write access. Reconciliation classifies `CANDIDATE/CANDIDATE` as
+`PAIR_INTENT_RECORDED_NO_MUTATION`, mixed `ACTIVE/CANDIDATE` as
+`PAIR_PARTIAL_BLOCKED_NO_REPLAY`, and two exact active/runtime verified
+pointers as `PAIR_ACTIVE_VERIFIED`. There is intentionally **no** replay,
+fallback, generic first-use promote or serving permission. The paired commit
+executor, independently proven real host-origin receipts, and physical
+two-host ACTIVE acceptance remain UNIMPLEMENTED; no first-use credentials
+mutation is authorized by source-only policy.
+
 **First-use immutable program upgrade BEFORE credentials (16 October 2026):**
 Use the existing protected GitHub command `/windows initial-pair-prepare <original_run_id>`
 to run the exact native offline ReleaseSet owner on Windows while ProxyOnly
