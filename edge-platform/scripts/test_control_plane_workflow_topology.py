@@ -296,6 +296,7 @@ def test_windows_gh_journal_pages(source: str) -> None:
 def verify_credential_observation_lane(source: str) -> None:
     expected = (
         "group: ${{ (inputs.command_body == '/credentials verify' || "
+        "inputs.command_body == '/credentials status' || "
         "startsWith(inputs.command_body, '/credentials initial-pair-preflight ')) && "
         "format('credential-observe-{0}', github.run_id) || "
         "format('credential-transaction-{0}', github.repository_id) }}"
@@ -304,6 +305,18 @@ def verify_credential_observation_lane(source: str) -> None:
             "credential read-only lane must be isolated while every mutation retains the exact global lock")
     require("cancel-in-progress: false" in source,
             "credential operations must never cancel an unresolved earlier run")
+    for job in (
+        "existing_join_status_release",
+        "existing_join_status_vm",
+        "existing_join_status_windows",
+        "existing_join_status_summary",
+    ):
+        require(source.count(f"  {job}:\n") == 1,
+                "native status must collect exactly one canonical two-host read-only verdict")
+    require("inputs.command_body == '/credentials status'" in source
+            and "credential_mutations=0" in source
+            and "GH_INTENT_AND_FIRST_ATTEMPT_APPLY_STILL_REQUIRED" in source,
+            "native status must never grant cross-host mutation authority")
     read_only_job = source.split("  execute:\n", 1)
     require(len(read_only_job) == 2, "credential read-only verify job missing")
     read_only_job = read_only_job[1].split("\n  rotate_release:\n", 1)[0]
@@ -1158,6 +1171,7 @@ def main() -> None:
     )
     credential_observation_group = (
         "group: ${{ (inputs.command_body == '/credentials verify' || "
+        "inputs.command_body == '/credentials status' || "
         "startsWith(inputs.command_body, '/credentials initial-pair-preflight ')) && "
         "format('credential-observe-{0}', github.run_id) || "
         "format('credential-transaction-{0}', github.repository_id) }}"
