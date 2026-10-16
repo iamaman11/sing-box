@@ -145,11 +145,11 @@ if ($Preflight) {
   if ($RequireCurrentRelease -and [string]$before['release_set_sha256'] -cne $ReleaseSetSha256) {
     throw 'FIRST_USE_PREBEGIN_BLOCKED: exact accepted Windows ReleaseSet must be installed BEFORE durable BEGIN'
   }
-  Write-Host "windows_credential_policy=$(if ($ExistingActive) { 'EXISTING_ACTIVE_RELEASE_ONLY' } else { 'FRESH_FIRST_USE' })"
+  Write-Output "windows_credential_policy=$(if ($ExistingActive) { 'EXISTING_ACTIVE_RELEASE_ONLY' } else { 'FRESH_FIRST_USE' })"
   Write-Host 'windows_first_use_prebegin_preflight=PASS_READ_ONLY'
   Write-Host "windows_offline_source_mode=$([string]$before['windows_datapath_mode'])"
-  Write-Host "windows_offline_source_release=$([string]$before['release_set_sha256'])"
-  Write-Host "windows_offline_transition_needed=$([string]$before['release_set_sha256'] -cne $ReleaseSetSha256)"
+  Write-Output "windows_offline_source_release=$([string]$before['release_set_sha256'])"
+  Write-Output "windows_offline_transition_needed=$([string]$before['release_set_sha256'] -cne $ReleaseSetSha256)"
   Write-Host "windows_installed_release=$([string]$before['release_set_sha256'])"
   Write-Host 'windows_scm_state=Stopped'
   Write-Host 'windows_credential_mutations=0'

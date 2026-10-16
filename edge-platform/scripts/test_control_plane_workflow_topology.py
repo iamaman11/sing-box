@@ -231,6 +231,28 @@ def test_windows_operation_owners(source: str) -> None:
         raise SystemExit("Windows dispatcher accepted a duplicate or wrong operation owner")
 
 
+def test_native_preflight_machine_output(source: str) -> None:
+    """PowerShell Write-Host cannot be captured by @( & script ) in the
+    delegated GitHub apply job. All three machine-readable decision fields
+    must use the success stream, never host-only informational output.
+    """
+    block = source.split("if ($Preflight) {", 1)
+    require(len(block) == 2, "native preflight block missing")
+    block = block[1].split("if ([string]$before['release_set_sha256']", 1)[0]
+    lines = source.splitlines()
+    for field in ("windows_credential_policy=", "windows_offline_source_release=",
+                  "windows_offline_transition_needed="):
+        matching = [line.strip() for line in lines if field in line]
+        require(len(matching) == 1 and matching[0].startswith("Write-Output "),
+                f"Windows preflight {field} is not returned to the GitHub caller")
+        broken = source.replace(matching[0], matching[0].replace("Write-Output ", "Write-Host "), 1)
+        broken_line = [line.strip() for line in broken.splitlines() if field in line]
+        require(len(broken_line) == 1 and broken_line[0].startswith("Write-Host "),
+                f"Windows negative Write-Host fixture missing: {field}")
+        require(not broken_line[0].startswith("Write-Output "),
+                f"Windows Write-Host regression not detected: {field}")
+
+
 def main() -> None:
     router = ROUTER.read_text(encoding="utf-8")
     application = APPLICATION.read_text(encoding="utf-8")
@@ -247,6 +269,7 @@ def main() -> None:
     windows_runner_bootstrap = WINDOWS_RUNNER_BOOTSTRAP.read_text(encoding="utf-8")
     windows_first_use_stage = Path("edge-platform/scripts/windows-initial-pair-stage.ps1").read_text(encoding="utf-8")
     windows_first_use_offline = Path("edge-platform/scripts/windows-first-use-offline-handoff.ps1").read_text(encoding="utf-8")
+    test_native_preflight_machine_output(windows_first_use_offline)
     windows_console = WINDOWS_CONSOLE.read_text(encoding="utf-8")
     windows_console_cli = WINDOWS_CONSOLE_CLI.read_text(encoding="utf-8")
     windows_controller = WINDOWS_CONTROLLER.read_text(encoding="utf-8")
