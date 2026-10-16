@@ -244,7 +244,7 @@ jobs:
       cancel-in-progress: false
     permissions:
       contents: read
-      issues: read
+      issues: write
     steps:
       - name: Checkout exact accepted native release owner
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -252,21 +252,7 @@ jobs:
           ref: ${{ needs.resolve.outputs.accepted_revision }}
           persist-credentials: false
           clean: true
-      - name: Prove no Windows one-shot staging BEGIN exists before updating binaries
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-          SOURCE_RUN_ID: ${{ needs.resolve.outputs.source_run_id }}
-        run: |
-          $ErrorActionPreference = 'Stop'
-          if ($env:GITHUB_RUN_ATTEMPT -cne '1') { throw 'FIRST_USE_UPGRADE_BLOCKED: replay forbidden' }
-          $history = & gh api --paginate "repos/$env:GITHUB_REPOSITORY/issues/26/comments?per_page=100" |
-            ConvertFrom-Json
-          if ($LASTEXITCODE -ne 0 -or $null -eq $history) { throw 'FIRST_USE_UPGRADE_BLOCKED: complete durable history unavailable' }
-          $staging = @($history | Where-Object { [string]$_.body -like '*<!-- sing-box-windows-persistent-initial-stage/*' })
-          if ($staging.Count -ne 0) { throw 'FIRST_USE_UPGRADE_BLOCKED: staging already begun; reconcile instead' }
-          Write-Host 'first_use_upgrade_journal=NO_WINDOWS_STAGE_BEGIN'
-      - name: Execute one stopped native offline ReleaseSet upgrade with bounded readback
+      - name: Verify installed native capability and all preconditions before journalling
         shell: powershell
         env:
           EDGE_FIRST_USE_EXPECTED_MODE: ${{ needs.resolve.outputs.expected_mode }}
@@ -274,7 +260,51 @@ jobs:
           $ErrorActionPreference = 'Stop'
           $script = Join-Path $env:GITHUB_WORKSPACE 'edge-platform\scripts\windows-first-use-offline-handoff.ps1'
           & $script -AcceptedRevision '${{ needs.resolve.outputs.accepted_revision }}' -ReleaseSetSha256 '${{ needs.resolve.outputs.release_set_sha256 }}' -Preflight
-          if ($LASTEXITCODE -ne 0 -or -not $?) { throw 'FIRST_USE_UPGRADE_BLOCKED: preflight failed before any mutation' }
+          if ($LASTEXITCODE -ne 0 -or -not $?) { throw 'FIRST_USE_UPGRADE_BLOCKED: native preflight failed before durable intent' }
+      - name: Persist exactly one immutable program-upgrade intent BEFORE native mutation
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_RUN_ID: ${{ needs.resolve.outputs.source_run_id }}
+          ACCEPTED_RELEASE: ${{ needs.resolve.outputs.release_set_sha256 }}
+          ACCEPTED_REVISION: ${{ needs.resolve.outputs.accepted_revision }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_RUN_ATTEMPT -cne '1') { throw 'FIRST_USE_UPGRADE_BLOCKED: replay forbidden' }
+          $url = "repos/$env:GITHUB_REPOSITORY/issues/26/comments?per_page=100"
+          $history = @(& gh api --paginate $url | ConvertFrom-Json)
+          if ($LASTEXITCODE -ne 0 -or $history.Count -eq 0) {
+            throw 'FIRST_USE_UPGRADE_BLOCKED: complete durable history unavailable'
+          }
+          $staging = @($history | Where-Object { [string]$_.body -like '*<!-- sing-box-windows-persistent-initial-stage/*' })
+          if ($staging.Count -ne 0) { throw 'FIRST_USE_UPGRADE_BLOCKED: staging already begun; reconcile instead' }
+          $attempts = @($history | Where-Object { [string]$_.body -like '*<!-- sing-box-windows-program-prepare/*' })
+          if ($attempts.Count -ne 0) { throw 'FIRST_USE_UPGRADE_BLOCKED: program-upgrade intent already recorded; reconcile only' }
+          $marker = '<!-- sing-box-windows-program-prepare/v1 -->'
+          $record = [ordered]@{
+            schema = 'sing-box.windows-program-prepare/v1'
+            phase = 'BEGIN'
+            original_run_id = [long]$env:SOURCE_RUN_ID
+            github_run_id = [long]$env:GITHUB_RUN_ID
+            source_revision = $env:ACCEPTED_REVISION
+            release_set_sha256 = $env:ACCEPTED_RELEASE
+          }
+          $body = $marker + "`n" + ($record | ConvertTo-Json -Compress)
+          & gh api -X POST "repos/$env:GITHUB_REPOSITORY/issues/26/comments" --raw-field "body=$body" > $null
+          if ($LASTEXITCODE -ne 0) { throw 'FIRST_USE_UPGRADE_UNKNOWN: durable intent write uncertain; no replay' }
+          $readback = @(& gh api --paginate $url | ConvertFrom-Json)
+          if ($LASTEXITCODE -ne 0 -or @($readback | Where-Object { [string]$_.body -ceq $body }).Count -ne 1) {
+            throw 'FIRST_USE_UPGRADE_UNKNOWN: exactly-one durable intent readback unproven; no replay'
+          }
+          Write-Host 'first_use_upgrade_intent=COMMITTED_ONCE'
+          Write-Host 'credential_staging_begin=NOT_WRITTEN'
+      - name: Execute one stopped native offline ReleaseSet upgrade with bounded readback
+        shell: powershell
+        env:
+          EDGE_FIRST_USE_EXPECTED_MODE: ${{ needs.resolve.outputs.expected_mode }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $script = Join-Path $env:GITHUB_WORKSPACE 'edge-platform\scripts\windows-first-use-offline-handoff.ps1'
           & $script -AcceptedRevision '${{ needs.resolve.outputs.accepted_revision }}' -ReleaseSetSha256 '${{ needs.resolve.outputs.release_set_sha256 }}'
           if ($LASTEXITCODE -ne 0 -or -not $?) { throw 'FIRST_USE_UPGRADE_UNKNOWN: native offline handoff incomplete; do not replay' }
           Write-Host 'first_use_binary_prepare=EXACT_STOPPED_RELEASE_ACCEPTED'
