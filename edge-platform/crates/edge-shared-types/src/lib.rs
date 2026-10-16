@@ -976,6 +976,12 @@ pub fn validate_windows_privileged_request(
     )?;
     let operation = WindowsPrivilegedOperation::try_from(request.operation)
         .map_err(|_| "WindowsPrivilegedRequest.operation is invalid".to_owned())?;
+    if operation != WindowsPrivilegedOperation::InitialCredentialCommit
+        && (request.initial_commit_intent_sha256.is_some()
+            || request.initial_commit_slot.is_some())
+    {
+        return Err("paired commit fields are forbidden on non-initial operations".to_owned());
+    }
     match operation {
         WindowsPrivilegedOperation::Unspecified => {
             return Err("WindowsPrivilegedRequest.operation is required".to_owned());
@@ -1067,6 +1073,23 @@ pub fn validate_windows_privileged_request(
                 "ADMIT_CREDENTIAL is retired; exact-generation STAGE_CREDENTIAL is the sole credential data-plane gate"
                     .to_owned(),
             );
+        }
+        WindowsPrivilegedOperation::InitialCredentialCommit => {
+            if request.accepted_revision.is_some()
+                || request.release_set_sha256.is_some()
+                || request.credential_transition_action.is_some()
+            {
+                return Err("first-use paired commit must not carry ordinary release or rotation authority".to_owned());
+            }
+            if request.credential_generation.unwrap_or(0) == 0 {
+                return Err("first-use paired commit requires exact candidate generation".to_owned());
+            }
+            if !matches!(request.initial_commit_slot, Some(1 | 2)) {
+                return Err("first-use paired commit requires exact A/B slot".to_owned());
+            }
+            let digest = request.initial_commit_intent_sha256.as_deref()
+                .ok_or_else(|| "first-use paired commit requires exact COMMIT_INTENT digest".to_owned())?;
+            validate_lower_hex("initial_commit_intent_sha256", digest, 64)?;
         }
         WindowsPrivilegedOperation::StageCredential => {
             if request.accepted_revision.is_some()
@@ -2762,6 +2785,8 @@ mod tests {
             ),
             credential_generation: None,
             credential_transition_action: None,
+            initial_commit_intent_sha256: None,
+            initial_commit_slot: None,
         };
         let bytes = encode_windows_privileged_request(&request).unwrap();
         assert_eq!(decode_windows_privileged_request(&bytes).unwrap(), request);
@@ -2781,6 +2806,8 @@ mod tests {
             release_set_sha256: None,
             credential_generation: None,
             credential_transition_action: None,
+            initial_commit_intent_sha256: None,
+            initial_commit_slot: None,
         };
         assert!(encode_windows_privileged_request(&request).is_ok());
 
@@ -2799,6 +2826,8 @@ mod tests {
             release_set_sha256: Some("b".repeat(64)),
             credential_generation: None,
             credential_transition_action: None,
+            initial_commit_intent_sha256: None,
+            initial_commit_slot: None,
         };
         let encoded = encode_windows_privileged_request(&request).unwrap();
         assert_eq!(
@@ -2835,6 +2864,8 @@ mod tests {
             ),
             credential_generation: None,
             credential_transition_action: None,
+            initial_commit_intent_sha256: None,
+            initial_commit_slot: None,
         };
         assert!(encode_windows_privileged_request(&request).is_ok());
 
@@ -2853,6 +2884,8 @@ mod tests {
             release_set_sha256: None,
             credential_generation: None,
             credential_transition_action: None,
+            initial_commit_intent_sha256: None,
+            initial_commit_slot: None,
         };
         assert!(encode_windows_privileged_request(&request).is_ok());
 
@@ -2871,6 +2904,8 @@ mod tests {
             release_set_sha256: None,
             credential_generation: None,
             credential_transition_action: None,
+            initial_commit_intent_sha256: None,
+            initial_commit_slot: None,
         };
         assert!(encode_windows_privileged_request(&request).is_ok());
 
@@ -2901,6 +2936,8 @@ mod tests {
             release_set_sha256: None,
             credential_generation: Some(101),
             credential_transition_action: None,
+            initial_commit_intent_sha256: None,
+            initial_commit_slot: None,
         };
         assert!(encode_windows_privileged_request(&request).is_ok());
 
@@ -2947,6 +2984,8 @@ mod tests {
                 release_set_sha256: None,
                 credential_generation: None,
                 credential_transition_action: Some(action as i32),
+                initial_commit_intent_sha256: None,
+                initial_commit_slot: None,
             };
             assert!(encode_windows_privileged_request(&request).is_ok());
         }
@@ -2960,6 +2999,8 @@ mod tests {
             release_set_sha256: None,
             credential_generation: None,
             credential_transition_action: None,
+            initial_commit_intent_sha256: None,
+            initial_commit_slot: None,
         };
         assert!(encode_windows_privileged_request(&invalid).is_err());
     }
@@ -2979,6 +3020,8 @@ mod tests {
                 release_set_sha256: None,
                 credential_generation: None,
                 credential_transition_action: None,
+                initial_commit_intent_sha256: None,
+                initial_commit_slot: None,
             };
             assert!(encode_windows_privileged_request(&request).is_ok());
 
