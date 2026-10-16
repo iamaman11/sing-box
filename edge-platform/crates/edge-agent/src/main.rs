@@ -241,7 +241,10 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
                 let join = store
                     .read_existing_join_receipt()
                     .map_err(AgentError::Command)?;
-                println!("credential_existing_join_receipt_present={}", join.is_some());
+                println!(
+                    "credential_existing_join_receipt_present={}",
+                    join.is_some()
+                );
                 let receipt = store
                     .read_initial_pair_receipt()
                     .map_err(AgentError::Command)?;

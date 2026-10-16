@@ -370,5 +370,4 @@ mod tests {
         assert_eq!(cursor.candidate.unwrap().generation, 124);
         std::fs::remove_dir_all(root).unwrap();
     }
-
 }
