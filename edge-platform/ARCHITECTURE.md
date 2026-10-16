@@ -19,7 +19,10 @@ creates only a local new file; it never posts to GitHub or requests Cloudflare
 write access. Reconciliation classifies `CANDIDATE/CANDIDATE` as
 `PAIR_INTENT_RECORDED_NO_MUTATION`, mixed `ACTIVE/CANDIDATE` as
 `PAIR_PARTIAL_BLOCKED_NO_REPLAY`, and two exact active/runtime verified
-pointers as `PAIR_ACTIVE_VERIFIED`. There is intentionally **no** replay,
+pointers as `PAIR_ACTIVE_DECLARED_NEEDS_INDEPENDENT_ORIGIN_PROOF`.
+The CLI cannot issue a final active PASS based only on caller-provided
+booleans; independent owner provenance and actual authenticated traffic
+must be checked outside this read-only policy. There is intentionally **no** replay,
 fallback, generic first-use promote or serving permission. The paired commit
 executor, independently proven real host-origin receipts, and physical
 two-host ACTIVE acceptance remain UNIMPLEMENTED; no first-use credentials
