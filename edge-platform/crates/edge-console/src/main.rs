@@ -1581,12 +1581,26 @@ fn read_bounded_windows_credential_cursor(install_root: &Path) -> Result<String,
         Some(_) => "UNKNOWN",
         None => "NONE",
     };
+    let active_slot = match active.map(|value| value.slot) {
+        Some(value) if value == edge_shared_types::CredentialDeliverySlot::A as i32 => "A",
+        Some(value) if value == edge_shared_types::CredentialDeliverySlot::B as i32 => "B",
+        Some(_) => "UNKNOWN",
+        None => "NONE",
+    };
+    let receipt = store.read_initial_pair_receipt()?;
+    let receipt_sha = receipt.as_deref()
+        .and_then(|value| value.lines().find_map(|line| line.strip_prefix("intent_sha256=")))
+        .unwrap_or("ABSENT");
     Ok(format!(
-        "credential_cursor=VALID;credential_active_present={};credential_candidate_present={};credential_candidate_generation={};credential_candidate_slot={slot};credential_previous_present={}",
+        "credential_cursor=VALID;credential_active_present={};credential_candidate_present={};credential_candidate_generation={};credential_candidate_slot={slot};credential_previous_present={};credential_active_generation={};credential_active_slot={active_slot};credential_active_sha256={};credential_candidate_sha256={};credential_initial_commit_receipt_present={};credential_initial_commit_intent_sha256={receipt_sha}",
         active.is_some(),
         candidate.is_some(),
         candidate.map(|value| value.generation).unwrap_or(0),
-        previous.is_some()
+        previous.is_some(),
+        active.map(|value| value.generation).unwrap_or(0),
+        active.map(|value| value.sha256.as_str()).unwrap_or("ABSENT"),
+        candidate.map(|value| value.sha256.as_str()).unwrap_or("ABSENT"),
+        receipt.is_some(),
     ))
 }
 
