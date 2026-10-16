@@ -253,11 +253,52 @@ def test_native_preflight_machine_output(source: str) -> None:
                 f"Windows Write-Host regression not detected: {field}")
 
 
+def verify_windows_gh_journal_pages(source: str) -> None:
+    """Native gh forbids --slurp + --jq, even before the first network read.
+    Both the existing-ACTIVE and first-use BEGIN paths must consume every
+    page using gh slurp and validate individual page/entry shapes fail-closed.
+    """
+    require("--slurp --jq" not in source,
+            "Windows issue journal must not combine mutually exclusive gh flags")
+    require(source.count("gh api --paginate --slurp $url") == 2,
+            "both one-shot Windows journal readers must paginate via native gh slurp")
+    require(source.count("ConvertFrom-Json -InputObject $raw -NoEnumerate") == 2,
+            "Windows journal readers must preserve page boundaries")
+    require(source.count("foreach ($page in $pages)") == 2
+            and source.count("if ($page -isnot [array])") == 2
+            and source.count("return $entries.ToArray()") == 2,
+            "Windows journal readers must reject missing or malformed pages")
+    require(source.count('[long]$issue.comments -ne $entries.Count') == 2,
+            "both Windows journal readers must reject a valid but incomplete page set")
+    for forbidden in (
+        "--slurp --jq 'add'",
+        "--paginate --jq 'add'",
+    ):
+        require(forbidden not in source, "Windows journal cannot use incompatible filtered pagination")
+
+
+def test_windows_gh_journal_pages(source: str) -> None:
+    verify_windows_gh_journal_pages(source)
+    for broken in (
+        source.replace("--slurp $url", "--slurp --jq 'add' $url", 1),
+        source.replace("-NoEnumerate", "", 1),
+        source.replace("if ($page -isnot [array])", "if ($false)", 1),
+        source.replace('[long]$issue.comments -ne $entries.Count', '$false', 1),
+    ):
+        require(broken != source, "Windows gh journal negative fixture missing")
+        try:
+            verify_windows_gh_journal_pages(broken)
+        except SystemExit:
+            continue
+        raise SystemExit("Windows GH pagination contract regression went undetected")
+
+
 def main() -> None:
     router = ROUTER.read_text(encoding="utf-8")
     application = APPLICATION.read_text(encoding="utf-8")
     vultr = VULTR.read_text(encoding="utf-8")
     windows_physical = WINDOWS_PHYSICAL.read_text(encoding="utf-8")
+    test_windows_gh_journal_pages(windows_physical)
     test_windows_operation_owners(windows_physical)
     credentials = CREDENTIALS.read_text(encoding="utf-8")
     test_workflow_job_boundaries(credentials)

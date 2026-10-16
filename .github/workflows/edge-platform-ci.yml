@@ -149,6 +149,10 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -File edge-platform/scripts/test_windows_installer_error_handler.ps1
 
+      - name: Test exact Windows production journal readers without network
+        shell: pwsh
+        run: pwsh -NoProfile -File edge-platform/scripts/test_windows_gh_journal_pages.ps1
+
       - name: Enforce protobuf-first JSON policy
         shell: bash
         run: python3 edge-platform/scripts/test_json_contract_policy.py
@@ -997,6 +1001,10 @@ jobs:
         shell: pwsh
         run: pwsh -NoProfile -File edge-platform/scripts/test_windows_installer_error_handler.ps1
 
+      - name: Test production journal reader negative fixtures on native Windows
+        shell: pwsh
+        run: pwsh -NoProfile -File edge-platform/scripts/test_windows_gh_journal_pages.ps1
+
       - name: Validate Stage 4B.1 Windows code proof with exact sing-box
         if: needs.dependencies.outputs.windows_reuse != 'true'
         working-directory: edge-platform
@@ -1577,10 +1585,38 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+  windows_journal_integration:
+    name: Windows read-only GH journal integration
+    if: >-
+      github.event_name == 'pull_request' &&
+      github.event.pull_request.head.repo.full_name == github.repository &&
+      github.repository == 'iamaman11/sing-box' && github.actor_id == '44100369'
+    needs: verify
+    runs-on: [self-hosted, Windows, X64, sing-box-windows-lab]
+    timeout-minutes: 6
+    concurrency:
+      group: sing-box-windows-physical
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: read
+    steps:
+      - name: Checkout exact trusted PR reader and test code
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+          clean: true
+      - name: Execute production parsers against complete real GH pages without mutation
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: pwsh -NoProfile -NonInteractive -File edge-platform/scripts/test_windows_gh_journal_pages.ps1 -Live
+
   candidate_complete:
     name: Candidate complete
     if: always() && github.event_name == 'pull_request' && github.event.action != 'closed'
-    needs: [verify, dependencies, windows, linux_candidate, release_authority]
+    needs: [verify, dependencies, windows, linux_candidate, release_authority, windows_journal_integration]
     runs-on: ubuntu-24.04
     steps:
       - name: Require complete exact candidate
@@ -1592,6 +1628,7 @@ jobs:
           WINDOWS_RESULT: ${{ needs.windows.result }}
           LINUX_RESULT: ${{ needs.linux_candidate.result }}
           RELEASE_AUTHORITY_RESULT: ${{ needs.release_authority.result }}
+          WINDOWS_JOURNAL_RESULT: ${{ needs.windows_journal_integration.result }}
         run: |
           set -euo pipefail
           test "${SOURCE_RESULT}" = "success"
@@ -1599,6 +1636,7 @@ jobs:
           test "${WINDOWS_RESULT}" = "success"
           test "${LINUX_RESULT}" = "success"
           test "${RELEASE_AUTHORITY_RESULT}" = "success"
+          test "${WINDOWS_JOURNAL_RESULT}" = "success"
           echo "candidate_revision=${CANDIDATE_REVISION}"
           echo "All candidate build and verification jobs passed."
 
