@@ -76,7 +76,8 @@ jobs:
         github.event.comment.body == '/windows repair' ||
         github.event.comment.body == '/windows rollback' ||
         startsWith(github.event.comment.body, '/windows acceptance-reconcile ') ||
-        startsWith(github.event.comment.body, '/windows initial-pair-stage ')
+        startsWith(github.event.comment.body, '/windows initial-pair-stage ') ||
+        startsWith(github.event.comment.body, '/windows initial-pair-prepare ')
       )
     permissions:
       contents: read
