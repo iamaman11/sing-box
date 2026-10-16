@@ -1243,7 +1243,9 @@ pub fn validate_windows_privileged_result(result: &WindowsPrivilegedResult) -> R
         160,
     )?;
     validate_safe_runtime_token("WindowsPrivilegedResult.code", &result.code, 96)?;
-    if result.detail.len() > 1024 || result.detail.chars().any(|ch| ch.is_control()) {
+    // Keep the public result as strictly bounded as the native Windows
+    // diagnostic owner; full four-task proof and v2 cursor need more than 1 KiB.
+    if result.detail.len() > 2048 || result.detail.chars().any(|ch| ch.is_control()) {
         return Err("WindowsPrivilegedResult.detail is invalid".to_owned());
     }
     if let Some(release) = result.active_release_set_sha256.as_deref() {
