@@ -354,6 +354,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     credential_transition_action: None,
                     initial_commit_intent_sha256: None,
                     initial_commit_slot: None,
+                    initial_recovery_intent_sha256: None,
+                    initial_candidate_sha256: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -374,6 +376,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     credential_transition_action: None,
                     initial_commit_intent_sha256: None,
                     initial_commit_slot: None,
+                    initial_recovery_intent_sha256: None,
+                    initial_candidate_sha256: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -396,6 +400,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     credential_transition_action: None,
                     initial_commit_intent_sha256: None,
                     initial_commit_slot: None,
+                    initial_recovery_intent_sha256: None,
+                    initial_candidate_sha256: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -415,6 +421,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                 credential_transition_action: None,
                 initial_commit_intent_sha256: None,
                 initial_commit_slot: None,
+                initial_recovery_intent_sha256: None,
+                initial_candidate_sha256: None,
             };
             let (code, detail, release) =
                 offline_bootstrap_privileged_release(&install_root, &request)
@@ -443,6 +451,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     credential_transition_action: None,
                     initial_commit_intent_sha256: None,
                     initial_commit_slot: None,
+                    initial_recovery_intent_sha256: None,
+                    initial_candidate_sha256: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -467,6 +477,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     credential_transition_action: None,
                     initial_commit_intent_sha256: None,
                     initial_commit_slot: None,
+                    initial_recovery_intent_sha256: None,
+                    initial_candidate_sha256: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -491,6 +503,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     credential_transition_action: None,
                     initial_commit_intent_sha256: None,
                     initial_commit_slot: None,
+                    initial_recovery_intent_sha256: None,
+                    initial_candidate_sha256: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -513,6 +527,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     credential_transition_action: None,
                     initial_commit_intent_sha256: None,
                     initial_commit_slot: None,
+                    initial_recovery_intent_sha256: None,
+                    initial_candidate_sha256: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -533,6 +549,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     credential_transition_action: None,
                     initial_commit_intent_sha256: None,
                     initial_commit_slot: None,
+                    initial_recovery_intent_sha256: None,
+                    initial_candidate_sha256: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -555,6 +573,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     credential_transition_action: None,
                     initial_commit_intent_sha256: None,
                     initial_commit_slot: None,
+                    initial_recovery_intent_sha256: None,
+                    initial_candidate_sha256: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -577,6 +597,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     credential_transition_action: None,
                     initial_commit_intent_sha256: None,
                     initial_commit_slot: None,
+                    initial_recovery_intent_sha256: None,
+                    initial_candidate_sha256: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -597,6 +619,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     credential_transition_action: None,
                     initial_commit_intent_sha256: None,
                     initial_commit_slot: None,
+                    initial_recovery_intent_sha256: None,
+                    initial_candidate_sha256: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -619,6 +643,32 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     credential_transition_action: None,
                     initial_commit_intent_sha256: Some(args.intent_sha256),
                     initial_commit_slot: Some(args.slot),
+                    initial_recovery_intent_sha256: None,
+                    initial_candidate_sha256: None,
+                },
+            )?;
+            print_privileged_result(&result);
+            finish_privileged_result(&result)?;
+            Ok(())
+        }
+        Command::PrivilegedInitialCredentialRecover(args) => {
+            let install_root = PathBuf::from(args.install_root);
+            require_exact_immutable_activation_console(&install_root)
+                .map_err(ConsoleError::Command)?;
+            let result = submit_privileged_request(
+                &install_root,
+                WindowsPrivilegedRequest {
+                    schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+                    request_id: new_privileged_request_id()?,
+                    operation: WindowsPrivilegedOperation::InitialCredentialRecover as i32,
+                    accepted_revision: None,
+                    release_set_sha256: None,
+                    credential_generation: Some(args.generation),
+                    credential_transition_action: None,
+                    initial_commit_intent_sha256: Some(args.original_intent_sha256),
+                    initial_commit_slot: Some(args.slot),
+                    initial_recovery_intent_sha256: Some(args.recovery_intent_sha256),
+                    initial_candidate_sha256: Some(args.candidate_sha256),
                 },
             )?;
             print_privileged_result(&result);
@@ -739,6 +789,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     credential_transition_action: None,
                     initial_commit_intent_sha256: None,
                     initial_commit_slot: None,
+                    initial_recovery_intent_sha256: None,
+                    initial_candidate_sha256: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -759,6 +811,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     credential_transition_action: None,
                     initial_commit_intent_sha256: None,
                     initial_commit_slot: None,
+                    initial_recovery_intent_sha256: None,
+                    initial_candidate_sha256: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -1474,6 +1528,40 @@ async fn process_privileged_request(
             #[cfg(not(windows))]
             {
                 Err("initial paired Windows credential commit is Windows-only".to_owned())
+            }
+        }
+        Ok(WindowsPrivilegedOperation::InitialCredentialRecover) => {
+            #[cfg(windows)]
+            {
+                (|| -> Result<(String, String, Option<String>), String> {
+                    require_stopped_proxy_only_initial_commit_owner(install_root)?;
+                    let activation = load_verified_activation(install_root)
+                        .map_err(|err| err.to_string())?;
+                    let generation = request.credential_generation
+                        .ok_or_else(|| "paired recovery generation absent".to_owned())?;
+                    let slot = request.initial_commit_slot
+                        .ok_or_else(|| "paired recovery slot absent".to_owned())?;
+                    let original = request.initial_commit_intent_sha256.as_deref()
+                        .ok_or_else(|| "paired recovery original intent absent".to_owned())?;
+                    let recovery = request.initial_recovery_intent_sha256.as_deref()
+                        .ok_or_else(|| "paired recovery decision absent".to_owned())?;
+                    let candidate = request.initial_candidate_sha256.as_deref()
+                        .ok_or_else(|| "paired recovery candidate identity absent".to_owned())?;
+                    let (code, detail) = credential_transition::initial_recover(
+                        install_root,
+                        &activation,
+                        generation,
+                        slot as i32,
+                        original,
+                        recovery,
+                        candidate,
+                    )?;
+                    Ok((code, detail, Some(activation.release_set_sha256)))
+                })()
+            }
+            #[cfg(not(windows))]
+            {
+                Err("initial paired credential recovery requires Windows SYSTEM owner".to_owned())
             }
         }
         Ok(WindowsPrivilegedOperation::CredentialTransition) => {
@@ -3714,6 +3802,8 @@ fn submit_windows_credential_transition(
             credential_transition_action: Some(action as i32),
             initial_commit_intent_sha256: None,
             initial_commit_slot: None,
+            initial_recovery_intent_sha256: None,
+            initial_candidate_sha256: None,
         },
     )
     .map_err(|err| err.to_string())
@@ -5744,6 +5834,8 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
                 credential_transition_action: None,
                 initial_commit_intent_sha256: None,
                 initial_commit_slot: None,
+                initial_recovery_intent_sha256: None,
+                initial_candidate_sha256: None,
             };
             let encoded = encode_windows_privileged_request(&req).unwrap();
             assert_eq!(
@@ -5988,6 +6080,8 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
             credential_transition_action: None,
             initial_commit_intent_sha256: None,
             initial_commit_slot: None,
+            initial_recovery_intent_sha256: None,
+            initial_candidate_sha256: None,
         };
         // The immutable authority pair is checked in both build modes.
         // Actual release rollback remains forbidden on first-install ProxyOnly.
@@ -6170,6 +6264,8 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
             credential_transition_action: None,
             initial_commit_intent_sha256: None,
             initial_commit_slot: None,
+            initial_recovery_intent_sha256: None,
+            initial_candidate_sha256: None,
         };
         let ping = WindowsPrivilegedRequest {
             schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
@@ -6181,6 +6277,8 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
             credential_transition_action: None,
             initial_commit_intent_sha256: None,
             initial_commit_slot: None,
+            initial_recovery_intent_sha256: None,
+            initial_candidate_sha256: None,
         };
 
         assert_eq!(
