@@ -618,7 +618,7 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     credential_generation: Some(args.generation),
                     credential_transition_action: None,
                     initial_commit_intent_sha256: Some(args.intent_sha256),
-                    initial_commit_slot: Some(args.slot as i32),
+                    initial_commit_slot: Some(args.slot),
                 },
             )?;
             print_privileged_result(&result);
@@ -1465,7 +1465,7 @@ async fn process_privileged_request(
                 let intent = request.initial_commit_intent_sha256.as_deref()
                     .ok_or_else(|| "initial Windows paired commit intent absent".to_owned())?;
                 let (code, detail) = credential_transition::initial_commit(
-                    install_root, &activation, generation, slot, intent
+                    install_root, &activation, generation, slot as i32, intent
                 )?;
                 Ok((code, detail, Some(activation.release_set_sha256)))
             }
