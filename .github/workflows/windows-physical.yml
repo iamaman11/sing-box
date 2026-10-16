@@ -567,7 +567,7 @@ jobs:
           if ($LASTEXITCODE -ne 0 -or -not $?) { throw 'Windows initial stage ended without confirmed evidence' }
 
   physical:
-    if: needs.resolve.outputs.operation != 'acceptance-reconcile' && needs.resolve.outputs.operation != 'initial-pair-stage' && needs.resolve.outputs.operation != 'initial-pair-prepare'
+    if: needs.resolve.outputs.operation != 'acceptance-reconcile' && needs.resolve.outputs.operation != 'initial-pair-stage' && needs.resolve.outputs.operation != 'initial-pair-prepare' && needs.resolve.outputs.operation != 'apply'
     name: Windows / ${{ needs.resolve.outputs.operation }}
     needs: resolve
     runs-on:
