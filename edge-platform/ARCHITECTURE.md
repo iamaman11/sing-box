@@ -1,5 +1,25 @@
 # Edge platform architecture authority
 
+**Accepted operator simplification target (16 October 2026):** GitHub is the
+only remote control surface; native Rust Windows SYSTEM and VM root owners
+remain the sole mutation authorities. Operator language is **status / apply /
+recover**, with first-use versus already-ACTIVE decided from observed state,
+not separate operator-selected installation ceremonies. Apply is desired-state
+convergence with one authoritative pre-mutation proof and one exact readback;
+it must not start a deliberately stopped ProxyOnly service merely to upgrade
+binaries. Recover is admitted only against a durable, independently verified
+partial/uncertain intent. Neither status nor a local ACTIVE cursor proves
+Worker origin. Preserve the exact immutable ReleaseSet, protected GitHub
+journal, unknown-ACK no-replay boundary, One Client independence and zero-TUN
+Windows baseline. The existing lower-level commands remain until safe
+equivalence is established; do not alias apply to the current /windows converge
+(which starts SCM). Current implementation adds nonsecret native cursor classification,
+/windows status and an explicit /windows apply for an existing stopped
+ProxyOnly ACTIVE cursor. This is program-only: exact source/target ReleaseSet,
+one durable GitHub BEGIN, and SCM/credential metadata readback. Unknown Worker
+origin cannot authorize changes to credentials. Cross-host status and full
+apply/recover remain NOT_ACCEPTED until physical end-to-end tests.
+
 This file defines the stable ownership/invariant model and steady-state target. **Physical N1/N2 external Line1 4/4 + Line2 6/6, before and after one VM reboot, is accepted** in [GitHub Actions #38627187731](https://github.com/iamaman11/sing-box/actions/runs/38627187731). The unchanged Worker credential generation and exact transient Windows/Access cleanup were also proven. **Do not infer that the reused VM was disposed, that its staged candidate has been promoted to an active credential pointer, or that an already-running container's credential source has been cryptographically attributed.** These remain N1/N2 lifecycle closure gates; Windows bidirectional mode changes remain N3, and production lifecycle N4 is unaccepted. Current operational evidence and ordering are in Issue #26, not older historical passages below.
 
 **Paired COMMIT_INTENT native read-only policy (16 October 2026):** The

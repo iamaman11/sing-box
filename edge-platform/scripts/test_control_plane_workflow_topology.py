@@ -132,11 +132,111 @@ def test_workflow_job_boundaries(source: str) -> None:
         raise SystemExit("workflow boundary validator missed malformed YAML regression")
 
 
+def verify_windows_operation_owners(source: str) -> None:
+    """Every authorized command must select its intended Windows job owners.
+
+    Verify job-level GitHub if expressions, not just keyword presence.
+    A single apply must never spawn both the dedicated owner and the
+    general physical lifecycle job. First-use staging deliberately uses
+    two SEQUENTIAL Windows jobs separated by its single-use journal owner.
+    """
+    job_blocks = dict(re.findall(
+        r"(?ms)^  ([a-z][a-z0-9_]*):\n(.*?)(?=^  [a-z][a-z0-9_]*:\n|\Z)",
+        source,
+    ))
+    guarded_jobs = {
+        "reconcile_first_use",
+        "apply_existing_active",
+        "initial_first_use_prepare",
+        "initial_first_use_preflight",
+        "initial_first_use_stage",
+        "physical",
+    }
+    require(guarded_jobs <= job_blocks.keys(), "Windows job owner missing")
+    expected = {
+        "diagnose": {"physical"},
+        "quality-line1": {"physical"},
+        "converge": {"physical"},
+        "start": {"physical"},
+        "stop": {"physical"},
+        "restart-controller": {"physical"},
+        "repair": {"physical"},
+        "rollback": {"physical"},
+        "acceptance-reconcile": {"reconcile_first_use"},
+        "initial-pair-prepare": {"initial_first_use_prepare"},
+        "initial-pair-stage": {"initial_first_use_preflight", "initial_first_use_stage"},
+        "apply": {"apply_existing_active"},
+    }
+    expressions = {}
+    for job in guarded_jobs:
+        raw = re.findall(r"^    if: ([^\n]+)$", job_blocks[job], re.MULTILINE)
+        require(len(raw) == 1, f"Windows job {job} must have one bounded routing expression")
+        terms = raw[0].split(" && ")
+        operation_terms = []
+        for term in terms:
+            match = re.fullmatch(
+                r"needs\.resolve\.outputs\.operation (==|!=) '([a-z-]+)'",
+                term,
+            )
+            if match:
+                operation_terms.append((match.group(1), match.group(2)))
+            elif term not in (
+                "needs.initial_first_use_preflight.result == 'success'",
+                "needs.initial_first_use_reservation.result == 'success'",
+            ):
+                raise SystemExit(f"unexpected Windows job routing predicate: {job}: {term}")
+        require(operation_terms, f"Windows job {job} has no operation constraint")
+        expressions[job] = operation_terms
+
+    for operation, owners in expected.items():
+        selected = {
+            job for job, conditions in expressions.items()
+            if all((operation == value if operator == "==" else operation != value)
+                   for operator, value in conditions)
+        }
+        require(
+            selected == owners,
+            f"Windows operation {operation} routed to {sorted(selected)}; "
+            f"expected {sorted(owners)}",
+        )
+
+
+def test_windows_operation_owners(source: str) -> None:
+    verify_windows_operation_owners(source)
+    # Deliberately reintroduce the precise overlapping-owner regression.
+    unsafe = source.replace(
+        " && needs.resolve.outputs.operation != 'apply'",
+        "",
+        1,
+    )
+    require(unsafe != source, "Windows physical apply exclusion missing")
+    for modified in (
+        unsafe,
+        source.replace(
+            "if: needs.resolve.outputs.operation == 'apply'",
+            "if: needs.resolve.outputs.operation == 'diagnose'",
+            1,
+        ),
+        source.replace(
+            "if: needs.resolve.outputs.operation == 'apply'",
+            "if: needs.resolve.outputs.operation != 'apply'",
+            1,
+        ),
+    ):
+        require(modified != source, "Windows negative dispatch fixture missing")
+        try:
+            verify_windows_operation_owners(modified)
+        except SystemExit:
+            continue
+        raise SystemExit("Windows dispatcher accepted a duplicate or wrong operation owner")
+
+
 def main() -> None:
     router = ROUTER.read_text(encoding="utf-8")
     application = APPLICATION.read_text(encoding="utf-8")
     vultr = VULTR.read_text(encoding="utf-8")
     windows_physical = WINDOWS_PHYSICAL.read_text(encoding="utf-8")
+    test_windows_operation_owners(windows_physical)
     credentials = CREDENTIALS.read_text(encoding="utf-8")
     test_workflow_job_boundaries(credentials)
     vpc = VPC.read_text(encoding="utf-8")
@@ -1731,6 +1831,11 @@ def main() -> None:
         and "/windows cutover" not in windows_physical
         and "github.event.comment.body == '/windows diagnose'" in router
         and "github.event.comment.body == '/windows converge'" in router
+        and "github.event.comment.body == '/windows apply'" in router
+        and 'operation="apply"' in windows_physical
+        and "EXISTING_ACTIVE_RELEASE_ONLY" in windows_physical
+        and "sing-box-windows-active-release-apply/v1" in windows_physical
+        and "Single native SYSTEM offline release apply and bounded readback" in windows_physical
         and "github.event.comment.body == '/windows start'" in router
         and "github.event.comment.body == '/windows stop'" in router
         and "github.event.comment.body == '/windows restart-controller'" in router
@@ -1748,7 +1853,7 @@ def main() -> None:
         and "restart-verify-runtime" not in windows_physical
         and "Verify exact authority and SCM handoff" in windows_physical
         and "Read-only privileged runtime evidence after restart" in windows_physical
-        and windows_physical.count("privileged-runtime-evidence") == 4
+        and windows_physical.count("privileged-runtime-evidence") == 5
         and windows_physical.rindex("verify-runtime") < windows_physical.rindex("privileged-runtime-evidence")
         and "runtime\\sing-box.stderr.log" not in windows_physical
         and "runtime_evidence=BOUNDED_READ_ONLY" in windows_physical
@@ -1795,7 +1900,7 @@ def main() -> None:
         and "managed_tun_present" in windows_physical
         and "start-local $env:EDGE_CONTROLLER_ENDPOINT" in windows_physical
         and "runtime_start=NOOP_ALREADY_RUNNING" in windows_physical
-        and windows_physical.count("privileged-runtime-evidence") == 4
+        and windows_physical.count("privileged-runtime-evidence") == 5
         and "EDGE_STOPPED_OWNER_RECOVERY=YES" in windows_physical
         and "Bounded recovery still observes privileged external sing-box ownership" in windows_physical
         and "stopped_owner_recovery_diagnostic_exit=NORMALIZED_AFTER_PROVEN_CONFLICT" in windows_physical
