@@ -28,9 +28,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use edge_observability::init as init_observability;
 use edge_secrets::{
-    ACCESS_IDENTITY_FILE_NAME, ApplicationRuntimeSecrets, CredentialOriginSelection, CredentialStore,
-    InitialDummySlotProof, attest_worker_credential_origin, fetch_canonical_credential_bundle,
-    verify_canonical_dummy_ab_slots,
+    ACCESS_IDENTITY_FILE_NAME, ApplicationRuntimeSecrets, CredentialOriginSelection,
+    CredentialStore, InitialDummySlotProof, attest_worker_credential_origin,
+    fetch_canonical_credential_bundle, verify_canonical_dummy_ab_slots,
     verify_initial_selected_dummy_slot,
 };
 use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
