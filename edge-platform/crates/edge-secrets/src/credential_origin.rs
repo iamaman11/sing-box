@@ -54,6 +54,24 @@ pub async fn attest_worker_credential_origin(
     projection: CredentialProjectionKind,
     selection: CredentialOriginSelection,
 ) -> Result<CredentialOriginObservation, String> {
+    attest_worker_credential_origin_with(store_root, projection, selection, |kind, generation| {
+        fetch_canonical_credential_bundle(kind, generation, identity_path)
+    })
+    .await
+}
+
+// This private seam allows deterministic races to be tested without a live
+// Worker. The production path always performs an authenticated canonical GET.
+async fn attest_worker_credential_origin_with<F, Fut>(
+    store_root: &Path,
+    projection: CredentialProjectionKind,
+    selection: CredentialOriginSelection,
+    fetch: F,
+) -> Result<CredentialOriginObservation, String>
+where
+    F: FnOnce(CredentialProjectionKind, u64) -> Fut,
+    Fut: std::future::Future<Output = Result<CredentialDeliveryBundle, String>>,
+{
     if !matches!(
         projection,
         CredentialProjectionKind::Windows | CredentialProjectionKind::Vm
@@ -78,7 +96,7 @@ pub async fn attest_worker_credential_origin(
     let local = store
         .read_bundle(reference)
         .map_err(|_| "WORKER_ORIGIN_BLOCKED: local bundle invalid")?;
-    let remote = fetch_canonical_credential_bundle(projection, reference.generation, identity_path)
+    let remote = fetch(projection, reference.generation)
         .await
         .map_err(|_| "WORKER_ORIGIN_BLOCKED: Worker lookup unproven")?;
     verify_remote_identity(projection, reference, &local, &remote).map_err(str::to_owned)?;
@@ -89,6 +107,15 @@ pub async fn attest_worker_credential_origin(
         != Some(&before)
     {
         return Err("WORKER_ORIGIN_BLOCKED: cursor changed during Worker observation".to_owned());
+    }
+    // An unchanged pointer is not sufficient if a bundle file was replaced
+    // while the authenticated Worker request was in flight.
+    if store
+        .read_bundle(reference)
+        .map_err(|_| "WORKER_ORIGIN_BLOCKED: bundle re-read failed")?
+        != local
+    {
+        return Err("WORKER_ORIGIN_BLOCKED: bundle changed during Worker observation".to_owned());
     }
     let slot = match CredentialDeliverySlot::try_from(reference.slot) {
         Ok(CredentialDeliverySlot::A) => "A",
@@ -173,4 +200,141 @@ mod tests {
             CredentialOriginSelection::Candidate
         );
     }
+
+    fn valid_bundle(generation: u64, slot: CredentialDeliverySlot) -> CredentialDeliveryBundle {
+        use edge_shared_types::{
+            RealityPublicIdentity, RealityPublicIdentityGeneration, TunnelAuthentication,
+            TunnelAuthenticationGeneration, WindowsCredentialProjection,
+            credential_delivery_bundle,
+        };
+        CredentialDeliveryBundle {
+            schema_version: 1,
+            generation,
+            projection: CredentialProjectionKind::Windows as i32,
+            slot: slot as i32,
+            dummy_non_secret: false,
+            payload: Some(credential_delivery_bundle::Payload::Windows(
+                WindowsCredentialProjection {
+                    tunnel_auth: Some(TunnelAuthenticationGeneration {
+                        generation,
+                        direct: Some(TunnelAuthentication {
+                            vless_uuid: "00000000-0000-4000-8000-000000000001".to_owned(),
+                            hysteria2_password: "a".repeat(64),
+                            reality_short_id: "b".repeat(16),
+                        }),
+                        warp: Some(TunnelAuthentication {
+                            vless_uuid: "00000000-0000-4000-8000-000000000002".to_owned(),
+                            hysteria2_password: "c".repeat(64),
+                            reality_short_id: "d".repeat(16),
+                        }),
+                    }),
+                    reality_identity: Some(RealityPublicIdentityGeneration {
+                        generation,
+                        direct: Some(RealityPublicIdentity {
+                            public_key: "A".repeat(43),
+                        }),
+                        warp: Some(RealityPublicIdentity {
+                            public_key: "B".repeat(43),
+                        }),
+                    }),
+                },
+            )),
+        }
+    }
+
+    fn active_store(label: &str, bundle: &CredentialDeliveryBundle) -> std::path::PathBuf {
+        use std::time::{SystemTime, UNIX_EPOCH};
+        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "edge-origin-{label}-{}-{stamp}",
+            std::process::id()
+        ));
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Windows).unwrap();
+        store.stage_candidate(bundle).unwrap();
+        store.promote_candidate().unwrap();
+        root
+    }
+
+    // No additional async runtime dependency: injected lookup is always ready.
+    fn ready<F: std::future::Future>(future: F) -> F::Output {
+        use std::future::Future;
+        use std::task::{Context, Poll, Waker};
+        let mut future = std::pin::pin!(future);
+        let mut context = Context::from_waker(Waker::noop());
+        match Future::poll(future.as_mut(), &mut context) {
+            Poll::Ready(result) => result,
+            Poll::Pending => panic!("test Worker future must not suspend"),
+        }
+    }
+
+    #[test]
+    fn valid_worker_bundle_proves_existing_active_origin() {
+        let bundle = valid_bundle(123, CredentialDeliverySlot::A);
+        let expected = local_credential_bundle_ref(&bundle).unwrap();
+        let root = active_store("positive", &bundle);
+        let observed = ready(attest_worker_credential_origin_with(
+            &root,
+            CredentialProjectionKind::Windows,
+            CredentialOriginSelection::Active,
+            |projection, generation| async {
+                assert_eq!(projection, CredentialProjectionKind::Windows);
+                assert_eq!(generation, 123);
+                Ok(bundle)
+            },
+        ))
+        .unwrap();
+        assert_eq!(observed.generation, expected.generation);
+        assert_eq!(observed.slot, "A");
+        assert_eq!(observed.bundle_sha256, expected.sha256);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn changed_worker_production_bundle_is_rejected() {
+        let bundle = valid_bundle(123, CredentialDeliverySlot::A);
+        let root = active_store("mismatch", &bundle);
+        let mut modified = bundle.clone();
+        if let Some(edge_shared_types::credential_delivery_bundle::Payload::Windows(w)) =
+            modified.payload.as_mut()
+        {
+            w.reality_identity
+                .as_mut()
+                .unwrap()
+                .direct
+                .as_mut()
+                .unwrap()
+                .public_key = "Z".repeat(43);
+        }
+        let result = ready(attest_worker_credential_origin_with(
+            &root,
+            CredentialProjectionKind::Windows,
+            CredentialOriginSelection::Active,
+            |_, _| async { Ok(modified) },
+        ));
+        assert!(result.unwrap_err().starts_with("WORKER_ORIGIN_BLOCKED:"));
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn cursor_mutation_during_worker_request_is_rejected() {
+        let bundle = valid_bundle(123, CredentialDeliverySlot::A);
+        let root = active_store("cursor-race", &bundle);
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Windows).unwrap();
+        let next = valid_bundle(124, CredentialDeliverySlot::B);
+        let result = ready(attest_worker_credential_origin_with(
+            &root,
+            CredentialProjectionKind::Windows,
+            CredentialOriginSelection::Active,
+            |_, _| async {
+                store.stage_candidate(&next).unwrap();
+                Ok(bundle)
+            },
+        ));
+        assert_eq!(
+            result.unwrap_err(),
+            "WORKER_ORIGIN_BLOCKED: cursor changed during Worker observation"
+        );
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
 }

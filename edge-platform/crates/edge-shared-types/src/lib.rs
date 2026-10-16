@@ -1014,9 +1014,7 @@ pub fn validate_windows_privileged_request(
                 || request.credential_generation.is_some()
                 || request.credential_transition_action.is_some()
             {
-                return Err(
-                    "CREDENTIAL_ORIGIN request must carry no mutation authority".to_owned(),
-                );
+                return Err("CREDENTIAL_ORIGIN request must carry no mutation authority".to_owned());
             }
         }
         WindowsPrivilegedOperation::RuntimeEvidence => {
