@@ -185,7 +185,7 @@ pub async fn run_delivery(
         CredentialDeliveryCommand::ExistingJoinPlan { .. }
         | CredentialDeliveryCommand::ExistingJoinReadback { .. } => {
             unreachable!("existing join runs before provider authority")
-        },
+        }
         CredentialDeliveryCommand::InitialLine2ExternalWitness { .. } => {
             unreachable!("independent witness is dispatched before provider authority")
         }

@@ -5,7 +5,6 @@
 use serde::{Deserialize, Serialize};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
-use std::path::Path;
 
 const MARKER: &str = "<!-- sing-box-credential-existing-join/v1 -->";
 const FAMILY: &str = "<!-- sing-box-credential-existing-join/";
@@ -40,7 +39,9 @@ pub(crate) struct ExistingJoinIntent {
 
 fn lower_hex(text: &str, size: usize) -> bool {
     text.len() == size
-        && text.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        && text
+            .bytes()
+            .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
 }
 
 fn validate(spec: &ExistingJoinIntent, revision: &str, release: &str) -> Result<(), String> {
@@ -82,7 +83,9 @@ fn records(history: &str) -> Result<Vec<String>, String> {
         .map_err(|_| "join journal must be a complete JSON comment array".to_owned())?;
     let mut found = Vec::new();
     for value in array {
-        let body = value.get("body").and_then(|v| v.as_str())
+        let body = value
+            .get("body")
+            .and_then(|v| v.as_str())
             .ok_or_else(|| "join journal has a missing comment body".to_owned())?;
         if body.trim().is_empty() {
             return Err("join journal has an empty comment body".to_owned());
@@ -123,14 +126,15 @@ pub(crate) fn readback(
     release: &str,
 ) -> Result<(), String> {
     validate(spec, revision, release)?;
-    let raw = exact.strip_prefix(&format!("{MARKER}\n"))
+    let raw = exact
+        .strip_prefix(&format!("{MARKER}\n"))
         .ok_or_else(|| "existing-active join readback marker missing".to_owned())?;
     let actual: ExistingJoinIntent = serde_json::from_str(raw)
         .map_err(|_| "existing-active join readback record malformed".to_owned())?;
-    if actual != *spec
-        || serde_json::to_string(&actual).ok().as_deref() != Some(raw)
-    {
-        return Err("existing-active join record differs from exact immutable witnesses".to_owned());
+    if actual != *spec || serde_json::to_string(&actual).ok().as_deref() != Some(raw) {
+        return Err(
+            "existing-active join record differs from exact immutable witnesses".to_owned(),
+        );
     }
     let history_records = records(history)?;
     if history_records.len() != 1 || history_records[0] != exact {
@@ -147,11 +151,14 @@ pub(crate) fn dispatch(
     use crate::cli::CredentialDeliveryCommand;
     match command {
         CredentialDeliveryCommand::ExistingJoinPlan {
-            spec_path, journal_history_path, record_output_path,
+            spec_path,
+            journal_history_path,
+            record_output_path,
         } => {
             let spec: ExistingJoinIntent = serde_json::from_slice(
                 &fs::read(spec_path).map_err(|_| "existing join spec unavailable")?,
-            ).map_err(|_| "existing join spec invalid")?;
+            )
+            .map_err(|_| "existing join spec invalid")?;
             let history = fs::read_to_string(journal_history_path)
                 .map_err(|_| "existing join history unavailable")?;
             let text = plan(&spec, &history, revision, release)?;
@@ -164,9 +171,11 @@ pub(crate) fn dispatch(
                 use std::os::unix::fs::OpenOptionsExt;
                 options.mode(0o600);
             }
-            let mut file = options.open(record_output_path)
+            let mut file = options
+                .open(record_output_path)
                 .map_err(|_| "existing join local record already exists or UNKNOWN")?;
-            file.write_all(text.as_bytes()).and_then(|_| file.sync_all())
+            file.write_all(text.as_bytes())
+                .and_then(|_| file.sync_all())
                 .map_err(|_| "existing join local record write UNKNOWN")?;
             println!("existing_join_policy=INTENT_PLANNED_LOCAL_ONLY");
             println!("credential_provider_mutations=0");
@@ -174,11 +183,14 @@ pub(crate) fn dispatch(
             Ok(())
         }
         CredentialDeliveryCommand::ExistingJoinReadback {
-            spec_path, journal_history_path, exact_record_path,
+            spec_path,
+            journal_history_path,
+            exact_record_path,
         } => {
             let spec: ExistingJoinIntent = serde_json::from_slice(
                 &fs::read(spec_path).map_err(|_| "existing join spec unavailable")?,
-            ).map_err(|_| "existing join spec invalid")?;
+            )
+            .map_err(|_| "existing join spec invalid")?;
             let history = fs::read_to_string(journal_history_path)
                 .map_err(|_| "existing join history unavailable")?;
             let exact = fs::read_to_string(exact_record_path)
@@ -202,9 +214,21 @@ mod tests {
             run_id: 345,
             accepted_revision: "a".repeat(40),
             release_set_sha256: "b".repeat(64),
-            windows_active: Witness { generation: 101, slot: "A".to_owned(), sha256: "c".repeat(64) },
-            windows_candidate: Witness { generation: 202, slot: "B".to_owned(), sha256: "d".repeat(64) },
-            vm_candidate: Witness { generation: 202, slot: "B".to_owned(), sha256: "e".repeat(64) },
+            windows_active: Witness {
+                generation: 101,
+                slot: "A".to_owned(),
+                sha256: "c".repeat(64),
+            },
+            windows_candidate: Witness {
+                generation: 202,
+                slot: "B".to_owned(),
+                sha256: "d".repeat(64),
+            },
+            vm_candidate: Witness {
+                generation: 202,
+                slot: "B".to_owned(),
+                sha256: "e".repeat(64),
+            },
             windows_worker_both_exact: true,
             windows_stopped_proxy_only: true,
             windows_line1_four_authenticated: true,
@@ -218,17 +242,36 @@ mod tests {
         let record = plan(&g, "[]", &g.accepted_revision, &g.release_set_sha256).unwrap();
         let history = serde_json::json!([{"body":record}]).to_string();
         let expected = format!("{MARKER}\n{}", serde_json::to_string(&g).unwrap());
-        readback(&g, &history, &expected, &g.accepted_revision, &g.release_set_sha256).unwrap();
+        readback(
+            &g,
+            &history,
+            &expected,
+            &g.accepted_revision,
+            &g.release_set_sha256,
+        )
+        .unwrap();
         assert!(plan(&g, &history, &g.accepted_revision, &g.release_set_sha256).is_err());
     }
     #[test]
     fn false_origin_mismatch_slot_or_release_blocks() {
         let g = good();
         for changed in [
-            ExistingJoinIntent { vm_worker_candidate_exact: false, ..g.clone() },
-            ExistingJoinIntent { windows_line1_four_authenticated: false, ..g.clone() },
-            ExistingJoinIntent { windows_candidate: g.windows_active.clone(), ..g.clone() },
-            ExistingJoinIntent { release_set_sha256: "f".repeat(64), ..g.clone() },
+            ExistingJoinIntent {
+                vm_worker_candidate_exact: false,
+                ..g.clone()
+            },
+            ExistingJoinIntent {
+                windows_line1_four_authenticated: false,
+                ..g.clone()
+            },
+            ExistingJoinIntent {
+                windows_candidate: g.windows_active.clone(),
+                ..g.clone()
+            },
+            ExistingJoinIntent {
+                release_set_sha256: "f".repeat(64),
+                ..g.clone()
+            },
         ] {
             assert!(plan(&changed, "[]", &g.accepted_revision, &g.release_set_sha256).is_err());
         }
@@ -238,9 +281,19 @@ mod tests {
         let g = good();
         let record = plan(&g, "[]", &g.accepted_revision, &g.release_set_sha256).unwrap();
         let duplicate = serde_json::json!([{"body":record},{"body":record}]).to_string();
-        assert!(readback(&g, &duplicate, &record, &g.accepted_revision, &g.release_set_sha256).is_err());
+        assert!(
+            readback(
+                &g,
+                &duplicate,
+                &record,
+                &g.accepted_revision,
+                &g.release_set_sha256
+            )
+            .is_err()
+        );
         assert!(plan(&g, &duplicate, &g.accepted_revision, &g.release_set_sha256).is_err());
-        let partial = serde_json::json!([{"body":"<!-- sing-box-credential-existing-join/v2 -->"}]).to_string();
+        let partial = serde_json::json!([{"body":"<!-- sing-box-credential-existing-join/v2 -->"}])
+            .to_string();
         assert!(plan(&g, &partial, &g.accepted_revision, &g.release_set_sha256).is_err());
     }
 }
