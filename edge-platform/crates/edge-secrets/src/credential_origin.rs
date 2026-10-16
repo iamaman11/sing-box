@@ -244,7 +244,10 @@ mod tests {
 
     fn active_store(label: &str, bundle: &CredentialDeliveryBundle) -> std::path::PathBuf {
         use std::time::{SystemTime, UNIX_EPOCH};
-        let stamp = SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos();
+        let stamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
         let root = std::env::temp_dir().join(format!(
             "edge-origin-{label}-{}-{stamp}",
             std::process::id()
@@ -336,5 +339,4 @@ mod tests {
         );
         std::fs::remove_dir_all(root).unwrap();
     }
-
 }
