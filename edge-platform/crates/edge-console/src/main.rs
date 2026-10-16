@@ -1842,6 +1842,57 @@ fn require_offline_first_use_stage_owner(install_root: &Path) -> Result<(), Stri
     Ok(())
 }
 
+// Classify the existing local cursor before choosing any mutation path. These
+// are ownership observations, never proof that a Worker/VM generation matches.
+// No parser of historical log text may grant first-use or active authority.
+fn classify_windows_credential_lifecycle(
+    cursor: &str,
+    runtime: &str,
+    config: &str,
+    identity: &str,
+) -> (&'static str, &'static str) {
+    if cursor == "credential_cursor=ABSENT" {
+        if runtime != "ABSENT" || config != "ABSENT" {
+            return ("PARTIAL", "READ_ONLY_RECONCILE");
+        }
+        return if identity == "PRESENT_NONEMPTY_UNVERIFIED" {
+            ("FRESH_LOCAL_ONLY", "JOURNAL_AUTHORIZATION_REQUIRED")
+        } else {
+            ("FRESH_NEEDS_IDENTITY", "NATIVE_IDENTITY_BOOTSTRAP_REQUIRED")
+        };
+    }
+    let field = |name: &str| {
+        let mut matches = cursor.split(';').filter_map(|entry| {
+            let (key, value) = entry.split_once('=')?;
+            (key == name).then_some(value)
+        });
+        let value = matches.next();
+        if matches.next().is_some() {
+            None
+        } else {
+            value
+        }
+    };
+    if field("credential_cursor") != Some("VALID") {
+        return ("UNKNOWN", "READ_ONLY_RECONCILE");
+    }
+    match (
+        field("credential_active_present"),
+        field("credential_candidate_present"),
+    ) {
+        (Some("true"), Some("false")) if runtime == "PRESENT" && config == "PRESENT" => {
+            ("EXISTING_ACTIVE_UNVERIFIED", "READ_ONLY_ORIGIN_RECONCILE")
+        }
+        (Some("false"), Some("true")) => {
+            ("EXISTING_CANDIDATE_UNVERIFIED", "READ_ONLY_ORIGIN_RECONCILE")
+        }
+        (Some("true"), Some("true")) => {
+            ("EXISTING_TRANSITION_UNVERIFIED", "READ_ONLY_ORIGIN_RECONCILE")
+        }
+        _ => ("PARTIAL", "READ_ONLY_RECONCILE"),
+    }
+}
+
 fn read_bounded_windows_runtime_evidence(install_root: &Path) -> Result<String, String> {
     let runtime_root = install_root.join("runtime");
     #[cfg(windows)]
@@ -1891,8 +1942,10 @@ fn read_bounded_windows_runtime_evidence(install_root: &Path) -> Result<String, 
         Some(_) => "INVALID",
         None => "ABSENT",
     };
+    let (lifecycle, next_action) =
+        classify_windows_credential_lifecycle(&cursor, runtime, config, identity);
     let critical = format!(
-        "runtime_evidence=BOUNDED_READ_ONLY;{controller_error};{process_classification};{scheduled_tasks};{external_owner};{cursor};first_use_runtime={runtime};first_use_config={config};first_use_access_identity={identity}"
+        "runtime_evidence=BOUNDED_READ_ONLY;{controller_error};{process_classification};{scheduled_tasks};{external_owner};{cursor};credential_lifecycle_state={lifecycle};credential_next_action={next_action};credential_origin=UNPROVEN;first_use_runtime={runtime};first_use_config={config};first_use_access_identity={identity}"
     );
     if critical.len() > RUNTIME_EVIDENCE_RESULT_MAX_BYTES {
         return Err(format!(
@@ -6366,6 +6419,65 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
         fs::write(store.join("state.pb"), b"corrupt").unwrap();
         assert!(read_bounded_windows_credential_cursor(&root).is_err());
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn local_credential_status_is_not_a_remote_origin_proof() {
+        let active = "credential_cursor=VALID;credential_active_present=true;credential_candidate_present=false;credential_active_generation=7;credential_active_slot=B";
+        assert_eq!(
+            classify_windows_credential_lifecycle(
+                active,
+                "PRESENT",
+                "PRESENT",
+                "PRESENT_NONEMPTY_UNVERIFIED"
+            ),
+            ("EXISTING_ACTIVE_UNVERIFIED", "READ_ONLY_ORIGIN_RECONCILE")
+        );
+        assert_eq!(
+            classify_windows_credential_lifecycle(
+                active,
+                "ABSENT",
+                "PRESENT",
+                "PRESENT_NONEMPTY_UNVERIFIED"
+            ),
+            ("PARTIAL", "READ_ONLY_RECONCILE")
+        );
+        assert_eq!(
+            classify_windows_credential_lifecycle(
+                "credential_cursor=ABSENT",
+                "ABSENT",
+                "ABSENT",
+                "PRESENT_NONEMPTY_UNVERIFIED"
+            ),
+            ("FRESH_LOCAL_ONLY", "JOURNAL_AUTHORIZATION_REQUIRED")
+        );
+        assert_eq!(
+            classify_windows_credential_lifecycle(
+                "credential_cursor=ABSENT",
+                "PRESENT",
+                "ABSENT",
+                "PRESENT_NONEMPTY_UNVERIFIED"
+            ),
+            ("PARTIAL", "READ_ONLY_RECONCILE")
+        );
+        assert_eq!(
+            classify_windows_credential_lifecycle(
+                "credential_cursor=VALID;credential_active_present=false;credential_candidate_present=true",
+                "ABSENT",
+                "ABSENT",
+                "PRESENT_NONEMPTY_UNVERIFIED"
+            ),
+            ("EXISTING_CANDIDATE_UNVERIFIED", "READ_ONLY_ORIGIN_RECONCILE")
+        );
+        assert_eq!(
+            classify_windows_credential_lifecycle(
+                "credential_cursor=VALID;credential_active_present=true;credential_active_present=false;credential_candidate_present=false",
+                "PRESENT",
+                "PRESENT",
+                "PRESENT_NONEMPTY_UNVERIFIED"
+            ),
+            ("PARTIAL", "READ_ONLY_RECONCILE")
+        );
     }
 
     #[test]
