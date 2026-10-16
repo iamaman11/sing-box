@@ -980,6 +980,7 @@ pub fn validate_windows_privileged_request(
         operation,
         WindowsPrivilegedOperation::InitialCredentialCommit
             | WindowsPrivilegedOperation::InitialCredentialRecover
+            | WindowsPrivilegedOperation::ExistingCredentialJoin
     ) && (request.initial_commit_intent_sha256.is_some()
         || request.initial_commit_slot.is_some())
     {
@@ -990,6 +991,13 @@ pub fn validate_windows_privileged_request(
             || request.initial_candidate_sha256.is_some())
     {
         return Err("paired recovery fields are forbidden on unrelated operations".to_owned());
+    }
+    if operation != WindowsPrivilegedOperation::ExistingCredentialJoin
+        && (request.existing_join_vm_candidate_sha256.is_some()
+            || request.existing_join_windows_active_sha256.is_some()
+            || request.existing_join_windows_candidate_sha256.is_some())
+    {
+        return Err("existing join witnesses forbidden on unrelated operation".to_owned());
     }
     match operation {
         WindowsPrivilegedOperation::Unspecified => {
@@ -1141,6 +1149,39 @@ pub fn validate_windows_privileged_request(
             }
             if original == recovery {
                 return Err("paired recovery decision must differ from original commit".to_owned());
+            }
+        }
+        WindowsPrivilegedOperation::ExistingCredentialJoin => {
+            if request.accepted_revision.is_some()
+                || request.release_set_sha256.is_some()
+                || request.credential_transition_action.is_some()
+                || request.initial_recovery_intent_sha256.is_some()
+                || request.initial_candidate_sha256.is_some()
+                || request.credential_generation.unwrap_or(0) == 0
+                || !matches!(request.initial_commit_slot, Some(1 | 2))
+            {
+                return Err(
+                    "existing join requires generation/slot, exactly one durable intent and three owner witnesses"
+                        .to_owned(),
+                );
+            }
+            let digests = [
+                ("join_intent", request.initial_commit_intent_sha256.as_deref()),
+                ("join_vm_candidate", request.existing_join_vm_candidate_sha256.as_deref()),
+                ("join_windows_active", request.existing_join_windows_active_sha256.as_deref()),
+                ("join_windows_candidate", request.existing_join_windows_candidate_sha256.as_deref()),
+            ];
+            for (name, value) in digests {
+                validate_lower_hex(name, value.ok_or_else(|| format!("{name} absent"))?, 64)?;
+            }
+            if request.existing_join_windows_active_sha256
+                == request.existing_join_windows_candidate_sha256
+                || request.existing_join_windows_active_sha256
+                    == request.existing_join_vm_candidate_sha256
+                || request.existing_join_windows_candidate_sha256
+                    == request.existing_join_vm_candidate_sha256
+            {
+                return Err("existing join witness hashes must be distinct projections".to_owned());
             }
         }
         WindowsPrivilegedOperation::StageCredential => {
@@ -2843,6 +2884,9 @@ mod tests {
             initial_commit_slot: None,
             initial_recovery_intent_sha256: None,
             initial_candidate_sha256: None,
+            existing_join_vm_candidate_sha256: None,
+            existing_join_windows_active_sha256: None,
+            existing_join_windows_candidate_sha256: None,
         };
         let bytes = encode_windows_privileged_request(&request).unwrap();
         assert_eq!(decode_windows_privileged_request(&bytes).unwrap(), request);
@@ -2866,6 +2910,9 @@ mod tests {
             initial_commit_slot: None,
             initial_recovery_intent_sha256: None,
             initial_candidate_sha256: None,
+            existing_join_vm_candidate_sha256: None,
+            existing_join_windows_active_sha256: None,
+            existing_join_windows_candidate_sha256: None,
         };
         assert!(encode_windows_privileged_request(&request).is_ok());
 
@@ -2888,6 +2935,9 @@ mod tests {
             initial_commit_slot: None,
             initial_recovery_intent_sha256: None,
             initial_candidate_sha256: None,
+            existing_join_vm_candidate_sha256: None,
+            existing_join_windows_active_sha256: None,
+            existing_join_windows_candidate_sha256: None,
         };
         let encoded = encode_windows_privileged_request(&request).unwrap();
         assert_eq!(
@@ -2928,6 +2978,9 @@ mod tests {
             initial_commit_slot: None,
             initial_recovery_intent_sha256: None,
             initial_candidate_sha256: None,
+            existing_join_vm_candidate_sha256: None,
+            existing_join_windows_active_sha256: None,
+            existing_join_windows_candidate_sha256: None,
         };
         assert!(encode_windows_privileged_request(&request).is_ok());
 
@@ -2950,6 +3003,9 @@ mod tests {
             initial_commit_slot: None,
             initial_recovery_intent_sha256: None,
             initial_candidate_sha256: None,
+            existing_join_vm_candidate_sha256: None,
+            existing_join_windows_active_sha256: None,
+            existing_join_windows_candidate_sha256: None,
         };
         assert!(encode_windows_privileged_request(&request).is_ok());
 
@@ -2972,6 +3028,9 @@ mod tests {
             initial_commit_slot: None,
             initial_recovery_intent_sha256: None,
             initial_candidate_sha256: None,
+            existing_join_vm_candidate_sha256: None,
+            existing_join_windows_active_sha256: None,
+            existing_join_windows_candidate_sha256: None,
         };
         assert!(encode_windows_privileged_request(&request).is_ok());
 
@@ -3006,6 +3065,9 @@ mod tests {
             initial_commit_slot: None,
             initial_recovery_intent_sha256: None,
             initial_candidate_sha256: None,
+            existing_join_vm_candidate_sha256: None,
+            existing_join_windows_active_sha256: None,
+            existing_join_windows_candidate_sha256: None,
         };
         assert!(encode_windows_privileged_request(&request).is_ok());
 
@@ -3032,6 +3094,9 @@ mod tests {
             initial_commit_slot: Some(2),
             initial_recovery_intent_sha256: None,
             initial_candidate_sha256: None,
+            existing_join_vm_candidate_sha256: None,
+            existing_join_windows_active_sha256: None,
+            existing_join_windows_candidate_sha256: None,
         };
         let bytes = encode_windows_privileged_request(&valid).unwrap();
         assert_eq!(decode_windows_privileged_request(&bytes).unwrap(), valid);
@@ -3081,6 +3146,9 @@ mod tests {
             initial_commit_slot: Some(2),
             initial_recovery_intent_sha256: Some("b".repeat(64)),
             initial_candidate_sha256: Some("c".repeat(64)),
+            existing_join_vm_candidate_sha256: None,
+            existing_join_windows_active_sha256: None,
+            existing_join_windows_candidate_sha256: None,
         };
         let encoded = encode_windows_privileged_request(&request).unwrap();
         assert_eq!(
@@ -3141,6 +3209,9 @@ mod tests {
                 initial_commit_slot: None,
                 initial_recovery_intent_sha256: None,
                 initial_candidate_sha256: None,
+                existing_join_vm_candidate_sha256: None,
+                existing_join_windows_active_sha256: None,
+                existing_join_windows_candidate_sha256: None,
             };
             assert!(encode_windows_privileged_request(&request).is_ok());
         }
@@ -3158,6 +3229,9 @@ mod tests {
             initial_commit_slot: None,
             initial_recovery_intent_sha256: None,
             initial_candidate_sha256: None,
+            existing_join_vm_candidate_sha256: None,
+            existing_join_windows_active_sha256: None,
+            existing_join_windows_candidate_sha256: None,
         };
         assert!(encode_windows_privileged_request(&invalid).is_err());
     }
@@ -3181,6 +3255,9 @@ mod tests {
                 initial_commit_slot: None,
                 initial_recovery_intent_sha256: None,
                 initial_candidate_sha256: None,
+                existing_join_vm_candidate_sha256: None,
+                existing_join_windows_active_sha256: None,
+                existing_join_windows_candidate_sha256: None,
             };
             assert!(encode_windows_privileged_request(&request).is_ok());
 

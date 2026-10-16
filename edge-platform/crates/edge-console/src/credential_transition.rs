@@ -192,6 +192,59 @@ pub(crate) fn transition(
     }
 }
 
+/// Existing ACTIVE A -> selected B only. The protected GitHub owner must
+/// authenticate the exact durable A/B/VM intent before SYSTEM dispatch.
+/// This native action is one-shot and keeps A as PREVIOUS. SCM/TUN stay stopped.
+pub(crate) fn existing_join(
+    install_root: &Path,
+    activation: &WindowsActivationState,
+    generation: u64,
+    slot: i32,
+    intent_sha256: &str,
+    windows_a_sha256: &str,
+    windows_b_sha256: &str,
+    vm_b_sha256: &str,
+) -> Result<(String, String), String> {
+    verify_windows_activation_files(activation)?;
+    let store = open_store(install_root)?;
+    let before = store
+        .read_state()?
+        .ok_or_else(|| "Windows existing join cursor absent".to_owned())?;
+    require_active_v2_for_rotation(&before)?;
+    require_candidate_without_previous(&before)?;
+    let candidate = before
+        .candidate
+        .as_ref()
+        .ok_or_else(|| "Windows existing join candidate absent".to_owned())?;
+    if candidate.generation != generation
+        || candidate.slot != slot
+        || candidate.sha256 != windows_b_sha256
+    {
+        return Err("Windows existing join target differs from immutable intent".to_owned());
+    }
+    verify_exact_candidate_runtime(install_root, activation, &store, candidate)?;
+    let next = store.promote_windows_existing_join(
+        generation, slot, windows_a_sha256, windows_b_sha256,
+        vm_b_sha256, intent_sha256,
+    )?;
+    if next.active.as_ref().map(|v| v.sha256.as_str()) != Some(windows_b_sha256)
+        || next.previous.as_ref().map(|v| v.sha256.as_str()) != Some(windows_a_sha256)
+        || next.candidate.is_some()
+    {
+        return Err("Windows existing join pointer UNKNOWN; no replay".to_owned());
+    }
+    verify_exact_active_runtime(
+        install_root,
+        activation,
+        &store,
+        next.active.as_ref().unwrap(),
+    )?;
+    Ok((
+        "WINDOWS_EXISTING_JOIN_ACTIVE_LOCAL_ONLY".to_owned(),
+        format!("Windows generation {generation} slot {slot} ACTIVE, source A retained as PREVIOUS"),
+    ))
+}
+
 /// First-use ONLY: preserve the existing SYSTEM-only single-owner boundary.
 /// A protected GitHub paired commit intent must be independently verified
 /// before this request reaches SYSTEM. This function NEVER starts SCM/TUN.

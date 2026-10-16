@@ -53,6 +53,7 @@ pub(crate) enum Command {
     PrivilegedInitialCredentialCommit(PrivilegedInitialCredentialCommitArgs),
     // Exact separately authorized recovery of a previously failed paired first-use.
     PrivilegedInitialCredentialRecover(PrivilegedInitialCredentialRecoverArgs),
+    PrivilegedExistingJoin(PrivilegedExistingJoinArgs),
     CredentialTransition(CredentialTransitionArgs),
     RestartVerifyRuntime,
     VerifyRuntime,
@@ -114,6 +115,7 @@ impl Command {
             Self::PrivilegedStageCredential(_) => "privileged-stage-credential",
             Self::PrivilegedInitialCredentialCommit(_) => "privileged-initial-credential-commit",
             Self::PrivilegedInitialCredentialRecover(_) => "privileged-initial-credential-recover",
+            Self::PrivilegedExistingJoin(_) => "privileged-existing-join",
             Self::CredentialTransition(_) => "credential-transition",
             Self::RestartVerifyRuntime => "restart-verify-runtime",
             Self::VerifyRuntime => "verify-runtime",
@@ -230,6 +232,18 @@ pub(crate) struct PrivilegedInitialCredentialRecoverArgs {
     pub original_intent_sha256: String,
     pub recovery_intent_sha256: String,
     pub candidate_sha256: String,
+    #[arg(long, default_value = r"C:\sing-box")]
+    pub install_root: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PrivilegedExistingJoinArgs {
+    pub generation: u64,
+    pub slot: u32,
+    pub intent_sha256: String,
+    pub windows_active_sha256: String,
+    pub windows_candidate_sha256: String,
+    pub vm_candidate_sha256: String,
     #[arg(long, default_value = r"C:\sing-box")]
     pub install_root: String,
 }
