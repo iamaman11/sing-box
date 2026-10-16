@@ -95,6 +95,11 @@ def main() -> None:
         and "operation=\"initial-pair-prepare\"" in windows_physical
         and "initial_first_use_prepare:" in windows_physical
         and "FIRST_USE_UPGRADE_BLOCKED: staging already begun; reconcile instead" in windows_physical
+        and "FIRST_USE_UPGRADE_BLOCKED: program-upgrade intent already recorded; reconcile only" in windows_physical
+        and "sing-box-windows-program-prepare/v1" in windows_physical
+        and "first_use_upgrade_intent=COMMITTED_ONCE" in windows_physical
+        and "FIRST_USE_UPGRADE_UNKNOWN: exactly-one durable intent readback unproven; no replay" in windows_physical
+        and "Verify installed native capability and all preconditions before journalling" in windows_physical
         and "first_use_binary_prepare=EXACT_STOPPED_RELEASE_ACCEPTED" in windows_physical
         and "first_use_staging_begin=NOT_WRITTEN" in windows_physical
         and "FIRST_USE_STAGE_BLOCKED: exact previously prepared Windows release was not preserved" in windows_physical
