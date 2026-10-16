@@ -113,6 +113,12 @@ def main() -> None:
         and 'EDGE_FIRST_USE_TARGET_REVISION' in windows_physical
         and 'privileged-offline-activate' in windows_first_use_offline
         and 'FIRST_USE_OFFLINE_UNKNOWN:' in windows_first_use_offline
+        and "stopped ProxyOnly must be manual-start before BEGIN" in windows_first_use_offline
+        and "windows_offline_source_mode=" in windows_first_use_offline
+        and "protected native offline installer prerequisite missing before BEGIN" in windows_first_use_offline
+        and "bootstrap\\install-windows-release.ps1" in windows_first_use_offline
+        and "only stopped former ManagedTun may switch to ProxyOnly" not in windows_first_use_offline
+        and "if ([string]$before['release_set_sha256'] -cne $ReleaseSetSha256)" in windows_first_use_offline
         and 'Require-DirectNetwork' in windows_first_use_offline
         and 'windows_first_use_prebegin_preflight=PASS_READ_ONLY' in windows_first_use_offline
         and 'first_use_access_identity=PRESENT_NONEMPTY_UNVERIFIED' in windows_first_use_offline
@@ -379,6 +385,12 @@ def main() -> None:
             in windows_physical
         and "offline_command_advertised=$offlineCommandAdvertised" in windows_physical
         and "installedCommands = @(& $console --help)" in windows_physical
+        and '$formerManagedTun = (' in windows_physical
+        and '$stoppedProxyOnly = (' in windows_physical
+        and "requires exact stopped ManagedTun or manual ProxyOnly with no TUN" in windows_physical
+        and "$expectedStartMode = if ($formerManagedTun) { 'Auto' } else { 'Manual' }" in windows_physical
+        and "installed native owner cannot perform offline upgrade" in windows_physical
+        and "requires stopped old ManagedTun with desired ProxyOnly" not in windows_physical
         and "offline_mutations_performed=0" in windows_physical
         and windows_physical.count("      - name: Execute typed lifecycle mutation") == 1,
         "offline preflight must observe exact stopped owner and old privileged task without installation or TUN capture",
@@ -751,7 +763,11 @@ def main() -> None:
     # break the irreversible first-use / credential single-writer invariant.
     vm_observation_group = (
         "group: ${{ (inputs.command_body == '/production diagnose' || "
-        "startsWith(inputs.command_body, '/vm diagnose ')) && "
+        "inputs.command_body == '/production quality-line2' || "
+        "startsWith(inputs.command_body, '/vm diagnose ') || "
+        "startsWith(inputs.command_body, '/vm quality-line2 ') || "
+        "startsWith(inputs.command_body, '/vm credential-runtime-source ') || "
+        "startsWith(inputs.command_body, '/vm credential-initial-probe ')) && "
         "format('vm-observe-{0}', github.run_id) || "
         "format('credential-transaction-{0}', github.repository_id) }}"
     )

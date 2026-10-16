@@ -16,7 +16,7 @@ permissions: {}
 # A read-only diagnose must not hold the credentials mutation lock when
 # the selected VM self-hosted runner is offline. All writes retain that lock.
 concurrency:
-  group: ${{ (inputs.command_body == '/production diagnose' || startsWith(inputs.command_body, '/vm diagnose ')) && format('vm-observe-{0}', github.run_id) || format('credential-transaction-{0}', github.repository_id) }}
+  group: ${{ (inputs.command_body == '/production diagnose' || inputs.command_body == '/production quality-line2' || startsWith(inputs.command_body, '/vm diagnose ') || startsWith(inputs.command_body, '/vm quality-line2 ') || startsWith(inputs.command_body, '/vm credential-runtime-source ') || startsWith(inputs.command_body, '/vm credential-initial-probe ')) && format('vm-observe-{0}', github.run_id) || format('credential-transaction-{0}', github.repository_id) }}
   cancel-in-progress: false
 
 jobs:

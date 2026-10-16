@@ -1,5 +1,7 @@
-# Exact immutable offline ManagedTun -> ProxyOnly handoff, no SCM start.
-# Called only once from the canonical protected GitHub first-use Windows job.
+# Exact immutable stopped owner -> stopped ProxyOnly handoff, no SCM start.
+# This pre-BEGIN preflight must accept exactly the source states the subsequent
+# one-shot stage can handle: stopped ProxyOnly or stopped former ManagedTun.
+# SCM, routes, TUN, DNS and unrelated Cloudflare One remain untouched.
 [CmdletBinding()]
 param(
   [Parameter(Mandatory)][string]$AcceptedRevision,
@@ -45,6 +47,13 @@ function Read-Owner {
   if ($null -eq $service -or [string]$service.State -cne 'Stopped') {
     throw 'FIRST_USE_OFFLINE_BLOCKED: service state unknown/changed'
   }
+  # ProxyOnly must already be manual-start. A staged first-use candidate must
+  # never consume its one-time BEGIN while the old service can autostart.
+  if ([string]$v['windows_datapath_mode'] -ceq 'ProxyOnly' -and
+      ([string]$v['scm_start_type'] -cne 'OnDemand' -or
+       [string]$service.StartMode -cne 'Manual')) {
+    throw 'FIRST_USE_OFFLINE_BLOCKED: stopped ProxyOnly must be manual-start before BEGIN'
+  }
   return $v
 }
 function Require-DirectNetwork {
@@ -66,6 +75,16 @@ $commands = @(& $console --help)
 if ($LASTEXITCODE -ne 0 -or -not ($commands | Where-Object { $_ -match '\bprivileged-offline-activate\b' })) {
   throw 'FIRST_USE_OFFLINE_BLOCKED: installed owner has no native offline capability; BEGIN forbidden'
 }
+if ([string]$before['release_set_sha256'] -cne $ReleaseSetSha256) {
+  # This is the exact installer path consumed by the installed Rust offline
+  # owner. Refuse a missing/reparse prerequisite BEFORE writing the one-shot
+  # GitHub BEGIN rather than discovering it after a VM/Windows transaction.
+  $bootstrap = Join-Path $root 'bootstrap\install-windows-release.ps1'
+  if (-not (Test-Path -LiteralPath $bootstrap -PathType Leaf) -or
+      ((Get-Item -LiteralPath $bootstrap -ErrorAction Stop).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+    throw 'FIRST_USE_OFFLINE_BLOCKED: protected native offline installer prerequisite missing before BEGIN'
+  }
+}
 $evidence = @(& $console privileged-runtime-evidence --install-root $root)
 if ($LASTEXITCODE -ne 0) {
   throw 'FIRST_USE_OFFLINE_BLOCKED: installed SYSTEM readonly evidence unavailable'
@@ -80,15 +99,18 @@ if ($details.Count -ne 1 -or
 }
 if ($Preflight) {
   Write-Host 'windows_first_use_prebegin_preflight=PASS_READ_ONLY'
+  Write-Host "windows_offline_source_mode=$([string]$before['windows_datapath_mode'])"
+  Write-Host "windows_offline_source_release=$([string]$before['release_set_sha256'])"
+  Write-Host "windows_offline_transition_needed=$([string]$before['release_set_sha256'] -cne $ReleaseSetSha256)"
   Write-Host "windows_installed_release=$([string]$before['release_set_sha256'])"
   Write-Host 'windows_scm_state=Stopped'
   Write-Host 'windows_credential_mutations=0'
   return
 }
 if ([string]$before['release_set_sha256'] -cne $ReleaseSetSha256) {
-  if ([string]$before['windows_datapath_mode'] -cne 'ManagedTun') {
-    throw 'FIRST_USE_OFFLINE_BLOCKED: only stopped former ManagedTun may switch to ProxyOnly'
-  }
+  # Rust's existing offline owner owns the journal, exact ReleaseSet download,
+  # SCM manual-start retarget and compensation for BOTH stopped source modes.
+  # Do not introduce another installer/privilege path or reattempt on unknown.
   $console = [string]$before['console_path']
   if (-not (Test-Path -LiteralPath $console -PathType Leaf)) {
     throw 'FIRST_USE_OFFLINE_BLOCKED: immutable installed native console missing'

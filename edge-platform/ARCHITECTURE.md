@@ -2,6 +2,20 @@
 
 This file defines the stable ownership/invariant model and steady-state target. **Physical N1/N2 external Line1 4/4 + Line2 6/6, before and after one VM reboot, is accepted** in [GitHub Actions #38627187731](https://github.com/iamaman11/sing-box/actions/runs/38627187731). The unchanged Worker credential generation and exact transient Windows/Access cleanup were also proven. **Do not infer that the reused VM was disposed, that its staged candidate has been promoted to an active credential pointer, or that an already-running container's credential source has been cryptographically attributed.** These remain N1/N2 lifecycle closure gates; Windows bidirectional mode changes remain N3, and production lifecycle N4 is unaccepted. Current operational evidence and ordering are in Issue #26, not older historical passages below.
 
+**First-use stopped Windows source (16 October 2026):** Pre-BEGIN
+`windows-first-use-offline-handoff.ps1 -Preflight` and actual stage must
+accept the **same exact stopped, zero-TUN/no-process** old source state:
+former ManagedTun or manual-start ProxyOnly. The native immutable
+`privileged-offline-activate` already journals and retargets SCM to
+stopped/OnDemand with exact rollback; no separate install owner is needed.
+A stopped ProxyOnly source with AutoStart or a missing native CLI must fail
+before the irreversible GitHub BEGIN; candidate activation is still
+forbidden until both physical hosts and paired authority are proven.
+This alignment is source acceptance only, not permission to replay a
+failed/uncertain first-use attempt. Read-only `/vm quality-line2`,
+`credential-runtime-source`, and `credential-initial-probe` share the
+observation path without holding the credential mutation lock.
+
 Read-only `/vm diagnose` must distinguish `V2_CANDIDATE_RENDERED` from `V2_ACTIVE_RENDERED`, from any local mismatch, and from `credential_running_source=UNPROVEN_WITHOUT_CONTAINER_RELOAD_PROOF`. `healthy=true` or `ready=true` are runtime substrate observations, **not** authority to promote staged credentials or claim an end-to-end installed lifecycle. First-use paired commit must be explicitly authorized by a later proven owner transaction; no silent fallback or re-publication.
 
 **Exact installed VM owner migration (N1/N2 source boundary):** Existing canonical `vultr-lifecycle` may perform one bounded ReleaseSet-verified transition of `/usr/local/libexec/sing-box/edge-agent` after strict provider identity, observed old SHA, root-owner checks, safe staging and durable no-replay BEGIN. It must preserve the existing self-hosted runner identity, sudoers, Docker runtime, credentials, reboot state and Windows. Only the locally root-owned executable changes, with `edge-agent.previous` retained for explicit, exact-hash `owner-rollback` through the same Rust owner. Recovery writes an independent durable rollback BEGIN and retains the failed binary; uncertain outcomes must be reconciled, never replayed. This narrow SSH bootstrap is transitional; it is not a second permanent operator path or permission for routine SSH upgrades. A green source check is not physical installation proof. The unproven container-loaded credential source and authorized first candidate promotion remain N1/N2 blockers.

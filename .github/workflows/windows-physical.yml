@@ -481,12 +481,21 @@ jobs:
             Write-Host 'direct_no_proxy_https=PASS'
           }
           if ($env:EDGE_READONLY_PURPOSE -ceq 'offline-preflight') {
-            if (-not $stoppedB -or
-                [string]$v['windows_datapath_mode'] -cne 'ManagedTun' -or
-                $env:EDGE_EXPECTED_MODE -cne 'ProxyOnly' -or
-                $desired -cne 'DEGRADED_INSTALLED_MODE' -or
-                [string]$v['scm_start_type'] -cne 'AutoStart') {
-              throw 'OFFLINE_PREFLIGHT_BLOCKED: requires stopped old ManagedTun with desired ProxyOnly'
+            # This operator read-only preview must cover both safe source
+            # states supported by the native first-use offline handoff.
+            $formerManagedTun = (
+              [string]$v['windows_datapath_mode'] -ceq 'ManagedTun' -and
+              $desired -ceq 'DEGRADED_INSTALLED_MODE' -and
+              [string]$v['scm_start_type'] -ceq 'AutoStart'
+            )
+            $stoppedProxyOnly = (
+              [string]$v['windows_datapath_mode'] -ceq 'ProxyOnly' -and
+              $desired -ceq 'PASS' -and
+              [string]$v['scm_start_type'] -ceq 'OnDemand'
+            )
+            if (-not $stoppedB -or $env:EDGE_EXPECTED_MODE -cne 'ProxyOnly' -or
+                (-not $formerManagedTun -and -not $stoppedProxyOnly)) {
+              throw 'OFFLINE_PREFLIGHT_BLOCKED: requires exact stopped ManagedTun or manual ProxyOnly with no TUN'
             }
             $installed = [string]$v['release_set_sha256']
             $target = [string]$env:EDGE_RELEASE_SET_SHA256
@@ -509,8 +518,9 @@ jobs:
               throw 'OFFLINE_PREFLIGHT_BLOCKED: privileged task could not attest zero managed and external owners'
             }
             $service = Get-CimInstance -ClassName Win32_Service -Filter "Name='EdgePlatformController'" -ErrorAction Stop
+            $expectedStartMode = if ($formerManagedTun) { 'Auto' } else { 'Manual' }
             if ($null -eq $service -or [string]$service.State -cne 'Stopped' -or
-                [string]$service.StartMode -cne 'Auto') {
+                [string]$service.StartMode -cne $expectedStartMode) {
               throw 'OFFLINE_PREFLIGHT_BLOCKED: SCM state or startup mode changed'
             }
             $installedCommands = @(& $console --help)
@@ -520,6 +530,10 @@ jobs:
             $offlineCommandAdvertised = @(
               $installedCommands | Where-Object { [string]$_ -match '\bprivileged-offline-activate\b' }
             ).Count -gt 0
+            if (-not $offlineCommandAdvertised) {
+              throw 'OFFLINE_PREFLIGHT_BLOCKED: immutable installed native owner cannot perform offline upgrade'
+            }
+            Write-Host "offline_source_mode=$([string]$v['windows_datapath_mode'])"
             Write-Host 'offline_preflight_observation=PASS'
             Write-Host 'offline_privileged_task_readonly=PASS'
             Write-Host "offline_command_advertised=$offlineCommandAdvertised"
