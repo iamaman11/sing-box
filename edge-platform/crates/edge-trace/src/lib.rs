@@ -57,7 +57,6 @@ fn trace_transport_failure(err: &reqwest::Error, proxy_url: &str) -> String {
     )
 }
 
-
 pub async fn trace_via_proxy(proxy_url: &str) -> TraceObservation {
     let client = match Client::builder()
         .proxy(match Proxy::all(proxy_url) {
@@ -152,10 +151,7 @@ mod tests {
             local_proxy_tcp_evidence("http://remote.invalid:443"),
             "NOT_LOCAL_HTTP_PROXY"
         );
-        assert_eq!(
-            local_proxy_tcp_evidence("not-a-url"),
-            "INVALID_PROXY_URL"
-        );
+        assert_eq!(local_proxy_tcp_evidence("not-a-url"), "INVALID_PROXY_URL");
         assert_eq!(
             local_proxy_tcp_evidence("https://127.0.0.1:443"),
             "NOT_LOCAL_HTTP_PROXY"
@@ -171,7 +167,10 @@ mod tests {
         let observation = trace_via_proxy(&proxy).await;
         assert!(!observation.available);
         let note = observation.note.unwrap();
-        assert!(note.starts_with("trace request failed: phase=HTTPS_VIA_PROXY;"), "{note}");
+        assert!(
+            note.starts_with("trace request failed: phase=HTTPS_VIA_PROXY;"),
+            "{note}"
+        );
         assert!(note.contains("request_class=CONNECT_OR_TLS"), "{note}");
         assert!(note.contains("local_proxy_tcp=REFUSED"), "{note}");
         assert!(!note.contains("cloudflare.com"), "{note}");
