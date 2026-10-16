@@ -245,6 +245,20 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
                     "credential_existing_join_receipt_present={}",
                     join.is_some()
                 );
+                if let Some(text) = join {
+                    let intent = text
+                        .lines()
+                        .find_map(|line| line.strip_prefix("intent_sha256="))
+                        .ok_or_else(|| {
+                            AgentError::Command(
+                                "existing join receipt missing intent digest; outcome UNKNOWN"
+                                    .to_owned(),
+                            )
+                        })?;
+                    println!("credential_existing_join_intent_sha256={intent}");
+                } else {
+                    println!("credential_existing_join_intent_sha256=ABSENT");
+                }
                 let receipt = store
                     .read_initial_pair_receipt()
                     .map_err(AgentError::Command)?;
@@ -285,6 +299,7 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
                 println!("credential_initial_commit_receipt_present=false");
                 println!("credential_initial_recovery_receipt_present=false");
                 println!("credential_existing_join_receipt_present=false");
+                println!("credential_existing_join_intent_sha256=ABSENT");
             }
             // Existing root owner; a single authenticated read-only GET
             // proves the selected local projection without exporting secrets.
