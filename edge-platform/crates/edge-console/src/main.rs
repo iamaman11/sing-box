@@ -7092,7 +7092,7 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
             sample.replace(&format!("candidate_sha256={candidate}"), "candidate_sha256=ABSENT"),
             sample.replace(&format!("begin_sha256={begin}"), "begin_sha256=ABSENT"),
             sample.replace("status=PASS", "status=PASS\nstatus=PASS"),
-            format!("{sample}credential_candidate_slot=B;"),
+            sample.replace("credential_candidate_slot=B;", "credential_candidate_slot=B;credential_candidate_slot=B;"),
         ] {
             assert!(
                 parse_existing_line1_system_result(&invalid, 203, &candidate).is_err(),
