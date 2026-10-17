@@ -330,6 +330,34 @@ def verify_credential_observation_lane(source: str) -> None:
         and "test \"$GITHUB_RUN_ATTEMPT\" = 1" in source,
         "native BEGIN must be sourced from protected Windows/VM proof and read-only recover never replay",
     )
+    # Post-COMMIT Windows B retains A as PREVIOUS. Read-only recovery must
+    # observe that state, but a NEW BEGIN must reject any previous pointer
+    # or any durable preparation/commit receipt. Do not conflate recovery and
+    # apply preflight: otherwise even a successful one-shot join looks UNKNOWN.
+    vm_observe = source.split("  existing_join_status_vm:\n", 1)[1].split(
+        "\n  existing_join_status_windows:", 1)[0]
+    windows_observe = source.split("  existing_join_status_windows:\n", 1)[1].split(
+        "\n  existing_join_status_summary:", 1)[0]
+    existing_begin = source.split("  existing_join_begin:\n", 1)[1].split(
+        "\n  existing_join_recover_readonly:", 1)[0]
+    require(
+        "credential_existing_join_intent_sha256" in vm_observe
+        and "receipt_intent_sha256=$receipt_intent" in vm_observe
+        and "join_receipt_intent_sha256:" in vm_observe,
+        "VM owner status must export the exact durable join receipt identity")
+    require(
+        "previous_present: ${{ steps.observe.outputs.previous_present }}" in windows_observe
+        and "previous_sha256: ${{ steps.observe.outputs.previous_sha256 }}" in windows_observe
+        and "prepare_begin_sha256:" in windows_observe
+        and "join_intent_sha256:" in windows_observe
+        and "Windows previous A post-commit cursor invalid" in windows_observe
+        and "credential_previous_present'] -cne 'false'" not in windows_observe,
+        "Windows status must read post-COMMIT PREVIOUS A plus exact receipts")
+    require(
+        'test "$WIN_PREVIOUS" = false && test "$WIN_PREPARE_RECEIPT" = false && test "$WIN_JOIN_RECEIPT" = false'
+        in existing_begin,
+        "new BEGIN must reject any previous pointer or previous irreversible join attempt")
+
     read_only_job = source.split("  execute:\n", 1)
     require(len(read_only_job) == 2, "credential read-only verify job missing")
     read_only_job = read_only_job[1].split("\n  rotate_release:\n", 1)[0]
