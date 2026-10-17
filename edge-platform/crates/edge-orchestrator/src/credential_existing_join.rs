@@ -404,8 +404,12 @@ pub(crate) fn reconcile(
         && vm_candidate_b
         && receipt_absent
         && windows_receipt_absent
-        && prepare_absent
+        && prepare_correct
     {
+        // BEGIN-bound prepare receipt is necessary; an unstaged or
+        // interrupted candidate store is not a prepared managed runtime.
+        // Even with a receipt, only the independent Line1 witness above
+        // can confirm that applying the candidate actually completed.
         return Ok("INTENT_DURABLE_PREPARED_NO_AUTO_APPLY");
     }
     if win_is_b
@@ -836,8 +840,16 @@ mod tests {
     #[test]
     fn exact_durable_prepared_state_does_not_automatically_apply() {
         let g = good();
+        // Merely seeing B in the local candidate store is not proof that
+        // SYSTEM durably prepared and applied the managed runtime.
         assert_eq!(
             classify(&g, &snapshot(&g)),
+            "PARTIAL_SAFE_BLOCKED_NO_REPLAY"
+        );
+        let mut s = snapshot(&g);
+        s.windows_prepare_begin_sha256 = Some(beginning_digest_for_test(&g));
+        assert_eq!(
+            classify(&g, &s),
             "INTENT_DURABLE_PREPARED_NO_AUTO_APPLY"
         );
     }
