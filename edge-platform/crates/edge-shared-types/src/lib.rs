@@ -2859,6 +2859,14 @@ mod release_set_tests {
             schema_version: 1,
             hosts: vec![
                 FleetHost {
+                    machine_id: "application-acceptance-1".to_owned(),
+                    kind: FleetHostKind::Vm as i32,
+                    owner: Some(fleet_host::Owner::VmMachineId(
+                        "application-acceptance-1".to_owned(),
+                    )),
+                    windows_runner_label: String::new(),
+                },
+                FleetHost {
                     machine_id: "production-1".to_owned(),
                     kind: FleetHostKind::Vm as i32,
                     owner: Some(fleet_host::Owner::VmMachineId("production-1".to_owned())),
@@ -2880,28 +2888,28 @@ mod release_set_tests {
         invalid.hosts.swap(0, 1);
         assert!(validate_fleet_desired_state(&invalid).is_err());
         invalid = expected.clone();
-        invalid.hosts[1].machine_id = invalid.hosts[0].machine_id.clone();
+        invalid.hosts[2].machine_id = invalid.hosts[1].machine_id.clone();
         assert!(validate_fleet_desired_state(&invalid).is_err());
         invalid = expected.clone();
-        invalid.hosts[0].kind = FleetHostKind::Windows as i32;
+        invalid.hosts[1].kind = FleetHostKind::Windows as i32;
         assert!(validate_fleet_desired_state(&invalid).is_err());
         invalid = expected.clone();
-        invalid.hosts[1].owner = None;
+        invalid.hosts[2].owner = None;
         assert!(validate_fleet_desired_state(&invalid).is_err());
         invalid = expected.clone();
-        invalid.hosts[0].machine_id = "../escape".to_owned();
+        invalid.hosts[1].machine_id = "../escape".to_owned();
         assert!(validate_fleet_desired_state(&invalid).is_err());
         invalid = expected.clone();
-        invalid.hosts[1].owner = Some(fleet_host::Owner::WindowsRunnerName(String::new()));
+        invalid.hosts[2].owner = Some(fleet_host::Owner::WindowsRunnerName(String::new()));
         assert!(validate_fleet_desired_state(&invalid).is_err());
         invalid = expected.clone();
-        invalid.hosts[1].windows_runner_label.clear();
+        invalid.hosts[2].windows_runner_label.clear();
         assert!(validate_fleet_desired_state(&invalid).is_err());
         invalid = expected.clone();
-        invalid.hosts[1].windows_runner_label = "../untrusted".to_owned();
+        invalid.hosts[2].windows_runner_label = "../untrusted".to_owned();
         assert!(validate_fleet_desired_state(&invalid).is_err());
         invalid = expected.clone();
-        invalid.hosts[0].windows_runner_label = "sing-box-windows-lab".to_owned();
+        invalid.hosts[1].windows_runner_label = "sing-box-windows-lab".to_owned();
         assert!(validate_fleet_desired_state(&invalid).is_err());
         let mut conflicting = bytes.clone();
         conflicting.extend_from_slice(&[0x08, 0x02]); // conflicting schema_version

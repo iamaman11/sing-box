@@ -221,6 +221,10 @@ mod tests {
             runner_labels(FleetHostKind::Vm, "production-1", "").unwrap(),
             r#"["self-hosted","Linux","X64","sing-box-production-vm","production-1"]"#
         );
+        assert_eq!(
+            runner_labels(FleetHostKind::Vm, "application-acceptance-1", "").unwrap(),
+            r#"["self-hosted","Linux","X64","sing-box-production-vm","application-acceptance-1"]"#
+        );
         assert!(runner_labels(FleetHostKind::Unspecified, "unknown", "").is_err());
     }
 }
