@@ -41,9 +41,10 @@ pub const CANONICAL_PRODUCTION_DESIRED_STATE_BYTES: &[u8] =
 pub fn decode_fleet_desired_state(bytes: &[u8]) -> Result<FleetDesiredState, String> {
     let desired = FleetDesiredState::decode(bytes)
         .map_err(|err| format!("fleet protobuf decode failed: {err}"))?;
-    if desired.encode_to_vec() != bytes {
-        return Err("fleet protobuf bytes are not canonical".to_owned());
-    }
+    // Protobuf wire field ordering is not canonical across independent
+    // conforming encoders (pinned Buf/Go and Rust/prost). Source authenticity
+    // is instead bound to the exact protected Git bytes by SHA-256 at the
+    // Fleet control boundary. Validate the typed semantics here.
     validate_fleet_desired_state(&desired)?;
     Ok(desired)
 }
@@ -2902,9 +2903,9 @@ mod release_set_tests {
         invalid = expected.clone();
         invalid.hosts[0].windows_runner_label = "sing-box-windows-lab".to_owned();
         assert!(validate_fleet_desired_state(&invalid).is_err());
-        let mut noncanonical = bytes.clone();
-        noncanonical.extend_from_slice(&[0x08, 0x01]);
-        assert!(decode_fleet_desired_state(&noncanonical).is_err());
+        let mut conflicting = bytes.clone();
+        conflicting.extend_from_slice(&[0x08, 0x02]); // conflicting schema_version
+        assert!(decode_fleet_desired_state(&conflicting).is_err());
         assert!(decode_fleet_desired_state(&[]).is_err());
     }
 
@@ -2916,7 +2917,8 @@ mod release_set_tests {
             let bytes = std::fs::read(path).expect("read exact Git fleet protobuf");
             let observed = decode_fleet_desired_state(&bytes).unwrap();
             assert!(!observed.hosts.is_empty());
-            assert_eq!(encode_fleet_desired_state(&observed).unwrap(), bytes);
+            let rust_encoded = encode_fleet_desired_state(&observed).unwrap();
+            assert_eq!(decode_fleet_desired_state(&rust_encoded).unwrap(), observed);
         }
     }
 
