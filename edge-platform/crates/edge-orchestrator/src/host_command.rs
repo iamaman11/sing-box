@@ -10,6 +10,9 @@ use std::path::Path;
 
 const MAX_INVENTORY_BYTES: u64 = 65_536;
 const MAX_RUNNER_BYTES: u64 = 1_048_576;
+const MAX_JOURNAL_BYTES: u64 = 16 * 1024 * 1024;
+const ORIGINAL_AB_RUN_ID: u64 = 39_004_301_614;
+const BEGIN_MARKER: &str = "<!-- sing-box-credential-existing-join-begin/v1 -->";
 
 #[derive(Deserialize)]
 struct RunnerApiPage {
@@ -151,6 +154,7 @@ pub(crate) fn run(
     expected_sha256: &str,
     github_output: Option<&Path>,
     runner_inventory_json: Option<&Path>,
+    journal_history_json: Option<&Path>,
 ) -> Result<(), String> {
     let mut bytes = Vec::new();
     File::open(inventory_path)
@@ -285,7 +289,185 @@ pub(crate) fn run(
             println!("host_mutations=0");
             Ok(())
         }
+        HostCommand::Apply { machine_id } => {
+            host_lifecycle_admission(
+                &desired,
+                &machine_id,
+                HostLifecycleOperation::Apply,
+                journal_history_json,
+                runner_inventory_json,
+                github_output,
+            )
+        }
+        HostCommand::Recover { machine_id } => {
+            host_lifecycle_admission(
+                &desired,
+                &machine_id,
+                HostLifecycleOperation::Recover,
+                journal_history_json,
+                runner_inventory_json,
+                github_output,
+            )
+        }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostLifecycleOperation {
+    Apply,
+    Recover,
+}
+
+/// Only an exact, complete, read-only GitHub history is admissible.
+/// A BEGIN is durable even after its workflow fails; neither an Actions
+/// SUCCESS nor an apparent matching ReleaseSet makes it terminal.
+fn original_ab_unresolved(data: &[u8]) -> Result<bool, String> {
+    let history: Vec<serde_json::Value> =
+        serde_json::from_slice(data).map_err(|_| "HOST_JOURNAL_MALFORMED".to_owned())?;
+    if history.is_empty() {
+        return Err("HOST_JOURNAL_EMPTY".to_owned());
+    }
+    let mut count = 0;
+    for row in history {
+        let body = row
+            .get("body")
+            .and_then(serde_json::Value::as_str)
+            .ok_or("HOST_JOURNAL_BODY_MISSING")?;
+        if body.contains("sing-box-credential-existing-join-begin/") {
+            let literal = body
+                .strip_prefix(BEGIN_MARKER)
+                .and_then(|rest| rest.strip_prefix('\n'))
+                .ok_or("HOST_JOURNAL_BEGIN_AMBIGUOUS")?;
+            let begin: serde_json::Value =
+                serde_json::from_str(literal).map_err(|_| "HOST_JOURNAL_BEGIN_INVALID")?;
+            if begin.get("run_id").and_then(serde_json::Value::as_u64)
+                == Some(ORIGINAL_AB_RUN_ID)
+            {
+                count += 1;
+            }
+        }
+    }
+    if count > 1 {
+        return Err("HOST_JOURNAL_ORIGINAL_AB_DUPLICATE".to_owned());
+    }
+    Ok(count == 1)
+}
+
+fn read_host_journal(path: Option<&Path>) -> Result<Vec<u8>, String> {
+    let path = path.ok_or("HOST_JOURNAL_REQUIRED")?;
+    let metadata =
+        std::fs::symlink_metadata(path).map_err(|_| "HOST_JOURNAL_UNAVAILABLE".to_owned())?;
+    if !metadata.file_type().is_file() || metadata.len() > MAX_JOURNAL_BYTES {
+        return Err("HOST_JOURNAL_INVALID_FILE".to_owned());
+    }
+    let mut data = Vec::new();
+    File::open(path)
+        .map_err(|_| "HOST_JOURNAL_UNAVAILABLE".to_owned())?
+        .take(MAX_JOURNAL_BYTES + 1)
+        .read_to_end(&mut data)
+        .map_err(|_| "HOST_JOURNAL_UNREADABLE".to_owned())?;
+    if data.len() as u64 > MAX_JOURNAL_BYTES {
+        return Err("HOST_JOURNAL_TOO_LARGE".to_owned());
+    }
+    Ok(data)
+}
+
+fn host_lifecycle_admission(
+    desired: &HostRegistry,
+    machine_id: &str,
+    operation: HostLifecycleOperation,
+    journal_path: Option<&Path>,
+    runner_json: Option<&Path>,
+    output: Option<&Path>,
+) -> Result<(), String> {
+    let selected = desired
+        .hosts
+        .iter()
+        .find(|host| host.machine_id == machine_id)
+        .ok_or("HOST_NOT_REGISTERED")?;
+    let kind = ManagedHostKind::try_from(selected.kind)
+        .map_err(|_| "HOST_KIND_INVALID".to_owned())?;
+    let owner = match (kind, selected.owner.as_ref()) {
+        (ManagedHostKind::Windows, Some(managed_host::Owner::WindowsRunnerName(name))) => name,
+        (ManagedHostKind::Vm, Some(managed_host::Owner::VmMachineId(name))) => name,
+        _ => return Err("HOST_OWNER_MISMATCH".to_owned()),
+    };
+    let journal = read_host_journal(journal_path)?;
+    let unresolved = original_ab_unresolved(&journal)?;
+    println!("host_machine_id={machine_id}");
+    println!("host_kind={kind:?}");
+    println!("host_original_ab_unresolved={unresolved}");
+    println!("host_mutations=0");
+
+    if operation == HostLifecycleOperation::Apply && unresolved {
+        return Err("HOST_APPLY_BLOCKED_ORIGINAL_AB_BEGIN_NO_REPLAY".to_owned());
+    }
+    if operation == HostLifecycleOperation::Recover {
+        // This is a reconciliation request, not a blind rollback or replay.
+        // It must inspect the installed owner independently before deciding
+        // whether previous-state rollback can ever be authorized.
+        println!(
+            "host_recovery_decision={}",
+            if unresolved {
+                "UNKNOWN_NO_REPLAY_ORIGINAL_AB"
+            } else {
+                "RECONCILE_NATIVE_OWNER_BEFORE_MUTATION"
+            }
+        );
+        if let Some(output) = output {
+            let labels = runner_labels(kind, owner, &selected.windows_runner_label)?;
+            append_control_outputs(
+                output,
+                machine_id,
+                kind,
+                owner,
+                &labels,
+                &selected.desired_spec_path,
+            )?;
+            append_action_output(output, "RECOVER_READ_ONLY")?;
+        }
+        return Ok(());
+    }
+
+    // A mutation may be scheduled only for the exact registered, available
+    // owner. Missing repository Administration:read is not a PASS.
+    let json = runner_json.ok_or("HOST_APPLY_BLOCKED_RUNNER_API_UNAVAILABLE")?;
+    let runner_id = official_runner_id(json, kind, owner, &selected.windows_runner_label)?;
+    println!("host_runner_id={runner_id}");
+    // No default VM manifest may be silently interpreted as a production
+    // ReleaseSet: only existing canonical production lifecycle supports it.
+    if kind == ManagedHostKind::Vm
+        && (machine_id != "production-1"
+            || selected.desired_spec_path != "infra/production/production.textproto")
+    {
+        return Err("HOST_APPLY_BLOCKED_VM_MANIFEST_NOT_YET_NATIVE".to_owned());
+    }
+    let labels = runner_labels(kind, owner, &selected.windows_runner_label)?;
+    let output = output.ok_or("HOST_APPLY_OUTPUT_REQUIRED")?;
+    append_control_outputs(
+        output,
+        machine_id,
+        kind,
+        owner,
+        &labels,
+        &selected.desired_spec_path,
+    )?;
+    append_action_output(output, "APPLY")?;
+    println!("host_dispatch=EXACT_NATIVE_OWNER");
+    Ok(())
+}
+
+fn append_action_output(path: &Path, action: &str) -> Result<(), String> {
+    let metadata =
+        std::fs::symlink_metadata(path).map_err(|_| "HOST_OUTPUT_UNAVAILABLE".to_owned())?;
+    if !metadata.file_type().is_file() {
+        return Err("HOST_OUTPUT_NOT_REGULAR".to_owned());
+    }
+    OpenOptions::new()
+        .append(true)
+        .open(path)
+        .and_then(|mut file| writeln!(file, "operation={action}"))
+        .map_err(|_| "HOST_ACTION_OUTPUT_WRITE_FAILED".to_owned())
 }
 
 /// A single Rust-owned mapping from typed host kind to GitHub's existing
@@ -464,6 +646,27 @@ mod tests {
         assert_eq!(
             resolve_credential_peer(&two_windows, "application-acceptance-1", "auto").unwrap_err(),
             "HOST_CREDENTIAL_WINDOWS_EXPLICIT_ID_REQUIRED"
+        );
+    }
+
+    #[test]
+    fn host_original_ab_requires_reconciliation_without_any_replay() {
+        let begin = format!(
+            "{BEGIN_MARKER}\\n{{\\\"schema\\\":\\\"sing-box.credential-existing-join-begin/v1\\\",\\\"run_id\\\":{ORIGINAL_AB_RUN_ID}}}"
+        );
+        let rows = serde_json::to_vec(&serde_json::json!([{"body":begin}])).unwrap();
+        assert!(original_ab_unresolved(&rows).unwrap());
+        assert!(!original_ab_unresolved(b"[{\\\"body\\\":\\\"ordinary comment\\\"}]").unwrap());
+        assert_eq!(
+            original_ab_unresolved(b"[]").unwrap_err(),
+            "HOST_JOURNAL_EMPTY"
+        );
+        let duplicate = serde_json::to_vec(&serde_json::json!([
+            {"body": begin}, {"body": begin}
+        ])).unwrap();
+        assert_eq!(
+            original_ab_unresolved(&duplicate).unwrap_err(),
+            "HOST_JOURNAL_ORIGINAL_AB_DUPLICATE"
         );
     }
 

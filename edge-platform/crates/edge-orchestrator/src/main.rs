@@ -180,6 +180,7 @@ async fn run(
             hosts_sha256,
             github_output,
             runner_inventory_json,
+            journal_history_json,
         } => host_command::run(
             command,
             release_context,
@@ -187,6 +188,7 @@ async fn run(
             &hosts_sha256,
             github_output.as_deref(),
             runner_inventory_json.as_deref(),
+            journal_history_json.as_deref(),
         ),
         Command::Production { command } => match command {
             cli::ProductionCommand::Validate => production_command::validate(release_context),
