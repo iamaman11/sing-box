@@ -190,7 +190,8 @@ pub(crate) fn run(
                 "release_set_sha256={}",
                 release.release().release_set_sha256
             );
-            let selected = desired.hosts
+            let selected = desired
+                .hosts
                 .iter()
                 .filter(|host| machine_id.as_ref().is_none_or(|id| id == &host.machine_id))
                 .collect::<Vec<_>>();
@@ -206,19 +207,27 @@ pub(crate) fn run(
                     None => return Err("HOST_OWNER_MISSING".to_owned()),
                 };
                 println!("host_machine_id={}", host.machine_id);
-                println!("host_kind={}", match kind {
-                    ManagedHostKind::Windows => "WINDOWS",
-                    ManagedHostKind::Vm => "VM",
-                    ManagedHostKind::Unspecified => return Err("HOST_KIND_UNSPECIFIED".to_owned()),
-                });
+                println!(
+                    "host_kind={}",
+                    match kind {
+                        ManagedHostKind::Windows => "WINDOWS",
+                        ManagedHostKind::Vm => "VM",
+                        ManagedHostKind::Unspecified =>
+                            return Err("HOST_KIND_UNSPECIFIED".to_owned()),
+                    }
+                );
                 let labels = runner_labels(kind, owner, &host.windows_runner_label)?;
                 if machine_id.is_some() {
-                    let inventory = runner_inventory_json
-                        .ok_or_else(|| "RUNNER_API_UNAVAILABLE".to_owned())?;
-                    let id = official_runner_id(inventory, kind, owner, &host.windows_runner_label)?;
+                    let inventory =
+                        runner_inventory_json.ok_or_else(|| "RUNNER_API_UNAVAILABLE".to_owned())?;
+                    let id =
+                        official_runner_id(inventory, kind, owner, &host.windows_runner_label)?;
                     println!("host_runner_id={id}");
                     println!("host_runner_registration=READY_FOR_DISPATCH");
-                    println!("host_observation_depth={}", if deep { "DEEP" } else { "FAST" });
+                    println!(
+                        "host_observation_depth={}",
+                        if deep { "DEEP" } else { "FAST" }
+                    );
                     if let Some(path) = github_output {
                         append_control_outputs(path, &host.machine_id, kind, owner, &labels)?;
                     }

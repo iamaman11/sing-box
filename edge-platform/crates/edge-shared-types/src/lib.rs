@@ -21,7 +21,6 @@ pub use FleetHost as ManagedHost;
 pub use FleetHostKind as ManagedHostKind;
 pub use fleet_host as managed_host;
 
-
 pub mod initial_credential_attestation;
 pub use initial_credential_attestation::first_use_host_attestation_sha256;
 use prost::Message;
@@ -47,8 +46,8 @@ pub const CANONICAL_PRODUCTION_DESIRED_STATE_BYTES: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/production-desired-state.pb"));
 
 pub fn decode_host_registry(bytes: &[u8]) -> Result<HostRegistry, String> {
-    let desired = HostRegistry::decode(bytes)
-        .map_err(|err| format!("host protobuf decode failed: {err}"))?;
+    let desired =
+        HostRegistry::decode(bytes).map_err(|err| format!("host protobuf decode failed: {err}"))?;
     // Protobuf wire field ordering is not canonical across independent
     // conforming encoders (pinned Buf/Go and Rust/prost). Source authenticity
     // is instead bound to the exact protected Git bytes by SHA-256 at the
