@@ -490,6 +490,92 @@ def test_credential_observation_lane(source: str) -> None:
         raise SystemExit("credential isolation regression was not detected")
 
 
+
+def verify_existing_join_endpoint_and_access(source: str) -> None:
+    """Fail closed on two P0 boundaries before any irreversible BEGIN.
+
+    Verified target values must be exposed as actual GitHub job outputs only
+    after exact BEGIN readback. The physical Windows runner may see only a
+    proof-only temporary Access identity, never the permanent SYSTEM identity.
+    """
+    jobs = dict(re.findall(
+        r"(?ms)^  ([a-z][a-z0-9_]*):\n(.*?)(?=^  [a-z][a-z0-9_]*:\n|\Z)",
+        source,
+    ))
+    names = (
+        "existing_join_windows_access_issue",
+        "existing_join_begin",
+        "existing_join_windows_stage_prepare",
+        "existing_join_vm_commit",
+        "existing_join_windows_commit",
+        "existing_join_windows_access_cleanup",
+    )
+    require(all(name in jobs for name in names), "P0: missing same-run access/credential lifecycle job")
+    issuer = jobs["existing_join_windows_access_issue"]
+    begin = jobs["existing_join_begin"]
+    windows = jobs["existing_join_windows_stage_prepare"]
+    cleanup = jobs["existing_join_windows_access_cleanup"]
+    require(
+        "target_ipv4: ${{ steps.begin.outputs.target_ipv4 }}" in begin
+        and "target_domain: ${{ steps.begin.outputs.target_domain }}" in begin
+        and 'echo "target_ipv4=$VM_IPV4" >> "$GITHUB_OUTPUT"' in begin
+        and 'echo "target_domain=$domain" >> "$GITHUB_OUTPUT"' in begin
+        and begin.index('existing-join-begin-readback') < begin.index('echo "target_ipv4=$VM_IPV4"')
+        and begin.index('existing-join-begin-readback') < begin.index('echo "target_domain=$domain"')
+        and "TARGET_IPV4: ${{ needs.existing_join_begin.outputs.target_ipv4 }}" in windows
+        and "TARGET_DOMAIN: ${{ needs.existing_join_begin.outputs.target_domain }}" in windows,
+        "P0: Windows physical Line1 must consume verified VM target via real BEGIN outputs",
+    )
+    require(
+        "existing_join_windows_access_issue.result" in begin
+        and "existing_join_windows_access_issue" in begin.split("    needs:", 1)[1].split("\n", 1)[0]
+        and "existing_join_windows_access_issue" in windows.split("    needs:", 1)[1].split("\n", 1)[0]
+        and 'initial-windows-acceptance-issue "$GITHUB_RUN_ID"' in issuer
+        and "acceptance_access_policy=HOST_PLUS_EXACT_ONE_RUN_SCOPED" in issuer
+        and "CLOUDFLARE_WINDOWS_ACCEPTANCE_CLIENT_ID" in windows
+        and "CLOUDFLARE_WINDOWS_ACCEPTANCE_CLIENT_SECRET" in windows
+        and "CLOUDFLARE_WINDOWS_ACCESS_CLIENT_ID" not in windows
+        and "CLOUDFLARE_WINDOWS_ACCESS_CLIENT_SECRET" not in windows
+        and "name: production-vultr" in issuer
+        and "name: production-vultr" in windows,
+        "P0: physical Windows runner must use run-scoped proof identity, never permanent host identity",
+    )
+    require(
+        "always()" in cleanup
+        and "existing_join_windows_commit" in cleanup.split("    needs:", 1)[1].split("\n", 1)[0]
+        and 'initial-windows-acceptance-cleanup "$GITHUB_RUN_ID"' in cleanup
+        and "acceptance_access_status=REVOKED_OR_ABSENT" in cleanup
+        and "windows_access_policy=EXACT_HOST_ONLY" in cleanup
+        and "gh secret delete" in cleanup
+        and "CLOUDFLARE_WINDOWS_ACCEPTANCE_CLIENT_SECRET" in cleanup
+        and "name: production-vultr" in cleanup,
+        "P0: protected workflow must revoke run-scoped Access and delete disposable escrow",
+    )
+
+
+def test_existing_join_endpoint_and_access(source: str) -> None:
+    verify_existing_join_endpoint_and_access(source)
+    broken = (
+        source.replace("      target_ipv4: ${{ steps.begin.outputs.target_ipv4 }}\n", "", 1),
+        source.replace('echo "target_domain=$domain" >> "$GITHUB_OUTPUT"',
+                       'echo "target_domain=$domain"', 1),
+        source.replace(
+            "EDGE_WINDOWS_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_WINDOWS_ACCEPTANCE_CLIENT_SECRET }}",
+            "EDGE_WINDOWS_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_WINDOWS_ACCESS_CLIENT_SECRET }}",
+            1,
+        ),
+        source.replace('initial-windows-acceptance-cleanup "$GITHUB_RUN_ID"',
+                       'initial-windows-acceptance-cleanup "0"', 1),
+    )
+    for altered in broken:
+        require(altered != source, "P0 negative fixture failed to modify workflow")
+        try:
+            verify_existing_join_endpoint_and_access(altered)
+        except SystemExit:
+            continue
+        raise SystemExit("P0 existing join negative regression was mistakenly accepted")
+
+
 def main() -> None:
     router = ROUTER.read_text(encoding="utf-8")
     application = APPLICATION.read_text(encoding="utf-8")
@@ -500,6 +586,7 @@ def main() -> None:
     credentials = CREDENTIALS.read_text(encoding="utf-8")
     test_credential_observation_lane(credentials)
     test_workflow_job_boundaries(credentials)
+    test_existing_join_endpoint_and_access(credentials)
     vpc = VPC.read_text(encoding="utf-8")
     edge_platform_ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
     runtime_input = RUNTIME_INPUT.read_text(encoding="utf-8")
