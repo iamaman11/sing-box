@@ -92,6 +92,30 @@ pub fn validate_host_registry(desired: &HostRegistry) -> Result<(), String> {
         if !host_token(name, 128) || !selectors.insert((scope, name)) {
             return Err("host owner selector invalid or duplicated".to_owned());
         }
+        // Reference to existing Git-owned desired state; never duplicate configuration.
+        // Keep this narrow: no absolute paths, traversal, or runner-supplied specs.
+        let spec = host.desired_spec_path.as_str();
+        let allowed = match kind {
+            ManagedHostKind::Windows => spec == "infra/production/production.textproto",
+            ManagedHostKind::Vm => {
+                spec == "infra/production/production.textproto"
+                    || (spec.starts_with("infra/application/")
+                        && spec.ends_with(".json")
+                        && spec.len() <= 160
+                        && spec
+                            .trim_start_matches("infra/application/")
+                            .trim_end_matches(".json")
+                            .bytes()
+                            .all(|ch| ch.is_ascii_lowercase()
+                                || ch.is_ascii_digit()
+                                || matches!(ch, b'-' | b'_'))
+                        && spec != "infra/application/.json")
+            }
+            ManagedHostKind::Unspecified => false,
+        };
+        if !allowed || spec.contains("..") {
+            return Err("host desired spec reference invalid for this kind".to_owned());
+        }
         match kind {
             ManagedHostKind::Windows => {
                 if !host_token(&host.windows_runner_label, 128)
@@ -2872,6 +2896,8 @@ mod release_set_tests {
                         "application-acceptance-1".to_owned(),
                     )),
                     windows_runner_label: String::new(),
+                    desired_spec_path: "infra/production/production.textproto".to_owned(),
+                    desired_spec_path: "infra/application/disposable-acceptance.json".to_owned(),
                 },
                 ManagedHost {
                     machine_id: "production-1".to_owned(),
@@ -2886,6 +2912,7 @@ mod release_set_tests {
                         "DESKTOP-0E1F6UQ".to_owned(),
                     )),
                     windows_runner_label: "sing-box-windows-lab".to_owned(),
+                    desired_spec_path: "infra/production/production.textproto".to_owned(),
                 },
             ],
         };
@@ -2917,6 +2944,15 @@ mod release_set_tests {
         assert!(validate_host_registry(&invalid).is_err());
         invalid = expected.clone();
         invalid.hosts[1].windows_runner_label = "sing-box-windows-lab".to_owned();
+        assert!(validate_host_registry(&invalid).is_err());
+        invalid = expected.clone();
+        invalid.hosts[0].desired_spec_path = "../escape.json".to_owned();
+        assert!(validate_host_registry(&invalid).is_err());
+        invalid = expected.clone();
+        invalid.hosts[2].desired_spec_path = "infra/application/disposable-acceptance.json".to_owned();
+        assert!(validate_host_registry(&invalid).is_err());
+        invalid = expected.clone();
+        invalid.hosts[1].desired_spec_path.clear();
         assert!(validate_host_registry(&invalid).is_err());
         let mut conflicting = bytes.clone();
         conflicting.extend_from_slice(&[0x08, 0x02]); // conflicting schema_version
