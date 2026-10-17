@@ -309,9 +309,10 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                 initial_line1_witness::require_isolated_root(root)
                     .map_err(ConsoleError::Command)?;
                 if args.windows_candidate_sha256.len() != 64
-                    || !args.windows_candidate_sha256.bytes().all(|byte| {
-                        byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
-                    })
+                    || !args
+                        .windows_candidate_sha256
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
                 {
                     return Err(ConsoleError::Command(
                         "existing B witness requires exact Windows candidate SHA-256".to_owned(),
@@ -322,7 +323,8 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                 let serving_release = load_verified_activation(serving)?;
                 if isolated.release_set_sha256 != serving_release.release_set_sha256 {
                     return Err(ConsoleError::Command(
-                        "isolated Line1 witness ReleaseSet differs from serving SYSTEM release".to_owned(),
+                        "isolated Line1 witness ReleaseSet differs from serving SYSTEM release"
+                            .to_owned(),
                     ));
                 }
                 require_stopped_proxy_only_initial_commit_owner(serving)
@@ -395,7 +397,10 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                 println!("existing_join_line1_external_4_of_4=PASS");
                 println!("existing_join_windows_b_worker_exact=true");
                 println!("existing_join_windows_system_stopped_proxyonly=true");
-                println!("existing_join_candidate_sha256={}", args.windows_candidate_sha256);
+                println!(
+                    "existing_join_candidate_sha256={}",
+                    args.windows_candidate_sha256
+                );
                 Ok(())
             }
             #[cfg(not(windows))]
@@ -2237,9 +2242,11 @@ fn parse_existing_line1_system_result(
         .get("credential_existing_join_prepare_begin_sha256")
         .copied()
         .ok_or_else(|| "SYSTEM BEGIN preparation receipt unknown".to_owned())?;
-    if begin.len() != 64 || !begin.bytes().all(|value| {
-        value.is_ascii_digit() || (b'a'..=b'f').contains(&value)
-    }) {
+    if begin.len() != 64
+        || !begin
+            .bytes()
+            .all(|value| value.is_ascii_digit() || (b'a'..=b'f').contains(&value))
+    {
         return Err("SYSTEM BEGIN preparation SHA-256 invalid".to_owned());
     }
     Ok(begin.to_owned())
@@ -7086,13 +7093,22 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
         for invalid in [
             sample.replace("WORKER_OK", "UNPROVEN"),
             sample.replace("candidate_slot=B", "candidate_slot=A"),
-            sample.replace("prepare_receipt_present=true", "prepare_receipt_present=false"),
+            sample.replace(
+                "prepare_receipt_present=true",
+                "prepare_receipt_present=false",
+            ),
             sample.replace("generation=203", "generation=204"),
             sample.replace("previous_present=false", "previous_present=true"),
-            sample.replace(&format!("candidate_sha256={candidate}"), "candidate_sha256=ABSENT"),
+            sample.replace(
+                &format!("candidate_sha256={candidate}"),
+                "candidate_sha256=ABSENT",
+            ),
             sample.replace(&format!("begin_sha256={begin}"), "begin_sha256=ABSENT"),
             sample.replace("status=PASS", "status=PASS\nstatus=PASS"),
-            sample.replace("credential_candidate_slot=B;", "credential_candidate_slot=B;credential_candidate_slot=B;"),
+            sample.replace(
+                "credential_candidate_slot=B;",
+                "credential_candidate_slot=B;credential_candidate_slot=B;",
+            ),
         ] {
             assert!(
                 parse_existing_line1_system_result(&invalid, 203, &candidate).is_err(),
