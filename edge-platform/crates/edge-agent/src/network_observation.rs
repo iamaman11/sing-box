@@ -219,7 +219,6 @@ pub(crate) fn unique_public_serving_ipv4(
         let special = octets[0] == 0 || octets[0] >= 240
             || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
             || (octets[0] == 192 && octets[1] == 88 && octets[2] == 99)
-            || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
             || (octets[0] == 192 && octets[1] == 0 && octets[2] == 2)
             || (octets[0] == 198 && octets[1] == 51 && octets[2] == 100)
             || (octets[0] == 203 && octets[1] == 0 && octets[2] == 113);
@@ -306,6 +305,60 @@ mod tests {
             .output_interface(7)
             .build();
         assert!(normalize_route(&ipv6).is_none());
+    }
+
+    #[test]
+    fn one_public_kernel_address_is_strict_and_deterministic() {
+        let network = |second: Option<&str>| Ipv4NetworkObservation {
+            links: vec![
+                Ipv4LinkObservation {
+                    interface_index: 3,
+                    name: "ens3".into(),
+                    up: true,
+                    lower_up: true,
+                    loopback: false,
+                },
+                Ipv4LinkObservation {
+                    interface_index: 4,
+                    name: "warp0".into(),
+                    up: true,
+                    lower_up: true,
+                    loopback: false,
+                },
+            ],
+            addresses: [
+                vec![Ipv4AddressObservation {
+                    interface_index: 3,
+                    address: "1.2.3.4".into(),
+                    prefix_length: 24,
+                    global_scope: true,
+                }],
+                second.map(|address| vec![Ipv4AddressObservation {
+                    interface_index: 4,
+                    address: address.into(),
+                    prefix_length: 32,
+                    global_scope: true,
+                }]).unwrap_or_default(),
+            ].concat(),
+            routes: vec![],
+        };
+        assert_eq!(
+            unique_public_serving_ipv4(&network(Some("172.19.0.2"))).unwrap(),
+            Ipv4Addr::new(1, 2, 3, 4)
+        );
+        assert!(unique_public_serving_ipv4(&network(Some("8.8.8.8"))).is_err());
+        assert!(unique_public_serving_ipv4(&network(None)).is_ok());
+        let mut absent = network(None);
+        absent.addresses.clear();
+        assert!(unique_public_serving_ipv4(&absent).is_err());
+        let mut down = network(None);
+        down.links[0].lower_up = false;
+        assert!(unique_public_serving_ipv4(&down).is_err());
+        for forbidden in ["127.0.0.1", "100.64.0.1", "203.0.113.20"] {
+            let mut invalid = network(None);
+            invalid.addresses[0].address = forbidden.into();
+            assert!(unique_public_serving_ipv4(&invalid).is_err());
+        }
     }
 
     #[test]
