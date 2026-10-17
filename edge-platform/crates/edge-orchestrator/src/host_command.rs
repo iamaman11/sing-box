@@ -11,7 +11,6 @@ use std::path::Path;
 const MAX_INVENTORY_BYTES: u64 = 65_536;
 const MAX_RUNNER_BYTES: u64 = 1_048_576;
 const MAX_JOURNAL_BYTES: u64 = 16 * 1024 * 1024;
-const ORIGINAL_AB_RUN_ID: u64 = 39_004_301_614;
 const BEGIN_MARKER: &str = "<!-- sing-box-credential-existing-join-begin/v1 -->";
 
 #[derive(Deserialize)]
@@ -337,9 +336,16 @@ fn original_ab_unresolved(data: &[u8]) -> Result<bool, String> {
                 .ok_or("HOST_JOURNAL_BEGIN_AMBIGUOUS")?;
             let begin: serde_json::Value =
                 serde_json::from_str(literal).map_err(|_| "HOST_JOURNAL_BEGIN_INVALID")?;
-            if begin.get("run_id").and_then(serde_json::Value::as_u64) == Some(ORIGINAL_AB_RUN_ID) {
-                count += 1;
+            if begin.get("schema").and_then(serde_json::Value::as_str)
+                != Some("sing-box.credential-existing-join-begin/v1")
+                || !begin
+                    .get("run_id")
+                    .and_then(serde_json::Value::as_u64)
+                    .is_some_and(|run| run > 0)
+            {
+                return Err("HOST_JOURNAL_BEGIN_INVALID".to_owned());
             }
+            count += 1;
         }
     }
     if count > 1 {
@@ -395,7 +401,7 @@ fn host_lifecycle_admission(
     println!("host_mutations=0");
 
     if operation == HostLifecycleOperation::Apply && unresolved {
-        return Err("HOST_APPLY_BLOCKED_ORIGINAL_AB_BEGIN_NO_REPLAY".to_owned());
+        return Err("HOST_APPLY_BLOCKED_UNRESOLVED_AB_NO_REPLAY".to_owned());
     }
     if operation == HostLifecycleOperation::Recover {
         // This is a reconciliation request, not a blind rollback or replay.
@@ -404,7 +410,7 @@ fn host_lifecycle_admission(
         println!(
             "host_recovery_decision={}",
             if unresolved {
-                "UNKNOWN_NO_REPLAY_ORIGINAL_AB"
+                "UNKNOWN_NO_REPLAY_AB_UNRESOLVED"
             } else {
                 "RECONCILE_NATIVE_OWNER_BEFORE_MUTATION"
             }
@@ -650,7 +656,7 @@ mod tests {
     #[test]
     fn host_original_ab_requires_reconciliation_without_any_replay() {
         let begin = format!(
-            "{BEGIN_MARKER}\n{{\"schema\":\"sing-box.credential-existing-join-begin/v1\",\"run_id\":{ORIGINAL_AB_RUN_ID}}}"
+            "{BEGIN_MARKER}\n{{\"schema\":\"sing-box.credential-existing-join-begin/v1\",\"run_id\":39004301614}}"
         );
         let rows = serde_json::to_vec(&serde_json::json!([{"body":begin}])).unwrap();
         assert!(original_ab_unresolved(&rows).unwrap());
