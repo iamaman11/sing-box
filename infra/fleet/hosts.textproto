@@ -1,0 +1,11 @@
+schema_version: 1
+hosts {
+  machine_id: "production-1"
+  kind: FLEET_HOST_KIND_VM
+  vm_machine_id: "production-1"
+}
+hosts {
+  machine_id: "sing-box-windows-lab"
+  kind: FLEET_HOST_KIND_WINDOWS
+  windows_runner_name: "sing-box-windows-lab"
+}

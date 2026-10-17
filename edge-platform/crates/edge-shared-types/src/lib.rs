@@ -38,6 +38,68 @@ pub const WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS: u64 = 45;
 pub const CANONICAL_PRODUCTION_DESIRED_STATE_BYTES: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/production-desired-state.pb"));
 
+pub const CANONICAL_FLEET_DESIRED_STATE_BYTES: &[u8] =
+    include_bytes!(concat!(env!("OUT_DIR"), "/fleet-desired-state.pb"));
+
+pub fn decode_fleet_desired_state(bytes: &[u8]) -> Result<FleetDesiredState, String> {
+    let desired = FleetDesiredState::decode(bytes)
+        .map_err(|err| format!("fleet protobuf decode failed: {err}"))?;
+    if desired.encode_to_vec() != bytes {
+        return Err("fleet protobuf bytes are not canonical".to_owned());
+    }
+    validate_fleet_desired_state(&desired)?;
+    Ok(desired)
+}
+
+pub fn canonical_fleet_desired_state() -> Result<FleetDesiredState, String> {
+    decode_fleet_desired_state(CANONICAL_FLEET_DESIRED_STATE_BYTES)
+}
+
+pub fn validate_fleet_desired_state(desired: &FleetDesiredState) -> Result<(), String> {
+    use std::collections::BTreeSet;
+
+    if desired.schema_version != 1 || desired.hosts.is_empty() {
+        return Err("fleet registry requires schema_version=1 and registered hosts".to_owned());
+    }
+    let mut ids = BTreeSet::new();
+    let mut selectors = BTreeSet::new();
+    let mut preceding_id: Option<&str> = None;
+    for host in &desired.hosts {
+        if !fleet_token(&host.machine_id, 64) || !ids.insert(host.machine_id.as_str()) {
+            return Err("fleet machine_id invalid or duplicated".to_owned());
+        }
+        if preceding_id.is_some_and(|prior| prior >= host.machine_id.as_str()) {
+            return Err("fleet hosts must be sorted by unique machine_id".to_owned());
+        }
+        preceding_id = Some(&host.machine_id);
+        let kind = FleetHostKind::try_from(host.kind)
+            .map_err(|_| "fleet host kind is invalid".to_owned())?;
+        let (scope, name) = match (kind, host.owner.as_ref()) {
+            (FleetHostKind::Windows, Some(fleet_host::Owner::WindowsRunnerName(name))) => {
+                ("windows", name.as_str())
+            }
+            (FleetHostKind::Vm, Some(fleet_host::Owner::VmMachineId(name))) => {
+                ("vm", name.as_str())
+            }
+            _ => return Err("fleet host owner must match its kind".to_owned()),
+        };
+        if !fleet_token(name, 128) || !selectors.insert((scope, name)) {
+            return Err("fleet owner selector invalid or duplicated".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn fleet_token(value: &str, max: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value.bytes().all(|byte| {
+            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
+        })
+}
+
+
 pub fn decode_production_desired_state(bytes: &[u8]) -> Result<ProductionDesiredState, String> {
     let desired = ProductionDesiredState::decode(bytes)
         .map_err(|err| format!("production desired-state protobuf decode failed: {err}"))?;
@@ -2774,6 +2836,42 @@ mod release_set_tests {
         let mut noncanonical = encoded.clone();
         noncanonical.extend_from_slice(&[0x08, 0x01]); // duplicated schema_version
         assert!(decode_credential_apply_checkpoint(&noncanonical).is_err());
+    }
+
+    #[test]
+    fn fleet_registry_is_canonical_and_rejects_aliases_and_unknown_owners() {
+        let expected = canonical_fleet_desired_state().unwrap();
+        assert_eq!(expected.schema_version, 1);
+        assert_eq!(expected.hosts.len(), 2);
+        assert_eq!(
+            decode_fleet_desired_state(CANONICAL_FLEET_DESIRED_STATE_BYTES).unwrap(),
+            expected
+        );
+        let mut invalid = expected.clone();
+        invalid.hosts.swap(0, 1);
+        assert!(validate_fleet_desired_state(&invalid).is_err());
+        invalid = expected.clone();
+        invalid.hosts[1].machine_id = invalid.hosts[0].machine_id.clone();
+        assert!(validate_fleet_desired_state(&invalid).is_err());
+        invalid = expected.clone();
+        invalid.hosts[0].kind = FleetHostKind::Windows as i32;
+        assert!(validate_fleet_desired_state(&invalid).is_err());
+        invalid = expected.clone();
+        invalid.hosts[1].owner = None;
+        assert!(validate_fleet_desired_state(&invalid).is_err());
+        invalid = expected.clone();
+        invalid.hosts[0].machine_id = "../escape".to_owned();
+        assert!(validate_fleet_desired_state(&invalid).is_err());
+        invalid = expected.clone();
+        invalid.hosts[1].owner =
+            Some(fleet_host::Owner::WindowsRunnerName("production-1".to_owned()));
+        assert!(validate_fleet_desired_state(&invalid).is_ok());
+        invalid.hosts[1].owner =
+            Some(fleet_host::Owner::WindowsRunnerName(String::new()));
+        assert!(validate_fleet_desired_state(&invalid).is_err());
+        let mut wire = CANONICAL_FLEET_DESIRED_STATE_BYTES.to_vec();
+        wire.extend_from_slice(&[0x08, 0x01]); // duplicate schema_version
+        assert!(decode_fleet_desired_state(&wire).is_err());
     }
 
     #[test]

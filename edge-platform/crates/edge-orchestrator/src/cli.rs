@@ -39,6 +39,10 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: CredentialDeliveryCommand,
     },
+    Fleet {
+        #[command(subcommand)]
+        command: FleetCommand,
+    },
     Production {
         #[command(subcommand)]
         command: ProductionCommand,
@@ -63,11 +67,20 @@ impl Command {
             Self::CloudflareTargetPlane { .. } => "cloudflare-target-plane",
             Self::CloudflareZeroTrust { .. } => "cloudflare-zero-trust",
             Self::Credentials { .. } => "credentials",
+            Self::Fleet { .. } => "fleet",
             Self::Production { .. } => "production",
             Self::VultrLifecycle { .. } => "vultr-lifecycle",
             Self::VultrVpc { .. } => "vultr-vpc",
         }
     }
+}
+
+#[derive(Debug, Clone, Subcommand)]
+pub(crate) enum FleetCommand {
+    /// Exact Git-owned machine selector inventory; does not claim runtime health.
+    Inventory,
+    /// Inspect a registered machine's owner selector and release authority.
+    Inspect { machine_id: String },
 }
 
 #[derive(Debug, Args, Clone)]
@@ -1374,6 +1387,29 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn fleet_clap_routes_exact_inventory_and_inspect_without_shell() {
+        let parsed = Cli::try_parse_from(["edge-orchestrator", "fleet", "inventory"]).unwrap();
+        assert!(matches!(
+            parsed.command,
+            Command::Fleet { command: FleetCommand::Inventory }
+        ));
+        let parsed = Cli::try_parse_from([
+            "edge-orchestrator",
+            "fleet",
+            "inspect",
+            "production-1",
+        ])
+        .unwrap();
+        assert!(matches!(
+            parsed.command,
+            Command::Fleet {
+                command: FleetCommand::Inspect { .. }
+            }
+        ));
+        assert!(Cli::try_parse_from(["edge-orchestrator", "fleet", "apply"]).is_err());
     }
 
     #[test]
