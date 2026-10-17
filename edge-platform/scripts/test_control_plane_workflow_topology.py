@@ -691,7 +691,7 @@ def test_git_windows_host_host_contract(credentials: str) -> None:
     path = Path("infra/hosts/hosts.textproto")
     contents = path.read_text(encoding="utf-8")
     require(
-        contents.startswith("schema_version: 1\\n")
+        contents.startswith("schema_version: 1\n")
         and "kind: FLEET_HOST_KIND_WINDOWS" in contents
         and "kind: FLEET_HOST_KIND_VM" in contents
         and 'windows_runner_label: "sing-box-windows-lab"' in contents
@@ -711,12 +711,12 @@ def test_git_windows_host_host_contract(credentials: str) -> None:
     )
     for job in ("existing_join_status_windows", "existing_join_windows_stage_prepare",
                 "existing_join_windows_commit"):
-        section = credentials.split(f"  {job}:\\n", 1)[1].split(
-            "\\n  " + ({
+        section = credentials.split(f"  {job}:\n", 1)[1].split(
+            "\n  " + ({
                 "existing_join_status_windows": "existing_join_status_summary",
                 "existing_join_windows_stage_prepare": "existing_join_commit_intent",
                 "existing_join_windows_commit": "existing_join_windows_access_cleanup",
-            }[job]) + ":\\n", 1)[0]
+            }[job]) + ":\n", 1)[0]
         require(
             'runs-on: [self-hosted, Windows, X64, "${{ needs.authorize.outputs.windows_runner_label }}"]' in section,
             "Windows status/prep/commit must use the selected Git-owned runner label",
