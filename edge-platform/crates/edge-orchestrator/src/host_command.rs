@@ -289,26 +289,22 @@ pub(crate) fn run(
             println!("host_mutations=0");
             Ok(())
         }
-        HostCommand::Apply { machine_id } => {
-            host_lifecycle_admission(
-                &desired,
-                &machine_id,
-                HostLifecycleOperation::Apply,
-                journal_history_json,
-                runner_inventory_json,
-                github_output,
-            )
-        }
-        HostCommand::Recover { machine_id } => {
-            host_lifecycle_admission(
-                &desired,
-                &machine_id,
-                HostLifecycleOperation::Recover,
-                journal_history_json,
-                runner_inventory_json,
-                github_output,
-            )
-        }
+        HostCommand::Apply { machine_id } => host_lifecycle_admission(
+            &desired,
+            &machine_id,
+            HostLifecycleOperation::Apply,
+            journal_history_json,
+            runner_inventory_json,
+            github_output,
+        ),
+        HostCommand::Recover { machine_id } => host_lifecycle_admission(
+            &desired,
+            &machine_id,
+            HostLifecycleOperation::Recover,
+            journal_history_json,
+            runner_inventory_json,
+            github_output,
+        ),
     }
 }
 
@@ -340,9 +336,7 @@ fn original_ab_unresolved(data: &[u8]) -> Result<bool, String> {
                 .ok_or("HOST_JOURNAL_BEGIN_AMBIGUOUS")?;
             let begin: serde_json::Value =
                 serde_json::from_str(literal).map_err(|_| "HOST_JOURNAL_BEGIN_INVALID")?;
-            if begin.get("run_id").and_then(serde_json::Value::as_u64)
-                == Some(ORIGINAL_AB_RUN_ID)
-            {
+            if begin.get("run_id").and_then(serde_json::Value::as_u64) == Some(ORIGINAL_AB_RUN_ID) {
                 count += 1;
             }
         }
@@ -385,8 +379,8 @@ fn host_lifecycle_admission(
         .iter()
         .find(|host| host.machine_id == machine_id)
         .ok_or("HOST_NOT_REGISTERED")?;
-    let kind = ManagedHostKind::try_from(selected.kind)
-        .map_err(|_| "HOST_KIND_INVALID".to_owned())?;
+    let kind =
+        ManagedHostKind::try_from(selected.kind).map_err(|_| "HOST_KIND_INVALID".to_owned())?;
     let owner = match (kind, selected.owner.as_ref()) {
         (ManagedHostKind::Windows, Some(managed_host::Owner::WindowsRunnerName(name))) => name,
         (ManagedHostKind::Vm, Some(managed_host::Owner::VmMachineId(name))) => name,
@@ -663,7 +657,8 @@ mod tests {
         );
         let duplicate = serde_json::to_vec(&serde_json::json!([
             {"body": begin}, {"body": begin}
-        ])).unwrap();
+        ]))
+        .unwrap();
         assert_eq!(
             original_ab_unresolved(&duplicate).unwrap_err(),
             "HOST_JOURNAL_ORIGINAL_AB_DUPLICATE"

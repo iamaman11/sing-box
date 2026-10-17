@@ -106,13 +106,9 @@ pub(crate) enum HostCommand {
         credential_pair_windows: Option<String>,
     },
     /// Select exactly one host for its existing native owner.
-    Apply {
-        machine_id: String,
-    },
+    Apply { machine_id: String },
     /// No replay: reconcile the original transaction before any rollback.
-    Recover {
-        machine_id: String,
-    },
+    Recover { machine_id: String },
 }
 
 #[derive(Debug, Args, Clone)]

@@ -15,7 +15,7 @@ Source of truth: GitHub `iamaman11/sing-box`, PR #394. Command counts refer to R
 
 | Prefix | Current accepted verbs in workflow grammar | Direction |
 | --- | --- | --- |
-| `/host` | `status [machine-id] [--deep]` | One operator status interface for any registered machine; no implicit mutation |
+| `/host` | `status [machine-id] [--deep]`, `apply <machine-id>`, `recover <machine-id>` | Single typed host interface; apply is journal-gated, recover is read-only pending original A/B reconciliation |
 | `/windows` | diagnose, offline-preflight, apply, quality-line1, converge, start, stop, restart-controller, repair, rollback, acceptance-reconcile, initial-pair-prepare, initial-pair-stage | Preserve distinct native physical operations until typed host apply/recover is complete; status and smoke aliases retired |
 | `/production` | enroll-runtime, converge, verify, diagnose, quality-line2, rollback | Legacy fixed VM path; migration target is machine-id based |
 | `/vm` | diagnose, quality-line2, credential-runtime-source, credential-initial-probe | Manifest-selected VM read-only path, internalized by host owner after acceptance |
@@ -34,7 +34,7 @@ Source of truth: GitHub `iamaman11/sing-box`, PR #394. Command counts refer to R
 
 - Status is read-only and can list all registered hosts. Each physical command binds **one exact machine_id**.
 - Each mutation must be bound to an exact host (or an explicitly journaled paired A/B transaction), have an exclusive operation owner and refuse replay after an uncertain outcome.
-- Do not expose `/host apply` or `/host recover` until the existing Windows SYSTEM and VM root paths are actually unified and physically accepted.
+- `/host apply` now admits a request only with complete durable journal and exact online/idle owner. The original A/B BEGIN currently blocks it. `/host recover` is read-only reconciliation, not an unsafe rollback.
 - Existing workflow branches and commands continue to work; removing them prematurely would delete unported functionality.
 - The removed `infra/windows/hosts.textproto` is no longer read by the credential workflow. The credential workflow now selects the VM/Windows pair using the same verified Rust protobuf `HostRegistry` as `/host status`; the original application/provider manifest remains independently validated, without a duplicate registry parser. Existing application/Vultr manifests are separate desired resources.
 - This inventory is source-level. It is not evidence that runner registration authorization, VM sudoers upgrades, multi-host physical operation, or original A/B BEGIN run 39004301614 has completed.
@@ -47,7 +47,7 @@ Each name below is a real Rust Clap enum variant. These are code entry points, *
 `ApplicationLifecycle, ApplicationAcceptance, ApplicationBundleBuild, ApplicationCleanup, CloudflareTargetPlane, CloudflareZeroTrust, Credentials, Host, Production, VultrLifecycle, VultrVpc`.
 
 **edge-orchestrator — subcommands (78):**
-- Host (1): `Status` (with optional machine_id and --deep).
+- Host (3): `Status` (optional machine_id and --deep), `Apply`, `Recover` (both require exact machine_id and complete Issue #26 journal).
 - ApplicationLifecycle (1): `Materialize`.
 - Production (4): `Validate, Diagnose, DnsNoop, EnrollRuntime`.
 - Credentials (24): `ContractVerify, ExistingJoinBeginPlan, ExistingJoinBeginReadback, ExistingJoinPlan, ExistingJoinReadback, ExistingJoinJournalInspect, ExistingJoinReconcile, InitialLine2ExternalWitness, InitialWorkerProofPlan, InitialWorkerProofUpgrade, InitialPairPreflight, InitialPairJournalObserve, InitialPairJournalReadback, InitialPairCommitPlan, InitialPairCommitReadback, InitialPairCommitReconcile, InitialPairRecoveryPlan, InitialPairRecoveryReadback, InitialPairJournalPlan, InitialPairPublish, InitialWindowsAcceptanceIssue, InitialWindowsAcceptanceCleanup, HostBootstrapConverge, RotateApplication`.
@@ -123,3 +123,9 @@ FAST snapshots now report observation Unix timestamp, reason and next action wit
 ## Second integrated source slice: one typed credential host resolver
 
 Credential authorization keeps its original protected GitHub/Worker authority and original A/B journal. The credential workflow reads application/provider resources, but passes the **same pinned binary protobuf** used by `/host status` to the existing Rust orchestrator. An internal hidden status option produces verified exact Windows runner identity and VM machine ID through `GITHUB_OUTPUT` (not diagnostic text parsing). Ambiguous multi-Windows selection requires an explicit machine ID. This is read-only selection, NOT an A/B replay or physical installation.
+
+## Native host lifecycle routing (not yet physically accepted)
+
+The existing `host` Rust command now exposes `status`, `apply` and `recover`, all taking exact registered IDs for machine-specific operations. The control plane verifies **all** Issue #26 comments against the GitHub issue's comment count, parses the original A/B BEGIN in Rust and refuses apply while the original run `39004301614` is unresolved. Apply also requires authoritative online/idle runner registration and uses only the existing Windows program-only apply or the exact `production-1` VM bundle converge. An acceptance VM with different manifest cannot be silently treated as production. Windows native apply checks the precise registry-selected runner name before SYSTEM operations.
+
+Recover gathers read-only physical evidence and returns `UNKNOWN_NO_REPLAY_ORIGINAL_AB` while the original transaction is unresolved. A real rollback of a previously unknown mutation requires independent owner proof; it is **not** done blindly under the new command. This is a coded and testable gate, not an assertion that installation, reinstallation and A/B convergence are accepted.
