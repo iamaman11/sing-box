@@ -598,6 +598,80 @@ def test_existing_join_endpoint_and_access(source: str) -> None:
         raise SystemExit("P0 existing join negative regression was mistakenly accepted")
 
 
+
+def test_git_windows_host_fleet_contract(credentials: str) -> None:
+    """Git owns exact Windows selection. The generic label is legacy singleton only."""
+    path = Path("infra/windows/hosts.json")
+    desired = json.loads(path.read_text(encoding="utf-8"))
+    require(
+        isinstance(desired, dict) and set(desired) == {"schema", "hosts"}
+        and desired["schema"] == "sing-box.windows-hosts/v1"
+        and isinstance(desired["hosts"], list),
+        "Git-owned Windows fleet inventory schema invalid",
+    )
+
+    def validate_hosts(hosts: list) -> bool:
+        ids, names = set(), set()
+        for host in hosts:
+            if not isinstance(host, dict) or set(host) != {"id", "runner_name"}:
+                return False
+            host_id, name = host["id"], host["runner_name"]
+            if (
+                not isinstance(host_id, str)
+                or re.fullmatch(r"[a-z][a-z0-9-]{0,39}", host_id) is None
+                or not isinstance(name, str)
+                or re.fullmatch(r"[A-Za-z0-9._-]{1,128}", name) is None
+                or host_id in ids or name in names
+            ):
+                return False
+            ids.add(host_id)
+            names.add(name)
+        return True
+
+    require(validate_hosts(desired["hosts"]), "Git Windows hosts must have unique typed host IDs and runners")
+    good = [{"id": "win-a", "runner_name": "sing-box-workstation-a"},
+            {"id": "win-b", "runner_name": "sing-box-workstation-b"}]
+    require(validate_hosts(good), "two exact Windows host registrations must be valid")
+    for bad in (good + [good[0]], good + [{"id": "win-c", "runner_name": good[0]["runner_name"]}],
+                [{"id": "WinBad", "runner_name": "x"}], [{"id": "win-a", "runner_name": "bad space"}]):
+        require(not validate_hosts(bad), "duplicate or malformed fleet registration was permitted")
+    authorize = credentials.split("  authorize:\n", 1)[1].split("\n  execute:\n", 1)[0]
+    require(
+        "windows_host_id: ${{ steps.parse.outputs.windows_host_id }}" in authorize
+        and "windows_runner_label: ${{ steps.initial_machine.outputs.windows_runner_label }}" in authorize
+        and "windows_runner_name: ${{ steps.initial_machine.outputs.windows_runner_name }}" in authorize
+        and 'f.write(f"windows_host_id={windows_host_id}' in authorize
+        and 'selected = os.environ.get("REQUESTED_WINDOWS_HOST_ID","")' in authorize
+        and 'raise SystemExit("Unknown Git-owned Windows host target")' in authorize
+        and 'label = "sing-box-host-" + selected' in authorize
+        and 'label = "sing-box-windows-lab"' in authorize
+        and "Named Windows fleet requires explicit" in authorize,
+        "the typed Git inventory must own per-host route authorization",
+    )
+    for job in ("existing_join_status_windows", "existing_join_windows_stage_prepare",
+                "existing_join_windows_commit"):
+        section = credentials.split(f"  {job}:\n", 1)[1].split("\n  ", 1)[0]
+        # Check full exact job content because short title sections cannot
+        # themselves prove the nested GitHub runner scheduling authority.
+        section = credentials.split(f"  {job}:\n", 1)[1].split(
+            "\n  " + ({
+                "existing_join_status_windows": "existing_join_status_summary",
+                "existing_join_windows_stage_prepare": "existing_join_commit_intent",
+                "existing_join_windows_commit": "existing_join_windows_access_cleanup",
+            }[job]) + ":\n", 1)[0]
+        require(
+            'runs-on: [self-hosted, Windows, X64, "${{ needs.authorize.outputs.windows_runner_label }}"]' in section,
+            "Windows status/prep/commit must schedule same Git-selected host label",
+        )
+    bootstrap = WINDOWS_RUNNER_BOOTSTRAP.read_text(encoding="utf-8")
+    require(
+        '[string]$HostId = ""' in bootstrap
+        and '$RunnerLabel = "$RunnerLabel,sing-box-host-$HostId"' in bootstrap
+        and 'Write-Output "windows_host_id=$HostId"' in bootstrap,
+        "new Windows bootstrap must bind unique Git host ID to runner label without another service",
+    )
+
+
 def main() -> None:
     router = ROUTER.read_text(encoding="utf-8")
     application = APPLICATION.read_text(encoding="utf-8")
@@ -609,6 +683,7 @@ def main() -> None:
     test_credential_observation_lane(credentials)
     test_workflow_job_boundaries(credentials)
     test_existing_join_endpoint_and_access(credentials)
+    test_git_windows_host_fleet_contract(credentials)
     vpc = VPC.read_text(encoding="utf-8")
     edge_platform_ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
     runtime_input = RUNTIME_INPUT.read_text(encoding="utf-8")
