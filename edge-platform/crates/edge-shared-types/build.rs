@@ -8,7 +8,6 @@ fn main() {
     let production_proto = platform_root.join("production.proto");
     let production_textproto =
         std::path::PathBuf::from("../../../infra/production/production.textproto");
-
     let mut protos = [
         "common.proto",
         "error.proto",
@@ -23,6 +22,7 @@ fn main() {
         "orchestrator.proto",
         "agent.proto",
         "production.proto",
+        "fleet.proto",
     ]
     .into_iter()
     .map(|name| platform_root.join(name))

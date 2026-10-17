@@ -104,13 +104,35 @@ pub(crate) fn transition(
                         .to_owned(),
                 );
             }
-            if state.active.is_some() {
-                let next = store.discard_candidate()?;
+            // A BEGIN-bound prepare receipt is durable mutation evidence.
+            // The ordinary DISCARD action is not a substitute for a proven
+            // two-owner ABORT and must never silently strand that receipt.
+            if store
+                .read_windows_existing_join_prepare_receipt()?
+                .is_some()
+                || store.read_existing_join_receipt()?.is_some()
+            {
+                return Err(
+                    "BEGIN-bound candidate requires paired owner reconciliation; ordinary discard is forbidden"
+                        .to_owned(),
+                );
+            }
+            if let Some(active) = state.active.as_ref() {
+                // Existing Windows may already have candidate B rendered in
+                // the managed config while its credential cursor still says A.
+                // Restore and verify exact ACTIVE A *before* dropping the
+                // candidate reference. Preserve candidate on any failed write.
+                let active_bundle = store.read_bundle(active)?;
+                let active_runtime =
+                    windows_runtime_state_from_canonical_production_bundle(&active_bundle)?;
+                apply_runtime_state(install_root, activation, &active_runtime)?;
+                verify_exact_active_runtime(install_root, activation, &store, active)?;
+                store.discard_candidate()?;
                 return Ok((
                     "CREDENTIAL_CANDIDATE_DISCARDED".to_owned(),
                     format!(
-                        "candidate discarded; active generation {} preserved",
-                        state.active.as_ref().unwrap().generation
+                        "candidate discarded after verified ACTIVE generation {} runtime restoration",
+                        active.generation
                     ),
                 ));
             }

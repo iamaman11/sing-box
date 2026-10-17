@@ -38,6 +38,65 @@ pub const WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS: u64 = 45;
 pub const CANONICAL_PRODUCTION_DESIRED_STATE_BYTES: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/production-desired-state.pb"));
 
+pub fn decode_fleet_desired_state(bytes: &[u8]) -> Result<FleetDesiredState, String> {
+    let desired = FleetDesiredState::decode(bytes)
+        .map_err(|err| format!("fleet protobuf decode failed: {err}"))?;
+    if desired.encode_to_vec() != bytes {
+        return Err("fleet protobuf bytes are not canonical".to_owned());
+    }
+    validate_fleet_desired_state(&desired)?;
+    Ok(desired)
+}
+
+pub fn encode_fleet_desired_state(desired: &FleetDesiredState) -> Result<Vec<u8>, String> {
+    validate_fleet_desired_state(desired)?;
+    Ok(desired.encode_to_vec())
+}
+
+pub fn validate_fleet_desired_state(desired: &FleetDesiredState) -> Result<(), String> {
+    use std::collections::BTreeSet;
+
+    if desired.schema_version != 1 || desired.hosts.is_empty() {
+        return Err("fleet registry requires schema_version=1 and registered hosts".to_owned());
+    }
+    let mut ids = BTreeSet::new();
+    let mut selectors = BTreeSet::new();
+    let mut preceding_id: Option<&str> = None;
+    for host in &desired.hosts {
+        if !fleet_token(&host.machine_id, 64) || !ids.insert(host.machine_id.as_str()) {
+            return Err("fleet machine_id invalid or duplicated".to_owned());
+        }
+        if preceding_id.is_some_and(|prior| prior >= host.machine_id.as_str()) {
+            return Err("fleet hosts must be sorted by unique machine_id".to_owned());
+        }
+        preceding_id = Some(&host.machine_id);
+        let kind = FleetHostKind::try_from(host.kind)
+            .map_err(|_| "fleet host kind is invalid".to_owned())?;
+        let (scope, name) = match (kind, host.owner.as_ref()) {
+            (FleetHostKind::Windows, Some(fleet_host::Owner::WindowsRunnerName(name))) => {
+                ("windows", name.as_str())
+            }
+            (FleetHostKind::Vm, Some(fleet_host::Owner::VmMachineId(name))) => {
+                ("vm", name.as_str())
+            }
+            _ => return Err("fleet host owner must match its kind".to_owned()),
+        };
+        if !fleet_token(name, 128) || !selectors.insert((scope, name)) {
+            return Err("fleet owner selector invalid or duplicated".to_owned());
+        }
+    }
+    Ok(())
+}
+
+fn fleet_token(value: &str, max: usize) -> bool {
+    !value.is_empty()
+        && value.len() <= max
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+}
+
 pub fn decode_production_desired_state(bytes: &[u8]) -> Result<ProductionDesiredState, String> {
     let desired = ProductionDesiredState::decode(bytes)
         .map_err(|err| format!("production desired-state protobuf decode failed: {err}"))?;
@@ -586,6 +645,83 @@ pub fn materialize_credential_delivery_candidate(
     validate_credential_delivery_bundle(&materialized)?;
     local_credential_bundle_ref(&materialized)?;
     Ok(materialized)
+}
+
+/// Canonical, non-secret cross-owner transaction identity. Jobs and shell
+/// wrappers must not reinterpret runtime log fragments as credential proofs.
+pub fn validate_credential_apply_checkpoint(
+    record: &CredentialApplyCheckpoint,
+) -> Result<(), String> {
+    if record.schema_version != 1 || record.operation_id == 0 {
+        return Err("credential checkpoint requires schema_version=1 and operation_id".to_owned());
+    }
+    validate_lower_hex(
+        "credential checkpoint ReleaseSet",
+        &record.release_set_sha256,
+        64,
+    )?;
+    validate_lower_hex(
+        "credential checkpoint BEGIN digest",
+        &record.begin_sha256,
+        64,
+    )?;
+    let phase = CredentialApplyPhase::try_from(record.phase)
+        .map_err(|_| "credential checkpoint phase is unknown".to_owned())?;
+    if phase == CredentialApplyPhase::Unspecified {
+        return Err("credential checkpoint phase is required".to_owned());
+    }
+    let a = record
+        .windows_active
+        .as_ref()
+        .ok_or_else(|| "credential checkpoint Windows ACTIVE A missing".to_owned())?;
+    let b = record
+        .windows_candidate
+        .as_ref()
+        .ok_or_else(|| "credential checkpoint Windows candidate B missing".to_owned())?;
+    let vm = record
+        .vm_candidate
+        .as_ref()
+        .ok_or_else(|| "credential checkpoint VM candidate B missing".to_owned())?;
+    if a.generation == 0
+        || b.generation == 0
+        || vm.generation != b.generation
+        || a.generation == b.generation
+        || a.slot != CredentialDeliverySlot::A as i32
+        || b.slot != CredentialDeliverySlot::B as i32
+        || vm.slot != CredentialDeliverySlot::B as i32
+    {
+        return Err("credential checkpoint A/B slot or generation mismatch".to_owned());
+    }
+    for (label, reference) in [
+        ("Windows ACTIVE A", a),
+        ("Windows candidate B", b),
+        ("VM candidate B", vm),
+    ] {
+        validate_lower_hex(label, &reference.sha256, 64)?;
+    }
+    if a.sha256 == b.sha256 || a.sha256 == vm.sha256 || b.sha256 == vm.sha256 {
+        return Err("credential checkpoint projections must have distinct digests".to_owned());
+    }
+    Ok(())
+}
+
+pub fn encode_credential_apply_checkpoint(
+    record: &CredentialApplyCheckpoint,
+) -> Result<Vec<u8>, String> {
+    validate_credential_apply_checkpoint(record)?;
+    Ok(record.encode_to_vec())
+}
+
+pub fn decode_credential_apply_checkpoint(
+    bytes: &[u8],
+) -> Result<CredentialApplyCheckpoint, String> {
+    let record = CredentialApplyCheckpoint::decode(bytes)
+        .map_err(|err| format!("credential checkpoint protobuf decode failed: {err}"))?;
+    validate_credential_apply_checkpoint(&record)?;
+    if record.encode_to_vec() != bytes {
+        return Err("credential checkpoint protobuf is not canonical".to_owned());
+    }
+    Ok(record)
 }
 
 pub fn encode_local_credential_state(state: &LocalCredentialState) -> Result<Vec<u8>, String> {
@@ -2650,6 +2786,110 @@ mod release_set_tests {
         clear_application_bundle_identity(&mut release);
         clear_windows_reuse_identity(&mut release);
         assert!(validate_release_set(&release).is_err());
+    }
+
+    #[test]
+    fn credential_checkpoint_roundtrip_and_unknown_fail_closed() {
+        let reference = |generation, slot, digest: char| LocalCredentialBundleRef {
+            generation,
+            slot,
+            sha256: digest.to_string().repeat(64),
+        };
+        let good = CredentialApplyCheckpoint {
+            schema_version: 1,
+            operation_id: 39004301614,
+            release_set_sha256: "a".repeat(64),
+            phase: CredentialApplyPhase::Prepared as i32,
+            windows_active: Some(reference(10, CredentialDeliverySlot::A as i32, 'b')),
+            windows_candidate: Some(reference(11, CredentialDeliverySlot::B as i32, 'c')),
+            vm_candidate: Some(reference(11, CredentialDeliverySlot::B as i32, 'd')),
+            begin_sha256: "e".repeat(64),
+        };
+        let encoded = encode_credential_apply_checkpoint(&good).unwrap();
+        assert_eq!(decode_credential_apply_checkpoint(&encoded).unwrap(), good);
+        for phase in [
+            CredentialApplyPhase::Preparing,
+            CredentialApplyPhase::Prepared,
+            CredentialApplyPhase::Committed,
+            CredentialApplyPhase::Aborted,
+            CredentialApplyPhase::Unknown,
+        ] {
+            let mut item = good.clone();
+            item.phase = phase as i32;
+            assert!(encode_credential_apply_checkpoint(&item).is_ok());
+        }
+        let mut invalid = good.clone();
+        invalid.phase = 999;
+        assert!(encode_credential_apply_checkpoint(&invalid).is_err());
+        invalid = good.clone();
+        invalid.operation_id = 0;
+        assert!(encode_credential_apply_checkpoint(&invalid).is_err());
+        invalid = good.clone();
+        invalid.vm_candidate.as_mut().unwrap().generation = 12;
+        assert!(encode_credential_apply_checkpoint(&invalid).is_err());
+        invalid = good.clone();
+        invalid.vm_candidate.as_mut().unwrap().sha256 = "c".repeat(64);
+        assert!(encode_credential_apply_checkpoint(&invalid).is_err());
+        let mut noncanonical = encoded.clone();
+        noncanonical.extend_from_slice(&[0x08, 0x01]); // duplicated schema_version
+        assert!(decode_credential_apply_checkpoint(&noncanonical).is_err());
+    }
+
+    #[test]
+    fn fleet_registry_is_canonical_and_rejects_aliases_and_unknown_owners() {
+        let expected = FleetDesiredState {
+            schema_version: 1,
+            hosts: vec![
+                FleetHost {
+                    machine_id: "production-1".to_owned(),
+                    kind: FleetHostKind::Vm as i32,
+                    owner: Some(fleet_host::Owner::VmMachineId("production-1".to_owned())),
+                },
+                FleetHost {
+                    machine_id: "sing-box-windows-lab".to_owned(),
+                    kind: FleetHostKind::Windows as i32,
+                    owner: Some(fleet_host::Owner::WindowsRunnerName(
+                        "sing-box-windows-lab".to_owned(),
+                    )),
+                },
+            ],
+        };
+        let bytes = encode_fleet_desired_state(&expected).unwrap();
+        assert_eq!(decode_fleet_desired_state(&bytes).unwrap(), expected);
+        let mut invalid = expected.clone();
+        invalid.hosts.swap(0, 1);
+        assert!(validate_fleet_desired_state(&invalid).is_err());
+        invalid = expected.clone();
+        invalid.hosts[1].machine_id = invalid.hosts[0].machine_id.clone();
+        assert!(validate_fleet_desired_state(&invalid).is_err());
+        invalid = expected.clone();
+        invalid.hosts[0].kind = FleetHostKind::Windows as i32;
+        assert!(validate_fleet_desired_state(&invalid).is_err());
+        invalid = expected.clone();
+        invalid.hosts[1].owner = None;
+        assert!(validate_fleet_desired_state(&invalid).is_err());
+        invalid = expected.clone();
+        invalid.hosts[0].machine_id = "../escape".to_owned();
+        assert!(validate_fleet_desired_state(&invalid).is_err());
+        invalid = expected.clone();
+        invalid.hosts[1].owner = Some(fleet_host::Owner::WindowsRunnerName(String::new()));
+        assert!(validate_fleet_desired_state(&invalid).is_err());
+        let mut noncanonical = bytes.clone();
+        noncanonical.extend_from_slice(&[0x08, 0x01]);
+        assert!(decode_fleet_desired_state(&noncanonical).is_err());
+        assert!(decode_fleet_desired_state(&[]).is_err());
+    }
+
+    #[test]
+    fn git_fleet_inventory_is_validated_without_compiling_it_into_the_binary() {
+        // CI sets this to the pinned-Buf compilation of the exact protected
+        // Git textproto. Ordinary unit tests also run without a checkout.
+        if let Some(path) = std::env::var_os("EDGE_FLEET_CANONICAL_PB") {
+            let bytes = std::fs::read(path).expect("read exact Git fleet protobuf");
+            let observed = decode_fleet_desired_state(&bytes).unwrap();
+            assert!(!observed.hosts.is_empty());
+            assert_eq!(encode_fleet_desired_state(&observed).unwrap(), bytes);
+        }
     }
 
     #[test]
