@@ -209,8 +209,12 @@ mod tests {
     #[test]
     fn exact_host_kind_selects_only_existing_native_owners() {
         assert_eq!(
-            runner_labels(FleetHostKind::Windows, "DESKTOP-0E1F6UQ", "sing-box-windows-lab")
-                .unwrap(),
+            runner_labels(
+                FleetHostKind::Windows,
+                "DESKTOP-0E1F6UQ",
+                "sing-box-windows-lab"
+            )
+            .unwrap(),
             r#"["self-hosted","Windows","X64","sing-box-windows-lab"]"#
         );
         assert_eq!(
