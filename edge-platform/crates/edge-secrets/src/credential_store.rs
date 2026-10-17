@@ -767,9 +767,7 @@ impl CredentialStore {
         // candidate: removing it would erase the only pointer to a runtime
         // already rendered with B. Even a direct store caller must fail closed.
         if self.projection == CredentialProjectionKind::Windows
-            && self
-                .read_windows_existing_join_prepare_receipt()?
-                .is_some()
+            && self.read_windows_existing_join_prepare_receipt()?.is_some()
         {
             return Err(
                 "Windows BEGIN-bound candidate requires authenticated paired ABORT, not discard"
