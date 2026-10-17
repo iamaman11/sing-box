@@ -90,17 +90,7 @@ pub(crate) fn run(
             // GitHub runner selectors are derived only from the validated
             // exact Git inventory. They never grant privilege by themselves:
             // the selected host must still attest its installed native owner.
-            let labels: Vec<&str> = match kind {
-                FleetHostKind::Windows => vec!["self-hosted", "Windows", "X64", owner],
-                FleetHostKind::Vm => {
-                    vec!["self-hosted", "Linux", "X64", "sing-box-production-vm", owner]
-                }
-                FleetHostKind::Unspecified => {
-                    return Err("fleet host kind unspecified".to_owned());
-                }
-            };
-            let label_json = serde_json::to_string(&labels)
-                .map_err(|_| "fleet runner selection encoding failed".to_owned())?;
+            let label_json = runner_labels(kind, owner)?;
             println!("fleet_runner_labels_json={label_json}");
             println!("fleet_inventory_sha256={inventory_sha}");
             println!(
@@ -112,5 +102,37 @@ pub(crate) fn run(
             println!("fleet_mutations=0");
             Ok(())
         }
+    }
+}
+
+/// A single Rust-owned mapping from typed host kind to GitHub's existing
+/// self-hosted owner labels; no workflow-specific second inventory or parser.
+fn runner_labels(kind: FleetHostKind, owner: &str) -> Result<String, String> {
+    let labels: Vec<&str> = match kind {
+        FleetHostKind::Windows => vec!["self-hosted", "Windows", "X64", owner],
+        FleetHostKind::Vm => {
+            vec!["self-hosted", "Linux", "X64", "sing-box-production-vm", owner]
+        }
+        FleetHostKind::Unspecified => return Err("fleet host kind unspecified".to_owned()),
+    };
+    serde_json::to_string(&labels)
+        .map_err(|_| "fleet runner selection encoding failed".to_owned())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn exact_host_kind_selects_only_existing_native_owners() {
+        assert_eq!(
+            runner_labels(FleetHostKind::Windows, "sing-box-windows-lab").unwrap(),
+            r#"["self-hosted","Windows","X64","sing-box-windows-lab"]"#
+        );
+        assert_eq!(
+            runner_labels(FleetHostKind::Vm, "production-1").unwrap(),
+            r#"["self-hosted","Linux","X64","sing-box-production-vm","production-1"]"#
+        );
+        assert!(runner_labels(FleetHostKind::Unspecified, "unknown").is_err());
     }
 }

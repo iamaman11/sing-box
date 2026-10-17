@@ -773,8 +773,34 @@ def test_git_windows_host_fleet_contract(credentials: str) -> None:
     )
 
 
+def test_native_fleet_readonly_control_boundary(router: str) -> None:
+    """Fleet source selection and native diagnostics must not grant mutations."""
+    require("  fleet:\n" in router and "  fleet_doctor:\n" in router, "Fleet owner route missing")
+    hosted = router.split("  fleet:\n", 1)[1].split("\n  fleet_doctor:\n", 1)[0]
+    physical = router.split("  fleet_doctor:\n", 1)[1].split("\n  windows:\n", 1)[0]
+    require(
+        "github.actor_id == '44100369'" in hosted
+        and "github.event.issue.number == 1" in hosted
+        and "github.run_attempt == 1" in hosted
+        and "actions: read" in hosted
+        and "contents: read" in hosted
+        and "issues: write" not in hosted
+        and "issues: write" not in physical
+        and "fleet_mutations=0" in hosted
+        and "fleet_runner_labels_json:runner_labels" in hosted
+        and "needs.fleet.outputs.runner_labels" in physical
+        and "Verify installed Windows native owner" in physical
+        and "FLEET_WINDOWS_OWNER_MISMATCH" in physical
+        and "Verify installed VM native owner" in physical
+        and "FLEET_VM_GENERIC_ROOT_AUTHORITY_FORBIDDEN" in physical
+        and 'sudo -n "${owner}" local diagnose' in physical,
+        "Fleet must select exact Git host then run existing native read-only owners only",
+    )
+
+
 def main() -> None:
     router = ROUTER.read_text(encoding="utf-8")
+    test_native_fleet_readonly_control_boundary(router)
     application = APPLICATION.read_text(encoding="utf-8")
     vultr = VULTR.read_text(encoding="utf-8")
     windows_physical = WINDOWS_PHYSICAL.read_text(encoding="utf-8")

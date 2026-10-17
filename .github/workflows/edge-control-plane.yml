@@ -165,7 +165,13 @@ jobs:
           grep -Fxq 'fleet_mutations=0' "${RUNNER_TEMP}/fleet-observation.txt"
           if [[ "${#command[@]}" == 2 ]]; then
             report="${RUNNER_TEMP}/fleet-observation.txt"
-            for entry in               'fleet_machine_id:machine_id'               'fleet_host_kind:kind'               'fleet_owner_selector:owner'               'fleet_runner_labels_json:runner_labels'; do
+            fields=(
+              'fleet_machine_id:machine_id'
+              'fleet_host_kind:kind'
+              'fleet_owner_selector:owner'
+              'fleet_runner_labels_json:runner_labels'
+            )
+            for entry in "${fields[@]}"; do
               key="${entry%%:*}"
               output="${entry#*:}"
               test "$(grep -c "^${key}=" "${report}")" = 1
