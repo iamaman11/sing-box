@@ -7,6 +7,8 @@ rust-version.workspace = true
 
 [dependencies]
 edge-shared-types = { path = "../edge-shared-types" }
+edge-secrets = { path = "../edge-secrets" }
+edge-controller-core = { path = "../edge-controller-core" }
 ring = "0.17.14"
 prost = "0.14.3"
 sysinfo = "0.37.2"

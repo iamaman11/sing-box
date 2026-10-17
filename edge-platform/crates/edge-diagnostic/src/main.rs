@@ -1,9 +1,12 @@
+use edge_secrets::observe_credential_safety;
 use edge_shared_types::{
-    WINDOWS_CONTROLLER_ADDR, WindowsDatapathMode, canonical_production_desired_state,
-    decode_windows_activation_state, verify_windows_activation_files,
+    CredentialProjectionKind, WINDOWS_CONTROLLER_ADDR, WindowsDatapathMode,
+    canonical_production_desired_state, decode_windows_activation_state,
+    verify_windows_activation_files,
 };
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 #[cfg(windows)]
@@ -57,8 +60,16 @@ fn run() -> Result<(), String> {
         return Err(usage());
     }
     let state_path = PathBuf::from(args.next().ok_or_else(usage)?);
+    let fast = match args.next().as_deref() {
+        None => false,
+        Some("--fast") => true,
+        _ => return Err(usage()),
+    };
     if args.next().is_some() {
         return Err(usage());
+    }
+    if fast {
+        return run_fast(&state_path);
     }
 
     let bytes = std::fs::read(&state_path).map_err(|err| {
@@ -97,6 +108,18 @@ fn run() -> Result<(), String> {
     println!("controller_running={controller_running}");
     println!("controller_required_for_diagnostics=false");
     println!("exact_release_files=PASS");
+    // Diagnose credentials with an owner-local, read-only cursor observation.
+    // Private credentials may be inaccessible to the runner: UNKNOWN is
+    // informative and never authorizes replay or prints secret payloads.
+    let install_root = state_path
+        .parent()
+        .ok_or_else(|| "Windows activation path has no install root".to_owned())?;
+    let credential_root = edge_controller_core::windows_credential_store_path(install_root);
+    for line in observe_credential_safety(&credential_root, CredentialProjectionKind::Windows)
+        .report_lines()
+    {
+        println!("{line}");
+    }
 
     #[cfg(windows)]
     let controller_pid = observe_windows_service(&expected_controller)?;
@@ -109,6 +132,73 @@ fn run() -> Result<(), String> {
     #[cfg(windows)]
     observe_windows_network(&state_path, datapath_mode)?;
 
+    Ok(())
+}
+
+/// Bounded read-only Fleet snapshot. It never starts a service, accesses private
+/// credential material, walks processes, probes DNS/routes or hashes release files.
+fn run_fast(state_path: &Path) -> Result<(), String> {
+    let started = Instant::now();
+    let mut bytes = Vec::new();
+    std::fs::File::open(state_path)
+        .map_err(|_| "FLEET_FAST_ACTIVATION_UNAVAILABLE".to_owned())?
+        .take(4097)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "FLEET_FAST_ACTIVATION_UNREADABLE".to_owned())?;
+    if bytes.len() > 4096 {
+        return Err("FLEET_FAST_ACTIVATION_TOO_LARGE".to_owned());
+    }
+    let state = decode_windows_activation_state(&bytes)
+        .map_err(|_| "FLEET_FAST_ACTIVATION_INVALID".to_owned())?;
+    if state.release_set_sha256.len() != 64
+        || !state
+            .release_set_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("FLEET_FAST_RELEASE_ID_INVALID".to_owned());
+    }
+    // The SCM itself is the one Windows service authority. Query only: no
+    // controller RPC, process discovery, shell, scheduled task or privilege change.
+    #[cfg(windows)]
+    let scm = (|| -> Result<String, String> {
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+            .map_err(|_| "SCM_UNAVAILABLE".to_owned())?;
+        let service = manager
+            .open_service(WINDOWS_CONTROLLER_SERVICE_NAME, ServiceAccess::QUERY_STATUS)
+            .map_err(|_| "SCM_UNAVAILABLE".to_owned())?;
+        let status = service
+            .query_status()
+            .map_err(|_| "SCM_UNAVAILABLE".to_owned())?;
+        Ok(format!("{:?}", status.current_state))
+    })()
+    .unwrap_or_else(|reason| reason);
+    #[cfg(not(windows))]
+    let scm = "UNSUPPORTED_HOST".to_owned();
+
+    let observed_unix_seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "FAST_CLOCK_UNAVAILABLE".to_owned())?
+        .as_secs();
+    println!("fast_schema=sing-box.fleet-fast/v1");
+    println!("fast_observed_unix_seconds={observed_unix_seconds}");
+    println!("fast_host_kind=WINDOWS");
+    println!("fast_release_set_sha256={}", state.release_set_sha256);
+    println!("fast_scm_state={scm}");
+    println!("fast_runtime=UNPROVEN");
+    println!("fast_reason=RUNTIME_REQUIRES_DEEP_PROOF");
+    println!(
+        "fast_next_action={}",
+        if scm == "Stopped" {
+            "KEEP_STOPPED_OR_RUN_DEEP_DIAGNOSE"
+        } else {
+            "RUN_DEEP_DIAGNOSE"
+        }
+    );
+    println!("fast_credential_pair_terminal=UNPROVEN");
+    println!("fast_credential_replay_authorized=false");
+    println!("fast_mutations=0");
+    println!("fast_elapsed_ms={}", started.elapsed().as_millis());
     Ok(())
 }
 
@@ -984,7 +1074,7 @@ fn observe_udp6_listeners(projects: &BTreeMap<u32, String>) -> Result<usize, Str
 }
 
 fn usage() -> String {
-    "usage: edge-diagnostic doctor <current.pb>".to_owned()
+    "usage: edge-diagnostic doctor <current.pb> [--fast]".to_owned()
 }
 
 #[cfg(test)]

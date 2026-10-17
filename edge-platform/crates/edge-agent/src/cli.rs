@@ -40,7 +40,10 @@ impl Command {
 
 #[derive(Debug, Clone, Subcommand)]
 pub(crate) enum LocalCommand {
-    Status,
+    Status {
+        #[arg(long)]
+        fast: bool,
+    },
     Verify,
     Diagnose,
     QualityLine2,
@@ -105,7 +108,7 @@ pub(crate) enum LocalCommand {
 impl LocalCommand {
     fn name(&self) -> &'static str {
         match self {
-            Self::Status => "local-status",
+            Self::Status { .. } => "local-status",
             Self::Verify => "local-verify",
             Self::Diagnose => "local-diagnose",
             Self::QualityLine2 => "local-quality-line2",
@@ -166,6 +169,7 @@ mod tests {
         assert!(Cli::try_parse_from(["edge-agent", "acceptance-serve"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent"]).is_err());
         assert!(Cli::try_parse_from(["edge-agent", "serve"]).is_err());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "status", "--fast"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "status"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "verify"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "diagnose"]).is_ok());

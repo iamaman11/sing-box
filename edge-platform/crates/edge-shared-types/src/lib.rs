@@ -14,6 +14,13 @@ pub mod release {
 
 pub use edge::platform::v1::*;
 
+// Stable protobuf wire contracts are kept for backwards compatibility.
+// Operator and host-management code use these exact aliases, not a second data model.
+pub use FleetDesiredState as HostRegistry;
+pub use FleetHost as ManagedHost;
+pub use FleetHostKind as ManagedHostKind;
+pub use fleet_host as managed_host;
+
 pub mod initial_credential_attestation;
 pub use initial_credential_attestation::first_use_host_attestation_sha256;
 use prost::Message;
@@ -38,75 +45,101 @@ pub const WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS: u64 = 45;
 pub const CANONICAL_PRODUCTION_DESIRED_STATE_BYTES: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/production-desired-state.pb"));
 
-pub fn decode_fleet_desired_state(bytes: &[u8]) -> Result<FleetDesiredState, String> {
-    let desired = FleetDesiredState::decode(bytes)
-        .map_err(|err| format!("fleet protobuf decode failed: {err}"))?;
+pub fn decode_host_registry(bytes: &[u8]) -> Result<HostRegistry, String> {
+    let desired =
+        HostRegistry::decode(bytes).map_err(|err| format!("host protobuf decode failed: {err}"))?;
     // Protobuf wire field ordering is not canonical across independent
     // conforming encoders (pinned Buf/Go and Rust/prost). Source authenticity
     // is instead bound to the exact protected Git bytes by SHA-256 at the
-    // Fleet control boundary. Validate the typed semantics here.
-    validate_fleet_desired_state(&desired)?;
+    // Host control boundary. Validate the typed semantics here.
+    validate_host_registry(&desired)?;
     Ok(desired)
 }
 
-pub fn encode_fleet_desired_state(desired: &FleetDesiredState) -> Result<Vec<u8>, String> {
-    validate_fleet_desired_state(desired)?;
+pub fn encode_host_registry(desired: &HostRegistry) -> Result<Vec<u8>, String> {
+    validate_host_registry(desired)?;
     Ok(desired.encode_to_vec())
 }
 
-pub fn validate_fleet_desired_state(desired: &FleetDesiredState) -> Result<(), String> {
+pub fn validate_host_registry(desired: &HostRegistry) -> Result<(), String> {
     use std::collections::BTreeSet;
 
     if desired.schema_version != 1 || desired.hosts.is_empty() {
-        return Err("fleet registry requires schema_version=1 and registered hosts".to_owned());
+        return Err("host registry requires schema_version=1 and registered hosts".to_owned());
     }
     let mut ids = BTreeSet::new();
     let mut selectors = BTreeSet::new();
     let mut preceding_id: Option<&str> = None;
     for host in &desired.hosts {
-        if !fleet_token(&host.machine_id, 64) || !ids.insert(host.machine_id.as_str()) {
-            return Err("fleet machine_id invalid or duplicated".to_owned());
+        if !host_token(&host.machine_id, 64) || !ids.insert(host.machine_id.as_str()) {
+            return Err("host machine_id invalid or duplicated".to_owned());
         }
         if preceding_id.is_some_and(|prior| prior >= host.machine_id.as_str()) {
-            return Err("fleet hosts must be sorted by unique machine_id".to_owned());
+            return Err("host hosts must be sorted by unique machine_id".to_owned());
         }
         preceding_id = Some(&host.machine_id);
-        let kind = FleetHostKind::try_from(host.kind)
-            .map_err(|_| "fleet host kind is invalid".to_owned())?;
+        let kind = ManagedHostKind::try_from(host.kind)
+            .map_err(|_| "host host kind is invalid".to_owned())?;
         let (scope, name) = match (kind, host.owner.as_ref()) {
-            (FleetHostKind::Windows, Some(fleet_host::Owner::WindowsRunnerName(name))) => {
+            (ManagedHostKind::Windows, Some(managed_host::Owner::WindowsRunnerName(name))) => {
                 ("windows", name.as_str())
             }
-            (FleetHostKind::Vm, Some(fleet_host::Owner::VmMachineId(name))) => {
+            (ManagedHostKind::Vm, Some(managed_host::Owner::VmMachineId(name))) => {
                 ("vm", name.as_str())
             }
-            _ => return Err("fleet host owner must match its kind".to_owned()),
+            _ => return Err("host host owner must match its kind".to_owned()),
         };
-        if !fleet_token(name, 128) || !selectors.insert((scope, name)) {
-            return Err("fleet owner selector invalid or duplicated".to_owned());
+        if !host_token(name, 128) || !selectors.insert((scope, name)) {
+            return Err("host owner selector invalid or duplicated".to_owned());
+        }
+        // Reference to existing Git-owned desired state; never duplicate configuration.
+        // Keep this narrow: no absolute paths, traversal, or runner-supplied specs.
+        let spec = host.desired_spec_path.as_str();
+        let allowed = match kind {
+            ManagedHostKind::Windows => spec == "infra/production/production.textproto",
+            ManagedHostKind::Vm => {
+                spec == "infra/production/production.textproto"
+                    || (spec.starts_with("infra/application/")
+                        && spec.ends_with(".json")
+                        && spec.len() <= 160
+                        && spec
+                            .trim_start_matches("infra/application/")
+                            .trim_end_matches(".json")
+                            .bytes()
+                            .all(|ch| {
+                                ch.is_ascii_lowercase()
+                                    || ch.is_ascii_digit()
+                                    || matches!(ch, b'-' | b'_')
+                            })
+                        && spec != "infra/application/.json")
+            }
+            ManagedHostKind::Unspecified => false,
+        };
+        if !allowed || spec.contains("..") {
+            return Err("host desired spec reference invalid for this kind".to_owned());
         }
         match kind {
-            FleetHostKind::Windows => {
-                if !fleet_token(&host.windows_runner_label, 128)
+            ManagedHostKind::Windows => {
+                if !host_token(&host.windows_runner_label, 128)
                     || !selectors.insert(("windows-label", host.windows_runner_label.as_str()))
                 {
-                    return Err("fleet Windows runner label invalid or duplicated".to_owned());
+                    return Err("host Windows runner label invalid or duplicated".to_owned());
                 }
             }
-            FleetHostKind::Vm => {
+            ManagedHostKind::Vm => {
                 if !host.windows_runner_label.is_empty() {
-                    return Err("fleet VM must not carry a Windows runner label".to_owned());
+                    return Err("host VM must not carry a Windows runner label".to_owned());
                 }
             }
-            FleetHostKind::Unspecified => {
-                return Err("fleet host kind unspecified".to_owned());
+            ManagedHostKind::Unspecified => {
+                return Err("host host kind unspecified".to_owned());
             }
         }
     }
     Ok(())
 }
 
-fn fleet_token(value: &str, max: usize) -> bool {
+fn host_token(value: &str, max: usize) -> bool {
     !value.is_empty()
         && value.len() <= max
         && value.as_bytes()[0].is_ascii_alphanumeric()
@@ -128,8 +161,93 @@ pub fn decode_production_desired_state(bytes: &[u8]) -> Result<ProductionDesired
     Ok(desired)
 }
 
+/// Reads one immutable Git-derived protobuf by exact digest. The existing
+/// embedded production spec remains the backwards-compatible default; a
+/// trusted host owner may supply an independently versioned config without
+/// rebuilding its Rust executable. A partial override fails closed.
+pub fn verified_production_desired_state(
+    path: &Path,
+    expected_sha256: &str,
+) -> Result<ProductionDesiredState, String> {
+    if expected_sha256.len() != 64
+        || !expected_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("CONFIG_SHA256_INVALID".to_owned());
+    }
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| "CONFIG_UNAVAILABLE".to_owned())?;
+    if !metadata.file_type().is_file() || metadata.len() > 256 * 1024 {
+        return Err("CONFIG_NOT_REGULAR_OR_TOO_LARGE".to_owned());
+    }
+    let mut bytes = Vec::new();
+    File::open(path)
+        .map_err(|_| "CONFIG_UNAVAILABLE".to_owned())?
+        .take(256 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "CONFIG_UNREADABLE".to_owned())?;
+    if bytes.is_empty() || bytes.len() > 256 * 1024 {
+        return Err("CONFIG_EMPTY_OR_TOO_LARGE".to_owned());
+    }
+    let actual_sha256 = ring::digest::digest(&ring::digest::SHA256, &bytes)
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    if actual_sha256 != expected_sha256 {
+        return Err("CONFIG_DIGEST_MISMATCH".to_owned());
+    }
+    // Conforming protobuf encoders may order fields differently. The byte
+    // digest pins the exact protected Git artifact; prost parses its type.
+    ProductionDesiredState::decode(bytes.as_slice())
+        .map_err(|_| "CONFIG_PROTOBUF_INVALID".to_owned())
+}
+
 pub fn canonical_production_desired_state() -> Result<ProductionDesiredState, String> {
-    decode_production_desired_state(CANONICAL_PRODUCTION_DESIRED_STATE_BYTES)
+    let path = std::env::var_os("EDGE_PRODUCTION_STATE_PB");
+    let sha = std::env::var_os("EDGE_PRODUCTION_STATE_SHA256");
+    match (path, sha) {
+        (None, None) => decode_production_desired_state(CANONICAL_PRODUCTION_DESIRED_STATE_BYTES),
+        (Some(path), Some(sha)) => {
+            let expected = sha.to_str().ok_or("CONFIG_SHA256_INVALID")?;
+            verified_production_desired_state(Path::new(&path), expected)
+        }
+        _ => Err("CONFIG_OVERRIDE_INCOMPLETE".to_owned()),
+    }
+}
+
+#[cfg(test)]
+mod verified_production_config_tests {
+    use super::*;
+
+    #[test]
+    fn verified_production_file_accepts_only_exact_digest() {
+        let path = std::env::temp_dir().join(format!(
+            "sing-box-verified-production-{}.pb",
+            std::process::id()
+        ));
+        let bytes = CANONICAL_PRODUCTION_DESIRED_STATE_BYTES;
+        std::fs::write(&path, bytes).unwrap();
+        let sha = ring::digest::digest(&ring::digest::SHA256, bytes)
+            .as_ref()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert!(verified_production_desired_state(&path, &sha).is_ok());
+        assert_eq!(
+            verified_production_desired_state(&path, &"0".repeat(64)).unwrap_err(),
+            "CONFIG_DIGEST_MISMATCH"
+        );
+        assert_eq!(
+            verified_production_desired_state(&path, "bad").unwrap_err(),
+            "CONFIG_SHA256_INVALID"
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            verified_production_desired_state(&path, &sha).unwrap_err(),
+            "CONFIG_UNAVAILABLE"
+        );
+    }
 }
 
 // One closed mapping shared by production validation and the exact sing-box renderer.
@@ -2854,71 +2972,92 @@ mod release_set_tests {
     }
 
     #[test]
-    fn fleet_registry_is_canonical_and_rejects_aliases_and_unknown_owners() {
-        let expected = FleetDesiredState {
+    fn host_registry_is_canonical_and_rejects_aliases_and_unknown_owners() {
+        let expected = HostRegistry {
             schema_version: 1,
             hosts: vec![
-                FleetHost {
-                    machine_id: "production-1".to_owned(),
-                    kind: FleetHostKind::Vm as i32,
-                    owner: Some(fleet_host::Owner::VmMachineId("production-1".to_owned())),
+                ManagedHost {
+                    machine_id: "application-acceptance-1".to_owned(),
+                    kind: ManagedHostKind::Vm as i32,
+                    owner: Some(managed_host::Owner::VmMachineId(
+                        "application-acceptance-1".to_owned(),
+                    )),
                     windows_runner_label: String::new(),
+                    desired_spec_path: "infra/application/disposable-acceptance.json".to_owned(),
                 },
-                FleetHost {
+                ManagedHost {
+                    machine_id: "production-1".to_owned(),
+                    kind: ManagedHostKind::Vm as i32,
+                    owner: Some(managed_host::Owner::VmMachineId("production-1".to_owned())),
+                    windows_runner_label: String::new(),
+                    desired_spec_path: "infra/production/production.textproto".to_owned(),
+                },
+                ManagedHost {
                     machine_id: "sing-box-windows-lab".to_owned(),
-                    kind: FleetHostKind::Windows as i32,
-                    owner: Some(fleet_host::Owner::WindowsRunnerName(
+                    kind: ManagedHostKind::Windows as i32,
+                    owner: Some(managed_host::Owner::WindowsRunnerName(
                         "DESKTOP-0E1F6UQ".to_owned(),
                     )),
                     windows_runner_label: "sing-box-windows-lab".to_owned(),
+                    desired_spec_path: "infra/production/production.textproto".to_owned(),
                 },
             ],
         };
-        let bytes = encode_fleet_desired_state(&expected).unwrap();
-        assert_eq!(decode_fleet_desired_state(&bytes).unwrap(), expected);
+        let bytes = encode_host_registry(&expected).unwrap();
+        assert_eq!(decode_host_registry(&bytes).unwrap(), expected);
         let mut invalid = expected.clone();
         invalid.hosts.swap(0, 1);
-        assert!(validate_fleet_desired_state(&invalid).is_err());
+        assert!(validate_host_registry(&invalid).is_err());
         invalid = expected.clone();
-        invalid.hosts[1].machine_id = invalid.hosts[0].machine_id.clone();
-        assert!(validate_fleet_desired_state(&invalid).is_err());
+        invalid.hosts[2].machine_id = invalid.hosts[1].machine_id.clone();
+        assert!(validate_host_registry(&invalid).is_err());
         invalid = expected.clone();
-        invalid.hosts[0].kind = FleetHostKind::Windows as i32;
-        assert!(validate_fleet_desired_state(&invalid).is_err());
+        invalid.hosts[1].kind = ManagedHostKind::Windows as i32;
+        assert!(validate_host_registry(&invalid).is_err());
         invalid = expected.clone();
-        invalid.hosts[1].owner = None;
-        assert!(validate_fleet_desired_state(&invalid).is_err());
+        invalid.hosts[2].owner = None;
+        assert!(validate_host_registry(&invalid).is_err());
         invalid = expected.clone();
-        invalid.hosts[0].machine_id = "../escape".to_owned();
-        assert!(validate_fleet_desired_state(&invalid).is_err());
+        invalid.hosts[1].machine_id = "../escape".to_owned();
+        assert!(validate_host_registry(&invalid).is_err());
         invalid = expected.clone();
-        invalid.hosts[1].owner = Some(fleet_host::Owner::WindowsRunnerName(String::new()));
-        assert!(validate_fleet_desired_state(&invalid).is_err());
+        invalid.hosts[2].owner = Some(managed_host::Owner::WindowsRunnerName(String::new()));
+        assert!(validate_host_registry(&invalid).is_err());
         invalid = expected.clone();
-        invalid.hosts[1].windows_runner_label.clear();
-        assert!(validate_fleet_desired_state(&invalid).is_err());
+        invalid.hosts[2].windows_runner_label.clear();
+        assert!(validate_host_registry(&invalid).is_err());
         invalid = expected.clone();
-        invalid.hosts[1].windows_runner_label = "../untrusted".to_owned();
-        assert!(validate_fleet_desired_state(&invalid).is_err());
+        invalid.hosts[2].windows_runner_label = "../untrusted".to_owned();
+        assert!(validate_host_registry(&invalid).is_err());
         invalid = expected.clone();
-        invalid.hosts[0].windows_runner_label = "sing-box-windows-lab".to_owned();
-        assert!(validate_fleet_desired_state(&invalid).is_err());
+        invalid.hosts[1].windows_runner_label = "sing-box-windows-lab".to_owned();
+        assert!(validate_host_registry(&invalid).is_err());
+        invalid = expected.clone();
+        invalid.hosts[0].desired_spec_path = "../escape.json".to_owned();
+        assert!(validate_host_registry(&invalid).is_err());
+        invalid = expected.clone();
+        invalid.hosts[2].desired_spec_path =
+            "infra/application/disposable-acceptance.json".to_owned();
+        assert!(validate_host_registry(&invalid).is_err());
+        invalid = expected.clone();
+        invalid.hosts[1].desired_spec_path.clear();
+        assert!(validate_host_registry(&invalid).is_err());
         let mut conflicting = bytes.clone();
         conflicting.extend_from_slice(&[0x08, 0x02]); // conflicting schema_version
-        assert!(decode_fleet_desired_state(&conflicting).is_err());
-        assert!(decode_fleet_desired_state(&[]).is_err());
+        assert!(decode_host_registry(&conflicting).is_err());
+        assert!(decode_host_registry(&[]).is_err());
     }
 
     #[test]
-    fn git_fleet_inventory_is_validated_without_compiling_it_into_the_binary() {
+    fn git_host_inventory_is_validated_without_compiling_it_into_the_binary() {
         // CI sets this to the pinned-Buf compilation of the exact protected
         // Git textproto. Ordinary unit tests also run without a checkout.
         if let Some(path) = std::env::var_os("EDGE_FLEET_CANONICAL_PB") {
-            let bytes = std::fs::read(path).expect("read exact Git fleet protobuf");
-            let observed = decode_fleet_desired_state(&bytes).unwrap();
+            let bytes = std::fs::read(path).expect("read exact Git host protobuf");
+            let observed = decode_host_registry(&bytes).unwrap();
             assert!(!observed.hosts.is_empty());
-            let rust_encoded = encode_fleet_desired_state(&observed).unwrap();
-            assert_eq!(decode_fleet_desired_state(&rust_encoded).unwrap(), observed);
+            let rust_encoded = encode_host_registry(&observed).unwrap();
+            assert_eq!(decode_host_registry(&rust_encoded).unwrap(), observed);
         }
     }
 

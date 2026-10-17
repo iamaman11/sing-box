@@ -12,6 +12,7 @@ ROUTER = WORKFLOWS / "edge-control-plane.yml"
 APPLICATION = WORKFLOWS / "vm-application-lifecycle.yml"
 VULTR = WORKFLOWS / "vultr-lifecycle.yml"
 WINDOWS_PHYSICAL = WORKFLOWS / "windows-physical.yml"
+WINDOWS_GH_JOURNAL = Path("edge-platform/scripts/read-complete-gh-journal.ps1")
 ZERO_TRUST = WORKFLOWS / "zero-trust-lifecycle.yml"
 ZERO_TRUST_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_zero_trust_lifecycle_command.rs")
 ZERO_TRUST_SERVICE = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_zero_trust_lifecycle_service.rs")
@@ -253,41 +254,45 @@ def test_native_preflight_machine_output(source: str) -> None:
                 f"Windows Write-Host regression not detected: {field}")
 
 
-def verify_windows_gh_journal_pages(source: str) -> None:
-    """Native gh forbids --slurp + --jq, even before the first network read.
-    Both the existing-ACTIVE and first-use BEGIN paths must consume every
-    page using gh slurp and validate individual page/entry shapes fail-closed.
+def verify_windows_gh_journal_pages(source: str, reader: str) -> None:
+    """Exactly one native read-only journal reader, reused by both mutation
+    workflows. It must preserve page boundaries and fail closed on an
+    incomplete or concurrently modified Issue #26 history.
     """
-    require("--slurp --jq" not in source,
-            "Windows issue journal must not combine mutually exclusive gh flags")
-    require(source.count("gh api --paginate --slurp $url") == 2,
-            "both one-shot Windows journal readers must paginate via native gh slurp")
-    require(source.count("ConvertFrom-Json -InputObject $raw -NoEnumerate") == 2,
-            "Windows journal readers must preserve page boundaries")
-    require(source.count("foreach ($page in $pages)") == 2
-            and source.count("if ($page -isnot [array])") == 2
-            and source.count("return $entries.ToArray()") == 2,
-            "Windows journal readers must reject missing or malformed pages")
-    require(source.count('[long]$issue.comments -ne $entries.Count') == 2,
-            "both Windows journal readers must reject a valid but incomplete page set")
-    for forbidden in (
-        "--slurp --jq 'add'",
-        "--paginate --jq 'add'",
-    ):
-        require(forbidden not in source, "Windows journal cannot use incompatible filtered pagination")
+    require(source.count("read-complete-gh-journal.ps1") == 2
+            and "function Read-CompleteJournal" not in source
+            and "function Read-AllJournalPages" not in source,
+            "Windows must reuse one journal reader, not duplicated YAML parsers")
+    require(reader.count("gh api --paginate --slurp $url") == 1,
+            "shared journal must fetch every real GH page once")
+    require("--slurp --jq" not in reader and "--paginate --jq" not in reader,
+            "GitHub journal must not combine incompatible pagination/filtering")
+    require(reader.count("ConvertFrom-Json -InputObject $raw -NoEnumerate") == 1
+            and reader.count("foreach ($page in $pages)") == 1
+            and reader.count("if ($page -isnot [array])") == 1
+            and reader.count("$entries.ToArray()") == 1,
+            "shared reader must preserve every page and reject malformed entries")
+    require(reader.count("[long]$issue.comments -ne $entries.Count") == 1
+            and "JOURNAL_READ_BLOCKED" in reader
+            and "GITHUB_REPOSITORY -cne 'iamaman11/sing-box'" in reader,
+            "shared journal must reject incomplete history and wrong repository")
+    require("gh api -X POST" not in reader,
+            "shared journal reader must not own a GitHub mutation")
 
 
 def test_windows_gh_journal_pages(source: str) -> None:
-    verify_windows_gh_journal_pages(source)
+    reader = WINDOWS_GH_JOURNAL.read_text(encoding="utf-8")
+    verify_windows_gh_journal_pages(source, reader)
     for broken in (
-        source.replace("--slurp $url", "--slurp --jq 'add' $url", 1),
-        source.replace("-NoEnumerate", "", 1),
-        source.replace("if ($page -isnot [array])", "if ($false)", 1),
-        source.replace('[long]$issue.comments -ne $entries.Count', '$false', 1),
+        reader.replace("--slurp $url", "--slurp --jq 'add' $url", 1),
+        reader.replace("-NoEnumerate", "", 1),
+        reader.replace("if ($page -isnot [array])", "if ($false)", 1),
+        reader.replace("[long]$issue.comments -ne $entries.Count", "$false", 1),
+        reader.replace("gh api --paginate --slurp $url", "gh api $url", 1),
     ):
-        require(broken != source, "Windows gh journal negative fixture missing")
+        require(broken != reader, "Windows GH journal negative fixture missing")
         try:
-            verify_windows_gh_journal_pages(broken)
+            verify_windows_gh_journal_pages(source, broken)
         except SystemExit:
             continue
         raise SystemExit("Windows GH pagination contract regression went undetected")
@@ -676,84 +681,40 @@ def test_existing_join_endpoint_and_access(source: str) -> None:
 
 
 
-def test_git_windows_host_fleet_contract(credentials: str) -> None:
-    """Git owns exact Windows selection. The generic label is legacy singleton only."""
-    path = Path("infra/windows/hosts.textproto")
+def test_git_windows_host_host_contract(credentials: str) -> None:
+    """One canonical host registry owns both Windows and VM selectors.
+
+    The previous empty Windows-only manifest is retired. The pairing
+    acceptance VM and Windows runner must be selected from the same
+    Git-owned protobuf, not from a fallback or hard-coded runner label.
+    """
+    path = Path("infra/hosts/hosts.textproto")
     contents = path.read_text(encoding="utf-8")
-    proto = Path("edge-platform/proto/edge/platform/v1/windows_hosts.proto").read_text(encoding="utf-8")
     require(
-        'message WindowsHostInventory {' in proto
-        and 'repeated WindowsHostRegistration hosts = 2;' in proto
-        and 'message WindowsHostRegistration {' in proto,
-        "Windows host inventory needs a real protobuf type, never a new first-party JSON file",
+        contents.startswith("schema_version: 1\n")
+        and "kind: FLEET_HOST_KIND_WINDOWS" in contents
+        and "kind: FLEET_HOST_KIND_VM" in contents
+        and 'windows_runner_label: "sing-box-windows-lab"' in contents
+        and "desired_spec_path:" in contents,
+        "canonical host registry must include typed Windows and VM ownership",
     )
-
-    def parse_hosts(text: str) -> list[dict] | None:
-        header = 'schema: "sing-box.windows-hosts/v1"\n'
-        if not text.startswith(header):
-            return None
-        body = text[len(header):]
-        pattern = re.compile(
-            r'hosts\s*\{\s*id:\s*"([a-z][a-z0-9-]{0,39})"\s*'
-            r'runner_name:\s*"([A-Za-z0-9._-]{1,128})"\s*\}\s*'
-        )
-        records = list(pattern.finditer(body))
-        if pattern.sub("", body).strip():
-            return None
-        return [{"id": m.group(1), "runner_name": m.group(2)} for m in records]
-
-    hosts = parse_hosts(contents)
-    require(hosts is not None, "Windows hosts textproto malformed or unknown field detected")
-    for bad in (
-        'schema: "wrong"\n',
-        contents + 'hostz { id: "x" }\n',
-        contents + 'hosts { id: "a" runner_name: "x" stray: 1 }\n',
-        contents + 'hosts { id: "Bad" runner_name: "x" }\n',
-    ):
-        require(parse_hosts(bad) is None, "invalid/unknown Windows host protobuf field permitted")
-
-    def validate_hosts(hosts: list) -> bool:
-        ids, names = set(), set()
-        for host in hosts:
-            if not isinstance(host, dict) or set(host) != {"id", "runner_name"}:
-                return False
-            host_id, name = host["id"], host["runner_name"]
-            if (
-                not isinstance(host_id, str)
-                or re.fullmatch(r"[a-z][a-z0-9-]{0,39}", host_id) is None
-                or not isinstance(name, str)
-                or re.fullmatch(r"[A-Za-z0-9._-]{1,128}", name) is None
-                or host_id in ids or name in names
-            ):
-                return False
-            ids.add(host_id)
-            names.add(name)
-        return True
-
-    require(validate_hosts(hosts), "Git Windows hosts must have unique typed host IDs and runners")
-    good = [{"id": "win-a", "runner_name": "sing-box-workstation-a"},
-            {"id": "win-b", "runner_name": "sing-box-workstation-b"}]
-    require(validate_hosts(good), "two exact Windows host registrations must be valid")
-    for bad in (good + [good[0]], good + [{"id": "win-c", "runner_name": good[0]["runner_name"]}],
-                [{"id": "WinBad", "runner_name": "x"}], [{"id": "win-a", "runner_name": "bad space"}]):
-        require(not validate_hosts(bad), "duplicate or malformed fleet registration was permitted")
-    authorize = credentials.split("  authorize:\n", 1)[1].split("\n  execute:\n", 1)[0]
     require(
-        "windows_host_id: ${{ steps.parse.outputs.windows_host_id }}" in authorize
-        and "windows_runner_label: ${{ steps.initial_machine.outputs.windows_runner_label }}" in authorize
-        and "windows_runner_name: ${{ steps.initial_machine.outputs.windows_runner_name }}" in authorize
-        and 'handle.write(f"windows_host_id={windows_host_id}' in authorize
-        and 'selected = os.environ.get("REQUESTED_WINDOWS_HOST_ID","")' in authorize
-        and 'raise SystemExit("Unknown Git-owned Windows host target")' in authorize
-        and 'label = "sing-box-host-" + selected' in authorize
-        and 'label = "sing-box-windows-lab"' in authorize
-        and "Named Windows fleet requires explicit" in authorize,
-        "the typed Git inventory must own per-host route authorization",
+        not Path("infra/windows/hosts.textproto").exists()
+        and 'infra/windows/hosts.textproto' not in credentials
+        and 'infra/hosts/hosts.textproto#format=txtpb' in credentials
+        and 'edge.platform.v1.FleetDesiredState' in credentials
+        and 'status "${vm_id}" --credential-pair-windows "${REQUESTED_WINDOWS_HOST_ID:-auto}"' in credentials
+        and "Canonical host registry has unknown or malformed records" not in credentials
+        and "vm_pattern = re.compile" not in credentials
+        and "windows_pattern = re.compile" not in credentials
+        and 'resolve_credential_peer(&desired, vm_id, windows_id)' in
+            Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(encoding="utf-8")
+        and "HOST_CREDENTIAL_WINDOWS_EXPLICIT_ID_REQUIRED" in
+            Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(encoding="utf-8"),
+        "credentials must share one Git host registry with the native orchestrator",
     )
     for job in ("existing_join_status_windows", "existing_join_windows_stage_prepare",
                 "existing_join_windows_commit"):
-        # Check full exact job content because short title sections cannot
-        # themselves prove the nested GitHub runner scheduling authority.
         section = credentials.split(f"  {job}:\n", 1)[1].split(
             "\n  " + ({
                 "existing_join_status_windows": "existing_join_status_summary",
@@ -762,22 +723,22 @@ def test_git_windows_host_fleet_contract(credentials: str) -> None:
             }[job]) + ":\n", 1)[0]
         require(
             'runs-on: [self-hosted, Windows, X64, "${{ needs.authorize.outputs.windows_runner_label }}"]' in section,
-            "Windows status/prep/commit must schedule same Git-selected host label",
+            "Windows status/prep/commit must use the selected Git-owned runner label",
         )
     bootstrap = WINDOWS_RUNNER_BOOTSTRAP.read_text(encoding="utf-8")
     require(
         '[string]$HostId = ""' in bootstrap
         and '$RunnerLabel = "$RunnerLabel,sing-box-host-$HostId"' in bootstrap
         and 'Write-Output "windows_host_id=$HostId"' in bootstrap,
-        "new Windows bootstrap must bind unique Git host ID to runner label without another service",
+        "new Windows bootstrap must bind its host ID without another service",
     )
 
 
-def test_native_fleet_readonly_control_boundary(router: str) -> None:
-    """Fleet source selection and native diagnostics must not grant mutations."""
-    require("  fleet:\n" in router and "  fleet_doctor:\n" in router, "Fleet owner route missing")
-    hosted = router.split("  fleet:\n", 1)[1].split("\n  fleet_doctor:\n", 1)[0]
-    physical = router.split("  fleet_doctor:\n", 1)[1].split("\n  windows:\n", 1)[0]
+def test_native_host_readonly_control_boundary(router: str) -> None:
+    """Host source selection and native diagnostics must not grant mutations."""
+    require("  host:\n" in router and "  host_observe:\n" in router, "Host owner route missing")
+    hosted = router.split("  host:\n", 1)[1].split("\n  host_observe:\n", 1)[0]
+    physical = router.split("  host_observe:\n", 1)[1].split("\n  host_apply_windows:\n", 1)[0]
     require(
         "github.actor_id == '44100369'" in hosted
         and "github.event.issue.number == 1" in hosted
@@ -786,21 +747,35 @@ def test_native_fleet_readonly_control_boundary(router: str) -> None:
         and "contents: read" in hosted
         and "issues: write" not in hosted
         and "issues: write" not in physical
-        and "fleet_mutations=0" in hosted
+        and "host_mutations=0" in hosted
         and '--github-output "${GITHUB_OUTPUT}"' in hosted
-        and "needs.fleet.outputs.runner_labels" in physical
+        and "needs.host.outputs.runner_labels" in physical
         and "Verify installed Windows native owner" in physical
-        and "FLEET_WINDOWS_OWNER_MISMATCH" in physical
+        and "HOST_WINDOWS_OWNER_MISMATCH" in physical
         and "Verify installed VM native owner" in physical
-        and "FLEET_VM_GENERIC_ROOT_AUTHORITY_FORBIDDEN" in physical
+        and "HOST_VM_GENERIC_ROOT_AUTHORITY_FORBIDDEN" in physical
         and 'sudo -n "${owner}" local diagnose' in physical,
-        "Fleet must select exact Git host then run existing native read-only owners only",
+        "Host must select exact Git host then run existing native read-only owners only",
+    )
+
+    require(
+        "  host_apply_windows:\n" in router
+        and "  host_apply_vm:\n" in router
+        and "needs.host.outputs.operation == 'APPLY'" in router
+        and "'HOST_APPLY_BLOCKED_ORIGINAL_AB_BEGIN_NO_REPLAY'" not in router
+        and "Read complete existing GitHub journal for mutation admission" in router
+        and "--journal-history-json" in router
+        and "needs.host.outputs.windows_runner_label" in router
+        and "host_runner_name:" in router
+        and "host_admitted_at_unix:" in router
+        and "needs.host.outputs.admitted_at_unix != ''" in router,
+        "Host apply must preserve one exact journalled native Windows/VM owner",
     )
 
 
 def main() -> None:
     router = ROUTER.read_text(encoding="utf-8")
-    test_native_fleet_readonly_control_boundary(router)
+    test_native_host_readonly_control_boundary(router)
     application = APPLICATION.read_text(encoding="utf-8")
     vultr = VULTR.read_text(encoding="utf-8")
     windows_physical = WINDOWS_PHYSICAL.read_text(encoding="utf-8")
@@ -810,7 +785,7 @@ def main() -> None:
     test_credential_observation_lane(credentials)
     test_workflow_job_boundaries(credentials)
     test_existing_join_endpoint_and_access(credentials)
-    test_git_windows_host_fleet_contract(credentials)
+    test_git_windows_host_host_contract(credentials)
     vpc = VPC.read_text(encoding="utf-8")
     edge_platform_ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
     runtime_input = RUNTIME_INPUT.read_text(encoding="utf-8")
@@ -1163,7 +1138,8 @@ def main() -> None:
         < program_prepare.index("Persist exactly one immutable program-upgrade intent BEFORE native mutation")
         < program_prepare.index("Execute one stopped native offline ReleaseSet upgrade with bounded readback")
         and program_prepare.count("gh api -X POST") == 1
-        and "gh api --paginate --slurp" in program_prepare
+        and "read-complete-gh-journal.ps1" in program_prepare
+        and "gh api --paginate --slurp" not in program_prepare
         and "first_use_upgrade_intent=COMMITTED_ONCE" in program_prepare
         and "install-windows-release.ps1" not in program_prepare
         and stage_once.count("-Preflight -RequireCurrentRelease") == 1
@@ -3006,7 +2982,9 @@ def main() -> None:
     )
     require(
         "startsWith(github.event.comment.body, '/production ')" in router
-        and router.count("uses: ./.github/workflows/vm-application-lifecycle.yml") == 2,
+        and router.count("uses: ./.github/workflows/vm-application-lifecycle.yml") == 3
+        and "needs.host.outputs.machine_id == 'production-1'" in router
+        and "needs.host.outputs.operation == 'APPLY'" in router,
         "router must expose production only through the existing owner-gated application lifecycle backend",
     )
     require(
@@ -3020,9 +2998,11 @@ def main() -> None:
     )
     require(
         "uses: ./.github/workflows/windows-physical.yml" in router
-        and "github.event.comment.body == '/windows smoke'" in router
+        and "github.event.comment.body == '/windows converge'" in router
+        and "github.event.comment.body == '/windows smoke'" not in router
+        and "github.event.comment.body == '/windows status'" not in router
         and "github.actor_id == '44100369'" in router,
-        "router must expose the physical Windows cycle only as the exact owner-only /windows smoke command",
+        "router must expose native converge once, without smoke/status aliases",
     )
     require(
         "vultr-root-ops.yml" not in router
@@ -4364,6 +4344,17 @@ def main() -> None:
         and 'base_schema not in {"6", "7"}' in windows_input
         and "base_diagnostic_sha256" in windows_input,
         "Windows identity must cover controller/console/diagnostic transitive local dependencies, marked build contract and allow exact reuse only from ReleaseSet v6/v7",
+    )
+
+    # PR candidate validation must not require the user's physical Windows
+    # machine merely to re-run hosted read-only GH journal parser tests.
+    # Actual Windows read-only diagnostics stay in the operational workflow.
+    require(
+        "windows_journal_integration:" not in edge_platform_ci
+        and "WINDOWS_JOURNAL_RESULT" not in edge_platform_ci
+        and "Test exact Windows production journal readers without network" in edge_platform_ci
+        and "test_windows_gh_journal_pages.ps1" in edge_platform_ci,
+        "CI must retain hosted journal negative tests without a physical Windows journal gate",
     )
 
     require(

@@ -15,7 +15,7 @@ mod cloudflare_target_plane_command;
 mod cloudflare_zero_trust_doctor;
 mod credential_existing_join;
 mod credential_initial_journal;
-mod fleet_command;
+mod host_command;
 mod line2_external_witness;
 mod production_command;
 mod vultr_host_bootstrap;
@@ -174,17 +174,21 @@ async fn run(
         Command::Credentials { command } => {
             cloudflare_credential_plane_command::run_delivery(command, release_context).await
         }
-        Command::Fleet {
+        Command::Host {
             command,
-            inventory_pb,
-            inventory_sha256,
+            hosts_pb,
+            hosts_sha256,
             github_output,
-        } => fleet_command::run(
+            runner_inventory_json,
+            journal_history_json,
+        } => host_command::run(
             command,
             release_context,
-            &inventory_pb,
-            &inventory_sha256,
+            &hosts_pb,
+            &hosts_sha256,
             github_output.as_deref(),
+            runner_inventory_json.as_deref(),
+            journal_history_json.as_deref(),
         ),
         Command::Production { command } => match command {
             cli::ProductionCommand::Validate => production_command::validate(release_context),

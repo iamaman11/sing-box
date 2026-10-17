@@ -7,6 +7,10 @@ on:
         description: Authorized /application or /production command from the control-plane router
         required: true
         type: string
+      host_admitted_at_unix:
+        required: false
+        type: string
+        default: ''
 
 permissions: {}
 
@@ -758,8 +762,20 @@ jobs:
 
       - name: Execute typed local runtime operation
         shell: bash
+        env:
+          HOST_ADMITTED_AT_UNIX: ${{ inputs.host_admitted_at_unix }}
         run: |
           set -euo pipefail
+          if [[ -n "${HOST_ADMITTED_AT_UNIX}" ]]; then
+            [[ "${REQUESTED_OPERATION}" == "converge" && "${GITHUB_RUN_ATTEMPT}" == "1" ]]
+            [[ "${HOST_ADMITTED_AT_UNIX}" =~ ^[0-9]{10,12}$ ]]
+            now="$(date -u +%s)"
+            age="$(( now - HOST_ADMITTED_AT_UNIX ))"
+            if (( age < 0 || age > 900 )); then
+              echo 'HOST_APPLY_ADMISSION_EXPIRED_NO_MUTATION' >&2
+              exit 1
+            fi
+          fi
           owner="/usr/local/libexec/sing-box/edge-agent"
           case "${REQUESTED_OPERATION}" in
             converge)

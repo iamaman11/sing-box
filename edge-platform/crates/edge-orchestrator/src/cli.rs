@@ -39,21 +39,27 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: CredentialDeliveryCommand,
     },
-    Fleet {
+    Host {
         /// Bounded canonical protobuf inventory, rendered from exact Git textproto.
         /// Loaded at runtime so adding machines never rebuilds Rust binaries.
         #[arg(long)]
-        inventory_pb: PathBuf,
+        hosts_pb: PathBuf,
         /// Canonical SHA-256 sourced from the protected Git revision,
         /// never inferred from an operator-provided path.
         #[arg(long)]
-        inventory_sha256: String,
+        hosts_sha256: String,
         /// Optional output file managed by the protected GitHub runner.
         /// Native Rust writes validated selection fields; no shell parsing.
         #[arg(long)]
         github_output: Option<PathBuf>,
+        /// Exact paginated GitHub runner registration for physical dispatch.
+        #[arg(long)]
+        runner_inventory_json: Option<PathBuf>,
+        /// Complete Issue #26 read-only journal; required for lifecycle admission.
+        #[arg(long)]
+        journal_history_json: Option<PathBuf>,
         #[command(subcommand)]
-        command: FleetCommand,
+        command: HostCommand,
     },
     Production {
         #[command(subcommand)]
@@ -79,7 +85,7 @@ impl Command {
             Self::CloudflareTargetPlane { .. } => "cloudflare-target-plane",
             Self::CloudflareZeroTrust { .. } => "cloudflare-zero-trust",
             Self::Credentials { .. } => "credentials",
-            Self::Fleet { .. } => "fleet",
+            Self::Host { .. } => "host",
             Self::Production { .. } => "production",
             Self::VultrLifecycle { .. } => "vultr-lifecycle",
             Self::VultrVpc { .. } => "vultr-vpc",
@@ -88,11 +94,21 @@ impl Command {
 }
 
 #[derive(Debug, Clone, Subcommand)]
-pub(crate) enum FleetCommand {
-    /// Exact Git-owned machine selector inventory; does not claim runtime health.
-    Inventory,
-    /// Inspect a registered machine's owner selector and release authority.
-    Inspect { machine_id: String },
+pub(crate) enum HostCommand {
+    /// All registered hosts, or the one machine selected by machine_id.
+    Status {
+        machine_id: Option<String>,
+        #[arg(long)]
+        deep: bool,
+        /// Internal only: resolve exact Git-owned credential peers for the
+        /// pre-existing workflow; does not authorize any credential action.
+        #[arg(long, hide = true)]
+        credential_pair_windows: Option<String>,
+    },
+    /// Select exactly one host for its existing native owner.
+    Apply { machine_id: String },
+    /// No replay: reconcile the original transaction before any rollback.
+    Recover { machine_id: String },
 }
 
 #[derive(Debug, Args, Clone)]
@@ -1402,43 +1418,32 @@ mod tests {
     }
 
     #[test]
-    fn fleet_clap_routes_exact_inventory_and_inspect_without_shell() {
+    fn host_cli_exposes_only_typed_status() {
         let parsed = Cli::try_parse_from([
             "edge-orchestrator",
-            "fleet",
-            "--inventory-pb",
-            "fleet.pb",
-            "--inventory-sha256",
+            "host",
+            "--hosts-pb",
+            "hosts.pb",
+            "--hosts-sha256",
             &"a".repeat(64),
-            "inventory",
-        ])
-        .unwrap();
-        assert!(matches!(
-            parsed.command,
-            Command::Fleet {
-                command: FleetCommand::Inventory,
-                ..
-            }
-        ));
-        let parsed = Cli::try_parse_from([
-            "edge-orchestrator",
-            "fleet",
-            "--inventory-pb",
-            "fleet.pb",
-            "--inventory-sha256",
-            &"a".repeat(64),
-            "inspect",
+            "status",
             "production-1",
+            "--deep",
         ])
         .unwrap();
         assert!(matches!(
             parsed.command,
-            Command::Fleet {
-                command: FleetCommand::Inspect { .. },
+            Command::Host {
+                command: HostCommand::Status {
+                    machine_id: Some(_),
+                    deep: true,
+                    ..
+                },
                 ..
             }
         ));
-        assert!(Cli::try_parse_from(["edge-orchestrator", "fleet", "apply"]).is_err());
+        assert!(Cli::try_parse_from(["edge-orchestrator", "fleet", "status"]).is_err());
+        assert!(Cli::try_parse_from(["edge-orchestrator", "host", "fast"]).is_err());
     }
 
     #[test]

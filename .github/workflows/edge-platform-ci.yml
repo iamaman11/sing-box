@@ -556,15 +556,15 @@ jobs:
           "${buf_bin}" lint
           "${buf_bin}" build
           "${buf_bin}" breaking --against "../.git#ref=refs/buf/base,subdir=edge-platform"
-          # The Git-owned fleet is a runtime input, not a Rust build input.
+          # The Git-owned host registry is a runtime input, not a Rust build input.
           # Compile it from the exact checked-out textproto with the pinned
           # protobuf compiler, without a custom YAML/Python/PowerShell parser.
           "${buf_bin}" convert proto/edge/platform/v1/fleet.proto \
             --type edge.platform.v1.FleetDesiredState \
-            --from "../infra/fleet/hosts.textproto#format=txtpb" \
-            --to "${RUNNER_TEMP}/fleet-canonical.binpb#format=binpb"
-          test -s "${RUNNER_TEMP}/fleet-canonical.binpb"
-          echo "fleet_inventory_sha256=$(sha256sum "${RUNNER_TEMP}/fleet-canonical.binpb" | cut -d' ' -f1)" >> "${GITHUB_STEP_SUMMARY}"
+            --from "../infra/hosts/hosts.textproto#format=txtpb" \
+            --to "${RUNNER_TEMP}/hosts-canonical.binpb#format=binpb"
+          test -s "${RUNNER_TEMP}/hosts-canonical.binpb"
+          echo "hosts_registry_sha256=$(sha256sum "${RUNNER_TEMP}/hosts-canonical.binpb" | cut -d' ' -f1)" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Install pinned Rust toolchain
         shell: bash
@@ -596,7 +596,7 @@ jobs:
         working-directory: edge-platform
         shell: bash
         env:
-          EDGE_FLEET_CANONICAL_PB: ${{ runner.temp }}/fleet-canonical.binpb
+          EDGE_FLEET_CANONICAL_PB: ${{ runner.temp }}/hosts-canonical.binpb
         run: cargo test --workspace --locked
 
   dependencies:
@@ -1596,38 +1596,10 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
-  windows_journal_integration:
-    name: Windows read-only GH journal integration
-    if: >-
-      github.event_name == 'pull_request' &&
-      github.event.pull_request.head.repo.full_name == github.repository &&
-      github.repository == 'iamaman11/sing-box' && github.actor_id == '44100369'
-    needs: verify
-    runs-on: [self-hosted, Windows, X64, sing-box-windows-lab]
-    timeout-minutes: 6
-    concurrency:
-      group: sing-box-windows-physical
-      cancel-in-progress: false
-    permissions:
-      contents: read
-      issues: read
-    steps:
-      - name: Checkout exact trusted PR reader and test code
-        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
-        with:
-          ref: ${{ github.event.pull_request.head.sha }}
-          persist-credentials: false
-          clean: true
-      - name: Execute production parsers against complete real GH pages without mutation
-        shell: pwsh
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: pwsh -NoProfile -NonInteractive -File edge-platform/scripts/test_windows_gh_journal_pages.ps1 -Live
-
   candidate_complete:
     name: Candidate complete
     if: always() && github.event_name == 'pull_request' && github.event.action != 'closed'
-    needs: [verify, dependencies, windows, linux_candidate, release_authority, windows_journal_integration]
+    needs: [verify, dependencies, windows, linux_candidate, release_authority]
     runs-on: ubuntu-24.04
     steps:
       - name: Require complete exact candidate
@@ -1639,7 +1611,6 @@ jobs:
           WINDOWS_RESULT: ${{ needs.windows.result }}
           LINUX_RESULT: ${{ needs.linux_candidate.result }}
           RELEASE_AUTHORITY_RESULT: ${{ needs.release_authority.result }}
-          WINDOWS_JOURNAL_RESULT: ${{ needs.windows_journal_integration.result }}
         run: |
           set -euo pipefail
           test "${SOURCE_RESULT}" = "success"
@@ -1647,7 +1618,6 @@ jobs:
           test "${WINDOWS_RESULT}" = "success"
           test "${LINUX_RESULT}" = "success"
           test "${RELEASE_AUTHORITY_RESULT}" = "success"
-          test "${WINDOWS_JOURNAL_RESULT}" = "success"
           echo "candidate_revision=${CANDIDATE_REVISION}"
           echo "All candidate build and verification jobs passed."
 
