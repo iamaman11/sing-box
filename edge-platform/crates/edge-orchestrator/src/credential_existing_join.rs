@@ -250,7 +250,8 @@ pub(crate) fn inspect_journal(
     if begins.len() != 1 || commits.len() > 1 {
         return Err("existing join journal duplicate/orphan or unsupported; UNKNOWN".to_owned());
     }
-    let original = begins[0].strip_prefix(&format!("{BEGIN_MARKER}\n"))
+    let original = begins[0]
+        .strip_prefix(&format!("{BEGIN_MARKER}\n"))
         .ok_or_else(|| "existing join original BEGIN displaced".to_owned())?;
     let begin: ExistingJoinBegin = serde_json::from_str(original)
         .map_err(|_| "existing join original BEGIN malformed".to_owned())?;
@@ -262,10 +263,11 @@ pub(crate) fn inspect_journal(
         readback_begin(&begin, history, &begins[0], revision, release)?;
         return Ok("BEGIN_DURABLE_NO_AUTOMATIC_REPLAY");
     }
-    let body = commits[0].strip_prefix(&format!("{MARKER}\n"))
+    let body = commits[0]
+        .strip_prefix(&format!("{MARKER}\n"))
         .ok_or_else(|| "existing join COMMIT marker displaced".to_owned())?;
-    let commit: ExistingJoinIntent = serde_json::from_str(body)
-        .map_err(|_| "existing join COMMIT malformed".to_owned())?;
+    let commit: ExistingJoinIntent =
+        serde_json::from_str(body).map_err(|_| "existing join COMMIT malformed".to_owned())?;
     readback(&commit, history, &commits[0], revision, release)?;
     Ok("COMMIT_DURABLE_OWNER_RECEIPTS_UNPROVEN")
 }
@@ -435,7 +437,9 @@ pub(crate) fn dispatch(
 ) -> Result<(), String> {
     use crate::cli::CredentialDeliveryCommand;
     match command {
-        CredentialDeliveryCommand::ExistingJoinJournalInspect { journal_history_path } => {
+        CredentialDeliveryCommand::ExistingJoinJournalInspect {
+            journal_history_path,
+        } => {
             let history = fs::read_to_string(journal_history_path)
                 .map_err(|_| "existing join GitHub history unavailable")?;
             let status = inspect_journal(&history, revision, release)?;
@@ -925,7 +929,12 @@ mod tests {
         );
         let record = plan(&g, &begin, &g.accepted_revision, &g.release_set_sha256).unwrap();
         assert_eq!(
-            inspect_journal(&history_commit(&g, &record), &g.accepted_revision, &g.release_set_sha256).unwrap(),
+            inspect_journal(
+                &history_commit(&g, &record),
+                &g.accepted_revision,
+                &g.release_set_sha256
+            )
+            .unwrap(),
             "COMMIT_DURABLE_OWNER_RECEIPTS_UNPROVEN"
         );
         let orphan = serde_json::json!([{"body":record}]).to_string();
