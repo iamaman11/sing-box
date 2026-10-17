@@ -22,7 +22,7 @@ fn main() {
         "orchestrator.proto",
         "agent.proto",
         "production.proto",
-        "fleet.proto",
+        "hosts.proto",
     ]
     .into_iter()
     .map(|name| platform_root.join(name))

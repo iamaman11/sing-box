@@ -2,23 +2,23 @@ syntax = "proto3";
 
 package edge.platform.v1;
 
-// The only Git-owned selector registry for the fleet. Configuration lives in
+// The only Git-owned selector registry for the host. Configuration lives in
 // existing desired state, immutable ReleaseSet and the Worker-v2 secret plane;
 // it is not duplicated into this inventory.
-message FleetDesiredState {
+message HostRegistry {
   uint32 schema_version = 1;
-  repeated FleetHost hosts = 2;
+  repeated ManagedHost hosts = 2;
 }
 
-enum FleetHostKind {
-  FLEET_HOST_KIND_UNSPECIFIED = 0;
-  FLEET_HOST_KIND_WINDOWS = 1;
-  FLEET_HOST_KIND_VM = 2;
+enum ManagedHostKind {
+  MANAGED_HOST_KIND_UNSPECIFIED = 0;
+  MANAGED_HOST_KIND_WINDOWS = 1;
+  MANAGED_HOST_KIND_VM = 2;
 }
 
-message FleetHost {
+message ManagedHost {
   string machine_id = 1;
-  FleetHostKind kind = 2;
+  ManagedHostKind kind = 2;
 
   // Exactly one existing privileged owner. These are selectors, not credentials.
   oneof owner {
