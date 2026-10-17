@@ -281,7 +281,15 @@ jobs:
           if [[ "${COMMAND_BODY}" == *" --deep" || "${COMMAND_BODY}" == "/host recover "* ]]; then
             sudo -n "${owner}" local diagnose
           else
-            sudo -n "${owner}" local status --fast
+            # Old installed sudoers may not yet grant --fast. Native deep
+            # remains authorized and read-only; do not elevate privileges.
+            if sudo -n -l "${owner}" local status --fast >/dev/null 2>&1; then
+              sudo -n "${owner}" local status --fast
+            else
+              echo 'host_observation_depth=DEEP_INSTALLED_OWNER_FALLBACK'
+              echo 'host_fast_unavailable=EXACT_SUDOERS_VERB_NOT_INSTALLED'
+              sudo -n "${owner}" local diagnose
+            fi
           fi
 
   host_apply_windows:

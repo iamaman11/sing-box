@@ -759,6 +759,14 @@ def test_native_host_readonly_control_boundary(router: str) -> None:
     )
 
     require(
+        'if sudo -n -l "${owner}" local status --fast >/dev/null 2>&1; then' in physical
+        and 'host_fast_unavailable=EXACT_SUDOERS_VERB_NOT_INSTALLED' in physical
+        and 'host_observation_depth=DEEP_INSTALLED_OWNER_FALLBACK' in physical
+        and 'sudo -n "${owner}" local diagnose' in physical,
+        "VM read-only host status must degrade to its existing sudoers-allowed native owner",
+    )
+
+    require(
         "  host_apply_windows:\n" in router
         and "  host_apply_vm:\n" in router
         and "needs.host.outputs.operation == 'APPLY'" in router
