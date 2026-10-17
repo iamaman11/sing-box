@@ -385,6 +385,7 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                         "isolated B Worker origin drifted during physical witness".to_owned(),
                     ));
                 }
+                println!("existing_join_begin_sha256={before}");
                 println!("existing_join_line1_external_4_of_4=PASS");
                 println!("existing_join_windows_b_worker_exact=true");
                 println!("existing_join_windows_system_stopped_proxyonly=true");
@@ -2178,7 +2179,7 @@ fn existing_line1_serving_candidate(
     }
     let details: Vec<_> = text
         .lines()
-        .filter_map(|line| line.strip_prefix("detail=runtime_evidence="))
+        .filter_map(|line| line.strip_prefix("detail=runtime_evidence=BOUNDED_READ_ONLY;"))
         .collect();
     if details.len() != 1 {
         return Err("SYSTEM cursor result absent or ambiguous".to_owned());
