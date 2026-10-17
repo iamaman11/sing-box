@@ -391,6 +391,26 @@ def verify_credential_observation_lane(source: str) -> None:
         require(f"  {name}:\n" not in source,
                 "unsafe partial apply: do not make structural BEGIN guard pass until every owner job is implemented")
 
+    # N2 external proof runs BEFORE irreversible BEGIN, using only the
+    # VM owner's kernel locator plus Worker-v2 TLS/auth; no Vultr API key.
+    vm_status = source.split("  existing_join_status_vm:\n", 1)[1].split(
+        "\n  existing_join_status_windows:", 1)[0]
+    require(
+        'local credential-public-endpoint' in vm_status
+        and 'credential_endpoint_origin=VM_KERNEL_READ_ONLY' in vm_status
+        and 'public_ipv4: ${{ steps.observe.outputs.public_ipv4 }}' in vm_status
+        and 'local quality-line2' in vm_status,
+        "VM root must supply a bounded public locator and native Line2 witness")
+    require(
+        'credentials initial-line2-external-witness' in existing_begin
+        and "line2_external_6_of_6=PASS" in existing_begin
+        and "line2_direct_warp_egress_distinct=true" in existing_begin
+        and "vm_runtime_mutations=0" in existing_begin
+        and 'VM_IPV4: ${{ needs.existing_join_status_vm.outputs.public_ipv4 }}' in existing_begin
+        and existing_begin.index("credentials initial-line2-external-witness")
+            < existing_begin.index('gh api -X POST "repos/$GITHUB_REPOSITORY/issues/26/comments"')
+        and "VULTR_API_KEY" not in source,
+        "original GitHub BEGIN must prove independent external Line2 before write, no Vultr authority")
     read_only_job = source.split("  execute:\n", 1)
     require(len(read_only_job) == 2, "credential read-only verify job missing")
     read_only_job = read_only_job[1].split("\n  rotate_release:\n", 1)[0]
