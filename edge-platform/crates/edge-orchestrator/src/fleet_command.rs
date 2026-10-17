@@ -111,12 +111,17 @@ fn runner_labels(kind: FleetHostKind, owner: &str) -> Result<String, String> {
     let labels: Vec<&str> = match kind {
         FleetHostKind::Windows => vec!["self-hosted", "Windows", "X64", owner],
         FleetHostKind::Vm => {
-            vec!["self-hosted", "Linux", "X64", "sing-box-production-vm", owner]
+            vec![
+                "self-hosted",
+                "Linux",
+                "X64",
+                "sing-box-production-vm",
+                owner,
+            ]
         }
         FleetHostKind::Unspecified => return Err("fleet host kind unspecified".to_owned()),
     };
-    serde_json::to_string(&labels)
-        .map_err(|_| "fleet runner selection encoding failed".to_owned())
+    serde_json::to_string(&labels).map_err(|_| "fleet runner selection encoding failed".to_owned())
 }
 
 #[cfg(test)]
