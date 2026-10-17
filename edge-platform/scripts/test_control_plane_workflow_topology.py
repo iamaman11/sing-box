@@ -360,6 +360,37 @@ def verify_credential_observation_lane(source: str) -> None:
         in existing_begin,
         "new BEGIN must reject any previous pointer or previous irreversible join attempt")
 
+    # After a durable original BEGIN only the existing SYSTEM owner may
+    # stage B and write its exact BEGIN-bound preparation receipt. This job
+    # must remain unreachable if any full-transaction sibling is missing.
+    assert_source = source.split("  existing_join_windows_stage_prepare:\n", 1)
+    require(len(assert_source) == 2, "Windows B stage/prepare owner missing")
+    stage = assert_source[1].split("\n  existing_join_recover_readonly:", 1)[0]
+    require(
+        "existing_join_begin.result == 'success'" in stage
+        and "group: sing-box-windows-physical" in stage
+        and "privileged-stage-credential" in stage
+        and "privileged-existing-prepare" in stage
+        and "BEGIN_SHA: ${{ needs.existing_join_begin.outputs.begin_sha256 }}" in stage
+        and "credential_existing_join_prepare_begin_sha256" in stage
+        and "credential_existing_join_receipt_present" in stage
+        and "Stage B outcome UNKNOWN; no replay" in stage
+        and "Windows BEGIN preparation UNKNOWN; no replay" in stage
+        and "windows_tun_mutations=0" in stage,
+        "Windows B stage/prepare must be BEGIN-bound, one-shot, SYSTEM owned and stopped")
+    require(
+        "begin_sha256: ${{ steps.begin.outputs.begin_sha256 }}" in existing_begin
+        and 'echo "begin_sha256=$(sha256sum "$exact" | awk' in existing_begin,
+        "BEGIN must only export exact digest after protected GitHub readback")
+    for name in (
+        "existing_join_windows_line1_acceptance",
+        "existing_join_commit_intent",
+        "existing_join_vm_commit",
+        "existing_join_windows_commit",
+    ):
+        require(f"  {name}:\n" not in source,
+                "unsafe partial apply: do not make structural BEGIN guard pass until every owner job is implemented")
+
     read_only_job = source.split("  execute:\n", 1)
     require(len(read_only_job) == 2, "credential read-only verify job missing")
     read_only_job = read_only_job[1].split("\n  rotate_release:\n", 1)[0]
