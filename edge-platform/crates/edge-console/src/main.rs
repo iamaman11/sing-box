@@ -7113,19 +7113,25 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
         );
         // Irrelevant malformed OS fragments are allowed, but duplicate or
         // malformed required credential evidence must continue to fail closed.
-        assert!(parse_existing_line1_system_result(
-            &real_envelope.replace(
-                "credential_candidate_slot=B;",
-                "credential_candidate_slot=B;credential_candidate_slot=B;",
-            ),
-            203,
-            &candidate,
-        ).is_err());
-        assert!(parse_existing_line1_system_result(
-            &real_envelope.replace("credential_origin=WORKER_OK", "credential_origin=UNPROVEN"),
-            203,
-            &candidate,
-        ).is_err());
+        assert!(
+            parse_existing_line1_system_result(
+                &real_envelope.replace(
+                    "credential_candidate_slot=B;",
+                    "credential_candidate_slot=B;credential_candidate_slot=B;",
+                ),
+                203,
+                &candidate,
+            )
+            .is_err()
+        );
+        assert!(
+            parse_existing_line1_system_result(
+                &real_envelope.replace("credential_origin=WORKER_OK", "credential_origin=UNPROVEN"),
+                203,
+                &candidate,
+            )
+            .is_err()
+        );
         for invalid in [
             sample.replace("WORKER_OK", "UNPROVEN"),
             sample.replace("candidate_slot=B", "candidate_slot=A"),
