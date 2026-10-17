@@ -352,7 +352,7 @@ def verify_credential_observation_lane(source: str) -> None:
         and "join_intent_sha256:" in windows_observe
         and "Windows previous A post-commit cursor invalid" in windows_observe
         and "[string]$fields[\'credential_previous_slot\'] -cne \'1\'" in windows_observe
-        and \'"previous_slot=A" >> $env:GITHUB_OUTPUT\' in windows_observe
+        and '"previous_slot=A" >> $env:GITHUB_OUTPUT' in windows_observe
         and "credential_previous_present'] -cne 'false'" not in windows_observe,
         "Windows status must read post-COMMIT PREVIOUS A plus exact receipts")
     require(
