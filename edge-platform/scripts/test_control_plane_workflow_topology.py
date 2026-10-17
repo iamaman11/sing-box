@@ -12,6 +12,7 @@ ROUTER = WORKFLOWS / "edge-control-plane.yml"
 APPLICATION = WORKFLOWS / "vm-application-lifecycle.yml"
 VULTR = WORKFLOWS / "vultr-lifecycle.yml"
 WINDOWS_PHYSICAL = WORKFLOWS / "windows-physical.yml"
+WINDOWS_GH_JOURNAL = Path("edge-platform/scripts/read-complete-gh-journal.ps1")
 ZERO_TRUST = WORKFLOWS / "zero-trust-lifecycle.yml"
 ZERO_TRUST_COMMAND = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_zero_trust_lifecycle_command.rs")
 ZERO_TRUST_SERVICE = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_zero_trust_lifecycle_service.rs")
@@ -253,41 +254,45 @@ def test_native_preflight_machine_output(source: str) -> None:
                 f"Windows Write-Host regression not detected: {field}")
 
 
-def verify_windows_gh_journal_pages(source: str) -> None:
-    """Native gh forbids --slurp + --jq, even before the first network read.
-    Both the existing-ACTIVE and first-use BEGIN paths must consume every
-    page using gh slurp and validate individual page/entry shapes fail-closed.
+def verify_windows_gh_journal_pages(source: str, reader: str) -> None:
+    """Exactly one native read-only journal reader, reused by both mutation
+    workflows. It must preserve page boundaries and fail closed on an
+    incomplete or concurrently modified Issue #26 history.
     """
-    require("--slurp --jq" not in source,
-            "Windows issue journal must not combine mutually exclusive gh flags")
-    require(source.count("gh api --paginate --slurp $url") == 2,
-            "both one-shot Windows journal readers must paginate via native gh slurp")
-    require(source.count("ConvertFrom-Json -InputObject $raw -NoEnumerate") == 2,
-            "Windows journal readers must preserve page boundaries")
-    require(source.count("foreach ($page in $pages)") == 2
-            and source.count("if ($page -isnot [array])") == 2
-            and source.count("return $entries.ToArray()") == 2,
-            "Windows journal readers must reject missing or malformed pages")
-    require(source.count('[long]$issue.comments -ne $entries.Count') == 2,
-            "both Windows journal readers must reject a valid but incomplete page set")
-    for forbidden in (
-        "--slurp --jq 'add'",
-        "--paginate --jq 'add'",
-    ):
-        require(forbidden not in source, "Windows journal cannot use incompatible filtered pagination")
+    require(source.count("read-complete-gh-journal.ps1") == 2
+            and "function Read-CompleteJournal" not in source
+            and "function Read-AllJournalPages" not in source,
+            "Windows must reuse one journal reader, not duplicated YAML parsers")
+    require(reader.count("gh api --paginate --slurp $url") == 1,
+            "shared journal must fetch every real GH page once")
+    require("--slurp --jq" not in reader and "--paginate --jq" not in reader,
+            "GitHub journal must not combine incompatible pagination/filtering")
+    require(reader.count("ConvertFrom-Json -InputObject $raw -NoEnumerate") == 1
+            and reader.count("foreach ($page in $pages)") == 1
+            and reader.count("if ($page -isnot [array])") == 1
+            and reader.count("$entries.ToArray()") == 1,
+            "shared reader must preserve every page and reject malformed entries")
+    require(reader.count("[long]$issue.comments -ne $entries.Count") == 1
+            and "JOURNAL_READ_BLOCKED" in reader
+            and "GITHUB_REPOSITORY -cne 'iamaman11/sing-box'" in reader,
+            "shared journal must reject incomplete history and wrong repository")
+    require("gh api -X POST" not in reader,
+            "shared journal reader must not own a GitHub mutation")
 
 
 def test_windows_gh_journal_pages(source: str) -> None:
-    verify_windows_gh_journal_pages(source)
+    reader = WINDOWS_GH_JOURNAL.read_text(encoding="utf-8")
+    verify_windows_gh_journal_pages(source, reader)
     for broken in (
-        source.replace("--slurp $url", "--slurp --jq 'add' $url", 1),
-        source.replace("-NoEnumerate", "", 1),
-        source.replace("if ($page -isnot [array])", "if ($false)", 1),
-        source.replace('[long]$issue.comments -ne $entries.Count', '$false', 1),
+        reader.replace("--slurp $url", "--slurp --jq 'add' $url", 1),
+        reader.replace("-NoEnumerate", "", 1),
+        reader.replace("if ($page -isnot [array])", "if ($false)", 1),
+        reader.replace("[long]$issue.comments -ne $entries.Count", "$false", 1),
+        reader.replace("gh api --paginate --slurp $url", "gh api $url", 1),
     ):
-        require(broken != source, "Windows gh journal negative fixture missing")
+        require(broken != reader, "Windows GH journal negative fixture missing")
         try:
-            verify_windows_gh_journal_pages(broken)
+            verify_windows_gh_journal_pages(source, broken)
         except SystemExit:
             continue
         raise SystemExit("Windows GH pagination contract regression went undetected")
