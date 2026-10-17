@@ -8,9 +8,6 @@ fn main() {
     let production_proto = platform_root.join("production.proto");
     let production_textproto =
         std::path::PathBuf::from("../../../infra/production/production.textproto");
-    let fleet_proto = platform_root.join("fleet.proto");
-    let fleet_textproto = std::path::PathBuf::from("../../../infra/fleet/hosts.textproto");
-
     let mut protos = [
         "common.proto",
         "error.proto",
@@ -38,7 +35,6 @@ fn main() {
         println!("cargo:rerun-if-changed={}", proto.display());
     }
     println!("cargo:rerun-if-changed={}", production_textproto.display());
-    println!("cargo:rerun-if-changed={}", fleet_textproto.display());
 
     unsafe {
         std::env::set_var("PROTOC", &protoc);
@@ -82,33 +78,4 @@ fn main() {
     let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
     std::fs::write(out_dir.join("production-desired-state.pb"), output.stdout)
         .expect("write canonical production protobuf");
-    // Decode the sole Git fleet selector registry with protoc, not a custom
-    // YAML/PowerShell parser. Unknown or malformed textproto fields fail build.
-    let desired_fleet = std::fs::read(&fleet_textproto).expect("read canonical fleet textproto");
-    let mut fleet_child = Command::new(&protoc)
-        .arg(format!("--proto_path={}", proto_root.display()))
-        .arg("--encode=edge.platform.v1.FleetDesiredState")
-        .arg(&fleet_proto)
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .expect("start protoc fleet textproto encoder");
-    fleet_child
-        .stdin
-        .take()
-        .expect("protoc fleet stdin")
-        .write_all(&desired_fleet)
-        .expect("write fleet textproto to protoc");
-    let fleet_output = fleet_child
-        .wait_with_output()
-        .expect("wait for fleet textproto encoder");
-    if !fleet_output.status.success() {
-        panic!(
-            "canonical fleet textproto invalid: {}",
-            String::from_utf8_lossy(&fleet_output.stderr)
-        );
-    }
-    std::fs::write(out_dir.join("fleet-desired-state.pb"), fleet_output.stdout)
-        .expect("write canonical fleet protobuf");
 }

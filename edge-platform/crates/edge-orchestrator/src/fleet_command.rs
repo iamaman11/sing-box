@@ -15,6 +15,7 @@ pub(crate) fn run(
     command: FleetCommand,
     release: &OrchestrationContext,
     inventory_path: &Path,
+    expected_sha256: &str,
 ) -> Result<(), String> {
     let mut bytes = Vec::new();
     File::open(inventory_path)
@@ -25,13 +26,23 @@ pub(crate) fn run(
     if bytes.len() as u64 > MAX_INVENTORY_BYTES {
         return Err("fleet inventory exceeds bounded protobuf size".to_owned());
     }
-    let desired = decode_fleet_desired_state(&bytes)?;
+    if expected_sha256.len() != 64
+        || !expected_sha256
+            .bytes()
+            .all(|ch| ch.is_ascii_digit() || (b'a'..=b'f').contains(&ch))
+    {
+        return Err("fleet Git inventory SHA-256 must be exact lowercase hex".to_owned());
+    }
     let digest = digest(&SHA256, &bytes);
     let inventory_sha = digest
         .as_ref()
         .iter()
         .map(|value| format!("{value:02x}"))
         .collect::<String>();
+    if inventory_sha != expected_sha256 {
+        return Err("fleet protobuf differs from protected Git inventory SHA-256".to_owned());
+    }
+    let desired = decode_fleet_desired_state(&bytes)?;
     match command {
         FleetCommand::Inventory => {
             println!("fleet_schema=1");

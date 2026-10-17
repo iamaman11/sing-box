@@ -44,6 +44,10 @@ pub(crate) enum Command {
         /// Loaded at runtime so adding machines never rebuilds Rust binaries.
         #[arg(long)]
         inventory_pb: PathBuf,
+        /// Canonical SHA-256 sourced from the protected Git revision,
+        /// never inferred from an operator-provided path.
+        #[arg(long)]
+        inventory_sha256: String,
         #[command(subcommand)]
         command: FleetCommand,
     },
@@ -1400,6 +1404,8 @@ mod tests {
             "fleet",
             "--inventory-pb",
             "fleet.pb",
+            "--inventory-sha256",
+            &"a".repeat(64),
             "inventory",
         ])
         .unwrap();
@@ -1415,6 +1421,8 @@ mod tests {
             "fleet",
             "--inventory-pb",
             "fleet.pb",
+            "--inventory-sha256",
+            &"a".repeat(64),
             "inspect",
             "production-1",
         ])

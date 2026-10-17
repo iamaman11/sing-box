@@ -38,9 +38,6 @@ pub const WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS: u64 = 45;
 pub const CANONICAL_PRODUCTION_DESIRED_STATE_BYTES: &[u8] =
     include_bytes!(concat!(env!("OUT_DIR"), "/production-desired-state.pb"));
 
-pub const CANONICAL_FLEET_DESIRED_STATE_BYTES: &[u8] =
-    include_bytes!(concat!(env!("OUT_DIR"), "/fleet-desired-state.pb"));
-
 pub fn decode_fleet_desired_state(bytes: &[u8]) -> Result<FleetDesiredState, String> {
     let desired = FleetDesiredState::decode(bytes)
         .map_err(|err| format!("fleet protobuf decode failed: {err}"))?;
@@ -51,8 +48,9 @@ pub fn decode_fleet_desired_state(bytes: &[u8]) -> Result<FleetDesiredState, Str
     Ok(desired)
 }
 
-pub fn canonical_fleet_desired_state() -> Result<FleetDesiredState, String> {
-    decode_fleet_desired_state(CANONICAL_FLEET_DESIRED_STATE_BYTES)
+pub fn encode_fleet_desired_state(desired: &FleetDesiredState) -> Result<Vec<u8>, String> {
+    validate_fleet_desired_state(desired)?;
+    Ok(desired.encode_to_vec())
 }
 
 pub fn validate_fleet_desired_state(desired: &FleetDesiredState) -> Result<(), String> {
@@ -2839,13 +2837,25 @@ mod release_set_tests {
 
     #[test]
     fn fleet_registry_is_canonical_and_rejects_aliases_and_unknown_owners() {
-        let expected = canonical_fleet_desired_state().unwrap();
-        assert_eq!(expected.schema_version, 1);
-        assert_eq!(expected.hosts.len(), 2);
-        assert_eq!(
-            decode_fleet_desired_state(CANONICAL_FLEET_DESIRED_STATE_BYTES).unwrap(),
-            expected
-        );
+        let expected = FleetDesiredState {
+            schema_version: 1,
+            hosts: vec![
+                FleetHost {
+                    machine_id: "production-1".to_owned(),
+                    kind: FleetHostKind::Vm as i32,
+                    owner: Some(fleet_host::Owner::VmMachineId("production-1".to_owned())),
+                },
+                FleetHost {
+                    machine_id: "sing-box-windows-lab".to_owned(),
+                    kind: FleetHostKind::Windows as i32,
+                    owner: Some(fleet_host::Owner::WindowsRunnerName(
+                        "sing-box-windows-lab".to_owned(),
+                    )),
+                },
+            ],
+        };
+        let bytes = encode_fleet_desired_state(&expected).unwrap();
+        assert_eq!(decode_fleet_desired_state(&bytes).unwrap(), expected);
         let mut invalid = expected.clone();
         invalid.hosts.swap(0, 1);
         assert!(validate_fleet_desired_state(&invalid).is_err());
@@ -2862,15 +2872,12 @@ mod release_set_tests {
         invalid.hosts[0].machine_id = "../escape".to_owned();
         assert!(validate_fleet_desired_state(&invalid).is_err());
         invalid = expected.clone();
-        invalid.hosts[1].owner = Some(fleet_host::Owner::WindowsRunnerName(
-            "production-1".to_owned(),
-        ));
-        assert!(validate_fleet_desired_state(&invalid).is_ok());
         invalid.hosts[1].owner = Some(fleet_host::Owner::WindowsRunnerName(String::new()));
         assert!(validate_fleet_desired_state(&invalid).is_err());
-        let mut wire = CANONICAL_FLEET_DESIRED_STATE_BYTES.to_vec();
-        wire.extend_from_slice(&[0x08, 0x01]); // duplicate schema_version
-        assert!(decode_fleet_desired_state(&wire).is_err());
+        let mut noncanonical = bytes.clone();
+        noncanonical.extend_from_slice(&[0x08, 0x01]);
+        assert!(decode_fleet_desired_state(&noncanonical).is_err());
+        assert!(decode_fleet_desired_state(&[]).is_err());
     }
 
     #[test]

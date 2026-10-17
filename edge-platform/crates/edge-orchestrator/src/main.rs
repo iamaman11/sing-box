@@ -177,7 +177,13 @@ async fn run(
         Command::Fleet {
             command,
             inventory_pb,
-        } => fleet_command::run(command, release_context, &inventory_pb),
+            inventory_sha256,
+        } => fleet_command::run(
+            command,
+            release_context,
+            &inventory_pb,
+            &inventory_sha256,
+        ),
         Command::Production { command } => match command {
             cli::ProductionCommand::Validate => production_command::validate(release_context),
             cli::ProductionCommand::Diagnose => cloudflare_production_inventory::run().await,
