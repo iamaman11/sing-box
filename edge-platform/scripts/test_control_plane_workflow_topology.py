@@ -676,7 +676,7 @@ def test_existing_join_endpoint_and_access(source: str) -> None:
 
 
 
-def test_git_windows_host_fleet_contract(credentials: str) -> None:
+def test_git_windows_host_host_contract(credentials: str) -> None:
     """Git owns exact Windows selection. The generic label is legacy singleton only."""
     path = Path("infra/windows/hosts.textproto")
     contents = path.read_text(encoding="utf-8")
@@ -736,7 +736,7 @@ def test_git_windows_host_fleet_contract(credentials: str) -> None:
     require(validate_hosts(good), "two exact Windows host registrations must be valid")
     for bad in (good + [good[0]], good + [{"id": "win-c", "runner_name": good[0]["runner_name"]}],
                 [{"id": "WinBad", "runner_name": "x"}], [{"id": "win-a", "runner_name": "bad space"}]):
-        require(not validate_hosts(bad), "duplicate or malformed fleet registration was permitted")
+        require(not validate_hosts(bad), "duplicate or malformed host registration was permitted")
     authorize = credentials.split("  authorize:\n", 1)[1].split("\n  execute:\n", 1)[0]
     require(
         "windows_host_id: ${{ steps.parse.outputs.windows_host_id }}" in authorize
@@ -747,7 +747,7 @@ def test_git_windows_host_fleet_contract(credentials: str) -> None:
         and 'raise SystemExit("Unknown Git-owned Windows host target")' in authorize
         and 'label = "sing-box-host-" + selected' in authorize
         and 'label = "sing-box-windows-lab"' in authorize
-        and "Named Windows fleet requires explicit" in authorize,
+        and "Named Windows host requires explicit" in authorize,
         "the typed Git inventory must own per-host route authorization",
     )
     for job in ("existing_join_status_windows", "existing_join_windows_stage_prepare",
@@ -773,11 +773,11 @@ def test_git_windows_host_fleet_contract(credentials: str) -> None:
     )
 
 
-def test_native_fleet_readonly_control_boundary(router: str) -> None:
-    """Fleet source selection and native diagnostics must not grant mutations."""
-    require("  fleet:\n" in router and "  fleet_doctor:\n" in router, "Fleet owner route missing")
-    hosted = router.split("  fleet:\n", 1)[1].split("\n  fleet_doctor:\n", 1)[0]
-    physical = router.split("  fleet_doctor:\n", 1)[1].split("\n  windows:\n", 1)[0]
+def test_native_host_readonly_control_boundary(router: str) -> None:
+    """Host source selection and native diagnostics must not grant mutations."""
+    require("  host:\n" in router and "  host_observe:\n" in router, "Host owner route missing")
+    hosted = router.split("  host:\n", 1)[1].split("\n  host_observe:\n", 1)[0]
+    physical = router.split("  host_observe:\n", 1)[1].split("\n  windows:\n", 1)[0]
     require(
         "github.actor_id == '44100369'" in hosted
         and "github.event.issue.number == 1" in hosted
@@ -786,21 +786,21 @@ def test_native_fleet_readonly_control_boundary(router: str) -> None:
         and "contents: read" in hosted
         and "issues: write" not in hosted
         and "issues: write" not in physical
-        and "fleet_mutations=0" in hosted
+        and "host_mutations=0" in hosted
         and '--github-output "${GITHUB_OUTPUT}"' in hosted
-        and "needs.fleet.outputs.runner_labels" in physical
+        and "needs.host.outputs.runner_labels" in physical
         and "Verify installed Windows native owner" in physical
-        and "FLEET_WINDOWS_OWNER_MISMATCH" in physical
+        and "HOST_WINDOWS_OWNER_MISMATCH" in physical
         and "Verify installed VM native owner" in physical
-        and "FLEET_VM_GENERIC_ROOT_AUTHORITY_FORBIDDEN" in physical
+        and "HOST_VM_GENERIC_ROOT_AUTHORITY_FORBIDDEN" in physical
         and 'sudo -n "${owner}" local diagnose' in physical,
-        "Fleet must select exact Git host then run existing native read-only owners only",
+        "Host must select exact Git host then run existing native read-only owners only",
     )
 
 
 def main() -> None:
     router = ROUTER.read_text(encoding="utf-8")
-    test_native_fleet_readonly_control_boundary(router)
+    test_native_host_readonly_control_boundary(router)
     application = APPLICATION.read_text(encoding="utf-8")
     vultr = VULTR.read_text(encoding="utf-8")
     windows_physical = WINDOWS_PHYSICAL.read_text(encoding="utf-8")
@@ -810,7 +810,7 @@ def main() -> None:
     test_credential_observation_lane(credentials)
     test_workflow_job_boundaries(credentials)
     test_existing_join_endpoint_and_access(credentials)
-    test_git_windows_host_fleet_contract(credentials)
+    test_git_windows_host_host_contract(credentials)
     vpc = VPC.read_text(encoding="utf-8")
     edge_platform_ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
     runtime_input = RUNTIME_INPUT.read_text(encoding="utf-8")

@@ -97,7 +97,7 @@ jobs:
           git fetch --no-tags --depth=1 origin "${GITHUB_SHA}"
           git checkout --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
-          test -f infra/host/hosts.textproto
+          test -f infra/hosts/hosts.textproto
 
       - name: Resolve exact immutable native Rust owner
         shell: bash
@@ -128,12 +128,12 @@ jobs:
           chmod 0755 "${buf_bin}"
           test "$("${buf_bin}" --version)" = "${BUF_VERSION}"
           cd edge-platform
-          "${buf_bin}" convert proto/edge/platform/v1/host.proto \
+          "${buf_bin}" convert proto/edge/platform/v1/hosts.proto \
             --type edge.platform.v1.HostRegistry \
-            --from "../infra/host/hosts.textproto#format=txtpb" \
-            --to "${RUNNER_TEMP}/host.binpb#format=binpb"
-          test -s "${RUNNER_TEMP}/host.binpb"
-          echo "HOSTS_SHA256=$(sha256sum "${RUNNER_TEMP}/host.binpb" | cut -d' ' -f1)" >> "${GITHUB_ENV}"
+            --from "../infra/hosts/hosts.textproto#format=txtpb" \
+            --to "${RUNNER_TEMP}/hosts.binpb#format=binpb"
+          test -s "${RUNNER_TEMP}/hosts.binpb"
+          echo "HOSTS_SHA256=$(sha256sum "${RUNNER_TEMP}/hosts.binpb" | cut -d' ' -f1)" >> "${GITHUB_ENV}"
 
       - name: Read official runner registration for host routing
         shell: bash
