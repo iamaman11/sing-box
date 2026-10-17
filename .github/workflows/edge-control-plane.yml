@@ -59,7 +59,7 @@ jobs:
       command_body: ${{ github.event.comment.body }}
     secrets: inherit
 
-  fleet:
+  host:
     # One read-only native Rust entry point. GitHub authorizes the caller;
     # existing release identity and typed protobuf identify the exact hosts.
     if: >-
@@ -70,11 +70,8 @@ jobs:
       !github.event.issue.pull_request &&
       github.actor_id == '44100369' &&
       github.run_attempt == 1 &&
-      (github.event.comment.body == '/fleet inventory' ||
-       github.event.comment.body == '/fleet status' ||
-       startsWith(github.event.comment.body, '/fleet inspect ') ||
-       startsWith(github.event.comment.body, '/fleet fast ') ||
-       startsWith(github.event.comment.body, '/fleet doctor '))
+      (github.event.comment.body == '/host status' ||
+       startsWith(github.event.comment.body, '/host status '))
     outputs:
       kind: ${{ steps.observe.outputs.kind }}
       owner: ${{ steps.observe.outputs.owner }}
@@ -100,13 +97,13 @@ jobs:
           git fetch --no-tags --depth=1 origin "${GITHUB_SHA}"
           git checkout --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
-          test -f infra/fleet/hosts.textproto
+          test -f infra/host/hosts.textproto
 
       - name: Resolve exact immutable native Rust owner
         shell: bash
         env:
           ACCEPTED_REVISION: ${{ github.sha }}
-          OUTPUT_DIR: ${{ runner.temp }}/fleet-release
+          OUTPUT_DIR: ${{ runner.temp }}/host-release
           REPOSITORY: ${{ github.repository }}
         run: |
           set -euo pipefail
@@ -117,9 +114,9 @@ jobs:
           test "$(sha256sum "${owner}" | cut -d' ' -f1)" = "${EDGE_ORCHESTRATOR_SHA256}"
           chmod 0755 "${owner}"
           echo "EDGE_RELEASE_CONTEXT_PATH=${OUTPUT_DIR}/resolved.env" >> "${GITHUB_ENV}"
-          echo "FLEET_OWNER=${owner}" >> "${GITHUB_ENV}"
+          echo "HOST_OWNER=${owner}" >> "${GITHUB_ENV}"
 
-      - name: Validate exact Git fleet through pinned protobuf compiler
+      - name: Validate exact Git host through pinned protobuf compiler
         shell: bash
         run: |
           set -euo pipefail
@@ -131,99 +128,79 @@ jobs:
           chmod 0755 "${buf_bin}"
           test "$("${buf_bin}" --version)" = "${BUF_VERSION}"
           cd edge-platform
-          "${buf_bin}" convert proto/edge/platform/v1/fleet.proto \
-            --type edge.platform.v1.FleetDesiredState \
-            --from "../infra/fleet/hosts.textproto#format=txtpb" \
-            --to "${RUNNER_TEMP}/fleet.binpb#format=binpb"
-          test -s "${RUNNER_TEMP}/fleet.binpb"
-          echo "FLEET_INVENTORY_SHA256=$(sha256sum "${RUNNER_TEMP}/fleet.binpb" | cut -d' ' -f1)" >> "${GITHUB_ENV}"
+          "${buf_bin}" convert proto/edge/platform/v1/host.proto \
+            --type edge.platform.v1.HostRegistry \
+            --from "../infra/host/hosts.textproto#format=txtpb" \
+            --to "${RUNNER_TEMP}/host.binpb#format=binpb"
+          test -s "${RUNNER_TEMP}/host.binpb"
+          echo "HOSTS_SHA256=$(sha256sum "${RUNNER_TEMP}/host.binpb" | cut -d' ' -f1)" >> "${GITHUB_ENV}"
 
-      - name: Read GitHub runner registration before physical dispatch
-        if: github.event.comment.body == '/fleet status' || startsWith(github.event.comment.body, '/fleet doctor ') || startsWith(github.event.comment.body, '/fleet fast ')
+      - name: Read official runner registration for host routing
         shell: bash
         run: |
           set -euo pipefail
-          # Official registration reports online/busy/labels. Job history does not.
-          # No retry, runner installation, or relabeling here.
           if ! gh api --paginate --slurp -H 'Accept: application/vnd.github+json' \
             "repos/${GITHUB_REPOSITORY}/actions/runners?per_page=100" \
-            > "${RUNNER_TEMP}/fleet-runners.json"; then
-            rm -f "${RUNNER_TEMP}/fleet-runners.json"
-            echo 'RUNNER_API_UNAVAILABLE: registration endpoint not authorized' >&2
-            if [[ "${COMMAND_BODY}" != "/fleet status" ]]; then
-              echo 'RUNNER_API_UNAVAILABLE: no physical job dispatched' >> "${GITHUB_STEP_SUMMARY}"
-              exit 1
-            fi
+            > "${RUNNER_TEMP}/host-runners.json"; then
+            rm -f "${RUNNER_TEMP}/host-runners.json"
+            echo 'RUNNER_API_UNAVAILABLE' >&2
+            if [[ "${COMMAND_BODY}" != "/host status" ]]; then exit 1; fi
           fi
-          if [[ -e "${RUNNER_TEMP}/fleet-runners.json" ]]; then
-            test -s "${RUNNER_TEMP}/fleet-runners.json" || \
-              { echo 'RUNNER_API_INCOMPLETE' >&2; exit 1; }
+          if [[ -e "${RUNNER_TEMP}/host-runners.json" ]]; then
+            test -s "${RUNNER_TEMP}/host-runners.json" || exit 1
           fi
 
-      - name: Execute bounded read-only Fleet operation
+      - name: Show one typed native host status
         id: observe
         shell: bash
         run: |
           set -euo pipefail
-          command=( )
-          if [[ "${COMMAND_BODY}" == "/fleet inventory" ]]; then
-            command=(inventory)
-          elif [[ "${COMMAND_BODY}" == "/fleet status" ]]; then
+          if [[ "${COMMAND_BODY}" == "/host status" ]]; then
             command=(status)
-          elif [[ "${COMMAND_BODY}" == "/fleet inspect "* ||
-                  "${COMMAND_BODY}" == "/fleet doctor "* ||
-                  "${COMMAND_BODY}" == "/fleet fast "* ]]; then
-            if [[ "${COMMAND_BODY}" == "/fleet doctor "* ]]; then
-              machine="${COMMAND_BODY#/fleet doctor }"
-            elif [[ "${COMMAND_BODY}" == "/fleet fast "* ]]; then
-              machine="${COMMAND_BODY#/fleet fast }"
-            else
-              machine="${COMMAND_BODY#/fleet inspect }"
-            fi
-            [[ "${machine}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]] ||
-              { echo 'Invalid Fleet machine selector' >&2; exit 1; }
-            command=(inspect "${machine}")
+          elif [[ "${COMMAND_BODY}" =~ ^/host[[:space:]]status[[:space:]]([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})([[:space:]]--deep)?$ ]]; then
+            machine="${BASH_REMATCH[1]}"
+            command=(status "${machine}")
+            if [[ "${COMMAND_BODY}" == *" --deep" ]]; then command+=(--deep); fi
           else
-            echo 'Unsupported Fleet command' >&2
+            echo 'HOST_COMMAND_INVALID' >&2
             exit 1
           fi
           runner_args=()
-          if [[ -f "${RUNNER_TEMP}/fleet-runners.json" ]]; then
-            runner_args=(--runner-inventory-json "${RUNNER_TEMP}/fleet-runners.json")
+          if [[ -f "${RUNNER_TEMP}/host-runners.json" ]]; then
+            runner_args=(--runner-inventory-json "${RUNNER_TEMP}/host-runners.json")
           fi
-          "${FLEET_OWNER}" fleet \
-            --inventory-pb "${RUNNER_TEMP}/fleet.binpb" \
-            --inventory-sha256 "${FLEET_INVENTORY_SHA256}" \
+          "${HOST_OWNER}" host \
+            --hosts-pb "${RUNNER_TEMP}/hosts.binpb" \
+            --hosts-sha256 "${HOSTS_SHA256}" \
             --github-output "${GITHUB_OUTPUT}" \
             "${runner_args[@]}" \
-            "${command[@]}" | tee "${RUNNER_TEMP}/fleet-observation.txt"
-          grep -Fxq 'fleet_mutations=0' "${RUNNER_TEMP}/fleet-observation.txt"
+            "${command[@]}" | tee "${RUNNER_TEMP}/host-observation.txt"
+          grep -Fxq 'host_mutations=0' "${RUNNER_TEMP}/host-observation.txt"
           {
-            echo '### Fleet — native read-only observation'
+            echo '### Host — read-only status'
             echo '~~~text'
-            cat "${RUNNER_TEMP}/fleet-observation.txt"
+            cat "${RUNNER_TEMP}/host-observation.txt"
             echo '~~~'
           } >> "${GITHUB_STEP_SUMMARY}"
 
-  fleet_doctor:
+  host_observe:
     # Real physical diagnostics are executed on the Git-selected machine,
     # via the existing native diagnostic/agent owner. No new service, remote
     # shell, credential publish, SCM start, network rewrite, or host mutation.
-    needs: fleet
+    needs: host
     if: >-
-      needs.fleet.result == 'success' &&
-      (startsWith(github.event.comment.body, '/fleet doctor ') ||
-       startsWith(github.event.comment.body, '/fleet fast ')) &&
-      (needs.fleet.outputs.kind == 'WINDOWS' ||
-       needs.fleet.outputs.kind == 'VM')
-    runs-on: ${{ fromJSON(needs.fleet.outputs.runner_labels) }}
+      needs.host.result == 'success' &&
+      startsWith(github.event.comment.body, '/host status ') &&
+      (needs.host.outputs.kind == 'WINDOWS' ||
+       needs.host.outputs.kind == 'VM')
+    runs-on: ${{ fromJSON(needs.host.outputs.runner_labels) }}
     timeout-minutes: 15
     permissions:
       contents: read
     env:
-      TARGET_MACHINE: ${{ needs.fleet.outputs.machine_id }}
-      TARGET_OWNER: ${{ needs.fleet.outputs.owner }}
-      TARGET_KIND: ${{ needs.fleet.outputs.kind }}
+      TARGET_MACHINE: ${{ needs.host.outputs.machine_id }}
+      TARGET_OWNER: ${{ needs.host.outputs.owner }}
+      TARGET_KIND: ${{ needs.host.outputs.kind }}
       COMMAND_BODY: ${{ github.event.comment.body }}
     steps:
       - name: Verify installed Windows native owner and diagnose without mutation
@@ -232,18 +209,21 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:RUNNER_NAME -cne $env:TARGET_OWNER) {
-            throw 'FLEET_WINDOWS_OWNER_MISMATCH'
+            throw 'HOST_WINDOWS_OWNER_MISMATCH'
           }
           $root = 'C:\sing-box'
           $doctor = Join-Path $root 'bin\edge-diagnostic.exe'
           $current = Join-Path $root 'current.pb'
           if (-not (Test-Path -LiteralPath $doctor -PathType Leaf) -or
               -not (Test-Path -LiteralPath $current -PathType Leaf)) {
-            throw 'FLEET_WINDOWS_NATIVE_OWNER_MISSING'
+            throw 'HOST_WINDOWS_NATIVE_OWNER_MISSING'
           }
-          $depth = if ($env:COMMAND_BODY -like '/fleet fast *') { 'fast' } else { 'doctor' }
-          & $doctor $depth $current
-          if ($LASTEXITCODE -ne 0) { throw 'FLEET_WINDOWS_NATIVE_DIAGNOSE_FAILED' }
+          if ($env:COMMAND_BODY -like '* --deep') {
+            & $doctor doctor $current
+          } else {
+            & $doctor doctor $current --fast
+          }
+          if ($LASTEXITCODE -ne 0) { throw 'HOST_WINDOWS_NATIVE_DIAGNOSE_FAILED' }
 
       - name: Verify installed VM native owner and diagnose without mutation
         if: env.TARGET_KIND == 'VM'
@@ -260,14 +240,14 @@ jobs:
           done
           test "$(id -u)" != 0
           if sudo -n id -u >/dev/null 2>&1; then
-            echo 'FLEET_VM_GENERIC_ROOT_AUTHORITY_FORBIDDEN' >&2
+            echo 'HOST_VM_GENERIC_ROOT_AUTHORITY_FORBIDDEN' >&2
             exit 1
           fi
           test ! -r /var/run/docker.sock
-          if [[ "${COMMAND_BODY}" == "/fleet fast "* ]]; then
-            sudo -n "${owner}" local fast
-          else
+          if [[ "${COMMAND_BODY}" == *" --deep" ]]; then
             sudo -n "${owner}" local diagnose
+          else
+            sudo -n "${owner}" local status --fast
           fi
 
   windows:
