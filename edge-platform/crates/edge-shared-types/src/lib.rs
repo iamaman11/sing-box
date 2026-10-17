@@ -84,6 +84,23 @@ pub fn validate_fleet_desired_state(desired: &FleetDesiredState) -> Result<(), S
         if !fleet_token(name, 128) || !selectors.insert((scope, name)) {
             return Err("fleet owner selector invalid or duplicated".to_owned());
         }
+        match kind {
+            FleetHostKind::Windows => {
+                if !fleet_token(&host.windows_runner_label, 128)
+                    || !selectors.insert(("windows-label", host.windows_runner_label.as_str()))
+                {
+                    return Err("fleet Windows runner label invalid or duplicated".to_owned());
+                }
+            }
+            FleetHostKind::Vm => {
+                if !host.windows_runner_label.is_empty() {
+                    return Err("fleet VM must not carry a Windows runner label".to_owned());
+                }
+            }
+            FleetHostKind::Unspecified => {
+                return Err("fleet host kind unspecified".to_owned());
+            }
+        }
     }
     Ok(())
 }
@@ -2844,13 +2861,15 @@ mod release_set_tests {
                     machine_id: "production-1".to_owned(),
                     kind: FleetHostKind::Vm as i32,
                     owner: Some(fleet_host::Owner::VmMachineId("production-1".to_owned())),
+                    windows_runner_label: String::new(),
                 },
                 FleetHost {
                     machine_id: "sing-box-windows-lab".to_owned(),
                     kind: FleetHostKind::Windows as i32,
                     owner: Some(fleet_host::Owner::WindowsRunnerName(
-                        "sing-box-windows-lab".to_owned(),
+                        "DESKTOP-0E1F6UQ".to_owned(),
                     )),
+                    windows_runner_label: "sing-box-windows-lab".to_owned(),
                 },
             ],
         };
@@ -2873,6 +2892,15 @@ mod release_set_tests {
         assert!(validate_fleet_desired_state(&invalid).is_err());
         invalid = expected.clone();
         invalid.hosts[1].owner = Some(fleet_host::Owner::WindowsRunnerName(String::new()));
+        assert!(validate_fleet_desired_state(&invalid).is_err());
+        invalid = expected.clone();
+        invalid.hosts[1].windows_runner_label.clear();
+        assert!(validate_fleet_desired_state(&invalid).is_err());
+        invalid = expected.clone();
+        invalid.hosts[1].windows_runner_label = "../untrusted".to_owned();
+        assert!(validate_fleet_desired_state(&invalid).is_err());
+        invalid = expected.clone();
+        invalid.hosts[0].windows_runner_label = "sing-box-windows-lab".to_owned();
         assert!(validate_fleet_desired_state(&invalid).is_err());
         let mut noncanonical = bytes.clone();
         noncanonical.extend_from_slice(&[0x08, 0x01]);

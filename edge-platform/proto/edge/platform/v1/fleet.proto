@@ -25,4 +25,9 @@ message FleetHost {
     string windows_runner_name = 3;
     string vm_machine_id = 4;
   }
+
+  // Actual runner name and scheduling label are distinct identities.
+  // Windows requires an exact Git-owned label and an independently
+  // verified RUNNER_NAME. VM must leave this Windows-only field empty.
+  string windows_runner_label = 5;
 }
