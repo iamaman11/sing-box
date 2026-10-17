@@ -2311,56 +2311,43 @@ def main() -> None:
         for path in WORKFLOWS.glob("*.yml")
         if "issue_comment:" in path.read_text(encoding="utf-8")
     )
+    # Current normative docs replace dated paragraphs with one authority.
+    plan = Path("edge-platform/FINALIZATION-PLAN.md").read_text(encoding="utf-8")
+    handoff = Path("edge-platform/NEXT-CHAT.md").read_text(encoding="utf-8")
+    commands = Path("edge-platform/COMMAND-INVENTORY.md").read_text(encoding="utf-8")
     require(
-        "Stage 3 and Stage 4A remain closed" in architecture
-        and "Stage 4A exit decision — CLOSED" in architecture
-        and "Managed TUN is now permitted only inside the explicit Stage 4B cutover" in architecture
-        and "Stage 4B entry contract — managed Windows TUN" in architecture
-        and "Add one typed Windows datapath mode" in architecture
-        and "copied into `WindowsRuntimeState`, `WindowsRuntime`, or `WindowsActivationState`" in architecture
-        and "Do not widen the SCM service identity merely by assumption" in architecture
-        and "typed Windows process observation distinguishes managed / conflicting external / absent ownership" in architecture
-        and "`infra/production/production.textproto` in Windows candidate input identity" in architecture
-        and "exact locally verified `previous.pb`" in architecture
-        and "Windows bidirectional mode changes remain N3" in architecture
-        and "Stage 4B datapath convergence" in local_architecture
-        and "Generated `runtime\\\\sing-box.json` never chooses the mode" in local_architecture
-        and "## 10. Current N1/N2 → N3 native Windows modes (2026-10-12)" in runbook
-        and "`PROXY_ONLY` ReleaseSet must never be treated as authority for the TUN cutover" in architecture
-        and "Shared-host foreign-project isolation" in architecture
-        and "Sing-box configuration, protocol selection and quality authority" in architecture
-        and "No Windows start, converge, repair, rollback, unattended reboot or TUN switch" in runbook
-        and "Production release rollback is not yet a supported public operation" not in runbook
-        and "**ACTIVE N1/N2 lifecycle closure → N3 Windows → N4 production (17 October 2026).**" in readme
-        and "the *only* execution cursor" in readme
-        and "one native SYSTEM/root owner per runtime host" in readme
-        and "The former production VM" not in readme
-        and "historical evidence, not permission to execute" in readme
-        and "EdgePlatformController` remains intentionally **Stopped, ProxyOnly, no managed TUN**" in readme
-        and "Existing Cloudflare One Client is independent" in readme
-        and "The accepted proxy-only runtime is the starting point" not in readme
-        and "currently working external Windows sing-box" not in readme
-        and "one native SYSTEM/root owner per runtime host" in readme
-        and "Independent authenticated 10/10 direct/WARP" in readme
-        and "/production rollback" in runbook
-        and "/credentials rotate tunnel-auth" in runbook
-        and "canonical permanent" in runbook
-        and "custom X25519/HKDF/AEAD handoff" in runbook
-        and "Routine production converge/verify/diagnose/rollback does not acquire a support lease" in server_architecture
-        and "> **N1/N2 physical network 10/10 + reboot: ACCEPTED." in root_readme
-        and "Original Worker credentials generation `38503639351`" in root_readme
-        and "The already-owned acceptance VM was retained" in root_readme
-        and "**One delivery order:** N1/N2" in root_readme
-        and "Never start/restart/converge/repair/rollback TUN merely to retest" in root_readme
-        and "An acceptance VM is disposable" not in root_readme
-        and "First-use credentials require a durable journal" in root_readme
-        and "The currently working external Windows sing-box/TUN" not in root_readme
-        and "bounded Stage-3 historical deletion slice is closed" in local_agent_contract
-        and "`/production rollback` uses the same" in application_readme
-        and "Routine production does not acquire a temporary support lease" in vultr_stack_readme
-        and "strict SSH local-forward" not in vultr_stack_readme
-        and "currently #169" not in runbook,
-        "operator docs must reflect sole Issue #26 N1/N2→N3→N4 and enforce stopped TUN/no-TUN recovery safety",
+        len(architecture) < 9000
+        and len(root_readme) < 6000
+        and len(readme) < 3500
+        and len(plan) < 12000
+        and len(handoff) < 7000
+        and len(commands) < 5000
+        and len(runbook) < 5000
+        and "infra/hosts/hosts.textproto" in architecture
+        and "Cloudflare Worker" in architecture
+        and "UNKNOWN_NO_REPLAY" in architecture
+        and "10/10" in architecture
+        and "ProxyOnly" in architecture
+        and "Issue #26" in architecture
+        and "FINALIZATION-PLAN.md" in architecture
+        and "A/B BEGIN" in plan
+        and "**A. Разрешить" in plan
+        and "10/10" in plan
+        and "UNKNOWN_NO_REPLAY" in plan
+        and "Issue #26" in plan
+        and "NEXT-CHAT.md" in readme
+        and "COMMAND-INVENTORY.md" in readme
+        and "Issue #26" in root_readme
+        and "/host apply" in commands
+        and "/host recover" in commands
+        and "UNKNOWN_NO_REPLAY" in handoff
+        and "39072475032" in handoff
+        and "/host status" in runbook
+        and "Cloudflare One" in runbook
+        and "ProxyOnly" in runbook
+        and "Stage 3 and Stage 4A remain closed" not in architecture
+        and "historical tombstone" not in plan,
+        "Normative docs must be concise, typed, fail-closed and non-contradictory",
     )
     image_build_section = edge_platform_ci.split("# VM_RUNTIME_BUILD_CONTRACT_BEGIN", 1)[1].split("# VM_RUNTIME_BUILD_CONTRACT_END", 1)[0]
     require(

@@ -1,206 +1,25 @@
-# Operator runbook
+# Оператор: одна штатная точка входа
 
-This runbook intentionally contains only stable supported boundaries.
-For the exact current step always read GitHub Issue #26 first.
+Канонические правила: [архитектура](../../edge-platform/ARCHITECTURE.md), [план](../../edge-platform/FINALIZATION-PLAN.md), [физический курсор](https://github.com/iamaman11/sing-box/issues/26). Удалённый GitHub, не локальная копия, — источник истины.
 
-## 1. Authority check
+В авторизованном Issue #1 вводятся:
+- `/host status` — read-only реестр хостов.
+- `/host status <machine-id> [--deep]` — read-only нативная диагностика.
+- `/host apply <machine-id>` — только при доказанном безопасном праве одной мутации.
+- `/host recover <machine-id>` — **пока read-only**; не выдавать за полное восстановление.
 
-Before any mutation:
+`/windows`, `/vm`, `/production`, `/vultr`, `/vpc`, `/application`, `/credentials` — существующие низкоуровневые поверхности переходного периода, **не** альтернативные пользовательские приложения. Использовать только по прямому указанию действующего Issue #26; переносить их уникальные функции в штатный host owner и затем удалять.
 
-1. read protected `main`;
-2. read #26 current cursor;
-3. read only the bounded issue explicitly selected by the latest #26 cursor; #169 is historical evidence and is not the current execution owner;
-4. inspect open PR/CI state;
-5. resolve the durable ReleaseSet only when release authority is required.
+### Windows
 
-Never operate from a saved SHA in old chat/documentation.
+`EdgePlatformController` намеренно Stopped/OnDemand, режим ProxyOnly, нет TUN. Независимый Cloudflare One Client не трогать. Установленный legacy doctor может не принимать `--fast`, поэтому в текущем коде он явно переходит к DEEP read-only:
 
-## 2. Production control
+    & "C:\sing-box\bin\edge-diagnostic.exe" doctor "C:\sing-box\current.pb"
 
-The normal production owner is the GitHub-only typed orchestrator.
+Никакого неявного start/repair/converge/reboot, изменения DNS/маршрутов, ManagedTun ради «диагностики». Режим TUN только после отдельного приёмочного допуска.
 
-Current routine owner-gated production commands on `main` are:
+### VM и credentials
 
-```text
-/production verify
-/production converge
-/production diagnose
-/production rollback
-```
+Только установленный root-owned `edge-agent` выполняет VM контейнерные и сетевые изменения; runner — транспорт. Для оригинального A/B искать ровно его durable BEGIN в Issue #26 и независимо сверять native owner/receipts/исторический ReleaseSet и актуальный network witness. Исторический источник не должен подменяться текущим `main`. Любой неясный ACK — `UNKNOWN_NO_REPLAY`, не новая генерация, не второй BEGIN и не скрытый rollback.
 
-`/production enroll-runtime` is an exceptional bootstrap/re-enrollment operation, not normal steady-state
-control. Production rollback is ReleaseSet-bound: the workflow transports the exact currently authorized
-application bundle to the production self-hosted runner, and the root-owned local owner refuses rollback
-if its active bundle no longer matches that authorization. Rollback never opens routine support access,
-SSH forwarding or TCP/gRPC agent control.
-
-Use only commands currently authorized by #26. Historical provider-specific operator surfaces are not
-normal production API and must not be revived merely because lower-level typed implementation remains.
-
-Do not use direct Windows Vultr/Cloudflare deployment.
-
-## 3. Windows local status
-
-Installed application root:
-
-```text
-C:\sing-box
-```
-
-Local console:
-
-```powershell
-& "C:\sing-box\bin\edge-console.exe" status
-```
-
-The controller is owned by Windows SCM. Do not start a second controller manually merely because a
-console/status command fails.
-
-Independent release/runtime diagnostics use the installed exact diagnostic binary and canonical
-activation state, for example the accepted doctor path:
-
-```powershell
-& "C:\sing-box\bin\edge-diagnostic.exe" doctor "C:\sing-box\current.pb"
-```
-
-If the installed stable `bin` layout differs in a later accepted release, use the exact path
-reported by that release/diagnostic authority rather than a legacy checkout.
-
-## 4. Windows physical GitHub operations
-
-The repository self-hosted runner is transport only.
-
-`/windows smoke` is an acceptance operation that has already passed for W1; do not replay it for
-confidence. Use a Windows command only when #26 explicitly returns the cursor to that slice.
-
-No arbitrary issue-comment PowerShell/exec command exists.
-
-## 5. Secrets
-
-Never paste or publish application/provider secrets into:
-- Git;
-- Issues;
-- Actions logs/artifacts;
-- Release assets;
-- chat instructions.
-
-Do not copy legacy VLESS/Hysteria/Reality/Line2 credentials into the new runtime.
-
-The canonical architecture defines fresh credential generations and host-local Cloudflare Access delivery. Follow #26 for the active gate; do not improvise another SSH/DPAPI/Vault/GitHub-secret transport.
-
-## 6. VM operations
-
-Normal VM operation is:
-
-```text
-GitHub -> production VM self-hosted runner -> root-owned local runtime owner
-       -> fixed Docker Compose mutation / Bollard observation
-```
-
-The runner is low privilege. It must not have generic root, Docker socket access, provider credentials or application credential plaintext authority.
-
-Use hosted-runner SSH only for bootstrap/migration/break-glass. Do not reopen routine /32 support access or TCP/gRPC local forwarding for ordinary status, verify, diagnostics or cleanup. Production release rollback is the existing owner-gated `/production rollback` operation and must stay ReleaseSet-bound on the same persistent local-runner owner boundary; do not revive the internal legacy lease/remote path.
-
-## 7. Diagnosis before repair
-
-Default order:
-
-```text
-observe
- -> diagnose
- -> exact plan
- -> one bounded mutation
- -> re-observe
- -> functional verify
-```
-
-An unknown mutation outcome is never solved by replaying the same mutation blindly.
-
-Diagnostics are read-only. Repair/converge is a separate explicit operation.
-
-## 8. Release update
-
-Normal release update:
-
-```text
-PR exact-head CI
- -> candidate acceptance
- -> protected merge
- -> promotion without rebuild
- -> durable ReleaseSet
- -> converge
- -> verify
-```
-
-No local Rust/OCI build occurs on production Windows/VM.
-
-Keep the previous accepted release long enough for bounded rollback.
-
-## 9. Credential rotation
-
-Credential rotation is not part of every release.
-
-The steady-state target is defined by `edge-platform/ARCHITECTURE.md`, not by #169. Rotation is
-class-scoped (`tunnel-auth`, `reality-identity`, `line2-proxy-auth`, with host identities separate),
-publishes one new candidate into the inactive fixed A/B slot, preserves unrelated credential-class
-generations, verifies both least-privilege projections and host-local runtime behavior, then promotes
-through the typed active/candidate/previous state transition with bounded rollback/grace.
-
-The public credential workflow supports:
-```text
-/credentials verify
-/credentials rotate tunnel-auth
-/credentials rotate reality-identity
-/credentials rotate line2-proxy-auth
-/credentials host-bootstrap-converge
-```
-
-Application rotation first proves the paired active cursor, recovers only an observed uncommitted
-candidate, retires an older previous buffer, and publishes only the slot opposite active. Each local
-owner then fetches the exact generation during staging, materializes the class-scoped delta inside its
-protected store and validates it; both hosts are staged before the first runtime activation. Functional
-verification precedes promotion, and promotion is re-observed before any bounded retry. A failed
-uncommitted candidate is compensated back to the observed active generation. Do not reuse Stage-2
-`fresh-v2-*` proof/cutover commands.
-
-Windows/VM Access host identities remain a separate lifecycle. They are canonical permanent
-(`forever`) create-once identities. `host-bootstrap-converge` is the accepted explicit
-bootstrap/recovery boundary and never implicitly rotates an installed host identity. Do not add a
-second steady-state host-token rotation transport or custom X25519/HKDF/AEAD handoff.
-
-## 10. Current N1/N2 → N3 native Windows modes (2026-10-12)
-
-The sole operator entry is the existing GitHub Issue #1 command inbox. The Windows self-hosted runner is transport only; the sole privileged writer is SCM `EdgePlatformController`, using Git-backed `infra/production/production.textproto` desired `ProxyOnly` or `ManagedTun` and the exact accepted ReleaseSet. Never edit generated sing-box JSON directly or add another service, installer, task or DNS writer.
-
-**Supported commands on protected main:** `/windows diagnose`, `/windows offline-preflight`, `/windows quality-line1`, `/windows converge`, `/windows start`, `/windows stop`, `/windows restart-controller`, `/windows repair`, `/windows rollback`. This is a command grammar, not a claim all mutations are safe now. There is **no accepted native simple mode-switch command yet**; do not tell operators that `/windows mode proxy` or `/windows mode tun` currently works. The existing guarded stop and ManagedTun→ProxyOnly paths correctly BLOCK when independent recovery is unproven.
-
-[Physical read-only /windows diagnose #38288078001](https://github.com/iamaman11/sing-box/actions/runs/38288078001): SCM Stopped / AutoStart, managed TUN absent; direct DNS/HTTPS PASS. Cloudflare One TunnelOnly is independent/foreign. No Windows start, converge, repair, rollback, unattended reboot or TUN switch until the new VM's authenticated Line1, exact credential generation and independent no-TUN DNS/control restoration are physically proven. Never mutate Cloudflare One, MISH or OKX to satisfy a sing-box test.
-
-**N3 acceptance (not an executable command):** the same native SCM controller must switch ProxyOnly → ManagedTun → ProxyOnly → ManagedTun using committed desired mode, with read-only preflight, exact process/route/adapter/DNS ownership, tested local authenticated proxy traffic with zero TUN in ProxyOnly, normal browser/no-proxy Internet over managed TUN, real direct/WARP and Mesh exclusions, reboot and bounded restoration proof. If any safety gate fails, report precise BLOCKED **without host network mutation**. This is not a release rollback or a second runtime owner. Issue #26 alone controls when the switch can be attempted.
-
-## 11. Recovery
-
-Target recovery must not need the legacy checkout.
-
-VM recovery:
-```text
-Git desired state + exact ReleaseSet + provider APIs + credential plane
-```
-
-Windows recovery:
-```text
-exact ReleaseSet + one-time machine enrollment + active credential generation
-```
-
-Generated env/JSON may be recreated. Loss of Cloudflare availability must not stop an already
-healthy runtime.
-
-## 12. Stop conditions
-
-Stop before mutation when:
-- ownership is ambiguous;
-- current main/ReleaseSet authority cannot be proven;
-- secret boundary would be widened;
-- a mutation outcome is uncertain and has not been re-observed;
-- the requested operation would touch legacy runtime before its cutover gate;
-- the operation is not authorized by the current #26 cursor.
+Никогда не публиковать приватные credentials, хеши секрета, ключи и незаредактированные runtime конфиги в Issues, CI, артефактах или чате.
