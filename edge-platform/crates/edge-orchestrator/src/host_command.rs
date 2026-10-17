@@ -219,12 +219,25 @@ pub(crate) fn run(
                 );
                 let labels = runner_labels(kind, owner, &host.windows_runner_label)?;
                 if machine_id.is_some() {
-                    let inventory =
-                        runner_inventory_json.ok_or_else(|| "RUNNER_API_UNAVAILABLE".to_owned())?;
-                    let id =
-                        official_runner_id(inventory, kind, owner, &host.windows_runner_label)?;
-                    println!("host_runner_id={id}");
-                    println!("host_runner_registration=READY_FOR_DISPATCH");
+                    // Runner API is advisory for read-only observation. A
+                    // missing Administration:read grant must not block
+                    // diagnostics on an existing exact-label runner. The
+                    // physical owner verifies RUNNER_NAME again on the host.
+                    // If the API returns an authoritative negative result,
+                    // do not enqueue a job that cannot run.
+                    let registration = if let Some(path) = runner_inventory_json {
+                        runner_status(path, kind, owner, &host.windows_runner_label)?
+                    } else {
+                        "UNPROVEN".to_owned()
+                    };
+                    println!("host_runner_registration={registration}");
+                    let can_dispatch = registration == "UNPROVEN"
+                        || registration.starts_with("READY_FOR_DISPATCH:");
+                    if !can_dispatch {
+                        println!("host_dispatch=NOT_SCHEDULED");
+                        continue;
+                    }
+                    println!("host_dispatch=READ_ONLY_EXACT_OWNER");
                     println!(
                         "host_observation_depth={}",
                         if deep { "DEEP" } else { "FAST" }
