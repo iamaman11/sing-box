@@ -9,8 +9,7 @@ fn main() {
     let production_textproto =
         std::path::PathBuf::from("../../../infra/production/production.textproto");
     let fleet_proto = platform_root.join("fleet.proto");
-    let fleet_textproto =
-        std::path::PathBuf::from("../../../infra/fleet/hosts.textproto");
+    let fleet_textproto = std::path::PathBuf::from("../../../infra/fleet/hosts.textproto");
 
     let mut protos = [
         "common.proto",
@@ -85,8 +84,7 @@ fn main() {
         .expect("write canonical production protobuf");
     // Decode the sole Git fleet selector registry with protoc, not a custom
     // YAML/PowerShell parser. Unknown or malformed textproto fields fail build.
-    let desired_fleet =
-        std::fs::read(&fleet_textproto).expect("read canonical fleet textproto");
+    let desired_fleet = std::fs::read(&fleet_textproto).expect("read canonical fleet textproto");
     let mut fleet_child = Command::new(&protoc)
         .arg(format!("--proto_path={}", proto_root.display()))
         .arg("--encode=edge.platform.v1.FleetDesiredState")

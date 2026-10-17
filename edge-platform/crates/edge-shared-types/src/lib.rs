@@ -94,11 +94,10 @@ fn fleet_token(value: &str, max: usize) -> bool {
     !value.is_empty()
         && value.len() <= max
         && value.as_bytes()[0].is_ascii_alphanumeric()
-        && value.bytes().all(|byte| {
-            byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-')
-        })
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
 }
-
 
 pub fn decode_production_desired_state(bytes: &[u8]) -> Result<ProductionDesiredState, String> {
     let desired = ProductionDesiredState::decode(bytes)
@@ -2863,11 +2862,11 @@ mod release_set_tests {
         invalid.hosts[0].machine_id = "../escape".to_owned();
         assert!(validate_fleet_desired_state(&invalid).is_err());
         invalid = expected.clone();
-        invalid.hosts[1].owner =
-            Some(fleet_host::Owner::WindowsRunnerName("production-1".to_owned()));
+        invalid.hosts[1].owner = Some(fleet_host::Owner::WindowsRunnerName(
+            "production-1".to_owned(),
+        ));
         assert!(validate_fleet_desired_state(&invalid).is_ok());
-        invalid.hosts[1].owner =
-            Some(fleet_host::Owner::WindowsRunnerName(String::new()));
+        invalid.hosts[1].owner = Some(fleet_host::Owner::WindowsRunnerName(String::new()));
         assert!(validate_fleet_desired_state(&invalid).is_err());
         let mut wire = CANONICAL_FLEET_DESIRED_STATE_BYTES.to_vec();
         wire.extend_from_slice(&[0x08, 0x01]); // duplicate schema_version
