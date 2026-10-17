@@ -3020,9 +3020,11 @@ def main() -> None:
     )
     require(
         "uses: ./.github/workflows/windows-physical.yml" in router
-        and "github.event.comment.body == '/windows smoke'" in router
+        and "github.event.comment.body == '/windows converge'" in router
+        and "github.event.comment.body == '/windows smoke'" not in router
+        and "github.event.comment.body == '/windows status'" not in router
         and "github.actor_id == '44100369'" in router,
-        "router must expose the physical Windows cycle only as the exact owner-only /windows smoke command",
+        "router must expose native converge once, without smoke/status aliases",
     )
     require(
         "vultr-root-ops.yml" not in router
@@ -4364,6 +4366,17 @@ def main() -> None:
         and 'base_schema not in {"6", "7"}' in windows_input
         and "base_diagnostic_sha256" in windows_input,
         "Windows identity must cover controller/console/diagnostic transitive local dependencies, marked build contract and allow exact reuse only from ReleaseSet v6/v7",
+    )
+
+    # PR candidate validation must not require the user's physical Windows
+    # machine merely to re-run hosted read-only GH journal parser tests.
+    # Actual Windows read-only diagnostics stay in the operational workflow.
+    require(
+        "windows_journal_integration:" not in edge_platform_ci
+        and "WINDOWS_JOURNAL_RESULT" not in edge_platform_ci
+        and "Test exact Windows production journal readers without network" in edge_platform_ci
+        and "test_windows_gh_journal_pages.ps1" in edge_platform_ci,
+        "CI must retain hosted journal negative tests without a physical Windows journal gate",
     )
 
     require(
