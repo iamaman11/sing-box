@@ -537,7 +537,12 @@ def verify_existing_join_endpoint_and_access(source: str) -> None:
         and "CLOUDFLARE_WINDOWS_ACCESS_CLIENT_ID" not in windows
         and "CLOUDFLARE_WINDOWS_ACCESS_CLIENT_SECRET" not in windows
         and "name: production-vultr" in issuer
-        and "name: production-vultr" in windows,
+        and "name: production-vultr" in windows
+        and "EXPECTED_WINDOWS_RUNNER: ${{ needs.existing_join_status_windows.outputs.runner_name }}" in issuer
+        and 'actions/runners?per_page=100' in issuer
+        and 'length == 1 and .[0].name == $expected' in issuer
+        and '.[0].status == "online"' in issuer
+        and issuer.index('actions/runners?per_page=100') < issuer.index('initial-windows-acceptance-issue'),
         "P0: physical Windows runner must use run-scoped proof identity, never permanent host identity",
     )
     status_windows = jobs.get("existing_join_status_windows", "")
