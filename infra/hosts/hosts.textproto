@@ -1,17 +1,17 @@
 schema_version: 1
 hosts {
   machine_id: "application-acceptance-1"
-  kind: MANAGED_HOST_KIND_VM
+  kind: FLEET_HOST_KIND_VM
   vm_machine_id: "application-acceptance-1"
 }
 hosts {
   machine_id: "production-1"
-  kind: MANAGED_HOST_KIND_VM
+  kind: FLEET_HOST_KIND_VM
   vm_machine_id: "production-1"
 }
 hosts {
   machine_id: "sing-box-windows-lab"
-  kind: MANAGED_HOST_KIND_WINDOWS
+  kind: FLEET_HOST_KIND_WINDOWS
   windows_runner_name: "DESKTOP-0E1F6UQ"
   windows_runner_label: "sing-box-windows-lab"
 }

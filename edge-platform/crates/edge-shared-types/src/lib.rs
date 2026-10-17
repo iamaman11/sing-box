@@ -14,6 +14,14 @@ pub mod release {
 
 pub use edge::platform::v1::*;
 
+// Stable protobuf wire contracts are kept for backwards compatibility.
+// Operator and host-management code use these exact aliases, not a second data model.
+pub use FleetDesiredState as HostRegistry;
+pub use FleetHost as ManagedHost;
+pub use FleetHostKind as ManagedHostKind;
+pub use fleet_host as managed_host;
+
+
 pub mod initial_credential_attestation;
 pub use initial_credential_attestation::first_use_host_attestation_sha256;
 use prost::Message;

@@ -128,8 +128,8 @@ jobs:
           chmod 0755 "${buf_bin}"
           test "$("${buf_bin}" --version)" = "${BUF_VERSION}"
           cd edge-platform
-          "${buf_bin}" convert proto/edge/platform/v1/hosts.proto \
-            --type edge.platform.v1.HostRegistry \
+          "${buf_bin}" convert proto/edge/platform/v1/fleet.proto \
+            --type edge.platform.v1.FleetDesiredState \
             --from "../infra/hosts/hosts.textproto#format=txtpb" \
             --to "${RUNNER_TEMP}/hosts.binpb#format=binpb"
           test -s "${RUNNER_TEMP}/hosts.binpb"
