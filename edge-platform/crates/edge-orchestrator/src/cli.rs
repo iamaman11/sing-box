@@ -1410,16 +1410,15 @@ mod tests {
                 ..
             }
         ));
-        let parsed =
-            Cli::try_parse_from([
-                "edge-orchestrator",
-                "fleet",
-                "--inventory-pb",
-                "fleet.pb",
-                "inspect",
-                "production-1",
-            ])
-            .unwrap();
+        let parsed = Cli::try_parse_from([
+            "edge-orchestrator",
+            "fleet",
+            "--inventory-pb",
+            "fleet.pb",
+            "inspect",
+            "production-1",
+        ])
+        .unwrap();
         assert!(matches!(
             parsed.command,
             Command::Fleet {
