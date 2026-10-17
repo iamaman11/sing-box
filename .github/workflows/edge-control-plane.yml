@@ -254,10 +254,19 @@ jobs:
           if ($env:COMMAND_BODY -like '* --deep' -or
               $env:COMMAND_BODY -like '/host recover *') {
             & $doctor doctor $current
+            if ($LASTEXITCODE -ne 0) { throw 'HOST_WINDOWS_NATIVE_DEEP_FAILED' }
           } else {
             & $doctor doctor $current --fast
+            if ($LASTEXITCODE -ne 0) {
+              # Older accepted immutable diagnostic has only doctor <current.pb>.
+              # Its exact owner can still diagnose read-only; don't install
+              # a new version, restart SCM or claim that FAST succeeded.
+              Write-Output 'host_fast_unavailable=INSTALLED_NATIVE_VERB_NOT_ACCEPTED'
+              Write-Output 'host_observation_depth=DEEP_INSTALLED_OWNER_FALLBACK'
+              & $doctor doctor $current
+              if ($LASTEXITCODE -ne 0) { throw 'HOST_WINDOWS_NATIVE_FALLBACK_FAILED' }
+            }
           }
-          if ($LASTEXITCODE -ne 0) { throw 'HOST_WINDOWS_NATIVE_DIAGNOSE_FAILED' }
 
       - name: Verify installed VM native owner and diagnose without mutation
         if: env.TARGET_KIND == 'VM'
