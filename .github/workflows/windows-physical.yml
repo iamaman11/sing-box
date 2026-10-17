@@ -292,40 +292,8 @@ jobs:
               $env:SOURCE_RELEASE -ceq $env:TARGET_RELEASE) {
             throw 'WINDOWS_APPLY_BLOCKED: exact first-attempt source and target required'
           }
-          $url = "repos/$env:GITHUB_REPOSITORY/issues/26/comments?per_page=100"
-          function Read-CompleteJournal {
-            # gh explicitly forbids --slurp combined with --jq. Fetch every
-            # page as JSON without filtering, then validate all nested pages.
-            # A partial/malformed page must never be interpreted as EMPTY.
-            $raw = (& gh api --paginate --slurp $url) -join "`n"
-            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($raw)) {
-              throw 'WINDOWS_APPLY_BLOCKED: complete durable issue history unavailable'
-            }
-            $pages = ConvertFrom-Json -InputObject $raw -NoEnumerate
-            if ($pages -isnot [array]) { throw 'WINDOWS_APPLY_BLOCKED: malformed journal page collection' }
-            $entries = [Collections.Generic.List[object]]::new()
-            foreach ($page in $pages) {
-              if ($page -isnot [array]) { throw 'WINDOWS_APPLY_BLOCKED: incomplete or malformed journal page' }
-              foreach ($entry in $page) {
-                if ($null -eq $entry -or $null -eq $entry.body -or $null -eq $entry.id) {
-                  throw 'WINDOWS_APPLY_BLOCKED: incomplete journal entry'
-                }
-                [void]$entries.Add($entry)
-              }
-            }
-            if ($entries.Count -eq 0) { throw 'WINDOWS_APPLY_BLOCKED: durable journal is empty' }
-            $issueRaw = (& gh api "repos/$env:GITHUB_REPOSITORY/issues/26") -join "`n"
-            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($issueRaw)) {
-              throw 'WINDOWS_APPLY_BLOCKED: journal count authority unavailable'
-            }
-            $issue = ConvertFrom-Json -InputObject $issueRaw
-            if ($null -eq $issue -or [string]$issue.comments -notmatch '^[0-9]+$' -or
-                [long]$issue.comments -ne $entries.Count) {
-              throw 'WINDOWS_APPLY_BLOCKED: incomplete or concurrently changed journal count'
-            }
-            return $entries.ToArray()
-          }
-          $history = @(Read-CompleteJournal)
+          $reader = Join-Path $env:GITHUB_WORKSPACE 'edge-platform\scripts\read-complete-gh-journal.ps1'
+          $history = @(& $reader)
           $marker = '<!-- sing-box-windows-active-release-apply/v1 -->'
           foreach ($prior in @($history | Where-Object { [string]$_.body -like "*$marker*" })) {
             $body = [string]$prior.body
@@ -351,7 +319,7 @@ jobs:
           $body = $marker + "`n" + ($record | ConvertTo-Json -Compress)
           & gh api -X POST "repos/$env:GITHUB_REPOSITORY/issues/26/comments" --raw-field "body=$body" > $null
           if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_APPLY_UNKNOWN: journal write uncertain; no replay' }
-          $readback = @(Read-CompleteJournal)
+          $readback = @(& $reader)
           if (@($readback | Where-Object { [string]$_.body -ceq $body }).Count -ne 1) {
             throw 'WINDOWS_APPLY_UNKNOWN: exact once-only intent not confirmed; no replay'
           }
@@ -409,40 +377,8 @@ jobs:
         run: |
           $ErrorActionPreference = 'Stop'
           if ($env:GITHUB_RUN_ATTEMPT -cne '1') { throw 'FIRST_USE_UPGRADE_BLOCKED: replay forbidden' }
-          $url = "repos/$env:GITHUB_REPOSITORY/issues/26/comments?per_page=100"
-          function Read-AllJournalPages {
-            # gh explicitly forbids --slurp combined with --jq. Fetch every
-            # page as JSON without filtering, then validate all nested pages.
-            # A partial/malformed page must never be interpreted as EMPTY.
-            $raw = (& gh api --paginate --slurp $url) -join "`n"
-            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($raw)) {
-              throw 'FIRST_USE_UPGRADE_BLOCKED: complete durable issue history unavailable'
-            }
-            $pages = ConvertFrom-Json -InputObject $raw -NoEnumerate
-            if ($pages -isnot [array]) { throw 'FIRST_USE_UPGRADE_BLOCKED: malformed journal page collection' }
-            $entries = [Collections.Generic.List[object]]::new()
-            foreach ($page in $pages) {
-              if ($page -isnot [array]) { throw 'FIRST_USE_UPGRADE_BLOCKED: incomplete or malformed journal page' }
-              foreach ($entry in $page) {
-                if ($null -eq $entry -or $null -eq $entry.body -or $null -eq $entry.id) {
-                  throw 'FIRST_USE_UPGRADE_BLOCKED: incomplete journal entry'
-                }
-                [void]$entries.Add($entry)
-              }
-            }
-            if ($entries.Count -eq 0) { throw 'FIRST_USE_UPGRADE_BLOCKED: durable journal is empty' }
-            $issueRaw = (& gh api "repos/$env:GITHUB_REPOSITORY/issues/26") -join "`n"
-            if ($LASTEXITCODE -ne 0 -or [string]::IsNullOrWhiteSpace($issueRaw)) {
-              throw 'FIRST_USE_UPGRADE_BLOCKED: journal count authority unavailable'
-            }
-            $issue = ConvertFrom-Json -InputObject $issueRaw
-            if ($null -eq $issue -or [string]$issue.comments -notmatch '^[0-9]+$' -or
-                [long]$issue.comments -ne $entries.Count) {
-              throw 'FIRST_USE_UPGRADE_BLOCKED: incomplete or concurrently changed journal count'
-            }
-            return $entries.ToArray()
-          }
-          $history = @(Read-AllJournalPages)
+          $reader = Join-Path $env:GITHUB_WORKSPACE 'edge-platform\scripts\read-complete-gh-journal.ps1'
+          $history = @(& $reader)
           $staging = @($history | Where-Object { [string]$_.body -like '*<!-- sing-box-windows-persistent-initial-stage/*' })
           if ($staging.Count -ne 0) { throw 'FIRST_USE_UPGRADE_BLOCKED: staging already begun; reconcile instead' }
           $attempts = @($history | Where-Object { [string]$_.body -like '*<!-- sing-box-windows-program-prepare/*' })
@@ -459,7 +395,7 @@ jobs:
           $body = $marker + "`n" + ($record | ConvertTo-Json -Compress)
           & gh api -X POST "repos/$env:GITHUB_REPOSITORY/issues/26/comments" --raw-field "body=$body" > $null
           if ($LASTEXITCODE -ne 0) { throw 'FIRST_USE_UPGRADE_UNKNOWN: durable intent write uncertain; no replay' }
-          $readback = @(Read-AllJournalPages)
+          $readback = @(& $reader)
           if (@($readback | Where-Object { [string]$_.body -ceq $body }).Count -ne 1) {
             throw 'FIRST_USE_UPGRADE_UNKNOWN: exactly-one durable intent readback unproven; no replay'
           }
