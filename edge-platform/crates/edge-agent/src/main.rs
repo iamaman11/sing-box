@@ -2750,6 +2750,21 @@ async fn transition_vm_credential(
                         .to_owned(),
                 );
             }
+            if let Some(active) = state.active.as_ref() {
+                // VM may be running with candidate B even though its cursor
+                // still points to A. Restore A and verify managed readiness
+                // before dropping the candidate reference.
+                let bundle = store.read_bundle(active)?;
+                let secrets = ApplicationRuntimeSecrets::from_vm_bundle(&bundle)?;
+                apply_vm_credential_runtime(stack_dir, &secrets).await?;
+            } else {
+                // The first-use VM has no A to restore. A staged B may already
+                // serve six public endpoints: dropping B would create an
+                // unowned live runtime. Only an empty application host may
+                // discard it without an explicit paired ABORT.
+                let docker = observe_docker().await?;
+                require_no_vm_application_containers(&docker)?;
+            }
             Ok(store.discard_candidate()?)
         }
         CredentialTransitionAction::RollbackPrevious => {
