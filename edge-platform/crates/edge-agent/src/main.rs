@@ -198,6 +198,22 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             print_mesh_state_evidence(&mesh);
             let credential_source = observe_vm_rendered_credential_source(&stack_dir);
             print_vm_rendered_credential_source(&credential_source);
+            // Same typed, non-secret cursor assessment as Windows Fleet doctor.
+            // A local A/B observation never closes a two-owner transaction.
+            if let Ok(store_root) = vm_credential_store_root(&stack_dir) {
+                let safety = edge_secrets::observe_credential_safety(
+                    &store_root,
+                    CredentialProjectionKind::Vm,
+                );
+                for line in safety.report_lines() {
+                    println!("{line}");
+                }
+            } else {
+                println!("credential_safety_state=UNKNOWN_NO_REPLAY");
+                println!("credential_pair_terminal=UNPROVEN");
+                println!("credential_replay_authorized=false");
+                println!("credential_mutations=0");
+            }
             println!(
                 "application_operational_verdict={}",
                 vm_application_operational_verdict(state.ready, &credential_source)

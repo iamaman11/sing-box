@@ -1,4 +1,6 @@
+use edge_secrets::observe_credential_safety;
 use edge_shared_types::{
+    CredentialProjectionKind,
     WINDOWS_CONTROLLER_ADDR, WindowsDatapathMode, canonical_production_desired_state,
     decode_windows_activation_state, verify_windows_activation_files,
 };
@@ -97,6 +99,18 @@ fn run() -> Result<(), String> {
     println!("controller_running={controller_running}");
     println!("controller_required_for_diagnostics=false");
     println!("exact_release_files=PASS");
+    // Diagnose credentials with an owner-local, read-only cursor observation.
+    // Private credentials may be inaccessible to the runner: UNKNOWN is
+    // informative and never authorizes replay or prints secret payloads.
+    let install_root = state_path
+        .parent()
+        .ok_or_else(|| "Windows activation path has no install root".to_owned())?;
+    let credential_root = edge_controller_core::windows_credential_store_path(install_root);
+    for line in observe_credential_safety(&credential_root, CredentialProjectionKind::Windows)
+        .report_lines()
+    {
+        println!("{line}");
+    }
 
     #[cfg(windows)]
     let controller_pid = observe_windows_service(&expected_controller)?;
