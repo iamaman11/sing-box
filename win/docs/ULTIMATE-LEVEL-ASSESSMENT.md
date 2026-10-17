@@ -1,30 +1,5 @@
-# Historical architecture assessment
+# Historical assessments (not an operative plan)
 
-> **ARCHIVED — NOT CURRENT PROJECT STATUS OR PLAN**
->
-> The former numerical “ultimate-level” ratings and recommendations in this file were snapshots of
-> an earlier PowerShell/DPAPI/workstation-owned architecture. They are intentionally removed because
-> they no longer describe the accepted system and encouraged comparison against retired ownership
-> boundaries.
+The former numeric ratings belong to retired PowerShell/Windows ownership and are not current evidence. They are retained in Git history, not this file.
 
-Current sources:
-- GitHub Issue #26 — sole execution cursor;
-- `edge-platform/ARCHITECTURE.md` — current architecture;
-- GitHub Issue #169 — historical Cloudflare convergence/retirement evidence only; it does not schedule current Stage-3 work;
-- Issue #154 — Windows Slice 2 implementation/evidence;
-- Issue #60 — Windows diagnostics specification.
-
-Current quality criteria are concrete invariants, not a subjective numeric score:
-- one owner per mutable resource class;
-- build once / promote exact bytes without rebuild;
-- typed desired state and lifecycle authority;
-- fail closed on drift/ambiguity;
-- bounded mutation + re-observation;
-- independent read-only diagnostics;
-- no runtime plaintext secrets in Git/GitHub evidence;
-- no provider authority in installed Windows controller;
-- autonomous active runtime during Cloudflare/control-plane outage;
-- full typed deploy/update/rollback/recovery/cleanup lifecycle;
-- deletion-first removal of legacy paths after replacement proof.
-
-Use those criteria and live acceptance evidence rather than historical ratings.
+Current objective 10/10 gates: [normative architecture](https://github.com/iamaman11/sing-box/blob/main/edge-platform/ARCHITECTURE.md). Current single [finalization plan](https://github.com/iamaman11/sing-box/blob/main/edge-platform/FINALIZATION-PLAN.md). Exact source/physical status: [Issue #26](https://github.com/iamaman11/sing-box/issues/26).

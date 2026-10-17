@@ -1,5 +1,8 @@
 # VM application desired state
 
+> **IMPLEMENTATION REFERENCE / NOT A CURRENT PLAN (2026-10-18).** The only normative architecture is [edge-platform/ARCHITECTURE.md](https://github.com/iamaman11/sing-box/blob/main/edge-platform/ARCHITECTURE.md); the single completion plan is [edge-platform/FINALIZATION-PLAN.md](https://github.com/iamaman11/sing-box/blob/main/edge-platform/FINALIZATION-PLAN.md). Dated deployment commands or "current" labels below are historical implementation details, not authorization. Live host/transaction evidence remains in [Issue #26](https://github.com/iamaman11/sing-box/issues/26).
+
+
 ## Authority
 
 Git owns desired application policy. The exact durable ReleaseSet owns immutable executable/image identity. The production VM self-hosted runner is transport only; the root-owned local runtime owner performs VM-local lifecycle operations.

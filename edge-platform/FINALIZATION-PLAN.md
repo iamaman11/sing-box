@@ -1,39 +1,27 @@
-# edge-platform Finalization Plan — historical tombstone
+# Единственный план завершения sing-box до 10/10
 
-> **SUPERSEDED / DO NOT EXECUTE**
->
-> This file intentionally contains no executable plan. It exists only so historical links fail safe.
+**OPEN — 18 октября 2026.** Это единственный **план развития**, не архив и не новый «этап»; [ARCHITECTURE.md](ARCHITECTURE.md) фиксирует неизменяемые границы, [Issue #26](https://github.com/iamaman11/sing-box/issues/26) — единственный живой физический курсор и оригинальный журнал, а не параллельный план. При расхождении данных — `BLOCKED`, не угаданный PASS. Истина всегда в удалённом защищённом GitHub.
 
-## Current authority
+## Проверенная отправная точка
 
-Use this order and nothing else:
+- `main` при создании плана: `7a2f2c4678d120fe71ac45775e09636100c94e56` (перед новой операцией обязательно обновить); PR #394 и #395 merged, immutable [promotion #39072388126](https://github.com/iamaman11/sing-box/actions/runs/39072388126) PASS.
+- Read-only [VM #39072466180](https://github.com/iamaman11/sing-box/actions/runs/39072466180), [Windows #39072469654](https://github.com/iamaman11/sing-box/actions/runs/39072469654) PASS, но использован старый нативный DEEP fallback, не быстрый протокол нового бинарника.
+- VM `application-acceptance-1`: три контейнера здоровы; v2 CANDIDATE B `38503639351`, **не ACTIVE**. Windows `sing-box-windows-lab`: ReleaseSet `08f86d8fb3619f47f2a3b2434f66bbf54b6f5358fed5eb6d99b6a5f913d93730`, intentionally Stopped/OnDemand, ProxyOnly, без TUN.
+- [Оригинальный A/B BEGIN](https://github.com/iamaman11/sing-box/issues/26#issuecomment-6229884538) из run `39004301614`, исходная ревизия `62782d5bc29574bc357dc9d3b020ff43d55c142a`, терминального COMMIT/ABORT не доказано.
+- [Read-only /credentials recover #39072475032](https://github.com/iamaman11/sing-box/actions/runs/39072475032): оба native owner подтвердились, но исторический original ReleaseSet не прошёл Rust release context новой `main`. **FAILED, без мутаций.** Исправлять контракт авторизации исторического **чтения**, а не обходить общую проверку записи.
 
-1. fresh protected `main`, open PRs and latest Actions;
-2. GitHub Issue #26 — **sole living execution cursor**;
-3. latest comments/evidence on #26 when newer than its body;
-4. `edge-platform/ARCHITECTURE.md` — stable target ownership and invariants, not execution order;
-5. issue #169 — historical Cloudflare convergence/retirement evidence only; it is no longer a
-   current Stage-3 execution dependency;
-6. issue #154 — Windows implementation/evidence record;
-7. issue #60 — Windows diagnostics specification;
-8. issue #1 — canonical operator command channel.
+## Одно интеграционное исполнение — четыре обязательных ворота
 
-No historical issue or document may become a competing execution cursor.
+**A. Разрешить исходную A/B, прежде чем создавать новые credentials.** Привязать полный Issue #26 journal, оригинальный immutable ReleaseSet и Rust read-only inspector к исходной accepted revision; отдельный типизированный контекст исторического наблюдения, не переопределение переменных окружения и не пропуск защиты. В штатных SYSTEM/root owners доказать original ACTIVE A, staged B, local receipts, live loaded source и сетевую аутентификацию. Классифицировать исходный intent; завершить его однократно, только если разрешают реальные доказательства и устойчивый COMMIT_INTENT. При сомнениях — `UNKNOWN_NO_REPLAY` с конкретным отсутствующим фактом. **PASS:** терминальная журнальная запись и независимый физический poststate + свежие Line1 4/4, Line2 6/6 DIRECT/WARP/TLS/auth. Исторический 10/10 здесь не засчитывается.
 
-## Direction
+**B. Завершить единый типизированный host lifecycle.** Один protobuf HostRegistry и типизированные desired/observed/error/result. Одна Rust-логика решения `status/apply/recover`, а Windows SYSTEM и VM root agent остаются исполнителями. Убрать привязку VM apply к `production-1`, статические Windows runner/name, второй источник конфигурации и межмашинный конфликт новых журналов. Старые записи без машинной области консервативно блокируют до доказанной сверки. Превратить recover в действительное доказанное разрешение/откат/довыполнение локальной операции, а не маску диагностики. **PASS:** 2 зарегистрированных Windows + 2 VM, независимые операции, no replay, ни одной копии workflow/сервиса на машину.
 
-The target architecture is deletion-first:
+**C. Единая установка, конфигурация и жёсткая зачистка.** Единственный native installer на тип Windows/VM, свежая установка, обновление, reinstall, конфигурация sing-box и контейнеров, recover с точным ReleaseSet. Git — typed desired/templates, Worker — единственный владелец секретов; generated JSON/Compose — только проверяемый output. Удалить устаревшие команды, вторые парсеры, устаревшие sudoers, workflow-дубли **после подтверждённой замены последнего потребителя и сохранения долговечных данных**. Никаких вечных fallbacks. **PASS:** новый хост вводится без патча кода, config-only изменение без пересборки Rust, rollback/reinstall сохраняют устойчивое состояние, нет новых привилегированных служб или ручных секретов.
 
-- GitHub-only `edge-orchestrator` owns provider composition;
-- Windows owns only Windows-local runtime through SCM `EdgePlatformController`;
-- the production VM uses one bounded local Linux runtime owner;
-- self-hosted runners are outbound transport only;
-- credential delivery is fixed A/B least-privilege projection with host-local acquisition;
-- duplicate operator namespaces, remote-agent trust/transport, obsolete provider responsibilities,
-  legacy persistence and migration proof glue are removed after their exact last consumer disappears.
+**D. Окончательная физическая 10/10 приёмка.** Сетевые Line1 4/4 + Line2 6/6, TLS и отрицательная auth, direct/WARP разделение, VM reboot, текущие фактические конфиги, Windows ProxyOnly и независимый Cloudflare One. TUN **отдельно**, только по явной команде с принятым DNS/route/reboot/restore browsing rollback; не включать ради тестов. Имитировать lost ACK, crash, offline runner, stale admission, неполный GitHub journal, cross-host collision, повторного запуска workflow. Результат — короткий типизированный machine-readable status + опциональная детальная диагностика. **PASS:** все 7 критериев [архитектуры](ARCHITECTURE.md) подтверждены ссылками на tested SHA, source CI, immutable promotion, физические Windows/VM и poststate.
 
-Do not restore historical designs in which Windows owns Vultr/Cloudflare deployment, a network
-`edge-agent` is routine production control, secrets are copied through runners, or old JSON/state
-contracts become authority.
+## Режим работы: без кругов
 
-For the current macro stage and exact next action, read #26.
+Одно крупное связное изменение в существующей Rust-архитектуре, один полный CI-проход и immutable release без rebuild, затем физическая приёмка каждого изменяемого ресурса. Не выпускать по одному PR на любую диагностику и не добавлять совместимость со старой версией как постоянное решение. Если физическая приёмка не проходит, исправлять первопричину в том же архитектурном контракте; не создавать новые «фазы». Полное удаление мёртвого кода разрешено; стирание журналов, native receipts, доступов, рабочих секретов и ресурсов других проектов — нет. Нет скрытых sleeps/polling loops, вторых агентов/профилей, parallel mutation authority или обхода отказов инструментов.
+
+**DONE только по фактическим доказательствам.** Успешный CI не равен установленному приложению. В Issue #26 записывать только реальное состояние, ссылку на доказательство и **один следующий допустимый шаг**, не копировать туда этот план.
