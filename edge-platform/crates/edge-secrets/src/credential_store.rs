@@ -763,6 +763,19 @@ impl CredentialStore {
     }
 
     pub fn discard_candidate(&self) -> Result<Option<LocalCredentialState>, String> {
+        // A durable Windows BEGIN preparation is not an ordinary disposable
+        // candidate: removing it would erase the only pointer to a runtime
+        // already rendered with B. Even a direct store caller must fail closed.
+        if self.projection == CredentialProjectionKind::Windows
+            && self
+                .read_windows_existing_join_prepare_receipt()?
+                .is_some()
+        {
+            return Err(
+                "Windows BEGIN-bound candidate requires authenticated paired ABORT, not discard"
+                    .to_owned(),
+            );
+        }
         let Some(mut current) = self.read_state()? else {
             return Ok(None);
         };
@@ -1825,6 +1838,10 @@ mod tests {
         assert_eq!(state.active, Some(source.clone()));
         assert_eq!(state.candidate, Some(target.clone()));
         assert!(state.previous.is_none());
+        // Safety is enforced in the store, not just by the SYSTEM caller.
+        assert!(store.discard_candidate().is_err());
+        let after_rejected_discard = store.read_state().unwrap().unwrap();
+        assert_eq!(state, after_rejected_discard);
         assert!(
             store
                 .prepare_windows_existing_join(&source, &target, &"d".repeat(64), &"e".repeat(64),)
