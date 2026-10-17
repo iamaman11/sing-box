@@ -207,9 +207,7 @@ pub fn canonical_production_desired_state() -> Result<ProductionDesiredState, St
     let path = std::env::var_os("EDGE_PRODUCTION_STATE_PB");
     let sha = std::env::var_os("EDGE_PRODUCTION_STATE_SHA256");
     match (path, sha) {
-        (None, None) => {
-            decode_production_desired_state(CANONICAL_PRODUCTION_DESIRED_STATE_BYTES)
-        }
+        (None, None) => decode_production_desired_state(CANONICAL_PRODUCTION_DESIRED_STATE_BYTES),
         (Some(path), Some(sha)) => {
             let expected = sha.to_str().ok_or("CONFIG_SHA256_INVALID")?;
             verified_production_desired_state(Path::new(&path), expected)

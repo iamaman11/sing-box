@@ -1,6 +1,8 @@
 use crate::cli::HostCommand;
 use edge_orchestrator::OrchestrationContext;
-use edge_shared_types::{ManagedHostKind, decode_host_registry, managed_host};
+use edge_shared_types::{
+    HostRegistry, ManagedHostKind, decode_host_registry, managed_host,
+};
 use ring::digest::{SHA256, digest};
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -178,8 +180,29 @@ pub(crate) fn run(
         return Err("host protobuf differs from protected Git inventory SHA-256".to_owned());
     }
     let desired = decode_host_registry(&bytes)?;
+    if let HostCommand::Status {
+        machine_id: Some(vm_id),
+        deep: false,
+        credential_pair_windows: Some(windows_id),
+    } = &command
+    {
+        let output = github_output.ok_or("HOST_CREDENTIAL_OUTPUT_REQUIRED")?;
+        let (runner_name, runner_label) =
+            resolve_credential_peer(&desired, vm_id, windows_id)?;
+        append_credential_peer_outputs(output, vm_id, &runner_name, &runner_label)?;
+        println!("host_credential_pair_resolution=READ_ONLY_TYPED");
+        println!("host_mutations=0");
+        return Ok(());
+    }
     match command {
-        HostCommand::Status { machine_id, deep } => {
+        HostCommand::Status {
+            machine_id,
+            deep,
+            credential_pair_windows,
+        } => {
+            if credential_pair_windows.is_some() {
+                return Err("HOST_CREDENTIAL_PEER_REQUIRES_EXACT_VM_AND_FAST".to_owned());
+            }
             if deep && machine_id.is_none() {
                 return Err("HOST_DEEP_REQUIRES_EXACT_MACHINE".to_owned());
             }
@@ -322,9 +345,127 @@ fn append_control_outputs(
         .map_err(|_| "Host GitHub output write failed".to_owned())
 }
 
+
+fn resolve_credential_peer(
+    desired: &HostRegistry,
+    vm_id: &str,
+    windows_id: &str,
+) -> Result<(String, String), String> {
+    let vm = desired
+        .hosts
+        .iter()
+        .find(|host| host.machine_id == vm_id)
+        .ok_or("HOST_CREDENTIAL_VM_UNKNOWN")?;
+    if ManagedHostKind::try_from(vm.kind) != Ok(ManagedHostKind::Vm)
+        || !matches!(
+            vm.owner.as_ref(),
+            Some(managed_host::Owner::VmMachineId(owner)) if owner == vm_id
+        )
+        || vm.desired_spec_path != "infra/application/disposable-acceptance.json"
+    {
+        return Err("HOST_CREDENTIAL_VM_ORIGIN_INVALID".to_owned());
+    }
+    let eligible = desired
+        .hosts
+        .iter()
+        .filter(|host| ManagedHostKind::try_from(host.kind) == Ok(ManagedHostKind::Windows))
+        .collect::<Vec<_>>();
+    let chosen = if windows_id == "auto" {
+        if eligible.len() != 1 {
+            return Err("HOST_CREDENTIAL_WINDOWS_EXPLICIT_ID_REQUIRED".to_owned());
+        }
+        eligible[0]
+    } else {
+        eligible
+            .into_iter()
+            .find(|host| host.machine_id == windows_id)
+            .ok_or("HOST_CREDENTIAL_WINDOWS_UNKNOWN")?
+    };
+    let name = match chosen.owner.as_ref() {
+        Some(managed_host::Owner::WindowsRunnerName(name)) => name.clone(),
+        _ => return Err("HOST_CREDENTIAL_WINDOWS_OWNER_INVALID".to_owned()),
+    };
+    Ok((name, chosen.windows_runner_label.clone()))
+}
+
+fn append_credential_peer_outputs(
+    path: &Path,
+    vm_id: &str,
+    windows_runner_name: &str,
+    windows_runner_label: &str,
+) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|_| "HOST_CREDENTIAL_OUTPUT_UNAVAILABLE".to_owned())?;
+    if !metadata.file_type().is_file() {
+        return Err("HOST_CREDENTIAL_OUTPUT_NOT_REGULAR".to_owned());
+    }
+    let values = format!(
+        "machine_id={vm_id}\nwindows_runner_name={windows_runner_name}\nwindows_runner_label={windows_runner_label}\n"
+    );
+    OpenOptions::new()
+        .append(true)
+        .open(path)
+        .and_then(|mut output| output.write_all(values.as_bytes()))
+        .map_err(|_| "HOST_CREDENTIAL_OUTPUT_WRITE_FAILED".to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use edge_shared_types::ManagedHost;
+
+    #[test]
+    fn credential_peer_is_selected_from_typed_registry_not_textproto_regex() {
+        let registry = HostRegistry {
+            schema_version: 1,
+            hosts: vec![
+                ManagedHost {
+                    machine_id: "application-acceptance-1".to_owned(),
+                    kind: ManagedHostKind::Vm as i32,
+                    owner: Some(managed_host::Owner::VmMachineId(
+                        "application-acceptance-1".to_owned(),
+                    )),
+                    windows_runner_label: String::new(),
+                    desired_spec_path: "infra/application/disposable-acceptance.json".to_owned(),
+                },
+                ManagedHost {
+                    machine_id: "sing-box-windows-lab".to_owned(),
+                    kind: ManagedHostKind::Windows as i32,
+                    owner: Some(managed_host::Owner::WindowsRunnerName(
+                        "DESKTOP-0E1F6UQ".to_owned(),
+                    )),
+                    windows_runner_label: "sing-box-windows-lab".to_owned(),
+                    desired_spec_path: "infra/production/production.textproto".to_owned(),
+                },
+            ],
+        };
+        assert_eq!(
+            resolve_credential_peer(&registry, "application-acceptance-1", "auto").unwrap(),
+            ("DESKTOP-0E1F6UQ".to_owned(), "sing-box-windows-lab".to_owned())
+        );
+        assert_eq!(
+            resolve_credential_peer(&registry, "production-1", "auto").unwrap_err(),
+            "HOST_CREDENTIAL_VM_UNKNOWN"
+        );
+        assert_eq!(
+            resolve_credential_peer(&registry, "application-acceptance-1", "not-enrolled")
+                .unwrap_err(),
+            "HOST_CREDENTIAL_WINDOWS_UNKNOWN"
+        );
+        let mut two_windows = registry.clone();
+        two_windows.hosts.push(ManagedHost {
+            machine_id: "other-windows".to_owned(),
+            kind: ManagedHostKind::Windows as i32,
+            owner: Some(managed_host::Owner::WindowsRunnerName("OTHER-PC".to_owned())),
+            windows_runner_label: "other-label".to_owned(),
+            desired_spec_path: "infra/production/production.textproto".to_owned(),
+        });
+        assert_eq!(
+            resolve_credential_peer(&two_windows, "application-acceptance-1", "auto")
+                .unwrap_err(),
+            "HOST_CREDENTIAL_WINDOWS_EXPLICIT_ID_REQUIRED"
+        );
+    }
 
     #[test]
     fn official_runner_registration_rejects_alias_offline_busy_and_mismatch() {

@@ -5,7 +5,7 @@ Source of truth: GitHub `iamaman11/sing-box`, PR #394. Command counts refer to R
 | Existing entry point | Variants | Meaning |
 | --- | ---: | --- |
 | edge-orchestrator top-level | 11 | ApplicationLifecycle, ApplicationAcceptance, ApplicationBundleBuild, ApplicationCleanup, CloudflareTargetPlane, CloudflareZeroTrust, Credentials, Host, Production, VultrLifecycle, VultrVpc |
-| edge-orchestrator nested | 78 | Host (1), ApplicationLifecycle (1), Production (4), Credentials (24), CloudflareTargetPlane (7), CloudflareZeroTrust (1), MeshProfile (3), VultrLifecycle (29), VultrVpc (8) |
+| edge-orchestrator nested | 78 | Host (1, internal credential-peer selector flag), ApplicationLifecycle (1), Production (4), Credentials (24), CloudflareTargetPlane (7), CloudflareZeroTrust (1), MeshProfile (3), VultrLifecycle (29), VultrVpc (8) |
 | edge-console Windows | 55 | Internal SCM/privileged install, rollback, credential transitions, proxy selectors, traces, status, diagnostics |
 | edge-controller Windows | 13 | Serve/WindowsService, read status, start/stop/restart, selector, trace, deploy/destroy, bootstrap |
 | edge-agent VM local | 24 | status/verify/diagnose, quality, credential attest/apply/transition, bundle, Mesh, bootstrap |
@@ -36,7 +36,7 @@ Source of truth: GitHub `iamaman11/sing-box`, PR #394. Command counts refer to R
 - Each mutation must be bound to an exact host (or an explicitly journaled paired A/B transaction), have an exclusive operation owner and refuse replay after an uncertain outcome.
 - Do not expose `/host apply` or `/host recover` until the existing Windows SYSTEM and VM root paths are actually unified and physically accepted.
 - Existing workflow branches and commands continue to work; removing them prematurely would delete unported functionality.
-- The removed `infra/windows/hosts.textproto` is no longer read by the credential workflow. Its remaining Python textproto-regex selector is a second *parser* for the canonical `infra/hosts/hosts.textproto` and must be migrated to the Rust protobuf selector; no second registry file exists. Existing application/Vultr manifests are separate desired resources.
+- The removed `infra/windows/hosts.textproto` is no longer read by the credential workflow. The credential workflow now selects the VM/Windows pair using the same verified Rust protobuf `HostRegistry` as `/host status`; the original application/provider manifest remains independently validated, without a duplicate registry parser. Existing application/Vultr manifests are separate desired resources.
 - This inventory is source-level. It is not evidence that runner registration authorization, VM sudoers upgrades, multi-host physical operation, or original A/B BEGIN run 39004301614 has completed.
 
 ## Exact Rust CLI variant enumeration
@@ -119,3 +119,7 @@ preserved until then.
 The existing shared production loader supports a **pinned external binary protobuf** without rebuilding Rust. A trusted native host process sets **both** `EDGE_PRODUCTION_STATE_PB` (local regular-file path) and `EDGE_PRODUCTION_STATE_SHA256` (exact lowercase SHA-256 from protected Git). Missing/partial, oversized, malformed or mismatched state fails closed. Without either variable, previously installed releases retain their embedded state. Git is the sole source of configuration; the Worker remains exclusively responsible for secrets. The deployment owner must still materialize, check and activate the pinned protobuf before this is a physically accepted configuration workflow.
 
 FAST snapshots now report observation Unix timestamp, reason and next action without claiming unprobed network or credential health. Sub-second/2-second timing and full runtime correctness require physical measurements; no claim is made from CI alone.
+
+## Second integrated source slice: one typed credential host resolver
+
+Credential authorization keeps its original protected GitHub/Worker authority and original A/B journal. The credential workflow reads application/provider resources, but passes the **same pinned binary protobuf** used by `/host status` to the existing Rust orchestrator. An internal hidden status option produces verified exact Windows runner identity and VM machine ID through `GITHUB_OUTPUT` (not diagnostic text parsing). Ambiguous multi-Windows selection requires an explicit machine ID. This is read-only selection, NOT an A/B replay or physical installation.
