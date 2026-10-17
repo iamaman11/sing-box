@@ -16,7 +16,7 @@ Source of truth: GitHub `iamaman11/sing-box`, PR #394. Command counts refer to R
 | Prefix | Current accepted verbs in workflow grammar | Direction |
 | --- | --- | --- |
 | `/host` | `status [machine-id] [--deep]` | One operator status interface for any registered machine; no implicit mutation |
-| `/windows` | status, diagnose, offline-preflight, apply, quality-line1, converge, smoke, start, stop, restart-controller, repair, rollback, acceptance-reconcile, initial-pair-prepare, initial-pair-stage | Preserve as legacy low-level physical path pending typed host apply/recover replacement |
+| `/windows` | diagnose, offline-preflight, apply, quality-line1, converge, start, stop, restart-controller, repair, rollback, acceptance-reconcile, initial-pair-prepare, initial-pair-stage | Preserve distinct native physical operations until typed host apply/recover is complete; status and smoke aliases retired |
 | `/production` | enroll-runtime, converge, verify, diagnose, quality-line2, rollback | Legacy fixed VM path; migration target is machine-id based |
 | `/vm` | diagnose, quality-line2, credential-runtime-source, credential-initial-probe | Manifest-selected VM read-only path, internalized by host owner after acceptance |
 | `/application` | mesh-profile-plan, mesh-profile-verify, mesh-profile-apply, acceptance, cleanup | App/Cloudflare operations, not generic machine selection |
@@ -90,3 +90,26 @@ journal to prevent mutations while the A/B BEGIN remains unresolved.
 Do not report `apply/recover` as accepted until they are implemented and
 physically exercised. The existing legacy operator commands are deliberately
 preserved until then.
+
+## Command and CI consolidation — 17 October 2026
+
+- Public `/windows status` and `/windows smoke` were exact aliases of
+  `/windows diagnose` and `/windows converge`, respectively. The aliases
+  are deleted from the router and the physical workflow; the implementations
+  are preserved.
+- Removed the **Windows read-only GH journal integration** job from the
+  mandatory PR CI graph. The full negative journal fixture suite remains
+  in hosted Source checks, including malformed/partial-page and count failures.
+  A PR build no longer depends on the user's physical Windows runner.
+- Windows program-apply and first-use program-prepare now invoke the same
+  read-only complete Issue #26 journal reader. It has no mutation verbs;
+  on an incomplete/ambiguous GitHub API response it stops before BEGIN.
+- `host status <machine>` can dispatch read-only to the exact Git-owned
+  machine labels even if GitHub runner Administration:read is unavailable.
+  Unverified runner registration is visibly `UNPROVEN`, not PASS; the
+  machine still checks exact RUNNER_NAME. This exception applies **only**
+  to read-only observation, never credentials or installation.
+- No user-facing command family, daemon, credential store or operator profile
+  was added. Pending `host apply/recover` is not treated as implemented.
+  Do not remove remaining physical commands before those paths are ported,
+  tested and recoverable.
