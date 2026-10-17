@@ -33,11 +33,16 @@ struct RunnerApiLabel {
 
 /// Official registration only; historical workflow-job assignments never prove availability.
 fn official_runner_id(
-    path: &Path, kind: FleetHostKind, owner: &str, windows_label: &str,
+    path: &Path,
+    kind: FleetHostKind,
+    owner: &str,
+    windows_label: &str,
 ) -> Result<u64, String> {
     let mut data = Vec::new();
-    File::open(path).map_err(|_| "RUNNER_API_UNAVAILABLE".to_owned())?
-        .take(MAX_RUNNER_BYTES + 1).read_to_end(&mut data)
+    File::open(path)
+        .map_err(|_| "RUNNER_API_UNAVAILABLE".to_owned())?
+        .take(MAX_RUNNER_BYTES + 1)
+        .read_to_end(&mut data)
         .map_err(|_| "RUNNER_API_UNAVAILABLE".to_owned())?;
     if data.len() as u64 > MAX_RUNNER_BYTES {
         return Err("RUNNER_API_TOO_LARGE".to_owned());
@@ -46,11 +51,15 @@ fn official_runner_id(
 }
 
 fn inspect_runner_registration(
-    data: &[u8], kind: FleetHostKind, owner: &str, windows_label: &str,
+    data: &[u8],
+    kind: FleetHostKind,
+    owner: &str,
+    windows_label: &str,
 ) -> Result<u64, String> {
     let pages: Vec<RunnerApiPage> =
         serde_json::from_slice(data).map_err(|_| "RUNNER_API_MALFORMED".to_owned())?;
-    if pages.is_empty() || pages.iter().any(|p| p.total_count != pages[0].total_count)
+    if pages.is_empty()
+        || pages.iter().any(|p| p.total_count != pages[0].total_count)
         || pages.iter().map(|p| p.runners.len()).sum::<usize>() != pages[0].total_count
         || pages[0].total_count > 10_000
     {
@@ -63,7 +72,13 @@ fn inspect_runner_registration(
     };
     let required: &[&str] = match kind {
         FleetHostKind::Windows => &["self-hosted", "Windows", "X64", windows_label],
-        FleetHostKind::Vm => &["self-hosted", "Linux", "X64", "sing-box-production-vm", owner],
+        FleetHostKind::Vm => &[
+            "self-hosted",
+            "Linux",
+            "X64",
+            "sing-box-production-vm",
+            owner,
+        ],
         FleetHostKind::Unspecified => return Err("RUNNER_KIND_INVALID".to_owned()),
     };
     let mut ids = BTreeSet::new();
@@ -73,10 +88,16 @@ fn inspect_runner_registration(
         if runner.id == 0 || !ids.insert(runner.id) || !names.insert(runner.name.clone()) {
             return Err("RUNNER_API_DUPLICATE_IDENTITY".to_owned());
         }
-        if runner.name == name { selected = Some(runner); }
+        if runner.name == name {
+            selected = Some(runner);
+        }
     }
     let runner = selected.ok_or_else(|| "RUNNER_UNREGISTERED".to_owned())?;
-    let labels = runner.labels.iter().map(|l| l.name.as_str()).collect::<BTreeSet<_>>();
+    let labels = runner
+        .labels
+        .iter()
+        .map(|l| l.name.as_str())
+        .collect::<BTreeSet<_>>();
     if required.iter().any(|r| !labels.contains(r)) {
         return Err("RUNNER_LABELS_MISMATCH".to_owned());
     }
@@ -87,7 +108,9 @@ fn inspect_runner_registration(
             "RUNNER_STATUS_UNKNOWN".to_owned()
         });
     }
-    if runner.busy { return Err("RUNNER_BUSY".to_owned()); }
+    if runner.busy {
+        return Err("RUNNER_BUSY".to_owned());
+    }
     Ok(runner.id)
 }
 
@@ -262,26 +285,48 @@ mod tests {
     #[test]
     fn official_runner_registration_rejects_alias_offline_busy_and_mismatch() {
         fn report(status: &str, busy: bool, last_label: &str) -> Vec<u8> {
-            let labels = ["self-hosted","Linux","X64","sing-box-production-vm",last_label]
-                .iter().map(|name| serde_json::json!({"name": name})).collect::<Vec<_>>();
+            let labels = [
+                "self-hosted",
+                "Linux",
+                "X64",
+                "sing-box-production-vm",
+                last_label,
+            ]
+            .iter()
+            .map(|name| serde_json::json!({"name": name}))
+            .collect::<Vec<_>>();
             serde_json::to_vec(&serde_json::json!([{
                 "total_count":1,"runners":[{
                     "id":24,"name":"sing-box-production-application-acceptance-1",
                     "status":status,"busy":busy,"labels":labels
                 }]
-            }])).unwrap()
+            }]))
+            .unwrap()
         }
         let success = report("online", false, "application-acceptance-1");
-        let call = |data: &[u8]| inspect_runner_registration(
-            data, FleetHostKind::Vm, "application-acceptance-1", ""
+        let call = |data: &[u8]| {
+            inspect_runner_registration(data, FleetHostKind::Vm, "application-acceptance-1", "")
+        };
+        assert_eq!(call(&success).unwrap(), 24);
+        assert_eq!(
+            inspect_runner_registration(&success, FleetHostKind::Vm, "production-1", "")
+                .unwrap_err(),
+            "RUNNER_UNREGISTERED"
         );
-        assert_eq!(call(&success).unwrap(),24);
-        assert_eq!(inspect_runner_registration(&success,FleetHostKind::Vm,"production-1","").unwrap_err(),"RUNNER_UNREGISTERED");
-        assert_eq!(call(&report("offline", false, "application-acceptance-1")).unwrap_err(),"RUNNER_OFFLINE");
-        assert_eq!(call(&report("online", true, "application-acceptance-1")).unwrap_err(),"RUNNER_BUSY");
-        assert_eq!(call(&report("online", false, "production-1")).unwrap_err(),"RUNNER_LABELS_MISMATCH");
-        assert_eq!(call(b"[]").unwrap_err(),"RUNNER_API_INCOMPLETE");
-        assert_eq!(call(b"malformed").unwrap_err(),"RUNNER_API_MALFORMED");
+        assert_eq!(
+            call(&report("offline", false, "application-acceptance-1")).unwrap_err(),
+            "RUNNER_OFFLINE"
+        );
+        assert_eq!(
+            call(&report("online", true, "application-acceptance-1")).unwrap_err(),
+            "RUNNER_BUSY"
+        );
+        assert_eq!(
+            call(&report("online", false, "production-1")).unwrap_err(),
+            "RUNNER_LABELS_MISMATCH"
+        );
+        assert_eq!(call(b"[]").unwrap_err(), "RUNNER_API_INCOMPLETE");
+        assert_eq!(call(b"malformed").unwrap_err(), "RUNNER_API_MALFORMED");
     }
 
     #[test]
