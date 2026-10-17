@@ -88,10 +88,13 @@ pub(crate) fn run(
                 }
             );
             println!("fleet_owner_selector={owner}");
+            if kind == FleetHostKind::Windows {
+                println!("fleet_runner_label={}", host.windows_runner_label);
+            }
             // GitHub runner selectors are derived only from the validated
             // exact Git inventory. They never grant privilege by themselves:
             // the selected host must still attest its installed native owner.
-            let label_json = runner_labels(kind, owner)?;
+            let label_json = runner_labels(kind, owner, &host.windows_runner_label)?;
             println!("fleet_runner_labels_json={label_json}");
             if let Some(path) = github_output {
                 append_control_outputs(path, &machine_id, kind, owner, &label_json)?;
@@ -111,9 +114,13 @@ pub(crate) fn run(
 
 /// A single Rust-owned mapping from typed host kind to GitHub's existing
 /// self-hosted owner labels; no workflow-specific second inventory or parser.
-fn runner_labels(kind: FleetHostKind, owner: &str) -> Result<String, String> {
+fn runner_labels(
+    kind: FleetHostKind,
+    owner: &str,
+    windows_runner_label: &str,
+) -> Result<String, String> {
     let labels: Vec<&str> = match kind {
-        FleetHostKind::Windows => vec!["self-hosted", "Windows", "X64", owner],
+        FleetHostKind::Windows => vec!["self-hosted", "Windows", "X64", windows_runner_label],
         FleetHostKind::Vm => {
             vec![
                 "self-hosted",
@@ -165,12 +172,17 @@ mod tests {
     fn native_owner_selection_writes_exact_host_fields_without_log_parsing() {
         let path = std::env::temp_dir().join(format!("fleet-gh-output-{}", std::process::id()));
         std::fs::write(&path, b"").unwrap();
-        let labels = runner_labels(FleetHostKind::Windows, "sing-box-windows-lab").unwrap();
+        let labels = runner_labels(
+            FleetHostKind::Windows,
+            "DESKTOP-0E1F6UQ",
+            "sing-box-windows-lab",
+        )
+        .unwrap();
         append_control_outputs(
             &path,
             "sing-box-windows-lab",
             FleetHostKind::Windows,
-            "sing-box-windows-lab",
+            "DESKTOP-0E1F6UQ",
             &labels,
         )
         .unwrap();
@@ -178,7 +190,7 @@ mod tests {
         assert_eq!(
             observed,
             format!(
-                "machine_id=sing-box-windows-lab\nkind=WINDOWS\nowner=sing-box-windows-lab\nrunner_labels={labels}\n"
+                "machine_id=sing-box-windows-lab\nkind=WINDOWS\nowner=DESKTOP-0E1F6UQ\nrunner_labels={labels}\n"
             )
         );
         std::fs::remove_file(&path).unwrap();
@@ -187,7 +199,7 @@ mod tests {
                 &path,
                 "sing-box-windows-lab",
                 FleetHostKind::Windows,
-                "sing-box-windows-lab",
+                "DESKTOP-0E1F6UQ",
                 &labels,
             )
             .is_err()
@@ -197,13 +209,18 @@ mod tests {
     #[test]
     fn exact_host_kind_selects_only_existing_native_owners() {
         assert_eq!(
-            runner_labels(FleetHostKind::Windows, "sing-box-windows-lab").unwrap(),
+            runner_labels(
+                FleetHostKind::Windows,
+                "DESKTOP-0E1F6UQ",
+                "sing-box-windows-lab"
+            )
+            .unwrap(),
             r#"["self-hosted","Windows","X64","sing-box-windows-lab"]"#
         );
         assert_eq!(
-            runner_labels(FleetHostKind::Vm, "production-1").unwrap(),
+            runner_labels(FleetHostKind::Vm, "production-1", "").unwrap(),
             r#"["self-hosted","Linux","X64","sing-box-production-vm","production-1"]"#
         );
-        assert!(runner_labels(FleetHostKind::Unspecified, "unknown").is_err());
+        assert!(runner_labels(FleetHostKind::Unspecified, "unknown", "").is_err());
     }
 }

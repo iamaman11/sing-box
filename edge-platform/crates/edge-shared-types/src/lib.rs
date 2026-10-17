@@ -41,9 +41,10 @@ pub const CANONICAL_PRODUCTION_DESIRED_STATE_BYTES: &[u8] =
 pub fn decode_fleet_desired_state(bytes: &[u8]) -> Result<FleetDesiredState, String> {
     let desired = FleetDesiredState::decode(bytes)
         .map_err(|err| format!("fleet protobuf decode failed: {err}"))?;
-    if desired.encode_to_vec() != bytes {
-        return Err("fleet protobuf bytes are not canonical".to_owned());
-    }
+    // Protobuf wire field ordering is not canonical across independent
+    // conforming encoders (pinned Buf/Go and Rust/prost). Source authenticity
+    // is instead bound to the exact protected Git bytes by SHA-256 at the
+    // Fleet control boundary. Validate the typed semantics here.
     validate_fleet_desired_state(&desired)?;
     Ok(desired)
 }
@@ -83,6 +84,23 @@ pub fn validate_fleet_desired_state(desired: &FleetDesiredState) -> Result<(), S
         };
         if !fleet_token(name, 128) || !selectors.insert((scope, name)) {
             return Err("fleet owner selector invalid or duplicated".to_owned());
+        }
+        match kind {
+            FleetHostKind::Windows => {
+                if !fleet_token(&host.windows_runner_label, 128)
+                    || !selectors.insert(("windows-label", host.windows_runner_label.as_str()))
+                {
+                    return Err("fleet Windows runner label invalid or duplicated".to_owned());
+                }
+            }
+            FleetHostKind::Vm => {
+                if !host.windows_runner_label.is_empty() {
+                    return Err("fleet VM must not carry a Windows runner label".to_owned());
+                }
+            }
+            FleetHostKind::Unspecified => {
+                return Err("fleet host kind unspecified".to_owned());
+            }
         }
     }
     Ok(())
@@ -2844,13 +2862,15 @@ mod release_set_tests {
                     machine_id: "production-1".to_owned(),
                     kind: FleetHostKind::Vm as i32,
                     owner: Some(fleet_host::Owner::VmMachineId("production-1".to_owned())),
+                    windows_runner_label: String::new(),
                 },
                 FleetHost {
                     machine_id: "sing-box-windows-lab".to_owned(),
                     kind: FleetHostKind::Windows as i32,
                     owner: Some(fleet_host::Owner::WindowsRunnerName(
-                        "sing-box-windows-lab".to_owned(),
+                        "DESKTOP-0E1F6UQ".to_owned(),
                     )),
+                    windows_runner_label: "sing-box-windows-lab".to_owned(),
                 },
             ],
         };
@@ -2874,9 +2894,18 @@ mod release_set_tests {
         invalid = expected.clone();
         invalid.hosts[1].owner = Some(fleet_host::Owner::WindowsRunnerName(String::new()));
         assert!(validate_fleet_desired_state(&invalid).is_err());
-        let mut noncanonical = bytes.clone();
-        noncanonical.extend_from_slice(&[0x08, 0x01]);
-        assert!(decode_fleet_desired_state(&noncanonical).is_err());
+        invalid = expected.clone();
+        invalid.hosts[1].windows_runner_label.clear();
+        assert!(validate_fleet_desired_state(&invalid).is_err());
+        invalid = expected.clone();
+        invalid.hosts[1].windows_runner_label = "../untrusted".to_owned();
+        assert!(validate_fleet_desired_state(&invalid).is_err());
+        invalid = expected.clone();
+        invalid.hosts[0].windows_runner_label = "sing-box-windows-lab".to_owned();
+        assert!(validate_fleet_desired_state(&invalid).is_err());
+        let mut conflicting = bytes.clone();
+        conflicting.extend_from_slice(&[0x08, 0x02]); // conflicting schema_version
+        assert!(decode_fleet_desired_state(&conflicting).is_err());
         assert!(decode_fleet_desired_state(&[]).is_err());
     }
 
@@ -2888,7 +2917,8 @@ mod release_set_tests {
             let bytes = std::fs::read(path).expect("read exact Git fleet protobuf");
             let observed = decode_fleet_desired_state(&bytes).unwrap();
             assert!(!observed.hosts.is_empty());
-            assert_eq!(encode_fleet_desired_state(&observed).unwrap(), bytes);
+            let rust_encoded = encode_fleet_desired_state(&observed).unwrap();
+            assert_eq!(decode_fleet_desired_state(&rust_encoded).unwrap(), observed);
         }
     }
 

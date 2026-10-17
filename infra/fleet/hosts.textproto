@@ -7,5 +7,6 @@ hosts {
 hosts {
   machine_id: "sing-box-windows-lab"
   kind: FLEET_HOST_KIND_WINDOWS
-  windows_runner_name: "sing-box-windows-lab"
+  windows_runner_name: "DESKTOP-0E1F6UQ"
+  windows_runner_label: "sing-box-windows-lab"
 }
