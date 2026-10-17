@@ -593,6 +593,8 @@ pub(crate) enum VultrLifecycleCommand {
     SubstratePlan(VultrMachineArgs),
     SubstrateApply(VultrAuthorizedMachineArgs),
     SubstrateVerify(VultrMachineArgs),
+    /// Read-only exact provider-owned machine endpoint, bound to Git desired state.
+    EndpointObserve(VultrMachineArgs),
     TransportProof(VultrTransportProofArgs),
     InitialDnsConverge(InitialVmDnsArgs),
     InitialPolicyStage(InitialVmPolicyArgs),
@@ -642,6 +644,7 @@ impl VultrLifecycleCommand {
                 args.authorized_plan_sha256,
             ],
             Self::SubstrateVerify(args) => machine("substrate-verify", args),
+            Self::EndpointObserve(args) => machine("endpoint-observe", args),
             Self::TransportProof(args) => vec![
                 "transport-proof".to_owned(),
                 path(args.spec_path),
