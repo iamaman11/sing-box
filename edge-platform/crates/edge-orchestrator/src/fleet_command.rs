@@ -2,11 +2,94 @@ use crate::cli::FleetCommand;
 use edge_orchestrator::OrchestrationContext;
 use edge_shared_types::{FleetHostKind, decode_fleet_desired_state, fleet_host};
 use ring::digest::{SHA256, digest};
+use serde::Deserialize;
+use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
 
 const MAX_INVENTORY_BYTES: u64 = 65_536;
+const MAX_RUNNER_BYTES: u64 = 1_048_576;
+
+#[derive(Deserialize)]
+struct RunnerApiPage {
+    total_count: usize,
+    runners: Vec<RunnerApiEntry>,
+}
+
+#[derive(Deserialize)]
+struct RunnerApiEntry {
+    id: u64,
+    name: String,
+    status: String,
+    busy: bool,
+    labels: Vec<RunnerApiLabel>,
+}
+
+#[derive(Deserialize)]
+struct RunnerApiLabel {
+    name: String,
+}
+
+/// Official registration only; historical workflow-job assignments never prove availability.
+fn official_runner_id(
+    path: &Path, kind: FleetHostKind, owner: &str, windows_label: &str,
+) -> Result<u64, String> {
+    let mut data = Vec::new();
+    File::open(path).map_err(|_| "RUNNER_API_UNAVAILABLE".to_owned())?
+        .take(MAX_RUNNER_BYTES + 1).read_to_end(&mut data)
+        .map_err(|_| "RUNNER_API_UNAVAILABLE".to_owned())?;
+    if data.len() as u64 > MAX_RUNNER_BYTES {
+        return Err("RUNNER_API_TOO_LARGE".to_owned());
+    }
+    inspect_runner_registration(&data, kind, owner, windows_label)
+}
+
+fn inspect_runner_registration(
+    data: &[u8], kind: FleetHostKind, owner: &str, windows_label: &str,
+) -> Result<u64, String> {
+    let pages: Vec<RunnerApiPage> =
+        serde_json::from_slice(data).map_err(|_| "RUNNER_API_MALFORMED".to_owned())?;
+    if pages.is_empty() || pages.iter().any(|p| p.total_count != pages[0].total_count)
+        || pages.iter().map(|p| p.runners.len()).sum::<usize>() != pages[0].total_count
+        || pages[0].total_count > 10_000
+    {
+        return Err("RUNNER_API_INCOMPLETE".to_owned());
+    }
+    let name = match kind {
+        FleetHostKind::Windows => owner.to_owned(),
+        FleetHostKind::Vm => format!("sing-box-production-{owner}"),
+        FleetHostKind::Unspecified => return Err("RUNNER_KIND_INVALID".to_owned()),
+    };
+    let required: &[&str] = match kind {
+        FleetHostKind::Windows => &["self-hosted", "Windows", "X64", windows_label],
+        FleetHostKind::Vm => &["self-hosted", "Linux", "X64", "sing-box-production-vm", owner],
+        FleetHostKind::Unspecified => return Err("RUNNER_KIND_INVALID".to_owned()),
+    };
+    let mut ids = BTreeSet::new();
+    let mut names = BTreeSet::new();
+    let mut selected = None;
+    for runner in pages.into_iter().flat_map(|p| p.runners) {
+        if runner.id == 0 || !ids.insert(runner.id) || !names.insert(runner.name.clone()) {
+            return Err("RUNNER_API_DUPLICATE_IDENTITY".to_owned());
+        }
+        if runner.name == name { selected = Some(runner); }
+    }
+    let runner = selected.ok_or_else(|| "RUNNER_UNREGISTERED".to_owned())?;
+    let labels = runner.labels.iter().map(|l| l.name.as_str()).collect::<BTreeSet<_>>();
+    if required.iter().any(|r| !labels.contains(r)) {
+        return Err("RUNNER_LABELS_MISMATCH".to_owned());
+    }
+    if runner.status != "online" {
+        return Err(if runner.status == "offline" {
+            "RUNNER_OFFLINE".to_owned()
+        } else {
+            "RUNNER_STATUS_UNKNOWN".to_owned()
+        });
+    }
+    if runner.busy { return Err("RUNNER_BUSY".to_owned()); }
+    Ok(runner.id)
+}
 
 /// Read a protobuf rendered from the canonical Git textproto at the exact
 /// checked-out revision. It is NOT embedded in the executable: enrolling
@@ -17,6 +100,7 @@ pub(crate) fn run(
     inventory_path: &Path,
     expected_sha256: &str,
     github_output: Option<&Path>,
+    runner_inventory_json: Option<&Path>,
 ) -> Result<(), String> {
     let mut bytes = Vec::new();
     File::open(inventory_path)
@@ -96,6 +180,11 @@ pub(crate) fn run(
             // the selected host must still attest its installed native owner.
             let label_json = runner_labels(kind, owner, &host.windows_runner_label)?;
             println!("fleet_runner_labels_json={label_json}");
+            if let Some(path) = runner_inventory_json {
+                let runner_id = official_runner_id(path, kind, owner, &host.windows_runner_label)?;
+                println!("fleet_runner_id={runner_id}");
+                println!("fleet_owner_reachability=READY_FOR_DISPATCH");
+            }
             if let Some(path) = github_output {
                 append_control_outputs(path, &machine_id, kind, owner, &label_json)?;
             }
@@ -105,7 +194,9 @@ pub(crate) fn run(
                 release.release().release_set_sha256
             );
             println!("fleet_runtime_observation=UNPROVEN");
-            println!("fleet_owner_reachability=UNPROVEN");
+            if runner_inventory_json.is_none() {
+                println!("fleet_owner_reachability=UNPROVEN");
+            }
             println!("fleet_mutations=0");
             Ok(())
         }
@@ -167,6 +258,31 @@ fn append_control_outputs(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn official_runner_registration_rejects_alias_offline_busy_and_mismatch() {
+        fn report(status: &str, busy: bool, last_label: &str) -> Vec<u8> {
+            let labels = ["self-hosted","Linux","X64","sing-box-production-vm",last_label]
+                .iter().map(|name| serde_json::json!({"name": name})).collect::<Vec<_>>();
+            serde_json::to_vec(&serde_json::json!([{
+                "total_count":1,"runners":[{
+                    "id":24,"name":"sing-box-production-application-acceptance-1",
+                    "status":status,"busy":busy,"labels":labels
+                }]
+            }])).unwrap()
+        }
+        let success = report("online", false, "application-acceptance-1");
+        let call = |data: &[u8]| inspect_runner_registration(
+            data, FleetHostKind::Vm, "application-acceptance-1", ""
+        );
+        assert_eq!(call(&success).unwrap(),24);
+        assert_eq!(inspect_runner_registration(&success,FleetHostKind::Vm,"production-1","").unwrap_err(),"RUNNER_UNREGISTERED");
+        assert_eq!(call(&report("offline", false, "application-acceptance-1")).unwrap_err(),"RUNNER_OFFLINE");
+        assert_eq!(call(&report("online", true, "application-acceptance-1")).unwrap_err(),"RUNNER_BUSY");
+        assert_eq!(call(&report("online", false, "production-1")).unwrap_err(),"RUNNER_LABELS_MISMATCH");
+        assert_eq!(call(b"[]").unwrap_err(),"RUNNER_API_INCOMPLETE");
+        assert_eq!(call(b"malformed").unwrap_err(),"RUNNER_API_MALFORMED");
+    }
 
     #[test]
     fn native_owner_selection_writes_exact_host_fields_without_log_parsing() {

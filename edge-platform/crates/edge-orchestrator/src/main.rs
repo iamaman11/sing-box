@@ -179,12 +179,14 @@ async fn run(
             inventory_pb,
             inventory_sha256,
             github_output,
+            runner_inventory_json,
         } => fleet_command::run(
             command,
             release_context,
             &inventory_pb,
             &inventory_sha256,
             github_output.as_deref(),
+            runner_inventory_json.as_deref(),
         ),
         Command::Production { command } => match command {
             cli::ProductionCommand::Validate => production_command::validate(release_context),

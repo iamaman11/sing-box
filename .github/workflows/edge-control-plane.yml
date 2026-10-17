@@ -136,6 +136,23 @@ jobs:
           test -s "${RUNNER_TEMP}/fleet.binpb"
           echo "FLEET_INVENTORY_SHA256=$(sha256sum "${RUNNER_TEMP}/fleet.binpb" | cut -d' ' -f1)" >> "${GITHUB_ENV}"
 
+      - name: Read GitHub runner registration before physical dispatch
+        if: startsWith(github.event.comment.body, '/fleet doctor ')
+        shell: bash
+        run: |
+          set -euo pipefail
+          # Official registration reports online/busy/labels. Job history does not.
+          # No retry, runner installation, or relabeling here.
+          if ! gh api --paginate --slurp -H 'Accept: application/vnd.github+json' \
+            "repos/${GITHUB_REPOSITORY}/actions/runners?per_page=100" \
+            > "${RUNNER_TEMP}/fleet-runners.json"; then
+            echo 'RUNNER_API_UNAVAILABLE: registration endpoint not authorized' >&2
+            echo 'RUNNER_API_UNAVAILABLE: no physical job dispatched' >> "${GITHUB_STEP_SUMMARY}"
+            exit 1
+          fi
+          test -s "${RUNNER_TEMP}/fleet-runners.json" || \
+            { echo 'RUNNER_API_INCOMPLETE' >&2; exit 1; }
+
       - name: Execute bounded read-only Fleet operation
         id: observe
         shell: bash
@@ -158,10 +175,15 @@ jobs:
             echo 'Unsupported Fleet command' >&2
             exit 1
           fi
+          runner_args=()
+          if [[ "${COMMAND_BODY}" == "/fleet doctor "* ]]; then
+            runner_args=(--runner-inventory-json "${RUNNER_TEMP}/fleet-runners.json")
+          fi
           "${FLEET_OWNER}" fleet \
             --inventory-pb "${RUNNER_TEMP}/fleet.binpb" \
             --inventory-sha256 "${FLEET_INVENTORY_SHA256}" \
             --github-output "${GITHUB_OUTPUT}" \
+            "${runner_args[@]}" \
             "${command[@]}" | tee "${RUNNER_TEMP}/fleet-observation.txt"
           grep -Fxq 'fleet_mutations=0' "${RUNNER_TEMP}/fleet-observation.txt"
           {

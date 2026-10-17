@@ -52,6 +52,9 @@ pub(crate) enum Command {
         /// Native Rust writes validated selection fields; no shell parsing.
         #[arg(long)]
         github_output: Option<PathBuf>,
+        /// Exact paginated GitHub runner registration for physical dispatch.
+        #[arg(long)]
+        runner_inventory_json: Option<PathBuf>,
         #[command(subcommand)]
         command: FleetCommand,
     },
