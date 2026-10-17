@@ -2,8 +2,8 @@ use crate::cli::FleetCommand;
 use edge_orchestrator::OrchestrationContext;
 use edge_shared_types::{FleetHostKind, decode_fleet_desired_state, fleet_host};
 use ring::digest::{SHA256, digest};
-use std::fs::File;
-use std::io::Read;
+use std::fs::{File, OpenOptions};
+use std::io::{Read, Write};
 use std::path::Path;
 
 const MAX_INVENTORY_BYTES: u64 = 65_536;
@@ -16,6 +16,7 @@ pub(crate) fn run(
     release: &OrchestrationContext,
     inventory_path: &Path,
     expected_sha256: &str,
+    github_output: Option<&Path>,
 ) -> Result<(), String> {
     let mut bytes = Vec::new();
     File::open(inventory_path)
@@ -92,6 +93,9 @@ pub(crate) fn run(
             // the selected host must still attest its installed native owner.
             let label_json = runner_labels(kind, owner)?;
             println!("fleet_runner_labels_json={label_json}");
+            if let Some(path) = github_output {
+                append_control_outputs(path, &machine_id, kind, owner, &label_json)?;
+            }
             println!("fleet_inventory_sha256={inventory_sha}");
             println!(
                 "release_set_sha256={}",
@@ -124,9 +128,70 @@ fn runner_labels(kind: FleetHostKind, owner: &str) -> Result<String, String> {
     serde_json::to_string(&labels).map_err(|_| "fleet runner selection encoding failed".to_owned())
 }
 
+/// Publishes exact protobuf-validated host selection to the *existing*
+/// GitHub Actions outputs file. Never create a path or parse diagnostic logs:
+/// the runner owns this file and the only data is non-secret host selectors.
+fn append_control_outputs(
+    path: &Path,
+    machine_id: &str,
+    kind: FleetHostKind,
+    owner: &str,
+    labels: &str,
+) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|_| "Fleet GitHub output destination unavailable".to_owned())?;
+    if !metadata.file_type().is_file() {
+        return Err("Fleet GitHub output must be an existing regular file".to_owned());
+    }
+    let name = match kind {
+        FleetHostKind::Windows => "WINDOWS",
+        FleetHostKind::Vm => "VM",
+        FleetHostKind::Unspecified => return Err("Fleet GitHub output kind invalid".to_owned()),
+    };
+    let values = format!(
+        "machine_id={machine_id}\nkind={name}\nowner={owner}\nrunner_labels={labels}\n"
+    );
+    OpenOptions::new()
+        .append(true)
+        .open(path)
+        .and_then(|mut target| target.write_all(values.as_bytes()))
+        .map_err(|_| "Fleet GitHub output write failed".to_owned())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_owner_selection_writes_exact_host_fields_without_log_parsing() {
+        let path = std::env::temp_dir().join(format!("fleet-gh-output-{}", std::process::id()));
+        std::fs::write(&path, b"").unwrap();
+        let labels = runner_labels(FleetHostKind::Windows, "sing-box-windows-lab").unwrap();
+        append_control_outputs(
+            &path,
+            "sing-box-windows-lab",
+            FleetHostKind::Windows,
+            "sing-box-windows-lab",
+            &labels,
+        )
+        .unwrap();
+        let observed = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            observed,
+            format!(
+                "machine_id=sing-box-windows-lab\nkind=WINDOWS\nowner=sing-box-windows-lab\nrunner_labels={labels}\n"
+            )
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert!(append_control_outputs(
+            &path,
+            "sing-box-windows-lab",
+            FleetHostKind::Windows,
+            "sing-box-windows-lab",
+            &labels,
+        )
+        .is_err());
+    }
 
     #[test]
     fn exact_host_kind_selects_only_existing_native_owners() {

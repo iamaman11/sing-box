@@ -787,7 +787,7 @@ def test_native_fleet_readonly_control_boundary(router: str) -> None:
         and "issues: write" not in hosted
         and "issues: write" not in physical
         and "fleet_mutations=0" in hosted
-        and "fleet_runner_labels_json:runner_labels" in hosted
+        and '--github-output "${GITHUB_OUTPUT}"' in hosted
         and "needs.fleet.outputs.runner_labels" in physical
         and "Verify installed Windows native owner" in physical
         and "FLEET_WINDOWS_OWNER_MISMATCH" in physical

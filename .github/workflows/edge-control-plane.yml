@@ -161,25 +161,9 @@ jobs:
           "${FLEET_OWNER}" fleet \
             --inventory-pb "${RUNNER_TEMP}/fleet.binpb" \
             --inventory-sha256 "${FLEET_INVENTORY_SHA256}" \
+            --github-output "${GITHUB_OUTPUT}" \
             "${command[@]}" | tee "${RUNNER_TEMP}/fleet-observation.txt"
           grep -Fxq 'fleet_mutations=0' "${RUNNER_TEMP}/fleet-observation.txt"
-          if [[ "${#command[@]}" == 2 ]]; then
-            report="${RUNNER_TEMP}/fleet-observation.txt"
-            fields=(
-              'fleet_machine_id:machine_id'
-              'fleet_host_kind:kind'
-              'fleet_owner_selector:owner'
-              'fleet_runner_labels_json:runner_labels'
-            )
-            for entry in "${fields[@]}"; do
-              key="${entry%%:*}"
-              output="${entry#*:}"
-              test "$(grep -c "^${key}=" "${report}")" = 1
-              value="$(sed -n "s/^${key}=//p" "${report}")"
-              test -n "${value}"
-              echo "${output}=${value}" >> "${GITHUB_OUTPUT}"
-            done
-          fi
           {
             echo '### Fleet — native read-only observation'
             echo '~~~text'

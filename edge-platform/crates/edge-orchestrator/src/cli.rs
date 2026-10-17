@@ -48,6 +48,10 @@ pub(crate) enum Command {
         /// never inferred from an operator-provided path.
         #[arg(long)]
         inventory_sha256: String,
+        /// Optional output file managed by the protected GitHub runner.
+        /// Native Rust writes validated selection fields; no shell parsing.
+        #[arg(long)]
+        github_output: Option<PathBuf>,
         #[command(subcommand)]
         command: FleetCommand,
     },
