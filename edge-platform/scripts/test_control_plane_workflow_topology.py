@@ -2331,7 +2331,7 @@ def main() -> None:
         and "Issue #26" in architecture
         and "FINALIZATION-PLAN.md" in architecture
         and "A/B BEGIN" in plan
-        and "Gate" in plan
+        and "**A. Разрешить" in plan
         and "10/10" in plan
         and "UNKNOWN_NO_REPLAY" in plan
         and "Issue #26" in plan
