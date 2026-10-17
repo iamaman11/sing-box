@@ -7077,7 +7077,7 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
         let begin = "a".repeat(64);
         let candidate = "b".repeat(64);
         let sample = format!(
-            "status=PASS\\ndetail=runtime_evidence=BOUNDED_READ_ONLY;credential_cursor=VALID;credential_origin=WORKER_OK;credential_active_present=true;credential_active_slot=A;credential_candidate_present=true;credential_candidate_slot=B;credential_candidate_sha256={candidate};credential_candidate_generation=203;credential_previous_present=false;credential_existing_join_prepare_receipt_present=true;credential_existing_join_receipt_present=false;credential_existing_join_prepare_begin_sha256={begin}\\n"
+            "status=PASS\ndetail=runtime_evidence=BOUNDED_READ_ONLY;credential_cursor=VALID;credential_origin=WORKER_OK;credential_active_present=true;credential_active_slot=A;credential_candidate_present=true;credential_candidate_slot=B;credential_candidate_sha256={candidate};credential_candidate_generation=203;credential_previous_present=false;credential_existing_join_prepare_receipt_present=true;credential_existing_join_receipt_present=false;credential_existing_join_prepare_begin_sha256={begin}\n"
         );
         assert_eq!(
             parse_existing_line1_system_result(&sample, 203, &candidate).unwrap(),
@@ -7091,7 +7091,7 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
             sample.replace("previous_present=false", "previous_present=true"),
             sample.replace(&format!("candidate_sha256={candidate}"), "candidate_sha256=ABSENT"),
             sample.replace(&format!("begin_sha256={begin}"), "begin_sha256=ABSENT"),
-            sample.replace("status=PASS", "status=PASS\\nstatus=PASS"),
+            sample.replace("status=PASS", "status=PASS\nstatus=PASS"),
             format!("{sample}credential_candidate_slot=B;"),
         ] {
             assert!(
