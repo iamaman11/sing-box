@@ -770,7 +770,7 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     existing_join_vm_candidate_sha256: Some(args.vm_candidate_sha256),
                     existing_join_windows_active_sha256: Some(args.windows_active_sha256),
                     existing_join_windows_candidate_sha256: Some(args.windows_candidate_sha256),
-                    existing_join_intent_sha256: Some(args.intent_sha256),
+                    existing_join_intent_sha256: Some(args.begin_sha256),
                     existing_join_slot: Some(args.slot),
                 },
             )?;
