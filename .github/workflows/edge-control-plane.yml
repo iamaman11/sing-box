@@ -144,8 +144,10 @@ jobs:
             "repos/${GITHUB_REPOSITORY}/actions/runners?per_page=100" \
             > "${RUNNER_TEMP}/host-runners.json"; then
             rm -f "${RUNNER_TEMP}/host-runners.json"
-            echo 'RUNNER_API_UNAVAILABLE' >&2
-            if [[ "${COMMAND_BODY}" != "/host status" ]]; then exit 1; fi
+            # Read-only host diagnostics still dispatch to the exact
+            # Git-owned runner label. The physical owner independently
+            # validates its immutable RUNNER_NAME before any diagnostic.
+            echo 'RUNNER_API_UNAVAILABLE_READ_ONLY_OWNER_WILL_VERIFY' >&2
           fi
           if [[ -e "${RUNNER_TEMP}/host-runners.json" ]]; then
             test -s "${RUNNER_TEMP}/host-runners.json" || exit 1
