@@ -38,3 +38,38 @@ Source of truth: GitHub `iamaman11/sing-box`, PR #394. Command counts refer to R
 - Existing workflow branches and commands continue to work; removing them prematurely would delete unported functionality.
 - The old `infra/windows/hosts.textproto` is still read by the credential workflow: retire this duplicate only when its consumers use HostRegistry. Existing fixed application/Vultr manifests are still present and are not yet unified.
 - This inventory is source-level. It is not evidence that runner registration authorization, VM sudoers upgrades, multi-host physical operation, or original A/B BEGIN run 39004301614 has completed.
+
+## Exact Rust CLI variant enumeration
+
+Each name below is a real Rust Clap enum variant. These are code entry points, **not** additional operator permissions.
+
+**edge-orchestrator — top level (11):**
+`ApplicationLifecycle, ApplicationAcceptance, ApplicationBundleBuild, ApplicationCleanup, CloudflareTargetPlane, CloudflareZeroTrust, Credentials, Host, Production, VultrLifecycle, VultrVpc`.
+
+**edge-orchestrator — subcommands (78):**
+- Host (1): `Status` (with optional machine_id and --deep).
+- ApplicationLifecycle (1): `Materialize`.
+- Production (4): `Validate, Diagnose, DnsNoop, EnrollRuntime`.
+- Credentials (24): `ContractVerify, ExistingJoinBeginPlan, ExistingJoinBeginReadback, ExistingJoinPlan, ExistingJoinReadback, ExistingJoinJournalInspect, ExistingJoinReconcile, InitialLine2ExternalWitness, InitialWorkerProofPlan, InitialWorkerProofUpgrade, InitialPairPreflight, InitialPairJournalObserve, InitialPairJournalReadback, InitialPairCommitPlan, InitialPairCommitReadback, InitialPairCommitReconcile, InitialPairRecoveryPlan, InitialPairRecoveryReadback, InitialPairJournalPlan, InitialPairPublish, InitialWindowsAcceptanceIssue, InitialWindowsAcceptanceCleanup, HostBootstrapConverge, RotateApplication`.
+- CloudflareTargetPlane (7): `Inventory, Plan, Converge, ActiveConverge, Verify, VerifyActive, AcceptanceProfile`.
+- CloudflareZeroTrust (1): `Doctor`.
+- MeshProfile (3): `Plan, Apply, Verify`.
+- VultrLifecycle (29): `Doctor, Inventory, Plan, Apply, SubstratePlan, SubstrateApply, SubstrateVerify, EndpointObserve, TransportProof, InitialDnsConverge, InitialPolicyStage, InitialHostProbe, InitialRuntimeApply, InitialRuntimeVerify, RunnerBootstrap, OwnerUpgrade, OwnerRollback, AcquireAccessPlan, AcquireAccess, LeaseAcquire, ReleaseAccessPlan, ReleaseAccess, LeaseRelease, ActionPlan, Action, DestroyPlan, DestroyApply, CleanupPlan, Cleanup`.
+- VultrVpc (8): `Inventory, Plan, Apply, AttachmentPlan, AttachmentApply, Verify, CleanupPlan, CleanupApply`.
+
+**edge-console — Windows (55):**
+`Menu, EnsureController, Reconcile, Status, Doctor, CredentialState, CredentialInitialProbe, CredentialInitialAttest, CredentialInitialAcceptanceBootstrap, CredentialInitialAcceptanceStage, CredentialInitialLine1Witness, CredentialExistingLine1Witness, SmokeRuntime, Stage2Preflight, ProvisionRuntimeState, PrivilegedPing, PrivilegedRuntimeEvidence, PrivilegedActivate, PrivilegedRollbackPrevious, PrivilegedOfflineActivate, OfflineBootstrap, PrivilegedOfflineRollbackPrevious, PrivilegedReinstallAccepted, PrivilegedRestartControllerService, PrivilegedStartProxyOnlyController, PrivilegedStopProxyOnlyController, PrivilegedStageCredential, PrivilegedInitialCredentialCommit, PrivilegedInitialCredentialRecover, PrivilegedExistingPrepare, PrivilegedExistingJoin, CredentialTransition, RestartVerifyRuntime, VerifyRuntime, QualityLine1, PrivilegedPrepareCredentialAccess, PrivilegedInstallCredentialAccess, PrivilegedConvergeControllerService, PrivilegedDispatch, Secrets, GetSecret, SetSecret, StartLocal, StartLocalVisible, StopLocal, RestartLocal, RestartLocalVisible, GetSelector, GetUbuntuSelector, SetSelector, SetUbuntuSelector, Trace, TraceUbuntu, GetOperation, WatchOperation`.
+
+**edge-controller — Windows (13):**
+`Serve, WindowsService, GetStatus, ControllerBootstrapRuntime, BootstrapRuntime, StartLocal, StopLocal, RestartLocal, GetSelector, SetSelector, Trace, Deploy, Destroy`.
+
+**edge-agent — VM local (24):**
+`Status, Verify, Diagnose, QualityLine2, CredentialPublicEndpoint, CredentialRuntimeSource, BootstrapBase, BootstrapTunnel, BootstrapFull, BundleConverge, BundleStageInitial, BundleVerify, BundleRollback, MeshVerify, MeshCleanup, CredentialState, CredentialInitialProbe, CredentialInitialAttest, CredentialInitialApply, CredentialInitialVerify, CredentialInitialCommit, CredentialExistingJoin, CredentialStage, CredentialTransition`.
+The separate `AcceptanceServe` and `Local` variants are dispatch groups; they do not increase the count of local verbs.
+
+**edge-diagnostic — Windows (1):**
+`doctor <current.pb> [--fast]`. The shallow/deep distinction is a parameter, not another command.
+
+## Multi-machine behavior: explicit, not implicit
+
+Multiple distinct `machine_id` records are valid in the same registry. An invocation with a `machine_id` may inspect only that machine and its exact controller/agent. Listing is read-only; it cannot trigger configuration on any machine. For later apply/recover, scope the mutation authority and durable cursor to the requested machine, and allow independent hosts to proceed separately when their resource/credential scopes do not overlap. A paired Windows/VM credential transaction is an explicitly journaled exception and must remain non-replayable.
