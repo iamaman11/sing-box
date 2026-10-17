@@ -44,6 +44,8 @@ pub(crate) enum LocalCommand {
     Verify,
     Diagnose,
     QualityLine2,
+    // Read-only unique public IPv4 observed on VM's live kernel interfaces.
+    CredentialPublicEndpoint,
     // Read-only binding of Worker-v2 projection to actual running file mounts.
     CredentialRuntimeSource,
     BootstrapBase,
@@ -107,6 +109,7 @@ impl LocalCommand {
             Self::Verify => "local-verify",
             Self::Diagnose => "local-diagnose",
             Self::QualityLine2 => "local-quality-line2",
+            Self::CredentialPublicEndpoint => "local-credential-public-endpoint",
             Self::CredentialRuntimeSource => "local-credential-runtime-source",
             Self::BootstrapBase => "local-bootstrap-base",
             Self::BootstrapTunnel => "local-bootstrap-tunnel",
