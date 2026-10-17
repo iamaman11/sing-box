@@ -2896,7 +2896,6 @@ mod release_set_tests {
                         "application-acceptance-1".to_owned(),
                     )),
                     windows_runner_label: String::new(),
-                    desired_spec_path: "infra/production/production.textproto".to_owned(),
                     desired_spec_path: "infra/application/disposable-acceptance.json".to_owned(),
                 },
                 ManagedHost {
@@ -2904,6 +2903,7 @@ mod release_set_tests {
                     kind: ManagedHostKind::Vm as i32,
                     owner: Some(managed_host::Owner::VmMachineId("production-1".to_owned())),
                     windows_runner_label: String::new(),
+                    desired_spec_path: "infra/production/production.textproto".to_owned(),
                 },
                 ManagedHost {
                     machine_id: "sing-box-windows-lab".to_owned(),
