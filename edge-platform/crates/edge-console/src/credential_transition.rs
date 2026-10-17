@@ -107,7 +107,9 @@ pub(crate) fn transition(
             // A BEGIN-bound prepare receipt is durable mutation evidence.
             // The ordinary DISCARD action is not a substitute for a proven
             // two-owner ABORT and must never silently strand that receipt.
-            if store.read_windows_existing_join_prepare_receipt()?.is_some()
+            if store
+                .read_windows_existing_join_prepare_receipt()?
+                .is_some()
                 || store.read_existing_join_receipt()?.is_some()
             {
                 return Err(

@@ -596,20 +596,35 @@ pub fn validate_credential_apply_checkpoint(
     if record.schema_version != 1 || record.operation_id == 0 {
         return Err("credential checkpoint requires schema_version=1 and operation_id".to_owned());
     }
-    validate_lower_hex("credential checkpoint ReleaseSet", &record.release_set_sha256, 64)?;
-    validate_lower_hex("credential checkpoint BEGIN digest", &record.begin_sha256, 64)?;
+    validate_lower_hex(
+        "credential checkpoint ReleaseSet",
+        &record.release_set_sha256,
+        64,
+    )?;
+    validate_lower_hex(
+        "credential checkpoint BEGIN digest",
+        &record.begin_sha256,
+        64,
+    )?;
     let phase = CredentialApplyPhase::try_from(record.phase)
         .map_err(|_| "credential checkpoint phase is unknown".to_owned())?;
     if phase == CredentialApplyPhase::Unspecified {
         return Err("credential checkpoint phase is required".to_owned());
     }
-    let a = record.windows_active.as_ref()
+    let a = record
+        .windows_active
+        .as_ref()
         .ok_or_else(|| "credential checkpoint Windows ACTIVE A missing".to_owned())?;
-    let b = record.windows_candidate.as_ref()
+    let b = record
+        .windows_candidate
+        .as_ref()
         .ok_or_else(|| "credential checkpoint Windows candidate B missing".to_owned())?;
-    let vm = record.vm_candidate.as_ref()
+    let vm = record
+        .vm_candidate
+        .as_ref()
         .ok_or_else(|| "credential checkpoint VM candidate B missing".to_owned())?;
-    if a.generation == 0 || b.generation == 0
+    if a.generation == 0
+        || b.generation == 0
         || vm.generation != b.generation
         || a.generation == b.generation
         || a.slot != CredentialDeliverySlot::A as i32
