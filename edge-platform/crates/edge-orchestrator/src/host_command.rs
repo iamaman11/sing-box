@@ -1,8 +1,6 @@
 use crate::cli::HostCommand;
 use edge_orchestrator::OrchestrationContext;
-use edge_shared_types::{
-    HostRegistry, ManagedHostKind, decode_host_registry, managed_host,
-};
+use edge_shared_types::{HostRegistry, ManagedHostKind, decode_host_registry, managed_host};
 use ring::digest::{SHA256, digest};
 use serde::Deserialize;
 use std::collections::BTreeSet;
@@ -187,8 +185,7 @@ pub(crate) fn run(
     } = &command
     {
         let output = github_output.ok_or("HOST_CREDENTIAL_OUTPUT_REQUIRED")?;
-        let (runner_name, runner_label) =
-            resolve_credential_peer(&desired, vm_id, windows_id)?;
+        let (runner_name, runner_label) = resolve_credential_peer(&desired, vm_id, windows_id)?;
         append_credential_peer_outputs(output, vm_id, &runner_name, &runner_label)?;
         println!("host_credential_pair_resolution=READ_ONLY_TYPED");
         println!("host_mutations=0");
@@ -345,7 +342,6 @@ fn append_control_outputs(
         .map_err(|_| "Host GitHub output write failed".to_owned())
 }
 
-
 fn resolve_credential_peer(
     desired: &HostRegistry,
     vm_id: &str,
@@ -441,7 +437,10 @@ mod tests {
         };
         assert_eq!(
             resolve_credential_peer(&registry, "application-acceptance-1", "auto").unwrap(),
-            ("DESKTOP-0E1F6UQ".to_owned(), "sing-box-windows-lab".to_owned())
+            (
+                "DESKTOP-0E1F6UQ".to_owned(),
+                "sing-box-windows-lab".to_owned()
+            )
         );
         assert_eq!(
             resolve_credential_peer(&registry, "production-1", "auto").unwrap_err(),
@@ -456,13 +455,14 @@ mod tests {
         two_windows.hosts.push(ManagedHost {
             machine_id: "other-windows".to_owned(),
             kind: ManagedHostKind::Windows as i32,
-            owner: Some(managed_host::Owner::WindowsRunnerName("OTHER-PC".to_owned())),
+            owner: Some(managed_host::Owner::WindowsRunnerName(
+                "OTHER-PC".to_owned(),
+            )),
             windows_runner_label: "other-label".to_owned(),
             desired_spec_path: "infra/production/production.textproto".to_owned(),
         });
         assert_eq!(
-            resolve_credential_peer(&two_windows, "application-acceptance-1", "auto")
-                .unwrap_err(),
+            resolve_credential_peer(&two_windows, "application-acceptance-1", "auto").unwrap_err(),
             "HOST_CREDENTIAL_WINDOWS_EXPLICIT_ID_REQUIRED"
         );
     }
