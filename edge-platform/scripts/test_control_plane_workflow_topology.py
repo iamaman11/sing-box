@@ -407,8 +407,10 @@ def verify_credential_observation_lane(source: str) -> None:
         'local credential-public-endpoint' in vm_status
         and 'credential_endpoint_origin=VM_KERNEL_READ_ONLY' in vm_status
         and 'public_ipv4: ${{ steps.observe.outputs.public_ipv4 }}' in vm_status
-        and 'local quality-line2' in vm_status,
-        "VM root must supply a bounded public locator and native Line2 witness")
+        and 'local quality-line2' in vm_status
+        and 'sudo -n -l "$owner" local credential-existing-join' in vm_status
+        and 'vm_root_join_capability=EXACT_NATIVE_SUDOERS_PASS' in vm_status,
+        "VM root must prove endpoint, Line2 and installed one-shot authority before BEGIN")
     require(
         'credentials initial-line2-external-witness' in existing_begin
         and "line2_external_6_of_6=PASS" in existing_begin
