@@ -30,4 +30,7 @@ message FleetHost {
   // Windows requires an exact Git-owned label and an independently
   // verified RUNNER_NAME. VM must leave this Windows-only field empty.
   string windows_runner_label = 5;
+
+  // Canonical Git-owned desired-state reference, not duplicated configuration.
+  string desired_spec_path = 6;
 }
