@@ -299,8 +299,9 @@ fn append_control_outputs(
         ManagedHostKind::Vm => "VM",
         ManagedHostKind::Unspecified => return Err("Host GitHub output kind invalid".to_owned()),
     };
-    let values =
-        format!("machine_id={machine_id}\nkind={name}\nowner={owner}\nrunner_labels={labels}\ndesired_spec_path={desired_spec_path}\n");
+    let values = format!(
+        "machine_id={machine_id}\nkind={name}\nowner={owner}\nrunner_labels={labels}\ndesired_spec_path={desired_spec_path}\n"
+    );
     OpenOptions::new()
         .append(true)
         .open(path)
