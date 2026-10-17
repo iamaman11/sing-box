@@ -393,15 +393,21 @@ mod tests {
         );
         assert_eq!(call(b"[]").unwrap_err(), "RUNNER_API_INCOMPLETE");
         assert_eq!(call(b"malformed").unwrap_err(), "RUNNER_API_MALFORMED");
-        let temp_path = std::env::temp_dir().join(format!(
-            "fleet-runner-status-{}",
-            std::process::id()
-        ));
-        std::fs::write(&temp_path, report("offline", false, "application-acceptance-1"))
-            .unwrap();
+        let temp_path =
+            std::env::temp_dir().join(format!("fleet-runner-status-{}", std::process::id()));
+        std::fs::write(
+            &temp_path,
+            report("offline", false, "application-acceptance-1"),
+        )
+        .unwrap();
         assert_eq!(
-            runner_status(&temp_path, FleetHostKind::Vm, "application-acceptance-1", "")
-                .unwrap(),
+            runner_status(
+                &temp_path,
+                FleetHostKind::Vm,
+                "application-acceptance-1",
+                ""
+            )
+            .unwrap(),
             "RUNNER_OFFLINE"
         );
         assert_eq!(
