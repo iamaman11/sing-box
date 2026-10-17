@@ -776,8 +776,7 @@ mod tests {
 
     fn beginning_digest_for_test(spec: &ExistingJoinIntent) -> String {
         use ring::digest::{SHA256, digest};
-        let history: Vec<serde_json::Value> =
-            serde_json::from_str(&history_begin(spec)).unwrap();
+        let history: Vec<serde_json::Value> = serde_json::from_str(&history_begin(spec)).unwrap();
         let body = history[0]["body"].as_str().unwrap();
         digest(&SHA256, body.as_bytes())
             .as_ref()
@@ -855,7 +854,6 @@ mod tests {
         s.vm_join_receipt_intent_sha256 = Some("e".repeat(64));
         assert_eq!(classify(&g, &s), "UNKNOWN_SAFE_BLOCKED_NO_REPLAY");
     }
-
 
     #[test]
     fn vm_and_windows_receipts_must_match_the_exact_same_begin_and_commit() {

@@ -2000,11 +2000,17 @@ fn read_bounded_windows_credential_cursor(install_root: &Path) -> Result<String,
     let existing_join = store.read_existing_join_receipt()?;
     let existing_prepare_begin = existing_prepare
         .as_deref()
-        .and_then(|text| text.lines().find_map(|line| line.strip_prefix("begin_sha256=")))
+        .and_then(|text| {
+            text.lines()
+                .find_map(|line| line.strip_prefix("begin_sha256="))
+        })
         .unwrap_or("ABSENT");
     let existing_commit_intent = existing_join
         .as_deref()
-        .and_then(|text| text.lines().find_map(|line| line.strip_prefix("intent_sha256=")))
+        .and_then(|text| {
+            text.lines()
+                .find_map(|line| line.strip_prefix("intent_sha256="))
+        })
         .unwrap_or("ABSENT");
     let recovery_sha = recovery
         .as_deref()
@@ -2041,7 +2047,9 @@ fn read_bounded_windows_credential_cursor(install_root: &Path) -> Result<String,
         existing_join.is_some(),
         previous.map(|value| value.generation).unwrap_or(0),
         previous.map(|value| value.slot).unwrap_or(0),
-        previous.map(|value| value.sha256.as_str()).unwrap_or("ABSENT"),
+        previous
+            .map(|value| value.sha256.as_str())
+            .unwrap_or("ABSENT"),
     ))
 }
 
