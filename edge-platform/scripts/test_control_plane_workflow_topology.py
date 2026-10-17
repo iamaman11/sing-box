@@ -2134,16 +2134,16 @@ def main() -> None:
         and "Sing-box configuration, protocol selection and quality authority" in architecture
         and "No Windows start, converge, repair, rollback, unattended reboot or TUN switch" in runbook
         and "Production release rollback is not yet a supported public operation" not in runbook
-        and "**ACTIVE N1/N2 → N3 → N4 (2026-10-12).**" in readme
-        and "the sole execution cursor" in readme
-        and "same existing normal VM lifecycle" in readme
+        and "**ACTIVE N1/N2 lifecycle closure → N3 Windows → N4 production (17 October 2026).**" in readme
+        and "the *only* execution cursor" in readme
+        and "one native SYSTEM/root owner per runtime host" in readme
         and "The former production VM" not in readme
-        and "The old production VM was deleted" in readme
-        and "EdgePlatformController` is **Stopped / AutoStart**" in readme
-        and "do not start or mutate Windows WARP/MISH/OKX" in readme
+        and "historical evidence, not permission to execute" in readme
+        and "EdgePlatformController` remains intentionally **Stopped, ProxyOnly, no managed TUN**" in readme
+        and "Existing Cloudflare One Client is independent" in readme
         and "The accepted proxy-only runtime is the starting point" not in readme
         and "currently working external Windows sing-box" not in readme
-        and "bounded local owner" in readme
+        and "one native SYSTEM/root owner per runtime host" in readme
         and "Independent authenticated 10/10 direct/WARP" in readme
         and "/production rollback" in runbook
         and "/credentials rotate tunnel-auth" in runbook
