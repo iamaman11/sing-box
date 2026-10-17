@@ -148,9 +148,8 @@ fn append_control_outputs(
         FleetHostKind::Vm => "VM",
         FleetHostKind::Unspecified => return Err("Fleet GitHub output kind invalid".to_owned()),
     };
-    let values = format!(
-        "machine_id={machine_id}\nkind={name}\nowner={owner}\nrunner_labels={labels}\n"
-    );
+    let values =
+        format!("machine_id={machine_id}\nkind={name}\nowner={owner}\nrunner_labels={labels}\n");
     OpenOptions::new()
         .append(true)
         .open(path)
@@ -183,14 +182,16 @@ mod tests {
             )
         );
         std::fs::remove_file(&path).unwrap();
-        assert!(append_control_outputs(
-            &path,
-            "sing-box-windows-lab",
-            FleetHostKind::Windows,
-            "sing-box-windows-lab",
-            &labels,
-        )
-        .is_err());
+        assert!(
+            append_control_outputs(
+                &path,
+                "sing-box-windows-lab",
+                FleetHostKind::Windows,
+                "sing-box-windows-lab",
+                &labels,
+            )
+            .is_err()
+        );
     }
 
     #[test]
