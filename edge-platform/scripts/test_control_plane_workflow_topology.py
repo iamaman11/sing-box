@@ -1168,7 +1168,8 @@ def main() -> None:
         < program_prepare.index("Persist exactly one immutable program-upgrade intent BEFORE native mutation")
         < program_prepare.index("Execute one stopped native offline ReleaseSet upgrade with bounded readback")
         and program_prepare.count("gh api -X POST") == 1
-        and "gh api --paginate --slurp" in program_prepare
+        and "read-complete-gh-journal.ps1" in program_prepare
+        and "gh api --paginate --slurp" not in program_prepare
         and "first_use_upgrade_intent=COMMITTED_ONCE" in program_prepare
         and "install-windows-release.ps1" not in program_prepare
         and stage_once.count("-Preflight -RequireCurrentRelease") == 1
