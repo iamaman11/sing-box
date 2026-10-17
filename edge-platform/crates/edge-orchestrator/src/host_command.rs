@@ -652,11 +652,11 @@ mod tests {
     #[test]
     fn host_original_ab_requires_reconciliation_without_any_replay() {
         let begin = format!(
-            "{BEGIN_MARKER}\\n{{\\\"schema\\\":\\\"sing-box.credential-existing-join-begin/v1\\\",\\\"run_id\\\":{ORIGINAL_AB_RUN_ID}}}"
+            "{BEGIN_MARKER}\n{{\"schema\":\"sing-box.credential-existing-join-begin/v1\",\"run_id\":{ORIGINAL_AB_RUN_ID}}}"
         );
         let rows = serde_json::to_vec(&serde_json::json!([{"body":begin}])).unwrap();
         assert!(original_ab_unresolved(&rows).unwrap());
-        assert!(!original_ab_unresolved(b"[{\\\"body\\\":\\\"ordinary comment\\\"}]").unwrap());
+        assert!(!original_ab_unresolved(br#"[{"body":"ordinary comment"}]"#).unwrap());
         assert_eq!(
             original_ab_unresolved(b"[]").unwrap_err(),
             "HOST_JOURNAL_EMPTY"
