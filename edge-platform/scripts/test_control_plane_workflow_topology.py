@@ -551,6 +551,21 @@ def verify_existing_join_endpoint_and_access(source: str) -> None:
     )
     status_windows = jobs.get("existing_join_status_windows", "")
     win_commit = jobs["existing_join_windows_commit"]
+    vm_status = jobs["existing_join_status_vm"]
+    vm_commit = jobs["existing_join_vm_commit"]
+    require(
+        'runtime="$(sudo -n "$owner" local diagnose)"' in vm_status
+        and '$(sudo -n "$owner" local diagnose)' in vm_commit
+        and 'sudo -n "$owner" local credential-runtime-source' not in source
+        and 'local diagnose' in PRODUCTION_VM_RUNNER_INSTALLER.read_text(encoding="utf-8"),
+        "VM runtime witness must reuse installed native sudo allowlist",
+    )
+    for win_section in (status_windows, windows, win_commit):
+        require("-cmatch '^credential_[a-z0-9_]+$'" in win_section
+                and "duplicate" in win_section
+                and "credential evidence field" in win_section
+                and "ContainsKey($pair[0])" in win_section,
+                "Windows credential witness must reject duplicate keys without parsing OS/log fields")
     require(
         "runner_name: ${{ steps.observe.outputs.runner_name }}" in status_windows
         and '"runner_name=$env:RUNNER_NAME" >> $env:GITHUB_OUTPUT' in status_windows
