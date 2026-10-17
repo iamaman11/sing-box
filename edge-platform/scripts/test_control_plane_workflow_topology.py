@@ -665,7 +665,7 @@ def test_git_windows_host_fleet_contract(credentials: str) -> None:
         "windows_host_id: ${{ steps.parse.outputs.windows_host_id }}" in authorize
         and "windows_runner_label: ${{ steps.initial_machine.outputs.windows_runner_label }}" in authorize
         and "windows_runner_name: ${{ steps.initial_machine.outputs.windows_runner_name }}" in authorize
-        and 'f.write(f"windows_host_id={windows_host_id}' in authorize
+        and 'handle.write(f"windows_host_id={windows_host_id}' in authorize
         and 'selected = os.environ.get("REQUESTED_WINDOWS_HOST_ID","")' in authorize
         and 'raise SystemExit("Unknown Git-owned Windows host target")' in authorize
         and 'label = "sing-box-host-" + selected' in authorize
