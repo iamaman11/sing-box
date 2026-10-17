@@ -273,6 +273,7 @@ pub(crate) fn run(
                             kind,
                             owner,
                             &labels,
+                            &host.windows_runner_label,
                             &host.desired_spec_path,
                         )?;
                     }
@@ -416,6 +417,7 @@ fn host_lifecycle_admission(
                 kind,
                 owner,
                 &labels,
+                &selected.windows_runner_label,
                 &selected.desired_spec_path,
             )?;
             append_action_output(output, "RECOVER_READ_ONLY")?;
@@ -444,6 +446,7 @@ fn host_lifecycle_admission(
         kind,
         owner,
         &labels,
+        &selected.windows_runner_label,
         &selected.desired_spec_path,
     )?;
     append_action_output(output, "APPLY")?;
@@ -496,6 +499,7 @@ fn append_control_outputs(
     kind: ManagedHostKind,
     owner: &str,
     labels: &str,
+    windows_runner_label: &str,
     desired_spec_path: &str,
 ) -> Result<(), String> {
     let metadata = std::fs::symlink_metadata(path)
@@ -509,7 +513,7 @@ fn append_control_outputs(
         ManagedHostKind::Unspecified => return Err("Host GitHub output kind invalid".to_owned()),
     };
     let values = format!(
-        "machine_id={machine_id}\nkind={name}\nowner={owner}\nrunner_labels={labels}\ndesired_spec_path={desired_spec_path}\n"
+        "machine_id={machine_id}\nkind={name}\nowner={owner}\nrunner_labels={labels}\nwindows_runner_label={windows_runner_label}\ndesired_spec_path={desired_spec_path}\n"
     );
     OpenOptions::new()
         .append(true)
@@ -755,6 +759,7 @@ mod tests {
             ManagedHostKind::Windows,
             "DESKTOP-0E1F6UQ",
             &labels,
+            "sing-box-windows-lab",
             "infra/production/production.textproto",
         )
         .unwrap();
@@ -762,7 +767,7 @@ mod tests {
         assert_eq!(
             observed,
             format!(
-                "machine_id=sing-box-windows-lab\nkind=WINDOWS\nowner=DESKTOP-0E1F6UQ\nrunner_labels={labels}\ndesired_spec_path=infra/production/production.textproto\n"
+                "machine_id=sing-box-windows-lab\nkind=WINDOWS\nowner=DESKTOP-0E1F6UQ\nrunner_labels={labels}\nwindows_runner_label=sing-box-windows-lab\ndesired_spec_path=infra/production/production.textproto\n"
             )
         );
         std::fs::remove_file(&path).unwrap();
@@ -773,6 +778,7 @@ mod tests {
                 ManagedHostKind::Windows,
                 "DESKTOP-0E1F6UQ",
                 &labels,
+                "sing-box-windows-lab",
                 "infra/production/production.textproto",
             )
             .is_err()
