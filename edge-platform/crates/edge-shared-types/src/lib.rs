@@ -2881,6 +2881,18 @@ mod release_set_tests {
     }
 
     #[test]
+    fn git_fleet_inventory_is_validated_without_compiling_it_into_the_binary() {
+        // CI sets this to the pinned-Buf compilation of the exact protected
+        // Git textproto. Ordinary unit tests also run without a checkout.
+        if let Some(path) = std::env::var_os("EDGE_FLEET_CANONICAL_PB") {
+            let bytes = std::fs::read(path).expect("read exact Git fleet protobuf");
+            let observed = decode_fleet_desired_state(&bytes).unwrap();
+            assert!(!observed.hosts.is_empty());
+            assert_eq!(encode_fleet_desired_state(&observed).unwrap(), bytes);
+        }
+    }
+
+    #[test]
     fn release_set_rejects_missing_v4_runtime_reuse_identity() {
         let mut release = valid_release();
         release.schema_version = 4;

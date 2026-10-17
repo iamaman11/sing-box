@@ -556,6 +556,15 @@ jobs:
           "${buf_bin}" lint
           "${buf_bin}" build
           "${buf_bin}" breaking --against "../.git#ref=refs/buf/base,subdir=edge-platform"
+          # The Git-owned fleet is a runtime input, not a Rust build input.
+          # Compile it from the exact checked-out textproto with the pinned
+          # protobuf compiler, without a custom YAML/Python/PowerShell parser.
+          "${buf_bin}" convert proto/edge/platform/v1/fleet.proto \
+            --type edge.platform.v1.FleetDesiredState \
+            --from "../infra/fleet/hosts.textproto#format=txtpb" \
+            --to "${RUNNER_TEMP}/fleet-canonical.binpb#format=binpb"
+          test -s "${RUNNER_TEMP}/fleet-canonical.binpb"
+          echo "fleet_inventory_sha256=$(sha256sum "${RUNNER_TEMP}/fleet-canonical.binpb" | cut -d' ' -f1)" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Install pinned Rust toolchain
         shell: bash
@@ -586,6 +595,8 @@ jobs:
       - name: Test workspace
         working-directory: edge-platform
         shell: bash
+        env:
+          EDGE_FLEET_CANONICAL_PB: ${{ runner.temp }}/fleet-canonical.binpb
         run: cargo test --workspace --locked
 
   dependencies:
