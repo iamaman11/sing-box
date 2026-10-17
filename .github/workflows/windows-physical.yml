@@ -39,7 +39,7 @@ jobs:
         run: |
           set -euo pipefail
           case "$COMMAND_BODY" in
-            "/windows diagnose"|"/windows status") operation="diagnose"; readonly_purpose="ordinary" ;;
+            "/windows diagnose") operation="diagnose"; readonly_purpose="ordinary" ;;
             "/windows offline-preflight") operation="diagnose"; readonly_purpose="offline-preflight" ;;
             "/windows apply") operation="apply" ;;
             "/windows initial-pair-prepare "*|"/windows initial-pair-stage "*)
@@ -62,7 +62,7 @@ jobs:
               }
               ;;
             "/windows quality-line1") operation="quality-line1" ;;
-            "/windows converge"|"/windows smoke") operation="converge" ;;
+            "/windows converge") operation="converge" ;;
             "/windows start") operation="start" ;;
             "/windows stop") operation="stop" ;;
             "/windows restart-controller") operation="restart-controller" ;;
