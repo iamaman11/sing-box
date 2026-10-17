@@ -965,7 +965,7 @@ mod tests {
         s.windows_prepare_begin_sha256 = Some("d".repeat(64));
         assert_eq!(classify(&g, &s), "UNKNOWN_SAFE_BLOCKED_NO_REPLAY");
         s.windows_prepare_begin_sha256 = Some(beginning_digest_for_test(&g));
-        assert_eq!(classify(&g, &s), "PARTIAL_SAFE_BLOCKED_NO_REPLAY");
+        assert_eq!(classify(&g, &s), "INTENT_DURABLE_PREPARED_NO_AUTO_APPLY");
         s.windows_join_receipt_intent_sha256 = Some("e".repeat(64));
         assert_eq!(classify(&g, &s), "UNKNOWN_SAFE_BLOCKED_NO_REPLAY");
     }
