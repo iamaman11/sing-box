@@ -588,6 +588,68 @@ pub fn materialize_credential_delivery_candidate(
     Ok(materialized)
 }
 
+/// Canonical, non-secret cross-owner transaction identity. Jobs and shell
+/// wrappers must not reinterpret runtime log fragments as credential proofs.
+pub fn validate_credential_apply_checkpoint(
+    record: &CredentialApplyCheckpoint,
+) -> Result<(), String> {
+    if record.schema_version != 1 || record.operation_id == 0 {
+        return Err("credential checkpoint requires schema_version=1 and operation_id".to_owned());
+    }
+    validate_lower_hex("credential checkpoint ReleaseSet", &record.release_set_sha256, 64)?;
+    validate_lower_hex("credential checkpoint BEGIN digest", &record.begin_sha256, 64)?;
+    let phase = CredentialApplyPhase::try_from(record.phase)
+        .map_err(|_| "credential checkpoint phase is unknown".to_owned())?;
+    if phase == CredentialApplyPhase::Unspecified {
+        return Err("credential checkpoint phase is required".to_owned());
+    }
+    let a = record.windows_active.as_ref()
+        .ok_or_else(|| "credential checkpoint Windows ACTIVE A missing".to_owned())?;
+    let b = record.windows_candidate.as_ref()
+        .ok_or_else(|| "credential checkpoint Windows candidate B missing".to_owned())?;
+    let vm = record.vm_candidate.as_ref()
+        .ok_or_else(|| "credential checkpoint VM candidate B missing".to_owned())?;
+    if a.generation == 0 || b.generation == 0
+        || vm.generation != b.generation
+        || a.generation == b.generation
+        || a.slot != CredentialDeliverySlot::A as i32
+        || b.slot != CredentialDeliverySlot::B as i32
+        || vm.slot != CredentialDeliverySlot::B as i32
+    {
+        return Err("credential checkpoint A/B slot or generation mismatch".to_owned());
+    }
+    for (label, reference) in [
+        ("Windows ACTIVE A", a),
+        ("Windows candidate B", b),
+        ("VM candidate B", vm),
+    ] {
+        validate_lower_hex(label, &reference.sha256, 64)?;
+    }
+    if a.sha256 == b.sha256 || a.sha256 == vm.sha256 || b.sha256 == vm.sha256 {
+        return Err("credential checkpoint projections must have distinct digests".to_owned());
+    }
+    Ok(())
+}
+
+pub fn encode_credential_apply_checkpoint(
+    record: &CredentialApplyCheckpoint,
+) -> Result<Vec<u8>, String> {
+    validate_credential_apply_checkpoint(record)?;
+    Ok(record.encode_to_vec())
+}
+
+pub fn decode_credential_apply_checkpoint(
+    bytes: &[u8],
+) -> Result<CredentialApplyCheckpoint, String> {
+    let record = CredentialApplyCheckpoint::decode(bytes)
+        .map_err(|err| format!("credential checkpoint protobuf decode failed: {err}"))?;
+    validate_credential_apply_checkpoint(&record)?;
+    if record.encode_to_vec() != bytes {
+        return Err("credential checkpoint protobuf is not canonical".to_owned());
+    }
+    Ok(record)
+}
+
 pub fn encode_local_credential_state(state: &LocalCredentialState) -> Result<Vec<u8>, String> {
     validate_local_credential_state(state)?;
     Ok(state.encode_to_vec())
@@ -2650,6 +2712,53 @@ mod release_set_tests {
         clear_application_bundle_identity(&mut release);
         clear_windows_reuse_identity(&mut release);
         assert!(validate_release_set(&release).is_err());
+    }
+
+    #[test]
+    fn credential_checkpoint_roundtrip_and_unknown_fail_closed() {
+        let reference = |generation, slot, digest: char| LocalCredentialBundleRef {
+            generation,
+            slot,
+            sha256: digest.to_string().repeat(64),
+        };
+        let good = CredentialApplyCheckpoint {
+            schema_version: 1,
+            operation_id: 39004301614,
+            release_set_sha256: "a".repeat(64),
+            phase: CredentialApplyPhase::Prepared as i32,
+            windows_active: Some(reference(10, CredentialDeliverySlot::A as i32, 'b')),
+            windows_candidate: Some(reference(11, CredentialDeliverySlot::B as i32, 'c')),
+            vm_candidate: Some(reference(11, CredentialDeliverySlot::B as i32, 'd')),
+            begin_sha256: "e".repeat(64),
+        };
+        let encoded = encode_credential_apply_checkpoint(&good).unwrap();
+        assert_eq!(decode_credential_apply_checkpoint(&encoded).unwrap(), good);
+        for phase in [
+            CredentialApplyPhase::Preparing,
+            CredentialApplyPhase::Prepared,
+            CredentialApplyPhase::Committed,
+            CredentialApplyPhase::Aborted,
+            CredentialApplyPhase::Unknown,
+        ] {
+            let mut item = good.clone();
+            item.phase = phase as i32;
+            assert!(encode_credential_apply_checkpoint(&item).is_ok());
+        }
+        let mut invalid = good.clone();
+        invalid.phase = 999;
+        assert!(encode_credential_apply_checkpoint(&invalid).is_err());
+        invalid = good.clone();
+        invalid.operation_id = 0;
+        assert!(encode_credential_apply_checkpoint(&invalid).is_err());
+        invalid = good.clone();
+        invalid.vm_candidate.as_mut().unwrap().generation = 12;
+        assert!(encode_credential_apply_checkpoint(&invalid).is_err());
+        invalid = good.clone();
+        invalid.vm_candidate.as_mut().unwrap().sha256 = "c".repeat(64);
+        assert!(encode_credential_apply_checkpoint(&invalid).is_err());
+        let mut noncanonical = encoded.clone();
+        noncanonical.extend_from_slice(&[0x08, 0x01]); // duplicated schema_version
+        assert!(decode_credential_apply_checkpoint(&noncanonical).is_err());
     }
 
     #[test]
