@@ -53,7 +53,7 @@ pub(crate) enum Command {
     PrivilegedInitialCredentialCommit(PrivilegedInitialCredentialCommitArgs),
     // Exact separately authorized recovery of a previously failed paired first-use.
     PrivilegedInitialCredentialRecover(PrivilegedInitialCredentialRecoverArgs),
-    PrivilegedExistingPrepare(PrivilegedExistingJoinArgs),
+    PrivilegedExistingPrepare(PrivilegedExistingPrepareArgs),
     PrivilegedExistingJoin(PrivilegedExistingJoinArgs),
     CredentialTransition(CredentialTransitionArgs),
     RestartVerifyRuntime,
@@ -234,6 +234,20 @@ pub(crate) struct PrivilegedInitialCredentialRecoverArgs {
     pub original_intent_sha256: String,
     pub recovery_intent_sha256: String,
     pub candidate_sha256: String,
+    #[arg(long, default_value = r"C:\sing-box")]
+    pub install_root: String,
+}
+
+/// The original GitHub BEGIN is not a COMMIT. Distinct typed arguments
+/// prevent accidentally passing the commit hash to SYSTEM preparation.
+#[derive(Debug, Args)]
+pub(crate) struct PrivilegedExistingPrepareArgs {
+    pub generation: u64,
+    pub slot: u32,
+    pub begin_sha256: String,
+    pub windows_active_sha256: String,
+    pub windows_candidate_sha256: String,
+    pub vm_candidate_sha256: String,
     #[arg(long, default_value = r"C:\sing-box")]
     pub install_root: String,
 }
