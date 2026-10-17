@@ -382,8 +382,16 @@ def verify_credential_observation_lane(source: str) -> None:
         "begin_sha256: ${{ steps.begin.outputs.begin_sha256 }}" in existing_begin
         and 'echo "begin_sha256=$(sha256sum "$exact" | awk' in existing_begin,
         "BEGIN must only export exact digest after protected GitHub readback")
+    require(
+        "credential-existing-line1-witness" in stage
+        and "line1_external_4_of_4=PASS" in stage
+        and "line1_direct_warp_egress_distinct=true" in stage
+        and "existing_join_windows_b_worker_exact=true" in stage
+        and "existing_join_begin_sha256=" in stage
+        and "reconcile-windows-first-use.ps1" in stage
+        and "line1_accepted:" in stage,
+        "same SYSTEM-owned Windows job must prove B via physical isolated 4/4 and exact owned cleanup")
     for name in (
-        "existing_join_windows_line1_acceptance",
         "existing_join_commit_intent",
         "existing_join_vm_commit",
         "existing_join_windows_commit",
