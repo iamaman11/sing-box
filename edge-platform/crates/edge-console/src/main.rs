@@ -2206,11 +2206,18 @@ fn parse_existing_line1_system_result(
     if details.len() != 1 {
         return Err("SYSTEM cursor result absent or ambiguous".to_owned());
     }
+    // The SYSTEM runtime projection contains bounded SCM, process and log
+    // evidence alongside credential fields. Only the typed credential keys
+    // belong to this witness; unrelated diagnostic fragments may be truncated
+    // or lack '='. Duplicate credential keys are still always rejected.
     let mut observed = std::collections::BTreeMap::new();
     for entry in details[0].split(';') {
-        let (key, value) = entry
-            .split_once('=')
-            .ok_or_else(|| "SYSTEM cursor field malformed".to_owned())?;
+        let Some((key, value)) = entry.split_once('=') else {
+            continue;
+        };
+        if !key.starts_with("credential_") {
+            continue;
+        }
         if observed.insert(key, value).is_some() {
             return Err("SYSTEM cursor field duplicated".to_owned());
         }
@@ -7090,6 +7097,35 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
             parse_existing_line1_system_result(&sample, 203, &candidate).unwrap(),
             begin
         );
+        // Match the native SYSTEM runtime-evidence envelope, not an artificially
+        // credential-only string. Windows OS/process/log metadata is not a
+        // credential contract and must not block a valid authenticated B.
+        let real_envelope = sample.replace(
+            "credential_cursor=VALID;",
+            "controller_service_error=ABSENT;process_classification=ABSENT;external_owner_evidence=BOUNDED_READ_ONLY;OS_LOG_TRUNCATED;credential_cursor=VALID;",
+        ).replace(
+            &format!("credential_existing_join_prepare_begin_sha256={begin}"),
+            &format!("credential_existing_join_prepare_begin_sha256={begin};first_use_runtime=PRESENT;first_use_config=PRESENT;stderr_tail=unstructured;"),
+        );
+        assert_eq!(
+            parse_existing_line1_system_result(&real_envelope, 203, &candidate).unwrap(),
+            begin
+        );
+        // Irrelevant malformed OS fragments are allowed, but duplicate or
+        // malformed required credential evidence must continue to fail closed.
+        assert!(parse_existing_line1_system_result(
+            &real_envelope.replace(
+                "credential_candidate_slot=B;",
+                "credential_candidate_slot=B;credential_candidate_slot=B;",
+            ),
+            203,
+            &candidate,
+        ).is_err());
+        assert!(parse_existing_line1_system_result(
+            &real_envelope.replace("credential_origin=WORKER_OK", "credential_origin=UNPROVEN"),
+            203,
+            &candidate,
+        ).is_err());
         for invalid in [
             sample.replace("WORKER_OK", "UNPROVEN"),
             sample.replace("candidate_slot=B", "candidate_slot=A"),
