@@ -98,6 +98,10 @@ pub(crate) enum HostCommand {
         #[arg(long)]
         deep: bool,
     },
+    /// Select one Git-owned machine and authorize its existing native apply owner.
+    Apply { machine_id: String },
+    /// Select one machine's pre-existing recovery path; never replay mutations.
+    Recover { machine_id: String },
 }
 
 #[derive(Debug, Args, Clone)]
@@ -1430,6 +1434,24 @@ mod tests {
                 ..
             }
         ));
+        for verb in ["apply", "recover"] {
+            let parsed = Cli::try_parse_from([
+                "edge-orchestrator",
+                "host",
+                "--hosts-pb",
+                "hosts.pb",
+                "--hosts-sha256",
+                &"a".repeat(64),
+                verb,
+                "sing-box-windows-lab",
+            ])
+            .unwrap();
+            assert!(matches!(parsed.command, Command::Host { .. }));
+        }
+        assert!(Cli::try_parse_from([
+            "edge-orchestrator", "host", "--hosts-pb", "hosts.pb",
+            "--hosts-sha256", &"a".repeat(64), "apply"
+        ]).is_err());
         assert!(Cli::try_parse_from(["edge-orchestrator", "fleet", "status"]).is_err());
         assert!(Cli::try_parse_from(["edge-orchestrator", "host", "fast"]).is_err());
     }
