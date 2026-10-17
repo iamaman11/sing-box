@@ -32,6 +32,9 @@ pub(crate) enum Command {
     CredentialInitialAcceptanceBootstrap(IsolatedAcceptanceRootArgs),
     CredentialInitialAcceptanceStage(InitialLine1WitnessArgs),
     CredentialInitialLine1Witness(AttestedLine1WitnessArgs),
+    // Existing ACTIVE A -> candidate B: same disposable Line1 verifier, with
+    // exact serving SYSTEM/isolated Worker projection parity.
+    CredentialExistingLine1Witness(ExistingLine1WitnessArgs),
     SmokeRuntime,
     Stage2Preflight,
     ProvisionRuntimeState(InstallRootArgs),
@@ -98,6 +101,7 @@ impl Command {
             }
             Self::CredentialInitialAcceptanceStage(_) => "credential-initial-acceptance-stage",
             Self::CredentialInitialLine1Witness(_) => "credential-initial-line1-witness",
+            Self::CredentialExistingLine1Witness(_) => "credential-existing-line1-witness",
             Self::SmokeRuntime => "smoke-runtime",
             Self::Stage2Preflight => "stage2-preflight",
             Self::ProvisionRuntimeState(_) => "provision-runtime-state",
@@ -201,6 +205,20 @@ pub(crate) struct AttestedLine1WitnessArgs {
     pub target_ipv4: std::net::Ipv4Addr,
     #[arg(long)]
     pub target_domain: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct ExistingLine1WitnessArgs {
+    pub generation: u64,
+    /// Exact Windows B candidate digest observed by protected SYSTEM owner.
+    pub windows_candidate_sha256: String,
+    /// Independent Git-owned VM endpoint location, never operator default.
+    #[arg(long)]
+    pub target_ipv4: std::net::Ipv4Addr,
+    #[arg(long)]
+    pub target_domain: String,
+    #[arg(long, default_value = r"C:\sing-box-acceptance")]
+    pub install_root: String,
 }
 
 #[derive(Debug, Args)]
