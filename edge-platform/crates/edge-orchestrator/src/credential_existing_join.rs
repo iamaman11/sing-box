@@ -235,6 +235,41 @@ fn records(history: &str) -> Result<Vec<String>, String> {
     Ok(found)
 }
 
+/// Rust-owned, read-only journal classification. Does not infer missing host
+/// receipts from a comment: even a complete COMMIT is NOT runtime acceptance.
+pub(crate) fn inspect_journal(
+    history: &str,
+    revision: &str,
+    release: &str,
+) -> Result<&'static str, String> {
+    let begins = begin_records(history)?;
+    let commits = records(history)?;
+    if begins.is_empty() && commits.is_empty() {
+        return Ok("NO_BEGIN_NO_MUTATION_AUTHORITY");
+    }
+    if begins.len() != 1 || commits.len() > 1 {
+        return Err("existing join journal duplicate/orphan or unsupported; UNKNOWN".to_owned());
+    }
+    let original = begins[0].strip_prefix(&format!("{BEGIN_MARKER}\n"))
+        .ok_or_else(|| "existing join original BEGIN displaced".to_owned())?;
+    let begin: ExistingJoinBegin = serde_json::from_str(original)
+        .map_err(|_| "existing join original BEGIN malformed".to_owned())?;
+    validate_begin(&begin, revision, release)?;
+    if serde_json::to_string(&begin).ok().as_deref() != Some(original) {
+        return Err("existing join original BEGIN is noncanonical".to_owned());
+    }
+    if commits.is_empty() {
+        readback_begin(&begin, history, &begins[0], revision, release)?;
+        return Ok("BEGIN_DURABLE_NO_AUTOMATIC_REPLAY");
+    }
+    let body = commits[0].strip_prefix(&format!("{MARKER}\n"))
+        .ok_or_else(|| "existing join COMMIT marker displaced".to_owned())?;
+    let commit: ExistingJoinIntent = serde_json::from_str(body)
+        .map_err(|_| "existing join COMMIT malformed".to_owned())?;
+    readback(&commit, history, &commits[0], revision, release)?;
+    Ok("COMMIT_DURABLE_OWNER_RECEIPTS_UNPROVEN")
+}
+
 pub(crate) fn plan(
     spec: &ExistingJoinIntent,
     history: &str,
@@ -400,6 +435,15 @@ pub(crate) fn dispatch(
 ) -> Result<(), String> {
     use crate::cli::CredentialDeliveryCommand;
     match command {
+        CredentialDeliveryCommand::ExistingJoinJournalInspect { journal_history_path } => {
+            let history = fs::read_to_string(journal_history_path)
+                .map_err(|_| "existing join GitHub history unavailable")?;
+            let status = inspect_journal(&history, revision, release)?;
+            println!("existing_join_journal_state={status}");
+            println!("credential_mutation_allowed=false");
+            println!("credential_mutation_replayed=false");
+            Ok(())
+        }
         CredentialDeliveryCommand::ExistingJoinBeginPlan {
             spec_path,
             journal_history_path,
@@ -865,6 +909,27 @@ mod tests {
         assert_eq!(classify(&g, &s), "PARTIAL_SAFE_BLOCKED_NO_REPLAY");
         s.windows_join_receipt_intent_sha256 = Some("e".repeat(64));
         assert_eq!(classify(&g, &s), "UNKNOWN_SAFE_BLOCKED_NO_REPLAY");
+    }
+
+    #[test]
+    fn rust_inspection_distinguishes_absent_begin_and_exact_commit_without_granting_apply() {
+        let g = good();
+        assert_eq!(
+            inspect_journal("[]", &g.accepted_revision, &g.release_set_sha256).unwrap(),
+            "NO_BEGIN_NO_MUTATION_AUTHORITY"
+        );
+        let begin = history_begin(&g);
+        assert_eq!(
+            inspect_journal(&begin, &g.accepted_revision, &g.release_set_sha256).unwrap(),
+            "BEGIN_DURABLE_NO_AUTOMATIC_REPLAY"
+        );
+        let record = plan(&g, &begin, &g.accepted_revision, &g.release_set_sha256).unwrap();
+        assert_eq!(
+            inspect_journal(&history_commit(&g, &record), &g.accepted_revision, &g.release_set_sha256).unwrap(),
+            "COMMIT_DURABLE_OWNER_RECEIPTS_UNPROVEN"
+        );
+        let orphan = serde_json::json!([{"body":record}]).to_string();
+        assert!(inspect_journal(&orphan, &g.accepted_revision, &g.release_set_sha256).is_err());
     }
     #[test]
     fn incomplete_or_unproven_snapshot_is_blocked() {

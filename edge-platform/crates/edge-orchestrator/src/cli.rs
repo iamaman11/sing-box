@@ -222,6 +222,9 @@ pub(crate) enum CredentialDeliveryCommand {
         exact_record_path: std::path::PathBuf,
     },
     // Existing native status/recover policy, read-only regardless of result.
+    ExistingJoinJournalInspect {
+        journal_history_path: std::path::PathBuf,
+    },
     ExistingJoinReconcile {
         spec_path: std::path::PathBuf,
         journal_history_path: std::path::PathBuf,
