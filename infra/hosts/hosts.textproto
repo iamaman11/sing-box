@@ -3,15 +3,18 @@ hosts {
   machine_id: "application-acceptance-1"
   kind: FLEET_HOST_KIND_VM
   vm_machine_id: "application-acceptance-1"
+  desired_spec_path: "infra/application/disposable-acceptance.json"
 }
 hosts {
   machine_id: "production-1"
   kind: FLEET_HOST_KIND_VM
   vm_machine_id: "production-1"
+  desired_spec_path: "infra/production/production.textproto"
 }
 hosts {
   machine_id: "sing-box-windows-lab"
   kind: FLEET_HOST_KIND_WINDOWS
   windows_runner_name: "DESKTOP-0E1F6UQ"
   windows_runner_label: "sing-box-windows-lab"
+  desired_spec_path: "infra/production/production.textproto"
 }
