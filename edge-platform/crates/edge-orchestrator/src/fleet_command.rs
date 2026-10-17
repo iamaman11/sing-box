@@ -87,6 +87,21 @@ pub(crate) fn run(
                 }
             );
             println!("fleet_owner_selector={owner}");
+            // GitHub runner selectors are derived only from the validated
+            // exact Git inventory. They never grant privilege by themselves:
+            // the selected host must still attest its installed native owner.
+            let labels: Vec<&str> = match kind {
+                FleetHostKind::Windows => vec!["self-hosted", "Windows", "X64", owner],
+                FleetHostKind::Vm => {
+                    vec!["self-hosted", "Linux", "X64", "sing-box-production-vm", owner]
+                }
+                FleetHostKind::Unspecified => {
+                    return Err("fleet host kind unspecified".to_owned());
+                }
+            };
+            let label_json = serde_json::to_string(&labels)
+                .map_err(|_| "fleet runner selection encoding failed".to_owned())?;
+            println!("fleet_runner_labels_json={label_json}");
             println!("fleet_inventory_sha256={inventory_sha}");
             println!(
                 "release_set_sha256={}",

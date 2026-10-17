@@ -71,7 +71,13 @@ jobs:
       github.actor_id == '44100369' &&
       github.run_attempt == 1 &&
       (github.event.comment.body == '/fleet inventory' ||
-       startsWith(github.event.comment.body, '/fleet inspect '))
+       startsWith(github.event.comment.body, '/fleet inspect ') ||
+       startsWith(github.event.comment.body, '/fleet doctor '))
+    outputs:
+      kind: ${{ steps.observe.outputs.kind }}
+      owner: ${{ steps.observe.outputs.owner }}
+      runner_labels: ${{ steps.observe.outputs.runner_labels }}
+      machine_id: ${{ steps.observe.outputs.machine_id }}
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     permissions:
@@ -131,14 +137,20 @@ jobs:
           echo "FLEET_INVENTORY_SHA256=$(sha256sum "${RUNNER_TEMP}/fleet.binpb" | cut -d' ' -f1)" >> "${GITHUB_ENV}"
 
       - name: Execute bounded read-only Fleet operation
+        id: observe
         shell: bash
         run: |
           set -euo pipefail
           command=( )
           if [[ "${COMMAND_BODY}" == "/fleet inventory" ]]; then
             command=(inventory)
-          elif [[ "${COMMAND_BODY}" == "/fleet inspect "* ]]; then
-            machine="${COMMAND_BODY#/fleet inspect }"
+          elif [[ "${COMMAND_BODY}" == "/fleet inspect "* ||
+                  "${COMMAND_BODY}" == "/fleet doctor "* ]]; then
+            if [[ "${COMMAND_BODY}" == "/fleet doctor "* ]]; then
+              machine="${COMMAND_BODY#/fleet doctor }"
+            else
+              machine="${COMMAND_BODY#/fleet inspect }"
+            fi
             [[ "${machine}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]] ||
               { echo 'Invalid Fleet machine selector' >&2; exit 1; }
             command=(inspect "${machine}")
@@ -151,12 +163,81 @@ jobs:
             --inventory-sha256 "${FLEET_INVENTORY_SHA256}" \
             "${command[@]}" | tee "${RUNNER_TEMP}/fleet-observation.txt"
           grep -Fxq 'fleet_mutations=0' "${RUNNER_TEMP}/fleet-observation.txt"
+          if [[ "${#command[@]}" == 2 ]]; then
+            report="${RUNNER_TEMP}/fleet-observation.txt"
+            for entry in               'fleet_machine_id:machine_id'               'fleet_host_kind:kind'               'fleet_owner_selector:owner'               'fleet_runner_labels_json:runner_labels'; do
+              key="${entry%%:*}"
+              output="${entry#*:}"
+              test "$(grep -c "^${key}=" "${report}")" = 1
+              value="$(sed -n "s/^${key}=//p" "${report}")"
+              test -n "${value}"
+              echo "${output}=${value}" >> "${GITHUB_OUTPUT}"
+            done
+          fi
           {
             echo '### Fleet — native read-only observation'
             echo '~~~text'
             cat "${RUNNER_TEMP}/fleet-observation.txt"
             echo '~~~'
           } >> "${GITHUB_STEP_SUMMARY}"
+
+  fleet_doctor:
+    # Real physical diagnostics are executed on the Git-selected machine,
+    # via the existing native diagnostic/agent owner. No new service, remote
+    # shell, credential publish, SCM start, network rewrite, or host mutation.
+    needs: fleet
+    if: >-
+      needs.fleet.result == 'success' &&
+      startsWith(github.event.comment.body, '/fleet doctor ') &&
+      (needs.fleet.outputs.kind == 'WINDOWS' ||
+       needs.fleet.outputs.kind == 'VM')
+    runs-on: ${{ fromJSON(needs.fleet.outputs.runner_labels) }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      TARGET_MACHINE: ${{ needs.fleet.outputs.machine_id }}
+      TARGET_OWNER: ${{ needs.fleet.outputs.owner }}
+      TARGET_KIND: ${{ needs.fleet.outputs.kind }}
+    steps:
+      - name: Verify installed Windows native owner and diagnose without mutation
+        if: env.TARGET_KIND == 'WINDOWS'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_NAME -cne $env:TARGET_OWNER) {
+            throw 'FLEET_WINDOWS_OWNER_MISMATCH'
+          }
+          $root = 'C:\sing-box'
+          $doctor = Join-Path $root 'bin\edge-diagnostic.exe'
+          $current = Join-Path $root 'current.pb'
+          if (-not (Test-Path -LiteralPath $doctor -PathType Leaf) -or
+              -not (Test-Path -LiteralPath $current -PathType Leaf)) {
+            throw 'FLEET_WINDOWS_NATIVE_OWNER_MISSING'
+          }
+          & $doctor doctor $current
+          if ($LASTEXITCODE -ne 0) { throw 'FLEET_WINDOWS_NATIVE_DIAGNOSE_FAILED' }
+
+      - name: Verify installed VM native owner and diagnose without mutation
+        if: env.TARGET_KIND == 'VM'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${RUNNER_NAME}" = "sing-box-production-${TARGET_OWNER}"
+          owner="/usr/local/libexec/sing-box/edge-agent"
+          test -x "${owner}"
+          test ! -L "${owner}"
+          for path in /usr /usr/local /usr/local/libexec /usr/local/libexec/sing-box "${owner}"; do
+            test ! -L "${path}"
+            test "$(stat -c '%u:%g:%a' "${path}")" = "0:0:755"
+          done
+          test "$(id -u)" != 0
+          if sudo -n id -u >/dev/null 2>&1; then
+            echo 'FLEET_VM_GENERIC_ROOT_AUTHORITY_FORBIDDEN' >&2
+            exit 1
+          fi
+          test ! -r /var/run/docker.sock
+          sudo -n "${owner}" local diagnose
 
   windows:
     if: >-
