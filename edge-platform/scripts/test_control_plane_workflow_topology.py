@@ -2762,8 +2762,10 @@ def main() -> None:
         "issues: read" not in vultr
         and vultr.count("issues: write") == 3
         and "issues: read" not in credentials.split("  execute:\n", 1)[1].split("\n  rotate_release:", 1)[0]
-        and credentials.count("issues: write") == 3
+        and credentials.count("issues: write") == 4
         and "issues: write" in credentials.split("  existing_join_begin:\n", 1)[1].split("\n  existing_join_recover_readonly:", 1)[0]
+        and "issues: write" in credentials.split("  existing_join_commit_intent:\n", 1)[1].split("\n  existing_join_vm_commit:", 1)[0]
+        and "issues: write" not in credentials.split("  existing_join_vm_commit:\n", 1)[1].split("\n  existing_join_recover_readonly:", 1)[0]
         and "issues: write" not in credentials.split("  existing_join_recover_readonly:\n", 1)[1]
         and "issues: write" in credentials.split("  initial_pair_intent:\n", 1)[1].split("\n  initial_pair_vm_commit:", 1)[0]
         and "issues: write" in credentials.split("  initial_pair_recovery_intent:\n", 1)[1].split("\n  initial_pair_recovery_apply_windows:", 1)[0]
