@@ -549,6 +549,20 @@ def verify_existing_join_endpoint_and_access(source: str) -> None:
         and issuer.index('actions/runners?per_page=100') < issuer.index('initial-windows-acceptance-issue'),
         "P0: physical Windows runner must use run-scoped proof identity, never permanent host identity",
     )
+    # The immutable ReleaseSet resolver shells out to gh and requires
+    # a GitHub token even when the Cloudflare/escrow operation has its own
+    # narrowly scoped control-plane secret.
+    for job, step in (
+        (issuer, "Assert original protected run, exact release and empty acceptance escrow"),
+        (cleanup, "Revoke this exact GitHub run Access principal, restore host-only policy"),
+    ):
+        scope = job.split("      - name: " + step + "\n", 1)
+        require(len(scope) == 2, "missing exact protected release step")
+        scope = scope[1].split("      - name:", 1)[0]
+        require("GH_TOKEN: ${{ github.token }}" in scope
+                and "bash edge-platform/scripts/resolve_durable_release.sh" in scope,
+                "native existing-join ReleaseSet resolver requires scoped GitHub read token")
+
     status_windows = jobs.get("existing_join_status_windows", "")
     win_commit = jobs["existing_join_windows_commit"]
     vm_status = jobs["existing_join_status_vm"]
@@ -604,6 +618,28 @@ def test_existing_join_endpoint_and_access(source: str) -> None:
         source.replace('initial-windows-acceptance-cleanup "$GITHUB_RUN_ID"',
                        'initial-windows-acceptance-cleanup "0"', 1),
     )
+    # Both stages must retain their GitHub read-token contract.
+    for job_name, step_name in (
+        ("existing_join_windows_access_issue", "Assert original protected run, exact release and empty acceptance escrow"),
+        ("existing_join_windows_access_cleanup", "Revoke this exact GitHub run Access principal, restore host-only policy"),
+    ):
+        match = re.search(
+            r"(?ms)^  " + re.escape(job_name) + r":\n.*?(?=^  [a-z][a-z0-9_]*:\n|\Z)",
+            source,
+        )
+        require(match is not None, "missing GitHub-token negative job fixture")
+        job_text = match.group(0)
+        step = job_text.split("      - name: " + step_name + "\n", 1)
+        require(len(step) == 2, "missing GitHub-token negative step fixture")
+        marker = "          GH_TOKEN: ${{ github.token }}\n"
+        require(marker in step[1], "missing scoped token negative fixture")
+        altered_job = job_text.replace(marker, "", 1)
+        altered = source[:match.start()] + altered_job + source[match.end():]
+        try:
+            verify_existing_join_endpoint_and_access(altered)
+        except SystemExit:
+            continue
+        raise SystemExit("missing scoped GitHub release token escaped regression check")
     for altered in broken:
         require(altered != source, "P0 negative fixture failed to modify workflow")
         try:
