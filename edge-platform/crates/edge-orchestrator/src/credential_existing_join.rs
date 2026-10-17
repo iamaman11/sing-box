@@ -377,8 +377,7 @@ pub(crate) fn reconcile(
     // state even when the original Line1/Line2 network witnesses have expired.
     // Such observations NEVER authorize another mutation or acceptance.
     let network_verified =
-        snapshot.line1_authenticated_endpoints == 4
-            && snapshot.line2_authenticated_endpoints == 6;
+        snapshot.line1_authenticated_endpoints == 4 && snapshot.line2_authenticated_endpoints == 6;
     let a = &spec.windows_active;
     let b = &spec.windows_candidate;
     let vm = &spec.vm_candidate;
@@ -860,10 +859,7 @@ mod tests {
         );
         let mut s = snapshot(&g);
         s.windows_prepare_begin_sha256 = Some(beginning_digest_for_test(&g));
-        assert_eq!(
-            classify(&g, &s),
-            "INTENT_DURABLE_PREPARED_NO_AUTO_APPLY"
-        );
+        assert_eq!(classify(&g, &s), "INTENT_DURABLE_PREPARED_NO_AUTO_APPLY");
     }
 
     #[test]
