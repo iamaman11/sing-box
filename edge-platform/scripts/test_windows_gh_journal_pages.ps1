@@ -35,18 +35,18 @@ try {
     # with the already fetched response or a negative fixture, avoiding re-fetch.
     function gh {
         param([Parameter(ValueFromRemainingArguments)][string[]]$Arguments)
-        $global:LASTEXITCODE = $script:FixtureExit
+        $global:LASTEXITCODE = $global:FixtureExit
         if (($Arguments -join ' ') -ceq "api --paginate --slurp $url") {
-            return $script:FixtureRaw
+            return $global:FixtureRaw
         }
         if (($Arguments -join ' ') -ceq "api $metadataUrl") {
-            return $script:FixtureMetadata
+            return $global:FixtureMetadata
         }
         throw 'Unexpected gh operation in production read-only reader'
     }
-    $script:FixtureExit = 0
-    $script:FixtureRaw = '[[{"id":1,"body":"first"}],[{"id":2,"body":"second"}]]'
-    $script:FixtureMetadata = '{"comments":2}'
+    $global:FixtureExit = 0
+    $global:FixtureRaw = '[[{"id":1,"body":"first"}],[{"id":2,"body":"second"}]]'
+    $global:FixtureMetadata = '{"comments":2}'
     foreach ($name in $names) {
         $entries = @(& $name)
         if ($entries.Count -ne 2 -or $entries[0].id -ne 1 -or $entries[1].id -ne 2) {
@@ -63,7 +63,7 @@ try {
     )
     $rejected = 0
     foreach ($fixture in $negative) {
-        $script:FixtureRaw = $fixture
+        $global:FixtureRaw = $fixture
         foreach ($name in $names) {
             $failed = $false
             try { $null = @(& $name) } catch { $failed = $true }
@@ -71,9 +71,9 @@ try {
             $rejected++
         }
     }
-    $script:FixtureRaw = '[[{"id":1,"body":"first"}],[{"id":2,"body":"second"}]]'
+    $global:FixtureRaw = '[[{"id":1,"body":"first"}],[{"id":2,"body":"second"}]]'
     foreach ($badMetadata in @('', 'not-json', '{}', '{"comments":3}')) {
-        $script:FixtureMetadata = $badMetadata
+        $global:FixtureMetadata = $badMetadata
         foreach ($name in $names) {
             $failed = $false
             try { $null = @(& $name) } catch { $failed = $true }
@@ -81,8 +81,8 @@ try {
             $rejected++
         }
     }
-    $script:FixtureMetadata = '{"comments":2}'
-    $script:FixtureExit = 1
+    $global:FixtureMetadata = '{"comments":2}'
+    $global:FixtureExit = 1
     foreach ($name in $names) {
         $failed = $false
         try { $null = @(& $name) } catch { $failed = $true }
@@ -91,9 +91,9 @@ try {
     }
     "journal_negative_cases_rejected=$rejected"
     if ($Live) {
-        $script:FixtureExit = 0
-        $script:FixtureRaw = $liveRaw
-        $script:FixtureMetadata = $liveMetadata
+        $global:FixtureExit = 0
+        $global:FixtureRaw = $liveRaw
+        $global:FixtureMetadata = $liveMetadata
         $pages = ConvertFrom-Json -InputObject $liveRaw -NoEnumerate
         $metadata = ConvertFrom-Json -InputObject $liveMetadata
         $first = @(Read-DurableJournal)
