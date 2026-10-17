@@ -856,13 +856,15 @@ mod tests {
             panic!("expected exact provider lifecycle command");
         };
         assert_eq!(command.into_legacy_args(), expected);
-        assert!(Cli::try_parse_from([
-            "edge-orchestrator",
-            "vultr-lifecycle",
-            "endpoint-observe",
-            "infra/vultr/application-acceptance.json",
-        ])
-        .is_err());
+        assert!(
+            Cli::try_parse_from([
+                "edge-orchestrator",
+                "vultr-lifecycle",
+                "endpoint-observe",
+                "infra/vultr/application-acceptance.json",
+            ])
+            .is_err()
+        );
     }
 
     #[test]
