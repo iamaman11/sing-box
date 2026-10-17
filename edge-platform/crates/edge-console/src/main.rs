@@ -2180,6 +2180,17 @@ fn existing_line1_serving_candidate(
     }
     let text = String::from_utf8(child.stdout)
         .map_err(|_| "SYSTEM evidence encoding invalid".to_owned())?;
+    parse_existing_line1_system_result(&text, generation, expected_b)
+}
+
+/// Pure, fail-closed decoding of the bounded SYSTEM projection. No secret,
+/// local file or operator-declared witness can authorize a mutation.
+#[cfg(any(windows, test))]
+fn parse_existing_line1_system_result(
+    text: &str,
+    generation: u64,
+    expected_b: &str,
+) -> Result<String, String> {
     if text.lines().filter(|line| *line == "status=PASS").count() != 1 {
         return Err("SYSTEM evidence success marker missing or duplicate".to_owned());
     }
@@ -7059,6 +7070,35 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
             active_release_set_sha256: None,
         };
         assert!(encode_windows_privileged_result(&result).is_ok());
+    }
+
+    #[test]
+    fn existing_line1_system_projection_requires_exact_worker_b_and_begin_receipt() {
+        let begin = "a".repeat(64);
+        let candidate = "b".repeat(64);
+        let sample = format!(
+            "status=PASS\\ndetail=runtime_evidence=BOUNDED_READ_ONLY;credential_cursor=VALID;credential_origin=WORKER_OK;credential_active_present=true;credential_active_slot=A;credential_candidate_present=true;credential_candidate_slot=B;credential_candidate_sha256={candidate};credential_candidate_generation=203;credential_previous_present=false;credential_existing_join_prepare_receipt_present=true;credential_existing_join_receipt_present=false;credential_existing_join_prepare_begin_sha256={begin}\\n"
+        );
+        assert_eq!(
+            parse_existing_line1_system_result(&sample, 203, &candidate).unwrap(),
+            begin
+        );
+        for invalid in [
+            sample.replace("WORKER_OK", "UNPROVEN"),
+            sample.replace("candidate_slot=B", "candidate_slot=A"),
+            sample.replace("prepare_receipt_present=true", "prepare_receipt_present=false"),
+            sample.replace("generation=203", "generation=204"),
+            sample.replace("previous_present=false", "previous_present=true"),
+            sample.replace(&format!("candidate_sha256={candidate}"), "candidate_sha256=ABSENT"),
+            sample.replace(&format!("begin_sha256={begin}"), "begin_sha256=ABSENT"),
+            sample.replace("status=PASS", "status=PASS\\nstatus=PASS"),
+            format!("{sample}credential_candidate_slot=B;"),
+        ] {
+            assert!(
+                parse_existing_line1_system_result(&invalid, 203, &candidate).is_err(),
+                "malformed or mismatched SYSTEM evidence must block Line1"
+            );
+        }
     }
 
     #[test]
