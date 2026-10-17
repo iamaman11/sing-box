@@ -40,6 +40,10 @@ pub(crate) enum Command {
         command: CredentialDeliveryCommand,
     },
     Fleet {
+        /// Bounded canonical protobuf inventory, rendered from exact Git textproto.
+        /// Loaded at runtime so adding machines never rebuilds Rust binaries.
+        #[arg(long)]
+        inventory_pb: PathBuf,
         #[command(subcommand)]
         command: FleetCommand,
     },
@@ -1391,19 +1395,36 @@ mod tests {
 
     #[test]
     fn fleet_clap_routes_exact_inventory_and_inspect_without_shell() {
-        let parsed = Cli::try_parse_from(["edge-orchestrator", "fleet", "inventory"]).unwrap();
+        let parsed = Cli::try_parse_from([
+            "edge-orchestrator",
+            "fleet",
+            "--inventory-pb",
+            "fleet.pb",
+            "inventory",
+        ])
+        .unwrap();
         assert!(matches!(
             parsed.command,
             Command::Fleet {
-                command: FleetCommand::Inventory
+                command: FleetCommand::Inventory,
+                ..
             }
         ));
         let parsed =
-            Cli::try_parse_from(["edge-orchestrator", "fleet", "inspect", "production-1"]).unwrap();
+            Cli::try_parse_from([
+                "edge-orchestrator",
+                "fleet",
+                "--inventory-pb",
+                "fleet.pb",
+                "inspect",
+                "production-1",
+            ])
+            .unwrap();
         assert!(matches!(
             parsed.command,
             Command::Fleet {
-                command: FleetCommand::Inspect { .. }
+                command: FleetCommand::Inspect { .. },
+                ..
             }
         ));
         assert!(Cli::try_parse_from(["edge-orchestrator", "fleet", "apply"]).is_err());

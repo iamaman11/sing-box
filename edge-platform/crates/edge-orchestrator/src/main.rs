@@ -174,7 +174,10 @@ async fn run(
         Command::Credentials { command } => {
             cloudflare_credential_plane_command::run_delivery(command, release_context).await
         }
-        Command::Fleet { command } => fleet_command::run(command, release_context),
+        Command::Fleet {
+            command,
+            inventory_pb,
+        } => fleet_command::run(command, release_context, &inventory_pb),
         Command::Production { command } => match command {
             cli::ProductionCommand::Validate => production_command::validate(release_context),
             cli::ProductionCommand::Diagnose => cloudflare_production_inventory::run().await,
