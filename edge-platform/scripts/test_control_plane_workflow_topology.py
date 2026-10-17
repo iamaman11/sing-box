@@ -612,13 +612,13 @@ def test_git_windows_host_fleet_contract(credentials: str) -> None:
     )
 
     def parse_hosts(text: str) -> list[dict] | None:
-        header = 'schema: "sing-box.windows-hosts/v1"\\n'
+        header = 'schema: "sing-box.windows-hosts/v1"\n'
         if not text.startswith(header):
             return None
         body = text[len(header):]
         pattern = re.compile(
-            r'hosts\\s*\\{\\s*id:\\s*"([a-z][a-z0-9-]{0,39})"\\s*'
-            r'runner_name:\\s*"([A-Za-z0-9._-]{1,128})"\\s*\\}\\s*'
+            r'hosts\s*\{\s*id:\s*"([a-z][a-z0-9-]{0,39})"\s*'
+            r'runner_name:\s*"([A-Za-z0-9._-]{1,128})"\s*\}\s*'
         )
         records = list(pattern.finditer(body))
         if pattern.sub("", body).strip():
@@ -628,12 +628,13 @@ def test_git_windows_host_fleet_contract(credentials: str) -> None:
     hosts = parse_hosts(contents)
     require(hosts is not None, "Windows hosts textproto malformed or unknown field detected")
     for bad in (
-        'schema: "wrong"\\n',
-        contents + 'hostz { id: "x" }\\n',
-        contents + 'hosts { id: "a" runner_name: "x" stray: 1 }\\n',
-        contents + 'hosts { id: "Bad" runner_name: "x" }\\n',
+        'schema: "wrong"\n',
+        contents + 'hostz { id: "x" }\n',
+        contents + 'hosts { id: "a" runner_name: "x" stray: 1 }\n',
+        contents + 'hosts { id: "Bad" runner_name: "x" }\n',
     ):
         require(parse_hosts(bad) is None, "invalid/unknown Windows host protobuf field permitted")
+
     def validate_hosts(hosts: list) -> bool:
         ids, names = set(), set()
         for host in hosts:
