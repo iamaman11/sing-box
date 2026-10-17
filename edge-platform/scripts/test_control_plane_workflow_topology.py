@@ -623,14 +623,18 @@ def test_existing_join_endpoint_and_access(source: str) -> None:
         ("existing_join_windows_access_issue", "Assert original protected run, exact release and empty acceptance escrow"),
         ("existing_join_windows_access_cleanup", "Revoke this exact GitHub run Access principal, restore host-only policy"),
     ):
-        prefix, suffix = source.split("  " + job_name + ":\n", 1)
-        job_text = suffix.split("\n  ", 1)[0]
+        match = re.search(
+            r"(?ms)^  " + re.escape(job_name) + r":\n.*?(?=^  [a-z][a-z0-9_]*:\n|\Z)",
+            source,
+        )
+        require(match is not None, "missing GitHub-token negative job fixture")
+        job_text = match.group(0)
         step = job_text.split("      - name: " + step_name + "\n", 1)
-        require(len(step) == 2, "missing GitHub-token negative fixture")
+        require(len(step) == 2, "missing GitHub-token negative step fixture")
         marker = "          GH_TOKEN: ${{ github.token }}\n"
         require(marker in step[1], "missing scoped token negative fixture")
         altered_job = job_text.replace(marker, "", 1)
-        altered = source.replace(job_text, altered_job, 1)
+        altered = source[:match.start()] + altered_job + source[match.end():]
         try:
             verify_existing_join_endpoint_and_access(altered)
         except SystemExit:
