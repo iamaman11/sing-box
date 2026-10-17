@@ -147,9 +147,10 @@ fn run_fast(state_path: &Path) -> Result<(), String> {
     let state = decode_windows_activation_state(&bytes)
         .map_err(|_| "FLEET_FAST_ACTIVATION_INVALID".to_owned())?;
     if state.release_set_sha256.len() != 64
-        || !state.release_set_sha256.bytes().all(|byte| {
-            byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
-        })
+        || !state
+            .release_set_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     {
         return Err("FLEET_FAST_RELEASE_ID_INVALID".to_owned());
     }
@@ -157,9 +158,8 @@ fn run_fast(state_path: &Path) -> Result<(), String> {
     // controller RPC, process discovery, shell, scheduled task or privilege change.
     #[cfg(windows)]
     let scm = (|| -> Result<String, String> {
-        let manager =
-            ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
-                .map_err(|_| "SCM_UNAVAILABLE".to_owned())?;
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+            .map_err(|_| "SCM_UNAVAILABLE".to_owned())?;
         let service = manager
             .open_service(WINDOWS_CONTROLLER_SERVICE_NAME, ServiceAccess::QUERY_STATUS)
             .map_err(|_| "SCM_UNAVAILABLE".to_owned())?;
