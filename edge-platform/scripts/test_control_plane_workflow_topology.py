@@ -2980,7 +2980,9 @@ def main() -> None:
     )
     require(
         "startsWith(github.event.comment.body, '/production ')" in router
-        and router.count("uses: ./.github/workflows/vm-application-lifecycle.yml") == 2,
+        and router.count("uses: ./.github/workflows/vm-application-lifecycle.yml") == 3
+        and "needs.host.outputs.machine_id == 'production-1'" in router
+        and "needs.host.outputs.operation == 'APPLY'" in router,
         "router must expose production only through the existing owner-gated application lifecycle backend",
     )
     require(
