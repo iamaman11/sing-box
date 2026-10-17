@@ -440,6 +440,8 @@ dependencies = [
 name = "edge-diagnostic"
 version = "0.1.0"
 dependencies = [
+ "edge-controller-core",
+ "edge-secrets",
  "edge-shared-types",
  "prost",
  "ring",
