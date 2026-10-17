@@ -56,15 +56,19 @@ fn main() {
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let command = args.next().ok_or_else(usage)?;
-    if command != "doctor" && command != "fast" {
+    if command != "doctor" {
         return Err(usage());
     }
     let state_path = PathBuf::from(args.next().ok_or_else(usage)?);
+    let fast = match args.next().as_deref() {
+        None => false,
+        Some("--fast") => true,
+        _ => return Err(usage()),
+    };
     if args.next().is_some() {
         return Err(usage());
     }
-
-    if command == "fast" {
+    if fast {
         return run_fast(&state_path);
     }
 
@@ -1056,7 +1060,7 @@ fn observe_udp6_listeners(projects: &BTreeMap<u32, String>) -> Result<usize, Str
 }
 
 fn usage() -> String {
-    "usage: edge-diagnostic <fast|doctor> <current.pb>".to_owned()
+    "usage: edge-diagnostic doctor <current.pb> [--fast]".to_owned()
 }
 
 #[cfg(test)]

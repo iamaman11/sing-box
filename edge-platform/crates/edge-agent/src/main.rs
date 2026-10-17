@@ -191,8 +191,10 @@ fn run_local_fast(stack_dir: &Path) -> Result<(), String> {
 async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
     let stack_dir = PathBuf::from(DEFAULT_STACK_DIR);
     match command {
-        cli::LocalCommand::Fast => run_local_fast(&stack_dir).map_err(AgentError::Command),
-        cli::LocalCommand::Status => {
+        cli::LocalCommand::Status { fast } => {
+            if fast {
+                return run_local_fast(&stack_dir).map_err(AgentError::Command);
+            }
             let state = inspect_runtime(&stack_dir, AgentMode::Runtime).await;
             print_agent_state_evidence("STATUS", &state);
             Ok(())
