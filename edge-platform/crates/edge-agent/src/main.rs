@@ -164,6 +164,19 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
                 ))
             }
         }
+        cli::LocalCommand::CredentialPublicEndpoint => {
+            // This locator is read from the same kernel namespace as the
+            // root-owned runtime, not from an operator or cloud API token.
+            let observation = network_observation::observe_ipv4_network()
+                .await
+                .map_err(AgentError::Command)?;
+            let ip = network_observation::unique_public_serving_ipv4(&observation)
+                .map_err(AgentError::Command)?;
+            println!("credential_vm_public_endpoint={ip}");
+            println!("credential_endpoint_origin=VM_KERNEL_READ_ONLY");
+            println!("credential_mutations=0");
+            Ok(())
+        }
         cli::LocalCommand::QualityLine2 => {
             line2_quality::measure(&stack_dir, read_typed_runtime_environment)
                 .map(|_| ())
