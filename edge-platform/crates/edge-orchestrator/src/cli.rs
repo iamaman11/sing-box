@@ -1430,6 +1430,7 @@ mod tests {
                 command: HostCommand::Status {
                     machine_id: Some(_),
                     deep: true,
+                    ..
                 },
                 ..
             }
