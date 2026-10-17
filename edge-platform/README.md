@@ -25,6 +25,41 @@ Before a mutation, refresh protected `main`, open PRs, latest Actions and the la
 
 **Operator product acceptance:** Issue #1 command → existing typed Rust owner → exact host. Self-hosted runners are bounded outbound transport only; local owners do all privileged runtime changes. Use one normal create/enroll/install/configure/diagnose/measure/repair/reinstall/destroy lifecycle. An acceptance VM is disposable, not a separate product installer. Independent authenticated 10/10 direct/WARP, public TLS, reboot and clean disposal are required; source/CI/provider metadata and internal loopback are not acceptance. See Issue #26 for live gates and failure resolution.
 
+## Native Windows fleet enrollment (one Git owner, no new services)
+
+An existing, single registered Windows runner remains eligible for the legacy
+`/credentials status`, `/credentials apply` and `/credentials recover`
+commands only when `infra/windows/hosts.json` contains **no** hosts and the
+GitHub runner label `sing-box-windows-lab` is unambiguous.
+
+For each **new Windows** host, complete the normal administrator-owned
+`bootstrap-windows-runner.ps1` with a stable `-HostId` and `-RunnerName`
+(for example `-HostId desktop-b -RunnerName sing-box-desktop-b`).
+The existing GitHub Actions runner receives both the historical transport
+label and `sing-box-host-desktop-b`. No second controller, runner or service
+is created.
+
+After that physical bootstrap, record exactly this nonsecret entry in the
+protected Git-owned `infra/windows/hosts.json`:
+
+```json
+{"id":"desktop-b","runner_name":"sing-box-desktop-b"}
+```
+
+Then use `/credentials status desktop-b`, `/credentials apply desktop-b`
+or `/credentials recover desktop-b`. The protected workflow validates
+the entire typed inventory, routes all three Windows stages by their one
+host-specific label, compares the registered runner name, and before any
+irreversible BEGIN requires exactly one online runner matching the selected
+host. A stale, duplicated, unmatched or ambiguous host is `SAFE_BLOCKED`;
+the command never silently falls back to a different Windows.
+
+The VM target is independently selected from the application's existing
+Git-owned Vultr machine descriptor. VM enrollment uses the existing /vultr
+native lifecycle. This host registry contains **no credentials, IP secrets or
+local mutable runtime state**. A future host must first pass normal immutable
+ReleaseSet installation and read-only status before any apply.
+
 ## Steady-state owner map
 
 ```text
