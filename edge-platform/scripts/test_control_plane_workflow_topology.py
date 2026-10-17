@@ -503,6 +503,12 @@ def verify_existing_join_endpoint_and_access(source: str) -> None:
         r"(?ms)^  ([a-z][a-z0-9_]*):\n(.*?)(?=^  [a-z][a-z0-9_]*:\n|\Z)",
         source,
     ))
+    require(
+        re.search(r"(?m)^env:\n  REPOSITORY: \$\{\{ github\.repository \}\}$", source) is not None
+        and "for name in GH_TOKEN REPOSITORY ACCEPTED_REVISION OUTPUT_DIR" in
+            Path("edge-platform/scripts/resolve_durable_release.sh").read_text(encoding="utf-8"),
+        "every native credential ReleaseSet helper needs the canonical Git repository",
+    )
     names = (
         "existing_join_windows_access_issue",
         "existing_join_begin",
@@ -607,6 +613,7 @@ def verify_existing_join_endpoint_and_access(source: str) -> None:
 def test_existing_join_endpoint_and_access(source: str) -> None:
     verify_existing_join_endpoint_and_access(source)
     broken = (
+        source.replace("env:\n  REPOSITORY: ${{ github.repository }}\n", "", 1),
         source.replace("      target_ipv4: ${{ steps.begin.outputs.target_ipv4 }}\n", "", 1),
         source.replace('echo "target_domain=$domain" >> "$GITHUB_OUTPUT"',
                        'echo "target_domain=$domain"', 1),
