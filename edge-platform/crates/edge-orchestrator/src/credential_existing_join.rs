@@ -272,6 +272,35 @@ pub(crate) fn inspect_journal(
     Ok("COMMIT_DURABLE_OWNER_RECEIPTS_UNPROVEN")
 }
 
+/// The Host lifecycle and credential recovery must use ONE journal parser.
+/// The revision and ReleaseSet are extracted only to validate the historical
+/// immutable record against itself, never to authorize a new mutation. In
+/// particular, a durable COMMIT_INTENT is not a proven physical COMMIT.
+pub(crate) fn host_admission_status(history: &[u8]) -> Result<&'static str, String> {
+    let data = std::str::from_utf8(history)
+        .map_err(|_| "HOST_JOURNAL_INVALID_UTF8".to_owned())?;
+    let rows: Vec<serde_json::Value> = serde_json::from_str(data)
+        .map_err(|_| "HOST_JOURNAL_MALFORMED".to_owned())?;
+    if rows.is_empty() {
+        return Err("HOST_JOURNAL_EMPTY".to_owned());
+    }
+    let begins = begin_records(data)?;
+    if begins.is_empty() {
+        // inspect_journal also rejects orphan, displaced or unknown join
+        // intent records and concurrent paired first-use commits.
+        return inspect_journal(data, "", "");
+    }
+    if begins.len() != 1 {
+        return Err("HOST_JOURNAL_ORIGINAL_AB_DUPLICATE".to_owned());
+    }
+    let raw = begins[0]
+        .strip_prefix(&format!("{BEGIN_MARKER}\n"))
+        .ok_or_else(|| "HOST_JOURNAL_BEGIN_AMBIGUOUS".to_owned())?;
+    let begin: ExistingJoinBegin = serde_json::from_str(raw)
+        .map_err(|_| "HOST_JOURNAL_BEGIN_INVALID".to_owned())?;
+    inspect_journal(data, &begin.accepted_revision, &begin.release_set_sha256)
+}
+
 pub(crate) fn plan(
     spec: &ExistingJoinIntent,
     history: &str,
@@ -995,6 +1024,42 @@ mod tests {
         let orphan = serde_json::json!([{"body":record}]).to_string();
         assert!(inspect_journal(&orphan, &g.accepted_revision, &g.release_set_sha256).is_err());
     }
+    #[test]
+    fn host_and_credentials_share_exact_original_join_journal_semantics() {
+        let g = good();
+        let ordinary = serde_json::json!([{"body":"read-only evidence"}]).to_string();
+        assert_eq!(
+            host_admission_status(ordinary.as_bytes()).unwrap(),
+            "NO_BEGIN_NO_MUTATION_AUTHORITY"
+        );
+        assert_eq!(host_admission_status(b"[]").unwrap_err(), "HOST_JOURNAL_EMPTY");
+        let begin = history_begin(&g);
+        assert_eq!(
+            host_admission_status(begin.as_bytes()).unwrap(),
+            "BEGIN_DURABLE_NO_AUTOMATIC_REPLAY"
+        );
+        let commit = plan(&g, &begin, &g.accepted_revision, &g.release_set_sha256).unwrap();
+        let history = history_commit(&g, &commit);
+        assert_eq!(
+            host_admission_status(history.as_bytes()).unwrap(),
+            "COMMIT_DURABLE_OWNER_RECEIPTS_UNPROVEN"
+        );
+        let mut duplicates: Vec<serde_json::Value> =
+            serde_json::from_str(&begin).unwrap();
+        duplicates.push(duplicates[0].clone());
+        assert_eq!(
+            host_admission_status(serde_json::to_string(&duplicates).unwrap().as_bytes())
+                .unwrap_err(),
+            "HOST_JOURNAL_ORIGINAL_AB_DUPLICATE"
+        );
+        let orphan = serde_json::json!([{"body":commit}]).to_string();
+        assert!(host_admission_status(orphan.as_bytes()).is_err());
+        let unsupported = serde_json::json!([
+            {"body":"<!-- sing-box-credential-existing-join-begin/v2 -->\n{}"}
+        ]).to_string();
+        assert!(host_admission_status(unsupported.as_bytes()).is_err());
+    }
+
     #[test]
     fn incomplete_or_unproven_snapshot_is_blocked() {
         let g = good();
