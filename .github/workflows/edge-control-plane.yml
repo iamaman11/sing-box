@@ -71,6 +71,7 @@ jobs:
       github.actor_id == '44100369' &&
       github.run_attempt == 1 &&
       (github.event.comment.body == '/fleet inventory' ||
+       github.event.comment.body == '/fleet status' ||
        startsWith(github.event.comment.body, '/fleet inspect ') ||
        startsWith(github.event.comment.body, '/fleet doctor '))
     outputs:
@@ -137,7 +138,7 @@ jobs:
           echo "FLEET_INVENTORY_SHA256=$(sha256sum "${RUNNER_TEMP}/fleet.binpb" | cut -d' ' -f1)" >> "${GITHUB_ENV}"
 
       - name: Read GitHub runner registration before physical dispatch
-        if: startsWith(github.event.comment.body, '/fleet doctor ')
+        if: github.event.comment.body == '/fleet status' || startsWith(github.event.comment.body, '/fleet doctor ')
         shell: bash
         run: |
           set -euo pipefail
@@ -146,12 +147,17 @@ jobs:
           if ! gh api --paginate --slurp -H 'Accept: application/vnd.github+json' \
             "repos/${GITHUB_REPOSITORY}/actions/runners?per_page=100" \
             > "${RUNNER_TEMP}/fleet-runners.json"; then
+            rm -f "${RUNNER_TEMP}/fleet-runners.json"
             echo 'RUNNER_API_UNAVAILABLE: registration endpoint not authorized' >&2
-            echo 'RUNNER_API_UNAVAILABLE: no physical job dispatched' >> "${GITHUB_STEP_SUMMARY}"
-            exit 1
+            if [[ "${COMMAND_BODY}" != "/fleet status" ]]; then
+              echo 'RUNNER_API_UNAVAILABLE: no physical job dispatched' >> "${GITHUB_STEP_SUMMARY}"
+              exit 1
+            fi
           fi
-          test -s "${RUNNER_TEMP}/fleet-runners.json" || \
-            { echo 'RUNNER_API_INCOMPLETE' >&2; exit 1; }
+          if [[ -e "${RUNNER_TEMP}/fleet-runners.json" ]]; then
+            test -s "${RUNNER_TEMP}/fleet-runners.json" || \
+              { echo 'RUNNER_API_INCOMPLETE' >&2; exit 1; }
+          fi
 
       - name: Execute bounded read-only Fleet operation
         id: observe
@@ -161,6 +167,8 @@ jobs:
           command=( )
           if [[ "${COMMAND_BODY}" == "/fleet inventory" ]]; then
             command=(inventory)
+          elif [[ "${COMMAND_BODY}" == "/fleet status" ]]; then
+            command=(status)
           elif [[ "${COMMAND_BODY}" == "/fleet inspect "* ||
                   "${COMMAND_BODY}" == "/fleet doctor "* ]]; then
             if [[ "${COMMAND_BODY}" == "/fleet doctor "* ]]; then
@@ -176,7 +184,7 @@ jobs:
             exit 1
           fi
           runner_args=()
-          if [[ "${COMMAND_BODY}" == "/fleet doctor "* ]]; then
+          if [[ -f "${RUNNER_TEMP}/fleet-runners.json" ]]; then
             runner_args=(--runner-inventory-json "${RUNNER_TEMP}/fleet-runners.json")
           fi
           "${FLEET_OWNER}" fleet \

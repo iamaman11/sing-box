@@ -114,6 +114,33 @@ fn inspect_runner_registration(
     Ok(runner.id)
 }
 
+/// Runner registration is an admission signal, not evidence of machine or app health.
+/// Unregistered, offline, and busy are legitimate observed states for status,
+/// whereas an invalid/incomplete API response cannot be reported as valid evidence.
+fn runner_status(
+    path: &Path,
+    kind: FleetHostKind,
+    owner: &str,
+    windows_label: &str,
+) -> Result<String, String> {
+    match official_runner_id(path, kind, owner, windows_label) {
+        Ok(id) => Ok(format!("READY_FOR_DISPATCH:{id}")),
+        Err(reason)
+            if matches!(
+                reason.as_str(),
+                "RUNNER_UNREGISTERED"
+                    | "RUNNER_OFFLINE"
+                    | "RUNNER_BUSY"
+                    | "RUNNER_LABELS_MISMATCH"
+                    | "RUNNER_STATUS_UNKNOWN"
+            ) =>
+        {
+            Ok(reason)
+        }
+        Err(reason) => Err(reason),
+    }
+}
+
 /// Read a protobuf rendered from the canonical Git textproto at the exact
 /// checked-out revision. It is NOT embedded in the executable: enrolling
 /// another host changes the inventory but never the runtime binary.
@@ -165,6 +192,45 @@ pub(crate) fn run(
             }
             println!("fleet_host_reachability=UNPROVEN");
             println!("fleet_host_runtime=UNPROVEN");
+            println!("fleet_mutations=0");
+            Ok(())
+        }
+        FleetCommand::Status => {
+            println!("fleet_schema=1");
+            println!("fleet_host_count={}", desired.hosts.len());
+            println!("fleet_inventory_sha256={inventory_sha}");
+            println!(
+                "release_set_sha256={}",
+                release.release().release_set_sha256
+            );
+            for host in &desired.hosts {
+                let kind = FleetHostKind::try_from(host.kind)
+                    .map_err(|_| "fleet host kind invalid".to_owned())?;
+                let owner = match host.owner.as_ref() {
+                    Some(fleet_host::Owner::WindowsRunnerName(name)) => name,
+                    Some(fleet_host::Owner::VmMachineId(name)) => name,
+                    None => return Err("fleet owner missing".to_owned()),
+                };
+                let registration = if let Some(path) = runner_inventory_json {
+                    runner_status(path, kind, owner, &host.windows_runner_label)?
+                } else {
+                    "UNPROVEN".to_owned()
+                };
+                println!("fleet_host_begin={}", host.machine_id);
+                println!(
+                    "fleet_host_kind={}",
+                    match kind {
+                        FleetHostKind::Windows => "WINDOWS",
+                        FleetHostKind::Vm => "VM",
+                        FleetHostKind::Unspecified => {
+                            return Err("fleet host kind unspecified".to_owned());
+                        }
+                    }
+                );
+                println!("fleet_runner_registration={registration}");
+                println!("fleet_host_runtime=UNPROVEN");
+                println!("fleet_host_end={}", host.machine_id);
+            }
             println!("fleet_mutations=0");
             Ok(())
         }
@@ -327,6 +393,27 @@ mod tests {
         );
         assert_eq!(call(b"[]").unwrap_err(), "RUNNER_API_INCOMPLETE");
         assert_eq!(call(b"malformed").unwrap_err(), "RUNNER_API_MALFORMED");
+        let temp_path = std::env::temp_dir().join(format!(
+            "fleet-runner-status-{}",
+            std::process::id()
+        ));
+        std::fs::write(&temp_path, report("offline", false, "application-acceptance-1"))
+            .unwrap();
+        assert_eq!(
+            runner_status(&temp_path, FleetHostKind::Vm, "application-acceptance-1", "")
+                .unwrap(),
+            "RUNNER_OFFLINE"
+        );
+        assert_eq!(
+            runner_status(&temp_path, FleetHostKind::Vm, "production-1", "").unwrap(),
+            "RUNNER_UNREGISTERED"
+        );
+        std::fs::write(&temp_path, b"[]").unwrap();
+        assert_eq!(
+            runner_status(&temp_path, FleetHostKind::Vm, "production-1", "").unwrap_err(),
+            "RUNNER_API_INCOMPLETE"
+        );
+        std::fs::remove_file(temp_path).unwrap();
     }
 
     #[test]

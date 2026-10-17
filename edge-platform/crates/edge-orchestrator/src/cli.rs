@@ -94,6 +94,8 @@ impl Command {
 pub(crate) enum FleetCommand {
     /// Exact Git-owned machine selector inventory; does not claim runtime health.
     Inventory,
+    /// Read-only fleet overview. Runner registration is distinct from physical runtime health.
+    Status,
     /// Inspect a registered machine's owner selector and release authority.
     Inspect { machine_id: String },
 }
