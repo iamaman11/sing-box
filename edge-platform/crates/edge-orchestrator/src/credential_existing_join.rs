@@ -370,11 +370,15 @@ pub(crate) fn reconcile(
     if !snapshot.windows_worker_origin_verified
         || !snapshot.vm_worker_origin_verified
         || !snapshot.windows_stopped_proxy_only
-        || snapshot.line1_authenticated_endpoints != 4
-        || snapshot.line2_authenticated_endpoints != 6
     {
         return Ok("SAFE_BLOCKED_UNPROVEN_OWNER_OR_NETWORK");
     }
+    // Recovery may identify a physically durable partial/complete pointer
+    // state even when the original Line1/Line2 network witnesses have expired.
+    // Such observations NEVER authorize another mutation or acceptance.
+    let network_verified =
+        snapshot.line1_authenticated_endpoints == 4
+            && snapshot.line2_authenticated_endpoints == 6;
     let a = &spec.windows_active;
     let b = &spec.windows_candidate;
     let vm = &spec.vm_candidate;
@@ -410,7 +414,11 @@ pub(crate) fn reconcile(
         // interrupted candidate store is not a prepared managed runtime.
         // Even with a receipt, only the independent Line1 witness above
         // can confirm that applying the candidate actually completed.
-        return Ok("INTENT_DURABLE_PREPARED_NO_AUTO_APPLY");
+        return if network_verified {
+            Ok("INTENT_DURABLE_PREPARED_NO_AUTO_APPLY")
+        } else {
+            Ok("PREPARED_NETWORK_UNPROVEN_NO_REPLAY")
+        };
     }
     if win_is_b
         && snapshot.windows_candidate.is_none()
@@ -421,7 +429,11 @@ pub(crate) fn reconcile(
         && windows_receipt_correct
         && prepare_correct
     {
-        return Ok("POINTERS_COMPLETE_REQUIRES_INDEPENDENT_ACCEPTANCE");
+        return if network_verified {
+            Ok("POINTERS_COMPLETE_REQUIRES_INDEPENDENT_ACCEPTANCE")
+        } else {
+            Ok("POINTERS_COMPLETE_NETWORK_UNPROVEN_NO_REPLAY")
+        };
     }
     if (win_is_a || win_is_b)
         && (vm_is_b || vm_candidate_b)
@@ -916,6 +928,41 @@ mod tests {
     }
 
     #[test]
+    fn completed_pointers_with_expired_network_are_read_only_and_not_accepted() {
+        let g = good();
+        let commit = plan(
+            &g,
+            &history_begin(&g),
+            &g.accepted_revision,
+            &g.release_set_sha256,
+        )
+        .unwrap();
+        let sha = {
+            use ring::digest::{SHA256, digest};
+            digest(&SHA256, commit.as_bytes())
+                .as_ref()
+                .iter()
+                .map(|v| format!("{v:02x}"))
+                .collect::<String>()
+        };
+        let mut s = snapshot(&g);
+        s.windows_active = g.windows_candidate.clone();
+        s.windows_candidate = None;
+        s.windows_previous = Some(g.windows_active.clone());
+        s.vm_active = Some(g.vm_candidate.clone());
+        s.vm_candidate = None;
+        s.vm_join_receipt_intent_sha256 = Some(sha.clone());
+        s.windows_join_receipt_intent_sha256 = Some(sha);
+        s.windows_prepare_begin_sha256 = Some(beginning_digest_for_test(&g));
+        s.line1_authenticated_endpoints = 0;
+        s.line2_authenticated_endpoints = 0;
+        assert_eq!(
+            classify(&g, &s),
+            "POINTERS_COMPLETE_NETWORK_UNPROVEN_NO_REPLAY"
+        );
+    }
+
+    #[test]
     fn vm_and_windows_receipts_must_match_the_exact_same_begin_and_commit() {
         let g = good();
         let mut s = snapshot(&g);
@@ -959,7 +1006,8 @@ mod tests {
         s.windows_worker_origin_verified = false;
         assert_eq!(classify(&g, &s), "SAFE_BLOCKED_UNPROVEN_OWNER_OR_NETWORK");
         s.windows_worker_origin_verified = true;
+        s.windows_prepare_begin_sha256 = Some(beginning_digest_for_test(&g));
         s.line2_authenticated_endpoints = 5;
-        assert_eq!(classify(&g, &s), "SAFE_BLOCKED_UNPROVEN_OWNER_OR_NETWORK");
+        assert_eq!(classify(&g, &s), "PREPARED_NETWORK_UNPROVEN_NO_REPLAY");
     }
 }
