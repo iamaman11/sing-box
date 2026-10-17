@@ -73,6 +73,7 @@ jobs:
       (github.event.comment.body == '/fleet inventory' ||
        github.event.comment.body == '/fleet status' ||
        startsWith(github.event.comment.body, '/fleet inspect ') ||
+       startsWith(github.event.comment.body, '/fleet fast ') ||
        startsWith(github.event.comment.body, '/fleet doctor '))
     outputs:
       kind: ${{ steps.observe.outputs.kind }}
@@ -138,7 +139,7 @@ jobs:
           echo "FLEET_INVENTORY_SHA256=$(sha256sum "${RUNNER_TEMP}/fleet.binpb" | cut -d' ' -f1)" >> "${GITHUB_ENV}"
 
       - name: Read GitHub runner registration before physical dispatch
-        if: github.event.comment.body == '/fleet status' || startsWith(github.event.comment.body, '/fleet doctor ')
+        if: github.event.comment.body == '/fleet status' || startsWith(github.event.comment.body, '/fleet doctor ') || startsWith(github.event.comment.body, '/fleet fast ')
         shell: bash
         run: |
           set -euo pipefail
@@ -170,9 +171,12 @@ jobs:
           elif [[ "${COMMAND_BODY}" == "/fleet status" ]]; then
             command=(status)
           elif [[ "${COMMAND_BODY}" == "/fleet inspect "* ||
-                  "${COMMAND_BODY}" == "/fleet doctor "* ]]; then
+                  "${COMMAND_BODY}" == "/fleet doctor "* ||
+                  "${COMMAND_BODY}" == "/fleet fast "* ]]; then
             if [[ "${COMMAND_BODY}" == "/fleet doctor "* ]]; then
               machine="${COMMAND_BODY#/fleet doctor }"
+            elif [[ "${COMMAND_BODY}" == "/fleet fast "* ]]; then
+              machine="${COMMAND_BODY#/fleet fast }"
             else
               machine="${COMMAND_BODY#/fleet inspect }"
             fi
@@ -208,7 +212,8 @@ jobs:
     needs: fleet
     if: >-
       needs.fleet.result == 'success' &&
-      startsWith(github.event.comment.body, '/fleet doctor ') &&
+      (startsWith(github.event.comment.body, '/fleet doctor ') ||
+       startsWith(github.event.comment.body, '/fleet fast ')) &&
       (needs.fleet.outputs.kind == 'WINDOWS' ||
        needs.fleet.outputs.kind == 'VM')
     runs-on: ${{ fromJSON(needs.fleet.outputs.runner_labels) }}
@@ -219,6 +224,7 @@ jobs:
       TARGET_MACHINE: ${{ needs.fleet.outputs.machine_id }}
       TARGET_OWNER: ${{ needs.fleet.outputs.owner }}
       TARGET_KIND: ${{ needs.fleet.outputs.kind }}
+      COMMAND_BODY: ${{ github.event.comment.body }}
     steps:
       - name: Verify installed Windows native owner and diagnose without mutation
         if: env.TARGET_KIND == 'WINDOWS'
@@ -235,7 +241,8 @@ jobs:
               -not (Test-Path -LiteralPath $current -PathType Leaf)) {
             throw 'FLEET_WINDOWS_NATIVE_OWNER_MISSING'
           }
-          & $doctor doctor $current
+          $depth = if ($env:COMMAND_BODY -like '/fleet fast *') { 'fast' } else { 'doctor' }
+          & $doctor $depth $current
           if ($LASTEXITCODE -ne 0) { throw 'FLEET_WINDOWS_NATIVE_DIAGNOSE_FAILED' }
 
       - name: Verify installed VM native owner and diagnose without mutation
@@ -257,7 +264,11 @@ jobs:
             exit 1
           fi
           test ! -r /var/run/docker.sock
-          sudo -n "${owner}" local diagnose
+          if [[ "${COMMAND_BODY}" == "/fleet fast "* ]]; then
+            sudo -n "${owner}" local fast
+          else
+            sudo -n "${owner}" local diagnose
+          fi
 
   windows:
     if: >-

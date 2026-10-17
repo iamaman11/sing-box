@@ -4,8 +4,9 @@ use edge_shared_types::{
     canonical_production_desired_state, decode_windows_activation_state,
     verify_windows_activation_files,
 };
+use std::io::Read;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
 
 #[cfg(windows)]
@@ -55,12 +56,16 @@ fn main() {
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let command = args.next().ok_or_else(usage)?;
-    if command != "doctor" {
+    if command != "doctor" && command != "fast" {
         return Err(usage());
     }
     let state_path = PathBuf::from(args.next().ok_or_else(usage)?);
     if args.next().is_some() {
         return Err(usage());
+    }
+
+    if command == "fast" {
+        return run_fast(&state_path);
     }
 
     let bytes = std::fs::read(&state_path).map_err(|err| {
@@ -123,6 +128,59 @@ fn run() -> Result<(), String> {
     #[cfg(windows)]
     observe_windows_network(&state_path, datapath_mode)?;
 
+    Ok(())
+}
+
+/// Bounded read-only Fleet snapshot. It never starts a service, accesses private
+/// credential material, walks processes, probes DNS/routes or hashes release files.
+fn run_fast(state_path: &Path) -> Result<(), String> {
+    let started = Instant::now();
+    let mut bytes = Vec::new();
+    std::fs::File::open(state_path)
+        .map_err(|_| "FLEET_FAST_ACTIVATION_UNAVAILABLE".to_owned())?
+        .take(4097)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "FLEET_FAST_ACTIVATION_UNREADABLE".to_owned())?;
+    if bytes.len() > 4096 {
+        return Err("FLEET_FAST_ACTIVATION_TOO_LARGE".to_owned());
+    }
+    let state = decode_windows_activation_state(&bytes)
+        .map_err(|_| "FLEET_FAST_ACTIVATION_INVALID".to_owned())?;
+    if state.release_set_sha256.len() != 64
+        || !state.release_set_sha256.bytes().all(|byte| {
+            byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+        })
+    {
+        return Err("FLEET_FAST_RELEASE_ID_INVALID".to_owned());
+    }
+    // The SCM itself is the one Windows service authority. Query only: no
+    // controller RPC, process discovery, shell, scheduled task or privilege change.
+    #[cfg(windows)]
+    let scm = (|| -> Result<String, String> {
+        let manager =
+            ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+                .map_err(|_| "SCM_UNAVAILABLE".to_owned())?;
+        let service = manager
+            .open_service(WINDOWS_CONTROLLER_SERVICE_NAME, ServiceAccess::QUERY_STATUS)
+            .map_err(|_| "SCM_UNAVAILABLE".to_owned())?;
+        let status = service
+            .query_status()
+            .map_err(|_| "SCM_UNAVAILABLE".to_owned())?;
+        Ok(format!("{:?}", status.current_state))
+    })()
+    .unwrap_or_else(|reason| reason);
+    #[cfg(not(windows))]
+    let scm = "UNSUPPORTED_HOST".to_owned();
+
+    println!("fast_schema=sing-box.fleet-fast/v1");
+    println!("fast_host_kind=WINDOWS");
+    println!("fast_release_set_sha256={}", state.release_set_sha256);
+    println!("fast_scm_state={scm}");
+    println!("fast_runtime=UNPROVEN");
+    println!("fast_credential_pair_terminal=UNPROVEN");
+    println!("fast_credential_replay_authorized=false");
+    println!("fast_mutations=0");
+    println!("fast_elapsed_ms={}", started.elapsed().as_millis());
     Ok(())
 }
 
@@ -998,7 +1056,7 @@ fn observe_udp6_listeners(projects: &BTreeMap<u32, String>) -> Result<usize, Str
 }
 
 fn usage() -> String {
-    "usage: edge-diagnostic doctor <current.pb>".to_owned()
+    "usage: edge-diagnostic <fast|doctor> <current.pb>".to_owned()
 }
 
 #[cfg(test)]

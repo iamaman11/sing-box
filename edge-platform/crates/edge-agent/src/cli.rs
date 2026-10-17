@@ -40,6 +40,8 @@ impl Command {
 
 #[derive(Debug, Clone, Subcommand)]
 pub(crate) enum LocalCommand {
+    /// Bounded local read-only Fleet status; does not inspect Docker or credentials.
+    Fast,
     Status,
     Verify,
     Diagnose,
@@ -105,6 +107,7 @@ pub(crate) enum LocalCommand {
 impl LocalCommand {
     fn name(&self) -> &'static str {
         match self {
+            Self::Fast => "local-fast",
             Self::Status => "local-status",
             Self::Verify => "local-verify",
             Self::Diagnose => "local-diagnose",
@@ -166,6 +169,7 @@ mod tests {
         assert!(Cli::try_parse_from(["edge-agent", "acceptance-serve"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent"]).is_err());
         assert!(Cli::try_parse_from(["edge-agent", "serve"]).is_err());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "fast"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "status"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "verify"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "diagnose"]).is_ok());

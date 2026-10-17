@@ -24,7 +24,7 @@ use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::thread::sleep;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use edge_observability::init as init_observability;
 use edge_secrets::{
@@ -145,9 +145,53 @@ async fn run(parsed: cli::Cli) -> Result<(), AgentError> {
     }
 }
 
+/// Lightweight read-only VM observation. It deliberately does not claim
+/// container health, egress success, credential equality or pair completion.
+fn run_local_fast(stack_dir: &Path) -> Result<(), String> {
+    let started = Instant::now();
+    let path = stack_dir.join(APPLICATION_RELEASE_MARKER);
+    let mut bytes = Vec::new();
+    match std::fs::File::open(&path) {
+        Ok(file) => {
+            file.take(4097)
+                .read_to_end(&mut bytes)
+                .map_err(|_| "FLEET_FAST_RELEASE_UNREADABLE".to_owned())?;
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("FLEET_FAST_RELEASE_UNREADABLE".to_owned()),
+    }
+    if bytes.len() > 4096 {
+        return Err("FLEET_FAST_RELEASE_TOO_LARGE".to_owned());
+    }
+    let digest = if bytes.is_empty() {
+        "UNPROVEN".to_owned()
+    } else {
+        let release = ApplicationBundleRelease::decode(bytes.as_slice())
+            .map_err(|_| "FLEET_FAST_RELEASE_INVALID".to_owned())?;
+        if release.encode_to_vec() != bytes
+            || release.schema_version != 1
+            || release.bundle_id.trim().is_empty()
+            || validate_lower_hex("bundle_digest", &release.bundle_digest, 64).is_err()
+        {
+            return Err("FLEET_FAST_RELEASE_INVALID".to_owned());
+        }
+        release.bundle_digest
+    };
+    println!("fast_schema=sing-box.fleet-fast/v1");
+    println!("fast_host_kind=VM");
+    println!("fast_bundle_digest={digest}");
+    println!("fast_runtime=UNPROVEN");
+    println!("fast_credential_pair_terminal=UNPROVEN");
+    println!("fast_credential_replay_authorized=false");
+    println!("fast_mutations=0");
+    println!("fast_elapsed_ms={}", started.elapsed().as_millis());
+    Ok(())
+}
+
 async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
     let stack_dir = PathBuf::from(DEFAULT_STACK_DIR);
     match command {
+        cli::LocalCommand::Fast => run_local_fast(&stack_dir).map_err(AgentError::Command),
         cli::LocalCommand::Status => {
             let state = inspect_runtime(&stack_dir, AgentMode::Runtime).await;
             print_agent_state_evidence("STATUS", &state);
