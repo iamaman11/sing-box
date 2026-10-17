@@ -302,6 +302,103 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             .map_err(ConsoleError::Command)?;
             Ok(())
         }
+        Command::CredentialExistingLine1Witness(args) => {
+            #[cfg(windows)]
+            {
+                let root = Path::new(&args.install_root);
+                initial_line1_witness::require_isolated_root(root)
+                    .map_err(ConsoleError::Command)?;
+                if args.windows_candidate_sha256.len() != 64
+                    || !args.windows_candidate_sha256.bytes().all(|byte| {
+                        byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte)
+                    })
+                {
+                    return Err(ConsoleError::Command(
+                        "existing B witness requires exact Windows candidate SHA-256".to_owned(),
+                    ));
+                }
+                let isolated = load_verified_activation(root)?;
+                let serving = Path::new(r"C:\sing-box");
+                require_stopped_proxy_only_initial_commit_owner(serving)
+                    .map_err(ConsoleError::Command)?;
+                let before = existing_line1_serving_candidate(
+                    serving,
+                    args.generation,
+                    &args.windows_candidate_sha256,
+                )
+                .map_err(ConsoleError::Command)?;
+                let store = windows_credential_store_path(root);
+                let identity = root
+                    .join("state")
+                    .join("secrets")
+                    .join(ACCESS_IDENTITY_FILE_NAME);
+                let worker = attest_worker_credential_origin(
+                    &store,
+                    &identity,
+                    edge_shared_types::CredentialProjectionKind::Windows,
+                    CredentialOriginSelection::Candidate,
+                )
+                .await
+                .map_err(ConsoleError::Command)?;
+                if worker.generation != args.generation
+                    || worker.slot != "B"
+                    || worker.bundle_sha256 != args.windows_candidate_sha256
+                {
+                    return Err(ConsoleError::Command(
+                        "isolated Windows B differs from serving SYSTEM candidate".to_owned(),
+                    ));
+                }
+                // Reuse the existing bounded transient witness; never use
+                // serving C:\sing-box as a disposable sing-box install root.
+                initial_line1_witness::run(
+                    root,
+                    Path::new(&isolated.sing_box_path),
+                    args.generation,
+                    args.target_ipv4,
+                    &args.target_domain,
+                )
+                .map_err(ConsoleError::Command)?;
+                require_stopped_proxy_only_initial_commit_owner(serving)
+                    .map_err(ConsoleError::Command)?;
+                if existing_line1_serving_candidate(
+                    serving,
+                    args.generation,
+                    &args.windows_candidate_sha256,
+                )
+                .map_err(ConsoleError::Command)?
+                    != before
+                {
+                    return Err(ConsoleError::Command(
+                        "serving SYSTEM A/B changed during isolated Line1 witness".to_owned(),
+                    ));
+                }
+                let after = attest_worker_credential_origin(
+                    &store,
+                    &identity,
+                    edge_shared_types::CredentialProjectionKind::Windows,
+                    CredentialOriginSelection::Candidate,
+                )
+                .await
+                .map_err(ConsoleError::Command)?;
+                if after != worker {
+                    return Err(ConsoleError::Command(
+                        "isolated B Worker origin drifted during physical witness".to_owned(),
+                    ));
+                }
+                println!("existing_join_line1_external_4_of_4=PASS");
+                println!("existing_join_windows_b_worker_exact=true");
+                println!("existing_join_windows_system_stopped_proxyonly=true");
+                println!("existing_join_candidate_sha256={}", args.windows_candidate_sha256);
+                Ok(())
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = args;
+                Err(ConsoleError::Command(
+                    "existing B physical Line1 witness requires Windows".to_owned(),
+                ))
+            }
+        }
         Command::CredentialState(args) => {
             let state = fetch_credential_state(args.resolve()).await?;
             print_windows_credential_state(state.as_ref());
@@ -2051,6 +2148,83 @@ fn read_bounded_windows_credential_cursor(install_root: &Path) -> Result<String,
             .map(|value| value.sha256.as_str())
             .unwrap_or("ABSENT"),
     ))
+}
+
+/// Non-secret SYSTEM cursor proof from the serving installation. A disposable
+/// Line1 test must use its own isolated root and prove it tested this same B.
+/// This function never reads private credential files as the GitHub runner.
+#[cfg(windows)]
+fn existing_line1_serving_candidate(
+    serving_root: &Path,
+    generation: u64,
+    expected_b: &str,
+) -> Result<String, String> {
+    let activation = load_verified_activation(serving_root)
+        .map_err(|_| "existing Line1 source ReleaseSet unverified".to_owned())?;
+    let child = Command::new(&activation.console_path)
+        .arg("privileged-runtime-evidence")
+        .arg("--install-root")
+        .arg(serving_root)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|_| "SYSTEM candidate evidence unavailable".to_owned())?;
+    if !child.status.success() {
+        return Err("SYSTEM candidate evidence failed".to_owned());
+    }
+    let text = String::from_utf8(child.stdout)
+        .map_err(|_| "SYSTEM evidence encoding invalid".to_owned())?;
+    if text.lines().filter(|line| *line == "status=PASS").count() != 1 {
+        return Err("SYSTEM evidence success marker missing or duplicate".to_owned());
+    }
+    let details: Vec<_> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("detail=runtime_evidence="))
+        .collect();
+    if details.len() != 1 {
+        return Err("SYSTEM cursor result absent or ambiguous".to_owned());
+    }
+    let mut observed = std::collections::BTreeMap::new();
+    for entry in details[0].split(';') {
+        let (key, value) = entry
+            .split_once('=')
+            .ok_or_else(|| "SYSTEM cursor field malformed".to_owned())?;
+        if observed.insert(key, value).is_some() {
+            return Err("SYSTEM cursor field duplicated".to_owned());
+        }
+    }
+    for (field, expected) in [
+        ("credential_cursor", "VALID"),
+        ("credential_origin", "WORKER_OK"),
+        ("credential_active_present", "true"),
+        ("credential_active_slot", "A"),
+        ("credential_candidate_present", "true"),
+        ("credential_candidate_slot", "B"),
+        ("credential_candidate_sha256", expected_b),
+        ("credential_previous_present", "false"),
+        ("credential_existing_join_prepare_receipt_present", "true"),
+        ("credential_existing_join_receipt_present", "false"),
+    ] {
+        if observed.get(field).copied() != Some(expected) {
+            return Err(format!("SYSTEM existing B witness mismatch: {field}"));
+        }
+    }
+    if observed
+        .get("credential_candidate_generation")
+        .and_then(|value| value.parse::<u64>().ok())
+        != Some(generation)
+    {
+        return Err("SYSTEM B candidate generation changed".to_owned());
+    }
+    let begin = observed
+        .get("credential_existing_join_prepare_begin_sha256")
+        .copied()
+        .ok_or_else(|| "SYSTEM BEGIN preparation receipt unknown".to_owned())?;
+    if begin.len() != 64 || !begin.bytes().all(|value| {
+        value.is_ascii_digit() || (b'a'..=b'f').contains(&value)
+    }) {
+        return Err("SYSTEM BEGIN preparation SHA-256 invalid".to_owned());
+    }
+    Ok(begin.to_owned())
 }
 
 #[cfg(windows)]
