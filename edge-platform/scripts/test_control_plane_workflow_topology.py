@@ -601,15 +601,39 @@ def test_existing_join_endpoint_and_access(source: str) -> None:
 
 def test_git_windows_host_fleet_contract(credentials: str) -> None:
     """Git owns exact Windows selection. The generic label is legacy singleton only."""
-    path = Path("infra/windows/hosts.json")
-    desired = json.loads(path.read_text(encoding="utf-8"))
+    path = Path("infra/windows/hosts.textproto")
+    contents = path.read_text(encoding="utf-8")
+    proto = Path("edge-platform/proto/edge/platform/v1/windows_hosts.proto").read_text(encoding="utf-8")
     require(
-        isinstance(desired, dict) and set(desired) == {"schema", "hosts"}
-        and desired["schema"] == "sing-box.windows-hosts/v1"
-        and isinstance(desired["hosts"], list),
-        "Git-owned Windows fleet inventory schema invalid",
+        'message WindowsHostInventory {' in proto
+        and 'repeated WindowsHostRegistration hosts = 2;' in proto
+        and 'message WindowsHostRegistration {' in proto,
+        "Windows host inventory needs a real protobuf type, never a new first-party JSON file",
     )
 
+    def parse_hosts(text: str) -> list[dict] | None:
+        header = 'schema: "sing-box.windows-hosts/v1"\\n'
+        if not text.startswith(header):
+            return None
+        body = text[len(header):]
+        pattern = re.compile(
+            r'hosts\\s*\\{\\s*id:\\s*"([a-z][a-z0-9-]{0,39})"\\s*'
+            r'runner_name:\\s*"([A-Za-z0-9._-]{1,128})"\\s*\\}\\s*'
+        )
+        records = list(pattern.finditer(body))
+        if pattern.sub("", body).strip():
+            return None
+        return [{"id": m.group(1), "runner_name": m.group(2)} for m in records]
+
+    hosts = parse_hosts(contents)
+    require(hosts is not None, "Windows hosts textproto malformed or unknown field detected")
+    for bad in (
+        'schema: "wrong"\\n',
+        contents + 'hostz { id: "x" }\\n',
+        contents + 'hosts { id: "a" runner_name: "x" stray: 1 }\\n',
+        contents + 'hosts { id: "Bad" runner_name: "x" }\\n',
+    ):
+        require(parse_hosts(bad) is None, "invalid/unknown Windows host protobuf field permitted")
     def validate_hosts(hosts: list) -> bool:
         ids, names = set(), set()
         for host in hosts:
@@ -628,7 +652,7 @@ def test_git_windows_host_fleet_contract(credentials: str) -> None:
             names.add(name)
         return True
 
-    require(validate_hosts(desired["hosts"]), "Git Windows hosts must have unique typed host IDs and runners")
+    require(validate_hosts(hosts), "Git Windows hosts must have unique typed host IDs and runners")
     good = [{"id": "win-a", "runner_name": "sing-box-workstation-a"},
             {"id": "win-b", "runner_name": "sing-box-workstation-b"}]
     require(validate_hosts(good), "two exact Windows host registrations must be valid")
@@ -650,7 +674,6 @@ def test_git_windows_host_fleet_contract(credentials: str) -> None:
     )
     for job in ("existing_join_status_windows", "existing_join_windows_stage_prepare",
                 "existing_join_windows_commit"):
-        section = credentials.split(f"  {job}:\n", 1)[1].split("\n  ", 1)[0]
         # Check full exact job content because short title sections cannot
         # themselves prove the nested GitHub runner scheduling authority.
         section = credentials.split(f"  {job}:\n", 1)[1].split(
