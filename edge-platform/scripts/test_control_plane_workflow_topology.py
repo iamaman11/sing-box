@@ -738,7 +738,7 @@ def test_native_host_readonly_control_boundary(router: str) -> None:
     """Host source selection and native diagnostics must not grant mutations."""
     require("  host:\n" in router and "  host_observe:\n" in router, "Host owner route missing")
     hosted = router.split("  host:\n", 1)[1].split("\n  host_observe:\n", 1)[0]
-    physical = router.split("  host_observe:\n", 1)[1].split("\n  windows:\n", 1)[0]
+    physical = router.split("  host_observe:\n", 1)[1].split("\n  host_apply_windows:\n", 1)[0]
     require(
         "github.actor_id == '44100369'" in hosted
         and "github.event.issue.number == 1" in hosted
@@ -756,6 +756,18 @@ def test_native_host_readonly_control_boundary(router: str) -> None:
         and "HOST_VM_GENERIC_ROOT_AUTHORITY_FORBIDDEN" in physical
         and 'sudo -n "${owner}" local diagnose' in physical,
         "Host must select exact Git host then run existing native read-only owners only",
+    )
+
+    require(
+        "  host_apply_windows:\n" in router
+        and "  host_apply_vm:\n" in router
+        and "needs.host.outputs.operation == 'APPLY'" in router
+        and "'HOST_APPLY_BLOCKED_ORIGINAL_AB_BEGIN_NO_REPLAY'" not in router
+        and "Read complete existing GitHub journal for mutation admission" in router
+        and "--journal-history-json" in router
+        and "needs.host.outputs.windows_runner_label" in router
+        and "host_runner_name:" in router,
+        "Host apply must preserve one exact journalled native Windows/VM owner",
     )
 
 
