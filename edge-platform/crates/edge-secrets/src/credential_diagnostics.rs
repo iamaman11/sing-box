@@ -42,7 +42,8 @@ impl CredentialSafetyObservation {
         let candidate = candidate_generation.is_some();
         let previous = previous_generation.is_some();
         let verdict = match projection {
-            CredentialProjectionKind::Windows => match (active, candidate, previous, prepare, join) {
+            CredentialProjectionKind::Windows => match (active, candidate, previous, prepare, join)
+            {
                 (true, true, false, Some(true), false) => "WINDOWS_BEGIN_BOUND_PARTIAL_NO_REPLAY",
                 (true, true, false, Some(false), false) => "WINDOWS_CANDIDATE_UNBOUND_NO_REPLAY",
                 (true, false, false, Some(false), false) => "WINDOWS_ACTIVE_LOCAL_ONLY",
@@ -82,14 +83,26 @@ impl CredentialSafetyObservation {
         vec![
             format!("credential_safety_state={}", self.state),
             format!("credential_cursor_present={}", boolean(self.cursor_present)),
-            format!("credential_active_generation={}", generation(self.active_generation)),
-            format!("credential_candidate_generation={}", generation(self.candidate_generation)),
-            format!("credential_previous_generation={}", generation(self.previous_generation)),
+            format!(
+                "credential_active_generation={}",
+                generation(self.active_generation)
+            ),
+            format!(
+                "credential_candidate_generation={}",
+                generation(self.candidate_generation)
+            ),
+            format!(
+                "credential_previous_generation={}",
+                generation(self.previous_generation)
+            ),
             format!(
                 "credential_windows_prepare_receipt={}",
                 boolean(self.windows_prepare_receipt)
             ),
-            format!("credential_local_join_receipt={}", boolean(self.local_join_receipt)),
+            format!(
+                "credential_local_join_receipt={}",
+                boolean(self.local_join_receipt)
+            ),
             "credential_pair_terminal=UNPROVEN".to_owned(),
             "credential_replay_authorized=false".to_owned(),
             "credential_mutations=0".to_owned(),
@@ -119,7 +132,11 @@ pub fn observe_credential_safety(
         };
         let state = store.read_state()?;
         let prepare = if projection == CredentialProjectionKind::Windows {
-            Some(store.read_windows_existing_join_prepare_receipt()?.is_some())
+            Some(
+                store
+                    .read_windows_existing_join_prepare_receipt()?
+                    .is_some(),
+            )
         } else {
             None
         };
@@ -171,8 +188,16 @@ mod tests {
             false,
         );
         assert_eq!(result.state, "WINDOWS_BEGIN_BOUND_PARTIAL_NO_REPLAY");
-        assert!(result.report_lines().contains(&"credential_replay_authorized=false".to_owned()));
-        assert!(result.report_lines().contains(&"credential_pair_terminal=UNPROVEN".to_owned()));
+        assert!(
+            result
+                .report_lines()
+                .contains(&"credential_replay_authorized=false".to_owned())
+        );
+        assert!(
+            result
+                .report_lines()
+                .contains(&"credential_pair_terminal=UNPROVEN".to_owned())
+        );
         assert!(!result.report_lines().join("\n").contains(&"a".repeat(64)));
         assert!(!result.report_lines().join("\n").contains(&"b".repeat(64)));
     }
@@ -205,7 +230,9 @@ mod tests {
             .state,
             "UNKNOWN_NO_REPLAY"
         );
-        let unknown = CredentialSafetyObservation::unknown().report_lines().join("\n");
+        let unknown = CredentialSafetyObservation::unknown()
+            .report_lines()
+            .join("\n");
         assert!(unknown.contains("credential_cursor_present=UNPROVEN"));
         assert!(unknown.contains("credential_replay_authorized=false"));
     }

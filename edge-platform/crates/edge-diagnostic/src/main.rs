@@ -1,8 +1,8 @@
 use edge_secrets::observe_credential_safety;
 use edge_shared_types::{
-    CredentialProjectionKind,
-    WINDOWS_CONTROLLER_ADDR, WindowsDatapathMode, canonical_production_desired_state,
-    decode_windows_activation_state, verify_windows_activation_files,
+    CredentialProjectionKind, WINDOWS_CONTROLLER_ADDR, WindowsDatapathMode,
+    canonical_production_desired_state, decode_windows_activation_state,
+    verify_windows_activation_files,
 };
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
