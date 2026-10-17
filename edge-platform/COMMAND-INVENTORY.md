@@ -73,3 +73,20 @@ The separate `AcceptanceServe` and `Local` variants are dispatch groups; they do
 ## Multi-machine behavior: explicit, not implicit
 
 Multiple distinct `machine_id` records are valid in the same registry. An invocation with a `machine_id` may inspect only that machine and its exact controller/agent. Listing is read-only; it cannot trigger configuration on any machine. For later apply/recover, scope the mutation authority and durable cursor to the requested machine, and allow independent hosts to proceed separately when their resource/credential scopes do not overlap. A paired Windows/VM credential transaction is an explicitly journaled exception and must remain non-replayable.
+
+## Git-owned desired configuration binding
+
+Every registered machine has one `desired_spec_path` in the existing HostRegistry
+wire-compatible protobuf (field 6 on the legacy on-wire message). The reference
+selects an **existing** Git-owned desired state; it is not a second configuration,
+does not contain credentials, and does not imply a change in running state.
+Rust validates per-kind spec families and rejects traversal or unset targets.
+The host route publishes this exact reference with its validated runner identity.
+
+This is the shared identity/configuration foundation only. A completed `host apply`
+must execute the native SYSTEM Windows owner or VM root/Bollard owner, compare
+the real observed state to the exact ReleaseSet, and use the original durable
+journal to prevent mutations while the A/B BEGIN remains unresolved.
+Do not report `apply/recover` as accepted until they are implemented and
+physically exercised. The existing legacy operator commands are deliberately
+preserved until then.
