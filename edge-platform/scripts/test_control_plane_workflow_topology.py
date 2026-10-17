@@ -700,13 +700,17 @@ def test_git_windows_host_host_contract(credentials: str) -> None:
     )
     require(
         not Path("infra/windows/hosts.textproto").exists()
-        and 'Path("infra/hosts/hosts.textproto").read_text()' in credentials
-        and "infra/windows/hosts.textproto" not in credentials
-        and "Canonical host registry has unknown or malformed records" in credentials
-        and "Credential acceptance VM does not match canonical host" in credentials
-        and "Unknown canonical Windows host target" in credentials
-        and 'chosen["label"]' in credentials
-        and 'chosen["runner_name"]' in credentials,
+        and 'infra/windows/hosts.textproto' not in credentials
+        and 'infra/hosts/hosts.textproto#format=txtpb' in credentials
+        and 'edge.platform.v1.FleetDesiredState' in credentials
+        and 'status "${vm_id}" --credential-pair-windows "${REQUESTED_WINDOWS_HOST_ID:-auto}"' in credentials
+        and "Canonical host registry has unknown or malformed records" not in credentials
+        and "vm_pattern = re.compile" not in credentials
+        and "windows_pattern = re.compile" not in credentials
+        and 'resolve_credential_peer(&desired, vm_id, windows_id)' in
+            Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(encoding="utf-8")
+        and "HOST_CREDENTIAL_WINDOWS_EXPLICIT_ID_REQUIRED" in
+            Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(encoding="utf-8"),
         "credentials must share one Git host registry with the native orchestrator",
     )
     for job in ("existing_join_status_windows", "existing_join_windows_stage_prepare",
