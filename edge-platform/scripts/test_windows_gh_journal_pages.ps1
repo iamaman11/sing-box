@@ -1,25 +1,16 @@
-# Execute the actual production reader ASTs, never the BEGIN/POST workflow body.
+# Exercise the one actual Windows production journal reader with negative fixtures.
+# Never call any credential or release mutation; only its two GH GET methods.
 [CmdletBinding()]
 param([switch]$Live)
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
-$workflow = Join-Path $PSScriptRoot '..\..\.github\workflows\windows-physical.yml'
-$source = [IO.File]::ReadAllText($workflow)
-$names = @('Read-CompleteJournal', 'Read-AllJournalPages')
-foreach ($name in $names) {
-    $pattern = '(?ms)^          function ' + [regex]::Escape($name) + ' \{\r?\n.*?^          \}'
-    $definitions = @([regex]::Matches($source, $pattern))
-    if ($definitions.Count -ne 1) { throw "Missing exact workflow reader: $name" }
-    $text = [regex]::Replace($definitions[0].Value, '(?m)^          ', '')
-    $tokens = $null; $errors = $null
-    $ast = [Management.Automation.Language.Parser]::ParseInput($text, [ref]$tokens, [ref]$errors)
-    if ($errors.Count -ne 0 -or $ast.EndBlock.Statements.Count -ne 1 -or
-        $ast.EndBlock.Statements[0] -isnot [Management.Automation.Language.FunctionDefinitionAst]) {
-        throw "Unsafe or invalid production function extraction: $name"
-    }
-    . ([scriptblock]::Create($text))
+$reader = Join-Path $PSScriptRoot 'read-complete-gh-journal.ps1'
+if (-not (Test-Path -LiteralPath $reader -PathType Leaf)) {
+    throw 'Missing canonical read-only journal reader'
 }
+function Read-DurableJournal { & $reader }
+$names = @('Read-DurableJournal')
 $repository = 'iamaman11/sing-box'
 if ($Live -and $env:GITHUB_REPOSITORY -and $env:GITHUB_REPOSITORY -cne $repository) {
     throw 'Live journal test is canonical-repository-only'
@@ -105,11 +96,9 @@ try {
         $script:FixtureMetadata = $liveMetadata
         $pages = ConvertFrom-Json -InputObject $liveRaw -NoEnumerate
         $metadata = ConvertFrom-Json -InputObject $liveMetadata
-        $first = @(Read-CompleteJournal)
-        $second = @(Read-AllJournalPages)
-        if ($first.Count -ne $second.Count -or $first.Count -ne [long]$metadata.comments -or
-            (($first.id -join ',') -cne ($second.id -join ','))) {
-            throw 'Production readers disagree on full journal identity'
+        $first = @(Read-DurableJournal)
+        if ($first.Count -ne [long]$metadata.comments) {
+            throw 'Production reader disagrees with authoritative issue count'
         }
         if (@($first | Group-Object id | Where-Object Count -ne 1).Count -ne 0) {
             throw 'Journal has duplicate comment IDs'
