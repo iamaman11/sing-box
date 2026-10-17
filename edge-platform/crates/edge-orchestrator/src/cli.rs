@@ -838,6 +838,34 @@ mod tests {
     use clap::Parser;
 
     #[test]
+    fn exact_provider_endpoint_observation_is_reachable_with_named_machine() {
+        let expected = vec![
+            "endpoint-observe".to_owned(),
+            "infra/vultr/application-acceptance.json".to_owned(),
+            "application-acceptance-1".to_owned(),
+        ];
+        let parsed = Cli::try_parse_from([
+            "edge-orchestrator",
+            "vultr-lifecycle",
+            "endpoint-observe",
+            "infra/vultr/application-acceptance.json",
+            "application-acceptance-1",
+        ])
+        .unwrap();
+        let Command::VultrLifecycle { command } = parsed.command else {
+            panic!("expected exact provider lifecycle command");
+        };
+        assert_eq!(command.into_legacy_args(), expected);
+        assert!(Cli::try_parse_from([
+            "edge-orchestrator",
+            "vultr-lifecycle",
+            "endpoint-observe",
+            "infra/vultr/application-acceptance.json",
+        ])
+        .is_err());
+    }
+
+    #[test]
     fn owner_transition_workflow_commands_reach_exact_public_clap_dispatch() {
         let old = "b".repeat(64);
         let new = "a".repeat(64);
