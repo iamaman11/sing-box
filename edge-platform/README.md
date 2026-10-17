@@ -29,7 +29,7 @@ Before a mutation, refresh protected `main`, open PRs, latest Actions and the la
 
 An existing, single registered Windows runner remains eligible for the legacy
 `/credentials status`, `/credentials apply` and `/credentials recover`
-commands only when `infra/windows/hosts.json` contains **no** hosts and the
+commands only when `infra/windows/hosts.textproto` contains **no** hosts and the
 GitHub runner label `sing-box-windows-lab` is unambiguous.
 
 For each **new Windows** host, complete the normal administrator-owned
@@ -40,10 +40,13 @@ label and `sing-box-host-desktop-b`. No second controller, runner or service
 is created.
 
 After that physical bootstrap, record exactly this nonsecret entry in the
-protected Git-owned `infra/windows/hosts.json`:
+protected Git-owned `infra/windows/hosts.textproto`:
 
-```json
-{"id":"desktop-b","runner_name":"sing-box-desktop-b"}
+```textproto
+hosts {
+  id: "desktop-b"
+  runner_name: "sing-box-desktop-b"
+}
 ```
 
 Then use `/credentials status desktop-b`, `/credentials apply desktop-b`
