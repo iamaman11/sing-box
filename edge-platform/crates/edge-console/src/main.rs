@@ -14,7 +14,8 @@ use edge_local_runtime::{
 };
 use edge_observability::init as init_observability;
 use edge_secrets::{
-    ACCESS_IDENTITY_FILE_NAME, CredentialStore, fetch_canonical_credential_bundle,
+    ACCESS_IDENTITY_FILE_NAME, CredentialOriginSelection, CredentialStore,
+    attest_worker_credential_origin, fetch_canonical_credential_bundle,
     verify_canonical_dummy_ab_slots, verify_initial_selected_dummy_slot,
 };
 use edge_singbox::{STAGE2_CLASH_API_PORT, STAGE2_DESKTOP_PROXY_PORT, STAGE2_WSL_PROXY_PORT};
@@ -301,6 +302,115 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             .map_err(ConsoleError::Command)?;
             Ok(())
         }
+        Command::CredentialExistingLine1Witness(args) => {
+            #[cfg(windows)]
+            {
+                let root = Path::new(&args.install_root);
+                initial_line1_witness::require_isolated_root(root)
+                    .map_err(ConsoleError::Command)?;
+                if args.windows_candidate_sha256.len() != 64
+                    || !args
+                        .windows_candidate_sha256
+                        .bytes()
+                        .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+                {
+                    return Err(ConsoleError::Command(
+                        "existing B witness requires exact Windows candidate SHA-256".to_owned(),
+                    ));
+                }
+                let isolated = load_verified_activation(root)?;
+                let serving = Path::new(r"C:\sing-box");
+                let serving_release = load_verified_activation(serving)?;
+                if isolated.release_set_sha256 != serving_release.release_set_sha256 {
+                    return Err(ConsoleError::Command(
+                        "isolated Line1 witness ReleaseSet differs from serving SYSTEM release"
+                            .to_owned(),
+                    ));
+                }
+                require_stopped_proxy_only_initial_commit_owner(serving)
+                    .map_err(ConsoleError::Command)?;
+                let before = existing_line1_serving_candidate(
+                    serving,
+                    args.generation,
+                    &args.windows_candidate_sha256,
+                )
+                .map_err(ConsoleError::Command)?;
+                let store = windows_credential_store_path(root);
+                let identity = root
+                    .join("state")
+                    .join("secrets")
+                    .join(ACCESS_IDENTITY_FILE_NAME);
+                let worker = attest_worker_credential_origin(
+                    &store,
+                    &identity,
+                    edge_shared_types::CredentialProjectionKind::Windows,
+                    CredentialOriginSelection::Candidate,
+                )
+                .await
+                .map_err(ConsoleError::Command)?;
+                if worker.generation != args.generation
+                    || worker.slot != "B"
+                    || worker.bundle_sha256 != args.windows_candidate_sha256
+                {
+                    return Err(ConsoleError::Command(
+                        "isolated Windows B differs from serving SYSTEM candidate".to_owned(),
+                    ));
+                }
+                // Reuse the existing bounded transient witness; never use
+                // serving C:\sing-box as a disposable sing-box install root.
+                initial_line1_witness::run(
+                    root,
+                    Path::new(&isolated.sing_box_path),
+                    args.generation,
+                    args.target_ipv4,
+                    &args.target_domain,
+                )
+                .map_err(ConsoleError::Command)?;
+                require_stopped_proxy_only_initial_commit_owner(serving)
+                    .map_err(ConsoleError::Command)?;
+                if existing_line1_serving_candidate(
+                    serving,
+                    args.generation,
+                    &args.windows_candidate_sha256,
+                )
+                .map_err(ConsoleError::Command)?
+                    != before
+                {
+                    return Err(ConsoleError::Command(
+                        "serving SYSTEM A/B changed during isolated Line1 witness".to_owned(),
+                    ));
+                }
+                let after = attest_worker_credential_origin(
+                    &store,
+                    &identity,
+                    edge_shared_types::CredentialProjectionKind::Windows,
+                    CredentialOriginSelection::Candidate,
+                )
+                .await
+                .map_err(ConsoleError::Command)?;
+                if after != worker {
+                    return Err(ConsoleError::Command(
+                        "isolated B Worker origin drifted during physical witness".to_owned(),
+                    ));
+                }
+                println!("existing_join_begin_sha256={before}");
+                println!("existing_join_line1_external_4_of_4=PASS");
+                println!("existing_join_windows_b_worker_exact=true");
+                println!("existing_join_windows_system_stopped_proxyonly=true");
+                println!(
+                    "existing_join_candidate_sha256={}",
+                    args.windows_candidate_sha256
+                );
+                Ok(())
+            }
+            #[cfg(not(windows))]
+            {
+                let _ = args;
+                Err(ConsoleError::Command(
+                    "existing B physical Line1 witness requires Windows".to_owned(),
+                ))
+            }
+        }
         Command::CredentialState(args) => {
             let state = fetch_credential_state(args.resolve()).await?;
             print_windows_credential_state(state.as_ref());
@@ -359,6 +469,11 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     initial_commit_slot: None,
                     initial_recovery_intent_sha256: None,
                     initial_candidate_sha256: None,
+                    existing_join_vm_candidate_sha256: None,
+                    existing_join_windows_active_sha256: None,
+                    existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -381,6 +496,11 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     initial_commit_slot: None,
                     initial_recovery_intent_sha256: None,
                     initial_candidate_sha256: None,
+                    existing_join_vm_candidate_sha256: None,
+                    existing_join_windows_active_sha256: None,
+                    existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -405,6 +525,11 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     initial_commit_slot: None,
                     initial_recovery_intent_sha256: None,
                     initial_candidate_sha256: None,
+                    existing_join_vm_candidate_sha256: None,
+                    existing_join_windows_active_sha256: None,
+                    existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -426,6 +551,11 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                 initial_commit_slot: None,
                 initial_recovery_intent_sha256: None,
                 initial_candidate_sha256: None,
+                existing_join_vm_candidate_sha256: None,
+                existing_join_windows_active_sha256: None,
+                existing_join_windows_candidate_sha256: None,
+                existing_join_intent_sha256: None,
+                existing_join_slot: None,
             };
             let (code, detail, release) =
                 offline_bootstrap_privileged_release(&install_root, &request)
@@ -456,6 +586,11 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     initial_commit_slot: None,
                     initial_recovery_intent_sha256: None,
                     initial_candidate_sha256: None,
+                    existing_join_vm_candidate_sha256: None,
+                    existing_join_windows_active_sha256: None,
+                    existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -482,6 +617,11 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     initial_commit_slot: None,
                     initial_recovery_intent_sha256: None,
                     initial_candidate_sha256: None,
+                    existing_join_vm_candidate_sha256: None,
+                    existing_join_windows_active_sha256: None,
+                    existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -508,6 +648,11 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     initial_commit_slot: None,
                     initial_recovery_intent_sha256: None,
                     initial_candidate_sha256: None,
+                    existing_join_vm_candidate_sha256: None,
+                    existing_join_windows_active_sha256: None,
+                    existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -532,6 +677,11 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     initial_commit_slot: None,
                     initial_recovery_intent_sha256: None,
                     initial_candidate_sha256: None,
+                    existing_join_vm_candidate_sha256: None,
+                    existing_join_windows_active_sha256: None,
+                    existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -554,6 +704,11 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     initial_commit_slot: None,
                     initial_recovery_intent_sha256: None,
                     initial_candidate_sha256: None,
+                    existing_join_vm_candidate_sha256: None,
+                    existing_join_windows_active_sha256: None,
+                    existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -578,6 +733,11 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     initial_commit_slot: None,
                     initial_recovery_intent_sha256: None,
                     initial_candidate_sha256: None,
+                    existing_join_vm_candidate_sha256: None,
+                    existing_join_windows_active_sha256: None,
+                    existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -602,6 +762,11 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     initial_commit_slot: None,
                     initial_recovery_intent_sha256: None,
                     initial_candidate_sha256: None,
+                    existing_join_vm_candidate_sha256: None,
+                    existing_join_windows_active_sha256: None,
+                    existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -624,6 +789,11 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     initial_commit_slot: None,
                     initial_recovery_intent_sha256: None,
                     initial_candidate_sha256: None,
+                    existing_join_vm_candidate_sha256: None,
+                    existing_join_windows_active_sha256: None,
+                    existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -648,6 +818,11 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     initial_commit_slot: Some(args.slot),
                     initial_recovery_intent_sha256: None,
                     initial_candidate_sha256: None,
+                    existing_join_vm_candidate_sha256: None,
+                    existing_join_windows_active_sha256: None,
+                    existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -672,6 +847,69 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     initial_commit_slot: Some(args.slot),
                     initial_recovery_intent_sha256: Some(args.recovery_intent_sha256),
                     initial_candidate_sha256: Some(args.candidate_sha256),
+                    existing_join_vm_candidate_sha256: None,
+                    existing_join_windows_active_sha256: None,
+                    existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
+                },
+            )?;
+            print_privileged_result(&result);
+            finish_privileged_result(&result)?;
+            Ok(())
+        }
+        Command::PrivilegedExistingPrepare(args) => {
+            let install_root = PathBuf::from(args.install_root);
+            require_exact_immutable_activation_console(&install_root)
+                .map_err(ConsoleError::Command)?;
+            let result = submit_privileged_request(
+                &install_root,
+                WindowsPrivilegedRequest {
+                    schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+                    request_id: new_privileged_request_id()?,
+                    operation: WindowsPrivilegedOperation::ExistingCredentialPrepare as i32,
+                    accepted_revision: None,
+                    release_set_sha256: None,
+                    credential_generation: Some(args.generation),
+                    credential_transition_action: None,
+                    initial_commit_intent_sha256: None,
+                    initial_commit_slot: None,
+                    initial_recovery_intent_sha256: None,
+                    initial_candidate_sha256: None,
+                    existing_join_vm_candidate_sha256: Some(args.vm_candidate_sha256),
+                    existing_join_windows_active_sha256: Some(args.windows_active_sha256),
+                    existing_join_windows_candidate_sha256: Some(args.windows_candidate_sha256),
+                    existing_join_intent_sha256: Some(args.begin_sha256),
+                    existing_join_slot: Some(args.slot),
+                },
+            )?;
+            print_privileged_result(&result);
+            finish_privileged_result(&result)?;
+            Ok(())
+        }
+        Command::PrivilegedExistingJoin(args) => {
+            let install_root = PathBuf::from(args.install_root);
+            require_exact_immutable_activation_console(&install_root)
+                .map_err(ConsoleError::Command)?;
+            let result = submit_privileged_request(
+                &install_root,
+                WindowsPrivilegedRequest {
+                    schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+                    request_id: new_privileged_request_id()?,
+                    operation: WindowsPrivilegedOperation::ExistingCredentialJoin as i32,
+                    accepted_revision: None,
+                    release_set_sha256: None,
+                    credential_generation: Some(args.generation),
+                    credential_transition_action: None,
+                    initial_commit_intent_sha256: None,
+                    initial_commit_slot: None,
+                    initial_recovery_intent_sha256: None,
+                    initial_candidate_sha256: None,
+                    existing_join_vm_candidate_sha256: Some(args.vm_candidate_sha256),
+                    existing_join_windows_active_sha256: Some(args.windows_active_sha256),
+                    existing_join_windows_candidate_sha256: Some(args.windows_candidate_sha256),
+                    existing_join_intent_sha256: Some(args.intent_sha256),
+                    existing_join_slot: Some(args.slot),
                 },
             )?;
             print_privileged_result(&result);
@@ -794,6 +1032,11 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     initial_commit_slot: None,
                     initial_recovery_intent_sha256: None,
                     initial_candidate_sha256: None,
+                    existing_join_vm_candidate_sha256: None,
+                    existing_join_windows_active_sha256: None,
+                    existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -816,6 +1059,11 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     initial_commit_slot: None,
                     initial_recovery_intent_sha256: None,
                     initial_candidate_sha256: None,
+                    existing_join_vm_candidate_sha256: None,
+                    existing_join_windows_active_sha256: None,
+                    existing_join_windows_candidate_sha256: None,
+                    existing_join_intent_sha256: None,
+                    existing_join_slot: None,
                 },
             )?;
             print_privileged_result(&result);
@@ -1567,6 +1815,132 @@ async fn process_privileged_request(
                 Err("initial paired credential recovery requires Windows SYSTEM owner".to_owned())
             }
         }
+        Ok(WindowsPrivilegedOperation::ExistingCredentialPrepare) => {
+            #[cfg(windows)]
+            {
+                async {
+                    require_stopped_proxy_only_initial_commit_owner(install_root)?;
+                    let activation = load_verified_activation(install_root)
+                        .map_err(|err| err.to_string())?;
+                    let generation = request.credential_generation
+                        .ok_or_else(|| "existing join generation missing".to_owned())?;
+                    let slot = request.existing_join_slot
+                        .ok_or_else(|| "existing join slot missing".to_owned())?;
+                    let intent = request.existing_join_intent_sha256.as_deref()
+                        .ok_or_else(|| "existing join durable intent missing".to_owned())?;
+                    let vm = request.existing_join_vm_candidate_sha256.as_deref()
+                        .ok_or_else(|| "existing join VM witness missing".to_owned())?;
+                    let source = request.existing_join_windows_active_sha256.as_deref()
+                        .ok_or_else(|| "existing join Windows A witness missing".to_owned())?;
+                    let target = request.existing_join_windows_candidate_sha256.as_deref()
+                        .ok_or_else(|| "existing join Windows B witness missing".to_owned())?;
+                    let identity = install_root.join("state").join("secrets")
+                        .join(ACCESS_IDENTITY_FILE_NAME);
+                    let root = windows_credential_store_path(install_root);
+                    let a = attest_worker_credential_origin(
+                        &root, &identity,
+                        edge_shared_types::CredentialProjectionKind::Windows,
+                        CredentialOriginSelection::Active,
+                    ).await?;
+                    let b = attest_worker_credential_origin(
+                        &root, &identity,
+                        edge_shared_types::CredentialProjectionKind::Windows,
+                        CredentialOriginSelection::Candidate,
+                    ).await?;
+                    let selected_slot = match slot {
+                        1 => "A",
+                        2 => "B",
+                        _ => return Err("existing Windows join selected slot invalid".to_owned()),
+                    };
+                    if a.bundle_sha256 != source
+                        || a.slot == selected_slot
+                        || b.bundle_sha256 != target
+                        || b.generation != generation
+                        || b.slot != selected_slot
+                    {
+                        return Err("existing join exact Worker Windows A/B witnesses drifted".to_owned());
+                    }
+                    let (code, detail) = credential_transition::existing_prepare(
+                        install_root,
+                        &activation,
+                        generation,
+                        slot as i32,
+                        source,
+                        target,
+                        vm,
+                        intent,
+                    )?;
+                    Ok((code, detail, Some(activation.release_set_sha256)))
+                }.await
+            }
+            #[cfg(not(windows))]
+            {
+                Err("existing paired join requires Windows SYSTEM owner".to_owned())
+            }
+        }
+        Ok(WindowsPrivilegedOperation::ExistingCredentialJoin) => {
+            #[cfg(windows)]
+            {
+                async {
+                    require_stopped_proxy_only_initial_commit_owner(install_root)?;
+                    let activation = load_verified_activation(install_root)
+                        .map_err(|err| err.to_string())?;
+                    let generation = request.credential_generation
+                        .ok_or_else(|| "existing join generation missing".to_owned())?;
+                    let slot = request.existing_join_slot
+                        .ok_or_else(|| "existing join slot missing".to_owned())?;
+                    let intent = request.existing_join_intent_sha256.as_deref()
+                        .ok_or_else(|| "existing join durable intent missing".to_owned())?;
+                    let vm = request.existing_join_vm_candidate_sha256.as_deref()
+                        .ok_or_else(|| "existing join VM witness missing".to_owned())?;
+                    let source = request.existing_join_windows_active_sha256.as_deref()
+                        .ok_or_else(|| "existing join Windows A witness missing".to_owned())?;
+                    let target = request.existing_join_windows_candidate_sha256.as_deref()
+                        .ok_or_else(|| "existing join Windows B witness missing".to_owned())?;
+                    let identity = install_root.join("state").join("secrets")
+                        .join(ACCESS_IDENTITY_FILE_NAME);
+                    let root = windows_credential_store_path(install_root);
+                    let a = attest_worker_credential_origin(
+                        &root, &identity,
+                        edge_shared_types::CredentialProjectionKind::Windows,
+                        CredentialOriginSelection::Active,
+                    ).await?;
+                    let b = attest_worker_credential_origin(
+                        &root, &identity,
+                        edge_shared_types::CredentialProjectionKind::Windows,
+                        CredentialOriginSelection::Candidate,
+                    ).await?;
+                    let selected_slot = match slot {
+                        1 => "A",
+                        2 => "B",
+                        _ => return Err("existing Windows join selected slot invalid".to_owned()),
+                    };
+                    if a.bundle_sha256 != source
+                        || a.slot == selected_slot
+                        || b.bundle_sha256 != target
+                        || b.generation != generation
+                        || b.slot != selected_slot
+                    {
+                        return Err("existing join exact Worker Windows A/B witnesses drifted".to_owned());
+                    }
+                    let (code, detail) = credential_transition::existing_join(
+                        install_root,
+                        &activation,
+                        generation,
+                        slot as i32,
+                        intent,
+                        source,
+                        target,
+                        vm,
+                    )?;
+                    Ok((code, detail, Some(activation.release_set_sha256)))
+                }.await
+            }
+            #[cfg(not(windows))]
+            {
+                Err("existing paired join requires Windows SYSTEM owner".to_owned())
+            }
+        }
         Ok(WindowsPrivilegedOperation::CredentialTransition) => {
             let action = request
                 .credential_transition_action
@@ -1586,8 +1960,55 @@ async fn process_privileged_request(
             let active = load_verified_activation(install_root)
                 .ok()
                 .map(|state| state.release_set_sha256);
-            read_bounded_windows_runtime_evidence(install_root)
-                .map(|detail| ("RUNTIME_EVIDENCE_READ".to_owned(), detail, active))
+            let evidence = read_bounded_windows_runtime_evidence(install_root);
+            #[cfg(windows)]
+            let evidence = match evidence {
+                Ok(detail)
+                    if (detail.contains("credential_lifecycle_state=EXISTING_ACTIVE_UNVERIFIED")
+                        || detail.contains("credential_lifecycle_state=EXISTING_TRANSITION_UNVERIFIED"))
+                        && require_stopped_proxy_only_initial_commit_owner(install_root).is_ok() =>
+                {
+                    let identity = install_root
+                        .join("state")
+                        .join("secrets")
+                        .join(ACCESS_IDENTITY_FILE_NAME);
+                    let store = windows_credential_store_path(install_root);
+                    // For a staged A/B transition BOTH immutable projections
+                    // must remain exact Worker-v2. No read-only result grants
+                    // local or cross-host mutation authority.
+                    let active_proof = attest_worker_credential_origin(
+                        &store,
+                        &identity,
+                        edge_shared_types::CredentialProjectionKind::Windows,
+                        CredentialOriginSelection::Active,
+                    ).await;
+                    let staged = detail.contains(
+                        "credential_lifecycle_state=EXISTING_TRANSITION_UNVERIFIED"
+                    );
+                    let candidate_ok = if staged && active_proof.is_ok() {
+                        attest_worker_credential_origin(
+                            &store,
+                            &identity,
+                            edge_shared_types::CredentialProjectionKind::Windows,
+                            CredentialOriginSelection::Candidate,
+                        ).await.is_ok()
+                    } else {
+                        !staged
+                    };
+                    if active_proof.is_ok() && candidate_ok {
+                        Ok(detail
+                            .replace("credential_origin=UNPROVEN", "credential_origin=WORKER_OK")
+                            .replace(
+                                "credential_next_action=READ_ONLY_ORIGIN_RECONCILE",
+                                "credential_next_action=PAIR_VM_PROOF",
+                            ))
+                    } else {
+                        Ok(detail)
+                    }
+                }
+                other => other,
+            };
+            evidence.map(|detail| ("RUNTIME_EVIDENCE_READ".to_owned(), detail, active))
         }
         Ok(WindowsPrivilegedOperation::RestartControllerService) => {
             #[cfg(windows)]
@@ -1682,6 +2103,24 @@ fn read_bounded_windows_credential_cursor(install_root: &Path) -> Result<String,
     };
     let receipt = store.read_initial_pair_receipt()?;
     let recovery = store.read_initial_pair_recovery_receipt()?;
+    // Only sanitized durable hashes; malformed or torn receipts yield
+    // UNKNOWN, never an invented "not attempted" state.
+    let existing_prepare = store.read_windows_existing_join_prepare_receipt()?;
+    let existing_join = store.read_existing_join_receipt()?;
+    let existing_prepare_begin = existing_prepare
+        .as_deref()
+        .and_then(|text| {
+            text.lines()
+                .find_map(|line| line.strip_prefix("begin_sha256="))
+        })
+        .unwrap_or("ABSENT");
+    let existing_commit_intent = existing_join
+        .as_deref()
+        .and_then(|text| {
+            text.lines()
+                .find_map(|line| line.strip_prefix("intent_sha256="))
+        })
+        .unwrap_or("ABSENT");
     let recovery_sha = recovery
         .as_deref()
         .and_then(|value| {
@@ -1699,7 +2138,7 @@ fn read_bounded_windows_credential_cursor(install_root: &Path) -> Result<String,
         })
         .unwrap_or("ABSENT");
     Ok(format!(
-        "credential_cursor=VALID;credential_active_present={};credential_candidate_present={};credential_candidate_generation={};credential_candidate_slot={slot};credential_previous_present={};credential_active_generation={};credential_active_slot={active_slot};credential_active_sha256={};credential_candidate_sha256={};credential_initial_commit_receipt_present={};credential_initial_commit_intent_sha256={receipt_sha};credential_initial_recovery_receipt_present={};credential_initial_recovery_intent_sha256={recovery_sha}",
+        "credential_cursor=VALID;credential_active_present={};credential_candidate_present={};credential_candidate_generation={};credential_candidate_slot={slot};credential_previous_present={};credential_active_generation={};credential_active_slot={active_slot};credential_active_sha256={};credential_candidate_sha256={};credential_initial_commit_receipt_present={};credential_initial_commit_intent_sha256={receipt_sha};credential_initial_recovery_receipt_present={};credential_initial_recovery_intent_sha256={recovery_sha};credential_existing_join_prepare_receipt_present={};credential_existing_join_prepare_begin_sha256={existing_prepare_begin};credential_existing_join_receipt_present={};credential_existing_join_intent_sha256={existing_commit_intent};credential_previous_generation={};credential_previous_slot={};credential_previous_sha256={}",
         active.is_some(),
         candidate.is_some(),
         candidate.map(|value| value.generation).unwrap_or(0),
@@ -1713,7 +2152,104 @@ fn read_bounded_windows_credential_cursor(install_root: &Path) -> Result<String,
             .unwrap_or("ABSENT"),
         receipt.is_some(),
         recovery.is_some(),
+        existing_prepare.is_some(),
+        existing_join.is_some(),
+        previous.map(|value| value.generation).unwrap_or(0),
+        previous.map(|value| value.slot).unwrap_or(0),
+        previous
+            .map(|value| value.sha256.as_str())
+            .unwrap_or("ABSENT"),
     ))
+}
+
+/// Non-secret SYSTEM cursor proof from the serving installation. A disposable
+/// Line1 test must use its own isolated root and prove it tested this same B.
+/// This function never reads private credential files as the GitHub runner.
+#[cfg(windows)]
+fn existing_line1_serving_candidate(
+    serving_root: &Path,
+    generation: u64,
+    expected_b: &str,
+) -> Result<String, String> {
+    let activation = load_verified_activation(serving_root)
+        .map_err(|_| "existing Line1 source ReleaseSet unverified".to_owned())?;
+    let child = Command::new(&activation.console_path)
+        .arg("privileged-runtime-evidence")
+        .arg("--install-root")
+        .arg(serving_root)
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|_| "SYSTEM candidate evidence unavailable".to_owned())?;
+    if !child.status.success() {
+        return Err("SYSTEM candidate evidence failed".to_owned());
+    }
+    let text = String::from_utf8(child.stdout)
+        .map_err(|_| "SYSTEM evidence encoding invalid".to_owned())?;
+    parse_existing_line1_system_result(&text, generation, expected_b)
+}
+
+/// Pure, fail-closed decoding of the bounded SYSTEM projection. No secret,
+/// local file or operator-declared witness can authorize a mutation.
+#[cfg(any(windows, test))]
+fn parse_existing_line1_system_result(
+    text: &str,
+    generation: u64,
+    expected_b: &str,
+) -> Result<String, String> {
+    if text.lines().filter(|line| *line == "status=PASS").count() != 1 {
+        return Err("SYSTEM evidence success marker missing or duplicate".to_owned());
+    }
+    let details: Vec<_> = text
+        .lines()
+        .filter_map(|line| line.strip_prefix("detail=runtime_evidence=BOUNDED_READ_ONLY;"))
+        .collect();
+    if details.len() != 1 {
+        return Err("SYSTEM cursor result absent or ambiguous".to_owned());
+    }
+    let mut observed = std::collections::BTreeMap::new();
+    for entry in details[0].split(';') {
+        let (key, value) = entry
+            .split_once('=')
+            .ok_or_else(|| "SYSTEM cursor field malformed".to_owned())?;
+        if observed.insert(key, value).is_some() {
+            return Err("SYSTEM cursor field duplicated".to_owned());
+        }
+    }
+    for (field, expected) in [
+        ("credential_cursor", "VALID"),
+        ("credential_origin", "WORKER_OK"),
+        ("credential_active_present", "true"),
+        ("credential_active_slot", "A"),
+        ("credential_candidate_present", "true"),
+        ("credential_candidate_slot", "B"),
+        ("credential_candidate_sha256", expected_b),
+        ("credential_previous_present", "false"),
+        ("credential_existing_join_prepare_receipt_present", "true"),
+        ("credential_existing_join_receipt_present", "false"),
+    ] {
+        if observed.get(field).copied() != Some(expected) {
+            return Err(format!("SYSTEM existing B witness mismatch: {field}"));
+        }
+    }
+    if observed
+        .get("credential_candidate_generation")
+        .and_then(|value| value.parse::<u64>().ok())
+        != Some(generation)
+    {
+        return Err("SYSTEM B candidate generation changed".to_owned());
+    }
+    let begin = observed
+        .get("credential_existing_join_prepare_begin_sha256")
+        .copied()
+        .ok_or_else(|| "SYSTEM BEGIN preparation receipt unknown".to_owned())?;
+    if begin.len() != 64
+        || !begin
+            .bytes()
+            .all(|value| value.is_ascii_digit() || (b'a'..=b'f').contains(&value))
+    {
+        return Err("SYSTEM BEGIN preparation SHA-256 invalid".to_owned());
+    }
+    Ok(begin.to_owned())
 }
 
 #[cfg(windows)]
@@ -3872,6 +4408,11 @@ fn submit_windows_credential_transition(
             initial_commit_slot: None,
             initial_recovery_intent_sha256: None,
             initial_candidate_sha256: None,
+            existing_join_vm_candidate_sha256: None,
+            existing_join_windows_active_sha256: None,
+            existing_join_windows_candidate_sha256: None,
+            existing_join_intent_sha256: None,
+            existing_join_slot: None,
         },
     )
     .map_err(|err| err.to_string())
@@ -5904,6 +6445,11 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
                 initial_commit_slot: None,
                 initial_recovery_intent_sha256: None,
                 initial_candidate_sha256: None,
+                existing_join_vm_candidate_sha256: None,
+                existing_join_windows_active_sha256: None,
+                existing_join_windows_candidate_sha256: None,
+                existing_join_intent_sha256: None,
+                existing_join_slot: None,
             };
             let encoded = encode_windows_privileged_request(&req).unwrap();
             assert_eq!(
@@ -6150,6 +6696,11 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
             initial_commit_slot: None,
             initial_recovery_intent_sha256: None,
             initial_candidate_sha256: None,
+            existing_join_vm_candidate_sha256: None,
+            existing_join_windows_active_sha256: None,
+            existing_join_windows_candidate_sha256: None,
+            existing_join_intent_sha256: None,
+            existing_join_slot: None,
         };
         // The immutable authority pair is checked in both build modes.
         // Actual release rollback remains forbidden on first-install ProxyOnly.
@@ -6334,6 +6885,11 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
             initial_commit_slot: None,
             initial_recovery_intent_sha256: None,
             initial_candidate_sha256: None,
+            existing_join_vm_candidate_sha256: None,
+            existing_join_windows_active_sha256: None,
+            existing_join_windows_candidate_sha256: None,
+            existing_join_intent_sha256: None,
+            existing_join_slot: None,
         };
         let ping = WindowsPrivilegedRequest {
             schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
@@ -6347,6 +6903,11 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
             initial_commit_slot: None,
             initial_recovery_intent_sha256: None,
             initial_candidate_sha256: None,
+            existing_join_vm_candidate_sha256: None,
+            existing_join_windows_active_sha256: None,
+            existing_join_windows_candidate_sha256: None,
+            existing_join_intent_sha256: None,
+            existing_join_slot: None,
         };
 
         assert_eq!(
@@ -6516,6 +7077,44 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
             active_release_set_sha256: None,
         };
         assert!(encode_windows_privileged_result(&result).is_ok());
+    }
+
+    #[test]
+    fn existing_line1_system_projection_requires_exact_worker_b_and_begin_receipt() {
+        let begin = "a".repeat(64);
+        let candidate = "b".repeat(64);
+        let sample = format!(
+            "status=PASS\ndetail=runtime_evidence=BOUNDED_READ_ONLY;credential_cursor=VALID;credential_origin=WORKER_OK;credential_active_present=true;credential_active_slot=A;credential_candidate_present=true;credential_candidate_slot=B;credential_candidate_sha256={candidate};credential_candidate_generation=203;credential_previous_present=false;credential_existing_join_prepare_receipt_present=true;credential_existing_join_receipt_present=false;credential_existing_join_prepare_begin_sha256={begin}\n"
+        );
+        assert_eq!(
+            parse_existing_line1_system_result(&sample, 203, &candidate).unwrap(),
+            begin
+        );
+        for invalid in [
+            sample.replace("WORKER_OK", "UNPROVEN"),
+            sample.replace("candidate_slot=B", "candidate_slot=A"),
+            sample.replace(
+                "prepare_receipt_present=true",
+                "prepare_receipt_present=false",
+            ),
+            sample.replace("generation=203", "generation=204"),
+            sample.replace("previous_present=false", "previous_present=true"),
+            sample.replace(
+                &format!("candidate_sha256={candidate}"),
+                "candidate_sha256=ABSENT",
+            ),
+            sample.replace(&format!("begin_sha256={begin}"), "begin_sha256=ABSENT"),
+            sample.replace("status=PASS", "status=PASS\nstatus=PASS"),
+            sample.replace(
+                "credential_candidate_slot=B;",
+                "credential_candidate_slot=B;credential_candidate_slot=B;",
+            ),
+        ] {
+            assert!(
+                parse_existing_line1_system_result(&invalid, 203, &candidate).is_err(),
+                "malformed or mismatched SYSTEM evidence must block Line1"
+            );
+        }
     }
 
     #[test]

@@ -296,6 +296,8 @@ def test_windows_gh_journal_pages(source: str) -> None:
 def verify_credential_observation_lane(source: str) -> None:
     expected = (
         "group: ${{ (inputs.command_body == '/credentials verify' || "
+        "inputs.command_body == '/credentials status' || "
+        "startsWith(inputs.command_body, '/credentials status ') || "
         "startsWith(inputs.command_body, '/credentials initial-pair-preflight ')) && "
         "format('credential-observe-{0}', github.run_id) || "
         "format('credential-transaction-{0}', github.repository_id) }}"
@@ -304,6 +306,158 @@ def verify_credential_observation_lane(source: str) -> None:
             "credential read-only lane must be isolated while every mutation retains the exact global lock")
     require("cancel-in-progress: false" in source,
             "credential operations must never cancel an unresolved earlier run")
+    for job in (
+        "existing_join_status_release",
+        "existing_join_status_vm",
+        "existing_join_status_windows",
+        "existing_join_status_summary",
+    ):
+        require(source.count(f"  {job}:\n") == 1,
+                "native status must collect exactly one canonical two-host read-only verdict")
+    require("inputs.command_body == '/credentials status'" in source
+            and "credential_mutations=0" in source
+            and "BEGIN_NOT_DURABLE_LINE1_UNPROVEN_APPLY_FORBIDDEN" in source,
+            "native status must never grant cross-host mutation authority")
+    require(
+        "  existing_join_begin:\n" in source
+        and "  existing_join_recover_readonly:\n" in source
+        and "needs.authorize.outputs.operation == 'apply'" in source
+        and "needs.authorize.outputs.operation == 'recover'" in source
+        and "credentials existing-join-begin-plan" in source
+        and "credentials existing-join-begin-readback" in source
+        and "existing_join_next=BLOCKED_UNTIL_OWNER_STAGE_AND_PHYSICAL_LINE1_4_OF_4" in source
+        and "recovery=SAFE_BLOCKED_READ_ONLY" in source
+        and "credential_mutation_replayed=false" in source
+        and "test \"$GITHUB_RUN_ATTEMPT\" = 1" in source,
+        "native BEGIN must be sourced from protected Windows/VM proof and read-only recover never replay",
+    )
+    # Post-COMMIT Windows B retains A as PREVIOUS. Read-only recovery must
+    # observe that state, but a NEW BEGIN must reject any previous pointer
+    # or any durable preparation/commit receipt. Do not conflate recovery and
+    # apply preflight: otherwise even a successful one-shot join looks UNKNOWN.
+    vm_observe = source.split("  existing_join_status_vm:\n", 1)[1].split(
+        "\n  existing_join_status_windows:", 1)[0]
+    windows_observe = source.split("  existing_join_status_windows:\n", 1)[1].split(
+        "\n  existing_join_status_summary:", 1)[0]
+    existing_begin = source.split("  existing_join_begin:\n", 1)[1].split(
+        "\n  existing_join_recover_readonly:", 1)[0]
+    require(
+        "credential_existing_join_intent_sha256" in vm_observe
+        and "receipt_intent_sha256=$receipt_intent" in vm_observe
+        and "join_receipt_intent_sha256:" in vm_observe,
+        "VM owner status must export the exact durable join receipt identity")
+    require(
+        "previous_present: ${{ steps.observe.outputs.previous_present }}" in windows_observe
+        and "previous_sha256: ${{ steps.observe.outputs.previous_sha256 }}" in windows_observe
+        and "prepare_begin_sha256:" in windows_observe
+        and "join_intent_sha256:" in windows_observe
+        and "Windows previous A post-commit cursor invalid" in windows_observe
+        and "[string]$fields[\'credential_previous_slot\'] -cne \'1\'" in windows_observe
+        and '"previous_slot=A" >> $env:GITHUB_OUTPUT' in windows_observe
+        and "credential_previous_present'] -cne 'false'" not in windows_observe,
+        "Windows status must read post-COMMIT PREVIOUS A plus exact receipts")
+    require(
+        'test "$WIN_PREVIOUS" = false && test "$WIN_PREPARE_RECEIPT" = false && test "$WIN_JOIN_RECEIPT" = false'
+        in existing_begin,
+        "new BEGIN must reject any previous pointer or previous irreversible join attempt")
+
+    # After a durable original BEGIN only the existing SYSTEM owner may
+    # stage B and write its exact BEGIN-bound preparation receipt. This job
+    # must remain unreachable if any full-transaction sibling is missing.
+    assert_source = source.split("  existing_join_windows_stage_prepare:\n", 1)
+    require(len(assert_source) == 2, "Windows B stage/prepare owner missing")
+    stage = assert_source[1].split("\n  existing_join_recover_readonly:", 1)[0]
+    require(
+        "existing_join_begin.result == 'success'" in stage
+        and "group: sing-box-windows-physical" in stage
+        and "privileged-stage-credential" in stage
+        and "privileged-existing-prepare" in stage
+        and "BEGIN_SHA: ${{ needs.existing_join_begin.outputs.begin_sha256 }}" in stage
+        and "credential_existing_join_prepare_begin_sha256" in stage
+        and "credential_existing_join_receipt_present" in stage
+        and "Stage B outcome UNKNOWN; no replay" in stage
+        and "Windows BEGIN preparation UNKNOWN; no replay" in stage
+        and "windows_tun_mutations=0" in stage,
+        "Windows B stage/prepare must be BEGIN-bound, one-shot, SYSTEM owned and stopped")
+    require(
+        "begin_sha256: ${{ steps.begin.outputs.begin_sha256 }}" in existing_begin
+        and 'echo "begin_sha256=$(sha256sum "$exact" | awk' in existing_begin,
+        "BEGIN must only export exact digest after protected GitHub readback")
+    require(
+        "credential-existing-line1-witness" in stage
+        and "line1_external_4_of_4=PASS" in stage
+        and "line1_direct_warp_egress_distinct=true" in stage
+        and "existing_join_windows_b_worker_exact=true" in stage
+        and "existing_join_begin_sha256=" in stage
+        and "reconcile-windows-first-use.ps1" in stage
+        and "line1_accepted:" in stage,
+        "same SYSTEM-owned Windows job must prove B via physical isolated 4/4 and exact owned cleanup")
+    # Full native transaction: physical 4/4 is a required stage output;
+    # only the exact same GitHub run may append COMMIT, and VM/Windows owners
+    # must then mutate once in order without restarting TUN or SCM.
+    for name in ("existing_join_commit_intent", "existing_join_vm_commit", "existing_join_windows_commit"):
+        require(f"  {name}:\n" in source, "one-shot existing A/B transaction job missing")
+    commit = source.split("  existing_join_commit_intent:\n", 1)[1].split(
+        "\n  existing_join_vm_commit:", 1)[0]
+    vm_commit = source.split("  existing_join_vm_commit:\n", 1)[1].split(
+        "\n  existing_join_windows_commit:", 1)[0]
+    win_commit = source.split("  existing_join_windows_commit:\n", 1)[1].split(
+        "\n  existing_join_recover_readonly:", 1)[0]
+    require(
+        "existing_join_windows_stage_prepare.result == 'success'" in commit
+        and 'test "$LINE1" = true' in commit
+        and 'test "$BEGIN_SHA" = "$STAGED_BEGIN_SHA"' in commit
+        and "existing-join-begin-readback" in commit
+        and "existing-join-plan" in commit
+        and "existing-join-readback" in commit
+        and "existing_join_intent=EXACT_DURABLE_ONCE" in commit
+        and "issues: write" in commit
+        and commit.index("existing-join-plan") < commit.index("gh api -X POST")
+        and commit.index("gh api -X POST") < commit.index("existing-join-readback"),
+        "GitHub must append one immutable COMMIT after exact BEGIN and physical A/B proof")
+    require(
+        "existing_join_commit_intent.result == 'success'" in vm_commit
+        and 'local credential-existing-join' in vm_commit
+        and "credential_existing_join_intent_sha256=$INTENT_SHA" in vm_commit
+        and "credential_active_present=true" in vm_commit
+        and "quality_status=PASS" in vm_commit
+        and "sudo -n" in vm_commit
+        and "credential_mutation_replayed=false" in vm_commit,
+        "VM pointer may commit only after exact GitHub intent, with root owner readback")
+    require(
+        "existing_join_vm_commit.result == 'success'" in win_commit
+        and "privileged-existing-join" in win_commit
+        and "credential_previous_slot" in win_commit
+        and "credential_existing_join_prepare_begin_sha256" in win_commit
+        and "credential_existing_join_intent_sha256" in win_commit
+        and "credential_candidate_present" in win_commit
+        and "managed_tun_present=false" in win_commit
+        and "Windows B commit outcome UNKNOWN; NO REPLAY" in win_commit,
+        "Windows SYSTEM commit must preserve A and require VM commit plus exact receipts")
+
+
+    # N2 external proof runs BEFORE irreversible BEGIN, using only the
+    # VM owner's kernel locator plus Worker-v2 TLS/auth; no Vultr API key.
+    vm_status = source.split("  existing_join_status_vm:\n", 1)[1].split(
+        "\n  existing_join_status_windows:", 1)[0]
+    require(
+        'local credential-public-endpoint' in vm_status
+        and 'credential_endpoint_origin=VM_KERNEL_READ_ONLY' in vm_status
+        and 'public_ipv4: ${{ steps.observe.outputs.public_ipv4 }}' in vm_status
+        and 'local quality-line2' in vm_status
+        and 'sudo -n -l "$owner" local credential-existing-join' in vm_status
+        and 'vm_root_join_capability=EXACT_NATIVE_SUDOERS_PASS' in vm_status,
+        "VM root must prove endpoint, Line2 and installed one-shot authority before BEGIN")
+    require(
+        'credentials initial-line2-external-witness' in existing_begin
+        and "line2_external_6_of_6=PASS" in existing_begin
+        and "line2_direct_warp_egress_distinct=true" in existing_begin
+        and "vm_runtime_mutations=0" in existing_begin
+        and 'VM_IPV4: ${{ needs.existing_join_status_vm.outputs.public_ipv4 }}' in existing_begin
+        and existing_begin.index("credentials initial-line2-external-witness")
+            < existing_begin.index('gh api -X POST "repos/$GITHUB_REPOSITORY/issues/26/comments"')
+        and "VULTR_API_KEY" not in source,
+        "original GitHub BEGIN must prove independent external Line2 before write, no Vultr authority")
     read_only_job = source.split("  execute:\n", 1)
     require(len(read_only_job) == 2, "credential read-only verify job missing")
     read_only_job = read_only_job[1].split("\n  rotate_release:\n", 1)[0]
@@ -337,6 +491,211 @@ def test_credential_observation_lane(source: str) -> None:
         raise SystemExit("credential isolation regression was not detected")
 
 
+
+def verify_existing_join_endpoint_and_access(source: str) -> None:
+    """Fail closed on two P0 boundaries before any irreversible BEGIN.
+
+    Verified target values must be exposed as actual GitHub job outputs only
+    after exact BEGIN readback. The physical Windows runner may see only a
+    proof-only temporary Access identity, never the permanent SYSTEM identity.
+    """
+    jobs = dict(re.findall(
+        r"(?ms)^  ([a-z][a-z0-9_]*):\n(.*?)(?=^  [a-z][a-z0-9_]*:\n|\Z)",
+        source,
+    ))
+    names = (
+        "existing_join_windows_access_issue",
+        "existing_join_begin",
+        "existing_join_windows_stage_prepare",
+        "existing_join_vm_commit",
+        "existing_join_windows_commit",
+        "existing_join_windows_access_cleanup",
+    )
+    require(all(name in jobs for name in names), "P0: missing same-run access/credential lifecycle job")
+    issuer = jobs["existing_join_windows_access_issue"]
+    begin = jobs["existing_join_begin"]
+    windows = jobs["existing_join_windows_stage_prepare"]
+    cleanup = jobs["existing_join_windows_access_cleanup"]
+    require(
+        "target_ipv4: ${{ steps.begin.outputs.target_ipv4 }}" in begin
+        and "target_domain: ${{ steps.begin.outputs.target_domain }}" in begin
+        and 'echo "target_ipv4=$VM_IPV4" >> "$GITHUB_OUTPUT"' in begin
+        and 'echo "target_domain=$domain" >> "$GITHUB_OUTPUT"' in begin
+        and begin.index('existing-join-begin-readback') < begin.index('echo "target_ipv4=$VM_IPV4"')
+        and begin.index('existing-join-begin-readback') < begin.index('echo "target_domain=$domain"')
+        and "TARGET_IPV4: ${{ needs.existing_join_begin.outputs.target_ipv4 }}" in windows
+        and "TARGET_DOMAIN: ${{ needs.existing_join_begin.outputs.target_domain }}" in windows,
+        "P0: Windows physical Line1 must consume verified VM target via real BEGIN outputs",
+    )
+    require(
+        "existing_join_windows_access_issue.result" in begin
+        and "existing_join_windows_access_issue" in begin.split("    needs:", 1)[1].split("\n", 1)[0]
+        and "existing_join_windows_access_issue" in windows.split("    needs:", 1)[1].split("\n", 1)[0]
+        and 'initial-windows-acceptance-issue "$GITHUB_RUN_ID"' in issuer
+        and "acceptance_access_policy=HOST_PLUS_EXACT_ONE_RUN_SCOPED" in issuer
+        and "CLOUDFLARE_WINDOWS_ACCEPTANCE_CLIENT_ID" in windows
+        and "CLOUDFLARE_WINDOWS_ACCEPTANCE_CLIENT_SECRET" in windows
+        and "CLOUDFLARE_WINDOWS_ACCESS_CLIENT_ID" not in windows
+        and "CLOUDFLARE_WINDOWS_ACCESS_CLIENT_SECRET" not in windows
+        and "EDGE_WINDOWS_ACCESS_CLIENT_SECRET:" not in windows.split("      - name: Checkout", 1)[0]
+        and "EDGE_WINDOWS_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_WINDOWS_ACCEPTANCE_CLIENT_SECRET }}" in
+            windows.split("      - name: Real Line1 4/4", 1)[1].split("\n      - name:", 1)[0]
+        and "name: production-vultr" in issuer
+        and "name: production-vultr" in windows
+        and "EXPECTED_WINDOWS_RUNNER: ${{ needs.existing_join_status_windows.outputs.runner_name }}" in issuer
+        and 'actions/runners?per_page=100' in issuer
+        and 'length == 1 and .[0].name == $expected' in issuer
+        and '.[0].status == "online"' in issuer
+        and issuer.index('actions/runners?per_page=100') < issuer.index('initial-windows-acceptance-issue'),
+        "P0: physical Windows runner must use run-scoped proof identity, never permanent host identity",
+    )
+    status_windows = jobs.get("existing_join_status_windows", "")
+    win_commit = jobs["existing_join_windows_commit"]
+    require(
+        "runner_name: ${{ steps.observe.outputs.runner_name }}" in status_windows
+        and '"runner_name=$env:RUNNER_NAME" >> $env:GITHUB_OUTPUT' in status_windows
+        and "WIN_RUNNER: ${{ needs.existing_join_status_windows.outputs.runner_name }}" in begin
+        and "EXPECTED_WINDOWS_RUNNER: ${{ needs.existing_join_status_windows.outputs.runner_name }}" in windows
+        and "EXPECTED_WINDOWS_RUNNER: ${{ needs.existing_join_status_windows.outputs.runner_name }}" in win_commit
+        and "$env:RUNNER_NAME -cne $env:EXPECTED_WINDOWS_RUNNER" in windows
+        and "$env:RUNNER_NAME -cne $env:EXPECTED_WINDOWS_RUNNER" in win_commit,
+        "P1: same Windows runner registration must perform A readback, B preparation and final COMMIT",
+    )
+    require(
+        "always()" in cleanup
+        and "existing_join_windows_commit" in cleanup.split("    needs:", 1)[1].split("\n", 1)[0]
+        and 'initial-windows-acceptance-cleanup "$GITHUB_RUN_ID"' in cleanup
+        and "acceptance_access_status=REVOKED_OR_ABSENT" in cleanup
+        and "windows_access_policy=EXACT_HOST_ONLY" in cleanup
+        and "gh secret delete" in cleanup
+        and "needs.existing_join_windows_access_issue.result == 'success'" in cleanup
+        and "CLOUDFLARE_WINDOWS_ACCEPTANCE_CLIENT_SECRET" in cleanup
+        and "name: production-vultr" in cleanup,
+        "P0: protected workflow must revoke run-scoped Access and delete disposable escrow",
+    )
+
+
+def test_existing_join_endpoint_and_access(source: str) -> None:
+    verify_existing_join_endpoint_and_access(source)
+    broken = (
+        source.replace("      target_ipv4: ${{ steps.begin.outputs.target_ipv4 }}\n", "", 1),
+        source.replace('echo "target_domain=$domain" >> "$GITHUB_OUTPUT"',
+                       'echo "target_domain=$domain"', 1),
+        source.replace(
+            "EDGE_WINDOWS_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_WINDOWS_ACCEPTANCE_CLIENT_SECRET }}",
+            "EDGE_WINDOWS_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_WINDOWS_ACCESS_CLIENT_SECRET }}",
+            1,
+        ),
+        source.replace('initial-windows-acceptance-cleanup "$GITHUB_RUN_ID"',
+                       'initial-windows-acceptance-cleanup "0"', 1),
+    )
+    for altered in broken:
+        require(altered != source, "P0 negative fixture failed to modify workflow")
+        try:
+            verify_existing_join_endpoint_and_access(altered)
+        except SystemExit:
+            continue
+        raise SystemExit("P0 existing join negative regression was mistakenly accepted")
+
+
+
+def test_git_windows_host_fleet_contract(credentials: str) -> None:
+    """Git owns exact Windows selection. The generic label is legacy singleton only."""
+    path = Path("infra/windows/hosts.textproto")
+    contents = path.read_text(encoding="utf-8")
+    proto = Path("edge-platform/proto/edge/platform/v1/windows_hosts.proto").read_text(encoding="utf-8")
+    require(
+        'message WindowsHostInventory {' in proto
+        and 'repeated WindowsHostRegistration hosts = 2;' in proto
+        and 'message WindowsHostRegistration {' in proto,
+        "Windows host inventory needs a real protobuf type, never a new first-party JSON file",
+    )
+
+    def parse_hosts(text: str) -> list[dict] | None:
+        header = 'schema: "sing-box.windows-hosts/v1"\n'
+        if not text.startswith(header):
+            return None
+        body = text[len(header):]
+        pattern = re.compile(
+            r'hosts\s*\{\s*id:\s*"([a-z][a-z0-9-]{0,39})"\s*'
+            r'runner_name:\s*"([A-Za-z0-9._-]{1,128})"\s*\}\s*'
+        )
+        records = list(pattern.finditer(body))
+        if pattern.sub("", body).strip():
+            return None
+        return [{"id": m.group(1), "runner_name": m.group(2)} for m in records]
+
+    hosts = parse_hosts(contents)
+    require(hosts is not None, "Windows hosts textproto malformed or unknown field detected")
+    for bad in (
+        'schema: "wrong"\n',
+        contents + 'hostz { id: "x" }\n',
+        contents + 'hosts { id: "a" runner_name: "x" stray: 1 }\n',
+        contents + 'hosts { id: "Bad" runner_name: "x" }\n',
+    ):
+        require(parse_hosts(bad) is None, "invalid/unknown Windows host protobuf field permitted")
+
+    def validate_hosts(hosts: list) -> bool:
+        ids, names = set(), set()
+        for host in hosts:
+            if not isinstance(host, dict) or set(host) != {"id", "runner_name"}:
+                return False
+            host_id, name = host["id"], host["runner_name"]
+            if (
+                not isinstance(host_id, str)
+                or re.fullmatch(r"[a-z][a-z0-9-]{0,39}", host_id) is None
+                or not isinstance(name, str)
+                or re.fullmatch(r"[A-Za-z0-9._-]{1,128}", name) is None
+                or host_id in ids or name in names
+            ):
+                return False
+            ids.add(host_id)
+            names.add(name)
+        return True
+
+    require(validate_hosts(hosts), "Git Windows hosts must have unique typed host IDs and runners")
+    good = [{"id": "win-a", "runner_name": "sing-box-workstation-a"},
+            {"id": "win-b", "runner_name": "sing-box-workstation-b"}]
+    require(validate_hosts(good), "two exact Windows host registrations must be valid")
+    for bad in (good + [good[0]], good + [{"id": "win-c", "runner_name": good[0]["runner_name"]}],
+                [{"id": "WinBad", "runner_name": "x"}], [{"id": "win-a", "runner_name": "bad space"}]):
+        require(not validate_hosts(bad), "duplicate or malformed fleet registration was permitted")
+    authorize = credentials.split("  authorize:\n", 1)[1].split("\n  execute:\n", 1)[0]
+    require(
+        "windows_host_id: ${{ steps.parse.outputs.windows_host_id }}" in authorize
+        and "windows_runner_label: ${{ steps.initial_machine.outputs.windows_runner_label }}" in authorize
+        and "windows_runner_name: ${{ steps.initial_machine.outputs.windows_runner_name }}" in authorize
+        and 'handle.write(f"windows_host_id={windows_host_id}' in authorize
+        and 'selected = os.environ.get("REQUESTED_WINDOWS_HOST_ID","")' in authorize
+        and 'raise SystemExit("Unknown Git-owned Windows host target")' in authorize
+        and 'label = "sing-box-host-" + selected' in authorize
+        and 'label = "sing-box-windows-lab"' in authorize
+        and "Named Windows fleet requires explicit" in authorize,
+        "the typed Git inventory must own per-host route authorization",
+    )
+    for job in ("existing_join_status_windows", "existing_join_windows_stage_prepare",
+                "existing_join_windows_commit"):
+        # Check full exact job content because short title sections cannot
+        # themselves prove the nested GitHub runner scheduling authority.
+        section = credentials.split(f"  {job}:\n", 1)[1].split(
+            "\n  " + ({
+                "existing_join_status_windows": "existing_join_status_summary",
+                "existing_join_windows_stage_prepare": "existing_join_commit_intent",
+                "existing_join_windows_commit": "existing_join_windows_access_cleanup",
+            }[job]) + ":\n", 1)[0]
+        require(
+            'runs-on: [self-hosted, Windows, X64, "${{ needs.authorize.outputs.windows_runner_label }}"]' in section,
+            "Windows status/prep/commit must schedule same Git-selected host label",
+        )
+    bootstrap = WINDOWS_RUNNER_BOOTSTRAP.read_text(encoding="utf-8")
+    require(
+        '[string]$HostId = ""' in bootstrap
+        and '$RunnerLabel = "$RunnerLabel,sing-box-host-$HostId"' in bootstrap
+        and 'Write-Output "windows_host_id=$HostId"' in bootstrap,
+        "new Windows bootstrap must bind unique Git host ID to runner label without another service",
+    )
+
+
 def main() -> None:
     router = ROUTER.read_text(encoding="utf-8")
     application = APPLICATION.read_text(encoding="utf-8")
@@ -347,6 +706,8 @@ def main() -> None:
     credentials = CREDENTIALS.read_text(encoding="utf-8")
     test_credential_observation_lane(credentials)
     test_workflow_job_boundaries(credentials)
+    test_existing_join_endpoint_and_access(credentials)
+    test_git_windows_host_fleet_contract(credentials)
     vpc = VPC.read_text(encoding="utf-8")
     edge_platform_ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
     runtime_input = RUNTIME_INPUT.read_text(encoding="utf-8")
@@ -456,7 +817,13 @@ def main() -> None:
         "local runtime must never reset foreign Cloudflare One Client DNS by resolver IP",
     )
     require(
-        windows_console.count("require_exact_immutable_activation_console(&install_root)") == 9
+        windows_console.count("require_exact_immutable_activation_console(&install_root)") == 11
+        and "Command::PrivilegedExistingPrepare(args)" in windows_console
+        and "WindowsPrivilegedOperation::ExistingCredentialPrepare" in windows_console
+        and "credential_transition::existing_prepare(" in windows_console
+        and "Command::PrivilegedExistingJoin(args)" in windows_console
+        and "WindowsPrivilegedOperation::ExistingCredentialJoin" in windows_console
+        and "credential_transition::existing_join(" in windows_console
         and "Command::PrivilegedInitialCredentialCommit(args)" in windows_console
         and "Command::PrivilegedInitialCredentialRecover(args)" in windows_console
         and "WindowsPrivilegedOperation::InitialCredentialRecover" in windows_console
@@ -989,7 +1356,7 @@ def main() -> None:
             "initial pair digest shell validator accepted malformed evidence or rejected valid evidence",
         )
     require(
-        'if operation in {"rotate-application", "host-bootstrap-converge", "initial-pair-commit", "initial-pair-recover"}:' in credentials
+        'if operation in {"rotate-application", "host-bootstrap-converge", "initial-pair-commit", "initial-pair-recover", "apply"}:' in credentials
         and '"initial-pair-commit"' in credentials
         and '"initial-pair-recover"' in credentials
         and "initial_pair_recovery_source:" in credentials
@@ -1158,6 +1525,8 @@ def main() -> None:
     )
     credential_observation_group = (
         "group: ${{ (inputs.command_body == '/credentials verify' || "
+        "inputs.command_body == '/credentials status' || "
+        "startsWith(inputs.command_body, '/credentials status ') || "
         "startsWith(inputs.command_body, '/credentials initial-pair-preflight ')) && "
         "format('credential-observe-{0}', github.run_id) || "
         "format('credential-transaction-{0}', github.repository_id) }}"
@@ -1875,16 +2244,16 @@ def main() -> None:
         and "Sing-box configuration, protocol selection and quality authority" in architecture
         and "No Windows start, converge, repair, rollback, unattended reboot or TUN switch" in runbook
         and "Production release rollback is not yet a supported public operation" not in runbook
-        and "**ACTIVE N1/N2 → N3 → N4 (2026-10-12).**" in readme
-        and "the sole execution cursor" in readme
-        and "same existing normal VM lifecycle" in readme
+        and "**ACTIVE N1/N2 lifecycle closure → N3 Windows → N4 production (17 October 2026).**" in readme
+        and "the *only* execution cursor" in readme
+        and "one native SYSTEM/root owner per runtime host" in readme
         and "The former production VM" not in readme
-        and "The old production VM was deleted" in readme
-        and "EdgePlatformController` is **Stopped / AutoStart**" in readme
-        and "do not start or mutate Windows WARP/MISH/OKX" in readme
+        and "historical evidence, not permission to execute" in readme
+        and "EdgePlatformController` remains intentionally **Stopped, ProxyOnly, no managed TUN**" in readme
+        and "Existing Cloudflare One Client is independent" in readme
         and "The accepted proxy-only runtime is the starting point" not in readme
         and "currently working external Windows sing-box" not in readme
-        and "bounded local owner" in readme
+        and "one native SYSTEM/root owner per runtime host" in readme
         and "Independent authenticated 10/10 direct/WARP" in readme
         and "/production rollback" in runbook
         and "/credentials rotate tunnel-auth" in runbook
@@ -2602,7 +2971,11 @@ def main() -> None:
         "issues: read" not in vultr
         and vultr.count("issues: write") == 3
         and "issues: read" not in credentials.split("  execute:\n", 1)[1].split("\n  rotate_release:", 1)[0]
-        and credentials.count("issues: write") == 2
+        and credentials.count("issues: write") == 4
+        and "issues: write" in credentials.split("  existing_join_begin:\n", 1)[1].split("\n  existing_join_recover_readonly:", 1)[0]
+        and "issues: write" in credentials.split("  existing_join_commit_intent:\n", 1)[1].split("\n  existing_join_vm_commit:", 1)[0]
+        and "issues: write" not in credentials.split("  existing_join_vm_commit:\n", 1)[1].split("\n  existing_join_recover_readonly:", 1)[0]
+        and "issues: write" not in credentials.split("  existing_join_recover_readonly:\n", 1)[1]
         and "issues: write" in credentials.split("  initial_pair_intent:\n", 1)[1].split("\n  initial_pair_vm_commit:", 1)[0]
         and "issues: write" in credentials.split("  initial_pair_recovery_intent:\n", 1)[1].split("\n  initial_pair_recovery_apply_windows:", 1)[0]
         and "issues: write" not in credentials.split("  initial_pair_recovery_source:\n", 1)[1].split("\n  initial_pair_recovery_intent:", 1)[0]
@@ -2747,7 +3120,11 @@ def main() -> None:
 
     require(
         "proven_unchanged: ${{ steps.promote.outputs.proven_unchanged }}" in rotation_workflow
-        and "VM_ROTATION_PROMOTE=PROVEN_UNCHANGED_AFTER_BOUNDED_RETRY" in rotation_workflow
+        and "VM_ROTATION_PROMOTE=PROVEN_UNCHANGED_NO_REPLAY" in rotation_workflow
+        and "ORIGINAL_ACTIVE_GENERATION" in rotation_workflow
+        and "ORIGINAL_ACTIVE_SLOT" in rotation_workflow
+        and "BOUNDED_RETRY_AFTER_OBSERVE" not in rotation_workflow
+        and "OBSERVED_COMMITTED_AFTER_RETRY" not in rotation_workflow
         and "needs.rotate_vm_promote.outputs.proven_unchanged == 'true'" in rotation_workflow
         and "no automatic cross-host compensation is authorized" in rotation_workflow,
         "cross-host credential promotion compensation must run only after the VM owner proves the promotion remained unchanged; uncertain outcomes must fail closed",

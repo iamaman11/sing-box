@@ -15,13 +15,53 @@ Before a mutation, refresh protected `main`, open PRs, latest Actions and the la
 
 ## Current convergence model
 
-**ACTIVE N1/N2 → N3 → N4 (2026-10-12).** [Issue #26](https://github.com/iamaman11/sing-box/issues/26) is the sole execution cursor and [Draft PR #348](https://github.com/iamaman11/sing-box/pull/348) the only integrated functional slice. Old Stage 4B.5 Android Mesh and Stage 4C cleanup are historical follow-on records, not competing live plans. Stage 2/3/4A acceptance remains historical; it does not license a rebuilt network.
+**ACTIVE N1/N2 lifecycle closure → N3 Windows → N4 production (17 October 2026).** [Issue #26](https://github.com/iamaman11/sing-box/issues/26) is the *only* execution cursor. [Draft PR #388](https://github.com/iamaman11/sing-box/pull/388) is the current integrated existing-Windows-A → VM-B lifecycle work; PR #348 and the earlier first-use diagnostics are historical evidence, not permission to execute or repeat any mutation. Read the live protected `main`, exact PR HEAD and its CI before acting.
 
-**VM present state:** [Provider doctor #38289563205](https://github.com/iamaman11/sing-box/actions/runs/38289563205) PASS with exact `application-acceptance-1` disposition **CREATE** and zero mutations: new VM, online self-hosted runner, installation, external authenticated Line1 4/4 + Line2 6/6, reboot and cleanup are **not yet accepted**. The old production VM was deleted. Current `/vultr initial-vm-install` in #348 is a transitional incomplete composition using hosted-runner SSH, an incompatible production-Windows first-use consumer, and unconditional final external BLOCKED. It must converge into the **same existing normal VM lifecycle** and bounded local owner used subsequently by production; only the durable Worker first-use journal/intent/unknown-ACK no-replay constraint remains a special internal transaction.
+**What is and is not accepted:** [External 10/10 + VM reboot run #38627187731](https://github.com/iamaman11/sing-box/actions/runs/38627187731) accepted the original network proof. It did **not** activate VM candidate B or accept the newer existing-A/B credential pointer transaction. Source tests and candidate builds in PR #388 are not proof of physical A→B execution, post-COMMIT state, host installation or safe recovery. The VM root candidate state, installed sudoers and real container credential source must be freshly observed before any new BEGIN.
 
-**Windows present state:** [Read-only physical /windows diagnose #38288078001](https://github.com/iamaman11/sing-box/actions/runs/38288078001) PASS: `EdgePlatformController` is **Stopped / AutoStart**, managed TUN absent, direct DNS and ordinary HTTPS PASS, Cloudflare One connected in TunnelOnly. Automatic no-TUN DNS/control recovery, new-server Line1 and ManagedTun→ProxyOnly are unproven; do not start or mutate Windows WARP/MISH/OKX to force a PASS. N3 accepts **one** SCM controller, Git-backed desired `WindowsDatapathMode`, native in-controller ProxyOnly ↔ ManagedTun transitions with both real traffic modes, routes, DNS and reboot/recovery proof.
+**Windows baseline:** the serving `EdgePlatformController` remains intentionally **Stopped, ProxyOnly, no managed TUN**. Existing Cloudflare One Client is independent. No installer, credential test, recovery or mode transition may start this SCM service, rewrite shared routes/DNS, or enable TUN as a side effect. N3 separately accepts native ProxyOnly ↔ ManagedTun switching, startup/rollback and real browsing restoration.
+
+**Target operator experience:** one protected Git-owned `status / apply / recover` workflow, one exact immutable ReleaseSet and one native SYSTEM/root owner per runtime host. `status` is read-only; `apply` proves the current origin and admits a single bounded transition; `recover` classifies an uncertain durable intent without replay. New registered Windows/VM hosts must have exact owner identities, not merely a shared runner label. A partial or ambiguous operation must never be silently reissued.
 
 **Operator product acceptance:** Issue #1 command → existing typed Rust owner → exact host. Self-hosted runners are bounded outbound transport only; local owners do all privileged runtime changes. Use one normal create/enroll/install/configure/diagnose/measure/repair/reinstall/destroy lifecycle. An acceptance VM is disposable, not a separate product installer. Independent authenticated 10/10 direct/WARP, public TLS, reboot and clean disposal are required; source/CI/provider metadata and internal loopback are not acceptance. See Issue #26 for live gates and failure resolution.
+
+## Native Windows fleet enrollment (one Git owner, no new services)
+
+An existing, single registered Windows runner remains eligible for the legacy
+`/credentials status`, `/credentials apply` and `/credentials recover`
+commands only when `infra/windows/hosts.textproto` contains **no** hosts and the
+GitHub runner label `sing-box-windows-lab` is unambiguous.
+
+For each **new Windows** host, complete the normal administrator-owned
+`bootstrap-windows-runner.ps1` with a stable `-HostId` and `-RunnerName`
+(for example `-HostId desktop-b -RunnerName sing-box-desktop-b`).
+The existing GitHub Actions runner receives both the historical transport
+label and `sing-box-host-desktop-b`. No second controller, runner or service
+is created.
+
+After that physical bootstrap, record exactly this nonsecret entry in the
+protected Git-owned `infra/windows/hosts.textproto`:
+
+```textproto
+hosts {
+  id: "desktop-b"
+  runner_name: "sing-box-desktop-b"
+}
+```
+
+Then use `/credentials status desktop-b`, `/credentials apply desktop-b`
+or `/credentials recover desktop-b`. The protected workflow validates
+the entire typed inventory, routes all three Windows stages by their one
+host-specific label, compares the registered runner name, and before any
+irreversible BEGIN requires exactly one online runner matching the selected
+host. A stale, duplicated, unmatched or ambiguous host is `SAFE_BLOCKED`;
+the command never silently falls back to a different Windows.
+
+The VM target is independently selected from the application's existing
+Git-owned Vultr machine descriptor. VM enrollment uses the existing /vultr
+native lifecycle. This host registry contains **no credentials, IP secrets or
+local mutable runtime state**. A future host must first pass normal immutable
+ReleaseSet installation and read-only status before any apply.
 
 ## Steady-state owner map
 

@@ -32,6 +32,9 @@ pub(crate) enum Command {
     CredentialInitialAcceptanceBootstrap(IsolatedAcceptanceRootArgs),
     CredentialInitialAcceptanceStage(InitialLine1WitnessArgs),
     CredentialInitialLine1Witness(AttestedLine1WitnessArgs),
+    // Existing ACTIVE A -> candidate B: same disposable Line1 verifier, with
+    // exact serving SYSTEM/isolated Worker projection parity.
+    CredentialExistingLine1Witness(ExistingLine1WitnessArgs),
     SmokeRuntime,
     Stage2Preflight,
     ProvisionRuntimeState(InstallRootArgs),
@@ -53,6 +56,8 @@ pub(crate) enum Command {
     PrivilegedInitialCredentialCommit(PrivilegedInitialCredentialCommitArgs),
     // Exact separately authorized recovery of a previously failed paired first-use.
     PrivilegedInitialCredentialRecover(PrivilegedInitialCredentialRecoverArgs),
+    PrivilegedExistingPrepare(PrivilegedExistingPrepareArgs),
+    PrivilegedExistingJoin(PrivilegedExistingJoinArgs),
     CredentialTransition(CredentialTransitionArgs),
     RestartVerifyRuntime,
     VerifyRuntime,
@@ -96,6 +101,7 @@ impl Command {
             }
             Self::CredentialInitialAcceptanceStage(_) => "credential-initial-acceptance-stage",
             Self::CredentialInitialLine1Witness(_) => "credential-initial-line1-witness",
+            Self::CredentialExistingLine1Witness(_) => "credential-existing-line1-witness",
             Self::SmokeRuntime => "smoke-runtime",
             Self::Stage2Preflight => "stage2-preflight",
             Self::ProvisionRuntimeState(_) => "provision-runtime-state",
@@ -114,6 +120,8 @@ impl Command {
             Self::PrivilegedStageCredential(_) => "privileged-stage-credential",
             Self::PrivilegedInitialCredentialCommit(_) => "privileged-initial-credential-commit",
             Self::PrivilegedInitialCredentialRecover(_) => "privileged-initial-credential-recover",
+            Self::PrivilegedExistingPrepare(_) => "privileged-existing-prepare",
+            Self::PrivilegedExistingJoin(_) => "privileged-existing-join",
             Self::CredentialTransition(_) => "credential-transition",
             Self::RestartVerifyRuntime => "restart-verify-runtime",
             Self::VerifyRuntime => "verify-runtime",
@@ -200,6 +208,20 @@ pub(crate) struct AttestedLine1WitnessArgs {
 }
 
 #[derive(Debug, Args)]
+pub(crate) struct ExistingLine1WitnessArgs {
+    pub generation: u64,
+    /// Exact Windows B candidate digest observed by protected SYSTEM owner.
+    pub windows_candidate_sha256: String,
+    /// Independent Git-owned VM endpoint location, never operator default.
+    #[arg(long)]
+    pub target_ipv4: std::net::Ipv4Addr,
+    #[arg(long)]
+    pub target_domain: String,
+    #[arg(long, default_value = r"C:\sing-box-acceptance")]
+    pub install_root: String,
+}
+
+#[derive(Debug, Args)]
 pub(crate) struct PrivilegedActivateArgs {
     pub accepted_revision: String,
     pub release_set_sha256: String,
@@ -230,6 +252,32 @@ pub(crate) struct PrivilegedInitialCredentialRecoverArgs {
     pub original_intent_sha256: String,
     pub recovery_intent_sha256: String,
     pub candidate_sha256: String,
+    #[arg(long, default_value = r"C:\sing-box")]
+    pub install_root: String,
+}
+
+/// The original GitHub BEGIN is not a COMMIT. Distinct typed arguments
+/// prevent accidentally passing the commit hash to SYSTEM preparation.
+#[derive(Debug, Args)]
+pub(crate) struct PrivilegedExistingPrepareArgs {
+    pub generation: u64,
+    pub slot: u32,
+    pub begin_sha256: String,
+    pub windows_active_sha256: String,
+    pub windows_candidate_sha256: String,
+    pub vm_candidate_sha256: String,
+    #[arg(long, default_value = r"C:\sing-box")]
+    pub install_root: String,
+}
+
+#[derive(Debug, Args)]
+pub(crate) struct PrivilegedExistingJoinArgs {
+    pub generation: u64,
+    pub slot: u32,
+    pub intent_sha256: String,
+    pub windows_active_sha256: String,
+    pub windows_candidate_sha256: String,
+    pub vm_candidate_sha256: String,
     #[arg(long, default_value = r"C:\sing-box")]
     pub install_root: String,
 }

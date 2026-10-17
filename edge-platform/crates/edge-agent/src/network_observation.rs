@@ -196,6 +196,61 @@ fn normalize_observation(mut observation: Ipv4NetworkObservation) -> Ipv4Network
     observation
 }
 
+/// Read-only public address of the same kernel namespace as the VM owner.
+/// This is a locator, NOT Vultr provider ownership or an authorization for
+/// credential mutation. External positive/negative TLS/auth still gates use.
+pub(crate) fn unique_public_serving_ipv4(
+    observed: &Ipv4NetworkObservation,
+) -> Result<Ipv4Addr, String> {
+    let mut addresses = std::collections::BTreeSet::new();
+    for addr in &observed.addresses {
+        let Some(link) = observed
+            .links
+            .iter()
+            .find(|link| link.interface_index == addr.interface_index)
+        else {
+            return Err("VM IPv4 address refers to unknown network interface".to_owned());
+        };
+        if !addr.global_scope || !link.up || !link.lower_up || link.loopback {
+            continue;
+        }
+        let ip: Ipv4Addr = addr
+            .address
+            .parse()
+            .map_err(|_| "VM network observation contains malformed IPv4".to_owned())?;
+        let octets = ip.octets();
+        let shared = octets[0] == 100 && (64..=127).contains(&octets[1]);
+        let benchmark = octets[0] == 198 && (18..=19).contains(&octets[1]);
+        let special = octets[0] == 0
+            || octets[0] >= 240
+            || (octets[0] == 192 && octets[1] == 0 && octets[2] == 0)
+            || (octets[0] == 192 && octets[1] == 88 && octets[2] == 99)
+            || (octets[0] == 192 && octets[1] == 0 && octets[2] == 2)
+            || (octets[0] == 198 && octets[1] == 51 && octets[2] == 100)
+            || (octets[0] == 203 && octets[1] == 0 && octets[2] == 113);
+        if ip.is_private()
+            || ip.is_loopback()
+            || ip.is_link_local()
+            || ip.is_broadcast()
+            || ip.is_multicast()
+            || ip.is_unspecified()
+            || ip.is_documentation()
+            || shared
+            || benchmark
+            || special
+        {
+            continue;
+        }
+        addresses.insert(ip);
+    }
+    if addresses.len() != 1 {
+        return Err(
+            "VM root cannot prove exactly one live public IPv4; external Line1 blocked".to_owned(),
+        );
+    }
+    Ok(*addresses.iter().next().unwrap())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -265,6 +320,65 @@ mod tests {
             .output_interface(7)
             .build();
         assert!(normalize_route(&ipv6).is_none());
+    }
+
+    #[test]
+    fn one_public_kernel_address_is_strict_and_deterministic() {
+        let network = |second: Option<&str>| Ipv4NetworkObservation {
+            links: vec![
+                Ipv4LinkObservation {
+                    interface_index: 3,
+                    name: "ens3".into(),
+                    up: true,
+                    lower_up: true,
+                    loopback: false,
+                },
+                Ipv4LinkObservation {
+                    interface_index: 4,
+                    name: "warp0".into(),
+                    up: true,
+                    lower_up: true,
+                    loopback: false,
+                },
+            ],
+            addresses: [
+                vec![Ipv4AddressObservation {
+                    interface_index: 3,
+                    address: "1.2.3.4".into(),
+                    prefix_length: 24,
+                    global_scope: true,
+                }],
+                second
+                    .map(|address| {
+                        vec![Ipv4AddressObservation {
+                            interface_index: 4,
+                            address: address.into(),
+                            prefix_length: 32,
+                            global_scope: true,
+                        }]
+                    })
+                    .unwrap_or_default(),
+            ]
+            .concat(),
+            routes: vec![],
+        };
+        assert_eq!(
+            unique_public_serving_ipv4(&network(Some("172.19.0.2"))).unwrap(),
+            Ipv4Addr::new(1, 2, 3, 4)
+        );
+        assert!(unique_public_serving_ipv4(&network(Some("8.8.8.8"))).is_err());
+        assert!(unique_public_serving_ipv4(&network(None)).is_ok());
+        let mut absent = network(None);
+        absent.addresses.clear();
+        assert!(unique_public_serving_ipv4(&absent).is_err());
+        let mut down = network(None);
+        down.links[0].lower_up = false;
+        assert!(unique_public_serving_ipv4(&down).is_err());
+        for forbidden in ["127.0.0.1", "100.64.0.1", "203.0.113.20"] {
+            let mut invalid = network(None);
+            invalid.addresses[0].address = forbidden.into();
+            assert!(unique_public_serving_ipv4(&invalid).is_err());
+        }
     }
 
     #[test]

@@ -173,6 +173,10 @@ enum WindowsPrivilegedOperation {
   // Separately journalled recovery of a proven PARTIAL first-use pair.
   // Not a retry, ordinary PROMOTE, or new credential issuance.
   WINDOWS_PRIVILEGED_OPERATION_INITIAL_CREDENTIAL_RECOVER = 17;
+  // One-shot Windows ACTIVE A -> prepared B, existing SYSTEM authority only.
+  WINDOWS_PRIVILEGED_OPERATION_EXISTING_CREDENTIAL_JOIN = 18;
+  // SYSTEM-only stopped ProxyOnly BEGIN-bound candidate application.
+  WINDOWS_PRIVILEGED_OPERATION_EXISTING_CREDENTIAL_PREPARE = 19;
 }
 
 message WindowsPrivilegedRequest {
@@ -187,6 +191,12 @@ message WindowsPrivilegedRequest {
   optional uint32 initial_commit_slot = 9; // fixed A=1, B=2; no external proto import
   optional string initial_recovery_intent_sha256 = 10;
   optional string initial_candidate_sha256 = 11;
+  // Distinct exact witnesses for a previously journalled existing-ACTIVE join.
+  optional string existing_join_vm_candidate_sha256 = 12;
+  optional string existing_join_windows_active_sha256 = 13;
+  optional string existing_join_windows_candidate_sha256 = 14;
+  optional string existing_join_intent_sha256 = 15;
+  optional uint32 existing_join_slot = 16;
 }
 
 message WindowsPrivilegedResult {

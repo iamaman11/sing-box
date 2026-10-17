@@ -13,6 +13,7 @@ mod cloudflare_mesh_profile_command;
 mod cloudflare_production_inventory;
 mod cloudflare_target_plane_command;
 mod cloudflare_zero_trust_doctor;
+mod credential_existing_join;
 mod credential_initial_journal;
 mod line2_external_witness;
 mod production_command;

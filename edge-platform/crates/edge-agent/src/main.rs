@@ -28,7 +28,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use edge_observability::init as init_observability;
 use edge_secrets::{
-    ACCESS_IDENTITY_FILE_NAME, ApplicationRuntimeSecrets, CredentialStore, InitialDummySlotProof,
+    ACCESS_IDENTITY_FILE_NAME, ApplicationRuntimeSecrets, CredentialOriginSelection,
+    CredentialStore, InitialDummySlotProof, attest_worker_credential_origin,
     fetch_canonical_credential_bundle, verify_canonical_dummy_ab_slots,
     verify_initial_selected_dummy_slot,
 };
@@ -163,6 +164,19 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
                 ))
             }
         }
+        cli::LocalCommand::CredentialPublicEndpoint => {
+            // This locator is read from the same kernel namespace as the
+            // root-owned runtime, not from an operator or cloud API token.
+            let observation = network_observation::observe_ipv4_network()
+                .await
+                .map_err(AgentError::Command)?;
+            let ip = network_observation::unique_public_serving_ipv4(&observation)
+                .map_err(AgentError::Command)?;
+            println!("credential_vm_public_endpoint={ip}");
+            println!("credential_endpoint_origin=VM_KERNEL_READ_ONLY");
+            println!("credential_mutations=0");
+            Ok(())
+        }
         cli::LocalCommand::QualityLine2 => {
             line2_quality::measure(&stack_dir, read_typed_runtime_environment)
                 .map(|_| ())
@@ -237,6 +251,27 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             if let Some(store) = CredentialStore::open_existing(root, CredentialProjectionKind::Vm)
                 .map_err(AgentError::Command)?
             {
+                let join = store
+                    .read_existing_join_receipt()
+                    .map_err(AgentError::Command)?;
+                println!(
+                    "credential_existing_join_receipt_present={}",
+                    join.is_some()
+                );
+                if let Some(text) = join {
+                    let intent = text
+                        .lines()
+                        .find_map(|line| line.strip_prefix("intent_sha256="))
+                        .ok_or_else(|| {
+                            AgentError::Command(
+                                "existing join receipt missing intent digest; outcome UNKNOWN"
+                                    .to_owned(),
+                            )
+                        })?;
+                    println!("credential_existing_join_intent_sha256={intent}");
+                } else {
+                    println!("credential_existing_join_intent_sha256=ABSENT");
+                }
                 let receipt = store
                     .read_initial_pair_receipt()
                     .map_err(AgentError::Command)?;
@@ -276,7 +311,48 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             } else {
                 println!("credential_initial_commit_receipt_present=false");
                 println!("credential_initial_recovery_receipt_present=false");
+                println!("credential_existing_join_receipt_present=false");
+                println!("credential_existing_join_intent_sha256=ABSENT");
             }
+            // Existing root owner; a single authenticated read-only GET
+            // proves the selected local projection without exporting secrets.
+            // Failed/ambiguous evidence is never treated as migration authority.
+            let role = match state.as_ref() {
+                Some(cursor)
+                    if cursor.active.is_none()
+                        && cursor.candidate.is_some()
+                        && cursor.previous.is_none() =>
+                {
+                    Some(CredentialOriginSelection::Candidate)
+                }
+                Some(cursor)
+                    if cursor.active.is_some()
+                        && cursor.candidate.is_none()
+                        && cursor.previous.is_none() =>
+                {
+                    Some(CredentialOriginSelection::Active)
+                }
+                _ => None,
+            };
+            let exact = if let Some(role) = role {
+                let root = vm_credential_store_root(&stack_dir).map_err(AgentError::Command)?;
+                let identity =
+                    vm_credential_access_identity_path(&stack_dir).map_err(AgentError::Command)?;
+                attest_worker_credential_origin(
+                    &root,
+                    &identity,
+                    CredentialProjectionKind::Vm,
+                    role,
+                )
+                .await
+                .is_ok()
+            } else {
+                false
+            };
+            println!(
+                "credential_worker_origin={}",
+                if exact { "WORKER_OK" } else { "UNPROVEN" }
+            );
             Ok(())
         }
         cli::LocalCommand::CredentialInitialProbe => {
@@ -370,6 +446,75 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             println!("credential_initial_pointer_commit=ACTIVE_LOCAL_ONLY");
             println!("credential_pair_committed=false");
             println!("runner_secret_access=false");
+            Ok(())
+        }
+        cli::LocalCommand::CredentialExistingJoin {
+            generation,
+            slot,
+            candidate_sha256,
+            windows_active_generation,
+            windows_active_slot,
+            windows_active_sha256,
+            windows_candidate_sha256,
+            intent_sha256,
+        } => {
+            // Protected GitHub caller verifies the original Windows A owner and
+            // exactly-one join intent. This local operation cannot infer either
+            // authorization from user-supplied digests.
+            verify_initial_vm_credential_functional(&stack_dir, generation)
+                .await
+                .map_err(AgentError::Command)?;
+            let origin = attest_worker_credential_origin(
+                &vm_credential_store_root(&stack_dir).map_err(AgentError::Command)?,
+                &vm_credential_access_identity_path(&stack_dir).map_err(AgentError::Command)?,
+                CredentialProjectionKind::Vm,
+                CredentialOriginSelection::Candidate,
+            )
+            .await
+            .map_err(AgentError::Command)?;
+            let slot_name = match slot {
+                1 => "A",
+                2 => "B",
+                _ => return Err(AgentError::Command("join VM slot invalid".to_owned())),
+            };
+            if origin.generation != generation
+                || origin.slot != slot_name
+                || origin.bundle_sha256 != candidate_sha256
+            {
+                return Err(AgentError::Command(
+                    "existing-active join Worker origin differs from selected VM candidate"
+                        .to_owned(),
+                ));
+            }
+            let store = open_vm_credential_store(&stack_dir).map_err(AgentError::Command)?;
+            let committed = store
+                .promote_existing_active_join(
+                    generation,
+                    slot as i32,
+                    &candidate_sha256,
+                    windows_active_generation,
+                    windows_active_slot as i32,
+                    &windows_active_sha256,
+                    &windows_candidate_sha256,
+                    &intent_sha256,
+                )
+                .map_err(AgentError::Command)?;
+            if committed.active.as_ref().map(|v| v.sha256.as_str())
+                != Some(candidate_sha256.as_str())
+                || committed.previous.is_some()
+                || committed.candidate.is_some()
+            {
+                return Err(AgentError::Command(
+                    "existing-active join pointer UNKNOWN; no replay".to_owned(),
+                ));
+            }
+            println!("operation=CREDENTIAL_EXISTING_JOIN");
+            println!("vm_credential_generation={generation}");
+            println!("vm_credential_slot={slot}");
+            println!("vm_credential_join=ACTIVE_LOCAL_ONLY");
+            println!("windows_mutations=0");
+            println!("credential_pair_committed=false");
+            println!("credential_replay_authorized=false");
             Ok(())
         }
         cli::LocalCommand::CredentialStage { generation } => {

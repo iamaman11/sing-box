@@ -15,6 +15,8 @@ const STATE_FILE: &str = "state.pb";
 const BUNDLES_DIR: &str = "bundles";
 const INITIAL_PAIR_COMMIT_RECEIPT: &str = "initial-paired-commit-receipt-v1";
 const INITIAL_PAIR_RECOVERY_RECEIPT: &str = "initial-paired-recovery-receipt-v1";
+const EXISTING_JOIN_RECEIPT: &str = "existing-active-join-receipt-v1";
+const EXISTING_JOIN_PREPARE_RECEIPT: &str = "existing-active-prepare-receipt-v1";
 
 #[derive(Debug, Clone)]
 pub struct CredentialStore {
@@ -375,6 +377,338 @@ impl CredentialStore {
         set_private_file_permissions(&receipt)?;
         sync_directory(&self.root)?;
         // Atomic cursor write only. No fallback, service start, DNS, or TUN.
+        self.promote_candidate()
+    }
+
+    /// VM half of a separately authorized existing Windows ACTIVE A -> VM B
+    /// join. The root caller must have authenticated both owners and the exact
+    /// durable GitHub intent. An intent digest alone is not authorization.
+    /// Receipt is durable before the atomic pointer; NEVER retry if uncertain.
+    pub fn promote_existing_active_join(
+        &self,
+        generation: u64,
+        slot: i32,
+        candidate_sha256: &str,
+        source_windows_generation: u64,
+        source_windows_slot: i32,
+        source_windows_sha256: &str,
+        windows_candidate_sha256: &str,
+        intent_sha256: &str,
+    ) -> Result<LocalCredentialState, String> {
+        if self.projection != CredentialProjectionKind::Vm
+            || generation == 0
+            || source_windows_generation == 0
+            || generation == source_windows_generation
+            || !matches!(slot, 1 | 2)
+            || !matches!(source_windows_slot, 1 | 2)
+            || slot == source_windows_slot
+            || !valid_first_use_digest(candidate_sha256)
+            || !valid_first_use_digest(source_windows_sha256)
+            || !valid_first_use_digest(windows_candidate_sha256)
+            || !valid_first_use_digest(intent_sha256)
+            || candidate_sha256 == source_windows_sha256
+            || windows_candidate_sha256 == source_windows_sha256
+            || windows_candidate_sha256 == candidate_sha256
+        {
+            return Err(
+                "existing-active join requires distinct exact A/B owner and intent witnesses"
+                    .to_owned(),
+            );
+        }
+        let state = self
+            .read_state()?
+            .ok_or_else(|| "existing-active join requires persisted VM candidate".to_owned())?;
+        if state.active.is_some() || state.previous.is_some() {
+            return Err("existing-active join refuses VM ACTIVE/PREVIOUS".to_owned());
+        }
+        let candidate = state
+            .candidate
+            .as_ref()
+            .ok_or_else(|| "existing-active join candidate absent".to_owned())?;
+        if candidate.generation != generation
+            || candidate.slot != slot
+            || candidate.sha256 != candidate_sha256
+        {
+            return Err("existing-active join candidate differs from intent".to_owned());
+        }
+        self.read_bundle(candidate)?;
+        if self.read_initial_pair_receipt()?.is_some()
+            || self.read_initial_pair_recovery_receipt()?.is_some()
+        {
+            return Err("existing-active join refuses first-use receipt history".to_owned());
+        }
+        if self.read_existing_join_receipt()?.is_some() {
+            return Err("existing-active join already attempted; no replay".to_owned());
+        }
+        let receipt = self.root.join(EXISTING_JOIN_RECEIPT);
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut handle = options.open(&receipt).map_err(|err| {
+            format!("existing-active join receipt already exists or UNKNOWN: {err}")
+        })?;
+        let text = format!(
+            "sing-box.existing-active-join/v1\nprojection={}\nwindows_generation={source_windows_generation}\nwindows_slot={source_windows_slot}\nwindows_sha256={source_windows_sha256}\nvm_generation={generation}\nvm_slot={slot}\nvm_sha256={candidate_sha256}\nwindows_candidate_sha256={windows_candidate_sha256}\nintent_sha256={intent_sha256}\n",
+            self.projection as i32,
+        );
+        handle
+            .write_all(text.as_bytes())
+            .and_then(|_| handle.sync_all())
+            .map_err(|err| format!("existing-active join receipt uncertain: {err}; no replay"))?;
+        drop(handle);
+        set_private_file_permissions(&receipt)?;
+        sync_directory(&self.root)?;
+        self.promote_candidate()
+    }
+
+    /// Sanitized receipt readback. A malformed receipt means UNKNOWN, never
+    /// no attempt. No secret payloads are stored here.
+    pub fn read_existing_join_receipt(&self) -> Result<Option<String>, String> {
+        let path = self.root.join(EXISTING_JOIN_RECEIPT);
+        let text = match fs::read_to_string(&path) {
+            Ok(value) => value,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(format!("existing-active join receipt read failed: {err}")),
+        };
+        let fields: Vec<_> = text.lines().collect();
+        let n = |i: usize, key: &str| -> Option<u64> {
+            fields.get(i)?.strip_prefix(key)?.parse::<u64>().ok()
+        };
+        let hex = |i: usize, key: &str| -> bool {
+            fields
+                .get(i)
+                .and_then(|v| v.strip_prefix(key))
+                .is_some_and(valid_first_use_digest)
+        };
+        let w = n(2, "windows_generation=");
+        let v = n(5, "vm_generation=");
+        let ws = n(3, "windows_slot=");
+        let vs = n(6, "vm_slot=");
+        if fields.len() != 10
+            || fields[0] != "sing-box.existing-active-join/v1"
+            || fields[1] != format!("projection={}", self.projection as i32)
+            || w.is_none_or(|x| x == 0)
+            || v.is_none_or(|x| x == 0)
+            || w == v
+            || !matches!(ws, Some(1 | 2))
+            || !matches!(vs, Some(1 | 2))
+            || ws == vs
+            || !hex(4, "windows_sha256=")
+            || !hex(7, "vm_sha256=")
+            || !hex(8, "windows_candidate_sha256=")
+            || !hex(9, "intent_sha256=")
+        {
+            return Err("existing-active join receipt malformed; outcome UNKNOWN".to_owned());
+        }
+        Ok(Some(text))
+    }
+
+    /// One-shot Windows A+B preparation before touching the managed files.
+    /// Receipt MUST be durable before an uncertain candidate runtime write.
+    /// BEGIN authority is independently verified by protected GitHub first.
+    pub fn prepare_windows_existing_join(
+        &self,
+        source: &LocalCredentialBundleRef,
+        candidate: &LocalCredentialBundleRef,
+        vm_sha256: &str,
+        begin_sha256: &str,
+    ) -> Result<(), String> {
+        if self.projection != CredentialProjectionKind::Windows
+            || !valid_first_use_digest(vm_sha256)
+            || !valid_first_use_digest(begin_sha256)
+            || source.sha256 == candidate.sha256
+            || source.sha256 == vm_sha256
+            || candidate.sha256 == vm_sha256
+            || source.slot != 1
+            || candidate.slot != 2
+            || source.generation == 0
+            || source.generation == candidate.generation
+        {
+            return Err(
+                "Windows join prepare requires distinct exact source A and target B".to_owned(),
+            );
+        }
+        let state = self
+            .read_state()?
+            .ok_or_else(|| "Windows join prepare cursor missing".to_owned())?;
+        if state.active.as_ref() != Some(source)
+            || state.candidate.as_ref() != Some(candidate)
+            || state.previous.is_some()
+            || self.read_existing_join_receipt()?.is_some()
+            || self.read_windows_existing_join_prepare_receipt()?.is_some()
+        {
+            return Err(
+                "Windows join prepare already attempted or state differs; no replay".to_owned(),
+            );
+        }
+        self.read_bundle(source)?;
+        self.read_bundle(candidate)?;
+        let text = format!(
+            "sing-box.existing-active-prepare/v1\nprojection={}\nsource_generation={}\nsource_slot={}\nsource_sha256={}\ntarget_generation={}\ntarget_slot={}\ntarget_sha256={}\nvm_sha256={vm_sha256}\nbegin_sha256={begin_sha256}\n",
+            self.projection as i32,
+            source.generation,
+            source.slot,
+            source.sha256,
+            candidate.generation,
+            candidate.slot,
+            candidate.sha256,
+        );
+        let path = self.root.join(EXISTING_JOIN_PREPARE_RECEIPT);
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&path).map_err(|err| {
+            format!("Windows join prepare receipt already exists or UNKNOWN: {err}")
+        })?;
+        file.write_all(text.as_bytes())
+            .and_then(|_| file.sync_all())
+            .map_err(|err| format!("Windows join prepare receipt write UNKNOWN: {err}"))?;
+        drop(file);
+        set_private_file_permissions(&path)?;
+        sync_directory(&self.root)?;
+        Ok(())
+    }
+
+    /// Exact private readback. A torn receipt is UNKNOWN, never unattempted.
+    pub fn read_windows_existing_join_prepare_receipt(&self) -> Result<Option<String>, String> {
+        let path = self.root.join(EXISTING_JOIN_PREPARE_RECEIPT);
+        let text = match fs::read_to_string(&path) {
+            Ok(value) => value,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(err) => return Err(format!("Windows join prepare receipt unreadable: {err}")),
+        };
+        let fields: Vec<_> = text.lines().collect();
+        let number = |index: usize, prefix: &str| -> Option<u64> {
+            fields.get(index)?.strip_prefix(prefix)?.parse::<u64>().ok()
+        };
+        let sha = |index: usize, prefix: &str| -> bool {
+            fields
+                .get(index)
+                .and_then(|v| v.strip_prefix(prefix))
+                .is_some_and(valid_first_use_digest)
+        };
+        if fields.len() != 10
+            || fields[0] != "sing-box.existing-active-prepare/v1"
+            || fields[1] != format!("projection={}", CredentialProjectionKind::Windows as i32)
+            || number(2, "source_generation=").is_none_or(|v| v == 0)
+            || number(3, "source_slot=") != Some(1)
+            || !sha(4, "source_sha256=")
+            || number(5, "target_generation=").is_none_or(|v| v == 0)
+            || number(6, "target_slot=") != Some(2)
+            || number(2, "source_generation=") == number(5, "target_generation=")
+            || !sha(7, "target_sha256=")
+            || !sha(8, "vm_sha256=")
+            || !sha(9, "begin_sha256=")
+        {
+            return Err("Windows join prepare receipt malformed; outcome UNKNOWN".to_owned());
+        }
+        Ok(Some(text))
+    }
+
+    /// Windows half of a separately authorized A -> B join. Reuses the same
+    /// durable non-secret receipt as VM, but retains the old Windows ACTIVE
+    /// as PREVIOUS. A failed or torn receipt forbids repeating this operation.
+    /// Its caller must independently read back the exact protected GitHub
+    /// intent before entry. No SCM, DNS, route, or TUN mutation occurs here.
+    pub fn promote_windows_existing_join(
+        &self,
+        generation: u64,
+        slot: i32,
+        windows_active_sha256: &str,
+        windows_candidate_sha256: &str,
+        vm_candidate_sha256: &str,
+        intent_sha256: &str,
+    ) -> Result<LocalCredentialState, String> {
+        if self.projection != CredentialProjectionKind::Windows
+            || generation == 0
+            || !matches!(slot, 1 | 2)
+            || !valid_first_use_digest(windows_active_sha256)
+            || !valid_first_use_digest(windows_candidate_sha256)
+            || !valid_first_use_digest(vm_candidate_sha256)
+            || !valid_first_use_digest(intent_sha256)
+            || windows_active_sha256 == windows_candidate_sha256
+            || windows_active_sha256 == vm_candidate_sha256
+            || windows_candidate_sha256 == vm_candidate_sha256
+        {
+            return Err(
+                "Windows existing join requires exact distinct A/B and VM witnesses".to_owned(),
+            );
+        }
+        let state = self
+            .read_state()?
+            .ok_or_else(|| "Windows existing join requires ACTIVE and CANDIDATE".to_owned())?;
+        if state.previous.is_some() {
+            return Err("Windows existing join refuses PREVIOUS rollback state".to_owned());
+        }
+        let active = state
+            .active
+            .as_ref()
+            .ok_or_else(|| "Windows existing join ACTIVE missing".to_owned())?;
+        let candidate = state
+            .candidate
+            .as_ref()
+            .ok_or_else(|| "Windows existing join CANDIDATE missing".to_owned())?;
+        if candidate.generation != generation
+            || candidate.slot != slot
+            || candidate.sha256 != windows_candidate_sha256
+            || active.generation == generation
+            || active.slot == slot
+            || active.sha256 != windows_active_sha256
+        {
+            return Err(
+                "Windows existing join source or target no longer matches intent".to_owned(),
+            );
+        }
+        self.read_bundle(active)?;
+        self.read_bundle(candidate)?;
+        if self.read_initial_pair_recovery_receipt()?.is_some()
+            || self.read_existing_join_receipt()?.is_some()
+        {
+            return Err(
+                "Windows existing join recovery or duplicate attempt; no replay".to_owned(),
+            );
+        }
+        if let Some(first_use) = self.read_initial_pair_receipt()? {
+            let lines: Vec<_> = first_use.lines().collect();
+            if lines.get(2).and_then(|s| s.strip_prefix("generation="))
+                != Some(active.generation.to_string().as_str())
+                || lines.get(3).and_then(|s| s.strip_prefix("slot="))
+                    != Some(active.slot.to_string().as_str())
+            {
+                return Err("Windows first-use receipt does not match existing ACTIVE A".to_owned());
+            }
+        }
+        let receipt = self.root.join(EXISTING_JOIN_RECEIPT);
+        let mut options = OpenOptions::new();
+        options.create_new(true).write(true);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::OpenOptionsExt;
+            options.mode(0o600);
+        }
+        let mut file = options.open(&receipt).map_err(|err| {
+            format!("Windows existing join receipt already attempted or UNKNOWN: {err}")
+        })?;
+        let text = format!(
+            "sing-box.existing-active-join/v1\nprojection={}\nwindows_generation={}\nwindows_slot={}\nwindows_sha256={windows_active_sha256}\nvm_generation={generation}\nvm_slot={slot}\nvm_sha256={vm_candidate_sha256}\nwindows_candidate_sha256={windows_candidate_sha256}\nintent_sha256={intent_sha256}\n",
+            self.projection as i32, active.generation, active.slot,
+        );
+        file.write_all(text.as_bytes())
+            .and_then(|_| file.sync_all())
+            .map_err(|err| {
+                format!("Windows existing join receipt write UNKNOWN; no replay: {err}")
+            })?;
+        drop(file);
+        set_private_file_permissions(&receipt)?;
+        sync_directory(&self.root)?;
         self.promote_candidate()
     }
 
@@ -1366,6 +1700,300 @@ mod tests {
                 & 0o777,
             0o600
         );
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn existing_join_one_shot_vm_candidate_to_active() {
+        let root = unique_root("join-positive");
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Vm).unwrap();
+        let bundle = vm_bundle(202, CredentialDeliverySlot::B);
+        let reference = local_credential_bundle_ref(&bundle).unwrap();
+        store.stage_candidate(&bundle).unwrap();
+        let result = store
+            .promote_existing_active_join(
+                202,
+                2,
+                &reference.sha256,
+                101,
+                1,
+                &"a".repeat(64),
+                &"c".repeat(64),
+                &"b".repeat(64),
+            )
+            .unwrap();
+        assert_eq!(result.active, Some(reference.clone()));
+        assert!(result.previous.is_none() && result.candidate.is_none());
+        assert!(store.read_existing_join_receipt().unwrap().is_some());
+        assert!(
+            store
+                .promote_existing_active_join(
+                    202,
+                    2,
+                    &reference.sha256,
+                    101,
+                    1,
+                    &"a".repeat(64),
+                    &"c".repeat(64),
+                    &"b".repeat(64)
+                )
+                .is_err()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn existing_join_torn_receipt_blocks_replay() {
+        let root = unique_root("join-torn");
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Vm).unwrap();
+        let bundle = vm_bundle(202, CredentialDeliverySlot::B);
+        let reference = local_credential_bundle_ref(&bundle).unwrap();
+        store.stage_candidate(&bundle).unwrap();
+        fs::write(root.join(EXISTING_JOIN_RECEIPT), b"partial").unwrap();
+        assert!(store.read_existing_join_receipt().is_err());
+        assert!(
+            store
+                .promote_existing_active_join(
+                    202,
+                    2,
+                    &reference.sha256,
+                    101,
+                    1,
+                    &"a".repeat(64),
+                    &"c".repeat(64),
+                    &"b".repeat(64)
+                )
+                .is_err()
+        );
+        assert!(store.read_state().unwrap().unwrap().active.is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn existing_join_invalid_source_target_is_noop() {
+        let root = unique_root("join-invalid");
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Vm).unwrap();
+        let bundle = vm_bundle(202, CredentialDeliverySlot::B);
+        let reference = local_credential_bundle_ref(&bundle).unwrap();
+        store.stage_candidate(&bundle).unwrap();
+        for (generation, slot, candidate, win_generation, win_slot) in [
+            (202, 2, "f".repeat(64), 101, 1),
+            (202, 2, reference.sha256.clone(), 101, 2),
+            (202, 2, reference.sha256.clone(), 202, 1),
+            (203, 2, reference.sha256.clone(), 101, 1),
+        ] {
+            assert!(
+                store
+                    .promote_existing_active_join(
+                        generation,
+                        slot,
+                        &candidate,
+                        win_generation,
+                        win_slot,
+                        &"a".repeat(64),
+                        &"c".repeat(64),
+                        &"b".repeat(64)
+                    )
+                    .is_err()
+            );
+        }
+        assert!(!root.join(EXISTING_JOIN_RECEIPT).exists());
+        assert!(store.read_state().unwrap().unwrap().active.is_none());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_join_prepare_is_one_shot_and_keeps_original_cursor() {
+        let root = unique_root("windows-join-prepared");
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Windows).unwrap();
+        let a = windows_bundle(101, CredentialDeliverySlot::A);
+        let b = windows_bundle(202, CredentialDeliverySlot::B);
+        let source = local_credential_bundle_ref(&a).unwrap();
+        let target = local_credential_bundle_ref(&b).unwrap();
+        store.stage_candidate(&a).unwrap();
+        store.promote_candidate().unwrap();
+        store.stage_candidate(&b).unwrap();
+        store
+            .prepare_windows_existing_join(&source, &target, &"d".repeat(64), &"e".repeat(64))
+            .unwrap();
+        assert!(
+            store
+                .read_windows_existing_join_prepare_receipt()
+                .unwrap()
+                .is_some()
+        );
+        let state = store.read_state().unwrap().unwrap();
+        assert_eq!(state.active, Some(source.clone()));
+        assert_eq!(state.candidate, Some(target.clone()));
+        assert!(state.previous.is_none());
+        assert!(
+            store
+                .prepare_windows_existing_join(&source, &target, &"d".repeat(64), &"e".repeat(64),)
+                .is_err()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_join_prepare_torn_receipt_is_unknown_not_retryable() {
+        let root = unique_root("windows-join-prepare-torn");
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Windows).unwrap();
+        let a = windows_bundle(101, CredentialDeliverySlot::A);
+        let b = windows_bundle(202, CredentialDeliverySlot::B);
+        let source = local_credential_bundle_ref(&a).unwrap();
+        let target = local_credential_bundle_ref(&b).unwrap();
+        store.stage_candidate(&a).unwrap();
+        store.promote_candidate().unwrap();
+        store.stage_candidate(&b).unwrap();
+        fs::write(root.join(EXISTING_JOIN_PREPARE_RECEIPT), b"partial").unwrap();
+        assert!(store.read_windows_existing_join_prepare_receipt().is_err());
+        assert!(
+            store
+                .prepare_windows_existing_join(&source, &target, &"d".repeat(64), &"e".repeat(64),)
+                .is_err()
+        );
+        assert!(store.read_state().unwrap().unwrap().active.is_some());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_existing_join_is_one_shot_preserving_a_as_previous() {
+        let root = unique_root("windows-join");
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Windows).unwrap();
+        let a = windows_bundle(101, CredentialDeliverySlot::A);
+        let b = windows_bundle(202, CredentialDeliverySlot::B);
+        let source = local_credential_bundle_ref(&a).unwrap();
+        let target = local_credential_bundle_ref(&b).unwrap();
+        store.stage_candidate(&a).unwrap();
+        store.promote_candidate().unwrap();
+        store.stage_candidate(&b).unwrap();
+        let next = store
+            .promote_windows_existing_join(
+                202,
+                2,
+                &source.sha256,
+                &target.sha256,
+                &"d".repeat(64),
+                &"e".repeat(64),
+            )
+            .unwrap();
+        assert_eq!(next.active, Some(target.clone()));
+        assert_eq!(next.previous, Some(source));
+        assert!(next.candidate.is_none());
+        assert!(store.read_existing_join_receipt().unwrap().is_some());
+        assert!(
+            store
+                .promote_windows_existing_join(
+                    202,
+                    2,
+                    &"a".repeat(64),
+                    &target.sha256,
+                    &"d".repeat(64),
+                    &"e".repeat(64),
+                )
+                .is_err()
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_existing_join_accepts_matching_historical_a_first_use_receipt_only() {
+        let root = unique_root("windows-join-original-lineage");
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Windows).unwrap();
+        let a = windows_bundle(101, CredentialDeliverySlot::A);
+        let b = windows_bundle(202, CredentialDeliverySlot::B);
+        let source = local_credential_bundle_ref(&a).unwrap();
+        let target = local_credential_bundle_ref(&b).unwrap();
+        store.stage_candidate(&a).unwrap();
+        store
+            .promote_initial_paired_candidate(101, 1, &"c".repeat(64))
+            .unwrap();
+        store.stage_candidate(&b).unwrap();
+        let result = store
+            .promote_windows_existing_join(
+                202,
+                2,
+                &source.sha256,
+                &target.sha256,
+                &"d".repeat(64),
+                &"e".repeat(64),
+            )
+            .unwrap();
+        assert_eq!(result.previous, Some(source));
+        assert_eq!(result.active, Some(target));
+        assert!(store.read_existing_join_receipt().unwrap().is_some());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_existing_join_rejects_conflicting_historical_a_receipt() {
+        let root = unique_root("windows-join-history-conflict");
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Windows).unwrap();
+        let a = windows_bundle(101, CredentialDeliverySlot::A);
+        let b = windows_bundle(202, CredentialDeliverySlot::B);
+        let source = local_credential_bundle_ref(&a).unwrap();
+        let target = local_credential_bundle_ref(&b).unwrap();
+        store.stage_candidate(&a).unwrap();
+        store
+            .promote_initial_paired_candidate(101, 1, &"c".repeat(64))
+            .unwrap();
+        store.stage_candidate(&b).unwrap();
+        fs::write(
+            root.join(INITIAL_PAIR_COMMIT_RECEIPT),
+            format!(
+                "sing-box.initial-paired-commit/v1\nprojection={}\ngeneration=100\nslot=1\nintent_sha256={}\n",
+                CredentialProjectionKind::Windows as i32,
+                "c".repeat(64),
+            ),
+        )
+        .unwrap();
+        assert!(
+            store
+                .promote_windows_existing_join(
+                    202,
+                    2,
+                    &source.sha256,
+                    &target.sha256,
+                    &"d".repeat(64),
+                    &"e".repeat(64),
+                )
+                .is_err()
+        );
+        assert!(store.read_existing_join_receipt().unwrap().is_none());
+        let state = store.read_state().unwrap().unwrap();
+        assert_eq!(state.active, Some(source));
+        assert_eq!(state.candidate, Some(target));
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn windows_existing_join_torn_receipt_blocks_pointer_mutation() {
+        let root = unique_root("windows-join-torn");
+        let store = CredentialStore::new(&root, CredentialProjectionKind::Windows).unwrap();
+        let a = windows_bundle(101, CredentialDeliverySlot::A);
+        let b = windows_bundle(202, CredentialDeliverySlot::B);
+        let source = local_credential_bundle_ref(&a).unwrap();
+        let target = local_credential_bundle_ref(&b).unwrap();
+        store.stage_candidate(&a).unwrap();
+        store.promote_candidate().unwrap();
+        store.stage_candidate(&b).unwrap();
+        fs::write(root.join(EXISTING_JOIN_RECEIPT), b"torn").unwrap();
+        assert!(store.read_existing_join_receipt().is_err());
+        assert!(
+            store
+                .promote_windows_existing_join(
+                    202,
+                    2,
+                    &source.sha256,
+                    &target.sha256,
+                    &"d".repeat(64),
+                    &"e".repeat(64),
+                )
+                .is_err()
+        );
+        let state = store.read_state().unwrap().unwrap();
+        assert_eq!(state.active, Some(source));
+        assert_eq!(state.candidate, Some(target));
+        assert!(state.previous.is_none());
         fs::remove_dir_all(root).unwrap();
     }
 }

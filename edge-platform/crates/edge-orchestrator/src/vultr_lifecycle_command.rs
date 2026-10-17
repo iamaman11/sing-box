@@ -72,6 +72,7 @@ pub async fn run(args: Vec<String>, context: &OrchestrationContext) -> Result<()
         "substrate-plan" => run_substrate_plan(&args[1..]).await,
         "substrate-apply" => run_substrate_apply(&args[1..]).await,
         "substrate-verify" => run_substrate_verify(&args[1..]).await,
+        "endpoint-observe" => run_endpoint_observe(&args[1..]).await,
         "transport-proof" => run_transport_proof(&args[1..], context).await,
         "initial-host-probe" => run_initial_host_probe(&args[1..], context).await,
         "initial-dns-converge" => run_initial_dns_converge(&args[1..], context).await,
@@ -576,6 +577,42 @@ async fn run_substrate_apply(args: &[String]) -> Result<(), String> {
         "performed": report.performed,
         "observation": report.observation,
         "next_plan": report.next_plan,
+    }))
+}
+
+/// Reuses the existing provider ownership/NOOP resolver. A DNS response,
+/// arbitrary runner IP, or operator-provided address is NOT machine identity.
+async fn run_endpoint_observe(args: &[String]) -> Result<(), String> {
+    if args.len() != 2 {
+        return Err(
+            "usage: edge-orchestrator vultr-lifecycle endpoint-observe <spec-path> <machine-id>"
+                .to_owned(),
+        );
+    }
+    let desired = load_desired_state(Path::new(&args[0]))?;
+    let actual = exact_existing_machine_observation(&desired, &args[1]).await?;
+    let address = actual
+        .main_ip
+        .as_deref()
+        .ok_or_else(|| "provider-owned machine has no observed IPv4".to_owned())?;
+    let ip: std::net::Ipv4Addr = address
+        .parse()
+        .map_err(|_| "provider-owned machine IPv4 is malformed".to_owned())?;
+    if ip.is_unspecified()
+        || ip.is_loopback()
+        || ip.is_private()
+        || ip.is_link_local()
+        || ip.is_broadcast()
+        || ip.is_multicast()
+        || ip.is_documentation()
+    {
+        return Err("provider-owned machine address is not a public unicast IPv4".to_owned());
+    }
+    print_json_value(serde_json::json!({
+        "schema": "sing-box.vultr-exact-endpoint/v1",
+        "machine_id": args[1],
+        "public_ipv4": ip.to_string(),
+        "provider_owner": "EXACT_GIT_DESIRED_NOOP"
     }))
 }
 

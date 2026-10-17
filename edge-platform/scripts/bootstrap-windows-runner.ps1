@@ -6,7 +6,8 @@ param(
     [string]$ReleaseSetSha256,
     [string]$RunnerRoot = "C:\sing-box-runner",
     [string]$ApplicationRoot = "C:\sing-box",
-    [string]$RunnerName = ""
+    [string]$RunnerName = "",
+    [string]$HostId = ""
 )
 
 Set-StrictMode -Version Latest
@@ -19,6 +20,12 @@ $RunnerAsset = "actions-runner-win-x64-$RunnerVersion.zip"
 $RunnerSha256 = "1150692afa94e71f872017e254ea55b6eece1eece3fe7e3a6d4c93d0a1b85cfc"
 $RunnerUrl = "https://github.com/actions/runner/releases/download/v$RunnerVersion/$RunnerAsset"
 $RunnerLabel = "sing-box-windows-lab"
+if ($HostId) {
+    if ($HostId -cnotmatch '^[a-z][a-z0-9-]{0,39}$') {
+        throw "HostId must be a stable Git-owned lower-case host identifier"
+    }
+    $RunnerLabel = "$RunnerLabel,sing-box-host-$HostId"
+}
 $PrivilegedTaskName = "EdgePlatformPrivilegedDispatch"
 $SystemSid = "S-1-5-18"
 $NetworkServiceSid = "S-1-5-20"
@@ -296,6 +303,7 @@ Write-Output "status=PASS"
 Write-Output "runner_root=$RunnerRoot"
 Write-Output "application_root=$ApplicationRoot"
 Write-Output "runner_label=$RunnerLabel"
+Write-Output "windows_host_id=$HostId"
 Write-Output "runner_service=$serviceName"
 Write-Output "runner_identity_sid=$NetworkServiceSid"
 Write-Output "runner_update_policy=github_auto"

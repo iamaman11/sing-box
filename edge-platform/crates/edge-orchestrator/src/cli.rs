@@ -199,6 +199,38 @@ impl CredentialDeliverySlotArg {
 #[derive(Debug, Clone, Subcommand)]
 pub(crate) enum CredentialDeliveryCommand {
     ContractVerify,
+    // Native read-only plan/readback for ONE durable existing-ACTIVE -> B
+    // join. Never accepts credentials or grants mutation authority.
+    ExistingJoinBeginPlan {
+        spec_path: std::path::PathBuf,
+        journal_history_path: std::path::PathBuf,
+        record_output_path: std::path::PathBuf,
+    },
+    ExistingJoinBeginReadback {
+        spec_path: std::path::PathBuf,
+        journal_history_path: std::path::PathBuf,
+        exact_record_path: std::path::PathBuf,
+    },
+    ExistingJoinPlan {
+        spec_path: std::path::PathBuf,
+        journal_history_path: std::path::PathBuf,
+        record_output_path: std::path::PathBuf,
+    },
+    ExistingJoinReadback {
+        spec_path: std::path::PathBuf,
+        journal_history_path: std::path::PathBuf,
+        exact_record_path: std::path::PathBuf,
+    },
+    // Existing native status/recover policy, read-only regardless of result.
+    ExistingJoinJournalInspect {
+        journal_history_path: std::path::PathBuf,
+    },
+    ExistingJoinReconcile {
+        spec_path: std::path::PathBuf,
+        journal_history_path: std::path::PathBuf,
+        exact_record_path: std::path::PathBuf,
+        snapshot_path: std::path::PathBuf,
+    },
     /// Bounded independent GitHub-runner vantage; public VM port probes only.
     InitialLine2ExternalWitness {
         generation: u64,
@@ -561,6 +593,8 @@ pub(crate) enum VultrLifecycleCommand {
     SubstratePlan(VultrMachineArgs),
     SubstrateApply(VultrAuthorizedMachineArgs),
     SubstrateVerify(VultrMachineArgs),
+    /// Read-only exact provider-owned machine endpoint, bound to Git desired state.
+    EndpointObserve(VultrMachineArgs),
     TransportProof(VultrTransportProofArgs),
     InitialDnsConverge(InitialVmDnsArgs),
     InitialPolicyStage(InitialVmPolicyArgs),
@@ -610,6 +644,7 @@ impl VultrLifecycleCommand {
                 args.authorized_plan_sha256,
             ],
             Self::SubstrateVerify(args) => machine("substrate-verify", args),
+            Self::EndpointObserve(args) => machine("endpoint-observe", args),
             Self::TransportProof(args) => vec![
                 "transport-proof".to_owned(),
                 path(args.spec_path),
@@ -801,6 +836,36 @@ fn non_blank(value: String) -> Option<String> {
 mod tests {
     use super::*;
     use clap::Parser;
+
+    #[test]
+    fn exact_provider_endpoint_observation_is_reachable_with_named_machine() {
+        let expected = vec![
+            "endpoint-observe".to_owned(),
+            "infra/vultr/application-acceptance.json".to_owned(),
+            "application-acceptance-1".to_owned(),
+        ];
+        let parsed = Cli::try_parse_from([
+            "edge-orchestrator",
+            "vultr-lifecycle",
+            "endpoint-observe",
+            "infra/vultr/application-acceptance.json",
+            "application-acceptance-1",
+        ])
+        .unwrap();
+        let Command::VultrLifecycle { command } = parsed.command else {
+            panic!("expected exact provider lifecycle command");
+        };
+        assert_eq!(command.into_legacy_args(), expected);
+        assert!(
+            Cli::try_parse_from([
+                "edge-orchestrator",
+                "vultr-lifecycle",
+                "endpoint-observe",
+                "infra/vultr/application-acceptance.json",
+            ])
+            .is_err()
+        );
+    }
 
     #[test]
     fn owner_transition_workflow_commands_reach_exact_public_clap_dispatch() {

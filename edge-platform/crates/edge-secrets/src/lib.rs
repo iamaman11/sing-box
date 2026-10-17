@@ -9,6 +9,10 @@ pub use credential_delivery::{
 
 mod credential_store;
 pub use credential_store::{CredentialStore, write_atomic_private};
+mod credential_origin;
+pub use credential_origin::{
+    CredentialOriginObservation, CredentialOriginSelection, attest_worker_credential_origin,
+};
 
 mod runtime;
 pub use runtime::{
