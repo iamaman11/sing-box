@@ -319,6 +319,12 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                 }
                 let isolated = load_verified_activation(root)?;
                 let serving = Path::new(r"C:\sing-box");
+                let serving_release = load_verified_activation(serving)?;
+                if isolated.release_set_sha256 != serving_release.release_set_sha256 {
+                    return Err(ConsoleError::Command(
+                        "isolated Line1 witness ReleaseSet differs from serving SYSTEM release".to_owned(),
+                    ));
+                }
                 require_stopped_proxy_only_initial_commit_owner(serving)
                     .map_err(ConsoleError::Command)?;
                 let before = existing_line1_serving_candidate(
