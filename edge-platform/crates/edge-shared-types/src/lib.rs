@@ -106,9 +106,11 @@ pub fn validate_host_registry(desired: &HostRegistry) -> Result<(), String> {
                             .trim_start_matches("infra/application/")
                             .trim_end_matches(".json")
                             .bytes()
-                            .all(|ch| ch.is_ascii_lowercase()
-                                || ch.is_ascii_digit()
-                                || matches!(ch, b'-' | b'_'))
+                            .all(|ch| {
+                                ch.is_ascii_lowercase()
+                                    || ch.is_ascii_digit()
+                                    || matches!(ch, b'-' | b'_')
+                            })
                         && spec != "infra/application/.json")
             }
             ManagedHostKind::Unspecified => false,
@@ -2949,7 +2951,8 @@ mod release_set_tests {
         invalid.hosts[0].desired_spec_path = "../escape.json".to_owned();
         assert!(validate_host_registry(&invalid).is_err());
         invalid = expected.clone();
-        invalid.hosts[2].desired_spec_path = "infra/application/disposable-acceptance.json".to_owned();
+        invalid.hosts[2].desired_spec_path =
+            "infra/application/disposable-acceptance.json".to_owned();
         assert!(validate_host_registry(&invalid).is_err());
         invalid = expected.clone();
         invalid.hosts[1].desired_spec_path.clear();
