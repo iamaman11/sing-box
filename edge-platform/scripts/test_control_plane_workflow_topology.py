@@ -540,6 +540,18 @@ def verify_existing_join_endpoint_and_access(source: str) -> None:
         and "name: production-vultr" in windows,
         "P0: physical Windows runner must use run-scoped proof identity, never permanent host identity",
     )
+    status_windows = jobs.get("existing_join_status_windows", "")
+    win_commit = jobs["existing_join_windows_commit"]
+    require(
+        "runner_name: ${{ steps.observe.outputs.runner_name }}" in status_windows
+        and '"runner_name=$env:RUNNER_NAME" >> $env:GITHUB_OUTPUT' in status_windows
+        and "WIN_RUNNER: ${{ needs.existing_join_status_windows.outputs.runner_name }}" in begin
+        and "EXPECTED_WINDOWS_RUNNER: ${{ needs.existing_join_status_windows.outputs.runner_name }}" in windows
+        and "EXPECTED_WINDOWS_RUNNER: ${{ needs.existing_join_status_windows.outputs.runner_name }}" in win_commit
+        and "$env:RUNNER_NAME -cne $env:EXPECTED_WINDOWS_RUNNER" in windows
+        and "$env:RUNNER_NAME -cne $env:EXPECTED_WINDOWS_RUNNER" in win_commit,
+        "P1: same Windows runner registration must perform A readback, B preparation and final COMMIT",
+    )
     require(
         "always()" in cleanup
         and "existing_join_windows_commit" in cleanup.split("    needs:", 1)[1].split("\n", 1)[0]
