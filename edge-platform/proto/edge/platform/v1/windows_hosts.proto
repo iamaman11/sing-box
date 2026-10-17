@@ -1,0 +1,15 @@
+syntax = "proto3";
+
+package edge.platform.v1;
+
+// Protected Git target selection only. No credentials or mutable runtime state.
+// The same existing SYSTEM owner is used for all enrolled Windows machines.
+message WindowsHostInventory {
+  string schema = 1;
+  repeated WindowsHostRegistration hosts = 2;
+}
+
+message WindowsHostRegistration {
+  string id = 1;
+  string runner_name = 2;
+}
