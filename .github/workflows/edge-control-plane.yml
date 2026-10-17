@@ -60,7 +60,7 @@ jobs:
     secrets: inherit
 
   host:
-    # One read-only native Rust entry point. GitHub authorizes the caller;
+    # One Rust-owned host lifecycle entry point. GitHub authorizes the caller;
     # existing release identity and typed protobuf identify the exact hosts.
     if: >-
       github.event_name == 'issue_comment' &&
@@ -71,13 +71,17 @@ jobs:
       github.actor_id == '44100369' &&
       github.run_attempt == 1 &&
       (github.event.comment.body == '/host status' ||
-       startsWith(github.event.comment.body, '/host status '))
+       startsWith(github.event.comment.body, '/host status ') ||
+       startsWith(github.event.comment.body, '/host apply ') ||
+       startsWith(github.event.comment.body, '/host recover '))
     outputs:
       kind: ${{ steps.observe.outputs.kind }}
       owner: ${{ steps.observe.outputs.owner }}
       runner_labels: ${{ steps.observe.outputs.runner_labels }}
       machine_id: ${{ steps.observe.outputs.machine_id }}
       desired_spec_path: ${{ steps.observe.outputs.desired_spec_path }}
+      operation: ${{ steps.observe.outputs.operation }}
+      windows_runner_label: ${{ steps.observe.outputs.windows_runner_label }}
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     permissions:
@@ -153,6 +157,23 @@ jobs:
             test -s "${RUNNER_TEMP}/host-runners.json" || exit 1
           fi
 
+      - name: Read complete existing GitHub journal for mutation admission
+        if: startsWith(github.event.comment.body, '/host apply ') || startsWith(github.event.comment.body, '/host recover ')
+        shell: bash
+        run: |
+          set -euo pipefail
+          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/26/comments?per_page=100" \
+            > "${RUNNER_TEMP}/host-issue-pages.json"
+          jq -e 'type == "array" and length > 0 and all(.[]; type == "array")' \
+            "${RUNNER_TEMP}/host-issue-pages.json" >/dev/null
+          jq -c 'add' "${RUNNER_TEMP}/host-issue-pages.json" > "${RUNNER_TEMP}/host-issue-history.json"
+          expected="$(gh api "repos/${GITHUB_REPOSITORY}/issues/26" --jq '.comments')"
+          [[ "${expected}" =~ ^[0-9]+$ ]]
+          jq -e --argjson count "${expected}" \
+            'length == $count and all(.[]; .id != null and (.body | type == "string"))' \
+            "${RUNNER_TEMP}/host-issue-history.json" >/dev/null
+          echo "HOST_JOURNAL_PATH=${RUNNER_TEMP}/host-issue-history.json" >> "${GITHUB_ENV}"
+
       - name: Show one typed native host status
         id: observe
         shell: bash
@@ -164,6 +185,8 @@ jobs:
             machine="${BASH_REMATCH[1]}"
             command=(status "${machine}")
             if [[ "${COMMAND_BODY}" == *" --deep" ]]; then command+=(--deep); fi
+          elif [[ "${COMMAND_BODY}" =~ ^/host[[:space:]](apply|recover)[[:space:]]([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})$ ]]; then
+            command=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")
           else
             echo 'HOST_COMMAND_INVALID' >&2
             exit 1
@@ -172,11 +195,16 @@ jobs:
           if [[ -f "${RUNNER_TEMP}/host-runners.json" ]]; then
             runner_args=(--runner-inventory-json "${RUNNER_TEMP}/host-runners.json")
           fi
+          journal_args=()
+          if [[ -n "${HOST_JOURNAL_PATH:-}" ]]; then
+            journal_args=(--journal-history-json "${HOST_JOURNAL_PATH}")
+          fi
           "${HOST_OWNER}" host \
             --hosts-pb "${RUNNER_TEMP}/hosts.binpb" \
             --hosts-sha256 "${HOSTS_SHA256}" \
             --github-output "${GITHUB_OUTPUT}" \
             "${runner_args[@]}" \
+            "${journal_args[@]}" \
             "${command[@]}" | tee "${RUNNER_TEMP}/host-observation.txt"
           grep -Fxq 'host_mutations=0' "${RUNNER_TEMP}/host-observation.txt"
           {
@@ -193,7 +221,8 @@ jobs:
     needs: host
     if: >-
       needs.host.result == 'success' &&
-      startsWith(github.event.comment.body, '/host status ') &&
+      (startsWith(github.event.comment.body, '/host status ') ||
+       needs.host.outputs.operation == 'RECOVER_READ_ONLY') &&
       (needs.host.outputs.kind == 'WINDOWS' ||
        needs.host.outputs.kind == 'VM')
     runs-on: ${{ fromJSON(needs.host.outputs.runner_labels) }}
@@ -221,7 +250,8 @@ jobs:
               -not (Test-Path -LiteralPath $current -PathType Leaf)) {
             throw 'HOST_WINDOWS_NATIVE_OWNER_MISSING'
           }
-          if ($env:COMMAND_BODY -like '* --deep') {
+          if ($env:COMMAND_BODY -like '* --deep' -or
+              $env:COMMAND_BODY -like '/host recover *') {
             & $doctor doctor $current
           } else {
             & $doctor doctor $current --fast
@@ -247,11 +277,40 @@ jobs:
             exit 1
           fi
           test ! -r /var/run/docker.sock
-          if [[ "${COMMAND_BODY}" == *" --deep" ]]; then
+          if [[ "${COMMAND_BODY}" == *" --deep" || "${COMMAND_BODY}" == "/host recover "* ]]; then
             sudo -n "${owner}" local diagnose
           else
             sudo -n "${owner}" local status --fast
           fi
+
+  host_apply_windows:
+    needs: host
+    if: >-
+      needs.host.result == 'success' &&
+      needs.host.outputs.operation == 'APPLY' &&
+      needs.host.outputs.kind == 'WINDOWS'
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    uses: ./.github/workflows/windows-physical.yml
+    with:
+      command_body: '/windows apply'
+      host_machine_id: ${{ needs.host.outputs.machine_id }}
+      host_runner_label: ${{ needs.host.outputs.windows_runner_label }}
+      host_runner_name: ${{ needs.host.outputs.owner }}
+
+  host_apply_vm:
+    needs: host
+    if: >-
+      needs.host.result == 'success' &&
+      needs.host.outputs.operation == 'APPLY' &&
+      needs.host.outputs.kind == 'VM' &&
+      needs.host.outputs.machine_id == 'production-1'
+    uses: ./.github/workflows/vm-application-lifecycle.yml
+    with:
+      command_body: '/production converge'
+    secrets: inherit
 
   windows:
     if: >-
