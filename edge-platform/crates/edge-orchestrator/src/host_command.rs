@@ -207,6 +207,7 @@ pub(crate) fn run(
                     None => return Err("HOST_OWNER_MISSING".to_owned()),
                 };
                 println!("host_machine_id={}", host.machine_id);
+                println!("host_desired_spec_path={}", host.desired_spec_path);
                 println!(
                     "host_kind={}",
                     match kind {
@@ -229,7 +230,14 @@ pub(crate) fn run(
                         if deep { "DEEP" } else { "FAST" }
                     );
                     if let Some(path) = github_output {
-                        append_control_outputs(path, &host.machine_id, kind, owner, &labels)?;
+                        append_control_outputs(
+                            path,
+                            &host.machine_id,
+                            kind,
+                            owner,
+                            &labels,
+                            &host.desired_spec_path,
+                        )?;
                     }
                 } else {
                     let registration = if let Some(path) = runner_inventory_json {
@@ -279,6 +287,7 @@ fn append_control_outputs(
     kind: ManagedHostKind,
     owner: &str,
     labels: &str,
+    desired_spec_path: &str,
 ) -> Result<(), String> {
     let metadata = std::fs::symlink_metadata(path)
         .map_err(|_| "Host GitHub output destination unavailable".to_owned())?;
@@ -291,7 +300,7 @@ fn append_control_outputs(
         ManagedHostKind::Unspecified => return Err("Host GitHub output kind invalid".to_owned()),
     };
     let values =
-        format!("machine_id={machine_id}\nkind={name}\nowner={owner}\nrunner_labels={labels}\n");
+        format!("machine_id={machine_id}\nkind={name}\nowner={owner}\nrunner_labels={labels}\ndesired_spec_path={desired_spec_path}\n");
     OpenOptions::new()
         .append(true)
         .open(path)
@@ -393,13 +402,14 @@ mod tests {
             ManagedHostKind::Windows,
             "DESKTOP-0E1F6UQ",
             &labels,
+            "infra/production/production.textproto",
         )
         .unwrap();
         let observed = std::fs::read_to_string(&path).unwrap();
         assert_eq!(
             observed,
             format!(
-                "machine_id=sing-box-windows-lab\nkind=WINDOWS\nowner=DESKTOP-0E1F6UQ\nrunner_labels={labels}\n"
+                "machine_id=sing-box-windows-lab\nkind=WINDOWS\nowner=DESKTOP-0E1F6UQ\nrunner_labels={labels}\ndesired_spec_path=infra/production/production.textproto\n"
             )
         );
         std::fs::remove_file(&path).unwrap();
@@ -410,6 +420,7 @@ mod tests {
                 ManagedHostKind::Windows,
                 "DESKTOP-0E1F6UQ",
                 &labels,
+                "infra/production/production.textproto",
             )
             .is_err()
         );
