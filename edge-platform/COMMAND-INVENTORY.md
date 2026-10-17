@@ -36,7 +36,7 @@ Source of truth: GitHub `iamaman11/sing-box`, PR #394. Command counts refer to R
 - Each mutation must be bound to an exact host (or an explicitly journaled paired A/B transaction), have an exclusive operation owner and refuse replay after an uncertain outcome.
 - Do not expose `/host apply` or `/host recover` until the existing Windows SYSTEM and VM root paths are actually unified and physically accepted.
 - Existing workflow branches and commands continue to work; removing them prematurely would delete unported functionality.
-- The old `infra/windows/hosts.textproto` is still read by the credential workflow: retire this duplicate only when its consumers use HostRegistry. Existing fixed application/Vultr manifests are still present and are not yet unified.
+- The removed `infra/windows/hosts.textproto` is no longer read by the credential workflow. Its remaining Python textproto-regex selector is a second *parser* for the canonical `infra/hosts/hosts.textproto` and must be migrated to the Rust protobuf selector; no second registry file exists. Existing application/Vultr manifests are separate desired resources.
 - This inventory is source-level. It is not evidence that runner registration authorization, VM sudoers upgrades, multi-host physical operation, or original A/B BEGIN run 39004301614 has completed.
 
 ## Exact Rust CLI variant enumeration
@@ -113,3 +113,9 @@ preserved until then.
   was added. Pending `host apply/recover` is not treated as implemented.
   Do not remove remaining physical commands before those paths are ported,
   tested and recoverable.
+
+## Independent production protobuf (source capability, not physical acceptance)
+
+The existing shared production loader supports a **pinned external binary protobuf** without rebuilding Rust. A trusted native host process sets **both** `EDGE_PRODUCTION_STATE_PB` (local regular-file path) and `EDGE_PRODUCTION_STATE_SHA256` (exact lowercase SHA-256 from protected Git). Missing/partial, oversized, malformed or mismatched state fails closed. Without either variable, previously installed releases retain their embedded state. Git is the sole source of configuration; the Worker remains exclusively responsible for secrets. The deployment owner must still materialize, check and activate the pinned protobuf before this is a physically accepted configuration workflow.
+
+FAST snapshots now report observation Unix timestamp, reason and next action without claiming unprobed network or credential health. Sub-second/2-second timing and full runtime correctness require physical measurements; no claim is made from CI alone.

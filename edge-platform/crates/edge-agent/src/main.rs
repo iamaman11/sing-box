@@ -177,10 +177,17 @@ fn run_local_fast(stack_dir: &Path) -> Result<(), String> {
         }
         release.bundle_digest
     };
+    let observed_unix_seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "FAST_CLOCK_UNAVAILABLE".to_owned())?
+        .as_secs();
     println!("fast_schema=sing-box.fleet-fast/v1");
+    println!("fast_observed_unix_seconds={observed_unix_seconds}");
     println!("fast_host_kind=VM");
     println!("fast_bundle_digest={digest}");
     println!("fast_runtime=UNPROVEN");
+    println!("fast_reason=CONTAINERS_AND_ENDPOINTS_NOT_PROBED");
+    println!("fast_next_action=RUN_DEEP_DIAGNOSE");
     println!("fast_credential_pair_terminal=UNPROVEN");
     println!("fast_credential_replay_authorized=false");
     println!("fast_mutations=0");

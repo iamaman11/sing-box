@@ -176,11 +176,25 @@ fn run_fast(state_path: &Path) -> Result<(), String> {
     #[cfg(not(windows))]
     let scm = "UNSUPPORTED_HOST".to_owned();
 
+    let observed_unix_seconds = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "FAST_CLOCK_UNAVAILABLE".to_owned())?
+        .as_secs();
     println!("fast_schema=sing-box.fleet-fast/v1");
+    println!("fast_observed_unix_seconds={observed_unix_seconds}");
     println!("fast_host_kind=WINDOWS");
     println!("fast_release_set_sha256={}", state.release_set_sha256);
     println!("fast_scm_state={scm}");
     println!("fast_runtime=UNPROVEN");
+    println!("fast_reason=RUNTIME_REQUIRES_DEEP_PROOF");
+    println!(
+        "fast_next_action={}",
+        if scm == "Stopped" {
+            "KEEP_STOPPED_OR_RUN_DEEP_DIAGNOSE"
+        } else {
+            "RUN_DEEP_DIAGNOSE"
+        }
+    );
     println!("fast_credential_pair_terminal=UNPROVEN");
     println!("fast_credential_replay_authorized=false");
     println!("fast_mutations=0");

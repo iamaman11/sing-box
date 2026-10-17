@@ -161,8 +161,95 @@ pub fn decode_production_desired_state(bytes: &[u8]) -> Result<ProductionDesired
     Ok(desired)
 }
 
+/// Reads one immutable Git-derived protobuf by exact digest. The existing
+/// embedded production spec remains the backwards-compatible default; a
+/// trusted host owner may supply an independently versioned config without
+/// rebuilding its Rust executable. A partial override fails closed.
+pub fn verified_production_desired_state(
+    path: &Path,
+    expected_sha256: &str,
+) -> Result<ProductionDesiredState, String> {
+    if expected_sha256.len() != 64
+        || !expected_sha256
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("CONFIG_SHA256_INVALID".to_owned());
+    }
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| "CONFIG_UNAVAILABLE".to_owned())?;
+    if !metadata.file_type().is_file() || metadata.len() > 256 * 1024 {
+        return Err("CONFIG_NOT_REGULAR_OR_TOO_LARGE".to_owned());
+    }
+    let mut bytes = Vec::new();
+    File::open(path)
+        .map_err(|_| "CONFIG_UNAVAILABLE".to_owned())?
+        .take(256 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "CONFIG_UNREADABLE".to_owned())?;
+    if bytes.is_empty() || bytes.len() > 256 * 1024 {
+        return Err("CONFIG_EMPTY_OR_TOO_LARGE".to_owned());
+    }
+    let actual_sha256 = ring::digest::digest(&ring::digest::SHA256, &bytes)
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    if actual_sha256 != expected_sha256 {
+        return Err("CONFIG_DIGEST_MISMATCH".to_owned());
+    }
+    // Conforming protobuf encoders may order fields differently. The byte
+    // digest pins the exact protected Git artifact; prost parses its type.
+    ProductionDesiredState::decode(bytes.as_slice())
+        .map_err(|_| "CONFIG_PROTOBUF_INVALID".to_owned())
+}
+
 pub fn canonical_production_desired_state() -> Result<ProductionDesiredState, String> {
-    decode_production_desired_state(CANONICAL_PRODUCTION_DESIRED_STATE_BYTES)
+    let path = std::env::var_os("EDGE_PRODUCTION_STATE_PB");
+    let sha = std::env::var_os("EDGE_PRODUCTION_STATE_SHA256");
+    match (path, sha) {
+        (None, None) => {
+            decode_production_desired_state(CANONICAL_PRODUCTION_DESIRED_STATE_BYTES)
+        }
+        (Some(path), Some(sha)) => {
+            let expected = sha.to_str().ok_or("CONFIG_SHA256_INVALID")?;
+            verified_production_desired_state(Path::new(&path), expected)
+        }
+        _ => Err("CONFIG_OVERRIDE_INCOMPLETE".to_owned()),
+    }
+}
+
+#[cfg(test)]
+mod verified_production_config_tests {
+    use super::*;
+
+    #[test]
+    fn verified_production_file_accepts_only_exact_digest() {
+        let path = std::env::temp_dir().join(format!(
+            "sing-box-verified-production-{}.pb",
+            std::process::id()
+        ));
+        let bytes = CANONICAL_PRODUCTION_DESIRED_STATE_BYTES;
+        std::fs::write(&path, bytes).unwrap();
+        let sha = ring::digest::digest(&ring::digest::SHA256, bytes)
+            .as_ref()
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        assert!(verified_production_desired_state(&path, &sha).is_ok());
+        assert_eq!(
+            verified_production_desired_state(&path, &"0".repeat(64)).unwrap_err(),
+            "CONFIG_DIGEST_MISMATCH"
+        );
+        assert_eq!(
+            verified_production_desired_state(&path, "bad").unwrap_err(),
+            "CONFIG_SHA256_INVALID"
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert_eq!(
+            verified_production_desired_state(&path, &sha).unwrap_err(),
+            "CONFIG_UNAVAILABLE"
+        );
+    }
 }
 
 // One closed mapping shared by production validation and the exact sing-box renderer.
