@@ -503,6 +503,12 @@ def verify_existing_join_endpoint_and_access(source: str) -> None:
         r"(?ms)^  ([a-z][a-z0-9_]*):\n(.*?)(?=^  [a-z][a-z0-9_]*:\n|\Z)",
         source,
     ))
+    require(
+        re.search(r"(?m)^env:\n  REPOSITORY: \$\{\{ github\.repository \}\}$", source) is not None
+        and "for name in GH_TOKEN REPOSITORY ACCEPTED_REVISION OUTPUT_DIR" in
+            Path("edge-platform/scripts/resolve_durable_release.sh").read_text(encoding="utf-8"),
+        "every native credential ReleaseSet helper needs the canonical Git repository",
+    )
     names = (
         "existing_join_windows_access_issue",
         "existing_join_begin",
@@ -516,6 +522,13 @@ def verify_existing_join_endpoint_and_access(source: str) -> None:
     begin = jobs["existing_join_begin"]
     windows = jobs["existing_join_windows_stage_prepare"]
     cleanup = jobs["existing_join_windows_access_cleanup"]
+    require(
+        "environment:\n      name: production-vultr\n      deployment: false" in begin
+        and "VM_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID }}" in begin
+        and "VM_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET }}" in begin
+        and 'test -n "$VM_ACCESS_CLIENT_ID" && test -n "$VM_ACCESS_CLIENT_SECRET"' in begin,
+        "external pre-BEGIN VM proof must receive scoped secrets from protected Environment",
+    )
     require(
         "target_ipv4: ${{ steps.begin.outputs.target_ipv4 }}" in begin
         and "target_domain: ${{ steps.begin.outputs.target_domain }}" in begin
@@ -607,6 +620,19 @@ def verify_existing_join_endpoint_and_access(source: str) -> None:
 def test_existing_join_endpoint_and_access(source: str) -> None:
     verify_existing_join_endpoint_and_access(source)
     broken = (
+        source.replace("env:\n  REPOSITORY: ${{ github.repository }}\n", "", 1),
+        source.replace(
+            "  existing_join_begin:\n", "  existing_join_begin:\n", 1
+        ).replace(
+            "    runs-on: ubuntu-24.04\n"
+            "    # VM Access is scoped to the existing protected environment. Without this\n"
+            "    # binding GitHub silently supplies empty secrets to the external 6/6 proof.\n"
+            "    environment:\n"
+            "      name: production-vultr\n"
+            "      deployment: false\n",
+            "    runs-on: ubuntu-24.04\n",
+            1,
+        ),
         source.replace("      target_ipv4: ${{ steps.begin.outputs.target_ipv4 }}\n", "", 1),
         source.replace('echo "target_domain=$domain" >> "$GITHUB_OUTPUT"',
                        'echo "target_domain=$domain"', 1),
