@@ -391,13 +391,49 @@ def verify_credential_observation_lane(source: str) -> None:
         and "reconcile-windows-first-use.ps1" in stage
         and "line1_accepted:" in stage,
         "same SYSTEM-owned Windows job must prove B via physical isolated 4/4 and exact owned cleanup")
-    for name in (
-        "existing_join_commit_intent",
-        "existing_join_vm_commit",
-        "existing_join_windows_commit",
-    ):
-        require(f"  {name}:\n" not in source,
-                "unsafe partial apply: do not make structural BEGIN guard pass until every owner job is implemented")
+    # Full native transaction: physical 4/4 is a required stage output;
+    # only the exact same GitHub run may append COMMIT, and VM/Windows owners
+    # must then mutate once in order without restarting TUN or SCM.
+    for name in ("existing_join_commit_intent", "existing_join_vm_commit", "existing_join_windows_commit"):
+        require(f"  {name}:\n" in source, "one-shot existing A/B transaction job missing")
+    commit = source.split("  existing_join_commit_intent:\n", 1)[1].split(
+        "\n  existing_join_vm_commit:", 1)[0]
+    vm_commit = source.split("  existing_join_vm_commit:\n", 1)[1].split(
+        "\n  existing_join_windows_commit:", 1)[0]
+    win_commit = source.split("  existing_join_windows_commit:\n", 1)[1].split(
+        "\n  existing_join_recover_readonly:", 1)[0]
+    require(
+        "existing_join_windows_stage_prepare.result == 'success'" in commit
+        and 'test "$LINE1" = true' in commit
+        and 'test "$BEGIN_SHA" = "$STAGED_BEGIN_SHA"' in commit
+        and "existing-join-begin-readback" in commit
+        and "existing-join-plan" in commit
+        and "existing-join-readback" in commit
+        and "existing_join_intent=EXACT_DURABLE_ONCE" in commit
+        and "issues: write" in commit
+        and commit.index("existing-join-plan") < commit.index("gh api -X POST")
+        and commit.index("gh api -X POST") < commit.index("existing-join-readback"),
+        "GitHub must append one immutable COMMIT after exact BEGIN and physical A/B proof")
+    require(
+        "existing_join_commit_intent.result == 'success'" in vm_commit
+        and 'local credential-existing-join' in vm_commit
+        and "credential_existing_join_intent_sha256=$INTENT_SHA" in vm_commit
+        and "credential_active_present=true" in vm_commit
+        and "quality_status=PASS" in vm_commit
+        and "sudo -n" in vm_commit
+        and "credential_mutation_replayed=false" in vm_commit,
+        "VM pointer may commit only after exact GitHub intent, with root owner readback")
+    require(
+        "existing_join_vm_commit.result == 'success'" in win_commit
+        and "privileged-existing-join" in win_commit
+        and "credential_previous_slot" in win_commit
+        and "credential_existing_join_prepare_begin_sha256" in win_commit
+        and "credential_existing_join_intent_sha256" in win_commit
+        and "credential_candidate_present" in win_commit
+        and "managed_tun_present=false" in win_commit
+        and "Windows B commit outcome UNKNOWN; NO REPLAY" in win_commit,
+        "Windows SYSTEM commit must preserve A and require VM commit plus exact receipts")
+
 
     # N2 external proof runs BEFORE irreversible BEGIN, using only the
     # VM owner's kernel locator plus Worker-v2 TLS/auth; no Vultr API key.
