@@ -297,6 +297,7 @@ def verify_credential_observation_lane(source: str) -> None:
     expected = (
         "group: ${{ (inputs.command_body == '/credentials verify' || "
         "inputs.command_body == '/credentials status' || "
+        "startsWith(inputs.command_body, '/credentials status ') || "
         "startsWith(inputs.command_body, '/credentials initial-pair-preflight ')) && "
         "format('credential-observe-{0}', github.run_id) || "
         "format('credential-transaction-{0}', github.repository_id) }}"
@@ -1426,6 +1427,7 @@ def main() -> None:
     credential_observation_group = (
         "group: ${{ (inputs.command_body == '/credentials verify' || "
         "inputs.command_body == '/credentials status' || "
+        "startsWith(inputs.command_body, '/credentials status ') || "
         "startsWith(inputs.command_body, '/credentials initial-pair-preflight ')) && "
         "format('credential-observe-{0}', github.run_id) || "
         "format('credential-transaction-{0}', github.repository_id) }}"
