@@ -7,6 +7,7 @@ use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_INVENTORY_BYTES: u64 = 65_536;
 const MAX_RUNNER_BYTES: u64 = 1_048_576;
@@ -431,11 +432,16 @@ fn host_lifecycle_admission(
         return Ok(());
     }
 
-    // A mutation may be scheduled only for the exact registered, available
-    // owner. Missing repository Administration:read is not a PASS.
-    let json = runner_json.ok_or("HOST_APPLY_BLOCKED_RUNNER_API_UNAVAILABLE")?;
-    let runner_id = official_runner_id(json, kind, owner, &selected.windows_runner_label)?;
-    println!("host_runner_id={runner_id}");
+    // The repository Actions token may lack Administration:read.
+    // A verified runner API answer is authoritative; an unavailable API
+    // merely defers owner authentication to the exact native owner.
+    // The short admission expiry stops queued jobs from mutating later.
+    if let Some(json) = runner_json {
+        let runner_id = official_runner_id(json, kind, owner, &selected.windows_runner_label)?;
+        println!("host_runner_registration=READY_FOR_DISPATCH:{runner_id}");
+    } else {
+        println!("host_runner_registration=UNPROVEN_NATIVE_OWNER_MUST_VERIFY");
+    }
     // No default VM manifest may be silently interpreted as a production
     // ReleaseSet: only existing canonical production lifecycle supports it.
     if kind == ManagedHostKind::Vm
@@ -456,8 +462,29 @@ fn host_lifecycle_admission(
         &selected.desired_spec_path,
     )?;
     append_action_output(output, "APPLY")?;
-    println!("host_dispatch=EXACT_NATIVE_OWNER");
+    let admitted_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "HOST_ADMISSION_CLOCK_INVALID".to_owned())?
+        .as_secs();
+    append_admission_timestamp(output, admitted_at)?;
+    println!("host_dispatch=EXACT_NATIVE_OWNER_FRESHNESS_REQUIRED");
+    println!("host_admission_valid_seconds=900");
     Ok(())
+}
+
+/// Expiring GitHub admission: queued/offline self-hosted jobs must not
+/// turn into deferred mutations after a host unexpectedly reconnects.
+fn append_admission_timestamp(path: &Path, admitted_at: u64) -> Result<(), String> {
+    let metadata =
+        std::fs::symlink_metadata(path).map_err(|_| "HOST_OUTPUT_UNAVAILABLE".to_owned())?;
+    if !metadata.file_type().is_file() || !(1_700_000_000..4_102_444_800).contains(&admitted_at) {
+        return Err("HOST_ADMISSION_INVALID".to_owned());
+    }
+    OpenOptions::new()
+        .append(true)
+        .open(path)
+        .and_then(|mut file| writeln!(file, "admitted_at_unix={admitted_at}"))
+        .map_err(|_| "HOST_ADMISSION_OUTPUT_FAILED".to_owned())
 }
 
 fn append_action_output(path: &Path, action: &str) -> Result<(), String> {

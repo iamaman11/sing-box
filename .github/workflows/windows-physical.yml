@@ -18,6 +18,10 @@ on:
         required: false
         type: string
         default: DESKTOP-0E1F6UQ
+      host_admitted_at_unix:
+        required: false
+        type: string
+        default: ''
 
 permissions: {}
 
@@ -266,8 +270,21 @@ jobs:
           TARGET_MACHINE_ID: ${{ inputs.host_machine_id }}
           TARGET_RUNNER_NAME: ${{ inputs.host_runner_name }}
           TARGET_RUNNER_LABEL: ${{ inputs.host_runner_label }}
+          HOST_ADMITTED_AT_UNIX: ${{ inputs.host_admitted_at_unix }}
         run: |
           $ErrorActionPreference = 'Stop'
+          if ($env:GITHUB_RUN_ATTEMPT -cne '1') {
+            throw 'HOST_APPLY_REPLAY_BLOCKED'
+          }
+          if ($env:HOST_ADMITTED_AT_UNIX) {
+            if ($env:HOST_ADMITTED_AT_UNIX -cnotmatch '^[0-9]{10,12}$') {
+              throw 'HOST_APPLY_ADMISSION_INVALID'
+            }
+            $age = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [long]$env:HOST_ADMITTED_AT_UNIX
+            if ($age -lt 0 -or $age -gt 900) {
+              throw 'HOST_APPLY_ADMISSION_EXPIRED_NO_MUTATION'
+            }
+          }
           if ($env:RUNNER_NAME -cne $env:TARGET_RUNNER_NAME -or
               $env:TARGET_MACHINE_ID -notmatch '^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$' -or
               $env:TARGET_RUNNER_LABEL -notmatch '^[a-zA-Z0-9][a-zA-Z0-9._-]{0,127}$') {
@@ -311,8 +328,18 @@ jobs:
           SOURCE_RELEASE: ${{ steps.active_preflight.outputs.source_release }}
           TARGET_RELEASE: ${{ needs.resolve.outputs.release_set_sha256 }}
           TARGET_REVISION: ${{ needs.resolve.outputs.accepted_revision }}
+          HOST_ADMITTED_AT_UNIX: ${{ inputs.host_admitted_at_unix }}
         run: |
           $ErrorActionPreference = 'Stop'
+          if ($env:HOST_ADMITTED_AT_UNIX) {
+            if ($env:HOST_ADMITTED_AT_UNIX -cnotmatch '^[0-9]{10,12}$') {
+              throw 'HOST_APPLY_ADMISSION_INVALID'
+            }
+            $age = [DateTimeOffset]::UtcNow.ToUnixTimeSeconds() - [long]$env:HOST_ADMITTED_AT_UNIX
+            if ($age -lt 0 -or $age -gt 900) {
+              throw 'HOST_APPLY_ADMISSION_EXPIRED_NO_BEGIN'
+            }
+          }
           if ($env:GITHUB_RUN_ATTEMPT -cne '1' -or
               $env:SOURCE_RELEASE -notmatch '^[0-9a-f]{64}$' -or
               $env:TARGET_RELEASE -notmatch '^[0-9a-f]{64}$' -or

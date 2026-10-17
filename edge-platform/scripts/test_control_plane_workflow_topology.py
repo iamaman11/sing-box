@@ -766,7 +766,9 @@ def test_native_host_readonly_control_boundary(router: str) -> None:
         and "Read complete existing GitHub journal for mutation admission" in router
         and "--journal-history-json" in router
         and "needs.host.outputs.windows_runner_label" in router
-        and "host_runner_name:" in router,
+        and "host_runner_name:" in router
+        and "host_admitted_at_unix:" in router
+        and "needs.host.outputs.admitted_at_unix != ''" in router,
         "Host apply must preserve one exact journalled native Windows/VM owner",
     )
 

@@ -82,6 +82,7 @@ jobs:
       desired_spec_path: ${{ steps.observe.outputs.desired_spec_path }}
       operation: ${{ steps.observe.outputs.operation }}
       windows_runner_label: ${{ steps.observe.outputs.windows_runner_label }}
+      admitted_at_unix: ${{ steps.observe.outputs.admitted_at_unix }}
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     permissions:
@@ -151,7 +152,7 @@ jobs:
             # Read-only host diagnostics still dispatch to the exact
             # Git-owned runner label. The physical owner independently
             # validates its immutable RUNNER_NAME before any diagnostic.
-            echo 'RUNNER_API_UNAVAILABLE_READ_ONLY_OWNER_WILL_VERIFY' >&2
+            echo 'RUNNER_API_UNAVAILABLE_NATIVE_OWNER_AND_FRESHNESS_WILL_VERIFY' >&2
           fi
           if [[ -e "${RUNNER_TEMP}/host-runners.json" ]]; then
             test -s "${RUNNER_TEMP}/host-runners.json" || exit 1
@@ -208,7 +209,7 @@ jobs:
             "${command[@]}" | tee "${RUNNER_TEMP}/host-observation.txt"
           grep -Fxq 'host_mutations=0' "${RUNNER_TEMP}/host-observation.txt"
           {
-            echo '### Host — read-only status'
+            echo '### Host — exact typed operation'
             echo '~~~text'
             cat "${RUNNER_TEMP}/host-observation.txt"
             echo '~~~'
@@ -288,7 +289,8 @@ jobs:
     if: >-
       needs.host.result == 'success' &&
       needs.host.outputs.operation == 'APPLY' &&
-      needs.host.outputs.kind == 'WINDOWS'
+      needs.host.outputs.kind == 'WINDOWS' &&
+      needs.host.outputs.admitted_at_unix != ''
     permissions:
       contents: read
       actions: read
@@ -299,6 +301,7 @@ jobs:
       host_machine_id: ${{ needs.host.outputs.machine_id }}
       host_runner_label: ${{ needs.host.outputs.windows_runner_label }}
       host_runner_name: ${{ needs.host.outputs.owner }}
+      host_admitted_at_unix: ${{ needs.host.outputs.admitted_at_unix }}
 
   host_apply_vm:
     needs: host
@@ -306,10 +309,12 @@ jobs:
       needs.host.result == 'success' &&
       needs.host.outputs.operation == 'APPLY' &&
       needs.host.outputs.kind == 'VM' &&
-      needs.host.outputs.machine_id == 'production-1'
+      needs.host.outputs.machine_id == 'production-1' &&
+      needs.host.outputs.admitted_at_unix != ''
     uses: ./.github/workflows/vm-application-lifecycle.yml
     with:
       command_body: '/production converge'
+      host_admitted_at_unix: ${{ needs.host.outputs.admitted_at_unix }}
     secrets: inherit
 
   windows:
