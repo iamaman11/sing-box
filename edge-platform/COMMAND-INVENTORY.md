@@ -1,19 +1,19 @@
-# Команды: существующие и целевые
+# Команды sing-box — один целевой интерфейс
 
-**Целевой публичный интерфейс** — ровно три команды. Это не утверждение, что все ветки уже работают физически.
+**Единственный разрешённый публичный API нового продукта** — `/host status [machine-id] [--deep]`, `/host apply <machine-id>`, `/host recover <machine-id>`. Команда изменения всегда требует однозначный `machine_id`. Содержимое `desired` — только типизированный Git-owned ресурс, никаких сохранённых ручных профилей.
 
-| Команда | Значение | Текущее ограничение |
+| Команда | Требуемое поведение | Что сейчас доказано |
 | --- | --- | --- |
-| `/host status [machine-id] [--deep]` | Только чтение, inventory или отдельный native owner | Старые установленные версии используют маркированный DEEP fallback |
-| `/host apply <machine-id>` | Одна типизированная установка/обновление/конфигурация | Исходная A/B не завершена; VM apply ограничен `production-1`; нет универсальной установки |
-| `/host recover <machine-id>` | Разрешение исходного intent по независимым native фактам | Пока **read-only**, не полноценное восстановление |
+| `/host status` | Ограниченная read-only диагностика парка, независимые ответы; `UNPROVEN` не PASS | Windows + acceptance VM работают; production runner всё ещё queued |
+| `/host apply <id>` | Один Rust intent → новый per-resource ReleaseSet → native install/reinstall/replace → физическое подтверждение | **НЕ ПРИНЯТО**: старые admission и production-bound bundle ещё в коде |
+| `/host recover <id>` | Для *новой* типизированной операции: read-only diagnosis → ограниченная замена/переустановка только собственных ресурсов, без повтора UNKNOWN | **НЕ ПРИНЯТО**: currently read-only и упирается в историческую A/B |
 
-Команда изменения требует **явный machine_id**. `status` без machine_id не меняет ни одной машины.
+## Исторические входы (ЗАПРЕЩЕНЫ, даже если код ещё содержит их)
 
-### Исторические пространства команд, пока присутствуют в коде
+`/windows`, `/vm`, `/production`, `/credentials`, `/vultr`, `/vpc`, `/application`, старые workflow исторической A/B, любые прежние профили, ручные пути, миграции и резервные secret-fallback. Не запускать их ни из ChatGPT, ни локально, ни через отдельный workflow. Не чинить и не возвращать исторические пути; удалить из выполняемого ingress в том же едином срезе, который даёт им нативную замену.
 
-`/windows` — физические SCM/ProxyOnly/update/rollback; `/vm` и `/production` — VM runtime; `/credentials` — Worker A/B и оригинальная транзакция; `/vultr` и `/vpc` — облачные ресурсы; `/application` — приложение/Mesh.
+## Допуск новой операции
 
-Их наличие **не** означает, что это отдельные одобренные операторские API. Перенести уникальные функции в нативный typed host owner, доказать эквивалентность, **удалить** CLI aliases, устаревшие маршруты и workflow-дубли. Не удалять реализованный функционал до подтверждённой замены.
+Только строго типизированные `machine_id / resource_id / desired_digest / immutable_release / operation_id / native_owner` и однозначные `READY | DEGRADED | BLOCKED | UNKNOWN_NO_REPLAY`. Нет старого `Issue #26` как mutation authority: старые comments — неизменяемый архив, не исходное желаемое состояние. Для сбоя секретов — fresh Worker-provision с **новой** resource identity, без переноса старой A/B, только после проверки границ собственности старого ресурса. Удалять старые файлы и контейнеры можно при доказанном scope и сохранённом способе доступа; не трогать Cloudflare One, Mesh других проектов и общую инфраструктуру.
 
-Запрещены новый `/fleet`, второй host registry, специальный installer на VM/Windows, Python/PowerShell decision authority, новый секретный менеджер, дублирующий агент, неявный повтор после unknown ACK. Старое имя protobuf message можно сохранять только для совместимости wire encoding, не как второй реестр. Операционное разрешение — только из [Issue #26](https://github.com/iamaman11/sing-box/issues/26), порядок реализации — [FINALIZATION-PLAN.md](FINALIZATION-PLAN.md).
+До фактической замены старого ingress **система не 10/10**, а изменения через устаревшие команды запрещены. [Нормативная архитектура](ARCHITECTURE.md), [единственный план](FINALIZATION-PLAN.md), [живой курсор](https://github.com/iamaman11/sing-box/issues/26).
