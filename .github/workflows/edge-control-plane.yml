@@ -110,7 +110,7 @@ jobs:
             test -s "${RUNNER_TEMP}/host-runners.json" || exit 1
           fi
 
-      - name: Show one typed native host status
+      - name: Show one typed native host status or read-only lifecycle preflight
         id: observe
         shell: bash
         run: |
@@ -182,7 +182,8 @@ jobs:
       needs.host.result == 'success' &&
       (github.event.comment.body == '/host status' ||
        startsWith(github.event.comment.body, '/host status ') ||
-       needs.host.outputs.operation == 'RECOVER_READ_ONLY')
+       needs.host.outputs.operation == 'APPLY_PREFLIGHT' ||
+       needs.host.outputs.operation == 'RECOVER_PREFLIGHT')
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     permissions:
