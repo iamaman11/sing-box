@@ -860,6 +860,18 @@ def test_existing_worker_host_signer_is_syntactically_closed() -> None:
             "Worker must fail closed without signer and credential secrets: "
             + no_secrets.stderr[-1000:],
         )
+        roundtrip = subprocess.run(
+            [
+                "node", "edge-platform/scripts/test_host_worker_signer.mjs",
+                str(target.resolve()),
+            ],
+            capture_output=True, text=True, timeout=25, check=False,
+        )
+        require(
+            roundtrip.returncode == 0,
+            "Worker Access/JWT/Ed25519 roundtrip failed: "
+            + roundtrip.stderr[-1800:],
+        )
 
 
 def main() -> None:
