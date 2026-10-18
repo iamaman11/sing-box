@@ -319,6 +319,7 @@ pub(crate) fn run(
             &desired,
             &machine_id,
             HostLifecycleOperation::Apply,
+            &release.release().release_set_sha256,
             runner_inventory_json,
             github_output,
         ),
@@ -326,6 +327,7 @@ pub(crate) fn run(
             &desired,
             &machine_id,
             HostLifecycleOperation::Recover,
+            &release.release().release_set_sha256,
             runner_inventory_json,
             github_output,
         ),
@@ -346,6 +348,7 @@ fn host_lifecycle_admission(
     desired: &HostRegistry,
     machine_id: &str,
     operation: HostLifecycleOperation,
+    expected_release_set_sha256: &str,
     runner_json: Option<&Path>,
     output: Option<&Path>,
 ) -> Result<(), String> {
@@ -370,6 +373,15 @@ fn host_lifecycle_admission(
     println!("host_kind={kind:?}");
     println!("host_runner_registration={registration}");
     println!("host_lifecycle_contract=FRESH_TYPED_ONLY");
+    println!("host_expected_release_set_sha256={expected_release_set_sha256}");
+    println!("host_desired_spec_path={}", selected.desired_spec_path);
+    println!(
+        "host_requested_operation={}",
+        match operation {
+            HostLifecycleOperation::Apply => "APPLY",
+            HostLifecycleOperation::Recover => "RECOVER",
+        }
+    );
     println!("host_historical_journal_authority=FORBIDDEN");
     println!("host_native_install_authority=NOT_YET_ACCEPTED");
     println!("host_next_action=NEED_NATIVE_TYPED_INSTALLER_AND_RELEASE_BOUND_RECEIPTS");
