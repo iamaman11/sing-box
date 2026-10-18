@@ -244,7 +244,7 @@ def prepare_inputs(root: Path, accepted: str, candidate: str, run_id: str) -> di
     )
     fleet_registry = b"git-derived-fleet-protobuf"
     (authority / "fleet-registry.pb").write_bytes(fleet_registry)
-    (authority / "fleet-registry.pb.sha256").write_text(f"{sha(fleet_registry)}  fleet-registry.pb\n")
+    (authority / "fleet-registry.pb.sha256").write_text(f"{hashlib.sha256(fleet_registry).hexdigest()}  fleet-registry.pb\n")
     (authority / "acceptance.json").write_text(json.dumps({
         "schema": 1,
         "accepted_revision": accepted,

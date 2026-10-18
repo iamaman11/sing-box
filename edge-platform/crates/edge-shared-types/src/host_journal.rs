@@ -60,10 +60,10 @@ fn verify_native_journal_protection(path: &Path) -> Result<(), &'static str> {
     use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{
         ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION, GetAce, GetTokenInformation,
-        IsWellKnownSid, OWNER_SECURITY_INFORMATION, OpenProcessToken, TOKEN_QUERY, TOKEN_USER,
+        IsWellKnownSid, OWNER_SECURITY_INFORMATION, TOKEN_QUERY, TOKEN_USER,
         TokenUser, WinBuiltinAdministratorsSid, WinLocalSystemSid,
     };
-    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     if !path.is_absolute() {
         return Err("HOST_WINDOWS_JOURNAL_ABSOLUTE_PATH_REQUIRED");
