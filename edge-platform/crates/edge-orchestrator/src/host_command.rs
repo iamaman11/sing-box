@@ -652,8 +652,7 @@ mod tests {
             "body": "<!-- sing-box-credential-existing-join-begin/v1 -->\\n{\"schema\":\"sing-box.credential-existing-join-begin/v1\",\"run_id\":39004301614}"
         }]).to_string();
         assert!(
-            crate::credential_existing_join::host_admission_status(malformed.as_bytes())
-                .is_err()
+            crate::credential_existing_join::host_admission_status(malformed.as_bytes()).is_err()
         );
         assert_eq!(
             crate::credential_existing_join::host_admission_status(b"[]").unwrap_err(),
