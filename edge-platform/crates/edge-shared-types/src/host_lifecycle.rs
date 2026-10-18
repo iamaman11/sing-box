@@ -31,7 +31,8 @@ pub fn digest_host_desired(
     payload.extend_from_slice(&(spec_bytes.len() as u32).to_be_bytes());
     payload.extend_from_slice(spec_bytes);
     Ok(ring::digest::digest(&ring::digest::SHA256, &payload)
-        .as_ref().to_vec())
+        .as_ref()
+        .to_vec())
 }
 
 fn token(value: &str) -> bool {
@@ -112,20 +113,24 @@ pub fn validate_intent_against_target(
     registry: &HostRegistry,
 ) -> Result<(), &'static str> {
     use crate::FleetHostRunState;
-    let host = registry.hosts.iter()
+    let host = registry
+        .hosts
+        .iter()
         .find(|host| host.machine_id == intent.machine_id)
         .ok_or("HOST_INTENT_UNKNOWN_MACHINE")?;
-    let target = host.target.as_ref()
+    let target = host
+        .target
+        .as_ref()
         .ok_or("HOST_TARGET_UNSET_OBSERVE_ONLY")?;
-    let action = FleetHostAction::try_from(intent.action)
-        .map_err(|_| "HOST_INTENT_ACTION_INVALID")?;
+    let action =
+        FleetHostAction::try_from(intent.action).map_err(|_| "HOST_INTENT_ACTION_INVALID")?;
     let state = FleetHostRunState::try_from(target.run_state)
         .map_err(|_| "HOST_TARGET_RUN_STATE_INVALID")?;
     if state == FleetHostRunState::Unspecified {
         return Err("HOST_TARGET_RUN_STATE_REQUIRED");
     }
-    let mode = FleetHostMode::try_from(target.windows_mode)
-        .map_err(|_| "HOST_TARGET_MODE_INVALID")?;
+    let mode =
+        FleetHostMode::try_from(target.windows_mode).map_err(|_| "HOST_TARGET_MODE_INVALID")?;
     if (host.kind == FleetHostKind::Windows as i32 && mode == FleetHostMode::Unspecified)
         || (host.kind == FleetHostKind::Vm as i32 && mode != FleetHostMode::Unspecified)
     {
@@ -141,9 +146,15 @@ pub fn validate_intent_against_target(
     // typed SET_MODE and a separate physical gate are both required.
     if mode == FleetHostMode::ManagedTun
         && action != FleetHostAction::SetMode
-        && matches!(action, FleetHostAction::Start | FleetHostAction::Apply
-                            | FleetHostAction::Install | FleetHostAction::Reinstall
-                            | FleetHostAction::Recover | FleetHostAction::Configure)
+        && matches!(
+            action,
+            FleetHostAction::Start
+                | FleetHostAction::Apply
+                | FleetHostAction::Install
+                | FleetHostAction::Reinstall
+                | FleetHostAction::Recover
+                | FleetHostAction::Configure
+        )
     {
         return Err("HOST_TUN_EXPLICIT_MODE_GATE_REQUIRED");
     }
@@ -307,7 +318,7 @@ mod tests {
                 owner: Some(managed_host::Owner::WindowsRunnerName("WIN-1".to_owned())),
                 windows_runner_label: "windows-1".to_owned(),
                 desired_spec_path: "infra/production/production.textproto".to_owned(),
-            target: None,
+                target: None,
             }],
         };
         let bytes = encode_host_registry(&registry).unwrap();
@@ -343,7 +354,10 @@ mod tests {
             windows_mode: FleetHostMode::ProxyOnly as i32,
         });
         assert_ne!(original, digest_host_desired(&changed, b"spec-v1").unwrap());
-        assert_ne!(original, digest_host_desired(&registry.hosts[0], b"spec-v2").unwrap());
+        assert_ne!(
+            original,
+            digest_host_desired(&registry.hosts[0], b"spec-v2").unwrap()
+        );
         changed.machine_id = "another-windows".to_owned();
         assert_ne!(
             digest_host_desired(&registry.hosts[0], b"spec-v1").unwrap(),
