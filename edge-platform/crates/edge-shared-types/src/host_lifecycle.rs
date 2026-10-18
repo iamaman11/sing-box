@@ -18,7 +18,9 @@ fn token(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
         && value.as_bytes()[0].is_ascii_alphanumeric()
-        && value.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
 }
 
 fn sha(value: &[u8]) -> bool {
@@ -32,39 +34,49 @@ pub fn validate_host_intent(
     exact_desired_sha256: &[u8],
     exact_release_set_sha256: &[u8],
 ) -> Result<(), &'static str> {
-    if intent.schema_version != 1 || !token(&intent.machine_id)
-        || !token(&intent.resource_id) || !token(&intent.operation_id)
+    if intent.schema_version != 1
+        || !token(&intent.machine_id)
+        || !token(&intent.resource_id)
+        || !token(&intent.operation_id)
         || intent.requested_at_unix == 0
     {
         return Err("HOST_INTENT_IDENTITY_INVALID");
     }
-    if !sha(exact_registry_sha256) || !sha(exact_desired_sha256) || !sha(exact_release_set_sha256)
+    if !sha(exact_registry_sha256)
+        || !sha(exact_desired_sha256)
+        || !sha(exact_release_set_sha256)
         || intent.registry_sha256 != exact_registry_sha256
         || intent.desired_sha256 != exact_desired_sha256
         || intent.release_set_sha256 != exact_release_set_sha256
     {
         return Err("HOST_INTENT_DIGEST_MISMATCH");
     }
-    let host = registry.hosts.iter()
+    let host = registry
+        .hosts
+        .iter()
         .find(|h| h.machine_id == intent.machine_id)
         .ok_or("HOST_INTENT_UNKNOWN_MACHINE")?;
     if host.kind != intent.kind
         || !matches!(
             (FleetHostKind::try_from(host.kind), host.owner.as_ref()),
-            (Ok(FleetHostKind::Windows), Some(managed_host::Owner::WindowsRunnerName(_)))
-                | (Ok(FleetHostKind::Vm), Some(managed_host::Owner::VmMachineId(_)))
+            (
+                Ok(FleetHostKind::Windows),
+                Some(managed_host::Owner::WindowsRunnerName(_))
+            ) | (
+                Ok(FleetHostKind::Vm),
+                Some(managed_host::Owner::VmMachineId(_))
+            )
         )
     {
         return Err("HOST_INTENT_OWNER_MISMATCH");
     }
-    let action = FleetHostAction::try_from(intent.action)
-        .map_err(|_| "HOST_INTENT_ACTION_INVALID")?;
-    let mode = FleetHostMode::try_from(intent.requested_mode)
-        .map_err(|_| "HOST_INTENT_MODE_INVALID")?;
+    let action =
+        FleetHostAction::try_from(intent.action).map_err(|_| "HOST_INTENT_ACTION_INVALID")?;
+    let mode =
+        FleetHostMode::try_from(intent.requested_mode).map_err(|_| "HOST_INTENT_MODE_INVALID")?;
     if action == FleetHostAction::Unspecified
         || (action == FleetHostAction::SetMode
-            && (host.kind != FleetHostKind::Windows as i32
-                || mode == FleetHostMode::Unspecified))
+            && (host.kind != FleetHostKind::Windows as i32 || mode == FleetHostMode::Unspecified))
         || (action != FleetHostAction::SetMode && mode != FleetHostMode::Unspecified)
     {
         return Err("HOST_INTENT_ACTION_MODE_MISMATCH");
@@ -108,8 +120,8 @@ pub fn validate_host_result(
     {
         return Err("HOST_RESULT_CORRELATION_MISMATCH");
     }
-    let state = FleetHostResultState::try_from(result.state)
-        .map_err(|_| "HOST_RESULT_STATE_INVALID")?;
+    let state =
+        FleetHostResultState::try_from(result.state).map_err(|_| "HOST_RESULT_STATE_INVALID")?;
     if state == FleetHostResultState::Unspecified
         || (state == FleetHostResultState::Verified
             && (!result.physical_readback
@@ -118,8 +130,14 @@ pub fn validate_host_result(
         || (state != FleetHostResultState::Verified && result.physical_readback)
         || result.error_class.len() > 128
         || result.next_action.len() > 128
-        || !result.error_class.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
-        || !result.next_action.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+        || !result
+            .error_class
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+        || !result
+            .next_action
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
     {
         return Err("HOST_RESULT_EVIDENCE_INVALID");
     }
@@ -160,7 +178,9 @@ mod tests {
             }],
         };
         let bytes = encode_host_registry(&registry).unwrap();
-        let registry_sha = ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref().to_vec();
+        let registry_sha = ring::digest::digest(&ring::digest::SHA256, &bytes)
+            .as_ref()
+            .to_vec();
         let desired = vec![11u8; 32];
         let release = vec![22u8; 32];
         let intent = FleetHostIntent {
@@ -187,7 +207,10 @@ mod tests {
         assert_eq!(decode_host_intent(&encoded).unwrap(), intent);
         let receipt = prepared_host_result(&intent);
         validate_host_result(&receipt, &intent).unwrap();
-        assert_eq!(decode_host_result(&receipt.encode_to_vec()).unwrap(), receipt);
+        assert_eq!(
+            decode_host_result(&receipt.encode_to_vec()).unwrap(),
+            receipt
+        );
     }
 
     #[test]
