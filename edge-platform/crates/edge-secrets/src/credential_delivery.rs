@@ -456,9 +456,11 @@ pub async fn request_canonical_host_authorization(
         return Err("HOST_AUTHORIZATION_EMPTY_OPERATION".to_owned());
     }
     let identity = read_access_service_identity(identity_path)?;
-    let mut url = reqwest::Url::parse(
-        &canonical_credential_worker_url(CredentialProjectionKind::Vm, 1)?,
-    ).map_err(|_| "HOST_WORKER_CANONICAL_URL_INVALID".to_owned())?;
+    let mut url = reqwest::Url::parse(&canonical_credential_worker_url(
+        CredentialProjectionKind::Vm,
+        1,
+    )?)
+    .map_err(|_| "HOST_WORKER_CANONICAL_URL_INVALID".to_owned())?;
     url.set_path("/v1/host/authorize");
     url.set_query(None);
     let client = credential_worker_client(&identity)?;
@@ -468,24 +470,35 @@ pub async fn request_canonical_host_authorization(
         .body(intent_bytes.to_vec())
         .send()
         .await
-        .map_err(|err| format!("HOST_WORKER_POST_OUTCOME_UNCERTAIN_NO_REPLAY:{}", credential_worker_transport_error_kind(&err)))?;
+        .map_err(|err| {
+            format!(
+                "HOST_WORKER_POST_OUTCOME_UNCERTAIN_NO_REPLAY:{}",
+                credential_worker_transport_error_kind(&err)
+            )
+        })?;
     match response.status() {
         StatusCode::NOT_FOUND => return Err("HOST_WORKER_SIGNER_NOT_PROVISIONED".to_owned()),
         StatusCode::FORBIDDEN => return Err("HOST_WORKER_POLICY_DENIED".to_owned()),
         StatusCode::OK => {}
         _ => return Err("HOST_WORKER_AUTHORIZATION_NOT_ACCEPTED".to_owned()),
     }
-    if response.content_length().is_some_and(|length| {
-        length == 0 || length > MAX_HOST_AUTHORIZATION_BYTES as u64
-    }) {
+    if response
+        .content_length()
+        .is_some_and(|length| length == 0 || length > MAX_HOST_AUTHORIZATION_BYTES as u64)
+    {
         return Err("HOST_WORKER_AUTHORIZATION_RESPONSE_SIZE_INVALID".to_owned());
     }
-    if response.headers().get(CONTENT_TYPE)
-        .and_then(|v| v.to_str().ok()) != Some("application/x-protobuf")
+    if response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        != Some("application/x-protobuf")
     {
         return Err("HOST_WORKER_AUTHORIZATION_RESPONSE_TYPE_INVALID".to_owned());
     }
-    let bytes = response.bytes().await
+    let bytes = response
+        .bytes()
+        .await
         .map_err(|_| "HOST_WORKER_RESPONSE_UNCERTAIN_NO_REPLAY".to_owned())?;
     let authorization = decode_host_authorization(&bytes).map_err(str::to_owned)?;
     if authorization.operation_id != intent.operation_id {
