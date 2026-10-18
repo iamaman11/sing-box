@@ -3121,6 +3121,36 @@ mod tests {
     use super::*;
 
     #[test]
+    fn host_authorization_is_closed_by_default_exact_and_access_bound() {
+        // Source for BOTH existing projection Workers; not a new Worker,
+        // key store, publisher or agent. No signer material is ever embedded
+        // in this public Git repository.
+        for projection in ["vm", "windows"] {
+            let source = delivery_worker_material(projection).unwrap().source;
+            assert!(source.contains("/v1/host/authorize"));
+            assert!(source.contains("if(q.method!==\"POST\""));
+            assert!(source.contains("EDGE_HOST_SIGNING_PKCS8_BASE64"));
+            assert!(source.contains("EDGE_HOST_SIGNING_KEY_ID"));
+            assert!(source.contains("EDGE_HOST_APPROVED_INTENT_SHA256"));
+            assert!(source.contains("EDGE_HOST_ACCESS_ISSUER"));
+            assert!(source.contains("EDGE_HOST_ACCESS_AUD"));
+            assert!(source.contains("Cf-Access-Jwt-Assertion"));
+            assert!(source.contains("RSASSA-PKCS1-v1_5"));
+            assert!(source.contains("sing-box/native-host-authorization/v1:"));
+            assert!(source.contains("U32(raw.length),raw,U32(kid.length),kid"));
+            assert!(source.contains("U64(issued),U64(expires)"));
+            assert!(source.contains("crypto.subtle.sign(\"Ed25519\""));
+            assert!(source.contains("sum!==approved"));
+            assert!(source.contains("issued+120"));
+            // Credential GET and dummy A/B proof route must remain in the
+            // original Worker, never copied to a second privileged service.
+            assert!(source.contains("/v1/proof-slot"));
+            assert!(source.contains("u.pathname!==\"/v1/credentials\""));
+            assert!(!source.contains("console.log"));
+        }
+    }
+
+    #[test]
     fn first_use_begin_file_create_new_has_no_overwrite_path() {
         let record = "<!-- sing-box-credential-initial-attempt/v1 -->\n{}";
         let unique = std::time::SystemTime::now()
