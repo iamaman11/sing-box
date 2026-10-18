@@ -2357,8 +2357,17 @@ fn projection_delivery_state(
         return Ok(ProjectionDeliveryState::LegacyLocked);
     }
 
-    if current.worker_binding_count == Some(2) {
-        require_exact_secret_bindings(&projection.worker_name, &current.worker_secret_bindings)?;
+    // Credential data plane remains exactly two A/B slots. The ONE VM Worker
+    // may additionally carry five independent Host signer guard secrets, with
+    // no second worker or duplicate issuer. Windows never permits signer keys.
+    let guarded_host_signer = projection.projection == "vm"
+        && current.worker_binding_count == Some(7);
+    if current.worker_binding_count == Some(2) || guarded_host_signer {
+        require_exact_secret_bindings(
+            &projection.worker_name,
+            &projection.projection,
+            &current.worker_secret_bindings,
+        )?;
         let latest_is_only_active = current.worker_active_deployment_id.is_some()
             && current
                 .worker_latest_version_id
@@ -2876,16 +2885,30 @@ fn workers_dev_hostname(
 
 fn require_exact_secret_bindings(
     worker_name: &str,
+    projection: &str,
     bindings: &[cloudflare::CloudflareWorkerSecretBinding],
 ) -> Result<(), String> {
-    let observed = bindings
+    let mut observed = bindings
         .iter()
         .map(|binding| (binding.name.as_str(), binding.binding_type.as_str()))
         .collect::<Vec<_>>();
-    let expected = vec![(SLOT_A, "secret_text"), (SLOT_B, "secret_text")];
+    observed.sort_unstable();
+    let mut expected = vec![(SLOT_A, "secret_text"), (SLOT_B, "secret_text")];
+    if projection == "vm" && observed.len() == 7 {
+        // Exactly one Worker may carry the host signing secret. No extra
+        // implicit credentials, fallback secrets or caller-provided key.
+        expected.extend_from_slice(&[
+            ("EDGE_HOST_SIGNING_PKCS8_BASE64", "secret_text"),
+            ("EDGE_HOST_SIGNING_KEY_ID", "secret_text"),
+            ("EDGE_HOST_APPROVED_INTENT_SHA256", "secret_text"),
+            ("EDGE_HOST_ACCESS_ISSUER", "secret_text"),
+            ("EDGE_HOST_ACCESS_AUD", "secret_text"),
+        ]);
+    }
+    expected.sort_unstable();
     if observed != expected {
         return Err(format!(
-            "Worker {worker_name} secret bindings differ from exact fixed A/B contract: observed={observed:?}"
+            "Worker {worker_name} bindings differ from exact A/B and optional ONE VM Host signer: observed={observed:?}"
         ));
     }
     Ok(())
@@ -3120,6 +3143,24 @@ fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_one_vm_worker_may_hold_host_signer_secrets() {
+        let names = [
+            SLOT_A, SLOT_B, "EDGE_HOST_ACCESS_AUD",
+            "EDGE_HOST_ACCESS_ISSUER", "EDGE_HOST_APPROVED_INTENT_SHA256",
+            "EDGE_HOST_SIGNING_KEY_ID", "EDGE_HOST_SIGNING_PKCS8_BASE64",
+        ];
+        let extra = names.iter().map(|name| cloudflare::CloudflareWorkerSecretBinding {
+            name: (*name).to_owned(),
+            binding_type: "secret_text".to_owned(),
+        }).collect::<Vec<_>>();
+        assert!(require_exact_secret_bindings("sing-box-credentials-vm", "vm", &extra).is_ok());
+        assert!(require_exact_secret_bindings("sing-box-credentials-windows", "windows", &extra).is_err());
+        let mut injected = extra;
+        injected[3].name = "ATTACKER_EXTRA_SECRET".to_owned();
+        assert!(require_exact_secret_bindings("sing-box-credentials-vm", "vm", &injected).is_err());
+    }
 
     #[test]
     fn host_authorization_is_closed_by_default_exact_and_access_bound() {
