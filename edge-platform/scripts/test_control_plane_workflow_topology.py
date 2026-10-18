@@ -749,13 +749,20 @@ def test_native_host_readonly_control_boundary(router: str) -> None:
         and "issues: write" not in physical
         and "host_mutations=0" in hosted
         and '--github-output "${GITHUB_OUTPUT}"' in hosted
-        and "needs.host.outputs.runner_labels" in physical
+        and "needs.host.outputs.runner_labels" not in physical
+        and "matrix: ${{ fromJSON(needs.host.outputs.host_matrix) }}" in physical
+        and "runs-on: ${{ matrix.runner_labels }}" in physical
+        and "TARGET_MACHINE: ${{ matrix.machine_id }}" in physical
+        and "TARGET_OWNER: ${{ matrix.owner }}" in physical
+        and "TARGET_KIND: ${{ matrix.kind }}" in physical
+        and "needs.host.outputs.host_targets_present == 'true'" in physical
+        and "github.event.comment.body == '/host status'" in physical
         and "Verify installed Windows native owner" in physical
         and "HOST_WINDOWS_OWNER_MISMATCH" in physical
         and "Verify installed VM native owner" in physical
         and "HOST_VM_GENERIC_ROOT_AUTHORITY_FORBIDDEN" in physical
         and 'sudo -n "${owner}" local diagnose' in physical,
-        "Host must select exact Git host then run existing native read-only owners only",
+        "Host must dispatch a single Rust-selected read-only owner per available fleet host",
     )
 
     require(
