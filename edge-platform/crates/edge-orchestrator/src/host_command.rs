@@ -240,6 +240,7 @@ pub(crate) fn run(
                 };
                 println!("host_machine_id={}", host.machine_id);
                 println!("host_desired_spec_path={}", host.desired_spec_path);
+                print_host_target(host)?;
                 println!(
                     "host_kind={}",
                     match kind {
@@ -472,6 +473,7 @@ fn host_lifecycle_admission(
     println!("host_lifecycle_contract=FRESH_TYPED_ONLY");
     println!("host_expected_release_set_sha256={expected_release_set_sha256}");
     println!("host_desired_spec_path={}", selected.desired_spec_path);
+    print_host_target(selected)?;
     println!(
         "host_requested_operation={}",
         match operation {
@@ -511,6 +513,28 @@ fn host_lifecycle_admission(
     };
     append_observation_matrix(output, &targets)?;
     println!("host_observation_targets={}", targets.len());
+    Ok(())
+}
+
+fn print_host_target(host: &edge_shared_types::FleetHost) -> Result<(), String> {
+    match &host.target {
+        None => {
+            println!("host_desired_run_state=UNSET_OBSERVE_ONLY");
+            println!("host_desired_windows_mode=UNSET");
+        }
+        Some(target) => {
+            use edge_shared_types::{FleetHostMode, FleetHostRunState};
+            let state = FleetHostRunState::try_from(target.run_state)
+                .map_err(|_| "HOST_TARGET_RUN_STATE_INVALID")?;
+            let mode = FleetHostMode::try_from(target.windows_mode)
+                .map_err(|_| "HOST_TARGET_MODE_INVALID")?;
+            if state == FleetHostRunState::Unspecified {
+                return Err("HOST_TARGET_RUN_STATE_REQUIRED".to_owned());
+            }
+            println!("host_desired_run_state={state:?}");
+            println!("host_desired_windows_mode={mode:?}");
+        }
+    }
     Ok(())
 }
 
@@ -759,6 +783,7 @@ mod tests {
         let apply = std::fs::read_to_string(&file).unwrap();
         assert!(apply.contains("operation=APPLY_PREFLIGHT"));
         assert!(apply.contains("host_targets_present=true"));
+        assert!(apply.contains("host_desired_run_state=UNSET_OBSERVE_ONLY"));
         assert!(!apply.contains("admitted_at_unix="));
         assert!(!apply.contains("operation=APPLY\\n"));
         let parsed = edge_shared_types::host_lifecycle::decode_host_intent(
