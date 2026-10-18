@@ -775,6 +775,22 @@ def test_native_host_readonly_control_boundary(router: str) -> None:
         "Per-host reports must finish independently with native read-only owners",
     )
     require(
+        "host-observe $current" in owner
+        and 'local host-observe > "${output}"' in owner
+        and "actions/upload-artifact@v4" in owner
+        and "native-readback-${{ inputs.machine_id }}-${{ inputs.source_comment_id }}" in owner
+        and "actions: read" in peer_report
+        and 'gh run download "${GITHUB_RUN_ID}"' in peer_report
+        and "resolve_durable_release.sh" in peer_report
+        and "edge-orchestrator-linux-amd64" in peer_report
+        and 'readback "${TARGET_MACHINE}" --observation-path "${observation}"' in peer_report
+        and "host_plan_mutation_authorized=false" in peer_report
+        and "host_plan_owner_attested=false" in peer_report
+        and "RUNNER_COPIED_UNAUTHENTICATED" in peer_report
+        and "REJECTED_EXACT_RUST_VALIDATION" in peer_report,
+        "Native protobuf transport must be consumed by exact trusted Rust without granting mutation",
+    )
+    require(
         "needs: host" in report
         and "github.run_attempt == 1" in report
         and "needs.host.result == 'success'" in report
