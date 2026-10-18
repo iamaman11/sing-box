@@ -324,6 +324,7 @@ where
         let mut result = crate::host_lifecycle::prepared_host_result(intent);
         result.state = FleetHostResultState::Observed as i32;
         result.observed_at_unix = before.observed_at_unix;
+        result.error_class.clear();
         result.next_action = "NONE".to_owned();
         store_native_terminal_and_unlock_once(intent, &result, "observed", protected_journal_dir)?;
         return Ok(result);
@@ -937,6 +938,9 @@ mod tests {
         )
         .unwrap();
         assert_eq!(noop.state, FleetHostResultState::Observed as i32);
+        assert!(noop.error_class.is_empty());
+        assert_eq!(noop.next_action, "NONE");
+        assert_eq!(noop.observed_at_unix, 1020);
         assert!(!noop.physical_readback);
         assert_eq!(count.get(), 1);
         assert!(
