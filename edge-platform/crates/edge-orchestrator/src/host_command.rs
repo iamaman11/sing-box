@@ -349,11 +349,13 @@ fn host_lifecycle_admission(
     runner_json: Option<&Path>,
     output: Option<&Path>,
 ) -> Result<(), String> {
-    let selected = desired.hosts.iter()
+    let selected = desired
+        .hosts
+        .iter()
         .find(|host| host.machine_id == machine_id)
         .ok_or("HOST_NOT_REGISTERED")?;
-    let kind = ManagedHostKind::try_from(selected.kind)
-        .map_err(|_| "HOST_KIND_INVALID".to_owned())?;
+    let kind =
+        ManagedHostKind::try_from(selected.kind).map_err(|_| "HOST_KIND_INVALID".to_owned())?;
     let owner = match (kind, selected.owner.as_ref()) {
         (ManagedHostKind::Windows, Some(managed_host::Owner::WindowsRunnerName(name))) => name,
         (ManagedHostKind::Vm, Some(managed_host::Owner::VmMachineId(name))) => name,
@@ -375,8 +377,13 @@ fn host_lifecycle_admission(
     let output = output.ok_or("HOST_PREFLIGHT_OUTPUT_REQUIRED")?;
     let labels = runner_labels(kind, owner, &selected.windows_runner_label)?;
     append_control_outputs(
-        output, machine_id, kind, owner, &labels,
-        &selected.windows_runner_label, &selected.desired_spec_path,
+        output,
+        machine_id,
+        kind,
+        owner,
+        &labels,
+        &selected.windows_runner_label,
+        &selected.desired_spec_path,
     )?;
     append_action_output(
         output,
