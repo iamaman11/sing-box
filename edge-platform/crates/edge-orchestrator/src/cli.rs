@@ -55,9 +55,6 @@ pub(crate) enum Command {
         /// Exact paginated GitHub runner registration for physical dispatch.
         #[arg(long)]
         runner_inventory_json: Option<PathBuf>,
-        /// Complete Issue #26 read-only journal; required for lifecycle admission.
-        #[arg(long)]
-        journal_history_json: Option<PathBuf>,
         #[command(subcommand)]
         command: HostCommand,
     },
@@ -105,9 +102,9 @@ pub(crate) enum HostCommand {
         #[arg(long, hide = true)]
         credential_pair_windows: Option<String>,
     },
-    /// Select exactly one host for its existing native owner.
+    /// One bounded fresh typed install preflight; mutation is disabled until new owner acceptance.
     Apply { machine_id: String },
-    /// No replay: reconcile the original transaction before any rollback.
+    /// One bounded fresh typed recovery preflight; never resumes historical operations.
     Recover { machine_id: String },
 }
 
