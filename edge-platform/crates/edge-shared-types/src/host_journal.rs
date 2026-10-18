@@ -304,10 +304,31 @@ where
         return Err("HOST_NATIVE_PLAN_BLOCKED");
     }
     if step == FleetHostPlannedStep::Noop {
-        let mut observed = crate::host_lifecycle::prepared_host_result(intent);
-        observed.state = FleetHostResultState::Observed as i32;
-        observed.next_action = "NONE".to_owned();
-        return Ok(observed);
+        // A valid signed NOOP also consumes its operation ID. Otherwise an
+        // old comment can be used indefinitely after the machine converges.
+        // The SAME durable resource gate and BEGIN record serialize this
+        // outcome against another concurrent mutation.
+        admit_after_protected_owner_check_once(
+            intent,
+            authorization,
+            &registry,
+            &bound.registry_sha256,
+            &bound.desired_sha256,
+            &bound.release_set_sha256,
+            pinned_worker_public_key,
+            native_machine_id,
+            native_owner_kind,
+            now_unix,
+            protected_journal_dir,
+        )?;
+        let mut result = crate::host_lifecycle::prepared_host_result(intent);
+        result.state = FleetHostResultState::Observed as i32;
+        result.observed_at_unix = before.observed_at_unix;
+        result.next_action = "NONE".to_owned();
+        store_native_terminal_and_unlock_once(
+            intent, &result, "observed", protected_journal_dir,
+        )?;
+        return Ok(result);
     }
     if !matches!(
         step,
@@ -468,13 +489,49 @@ where
         next_action: "NONE".to_owned(),
         physical_readback: true,
     };
-    // A protected terminal receipt is written exactly once. It is a local
-    // owner result, not yet a remotely authenticated receipt or permission
-    // for GitHub to infer VERIFIED from an uploaded protobuf.
+    // Only an existing protected native owner can reach this completion.
+    // No GitHub artifact or unsigned caller-provided protobuf is a receipt.
+    store_native_terminal_and_unlock_once(intent, &result, "verified", journal_dir)?;
+    Ok(result)
+}
+
+/// The only terminal commit path, used for both verified physical transitions
+/// and independently observed NOOPs. The result is durable BEFORE its
+/// resource gate is released. A crash or uncertain write keeps the gate,
+/// never an implicit permission to replay an operation.
+fn store_native_terminal_and_unlock_once(
+    intent: &FleetHostIntent,
+    result: &FleetHostResult,
+    terminal: &str,
+    journal_dir: &Path,
+) -> Result<(), &'static str> {
+    if result.operation_id != intent.operation_id
+        || result.machine_id != intent.machine_id
+        || result.resource_id != intent.resource_id
+        || result.release_set_sha256 != intent.release_set_sha256
+        || result.desired_sha256 != intent.desired_sha256
+        || !matches!(
+            (terminal, FleetHostResultState::try_from(result.state)),
+            ("verified", Ok(FleetHostResultState::Verified))
+                | ("observed", Ok(FleetHostResultState::Observed))
+        )
+        || (terminal == "observed" && result.physical_readback)
+        || (terminal == "verified" && !result.physical_readback)
+    {
+        return Err("HOST_TERMINAL_RESULT_INVALID");
+    }
+    let scope = native_scope_pending_path(journal_dir, intent);
+    let id = journal_hex(intent.operation_id.as_bytes());
+    // The exact pending operation must still be the same one that reserved
+    // this resource. Never remove a different operation's pending gate.
+    let pending = fs::read(&scope).map_err(|_| "HOST_RESOURCE_PENDING_RECORD_REQUIRED")?;
+    if pending != intent.encode_to_vec() {
+        return Err("HOST_RESOURCE_PENDING_IDENTITY_MISMATCH");
+    }
     let mut writer = OpenOptions::new()
         .create_new(true)
         .write(true)
-        .open(journal_dir.join(format!("{id}.verified.pb")))
+        .open(journal_dir.join(format!("{id}.{terminal}.pb")))
         .map_err(|_| "HOST_TERMINAL_RECEIPT_EXISTS_OR_UNAVAILABLE")?;
     writer
         .write_all(&result.encode_to_vec())
@@ -488,7 +545,7 @@ where
     fs::remove_file(&scope).map_err(|_| "HOST_SCOPE_RELEASE_UNCERTAIN_NO_REPLAY")?;
     dir.sync_all()
         .map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNCERTAIN_NO_REPLAY")?;
-    Ok(result)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -884,6 +941,30 @@ mod tests {
         assert_eq!(noop.state, FleetHostResultState::Observed as i32);
         assert!(!noop.physical_readback);
         assert_eq!(count.get(), 1);
+        assert!(dir.join(format!(
+            "{}.observed.pb",
+            journal_hex(intent.operation_id.as_bytes())
+        )).exists());
+        assert!(!native_scope_pending_path(&dir, &intent).exists());
+        assert_eq!(
+            execute_after_protected_owner_check_once(
+                &intent,
+                &auth,
+                &registry_pb,
+                spec,
+                &release_pb,
+                Some(&bundle_pb),
+                pair.public_key().as_ref(),
+                "vm-exact",
+                FleetHostKind::Vm as i32,
+                1020,
+                &dir,
+                observe,
+                |_step| panic!("the same signed NOOP must not be accepted twice"),
+            )
+            .unwrap_err(),
+            "HOST_OPERATION_EXISTS_OR_JOURNAL_UNAVAILABLE"
+        );
         // A new signed mutation with an uncertain outcome MUST retain its
         // durable per-resource lock. Another comment cannot replay it.
         running.set(false);
