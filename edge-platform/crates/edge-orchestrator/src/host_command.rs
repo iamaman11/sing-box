@@ -379,16 +379,20 @@ pub(crate) fn run(
             // decision until Worker + native owner independently attest.
             let release_sha = exact_hex_sha256(&release.release().release_set_sha256)?;
             let verified = verified_release_set_from_resolver(release)?;
-            let bundle_sha = verified
-                .vm_runtime
-                .as_ref()
-                .map(|vm| vm.application_bundle_sha256.as_slice())
-                .unwrap_or(&[]);
+            // The published VM bundle hash is the SHA of transport protobuf.
+            // Native readback holds its *logical* bundle_digest instead.
+            // Derive the expected native marker only from the exact published
+            // application-bundle.pb bytes; never compare unrelated hashes.
+            let native_bundle_sha = if selected.kind == ManagedHostKind::Vm as i32 {
+                verified_vm_runtime_digest_from_resolver(&verified)?
+            } else {
+                Vec::new()
+            };
             let proposed = edge_shared_types::host_planner::propose_host_transition(
                 selected,
                 Some(&observed),
                 &release_sha,
-                bundle_sha,
+                &native_bundle_sha,
                 now,
             );
             println!(
@@ -472,6 +476,33 @@ fn verified_release_set_from_resolver(
         &directory.join("release-set.pb"),
         &context.release().release_set_sha256,
     )
+}
+
+/// Only read the exact published ReleaseSet's adjacent bundle artifact.
+/// Its transport hash is verified before extracting the logical VM marker.
+/// This stays read-only and never authenticates a runner-provided observation.
+fn verified_vm_runtime_digest_from_resolver(
+    release: &edge_shared_types::ReleaseSet,
+) -> Result<Vec<u8>, String> {
+    let context_file = std::env::var_os("EDGE_RELEASE_CONTEXT_PATH")
+        .ok_or("HOST_RELEASE_CONTEXT_PATH_MISSING")?;
+    let directory = Path::new(&context_file)
+        .parent()
+        .ok_or("HOST_RELEASE_CONTEXT_PARENT_MISSING")?;
+    let path = directory.join("application-bundle.pb");
+    let meta = std::fs::symlink_metadata(&path)
+        .map_err(|_| "HOST_APPLICATION_BUNDLE_MISSING")?;
+    if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 8 * 1024 * 1024 {
+        return Err("HOST_APPLICATION_BUNDLE_INVALID_FILE".to_owned());
+    }
+    let mut bytes = Vec::new();
+    File::open(&path)
+        .map_err(|_| "HOST_APPLICATION_BUNDLE_UNREADABLE")?
+        .take(8 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "HOST_APPLICATION_BUNDLE_UNREADABLE")?;
+    edge_shared_types::host_lifecycle::native_vm_bundle_runtime_digest(release, &bytes)
+        .map_err(str::to_owned)
 }
 
 /// Read-only scope validation. This intentionally never authenticates the
