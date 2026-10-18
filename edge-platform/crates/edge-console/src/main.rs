@@ -482,11 +482,12 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
         }
         Command::PrivilegedRuntimeEvidence(args) => {
             let install_root = PathBuf::from(args.install_root);
+            let request_id = new_privileged_request_id()?;
             let result = submit_privileged_request(
                 &install_root,
                 WindowsPrivilegedRequest {
                     schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
-                    request_id: new_privileged_request_id()?,
+                    request_id: request_id.clone(),
                     operation: WindowsPrivilegedOperation::RuntimeEvidence as i32,
                     accepted_revision: None,
                     release_set_sha256: None,
@@ -502,8 +503,31 @@ async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     existing_join_intent_sha256: None,
                     existing_join_slot: None,
                 },
-            )?;
-            print_privileged_result(&result);
+            );
+            let result = match result {
+                Ok(value) => value,
+                Err(_) => {
+                    // A client-side exchange error has no verified SYSTEM
+                    // result. Report this exact request ID without exposing
+                    // transport errors or claiming that the operation failed.
+                    print!("{}", unproven_runtime_evidence(&request_id));
+                    return Err(ConsoleError::Command(
+                        "RUNTIME_EVIDENCE_EXCHANGE_UNPROVEN".to_owned(),
+                    ));
+                }
+            };
+            if result.success {
+                print_privileged_result(&result);
+            } else {
+                // SYSTEM may have recorded an error containing private paths
+                // or secret material. The opaque native result stays on the
+                // owner; only a stable reason code crosses this boundary.
+                println!("status=FAIL");
+                println!("request_id={}", result.request_id);
+                println!("code={}", result.code);
+                println!("error_class=RUNTIME_EVIDENCE_COLLECTION_FAILED");
+                println!("detail=WITHHELD_PRIVATE_NATIVE_RESULT");
+            }
             finish_privileged_result(&result)?;
             Ok(())
         }
@@ -1382,6 +1406,14 @@ async fn run_menu(controller_endpoint: String) -> Result<(), Box<dyn std::error:
             _ => println!("Unknown option"),
         }
     }
+}
+
+// Stable metadata for a failed client/SYSTEM result exchange. Even when
+// the task reports success, no typed result for this ID means UNKNOWN.
+fn unproven_runtime_evidence(request_id: &str) -> String {
+    format!(
+        "status=UNPROVEN\nrequest_id={request_id}\ncode=RUNTIME_EVIDENCE_EXCHANGE_UNPROVEN\nerror_class=SYSTEM_RESULT_NOT_OBSERVED\ndetail=EVIDENCE_NOT_RECORDED_OR_UNAVAILABLE\noperation_outcome=UNKNOWN_NO_REPLAY\n"
+    )
 }
 
 fn privileged_request_path(install_root: &Path) -> PathBuf {
@@ -6923,6 +6955,17 @@ if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and ки�
         );
         assert_eq!(privileged_wait_secs(&ping), PRIVILEGED_SHORT_WAIT_SECS);
         assert!(PRIVILEGED_ACTIVATE_WAIT_SECS > PRIVILEGED_SHORT_WAIT_SECS);
+    }
+
+    #[test]
+    fn runtime_evidence_exchange_failure_has_one_safe_correlated_result() {
+        let safe = unproven_runtime_evidence("123456789-10");
+        assert!(safe.contains("request_id=123456789-10"));
+        assert!(safe.contains("status=UNPROVEN"));
+        assert!(safe.contains("error_class=SYSTEM_RESULT_NOT_OBSERVED"));
+        assert!(safe.contains("operation_outcome=UNKNOWN_NO_REPLAY"));
+        assert!(!safe.contains("status=PASS"));
+        assert!(!safe.contains("credential_mutations=0"));
     }
 
     #[test]
