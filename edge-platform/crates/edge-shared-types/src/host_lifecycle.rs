@@ -84,6 +84,52 @@ pub fn validate_host_intent(
     Ok(())
 }
 
+/// Decide one native operation against a single Git-owned target. There
+/// is never an implicit START from an installed service, old runtime profile,
+/// production VM spec or GitHub runner text.
+pub fn validate_intent_against_target(
+    intent: &FleetHostIntent,
+    registry: &HostRegistry,
+) -> Result<(), &'static str> {
+    use crate::FleetHostRunState;
+    let host = registry.hosts.iter()
+        .find(|host| host.machine_id == intent.machine_id)
+        .ok_or("HOST_INTENT_UNKNOWN_MACHINE")?;
+    let target = host.target.as_ref()
+        .ok_or("HOST_TARGET_UNSET_OBSERVE_ONLY")?;
+    let action = FleetHostAction::try_from(intent.action)
+        .map_err(|_| "HOST_INTENT_ACTION_INVALID")?;
+    let state = FleetHostRunState::try_from(target.run_state)
+        .map_err(|_| "HOST_TARGET_RUN_STATE_INVALID")?;
+    if state == FleetHostRunState::Unspecified {
+        return Err("HOST_TARGET_RUN_STATE_REQUIRED");
+    }
+    let mode = FleetHostMode::try_from(target.windows_mode)
+        .map_err(|_| "HOST_TARGET_MODE_INVALID")?;
+    if (host.kind == FleetHostKind::Windows as i32 && mode == FleetHostMode::Unspecified)
+        || (host.kind == FleetHostKind::Vm as i32 && mode != FleetHostMode::Unspecified)
+    {
+        return Err("HOST_TARGET_MODE_KIND_MISMATCH");
+    }
+    if (action == FleetHostAction::Start && state != FleetHostRunState::Running)
+        || (action == FleetHostAction::Stop && state != FleetHostRunState::Stopped)
+        || (action == FleetHostAction::SetMode && intent.requested_mode != target.windows_mode)
+    {
+        return Err("HOST_ACTION_CONFLICTS_WITH_DESIRED");
+    }
+    // TUN is never inferred or admitted from an APPLY/RECOVER alone. Exact
+    // typed SET_MODE and a separate physical gate are both required.
+    if mode == FleetHostMode::ManagedTun
+        && action != FleetHostAction::SetMode
+        && matches!(action, FleetHostAction::Start | FleetHostAction::Apply
+                            | FleetHostAction::Install | FleetHostAction::Reinstall
+                            | FleetHostAction::Recover | FleetHostAction::Configure)
+    {
+        return Err("HOST_TUN_EXPLICIT_MODE_GATE_REQUIRED");
+    }
+    Ok(())
+}
+
 pub fn decode_host_intent(bytes: &[u8]) -> Result<FleetHostIntent, &'static str> {
     if bytes.is_empty() || bytes.len() > MAX_HOST_INTENT_BYTES {
         return Err("HOST_INTENT_SIZE_INVALID");
@@ -306,6 +352,33 @@ mod tests {
         invalid = intent.clone();
         invalid.operation_id = "../forged".to_owned();
         assert!(check(&invalid));
+    }
+
+    #[test]
+    fn never_start_stopped_windows_or_implicit_vm() {
+        use crate::{FleetHostRunState, FleetHostTarget};
+        let (mut registry, mut intent, _, _, _) = fixture();
+        assert_eq!(
+            validate_intent_against_target(&intent, &registry).unwrap_err(),
+            "HOST_TARGET_UNSET_OBSERVE_ONLY"
+        );
+        registry.hosts[0].target = Some(FleetHostTarget {
+            run_state: FleetHostRunState::Stopped as i32,
+            windows_mode: FleetHostMode::ProxyOnly as i32,
+        });
+        intent.action = FleetHostAction::Start as i32;
+        assert_eq!(
+            validate_intent_against_target(&intent, &registry).unwrap_err(),
+            "HOST_ACTION_CONFLICTS_WITH_DESIRED"
+        );
+        intent.action = FleetHostAction::Stop as i32;
+        validate_intent_against_target(&intent, &registry).unwrap();
+        intent.action = FleetHostAction::SetMode as i32;
+        intent.requested_mode = FleetHostMode::ManagedTun as i32;
+        assert_eq!(
+            validate_intent_against_target(&intent, &registry).unwrap_err(),
+            "HOST_ACTION_CONFLICTS_WITH_DESIRED"
+        );
     }
 
     #[test]
