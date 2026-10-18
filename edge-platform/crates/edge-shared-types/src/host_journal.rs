@@ -57,14 +57,11 @@ fn verify_native_journal_protection(path: &Path) -> Result<(), &'static str> {
 fn verify_native_journal_protection(path: &Path) -> Result<(), &'static str> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::{CloseHandle, LocalFree};
-    use windows_sys::Win32::Security::Authorization::{
-        GetNamedSecurityInfoW, SE_FILE_OBJECT,
-    };
+    use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{
-        ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION, GetAce,
-        GetTokenInformation, IsWellKnownSid, OpenProcessToken,
-        OWNER_SECURITY_INFORMATION, TOKEN_QUERY, TOKEN_USER, TokenUser,
-        WinBuiltinAdministratorsSid, WinLocalSystemSid,
+        ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION, GetAce, GetTokenInformation,
+        IsWellKnownSid, OWNER_SECURITY_INFORMATION, OpenProcessToken, TOKEN_QUERY, TOKEN_USER,
+        TokenUser, WinBuiltinAdministratorsSid, WinLocalSystemSid,
     };
     use windows_sys::Win32::System::Threading::GetCurrentProcess;
 
@@ -99,8 +96,7 @@ fn verify_native_journal_protection(path: &Path) -> Result<(), &'static str> {
             return false;
         }
         let user = unsafe { &*(info.as_ptr() as *const TOKEN_USER) };
-        !user.User.Sid.is_null()
-            && unsafe { IsWellKnownSid(user.User.Sid, WinLocalSystemSid) } != 0
+        !user.User.Sid.is_null() && unsafe { IsWellKnownSid(user.User.Sid, WinLocalSystemSid) } != 0
     })();
     unsafe {
         CloseHandle(token);
@@ -142,21 +138,26 @@ fn verify_native_journal_protection(path: &Path) -> Result<(), &'static str> {
             if owner.is_null() || dacl.is_null() {
                 return false;
             }
-            let privileged = |sid| {
-                unsafe {
-                    IsWellKnownSid(sid, WinLocalSystemSid) != 0
-                        || IsWellKnownSid(sid, WinBuiltinAdministratorsSid) != 0
-                }
+            let privileged = |sid| unsafe {
+                IsWellKnownSid(sid, WinLocalSystemSid) != 0
+                    || IsWellKnownSid(sid, WinBuiltinAdministratorsSid) != 0
             };
             if !privileged(owner) {
                 return false;
             }
             // FILE_WRITE_DATA / APPEND_DATA / EA / ATTRIBUTES / DELETE /
             // WRITE_DAC / WRITE_OWNER, generic write and generic all.
-            const WRITE_MASK: u32 =
-                0x0000_0002 | 0x0000_0004 | 0x0000_0010 | 0x0000_0100 |
-                0x0001_0000 | 0x0004_0000 | 0x0008_0000 |
-                0x1000_0000 | 0x4000_0000 | 0x0000_0001 | 0x0000_0008;
+            const WRITE_MASK: u32 = 0x0000_0002
+                | 0x0000_0004
+                | 0x0000_0010
+                | 0x0000_0100
+                | 0x0001_0000
+                | 0x0004_0000
+                | 0x0008_0000
+                | 0x1000_0000
+                | 0x4000_0000
+                | 0x0000_0001
+                | 0x0000_0008;
             let acl = unsafe { &*dacl };
             for index in 0..acl.AceCount {
                 let mut ace = std::ptr::null_mut();
