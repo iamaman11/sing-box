@@ -341,8 +341,10 @@ fn build_host_observation(state_path: &Path) -> Result<Vec<u8>, String> {
             // binary. A same-named foreign service cannot masquerade as the
             // managed SYSTEM owner, even when Windows reports RUNNING.
             let expected = exact_controller_path
-                .as_ref().ok_or("WINDOWS_OWNER_RELEASE_UNPROVEN")?;
-            let config = service.query_config()
+                .as_ref()
+                .ok_or("WINDOWS_OWNER_RELEASE_UNPROVEN")?;
+            let config = service
+                .query_config()
                 .map_err(|_| "WINDOWS_SCM_CONFIG_UNAVAILABLE")?;
             let actual = service_binary_path(&config.executable_path);
             if !same_path(&actual, expected) {
