@@ -181,33 +181,43 @@ pub fn bind_native_host_artifacts(
     release_set_pb: &[u8],
 ) -> Result<(HostRegistry, BoundNativeHostArtifacts), &'static str> {
     fn digest_bytes(bytes: &[u8]) -> Vec<u8> {
-        ring::digest::digest(&ring::digest::SHA256, bytes).as_ref().to_vec()
+        ring::digest::digest(&ring::digest::SHA256, bytes)
+            .as_ref()
+            .to_vec()
     }
-    if registry_pb.is_empty() || registry_pb.len() > 65536
-        || release_set_pb.is_empty() || release_set_pb.len() > 65536
+    if registry_pb.is_empty()
+        || registry_pb.len() > 65536
+        || release_set_pb.is_empty()
+        || release_set_pb.len() > 65536
     {
         return Err("HOST_NATIVE_ARTIFACT_SIZE_INVALID");
     }
-    let registry = crate::decode_host_registry(registry_pb)
-        .map_err(|_| "HOST_NATIVE_REGISTRY_INVALID")?;
-    let host = registry.hosts.iter()
+    let registry =
+        crate::decode_host_registry(registry_pb).map_err(|_| "HOST_NATIVE_REGISTRY_INVALID")?;
+    let host = registry
+        .hosts
+        .iter()
         .find(|h| h.machine_id == intent.machine_id && h.kind == intent.kind)
         .ok_or("HOST_NATIVE_MACHINE_UNREGISTERED")?;
     let release = crate::release::v1::ReleaseSet::decode(release_set_pb)
         .map_err(|_| "HOST_NATIVE_RELEASE_PROTO_INVALID")?;
     if release.schema_version < 7
         || release.source_revision.len() != 40
-        || !release.source_revision.bytes().all(|ch| {
-            ch.is_ascii_digit() || (b'a'..=b'f').contains(&ch)
-        })
+        || !release
+            .source_revision
+            .bytes()
+            .all(|ch| ch.is_ascii_digit() || (b'a'..=b'f').contains(&ch))
     {
         return Err("HOST_NATIVE_RELEASE_SCHEMA_INVALID");
     }
     let runtime_release_sha256 = match FleetHostKind::try_from(intent.kind) {
         Ok(FleetHostKind::Windows) => digest_bytes(release_set_pb),
-        Ok(FleetHostKind::Vm) => release.vm_runtime.as_ref()
+        Ok(FleetHostKind::Vm) => release
+            .vm_runtime
+            .as_ref()
             .ok_or("HOST_NATIVE_VM_RUNTIME_UNAVAILABLE")?
-            .application_bundle_sha256.clone(),
+            .application_bundle_sha256
+            .clone(),
         _ => return Err("HOST_NATIVE_OWNER_KIND_INVALID"),
     };
     if !sha(&runtime_release_sha256) {
@@ -220,7 +230,10 @@ pub fn bind_native_host_artifacts(
         runtime_release_sha256,
     };
     validate_host_intent(
-        intent, &registry, &bound.registry_sha256, &bound.desired_sha256,
+        intent,
+        &registry,
+        &bound.registry_sha256,
+        &bound.desired_sha256,
         &bound.release_set_sha256,
     )?;
     Ok((registry, bound))
@@ -562,10 +575,12 @@ mod tests {
             operation_id: "issue1-comment-123".to_owned(),
             action: FleetHostAction::Apply as i32,
             registry_sha256: ring::digest::digest(&ring::digest::SHA256, &registry_pb)
-                .as_ref().to_vec(),
+                .as_ref()
+                .to_vec(),
             desired_sha256: digest_host_desired(&registry.hosts[0], spec).unwrap(),
             release_set_sha256: ring::digest::digest(&ring::digest::SHA256, &release_pb)
-                .as_ref().to_vec(),
+                .as_ref()
+                .to_vec(),
             requested_mode: FleetHostMode::Unspecified as i32,
             requested_at_unix: 1000,
         };
@@ -585,14 +600,24 @@ mod tests {
             "HOST_INTENT_DIGEST_MISMATCH"
         );
         let mut missing_bundle = release;
-        missing_bundle.vm_runtime.as_mut().unwrap().application_bundle_sha256.clear();
-        intent.release_set_sha256 = ring::digest::digest(
-            &ring::digest::SHA256, &missing_bundle.encode_to_vec()
-        ).as_ref().to_vec();
+        missing_bundle
+            .vm_runtime
+            .as_mut()
+            .unwrap()
+            .application_bundle_sha256
+            .clear();
+        intent.release_set_sha256 =
+            ring::digest::digest(&ring::digest::SHA256, &missing_bundle.encode_to_vec())
+                .as_ref()
+                .to_vec();
         assert_eq!(
             bind_native_host_artifacts(
-                &intent, &registry_pb, spec, &missing_bundle.encode_to_vec()
-            ).unwrap_err(),
+                &intent,
+                &registry_pb,
+                spec,
+                &missing_bundle.encode_to_vec()
+            )
+            .unwrap_err(),
             "HOST_NATIVE_RUNTIME_RELEASE_INVALID"
         );
     }
