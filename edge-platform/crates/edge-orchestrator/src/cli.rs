@@ -55,6 +55,14 @@ pub(crate) enum Command {
         /// Exact paginated GitHub runner registration for physical dispatch.
         #[arg(long)]
         runner_inventory_json: Option<PathBuf>,
+        /// Immutable GitHub issue-comment ID is only an operation identity,
+        /// never independent SYSTEM/root mutation authorization.
+        #[arg(long)]
+        source_comment_id: Option<u64>,
+        /// Bounded typed protobuf preflight to be consumed by a future
+        /// authenticated native owner, never passed to a legacy dispatcher.
+        #[arg(long)]
+        intent_output: Option<PathBuf>,
         #[command(subcommand)]
         command: HostCommand,
     },
