@@ -7,9 +7,8 @@
 //! operations remain in the journal; no automatic retry/rollback.
 
 use crate::{
-    FleetHostAuthorization, FleetHostIntent, FleetHostResult, FleetHostResultState,
+    FleetHostAuthorization, FleetHostIntent, FleetHostResult, FleetHostResultState, HostRegistry,
     host_lifecycle::{validate_host_intent, verify_host_authorization},
-    HostRegistry,
 };
 use prost::Message;
 use ring::digest::{SHA256, digest};
@@ -46,8 +45,8 @@ pub fn admit_native_host_once(
     verify_host_authorization(intent, authorization, pinned_worker_public_key, now_unix)?;
     // An existing trusted owner MUST provision this directory. Creating it
     // from an unprivileged request (or following a symlink) is forbidden.
-    let directory = fs::symlink_metadata(protected_journal_dir)
-        .map_err(|_| "HOST_JOURNAL_ROOT_MISSING")?;
+    let directory =
+        fs::symlink_metadata(protected_journal_dir).map_err(|_| "HOST_JOURNAL_ROOT_MISSING")?;
     if !directory.file_type().is_dir() || directory.file_type().is_symlink() {
         return Err("HOST_JOURNAL_ROOT_INVALID");
     }
@@ -89,8 +88,8 @@ pub fn admit_native_host_once(
         .map_err(|_| "HOST_JOURNAL_SYNC_UNCERTAIN_NO_REPLAY")?;
     // Do not return an authorization if the platform cannot durably sync the
     // directory entry. This is conservative on Windows too.
-    let dir = fs::File::open(protected_journal_dir)
-        .map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNAVAILABLE")?;
+    let dir =
+        fs::File::open(protected_journal_dir).map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNAVAILABLE")?;
     dir.sync_all()
         .map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNCERTAIN_NO_REPLAY")?;
     Ok(recorded)
@@ -99,8 +98,8 @@ pub fn admit_native_host_once(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{FleetHost, FleetHostAction, FleetHostKind, FleetHostMode, managed_host};
     use crate::host_lifecycle::host_authorization_payload;
+    use crate::{FleetHost, FleetHostAction, FleetHostKind, FleetHostMode, managed_host};
     use ring::rand::SystemRandom;
     use ring::signature::{Ed25519KeyPair, KeyPair};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -108,9 +107,9 @@ mod tests {
     #[test]
     fn durable_native_admission_never_replays_and_requires_signature() {
         let rng = SystemRandom::new();
-        let pair = Ed25519KeyPair::from_pkcs8(
-            Ed25519KeyPair::generate_pkcs8(&rng).unwrap().as_ref()
-        ).unwrap();
+        let pair =
+            Ed25519KeyPair::from_pkcs8(Ed25519KeyPair::generate_pkcs8(&rng).unwrap().as_ref())
+                .unwrap();
         let registry = HostRegistry {
             schema_version: 1,
             hosts: vec![FleetHost {
@@ -145,26 +144,52 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "sing-box-native-journal-{}-{}",
             std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         fs::create_dir(&dir).unwrap();
         let call = |intent: &FleetHostIntent, signed: &FleetHostAuthorization| {
             admit_native_host_once(
-                intent, signed, &registry, &[1; 32], &[2; 32], &[3; 32],
-                pair.public_key().as_ref(), "vm-one", FleetHostKind::Vm as i32,
-                1020, &dir,
+                intent,
+                signed,
+                &registry,
+                &[1; 32],
+                &[2; 32],
+                &[3; 32],
+                pair.public_key().as_ref(),
+                "vm-one",
+                FleetHostKind::Vm as i32,
+                1020,
+                &dir,
             )
         };
-        assert_eq!(call(&i, &a).unwrap_err(), "HOST_AUTHORIZATION_IDENTITY_INVALID");
-        a.ed25519_signature = pair.sign(&host_authorization_payload(&i, &a)).as_ref().to_vec();
+        assert_eq!(
+            call(&i, &a).unwrap_err(),
+            "HOST_AUTHORIZATION_IDENTITY_INVALID"
+        );
+        a.ed25519_signature = pair
+            .sign(&host_authorization_payload(&i, &a))
+            .as_ref()
+            .to_vec();
         let first = call(&i, &a).unwrap();
         assert_eq!(first.state, FleetHostResultState::Authorized as i32);
         assert!(!first.physical_readback);
-        assert_eq!(call(&i, &a).unwrap_err(), "HOST_OPERATION_EXISTS_OR_JOURNAL_UNAVAILABLE");
+        assert_eq!(
+            call(&i, &a).unwrap_err(),
+            "HOST_OPERATION_EXISTS_OR_JOURNAL_UNAVAILABLE"
+        );
         let mut wrong = i.clone();
         wrong.machine_id = "vm-two".into();
-        assert_eq!(call(&wrong, &a).unwrap_err(), "HOST_LOCAL_OWNER_IDENTITY_MISMATCH");
-        let files = fs::read_dir(&dir).unwrap().map(|e| e.unwrap()).collect::<Vec<_>>();
+        assert_eq!(
+            call(&wrong, &a).unwrap_err(),
+            "HOST_LOCAL_OWNER_IDENTITY_MISMATCH"
+        );
+        let files = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap())
+            .collect::<Vec<_>>();
         assert_eq!(files.len(), 1);
         fs::remove_dir_all(&dir).unwrap();
     }
