@@ -2,6 +2,7 @@ mod cli;
 mod docker_observation;
 mod error;
 mod host_diagnostics;
+mod host_native;
 mod line2_quality;
 mod mesh_network_diagnostics;
 mod network_observation;
@@ -148,6 +149,15 @@ async fn run(parsed: cli::Cli) -> Result<(), AgentError> {
 /// One compact native VM evidence protobuf. There is no GitHub runner or
 /// credential authority here, and this cannot issue a mutation VERIFIED receipt.
 async fn run_local_host_observe(stack_dir: &Path) -> Result<(), String> {
+    let observed = capture_local_host_observation(stack_dir).await?;
+    io::stdout().write_all(&observed.encode_to_vec())
+        .map_err(|_| "HOST_OBSERVATION_STDOUT_UNAVAILABLE".to_owned())
+}
+
+/// One local source of native VM readback, shared with authenticated execution.
+async fn capture_local_host_observation(
+    stack_dir: &Path,
+) -> Result<edge_shared_types::FleetNativeObservation, String> {
     use edge_shared_types::host_lifecycle::build_native_observation;
     use edge_shared_types::{FleetHostKind, FleetNativeOwnerState, FleetNativeReleaseProof};
     let state = inspect_runtime(stack_dir, AgentMode::Runtime).await;
@@ -220,9 +230,7 @@ async fn run_local_host_observe(stack_dir: &Path) -> Result<(), String> {
         &reasons,
     )
     .map_err(str::to_owned)?;
-    io::stdout()
-        .write_all(&observed.encode_to_vec())
-        .map_err(|_| "HOST_OBSERVATION_STDOUT_UNAVAILABLE".to_owned())
+    Ok(observed)
 }
 
 /// Lightweight read-only VM observation. It deliberately does not claim
@@ -287,6 +295,9 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             Ok(())
         }
         cli::LocalCommand::HostObserve => run_local_host_observe(&stack_dir)
+            .await
+            .map_err(AgentError::Command),
+        cli::LocalCommand::HostApply => host_native::apply(&stack_dir)
             .await
             .map_err(AgentError::Command),
         cli::LocalCommand::Verify => {

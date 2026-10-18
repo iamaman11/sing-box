@@ -315,6 +315,7 @@ dependencies = [
  "edge-trust",
  "futures-util",
  "prost",
+ "ring",
  "rtnetlink",
  "serde",
  "serde_json",
