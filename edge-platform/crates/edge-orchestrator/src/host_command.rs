@@ -4,8 +4,8 @@ use edge_shared_types::{
     FleetHostAction, FleetHostIntent, FleetHostMode, HostRegistry, ManagedHostKind,
     decode_host_registry,
     host_lifecycle::{
-        decode_native_observation, prepared_host_result, validate_host_intent,
-        validate_host_result, MAX_NATIVE_OBSERVATION_BYTES,
+        MAX_NATIVE_OBSERVATION_BYTES, decode_native_observation, prepared_host_result,
+        validate_host_intent, validate_host_result,
     },
     managed_host,
 };
@@ -364,12 +364,16 @@ pub(crate) fn run(
             println!("host_machine_id={machine_id}");
             println!("host_native_readback_schema=1");
             println!("host_native_observed_at_unix={}", observed.observed_at_unix);
-            println!("host_native_owner_state={:?}",
+            println!(
+                "host_native_owner_state={:?}",
                 edge_shared_types::FleetNativeOwnerState::try_from(observed.owner_state)
-                    .map_err(|_| "HOST_NATIVE_OWNER_STATE_INVALID")?);
-            println!("host_native_release_scope={:?}",
+                    .map_err(|_| "HOST_NATIVE_OWNER_STATE_INVALID")?
+            );
+            println!(
+                "host_native_release_scope={:?}",
                 edge_shared_types::FleetNativeReleaseProof::try_from(observed.release_proof)
-                    .map_err(|_| "HOST_NATIVE_RELEASE_PROOF_INVALID")?);
+                    .map_err(|_| "HOST_NATIVE_RELEASE_PROOF_INVALID")?
+            );
             println!("host_native_readback_verdict={summary}");
             println!("host_native_readback_source=RUNNER_COPIED_UNAUTHENTICATED");
             println!("host_native_readback_authorizes_mutation=false");
@@ -418,8 +422,7 @@ fn validate_readback_scope(
     {
         return Err("HOST_READBACK_STALE_OR_FUTURE".to_owned());
     }
-    let kind = ManagedHostKind::try_from(host.kind)
-        .map_err(|_| "HOST_READBACK_KIND_INVALID")?;
+    let kind = ManagedHostKind::try_from(host.kind).map_err(|_| "HOST_READBACK_KIND_INVALID")?;
     let proof = FleetNativeReleaseProof::try_from(observed.release_proof)
         .map_err(|_| "HOST_READBACK_PROOF_INVALID")?;
     let owner = FleetNativeOwnerState::try_from(observed.owner_state)
