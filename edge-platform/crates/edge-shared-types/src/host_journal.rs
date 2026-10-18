@@ -287,6 +287,13 @@ where
         return Err("HOST_NATIVE_EXECUTION_ACTION_NOT_ALLOWED");
     }
 
+    // An unresolved BEGIN overrides even a seemingly healthy NOOP. Do not
+    // allow another comment to hide a lost ACK/crash behind newer readback.
+    match fs::symlink_metadata(native_scope_pending_path(protected_journal_dir, intent)) {
+        Ok(_) => return Err("HOST_RESOURCE_PENDING_OR_UNAVAILABLE"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("HOST_RESOURCE_PENDING_OR_UNAVAILABLE"),
+    }
     let selected = registry
         .hosts
         .iter()
