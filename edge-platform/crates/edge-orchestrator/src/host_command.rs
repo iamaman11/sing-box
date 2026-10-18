@@ -462,6 +462,13 @@ fn host_lifecycle_admission(
             return Err("HOST_VM_DESIRED_MACHINE_MISMATCH".to_owned());
         }
         println!("host_vm_application_spec=EXACT_GIT_MATCH");
+        // The canonical runtime currently publishes only the production
+        // application bundle in its immutable ReleaseSet. Until the
+        // per-host bundle protocol is accepted, fail closed instead of
+        // secretly routing a new VM to that unrelated production bundle.
+        if selected.desired_spec_path != "infra/production/production.textproto" {
+            return Err("HOST_VM_RELEASE_BOUND_BUNDLE_NOT_YET_PUBLISHED".to_owned());
+        }
     }
     let labels = runner_labels(kind, owner, &selected.windows_runner_label)?;
     let output = output.ok_or("HOST_APPLY_OUTPUT_REQUIRED")?;
