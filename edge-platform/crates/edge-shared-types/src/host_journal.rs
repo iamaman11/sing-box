@@ -882,6 +882,41 @@ mod tests {
         assert_eq!(noop.state, FleetHostResultState::Observed as i32);
         assert!(!noop.physical_readback);
         assert_eq!(count.get(), 1);
+        // A new signed mutation with an uncertain outcome MUST retain its
+        // durable per-resource lock. Another comment cannot replay it.
+        running.set(false);
+        intent.operation_id = "issue1-comment-983".into();
+        auth.operation_id = intent.operation_id.clone();
+        auth.ed25519_signature = pair.sign(&host_authorization_payload(&intent, &auth))
+            .as_ref().to_vec();
+        assert_eq!(
+            execute_after_protected_owner_check_once(
+                &intent, &auth, &registry_pb, spec, &release_pb,
+                pair.public_key().as_ref(), "vm-exact", FleetHostKind::Vm as i32,
+                1020, &dir, observe, |_step| {
+                    count.set(count.get() + 1);
+                    Err("HOST_TEST_UNKNOWN_AFTER_ADMISSION")
+                }
+            ).unwrap_err(),
+            "HOST_TEST_UNKNOWN_AFTER_ADMISSION"
+        );
+        assert_eq!(count.get(), 2);
+        assert!(native_scope_pending_path(&dir, &intent).exists());
+        intent.operation_id = "issue1-comment-984".into();
+        auth.operation_id = intent.operation_id.clone();
+        auth.ed25519_signature = pair.sign(&host_authorization_payload(&intent, &auth))
+            .as_ref().to_vec();
+        assert_eq!(
+            execute_after_protected_owner_check_once(
+                &intent, &auth, &registry_pb, spec, &release_pb,
+                pair.public_key().as_ref(), "vm-exact", FleetHostKind::Vm as i32,
+                1020, &dir, observe, |_step| {
+                    panic!("pending native resource must never replay");
+                }
+            ).unwrap_err(),
+            "HOST_RESOURCE_PENDING_OR_UNAVAILABLE"
+        );
+        assert_eq!(count.get(), 2);
         fs::remove_dir_all(dir).unwrap();
     }
 

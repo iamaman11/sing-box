@@ -95,20 +95,22 @@ mutations: trusted pinned Worker public key на native owner; физическ�
 
 На `main` после PR #399 есть независимая read-only диагностика Windows + acceptance VM, но `production-1` не подтверждён; native FAST установлен не везде. Универсальный fresh per-host bundle, deploy/replace/rollback, новый typed secret-provision и закрытие legacy-ingress **ещё не выполнены**. Имеющийся старый A/B BEGIN — архив истории, **не задача восстановления** и не вход новой операции.
 
-## Подтверждённый прогресс текущего PR #403
+## Фактический прогресс PR #403 (интеграционный срез)
 
-Нативный VM observer теперь различает `VERIFIED_ABSENT` и `UNPROVEN`.
-Единый Rust planner предлагает `INSTALL` только когда локальный VM
-owner действительно не находит marker, Compose и application-контейнеры
-и подтверждает STOPPED. Это не разрешение на запись. Worker signer
-отвергает неоднозначное protobuf-кодирование intent; положительные
-и отрицательные проверки остаются в текущем PR.
+Native VM readback различает `VERIFIED_ABSENT` и `UNPROVEN`; Rust
+planner выбирает `INSTALL` только для RUNNING target и доказанно пустой VM.
+Worker signer проверяет Access JWT, exact GitHub comment, каноническое
+кодирование intent и опубликованный ReleaseSet. Один Rust transaction
+entrypoint связывает owner readback → signed admission → durable resource
+lock → однократную mutation callback → физический poststate. Тесты
+покрывают NOOP, успешный переход и UNKNOWN_NO_REPLAY.
 
-**Оставшийся P0:** связать signed intent с независимо подтверждёнными
-Git desired и immutable ReleaseSet у native owner; подключить Linux
-root и Windows SYSTEM execution с защищённой блокировкой/журналом и
-аутентифицированным poststate receipt. Ни один новый физический apply
-пока не разрешён этими изменениями.
+**Не завершено:** доверенный per-host Git source/release resolver в
+native owner; Windows SYSTEM ACL admission; подключение entrypoint к
+existing Windows Controller и Linux Agent через единственный разрешённый
+transport; authenticated remote receipt; физический poststate. Эти
+неподтверждённые действия остаются закрытыми. Успешный exact CI не
+доказывает установленное нативное исполнение.
 
 ## Обязательный протокол сомнения (без гаданий и кругов)
 
