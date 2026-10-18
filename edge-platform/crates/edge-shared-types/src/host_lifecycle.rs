@@ -6,7 +6,7 @@
 //! issue a VERIFIED receipt. No compatibility with legacy A/B dispatcher.
 
 use crate::{
-    FleetHostAction, FleetHostIntent, FleetHostKind, FleetHostMode, FleetHostResult,
+    FleetHostAction, FleetHostAuthorization, FleetHostIntent, FleetHostKind, FleetHostMode, FleetHostResult,
     FleetHostResultState, HostRegistry, managed_host,
 };
 use prost::Message;
@@ -161,6 +161,65 @@ pub fn prepared_host_result(intent: &FleetHostIntent) -> FleetHostResult {
     }
 }
 
+/// The existing Cloudflare Worker is the sole issuer of this detached
+/// authorization; the native owner pins the public key in its accepted
+/// immutable release. Neither the GitHub runner nor the caller can mint it.
+///
+/// This function does not inspect or modify the host. A privileged executor
+/// MUST additionally enforce a durable operation-id no-replay ledger and
+/// exact local machine/owner identity before performing even one mutation.
+pub fn verify_host_authorization(
+    intent: &FleetHostIntent,
+    authorization: &FleetHostAuthorization,
+    trusted_ed25519_public_key: &[u8],
+    now_unix: u64,
+) -> Result<(), &'static str> {
+    if authorization.schema_version != 1
+        || !token(&authorization.key_id)
+        || authorization.operation_id != intent.operation_id
+        || trusted_ed25519_public_key.len() != 32
+        || authorization.ed25519_signature.len() != 64
+    {
+        return Err("HOST_AUTHORIZATION_IDENTITY_INVALID");
+    }
+    // Short lived, exact operation. No open-ended capabilities or
+    // time-of-check/time-of-use reuse across installs, mode changes or hosts.
+    if authorization.expires_at_unix <= authorization.issued_at_unix
+        || authorization.expires_at_unix - authorization.issued_at_unix > 300
+        || now_unix.saturating_add(60) < authorization.issued_at_unix
+        || now_unix > authorization.expires_at_unix.saturating_add(60)
+    {
+        return Err("HOST_AUTHORIZATION_EXPIRED_OR_FUTURE");
+    }
+    let signed = host_authorization_payload(intent, authorization);
+    ring::signature::UnparsedPublicKey::new(
+        &ring::signature::ED25519,
+        trusted_ed25519_public_key,
+    )
+    .verify(&signed, &authorization.ed25519_signature)
+    .map_err(|_| "HOST_AUTHORIZATION_SIGNATURE_INVALID")
+}
+
+/// Identical domain-separated byte sequence must be signed by the existing
+/// Worker secret authority. No untrusted JSON canonicalization or free-form
+/// command text participates in authentication.
+pub fn host_authorization_payload(
+    intent: &FleetHostIntent,
+    authorization: &FleetHostAuthorization,
+) -> Vec<u8> {
+    let intent_bytes = intent.encode_to_vec();
+    let mut bytes = b"sing-box/native-host-authorization/v1\\0".to_vec();
+    bytes.extend_from_slice(&(intent_bytes.len() as u32).to_be_bytes());
+    bytes.extend_from_slice(&intent_bytes);
+    bytes.extend_from_slice(&(authorization.key_id.len() as u32).to_be_bytes());
+    bytes.extend_from_slice(authorization.key_id.as_bytes());
+    bytes.extend_from_slice(&(authorization.operation_id.len() as u32).to_be_bytes());
+    bytes.extend_from_slice(authorization.operation_id.as_bytes());
+    bytes.extend_from_slice(&authorization.issued_at_unix.to_be_bytes());
+    bytes.extend_from_slice(&authorization.expires_at_unix.to_be_bytes());
+    bytes
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -253,6 +312,36 @@ mod tests {
         assert!(validate_host_result(&result, &intent).is_ok());
         result.operation_id.push('x');
         assert!(validate_host_result(&result, &intent).is_err());
+    }
+
+    #[test]
+    fn only_pinned_worker_signature_can_authorize_exact_intent() {
+        use ring::rand::SystemRandom;
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+        let (_, intent, _, _, _) = fixture();
+        let rng = SystemRandom::new();
+        let pair = Ed25519KeyPair::from_pkcs8(
+            Ed25519KeyPair::generate_pkcs8(&rng).unwrap().as_ref()
+        ).unwrap();
+        let mut auth = FleetHostAuthorization {
+            schema_version: 1,
+            key_id: "worker-v1".to_owned(),
+            operation_id: intent.operation_id.clone(),
+            issued_at_unix: 1_000,
+            expires_at_unix: 1_180,
+            ed25519_signature: Vec::new(),
+        };
+        assert!(verify_host_authorization(&intent, &auth, pair.public_key().as_ref(), 1_060).is_err());
+        auth.ed25519_signature = pair.sign(&host_authorization_payload(&intent, &auth))
+            .as_ref().to_vec();
+        verify_host_authorization(&intent, &auth, pair.public_key().as_ref(), 1_060).unwrap();
+        let mut forged = intent.clone();
+        forged.machine_id = "other-host".to_owned();
+        assert!(verify_host_authorization(&forged, &auth, pair.public_key().as_ref(), 1_060).is_err());
+        assert!(verify_host_authorization(&intent, &auth, &[7u8; 32], 1_060).is_err());
+        assert!(verify_host_authorization(&intent, &auth, pair.public_key().as_ref(), 9_999).is_err());
+        auth.operation_id = "other-operation".to_owned();
+        assert!(verify_host_authorization(&intent, &auth, pair.public_key().as_ref(), 1_060).is_err());
     }
 
     #[test]
