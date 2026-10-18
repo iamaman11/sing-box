@@ -7,7 +7,6 @@ use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
-use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_INVENTORY_BYTES: u64 = 65_536;
 const MAX_RUNNER_BYTES: u64 = 1_048_576;
@@ -417,21 +416,6 @@ fn host_lifecycle_admission(
     Ok(())
 }
 
-/// Expiring GitHub admission: queued/offline self-hosted jobs must not
-/// turn into deferred mutations after a host unexpectedly reconnects.
-fn append_admission_timestamp(path: &Path, admitted_at: u64) -> Result<(), String> {
-    let metadata =
-        std::fs::symlink_metadata(path).map_err(|_| "HOST_OUTPUT_UNAVAILABLE".to_owned())?;
-    if !metadata.file_type().is_file() || !(1_700_000_000..4_102_444_800).contains(&admitted_at) {
-        return Err("HOST_ADMISSION_INVALID".to_owned());
-    }
-    OpenOptions::new()
-        .append(true)
-        .open(path)
-        .and_then(|mut file| writeln!(file, "admitted_at_unix={admitted_at}"))
-        .map_err(|_| "HOST_ADMISSION_OUTPUT_FAILED".to_owned())
-}
-
 fn append_action_output(path: &Path, action: &str) -> Result<(), String> {
     let metadata =
         std::fs::symlink_metadata(path).map_err(|_| "HOST_OUTPUT_UNAVAILABLE".to_owned())?;
@@ -619,6 +603,60 @@ fn append_credential_peer_outputs(
 mod tests {
     use super::*;
     use edge_shared_types::ManagedHost;
+
+    #[test]
+    fn fresh_host_apply_and_recover_never_admit_historical_mutation() {
+        let desired = HostRegistry {
+            schema_version: 1,
+            hosts: vec![ManagedHost {
+                machine_id: "windows-test".to_owned(),
+                kind: ManagedHostKind::Windows as i32,
+                owner: Some(managed_host::Owner::WindowsRunnerName(
+                    "DESKTOP-TEST".to_owned(),
+                )),
+                windows_runner_label: "windows-test".to_owned(),
+                desired_spec_path: "infra/production/production.textproto".to_owned(),
+            }],
+        };
+        let release = "a".repeat(64);
+        let file = std::env::temp_dir().join(format!(
+            "sing-box-host-fresh-preflight-{}",
+            std::process::id()
+        ));
+        std::fs::write(&file, "").unwrap();
+        host_lifecycle_admission(
+            &desired,
+            "windows-test",
+            HostLifecycleOperation::Apply,
+            &release,
+            None,
+            Some(&file),
+        )
+        .unwrap();
+        let apply = std::fs::read_to_string(&file).unwrap();
+        assert!(apply.contains("operation=APPLY_PREFLIGHT"));
+        assert!(apply.contains("host_targets_present=true"));
+        assert!(!apply.contains("admitted_at_unix="));
+        assert!(!apply.contains("operation=APPLY\\n"));
+        std::fs::write(&file, "").unwrap();
+        host_lifecycle_admission(
+            &desired,
+            "windows-test",
+            HostLifecycleOperation::Recover,
+            &release,
+            None,
+            Some(&file),
+        )
+        .unwrap();
+        let recover = std::fs::read_to_string(&file).unwrap();
+        assert!(recover.contains("operation=RECOVER_PREFLIGHT"));
+        assert!(!recover.contains("admitted_at_unix="));
+        assert!(host_lifecycle_admission(
+            &desired, "not-enrolled", HostLifecycleOperation::Apply,
+            &release, None, Some(&file)
+        ).is_err());
+        std::fs::remove_file(file).unwrap();
+    }
 
     #[test]
     fn credential_peer_is_selected_from_typed_registry_not_textproto_regex() {
