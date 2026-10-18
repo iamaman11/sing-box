@@ -34,3 +34,70 @@ message FleetHost {
   // Canonical Git-owned desired-state reference, not duplicated configuration.
   string desired_spec_path = 6;
 }
+
+
+// A single native host lifecycle contract for Windows and VM.
+// These structures carry identities and evidence, NOT authorization by themselves.
+// A privileged owner must independently authenticate an approved intent before
+// it can perform a mutation. Merely writing a protobuf is never sufficient.
+enum FleetHostAction {
+  FLEET_HOST_ACTION_UNSPECIFIED = 0;
+  FLEET_HOST_ACTION_STATUS = 1;
+  FLEET_HOST_ACTION_APPLY = 2;
+  FLEET_HOST_ACTION_RECOVER = 3;
+  FLEET_HOST_ACTION_INSTALL = 4;
+  FLEET_HOST_ACTION_REINSTALL = 5;
+  FLEET_HOST_ACTION_CONFIGURE = 6;
+  FLEET_HOST_ACTION_START = 7;
+  FLEET_HOST_ACTION_STOP = 8;
+  FLEET_HOST_ACTION_SET_MODE = 9;
+}
+
+enum FleetHostMode {
+  FLEET_HOST_MODE_UNSPECIFIED = 0;
+  FLEET_HOST_MODE_PROXY_ONLY = 1;
+  FLEET_HOST_MODE_MANAGED_TUN = 2;
+}
+
+enum FleetHostResultState {
+  FLEET_HOST_RESULT_STATE_UNSPECIFIED = 0;
+  FLEET_HOST_RESULT_STATE_OBSERVED = 1;
+  FLEET_HOST_RESULT_STATE_PREPARED = 2;
+  FLEET_HOST_RESULT_STATE_AUTHORIZED = 3;
+  FLEET_HOST_RESULT_STATE_VERIFIED = 4;
+  FLEET_HOST_RESULT_STATE_BLOCKED = 5;
+  FLEET_HOST_RESULT_STATE_UNKNOWN_NO_REPLAY = 6;
+}
+
+message FleetHostIntent {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  FleetHostKind kind = 3;
+  string resource_id = 4;
+  string operation_id = 5;
+  FleetHostAction action = 6;
+  // SHA-256 over the exact checked-out fleet registry and host-specific spec.
+  bytes registry_sha256 = 7;
+  bytes desired_sha256 = 8;
+  // SHA-256 of the exact immutable ReleaseSet accepted by the owner.
+  bytes release_set_sha256 = 9;
+  FleetHostMode requested_mode = 10;
+  // Advisory timestamp only; never used as a mutation authorization.
+  uint64 requested_at_unix = 11;
+}
+
+message FleetHostResult {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  string resource_id = 3;
+  string operation_id = 4;
+  FleetHostAction action = 5;
+  FleetHostResultState state = 6;
+  bytes release_set_sha256 = 7;
+  bytes desired_sha256 = 8;
+  uint64 observed_at_unix = 9;
+  string error_class = 10;
+  string next_action = 11;
+  // A final VERIFIED result requires a physical native-owner readback.
+  bool physical_readback = 12;
+}
