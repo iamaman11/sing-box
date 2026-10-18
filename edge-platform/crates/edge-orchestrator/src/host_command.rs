@@ -536,7 +536,12 @@ fn observation_target(
 ) -> Result<serde_json::Value, String> {
     let runner_labels: Vec<String> = serde_json::from_str(labels)
         .map_err(|_| "HOST_MATRIX_LABELS_INVALID".to_owned())?;
-    if runner_labels.len() != 4 || runner_labels.iter().any(|s| s.is_empty()) {
+    let expected_labels = match kind {
+        ManagedHostKind::Windows => 4,
+        ManagedHostKind::Vm => 5,
+        ManagedHostKind::Unspecified => return Err("HOST_MATRIX_KIND_INVALID".to_owned()),
+    };
+    if runner_labels.len() != expected_labels || runner_labels.iter().any(|s| s.is_empty()) {
         return Err("HOST_MATRIX_LABELS_INVALID".to_owned());
     }
     let kind = match kind {
@@ -768,7 +773,7 @@ mod tests {
             "vm-02",
             ManagedHostKind::Vm,
             "vm-02",
-            r#"["self-hosted","Linux","X64","sing-box-production-vm"]"#,
+            r#"["self-hosted","Linux","X64","sing-box-production-vm","vm-02"]"#,
         )
         .unwrap();
         assert_eq!(win["kind"], "WINDOWS");
