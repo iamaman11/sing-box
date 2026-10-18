@@ -65,11 +65,30 @@ unset credential_access_client_id credential_access_client_secret
 
 cat > "${SUDOERS_FILE}" <<EOF
 Cmnd_Alias SING_BOX_RUNTIME_READ = ${LOCAL_OWNER} local status --fast, ${LOCAL_OWNER} local status, ${LOCAL_OWNER} local verify, ${LOCAL_OWNER} local diagnose, ${LOCAL_OWNER} local quality-line2, ${LOCAL_OWNER} local credential-initial-probe, ${LOCAL_OWNER} local bundle-verify, ${LOCAL_OWNER} local mesh-verify, ${LOCAL_OWNER} local credential-state
-Cmnd_Alias SING_BOX_RUNTIME_MUTATE = ${LOCAL_OWNER} local bootstrap-base, ${LOCAL_OWNER} local bootstrap-tunnel, ${LOCAL_OWNER} local bootstrap-full, ${LOCAL_OWNER} local bundle-converge, ${LOCAL_OWNER} local bundle-rollback, ${LOCAL_OWNER} local mesh-cleanup, ${LOCAL_OWNER} local credential-stage *, ${LOCAL_OWNER} local credential-transition *, ${LOCAL_OWNER} local credential-existing-join *
-${RUNNER_USER} ALL=(root) NOPASSWD: SING_BOX_RUNTIME_READ, SING_BOX_RUNTIME_MUTATE
+# The runner is transport and may only ask the installed root owner to OBSERVE.
+# No bootstrap, bundle/credential mutation, rollback, Mesh cleanup or wildcard
+# sudo arguments. Native Host mutations require independently signed admission.
+${RUNNER_USER} ALL=(root) NOPASSWD: SING_BOX_RUNTIME_READ
 EOF
 chmod 0440 "${SUDOERS_FILE}"
 visudo -cf "${SUDOERS_FILE}" >/dev/null
+
+# Do not let legacy sudoers or an accidentally broader policy silently preserve
+# direct runner mutation capability. All probes are sudo -l (read-only).
+for unsafe_command in \
+  "local bundle-converge" \
+  "local bundle-rollback" \
+  "local bootstrap-full" \
+  "local mesh-cleanup" \
+  "local credential-stage 1" \
+  "local credential-transition promote" \
+  "local credential-existing-join 1 2 3"; do
+  read -r -a argv <<< "${unsafe_command}"
+  if sudo -u "${RUNNER_USER}" sudo -n -l "${LOCAL_OWNER}" "${argv[@]}" >/dev/null 2>&1; then
+    echo "runner retains forbidden native mutation sudo authority" >&2
+    exit 11
+  fi
+done
 
 if sudo -u "${RUNNER_USER}" sudo -n id -u >/dev/null 2>&1; then
   echo "runner unexpectedly has generic root authority" >&2
@@ -123,8 +142,9 @@ fi
 echo "runner_name=${runner_name}"
 echo "runner_user=${RUNNER_USER}"
 echo "generic_root_authority=false"
-echo "bounded_runtime_dispatch=true"
+echo "bounded_runtime_dispatch=READ_ONLY"
 echo "docker_socket_authority=false"
+echo "runner_native_mutation_authority=false"
 echo "acceptance_rpc_service_enabled=false"
 echo "tcp_50061_listener=false"
 echo "local_owner=${LOCAL_OWNER}"
