@@ -130,12 +130,29 @@ fn admit_after_protected_owner_check_once(
     // The caller must prove the full ancestor ACL/ownership chain separately.
     // A directory merely appearing as a regular directory is not a security
     // check and may not grant SYSTEM/root execution authority.
-    let identity = digest(&SHA256, intent.operation_id.as_bytes());
-    let id = identity
-        .as_ref()
-        .iter()
-        .map(|b| format!("{b:02x}"))
-        .collect::<String>();
+    let id = journal_hex(intent.operation_id.as_bytes());
+    // The operation-ID journal alone cannot serialize two different comments
+    // acting on the SAME resource. The scope gate is durable across process
+    // crashes; it is released only by a locally verified native poststate.
+    // An uncertain action retains the gate and cannot be silently retried
+    // under a new operation ID.
+    let scope_path = native_scope_pending_path(protected_journal_dir, intent);
+    let mut scope = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&scope_path)
+        .map_err(|_| "HOST_RESOURCE_PENDING_OR_UNAVAILABLE")?;
+    scope
+        .write_all(&intent.encode_to_vec())
+        .map_err(|_| "HOST_SCOPE_WRITE_UNCERTAIN_NO_REPLAY")?;
+    scope
+        .sync_all()
+        .map_err(|_| "HOST_SCOPE_SYNC_UNCERTAIN_NO_REPLAY")?;
+    let parent = fs::File::open(protected_journal_dir)
+        .map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNAVAILABLE")?;
+    parent
+        .sync_all()
+        .map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNCERTAIN_NO_REPLAY")?;
     let path = protected_journal_dir.join(format!("{id}.pb"));
     let recorded = FleetHostResult {
         schema_version: 1,
@@ -170,6 +187,175 @@ fn admit_after_protected_owner_check_once(
     dir.sync_all()
         .map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNCERTAIN_NO_REPLAY")?;
     Ok(recorded)
+}
+
+fn journal_hex(bytes: &[u8]) -> String {
+    digest(&SHA256, bytes)
+        .as_ref()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>()
+}
+
+/// Machine/resource scope is independent of the comment/operation ID.
+/// Domain-separated hashing makes the key unambiguous without trusting
+/// caller-controlled path elements.
+fn native_scope_pending_path(root: &Path, intent: &FleetHostIntent) -> std::path::PathBuf {
+    let mut bytes = b"sing-box/native-resource-scope/v1:".to_vec();
+    for field in [&intent.machine_id, &intent.resource_id] {
+        bytes.extend_from_slice(&(field.len() as u32).to_be_bytes());
+        bytes.extend_from_slice(field.as_bytes());
+    }
+    root.join(format!("resource-{}.pending.pb", journal_hex(&bytes)))
+}
+
+/// A final result is made durable BEFORE unlocking a resource. A missing,
+/// stale or inconsistent physical poststate leaves the original scope locked
+/// as UNKNOWN_NO_REPLAY. The native owner supplies a live, local readback;
+/// a copied runner artifact is not acceptable evidence for this function.
+pub fn finish_native_host_once<F>(
+    intent: &FleetHostIntent,
+    registry: &HostRegistry,
+    native_machine_id: &str,
+    native_owner_kind: i32,
+    expected_runtime_digest: &[u8],
+    now_unix: u64,
+    journal_dir: &Path,
+    native_readback: F,
+) -> Result<FleetHostResult, &'static str>
+where
+    F: FnOnce() -> Result<crate::FleetNativeObservation, &'static str>,
+{
+    verify_native_journal_protection(journal_dir)?;
+    finish_after_protected_owner_check_once(
+        intent,
+        registry,
+        native_machine_id,
+        native_owner_kind,
+        expected_runtime_digest,
+        now_unix,
+        journal_dir,
+        native_readback,
+    )
+}
+
+fn finish_after_protected_owner_check_once<F>(
+    intent: &FleetHostIntent,
+    registry: &HostRegistry,
+    native_machine_id: &str,
+    native_owner_kind: i32,
+    expected_runtime_digest: &[u8],
+    now_unix: u64,
+    journal_dir: &Path,
+    native_readback: F,
+) -> Result<FleetHostResult, &'static str>
+where
+    F: FnOnce() -> Result<crate::FleetNativeObservation, &'static str>,
+{
+    use crate::{
+        FleetHostKind, FleetHostRunState, FleetNativeOwnerState, FleetNativeReleaseProof,
+        host_lifecycle::{decode_host_intent, validate_native_observation},
+    };
+
+    if intent.machine_id != native_machine_id || intent.kind != native_owner_kind {
+        return Err("HOST_LOCAL_OWNER_IDENTITY_MISMATCH");
+    }
+    crate::host_lifecycle::validate_intent_against_target(intent, registry)?;
+    let target = registry
+        .hosts
+        .iter()
+        .find(|host| host.machine_id == intent.machine_id && host.kind == intent.kind)
+        .and_then(|host| host.target.as_ref())
+        .ok_or("HOST_TARGET_UNSET_OBSERVE_ONLY")?;
+    if expected_runtime_digest.len() != 32 || expected_runtime_digest.iter().all(|b| *b == 0) {
+        return Err("HOST_EXPECTED_RUNTIME_DIGEST_INVALID");
+    }
+    let scope = native_scope_pending_path(journal_dir, intent);
+    let bytes = fs::read(&scope).map_err(|_| "HOST_RESOURCE_PENDING_RECORD_REQUIRED")?;
+    let recorded_intent = decode_host_intent(&bytes)?;
+    if recorded_intent != *intent {
+        return Err("HOST_RESOURCE_PENDING_IDENTITY_MISMATCH");
+    }
+    let id = journal_hex(intent.operation_id.as_bytes());
+    let original = fs::read(journal_dir.join(format!("{id}.pb")))
+        .map_err(|_| "HOST_AUTHORIZED_JOURNAL_MISSING")?;
+    let recorded = FleetHostResult::decode(original.as_slice())
+        .map_err(|_| "HOST_AUTHORIZED_JOURNAL_INVALID")?;
+    if recorded.state != FleetHostResultState::Authorized as i32
+        || recorded.machine_id != intent.machine_id
+        || recorded.resource_id != intent.resource_id
+        || recorded.operation_id != intent.operation_id
+        || recorded.action != intent.action
+        || recorded.release_set_sha256 != intent.release_set_sha256
+        || recorded.desired_sha256 != intent.desired_sha256
+    {
+        return Err("HOST_AUTHORIZED_JOURNAL_MISMATCH");
+    }
+    let observed = native_readback()?;
+    validate_native_observation(&observed)?;
+    if observed.host_kind != intent.kind
+        || observed.observed_at_unix > now_unix.saturating_add(60)
+        || now_unix.saturating_sub(observed.observed_at_unix) > 300
+        || !observed.reason_codes.is_empty()
+    {
+        return Err("HOST_NATIVE_POSTSTATE_UNPROVEN");
+    }
+    let kind = FleetHostKind::try_from(intent.kind)
+        .map_err(|_| "HOST_NATIVE_KIND_INVALID")?;
+    let expected_proof = match kind {
+        FleetHostKind::Windows => FleetNativeReleaseProof::ActivationRecord,
+        FleetHostKind::Vm => FleetNativeReleaseProof::ApplicationBundle,
+        FleetHostKind::Unspecified => return Err("HOST_NATIVE_KIND_INVALID"),
+    };
+    if observed.release_proof != expected_proof as i32
+        || observed.observed_release_sha256 != expected_runtime_digest
+    {
+        return Err("HOST_NATIVE_RELEASE_POSTSTATE_MISMATCH");
+    }
+    let run = FleetHostRunState::try_from(target.run_state)
+        .map_err(|_| "HOST_TARGET_RUN_STATE_INVALID")?;
+    let owner = FleetNativeOwnerState::try_from(observed.owner_state)
+        .map_err(|_| "HOST_NATIVE_OWNER_STATE_INVALID")?;
+    if !matches!(
+        (run, owner),
+        (FleetHostRunState::Stopped, FleetNativeOwnerState::Stopped)
+            | (FleetHostRunState::Running, FleetNativeOwnerState::Running)
+    ) || (run == FleetHostRunState::Running
+        && !(observed.runtime_ready_proven && observed.runtime_ready))
+    {
+        return Err("HOST_NATIVE_RUNTIME_POSTSTATE_MISMATCH");
+    }
+    let result = FleetHostResult {
+        schema_version: 1,
+        machine_id: intent.machine_id.clone(),
+        resource_id: intent.resource_id.clone(),
+        operation_id: intent.operation_id.clone(),
+        action: intent.action,
+        state: FleetHostResultState::Verified as i32,
+        release_set_sha256: intent.release_set_sha256.clone(),
+        desired_sha256: intent.desired_sha256.clone(),
+        observed_at_unix: observed.observed_at_unix,
+        error_class: String::new(),
+        next_action: "NONE".to_owned(),
+        physical_readback: true,
+    };
+    // A protected terminal receipt is written exactly once. It is a local
+    // owner result, not yet a remotely authenticated receipt or permission
+    // for GitHub to infer VERIFIED from an uploaded protobuf.
+    let mut writer = OpenOptions::new()
+        .create_new(true)
+        .write(true)
+        .open(journal_dir.join(format!("{id}.verified.pb")))
+        .map_err(|_| "HOST_TERMINAL_RECEIPT_EXISTS_OR_UNAVAILABLE")?;
+    writer
+        .write_all(&result.encode_to_vec())
+        .map_err(|_| "HOST_TERMINAL_RECEIPT_WRITE_UNCERTAIN")?;
+    writer.sync_all().map_err(|_| "HOST_TERMINAL_RECEIPT_SYNC_UNCERTAIN")?;
+    let dir = fs::File::open(journal_dir).map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNAVAILABLE")?;
+    dir.sync_all().map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNCERTAIN_NO_REPLAY")?;
+    fs::remove_file(&scope).map_err(|_| "HOST_SCOPE_RELEASE_UNCERTAIN_NO_REPLAY")?;
+    dir.sync_all().map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNCERTAIN_NO_REPLAY")?;
+    Ok(result)
 }
 
 #[cfg(test)]
@@ -281,7 +467,19 @@ mod tests {
         assert!(!first.physical_readback);
         assert_eq!(
             call(&i, &a).unwrap_err(),
-            "HOST_OPERATION_EXISTS_OR_JOURNAL_UNAVAILABLE"
+            "HOST_RESOURCE_PENDING_OR_UNAVAILABLE"
+        );
+        let mut second = i.clone();
+        second.operation_id = "issue1-comment-124".into();
+        let mut next_authorization = a.clone();
+        next_authorization.operation_id = second.operation_id.clone();
+        next_authorization.ed25519_signature = pair
+            .sign(&host_authorization_payload(&second, &next_authorization))
+            .as_ref()
+            .to_vec();
+        assert_eq!(
+            call(&second, &next_authorization).unwrap_err(),
+            "HOST_RESOURCE_PENDING_OR_UNAVAILABLE"
         );
         let mut wrong = i.clone();
         wrong.machine_id = "vm-two".into();
@@ -293,7 +491,50 @@ mod tests {
             .unwrap()
             .map(|e| e.unwrap())
             .collect::<Vec<_>>();
-        assert_eq!(files.len(), 1);
+        assert_eq!(files.len(), 2); // authorized journal + durable per-resource gate
+        let stopped_observation = crate::FleetNativeObservation {
+            schema_version: 1,
+            host_kind: FleetHostKind::Vm as i32,
+            observed_at_unix: 1020,
+            owner_state: crate::FleetNativeOwnerState::Stopped as i32,
+            release_proof: crate::FleetNativeReleaseProof::ApplicationBundle as i32,
+            observed_release_sha256: vec![4; 32],
+            runtime_ready: false,
+            runtime_ready_proven: true,
+            reason_codes: vec![],
+        };
+        let mut wrong_observation = stopped_observation.clone();
+        wrong_observation.reason_codes.push("VM_RUNTIME_UNPROVEN".to_owned());
+        assert_eq!(
+            finish_after_protected_owner_check_once(
+                &i, &registry, "vm-one", FleetHostKind::Vm as i32, &[4; 32],
+                1020, &dir, || Ok(wrong_observation)
+            ).unwrap_err(),
+            "HOST_NATIVE_POSTSTATE_UNPROVEN"
+        );
+        // Missing runtime readiness cannot complete a RUNNING desired target.
+        assert_eq!(
+            finish_after_protected_owner_check_once(
+                &i, &registry, "vm-one", FleetHostKind::Vm as i32, &[4; 32],
+                1020, &dir, || Ok(stopped_observation.clone())
+            ).unwrap_err(),
+            "HOST_NATIVE_RUNTIME_POSTSTATE_MISMATCH"
+        );
+        let ready_observation = crate::FleetNativeObservation {
+            owner_state: crate::FleetNativeOwnerState::Running as i32,
+            runtime_ready: true,
+            ..stopped_observation
+        };
+        let completed = finish_after_protected_owner_check_once(
+            &i, &registry, "vm-one", FleetHostKind::Vm as i32, &[4; 32],
+            1020, &dir, || Ok(ready_observation)
+        ).unwrap();
+        assert_eq!(completed.state, FleetHostResultState::Verified as i32);
+        assert!(completed.physical_readback);
+        assert_eq!(
+            call(&second, &next_authorization).unwrap().state,
+            FleetHostResultState::Authorized as i32
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
