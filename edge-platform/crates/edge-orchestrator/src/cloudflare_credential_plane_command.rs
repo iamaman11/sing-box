@@ -2360,8 +2360,8 @@ fn projection_delivery_state(
     // Credential data plane remains exactly two A/B slots. The ONE VM Worker
     // may additionally carry five independent Host signer guard secrets, with
     // no second worker or duplicate issuer. Windows never permits signer keys.
-    let guarded_host_signer = projection.projection == "vm"
-        && current.worker_binding_count == Some(7);
+    let guarded_host_signer =
+        projection.projection == "vm" && current.worker_binding_count == Some(7);
     if current.worker_binding_count == Some(2) || guarded_host_signer {
         require_exact_secret_bindings(
             &projection.worker_name,
@@ -3147,16 +3147,26 @@ mod tests {
     #[test]
     fn only_one_vm_worker_may_hold_host_signer_secrets() {
         let names = [
-            SLOT_A, SLOT_B, "EDGE_HOST_ACCESS_AUD",
-            "EDGE_HOST_ACCESS_ISSUER", "EDGE_HOST_APPROVED_INTENT_SHA256",
-            "EDGE_HOST_SIGNING_KEY_ID", "EDGE_HOST_SIGNING_PKCS8_BASE64",
+            SLOT_A,
+            SLOT_B,
+            "EDGE_HOST_ACCESS_AUD",
+            "EDGE_HOST_ACCESS_ISSUER",
+            "EDGE_HOST_APPROVED_INTENT_SHA256",
+            "EDGE_HOST_SIGNING_KEY_ID",
+            "EDGE_HOST_SIGNING_PKCS8_BASE64",
         ];
-        let extra = names.iter().map(|name| cloudflare::CloudflareWorkerSecretBinding {
-            name: (*name).to_owned(),
-            binding_type: "secret_text".to_owned(),
-        }).collect::<Vec<_>>();
+        let extra = names
+            .iter()
+            .map(|name| cloudflare::CloudflareWorkerSecretBinding {
+                name: (*name).to_owned(),
+                binding_type: "secret_text".to_owned(),
+            })
+            .collect::<Vec<_>>();
         assert!(require_exact_secret_bindings("sing-box-credentials-vm", "vm", &extra).is_ok());
-        assert!(require_exact_secret_bindings("sing-box-credentials-windows", "windows", &extra).is_err());
+        assert!(
+            require_exact_secret_bindings("sing-box-credentials-windows", "windows", &extra)
+                .is_err()
+        );
         let mut injected = extra;
         injected[3].name = "ATTACKER_EXTRA_SECRET".to_owned();
         assert!(require_exact_secret_bindings("sing-box-credentials-vm", "vm", &injected).is_err());
