@@ -101,3 +101,16 @@ message FleetHostResult {
   // A final VERIFIED result requires a physical native-owner readback.
   bool physical_readback = 12;
 }
+
+ // Independent admission evidence. Never infer authority from ownership of
+ // exchange/requests or from a valid FleetHostIntent protobuf. This detached
+ // signature is minted by the existing Worker secret authority and verified
+ // against a pinned public key by the native SYSTEM/root owner.
+message FleetHostAuthorization {
+  uint32 schema_version = 1;
+  string key_id = 2;
+  string operation_id = 3;
+  uint64 issued_at_unix = 4;
+  uint64 expires_at_unix = 5;
+  bytes ed25519_signature = 6;
+}
