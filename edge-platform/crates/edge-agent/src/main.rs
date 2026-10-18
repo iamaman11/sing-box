@@ -192,9 +192,11 @@ async fn run_local_host_observe(stack_dir: &Path) -> Result<(), String> {
     }
     if !state.docker_reachable {
         reasons.push("VM_DOCKER_UNAVAILABLE");
-    } else if !state.ready {
-        reasons.push("VM_RUNTIME_NOT_READY");
     }
+    // Runtime readiness is already explicitly encoded as
+    // runtime_ready_proven / runtime_ready. Stopped VM resources are not
+    // a broken observation; do not flag them as an evidence error merely
+    // because the application is intentionally stopped.
     let observed_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| "HOST_CLOCK_UNAVAILABLE".to_owned())?
