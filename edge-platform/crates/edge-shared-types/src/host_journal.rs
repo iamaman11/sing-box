@@ -192,6 +192,7 @@ mod tests {
                 owner: Some(managed_host::Owner::VmMachineId("vm-one".into())),
                 windows_runner_label: String::new(),
                 desired_spec_path: "infra/production/production.textproto".into(),
+            target: None,
             }],
         };
         let i = FleetHostIntent {
