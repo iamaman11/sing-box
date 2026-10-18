@@ -2,8 +2,9 @@ use crate::cli::HostCommand;
 use edge_orchestrator::OrchestrationContext;
 use edge_shared_types::{
     FleetHostAction, FleetHostIntent, FleetHostMode, HostRegistry, ManagedHostKind,
-    decode_host_registry, host_lifecycle::{prepared_host_result, validate_host_intent,
-    validate_host_result}, managed_host,
+    decode_host_registry,
+    host_lifecycle::{prepared_host_result, validate_host_intent, validate_host_result},
+    managed_host,
 };
 use prost::Message;
 use ring::digest::{SHA256, digest};
@@ -385,24 +386,25 @@ fn host_lifecycle_admission(
     } else {
         "UNPROVEN_NATIVE_OWNER_MUST_VERIFY".to_owned()
     };
-    let comment_id = source_comment_id.filter(|id| *id != 0)
+    let comment_id = source_comment_id
+        .filter(|id| *id != 0)
         .ok_or("HOST_SOURCE_COMMENT_REQUIRED")?;
     let intent_path = intent_output.ok_or("HOST_INTENT_OUTPUT_REQUIRED")?;
     // Read *the checked-out protected Git spec*, not an operator-supplied file.
     // This binds the intent to the exact desired bytes; JSON remains an
     // explicit conversion debt for acceptance hosts, not an alternative source.
     let spec_path = Path::new(&selected.desired_spec_path);
-    let meta = std::fs::symlink_metadata(spec_path)
-        .map_err(|_| "HOST_DESIRED_SPEC_MISSING")?;
+    let meta = std::fs::symlink_metadata(spec_path).map_err(|_| "HOST_DESIRED_SPEC_MISSING")?;
     if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 1_048_576 {
         return Err("HOST_DESIRED_SPEC_INVALID_FILE".to_owned());
     }
-    let spec_bytes = std::fs::read(spec_path)
-        .map_err(|_| "HOST_DESIRED_SPEC_UNREADABLE")?;
+    let spec_bytes = std::fs::read(spec_path).map_err(|_| "HOST_DESIRED_SPEC_UNREADABLE")?;
     let desired_sha = digest(&SHA256, &spec_bytes).as_ref().to_vec();
     let release_sha = exact_hex_sha256(expected_release_set_sha256)?;
-    let now = SystemTime::now().duration_since(UNIX_EPOCH)
-        .map_err(|_| "HOST_CLOCK_UNAVAILABLE")?.as_secs();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "HOST_CLOCK_UNAVAILABLE")?
+        .as_secs();
     let intent = FleetHostIntent {
         schema_version: 1,
         machine_id: machine_id.to_owned(),
@@ -419,27 +421,50 @@ fn host_lifecycle_admission(
         requested_mode: FleetHostMode::Unspecified as i32,
         requested_at_unix: now,
     };
-    validate_host_intent(&intent, desired, exact_registry_sha256, &desired_sha, &release_sha)
-        .map_err(str::to_owned)?;
+    validate_host_intent(
+        &intent,
+        desired,
+        exact_registry_sha256,
+        &desired_sha,
+        &release_sha,
+    )
+    .map_err(str::to_owned)?;
     let prepared = prepared_host_result(&intent);
     validate_host_result(&prepared, &intent).map_err(str::to_owned)?;
     let bytes = intent.encode_to_vec();
     // Exclusive create: an uncertain or duplicate request cannot clobber
     // an existing typed intent/receipt. No SYSTEM/root action is invoked.
-    let mut writer = OpenOptions::new().write(true).create_new(true)
-        .open(intent_path).map_err(|_| "HOST_INTENT_ALREADY_EXISTS_OR_UNWRITABLE")?;
-    writer.write_all(&bytes).map_err(|_| "HOST_INTENT_WRITE_FAILED")?;
+    let mut writer = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(intent_path)
+        .map_err(|_| "HOST_INTENT_ALREADY_EXISTS_OR_UNWRITABLE")?;
+    writer
+        .write_all(&bytes)
+        .map_err(|_| "HOST_INTENT_WRITE_FAILED")?;
     writer.sync_all().map_err(|_| "HOST_INTENT_SYNC_FAILED")?;
     let receipt_path = intent_path.with_extension("receipt.pb");
-    let mut receipt = OpenOptions::new().write(true).create_new(true)
-        .open(&receipt_path).map_err(|_| "HOST_PREPARED_RECEIPT_EXISTS_OR_UNWRITABLE")?;
-    receipt.write_all(&prepared.encode_to_vec())
+    let mut receipt = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&receipt_path)
+        .map_err(|_| "HOST_PREPARED_RECEIPT_EXISTS_OR_UNWRITABLE")?;
+    receipt
+        .write_all(&prepared.encode_to_vec())
         .map_err(|_| "HOST_PREPARED_RECEIPT_WRITE_FAILED")?;
-    receipt.sync_all().map_err(|_| "HOST_PREPARED_RECEIPT_SYNC_FAILED")?;
+    receipt
+        .sync_all()
+        .map_err(|_| "HOST_PREPARED_RECEIPT_SYNC_FAILED")?;
     println!("host_intent_schema=1");
     println!("host_operation_id={}", intent.operation_id);
-    println!("host_intent_sha256={}", digest(&SHA256, &bytes).as_ref().iter()
-        .map(|b| format!("{b:02x}")).collect::<String>());
+    println!(
+        "host_intent_sha256={}",
+        digest(&SHA256, &bytes)
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    );
     println!("host_intent_state=PREPARED_NOT_AUTHORIZED");
     println!("host_machine_id={machine_id}");
     println!("host_kind={kind:?}");
@@ -490,12 +515,18 @@ fn host_lifecycle_admission(
 }
 
 fn exact_hex_sha256(value: &str) -> Result<Vec<u8>, String> {
-    if value.len() != 64 || !value.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase()) {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
         return Err("HOST_RELEASE_SHA256_INVALID".to_owned());
     }
     (0..32)
-        .map(|idx| u8::from_str_radix(&value[idx * 2..idx * 2 + 2], 16)
-            .map_err(|_| "HOST_RELEASE_SHA256_INVALID".to_owned()))
+        .map(|idx| {
+            u8::from_str_radix(&value[idx * 2..idx * 2 + 2], 16)
+                .map_err(|_| "HOST_RELEASE_SHA256_INVALID".to_owned())
+        })
         .collect()
 }
 
@@ -689,9 +720,7 @@ mod tests {
 
     #[test]
     fn fresh_host_apply_and_recover_never_admit_historical_mutation() {
-        let spec = std::env::temp_dir().join(format!(
-            "sing-box-host-spec-{}", std::process::id()
-        ));
+        let spec = std::env::temp_dir().join(format!("sing-box-host-spec-{}", std::process::id()));
         std::fs::write(&spec, b"schema_version: 1\\n").unwrap();
         let desired = HostRegistry {
             schema_version: 1,
@@ -707,9 +736,8 @@ mod tests {
         };
         let release = "a".repeat(64);
         let registry_sha = vec![3u8; 32];
-        let intent_path = std::env::temp_dir().join(format!(
-            "sing-box-host-intent-{}.pb", std::process::id()
-        ));
+        let intent_path =
+            std::env::temp_dir().join(format!("sing-box-host-intent-{}.pb", std::process::id()));
         let file = std::env::temp_dir().join(format!(
             "sing-box-host-fresh-preflight-{}",
             std::process::id()
@@ -733,8 +761,9 @@ mod tests {
         assert!(!apply.contains("admitted_at_unix="));
         assert!(!apply.contains("operation=APPLY\\n"));
         let parsed = edge_shared_types::host_lifecycle::decode_host_intent(
-            &std::fs::read(&intent_path).unwrap()
-        ).unwrap();
+            &std::fs::read(&intent_path).unwrap(),
+        )
+        .unwrap();
         assert_eq!(parsed.operation_id, "issue1-comment-123");
         assert_eq!(parsed.action, FleetHostAction::Apply as i32);
         std::fs::remove_file(&intent_path).unwrap();
