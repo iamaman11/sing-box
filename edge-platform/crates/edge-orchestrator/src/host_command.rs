@@ -355,10 +355,21 @@ pub(crate) fn run(
                 .duration_since(UNIX_EPOCH)
                 .map_err(|_| "HOST_CLOCK_UNAVAILABLE")?
                 .as_secs();
+            let release_sha = exact_hex_sha256(&release.release().release_set_sha256)?;
+            let verified = verified_release_set_from_resolver(release)?;
+            // Resolve VM transport->logical identity once for both summary and
+            // planner so no status can contradict its typed proposal.
+            let native_bundle_sha = if selected.kind == ManagedHostKind::Vm as i32 {
+                verified_vm_runtime_digest_from_resolver(&verified)?
+            } else {
+                Vec::new()
+            };
             let summary = validate_readback_scope(
                 selected,
                 &observed,
                 &release.release().release_set_sha256,
+                (selected.kind == ManagedHostKind::Vm as i32)
+                    .then_some(native_bundle_sha.as_slice()),
                 now,
             )?;
             println!("host_machine_id={machine_id}");
@@ -377,17 +388,8 @@ pub(crate) fn run(
             println!("host_native_readback_verdict={summary}");
             // Pure typed reconcile: this is NEVER a privileged mutation
             // decision until Worker + native owner independently attest.
-            let release_sha = exact_hex_sha256(&release.release().release_set_sha256)?;
-            let verified = verified_release_set_from_resolver(release)?;
-            // The published VM bundle hash is the SHA of transport protobuf.
-            // Native readback holds its *logical* bundle_digest instead.
-            // Derive the expected native marker only from the exact published
-            // application-bundle.pb bytes; never compare unrelated hashes.
-            let native_bundle_sha = if selected.kind == ManagedHostKind::Vm as i32 {
-                verified_vm_runtime_digest_from_resolver(&verified)?
-            } else {
-                Vec::new()
-            };
+            // Reuse the same independently release-bound VM digest for the
+            // detailed reconciliation proposal printed below.
             let proposed = edge_shared_types::host_planner::propose_host_transition(
                 selected,
                 Some(&observed),
@@ -510,6 +512,7 @@ fn validate_readback_scope(
     host: &edge_shared_types::FleetHost,
     observed: &edge_shared_types::FleetNativeObservation,
     expected_release_set_sha256: &str,
+    expected_vm_logical_sha256: Option<&[u8]>,
     now: u64,
 ) -> Result<&'static str, String> {
     use edge_shared_types::{FleetNativeOwnerState, FleetNativeReleaseProof};
@@ -533,12 +536,25 @@ fn validate_readback_scope(
         return Ok("UNPROVEN_NATIVE_OWNER_OR_RUNTIME");
     }
     if kind == ManagedHostKind::Windows {
-        // Windows activation names the whole exact immutable ReleaseSet.
-        // No analogous comparison exists for the VM application bundle digest.
+        if proof != FleetNativeReleaseProof::ActivationRecord {
+            return Ok("WINDOWS_ACTIVATION_UNPROVEN");
+        }
         let expected = exact_hex_sha256(expected_release_set_sha256)?;
         if observed.observed_release_sha256 != expected {
             return Ok("WINDOWS_RELEASESET_MISMATCH");
         }
+    } else if proof == FleetNativeReleaseProof::VerifiedAbsent {
+        return Ok("VM_RELEASE_ABSENT_LOCAL_ONLY");
+    } else if proof == FleetNativeReleaseProof::ApplicationBundle {
+        let expected = match expected_vm_logical_sha256 {
+            Some(digest) if digest.len() == 32 => digest,
+            _ => return Ok("VM_EXPECTED_BUNDLE_UNPROVEN"),
+        };
+        if observed.observed_release_sha256 != expected {
+            return Ok("VM_BUNDLE_LOGICAL_DIGEST_MISMATCH");
+        }
+    } else {
+        return Ok("VM_RELEASE_PROOF_UNPROVEN");
     }
     if !observed.runtime_ready_proven || !observed.runtime_ready {
         return Ok("UNPROVEN_RUNTIME_READINESS");
@@ -1001,22 +1017,22 @@ mod tests {
             reason_codes: vec![],
         };
         assert_eq!(
-            validate_readback_scope(&host, &o, &"a".repeat(64), 1000).unwrap(),
+            validate_readback_scope(&host, &o, &"a".repeat(64), None, 1000).unwrap(),
             "LOCAL_OBSERVATION_ONLY_NOT_PHYSICAL_ACCEPTANCE"
         );
         o.observed_release_sha256 = vec![0xbb; 32];
         assert_eq!(
-            validate_readback_scope(&host, &o, &"a".repeat(64), 1000).unwrap(),
+            validate_readback_scope(&host, &o, &"a".repeat(64), None, 1000).unwrap(),
             "WINDOWS_RELEASESET_MISMATCH"
         );
         o.host_kind = FleetHostKind::Vm as i32;
         assert_eq!(
-            validate_readback_scope(&host, &o, &"a".repeat(64), 1000).unwrap_err(),
+            validate_readback_scope(&host, &o, &"a".repeat(64), None, 1000).unwrap_err(),
             "HOST_READBACK_KIND_MISMATCH"
         );
         o.host_kind = FleetHostKind::Windows as i32;
         assert_eq!(
-            validate_readback_scope(&host, &o, &"a".repeat(64), 1400).unwrap_err(),
+            validate_readback_scope(&host, &o, &"a".repeat(64), None, 1400).unwrap_err(),
             "HOST_READBACK_STALE_OR_FUTURE"
         );
         let vm_host = FleetHost {
@@ -1030,8 +1046,17 @@ mod tests {
         o.release_proof = FleetNativeReleaseProof::ApplicationBundle as i32;
         o.observed_at_unix = 1400;
         assert_eq!(
-            validate_readback_scope(&vm_host, &o, &"a".repeat(64), 1400).unwrap(),
+            validate_readback_scope(&vm_host, &o, &"a".repeat(64), Some(&[0xbb; 32]), 1400).unwrap(),
             "LOCAL_OBSERVATION_ONLY_NOT_PHYSICAL_ACCEPTANCE"
+        );
+        assert_eq!(
+            validate_readback_scope(&vm_host, &o, &"a".repeat(64), Some(&[0xaa; 32]), 1400)
+                .unwrap(),
+            "VM_BUNDLE_LOGICAL_DIGEST_MISMATCH"
+        );
+        assert_eq!(
+            validate_readback_scope(&vm_host, &o, &"a".repeat(64), None, 1400).unwrap(),
+            "VM_EXPECTED_BUNDLE_UNPROVEN"
         );
     }
 
