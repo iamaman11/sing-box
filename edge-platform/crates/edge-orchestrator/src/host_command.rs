@@ -3,7 +3,10 @@ use edge_orchestrator::OrchestrationContext;
 use edge_shared_types::{
     FleetHostAction, FleetHostIntent, FleetHostMode, HostRegistry, ManagedHostKind,
     decode_host_registry,
-    host_lifecycle::{prepared_host_result, validate_host_intent, validate_host_result},
+    host_lifecycle::{
+        decode_native_observation, prepared_host_result, validate_host_intent,
+        validate_host_result, MAX_NATIVE_OBSERVATION_BYTES,
+    },
     managed_host,
 };
 use prost::Message;
@@ -324,6 +327,55 @@ pub(crate) fn run(
             println!("host_mutations=0");
             Ok(())
         }
+        HostCommand::Readback {
+            machine_id,
+            observation_path,
+        } => {
+            let selected = desired
+                .hosts
+                .iter()
+                .find(|host| host.machine_id == machine_id)
+                .ok_or("HOST_NOT_REGISTERED")?;
+            let metadata = std::fs::symlink_metadata(&observation_path)
+                .map_err(|_| "HOST_NATIVE_READBACK_MISSING")?;
+            if !metadata.file_type().is_file()
+                || metadata.len() == 0
+                || metadata.len() > MAX_NATIVE_OBSERVATION_BYTES as u64
+            {
+                return Err("HOST_NATIVE_READBACK_FILE_INVALID".to_owned());
+            }
+            let mut bytes = Vec::new();
+            File::open(&observation_path)
+                .map_err(|_| "HOST_NATIVE_READBACK_UNREADABLE")?
+                .take(MAX_NATIVE_OBSERVATION_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|_| "HOST_NATIVE_READBACK_UNREADABLE")?;
+            let observed = decode_native_observation(&bytes).map_err(str::to_owned)?;
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| "HOST_CLOCK_UNAVAILABLE")?
+                .as_secs();
+            let summary = validate_readback_scope(
+                selected,
+                &observed,
+                &release.release().release_set_sha256,
+                now,
+            )?;
+            println!("host_machine_id={machine_id}");
+            println!("host_native_readback_schema=1");
+            println!("host_native_observed_at_unix={}", observed.observed_at_unix);
+            println!("host_native_owner_state={:?}",
+                edge_shared_types::FleetNativeOwnerState::try_from(observed.owner_state)
+                    .map_err(|_| "HOST_NATIVE_OWNER_STATE_INVALID")?);
+            println!("host_native_release_scope={:?}",
+                edge_shared_types::FleetNativeReleaseProof::try_from(observed.release_proof)
+                    .map_err(|_| "HOST_NATIVE_RELEASE_PROOF_INVALID")?);
+            println!("host_native_readback_verdict={summary}");
+            println!("host_native_readback_source=RUNNER_COPIED_UNAUTHENTICATED");
+            println!("host_native_readback_authorizes_mutation=false");
+            println!("host_mutations=0");
+            Ok(())
+        }
         HostCommand::Apply { machine_id } => host_lifecycle_admission(
             &desired,
             &machine_id,
@@ -347,6 +399,49 @@ pub(crate) fn run(
             intent_output,
         ),
     }
+}
+
+/// Read-only scope validation. This intentionally never authenticates the
+/// runner copy: native attestation is a separate, still-unimplemented gate.
+fn validate_readback_scope(
+    host: &edge_shared_types::FleetHost,
+    observed: &edge_shared_types::FleetNativeObservation,
+    expected_release_set_sha256: &str,
+    now: u64,
+) -> Result<&'static str, String> {
+    use edge_shared_types::{FleetNativeOwnerState, FleetNativeReleaseProof};
+    if host.kind != observed.host_kind {
+        return Err("HOST_READBACK_KIND_MISMATCH".to_owned());
+    }
+    if observed.observed_at_unix > now.saturating_add(60)
+        || now.saturating_sub(observed.observed_at_unix) > 300
+    {
+        return Err("HOST_READBACK_STALE_OR_FUTURE".to_owned());
+    }
+    let kind = ManagedHostKind::try_from(host.kind)
+        .map_err(|_| "HOST_READBACK_KIND_INVALID")?;
+    let proof = FleetNativeReleaseProof::try_from(observed.release_proof)
+        .map_err(|_| "HOST_READBACK_PROOF_INVALID")?;
+    let owner = FleetNativeOwnerState::try_from(observed.owner_state)
+        .map_err(|_| "HOST_READBACK_OWNER_INVALID")?;
+    if owner == FleetNativeOwnerState::Unproven
+        || proof == FleetNativeReleaseProof::Unproven
+        || !observed.reason_codes.is_empty()
+    {
+        return Ok("UNPROVEN_NATIVE_OWNER_OR_RUNTIME");
+    }
+    if kind == ManagedHostKind::Windows {
+        // Windows activation names the whole exact immutable ReleaseSet.
+        // No analogous comparison exists for the VM application bundle digest.
+        let expected = exact_hex_sha256(expected_release_set_sha256)?;
+        if observed.observed_release_sha256 != expected {
+            return Ok("WINDOWS_RELEASESET_MISMATCH");
+        }
+    }
+    if !observed.runtime_ready_proven || !observed.runtime_ready {
+        return Ok("UNPROVEN_RUNTIME_READINESS");
+    }
+    Ok("LOCAL_OBSERVATION_ONLY_NOT_PHYSICAL_ACCEPTANCE")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -742,6 +837,66 @@ fn append_credential_peer_outputs(
 mod tests {
     use super::*;
     use edge_shared_types::ManagedHost;
+
+    #[test]
+    fn native_readback_never_authorizes_mutation_or_conflates_vm_digest() {
+        use edge_shared_types::{
+            FleetHost, FleetHostKind, FleetNativeObservation, FleetNativeOwnerState,
+            FleetNativeReleaseProof,
+        };
+        let host = FleetHost {
+            machine_id: "windows-1".into(),
+            kind: FleetHostKind::Windows as i32,
+            owner: Some(managed_host::Owner::WindowsRunnerName("WIN-1".into())),
+            windows_runner_label: "windows-1".into(),
+            desired_spec_path: "infra/production/production.textproto".into(),
+            target: None,
+        };
+        let mut o = FleetNativeObservation {
+            schema_version: 1,
+            host_kind: FleetHostKind::Windows as i32,
+            observed_at_unix: 1000,
+            owner_state: FleetNativeOwnerState::Running as i32,
+            release_proof: FleetNativeReleaseProof::ActivationRecord as i32,
+            observed_release_sha256: vec![0xaa; 32],
+            runtime_ready: true,
+            runtime_ready_proven: true,
+            reason_codes: vec![],
+        };
+        assert_eq!(
+            validate_readback_scope(&host, &o, &"a".repeat(64), 1000).unwrap(),
+            "LOCAL_OBSERVATION_ONLY_NOT_PHYSICAL_ACCEPTANCE"
+        );
+        o.observed_release_sha256 = vec![0xbb; 32];
+        assert_eq!(
+            validate_readback_scope(&host, &o, &"a".repeat(64), 1000).unwrap(),
+            "WINDOWS_RELEASESET_MISMATCH"
+        );
+        o.host_kind = FleetHostKind::Vm as i32;
+        assert_eq!(
+            validate_readback_scope(&host, &o, &"a".repeat(64), 1000).unwrap_err(),
+            "HOST_READBACK_KIND_MISMATCH"
+        );
+        o.host_kind = FleetHostKind::Windows as i32;
+        assert_eq!(
+            validate_readback_scope(&host, &o, &"a".repeat(64), 1400).unwrap_err(),
+            "HOST_READBACK_STALE_OR_FUTURE"
+        );
+        let vm_host = FleetHost {
+            kind: FleetHostKind::Vm as i32,
+            owner: Some(managed_host::Owner::VmMachineId("vm-1".into())),
+            machine_id: "vm-1".into(),
+            windows_runner_label: String::new(),
+            ..host
+        };
+        o.host_kind = FleetHostKind::Vm as i32;
+        o.release_proof = FleetNativeReleaseProof::ApplicationBundle as i32;
+        o.observed_at_unix = 1400;
+        assert_eq!(
+            validate_readback_scope(&vm_host, &o, &"a".repeat(64), 1400).unwrap(),
+            "LOCAL_OBSERVATION_ONLY_NOT_PHYSICAL_ACCEPTANCE"
+        );
+    }
 
     #[test]
     fn fresh_host_apply_and_recover_never_admit_historical_mutation() {
