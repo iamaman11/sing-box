@@ -71,6 +71,28 @@ async function call(body= intent, settings=env, claims={}){
 }
 const empty=await call(intent,{});
 requireTest(empty.status===404,"signer is not closed by default");
+const duplicateDigest=await call(combine(intent,field(7,Buffer.alloc(32,4))));
+requireTest(duplicateDigest.status===400,"duplicate protobuf digest accepted");
+const missingRelease=combine(
+ number(1,1),field(2,TE.encode("vm-test-1")),number(3,2),
+ field(4,TE.encode("sing-box")),field(5,TE.encode("issue1-comment-123")),
+ number(6,2),field(7,Buffer.alloc(32,1)),field(8,Buffer.alloc(32,2)),
+ number(11,now));
+requireTest((await call(missingRelease)).status===400,"missing release digest accepted");
+const zeroDigest=combine(
+ number(1,1),field(2,TE.encode("vm-test-1")),number(3,2),
+ field(4,TE.encode("sing-box")),field(5,TE.encode("issue1-comment-123")),
+ number(6,2),field(7,Buffer.alloc(32)),field(8,Buffer.alloc(32,2)),
+ field(9,Buffer.alloc(32,3)),number(11,now));
+requireTest((await call(zeroDigest)).status===400,"zero registry digest accepted");
+const explicitZeroMode=combine(intent,number(10,0));
+requireTest((await call(explicitZeroMode)).status===400,"noncanonical zero mode accepted");
+const reorderedFields=combine(
+ field(2,TE.encode("vm-test-1")),number(1,1),number(3,2),
+ field(4,TE.encode("sing-box")),field(5,TE.encode("issue1-comment-123")),
+ number(6,2),field(7,Buffer.alloc(32,1)),field(8,Buffer.alloc(32,2)),
+ field(9,Buffer.alloc(32,3)),number(11,now));
+requireTest((await call(reorderedFields)).status===400,"out-of-order protobuf accepted");
 const wrong=await call(combine(intent,Buffer.from([0x50,1])));
 requireTest(wrong.status!==200,"tampered protobuf must not be signed");
 const expired=await call(intent,env,{exp:now-1});

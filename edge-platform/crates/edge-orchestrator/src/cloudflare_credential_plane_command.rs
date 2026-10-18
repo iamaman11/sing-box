@@ -2960,7 +2960,47 @@ function CAT(...xs){const n=xs.reduce((a,b)=>a+b.length,0),b=new Uint8Array(n);l
 function VI(n){let x=BigInt(n),b=[];do{let v=Number(x&127n);x>>=7n;if(x)v|=128;b.push(v)}while(x);return Uint8Array.from(b)}
 function FLD(n,bytes){return CAT(VI((BigInt(n)<<3n)|2n),VI(bytes.length),bytes)}
 function FNUM(n,value){return CAT(VI(BigInt(n)<<3n),VI(value))}
-function INFO(b){let p=0,id=null,m=null,action=null,kind=null,schema=null,when=null,resource=null,d=0;while(p<b.length){const k=V(b,p);if(!k)return null;const f=Number(k[0]>>3n),w=Number(k[0]&7n);p=k[1];if(f<1||f>11)return null;if(w===0){const z=V(b,p);if(!z)return null;p=z[1];if(f===1)schema=Number(z[0]);if(f===3)kind=Number(z[0]);if(f===6)action=Number(z[0]);if(f===11)when=Number(z[0]);if(f===10&&z[0]!==0n)return null}else if(w===2){const z=V(b,p);if(!z||z[0]>BigInt(b.length))return null;p=z[1];const n=Number(z[0]);if(n>b.length-p)return null;if(f===2||f===4||f===5){if(n===0||n>128)return null;let t;try{t=TD.decode(b.slice(p,p+n))}catch{return null}if(f===2)m=t;if(f===4)resource=t;if(f===5)id=t}if(f>=7&&f<=9){if(n!==32)return null;d++}p+=n}else return null}if(schema!==1||kind!==1&&kind!==2||resource!=="sing-box"||d!==3||action!==2&&action!==3||typeof id!=="string"||!/^issue1-comment-[1-9][0-9]{0,19}$/.test(id)||typeof m!=="string"||!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(m)||!Number.isSafeInteger(when))return null;return{id,m,action,when}}
+// Reject duplicate fields, unknown wire types and ambiguous field order.
+// The native prost decoder accepts only its canonical protobuf encoding;
+// the issuer must not sign a different representation of the same request.
+function INFO(b){
+ let p=0,last=0,id=null,m=null,action=null,kind=null,schema=null,when=null,resource=null;
+ const seen=new Set();
+ while(p<b.length){
+  const k=V(b,p);if(!k)return null;
+  const f=Number(k[0]>>3n),w=Number(k[0]&7n);p=k[1];
+  if(f<=last||f>11)return null;last=f;seen.add(f);
+  const numberField=f===1||f===3||f===6||f===10||f===11;
+  if(numberField){
+   if(w!==0)return null;
+   const z=V(b,p);if(!z)return null;p=z[1];
+   if(f===1)schema=Number(z[0]);
+   if(f===3)kind=Number(z[0]);
+   if(f===6)action=Number(z[0]);
+   if(f===10)return null; // zero-valued requested_mode is omitted by prost
+   if(f===11)when=Number(z[0]);
+  }else{
+   if(w!==2)return null;
+   const z=V(b,p);if(!z||z[0]>BigInt(b.length))return null;p=z[1];
+   const n=Number(z[0]);if(n>b.length-p)return null;
+   const value=b.slice(p,p+n);p+=n;
+   if(f===2||f===4||f===5){
+    if(n===0||n>128)return null;
+    let t;try{t=TD.decode(value)}catch{return null}
+    if(f===2)m=t;if(f===4)resource=t;if(f===5)id=t;
+   }else if(f>=7&&f<=9){
+    if(n!==32||!value.some(x=>x!==0))return null;
+   }else return null;
+  }
+ }
+ if([1,2,3,4,5,6,7,8,9,11].some(f=>!seen.has(f)))return null;
+ if(schema!==1||(kind!==1&&kind!==2)||resource!=="sing-box"||
+    (action!==2&&action!==3)||
+    typeof id!=="string"||!/^issue1-comment-[1-9][0-9]{0,19}$/.test(id)||
+    typeof m!=="string"||!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(m)||
+    !Number.isSafeInteger(when)||when<=0)return null;
+ return{id,m,action,when};
+}
 async function GITHUB(info,e,now){const actor=String(e.EDGE_HOST_GITHUB_ACTOR_ID||"");if(!/^[1-9][0-9]{0,19}$/.test(actor)||Math.abs(now-info.when)>300)return false;
 const id=info.id.slice("issue1-comment-".length),api="https://api.github.com/repos/iamaman11/sing-box/issues/comments/"+id;
 try{const res=await fetch(api,{redirect:"error",headers:{"Accept":"application/vnd.github+json","User-Agent":"sing-box-host-authorizer"}});if(!res.ok)return false;const c=await res.json(),stamp=Date.parse(c.created_at)/1000;return !!c&&String(c.user?.id)===actor&&c.issue_url==="https://api.github.com/repos/iamaman11/sing-box/issues/1"&&c.updated_at===c.created_at&&Number.isFinite(stamp)&&stamp>=now-300&&stamp<=now+30&&info.when>=stamp-30&&c.body==="/host "+(info.action===2?"apply":"recover")+" "+info.m}catch{return false}}
