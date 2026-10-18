@@ -24,28 +24,17 @@ GitHub runner — транспорт без привилегий runtime; тек
 
 Line1 — четыре endpoint, Line2 — шесть, WARP egress и Mesh — типизированные ресурсы текущего VM owner; Mesh может быть не принят отдельно.
 
-## Канонический target и отсутствие скрытого запуска
+## Канонический target без скрытого запуска
 
-Единственный `FleetDesiredState` хранит для каждой машины `FleetHostTarget`:
-`run_state=STOPPED|RUNNING`; для Windows дополнительно `windows_mode=PROXY_ONLY|MANAGED_TUN`.
-`target` отсутствует — машина доступна только для наблюдения, **не** запускается
-и не принимается как mutation-ready. Сейчас Windows `sing-box-windows-lab` явно
-`STOPPED/PROXY_ONLY`; отсутствие target у VM означает `OBSERVE_ONLY` до явного
-Git-owned решения, а не автоматический RUNNING.
+`FleetHostTarget` в единственном Git `FleetDesiredState`: `STOPPED|RUNNING`,
+на Windows дополнительно `PROXY_ONLY|MANAGED_TUN`. Отсутствует target —
+только OBSERVE, не разрешение на запуск. Windows сейчас явно
+`STOPPED/PROXY_ONLY`; VM без target — `OBSERVE_ONLY`.
 
-Один host-specific `desired_sha256` вычисляется по типизированному `FleetHost`
-**вместе** с точными байтами его Git spec. Нельзя менять VM shared spec и тем
-самым незаметно управлять Windows; машина, режим и ожидаемый запуск входят в
-криптографически проверяемое desired. Форматы для рендера контейнеров и sing-box
-могут быть JSON, но **не** самостоятельным desired authority.
-Для нового хоста конфигурация отделяется от machine ID и не должна требовать
-нового Rust binary.
-
-Из ChatGPT пользователь выбирает `start/stop` или `ProxyOnly/TUN`; Orchestrator
-сверяет это с каноническим Git desired и передаёт только scoped intent.
-Пока Git desired не изменён и его immutable digest не проверен native owner,
-никакое устное пожелание, состояние Windows SCM или сообщение GitHub runner
-не считается разрешением на переключение.
+Хеш host-specific desired связывает точный `FleetHost` (машина, режим,
+состояние) и Git spec. Rust проверяет его вместе с ReleaseSet. Старт/стоп
+и выбор режима не становятся разрешённой мутацией до изменения
+канонического desired и проверки native owner. JSON — только вывод рендера.
 
 ## Три операции
 
