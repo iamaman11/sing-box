@@ -378,8 +378,8 @@ pub(crate) fn run(
             // Pure typed reconcile: this is NEVER a privileged mutation
             // decision until Worker + native owner independently attest.
             let release_sha = exact_hex_sha256(&release.release().release_set_sha256)?;
-            let bundle_sha = release
-                .release()
+            let verified = verified_release_set_from_resolver(release)?;
+            let bundle_sha = verified
                 .vm_runtime
                 .as_ref()
                 .map(|vm| vm.application_bundle_sha256.as_slice())
@@ -430,6 +430,49 @@ pub(crate) fn run(
             intent_output,
         ),
     }
+}
+
+/// Re-read the exact immutable ReleaseSet downloaded by the existing resolver.
+/// VM compares its application bundle digest only to vm_runtime's bundle
+/// digest, NEVER to the ReleaseSet hash (the hashes represent different bytes).
+fn verified_release_set_bytes(
+    path: &Path,
+    expected_sha256: &str,
+) -> Result<edge_shared_types::ReleaseSet, String> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|_| "HOST_RELEASESET_BYTES_MISSING")?;
+    if !metadata.file_type().is_file() || metadata.len() == 0 || metadata.len() > 131_072 {
+        return Err("HOST_RELEASESET_BYTES_NOT_REGULAR_OR_TOO_LARGE".to_owned());
+    }
+    let mut bytes = Vec::new();
+    File::open(path)
+        .map_err(|_| "HOST_RELEASESET_BYTES_UNREADABLE")?
+        .take(131_073)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "HOST_RELEASESET_BYTES_UNREADABLE")?;
+    if bytes.is_empty() || bytes.len() > 131_072 {
+        return Err("HOST_RELEASESET_BYTES_INVALID".to_owned());
+    }
+    let actual_sha = digest(&SHA256, &bytes);
+    if actual_sha.as_ref() != exact_hex_sha256(expected_sha256)?.as_slice() {
+        return Err("HOST_RELEASESET_DIGEST_MISMATCH".to_owned());
+    }
+    edge_shared_types::ReleaseSet::decode(bytes.as_slice())
+        .map_err(|_| "HOST_RELEASESET_PROTO_INVALID".to_owned())
+}
+
+fn verified_release_set_from_resolver(
+    context: &OrchestrationContext,
+) -> Result<edge_shared_types::ReleaseSet, String> {
+    let context_file = std::env::var_os("EDGE_RELEASE_CONTEXT_PATH")
+        .ok_or("HOST_RELEASE_CONTEXT_PATH_MISSING")?;
+    let directory = Path::new(&context_file)
+        .parent()
+        .ok_or("HOST_RELEASE_CONTEXT_PARENT_MISSING")?;
+    verified_release_set_bytes(
+        &directory.join("release-set.pb"),
+        &context.release().release_set_sha256,
+    )
 }
 
 /// Read-only scope validation. This intentionally never authenticates the
@@ -867,6 +910,30 @@ fn append_credential_peer_outputs(
 mod tests {
     use super::*;
     use edge_shared_types::ManagedHost;
+
+    #[test]
+    fn release_set_bundle_digest_is_verified_by_exact_immutable_bytes() {
+        let mut release = edge_shared_types::ReleaseSet::default();
+        release.schema_version = 7;
+        release.vm_runtime = Some(edge_shared_types::VmRuntime {
+            application_bundle_sha256: vec![4; 32],
+            ..Default::default()
+        });
+        let bytes = release.encode_to_vec();
+        let sha = digest(&SHA256, &bytes).as_ref().iter()
+            .map(|b| format!("{b:02x}")).collect::<String>();
+        let path = std::env::temp_dir().join(format!(
+            "sing-box-vm-release-set-test-{}.pb", std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let parsed = verified_release_set_bytes(&path, &sha).unwrap();
+        assert_eq!(parsed.vm_runtime.unwrap().application_bundle_sha256, vec![4; 32]);
+        assert_eq!(
+            verified_release_set_bytes(&path, &"a".repeat(64)).unwrap_err(),
+            "HOST_RELEASESET_DIGEST_MISMATCH"
+        );
+        std::fs::remove_file(&path).unwrap();
+    }
 
     #[test]
     fn native_readback_never_authorizes_mutation_or_conflates_vm_digest() {
