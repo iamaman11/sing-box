@@ -310,10 +310,11 @@ jobs:
       needs.host.result == 'success' &&
       needs.host.outputs.operation == 'APPLY' &&
       needs.host.outputs.kind == 'VM' &&
+      needs.host.outputs.desired_spec_path == 'infra/production/production.textproto' &&
       needs.host.outputs.admitted_at_unix != ''
     uses: ./.github/workflows/vm-application-lifecycle.yml
     with:
-      command_body: ${{ needs.host.outputs.desired_spec_path == 'infra/production/production.textproto' && '/production converge' || format('/vm converge {0}', needs.host.outputs.desired_spec_path) }}
+      command_body: '/production converge'
       host_admitted_at_unix: ${{ needs.host.outputs.admitted_at_unix }}
     secrets: inherit
 
