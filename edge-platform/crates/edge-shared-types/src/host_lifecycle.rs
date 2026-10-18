@@ -14,6 +14,105 @@ use prost::Message;
 pub const MAX_HOST_INTENT_BYTES: usize = 8192;
 pub const MAX_HOST_RESULT_BYTES: usize = 8192;
 
+pub const MAX_NATIVE_OBSERVATION_BYTES: usize = 4096;
+
+/// Returns a local typed readback, not a signed mutation receipt. Kind and
+/// release digest semantics are fixed: Windows activation records are NOT
+/// interchangeable with VM application bundle digests.
+pub fn build_native_observation(
+    kind: crate::FleetHostKind,
+    state: crate::FleetNativeOwnerState,
+    proof: crate::FleetNativeReleaseProof,
+    release_digest_hex: Option<&str>,
+    runtime_ready: Option<bool>,
+    observed_at_unix: u64,
+    reason_codes: &[&str],
+) -> Result<crate::FleetNativeObservation, &'static str> {
+    use crate::{FleetNativeObservation, FleetNativeReleaseProof, FleetHostKind};
+    let mut release = Vec::new();
+    if let Some(value) = release_digest_hex {
+        if value.len() != 64 || !value.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) {
+            return Err("HOST_OBSERVATION_RELEASE_DIGEST_INVALID");
+        }
+        for chunk in value.as_bytes().chunks_exact(2) {
+            let high = (chunk[0] as char).to_digit(16).ok_or("HOST_OBSERVATION_DIGEST_INVALID")?;
+            let low = (chunk[1] as char).to_digit(16).ok_or("HOST_OBSERVATION_DIGEST_INVALID")?;
+            release.push(((high << 4) | low) as u8);
+        }
+    }
+    let expected = match kind {
+        FleetHostKind::Windows => FleetNativeReleaseProof::ActivationRecord,
+        FleetHostKind::Vm => FleetNativeReleaseProof::ApplicationBundle,
+        FleetHostKind::Unspecified => return Err("HOST_OBSERVATION_KIND_INVALID"),
+    };
+    if proof != FleetNativeReleaseProof::Unproven && proof != expected {
+        return Err("HOST_OBSERVATION_PROOF_KIND_MISMATCH");
+    }
+    if release.is_empty() != (proof == FleetNativeReleaseProof::Unproven) {
+        return Err("HOST_OBSERVATION_RELEASE_PROOF_INCOMPLETE");
+    }
+    let observation = FleetNativeObservation {
+        schema_version: 1,
+        host_kind: kind as i32,
+        observed_at_unix,
+        owner_state: state as i32,
+        release_proof: proof as i32,
+        observed_release_sha256: release,
+        runtime_ready: runtime_ready.unwrap_or(false),
+        runtime_ready_proven: runtime_ready.is_some(),
+        reason_codes: reason_codes.iter().map(|s| (*s).to_owned()).collect(),
+    };
+    validate_native_observation(&observation)?;
+    Ok(observation)
+}
+
+pub fn validate_native_observation(
+    observed: &crate::FleetNativeObservation,
+) -> Result<(), &'static str> {
+    use crate::{FleetHostKind, FleetNativeOwnerState, FleetNativeReleaseProof};
+    let kind = FleetHostKind::try_from(observed.host_kind)
+        .map_err(|_| "HOST_OBSERVATION_KIND_INVALID")?;
+    let state = FleetNativeOwnerState::try_from(observed.owner_state)
+        .map_err(|_| "HOST_OBSERVATION_STATE_INVALID")?;
+    let proof = FleetNativeReleaseProof::try_from(observed.release_proof)
+        .map_err(|_| "HOST_OBSERVATION_PROOF_INVALID")?;
+    if observed.schema_version != 1 || observed.observed_at_unix == 0
+        || kind == FleetHostKind::Unspecified
+        || matches!(state, FleetNativeOwnerState::Unspecified)
+        || matches!(proof, FleetNativeReleaseProof::Unspecified)
+        || (kind == FleetHostKind::Windows && proof == FleetNativeReleaseProof::ApplicationBundle)
+        || (kind == FleetHostKind::Vm && proof == FleetNativeReleaseProof::ActivationRecord)
+        || (observed.observed_release_sha256.is_empty() !=
+            (proof == FleetNativeReleaseProof::Unproven))
+        || (!observed.observed_release_sha256.is_empty() &&
+            observed.observed_release_sha256.len() != 32)
+        || (observed.runtime_ready && !observed.runtime_ready_proven)
+        || observed.reason_codes.len() > 12
+        || observed.reason_codes.iter().any(|code| {
+            code.is_empty() || code.len() > 96 ||
+            !code.bytes().all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == b'_')
+        })
+        || observed.encode_to_vec().len() > MAX_NATIVE_OBSERVATION_BYTES
+    {
+        return Err("HOST_OBSERVATION_EVIDENCE_INVALID");
+    }
+    Ok(())
+}
+
+pub fn decode_native_observation(bytes: &[u8]) -> Result<crate::FleetNativeObservation, &'static str> {
+    if bytes.is_empty() || bytes.len() > MAX_NATIVE_OBSERVATION_BYTES {
+        return Err("HOST_OBSERVATION_SIZE_INVALID");
+    }
+    let observed = crate::FleetNativeObservation::decode(bytes)
+        .map_err(|_| "HOST_OBSERVATION_PROTO_INVALID")?;
+    if observed.encode_to_vec() != bytes {
+        return Err("HOST_OBSERVATION_NONCANONICAL");
+    }
+    validate_native_observation(&observed)?;
+    Ok(observed)
+}
+
+
 /// One host-specific desired digest binds the protobuf machine/run-state/mode
 /// and the exact protected Git spec bytes. A shared VM spec alone can never
 /// act as desired identity for a Windows host or override STOPPED.
