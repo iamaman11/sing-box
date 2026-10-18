@@ -325,9 +325,7 @@ where
         result.state = FleetHostResultState::Observed as i32;
         result.observed_at_unix = before.observed_at_unix;
         result.next_action = "NONE".to_owned();
-        store_native_terminal_and_unlock_once(
-            intent, &result, "observed", protected_journal_dir,
-        )?;
+        store_native_terminal_and_unlock_once(intent, &result, "observed", protected_journal_dir)?;
         return Ok(result);
     }
     if !matches!(
@@ -941,10 +939,13 @@ mod tests {
         assert_eq!(noop.state, FleetHostResultState::Observed as i32);
         assert!(!noop.physical_readback);
         assert_eq!(count.get(), 1);
-        assert!(dir.join(format!(
-            "{}.observed.pb",
-            journal_hex(intent.operation_id.as_bytes())
-        )).exists());
+        assert!(
+            dir.join(format!(
+                "{}.observed.pb",
+                journal_hex(intent.operation_id.as_bytes())
+            ))
+            .exists()
+        );
         assert!(!native_scope_pending_path(&dir, &intent).exists());
         assert_eq!(
             execute_after_protected_owner_check_once(
