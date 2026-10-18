@@ -485,8 +485,14 @@ pub(crate) fn dispatch(
         } => {
             let history = fs::read_to_string(journal_history_path)
                 .map_err(|_| "existing join GitHub history unavailable")?;
-            let status = inspect_journal(&history, revision, release)?;
+            // Historical read-only recovery must classify the ORIGINAL
+            // durable BEGIN against its own immutable typed identity. The
+            // executing release can be newer. Do NOT reuse this classification
+            // to authorize a write; mutation plans still require exact
+            // revision/ReleaseSet-bound native receipts.
+            let status = host_admission_status(history.as_bytes())?;
             println!("existing_join_journal_state={status}");
+            println!("existing_join_historical_release_proof=UNPROVEN_READ_ONLY");
             println!("credential_mutation_allowed=false");
             println!("credential_mutation_replayed=false");
             Ok(())
@@ -679,6 +685,26 @@ mod tests {
         let initial: Vec<serde_json::Value> = serde_json::from_str(&history_begin(spec)).unwrap();
         serde_json::json!([initial[0], {"body":exact}]).to_string()
     }
+    #[test]
+    fn historical_readonly_inspection_uses_only_exact_original_begin_identity() {
+        let g = good();
+        let history = history_begin(&g);
+        assert_eq!(
+            host_admission_status(history.as_bytes()).unwrap(),
+            "BEGIN_DURABLE_NO_AUTOMATIC_REPLAY"
+        );
+        // A recent runtime release must not rewrite the original proof:
+        // mutation-time plan() continues to demand exact original values.
+        assert!(inspect_journal(&history, &"f".repeat(40), &"d".repeat(64)).is_err());
+        assert!(plan(&g, &history, &"f".repeat(40), &"d".repeat(64)).is_err());
+        let duplicate = serde_json::json!([
+            {"body": plan_begin(&source_begin(&g), "[]", &g.accepted_revision, &g.release_set_sha256).unwrap()},
+            {"body": plan_begin(&source_begin(&g), "[]", &g.accepted_revision, &g.release_set_sha256).unwrap()}
+        ])
+        .to_string();
+        assert!(host_admission_status(duplicate.as_bytes()).is_err());
+    }
+
     #[test]
     fn original_begin_is_durable_before_staged_windows_b_and_commit() {
         let g = good();
