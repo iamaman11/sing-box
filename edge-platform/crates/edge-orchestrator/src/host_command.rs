@@ -400,7 +400,9 @@ fn host_lifecycle_admission(
         return Err("HOST_DESIRED_SPEC_INVALID_FILE".to_owned());
     }
     let spec_bytes = std::fs::read(spec_path).map_err(|_| "HOST_DESIRED_SPEC_UNREADABLE")?;
-    let desired_sha = digest(&SHA256, &spec_bytes).as_ref().to_vec();
+    let desired_sha = edge_shared_types::host_lifecycle::digest_host_desired(
+        selected, &spec_bytes
+    ).map_err(str::to_owned)?;
     let release_sha = exact_hex_sha256(expected_release_set_sha256)?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
