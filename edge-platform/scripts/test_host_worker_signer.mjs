@@ -49,6 +49,8 @@ const env={
  EDGE_HOST_ACCESS_AUD:aud,
 };
 const expectedCertUrl=issuer+"/cdn-cgi/access/certs";
+let publishedRelease=true;
+const testReleaseTag="edge-release-"+Buffer.alloc(32,3).toString("hex");
 globalThis.fetch=async u=>{
   if(String(u)===expectedCertUrl) return Response.json({keys:[jwk]});
   if(String(u)==="https://api.github.com/repos/iamaman11/sing-box/issues/comments/123")
@@ -59,6 +61,11 @@ globalThis.fetch=async u=>{
       updated_at:new Date((now-2)*1000).toISOString(),
       body:"/host apply vm-test-1",
     });
+  if(String(u)==="https://api.github.com/repos/iamaman11/sing-box/releases/tags/"+testReleaseTag)
+    return publishedRelease
+      ? Response.json({tag_name:testReleaseTag,draft:false,prerelease:false,
+          target_commitish:"a".repeat(40)})
+      : new Response(null,{status:404});
   throw Error("unexpected external lookup "+String(u));
 };
 const mod=await import(pathToFileURL(process.argv[2]).href);
@@ -99,6 +106,9 @@ const expired=await call(intent,env,{exp:now-1});
 requireTest(expired.status===403,"expired Cloudflare Access JWT accepted");
 const wrongAud=await call(intent,env,{aud:["different-access-app"]});
 requireTest(wrongAud.status===403,"wrong Access audience accepted");
+publishedRelease=false;
+requireTest((await call()).status===403,"unpublished ReleaseSet was authorized");
+publishedRelease=true;
 const response=await call();
 requireTest(response.status===200,"valid exact signed request rejected: "+response.status);
 const raw=Buffer.from(await response.arrayBuffer());

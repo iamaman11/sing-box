@@ -2964,7 +2964,7 @@ function FNUM(n,value){return CAT(VI(BigInt(n)<<3n),VI(value))}
 // The native prost decoder accepts only its canonical protobuf encoding;
 // the issuer must not sign a different representation of the same request.
 function INFO(b){
- let p=0,last=0,id=null,m=null,action=null,kind=null,schema=null,when=null,resource=null;
+ let p=0,last=0,id=null,m=null,action=null,kind=null,schema=null,when=null,resource=null,release=null;
  const seen=new Set();
  while(p<b.length){
   const k=V(b,p);if(!k)return null;
@@ -2990,6 +2990,7 @@ function INFO(b){
     if(f===2)m=t;if(f===4)resource=t;if(f===5)id=t;
    }else if(f>=7&&f<=9){
     if(n!==32||!value.some(x=>x!==0))return null;
+    if(f===9)release=Array.from(value,x=>x.toString(16).padStart(2,"0")).join("");
    }else return null;
   }
  }
@@ -2999,11 +3000,33 @@ function INFO(b){
     typeof id!=="string"||!/^issue1-comment-[1-9][0-9]{0,19}$/.test(id)||
     typeof m!=="string"||!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(m)||
     !Number.isSafeInteger(when)||when<=0)return null;
- return{id,m,action,when};
+ return{id,m,action,when,release};
 }
-async function GITHUB(info,e,now){const actor=String(e.EDGE_HOST_GITHUB_ACTOR_ID||"");if(!/^[1-9][0-9]{0,19}$/.test(actor)||Math.abs(now-info.when)>300)return false;
-const id=info.id.slice("issue1-comment-".length),api="https://api.github.com/repos/iamaman11/sing-box/issues/comments/"+id;
-try{const res=await fetch(api,{redirect:"error",headers:{"Accept":"application/vnd.github+json","User-Agent":"sing-box-host-authorizer"}});if(!res.ok)return false;const c=await res.json(),stamp=Date.parse(c.created_at)/1000;return !!c&&String(c.user?.id)===actor&&c.issue_url==="https://api.github.com/repos/iamaman11/sing-box/issues/1"&&c.updated_at===c.created_at&&Number.isFinite(stamp)&&stamp>=now-300&&stamp<=now+30&&info.when>=stamp-30&&c.body==="/host "+(info.action===2?"apply":"recover")+" "+info.m}catch{return false}}
+async function GITHUB(info,e,now){
+ const actor=String(e.EDGE_HOST_GITHUB_ACTOR_ID||"");
+ if(!/^[1-9][0-9]{0,19}$/.test(actor)||Math.abs(now-info.when)>300||
+    !/^[0-9a-f]{64}$/.test(info.release))return false;
+ const id=info.id.slice("issue1-comment-".length);
+ const base="https://api.github.com/repos/iamaman11/sing-box";
+ const headers={"Accept":"application/vnd.github+json","User-Agent":"sing-box-host-authorizer"};
+ try{
+  const comment=await fetch(base+"/issues/comments/"+id,{redirect:"error",headers});
+  if(!comment.ok)return false;
+  const c=await comment.json(),stamp=Date.parse(c.created_at)/1000;
+  if(!c||String(c.user?.id)!==actor||c.issue_url!==base+"/issues/1"||
+     c.updated_at!==c.created_at||!Number.isFinite(stamp)||
+     stamp<now-300||stamp>now+30||info.when<stamp-30||
+     c.body!=="/host "+(info.action===2?"apply":"recover")+" "+info.m)return false;
+  // GitHub's published immutable ReleaseSet is distinct from a PR candidate.
+  // This is a second check of release existence, NOT native desired admission.
+  const tag="edge-release-"+info.release;
+  const release=await fetch(base+"/releases/tags/"+tag,{redirect:"error",headers});
+  if(!release.ok)return false;
+  const value=await release.json();
+  return value.tag_name===tag&&value.draft===false&&
+    value.prerelease===false&&/^[0-9a-f]{40}$/.test(value.target_commitish);
+ }catch{return false}
+}
 async function ACCESS(q,e){const iss=e.EDGE_HOST_ACCESS_ISSUER,aud=e.EDGE_HOST_ACCESS_AUD,t=q.headers.get("Cf-Access-Jwt-Assertion");if(typeof iss!=="string"||!/^https:\/\/[a-z0-9-]+\.cloudflareaccess\.com$/.test(iss)||typeof aud!=="string"||aud.length<8||aud.length>256||!t||t.length>8192)return false;
 const parts=t.split(".");if(parts.length!==3)return false;let h,c;try{h=JSON.parse(TD.decode(B64(parts[0])));c=JSON.parse(TD.decode(B64(parts[1])))}catch{return false}
 const now=Math.floor(Date.now()/1000);if(!h||h.alg!=="RS256"||typeof h.kid!=="string"||!c||c.iss!==iss||!Array.isArray(c.aud)||!c.aud.includes(aud)||!Number.isInteger(c.exp)||c.exp<=now||!Number.isInteger(c.nbf)||c.nbf>now+60)return false;
