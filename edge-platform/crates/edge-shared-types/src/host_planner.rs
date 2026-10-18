@@ -243,6 +243,20 @@ mod tests {
         assert_eq!(candidate.step, FleetHostPlannedStep::Install as i32);
         assert_eq!(candidate.reason_code, "VERIFIED_ABSENT_INSTALL_PROPOSAL_ONLY");
         assert!(!candidate.owner_attested && !candidate.mutation_authorized);
+        // A tampered observation cannot turn an existing/running installation
+        // or an invented digest into VERIFIED_ABSENT.
+        let mut running = absent.clone();
+        running.owner_state = FleetNativeOwnerState::Running as i32;
+        assert_eq!(
+            propose_host_transition(&vm, Some(&running), &[1; 32], &[2; 32], 1000).step,
+            FleetHostPlannedStep::Blocked as i32,
+        );
+        let mut forged_digest = absent.clone();
+        forged_digest.observed_release_sha256 = vec![1; 32];
+        assert_eq!(
+            propose_host_transition(&vm, Some(&forged_digest), &[1; 32], &[2; 32], 1000).step,
+            FleetHostPlannedStep::Blocked as i32,
+        );
 
         let unproven = build_native_observation(
             FleetHostKind::Vm,

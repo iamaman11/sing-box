@@ -186,7 +186,11 @@ async fn run_local_host_observe(stack_dir: &Path) -> Result<(), String> {
     // container with no marker is an UNKNOWN state, not a fresh installation.
     let proof = if digest.is_some() {
         FleetNativeReleaseProof::ApplicationBundle
-    } else if owner_state == FleetNativeOwnerState::Stopped {
+    } else if owner_state == FleetNativeOwnerState::Stopped
+        && !state.compose_file_present
+        && state.missing_containers.is_empty()
+        && state.containers.is_empty()
+    {
         FleetNativeReleaseProof::VerifiedAbsent
     } else {
         FleetNativeReleaseProof::Unproven
