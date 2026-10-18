@@ -122,6 +122,16 @@ pub fn validate_host_result(
     }
     let state =
         FleetHostResultState::try_from(result.state).map_err(|_| "HOST_RESULT_STATE_INVALID")?;
+    // Public protobuf data is NOT an authenticated physical result.
+    // A privileged native owner can create its own journal record, but
+    // external observers may never promote caller-supplied AUTHORIZED/VERIFIED
+    // just by flipping a boolean or timestamp in FleetHostResult.
+    if matches!(
+        state,
+        FleetHostResultState::Authorized | FleetHostResultState::Verified
+    ) {
+        return Err("HOST_NATIVE_RECEIPT_ATTESTATION_REQUIRED");
+    }
     if state == FleetHostResultState::Unspecified
         || (state == FleetHostResultState::Verified
             && (!result.physical_readback
@@ -306,7 +316,17 @@ mod tests {
         result.physical_readback = true;
         result.observed_at_unix = 100;
         result.error_class.clear();
-        assert!(validate_host_result(&result, &intent).is_ok());
+        // A bool and timestamp are not independently authenticated proof.
+        assert_eq!(
+            validate_host_result(&result, &intent).unwrap_err(),
+            "HOST_NATIVE_RECEIPT_ATTESTATION_REQUIRED"
+        );
+        result.state = FleetHostResultState::Authorized as i32;
+        result.physical_readback = false;
+        assert_eq!(
+            validate_host_result(&result, &intent).unwrap_err(),
+            "HOST_NATIVE_RECEIPT_ATTESTATION_REQUIRED"
+        );
         result.operation_id.push('x');
         assert!(validate_host_result(&result, &intent).is_err());
     }
