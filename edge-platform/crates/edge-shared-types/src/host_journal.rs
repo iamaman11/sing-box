@@ -22,7 +22,7 @@ use std::path::Path;
 /// runner is not enough: execution also requires a kernel-verified protected
 /// local journal root. On Windows the stronger ACL/SYSTEM gate must be added
 /// before this admission can be enabled; fail closed until that is accepted.
-pub fn admit_native_host_once(
+fn admit_native_host_once(
     intent: &FleetHostIntent,
     authorization: &FleetHostAuthorization,
     registry: &HostRegistry,
@@ -287,6 +287,16 @@ where
         return Err("HOST_NATIVE_EXECUTION_ACTION_NOT_ALLOWED");
     }
 
+    // Every operation_id is single use, including when the machine has
+    // already converged. Otherwise a previously executed signed comment
+    // could be reinterpreted as a fresh OBSERVED/NOOP after a lost ACK.
+    let prior_operation = protected_journal_dir
+        .join(format!("{}.pb", journal_hex(intent.operation_id.as_bytes())));
+    match fs::symlink_metadata(prior_operation) {
+        Ok(_) => return Err("HOST_OPERATION_EXISTS_OR_JOURNAL_UNAVAILABLE"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("HOST_OPERATION_JOURNAL_UNAVAILABLE"),
+    }
     // An unresolved BEGIN overrides even a seemingly healthy NOOP. Do not
     // allow another comment to hide a lost ACK/crash behind newer readback.
     match fs::symlink_metadata(native_scope_pending_path(protected_journal_dir, intent)) {
@@ -384,7 +394,7 @@ fn native_scope_pending_path(root: &Path, intent: &FleetHostIntent) -> std::path
 /// stale or inconsistent physical poststate leaves the original scope locked
 /// as UNKNOWN_NO_REPLAY. The native owner supplies a live, local readback;
 /// a copied runner artifact is not acceptable evidence for this function.
-pub fn finish_native_host_once<F>(
+fn finish_native_host_once<F>(
     intent: &FleetHostIntent,
     registry: &HostRegistry,
     native_machine_id: &str,
@@ -860,6 +870,18 @@ mod tests {
         assert_eq!(outcome.state, FleetHostResultState::Verified as i32);
         assert!(outcome.physical_readback);
         assert!(!native_scope_pending_path(&dir, &intent).exists());
+        // Even if the next fresh readback would say NOOP, an already used
+        // operation ID cannot be reused to conceal an executed mutation.
+        assert_eq!(
+            execute_after_protected_owner_check_once(
+                &intent, &auth, &registry_pb, spec, &release_pb,
+                pair.public_key().as_ref(), "vm-exact", FleetHostKind::Vm as i32,
+                1020, &dir, observe, |_step| {
+                    panic!("completed signed operation must not dispatch again");
+                }
+            ).unwrap_err(),
+            "HOST_OPERATION_EXISTS_OR_JOURNAL_UNAVAILABLE"
+        );
 
         // A different operation against already-converged state is NOOP;
         // no mutation or fabricated VERIFIED receipt is allowed.
