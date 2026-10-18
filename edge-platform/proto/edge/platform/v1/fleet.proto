@@ -92,8 +92,10 @@ message FleetHostIntent {
   string resource_id = 4;
   string operation_id = 5;
   FleetHostAction action = 6;
-  // SHA-256 over the exact checked-out fleet registry and host-specific spec.
+  // SHA-256 of the exact checked-out Git fleet registry protobuf.
   bytes registry_sha256 = 7;
+  // Domain-separated SHA-256 over typed FleetHost (including target)
+  // plus exact protected-Git spec bytes, not the shared spec alone.
   bytes desired_sha256 = 8;
   // SHA-256 of the exact immutable ReleaseSet accepted by the owner.
   bytes release_set_sha256 = 9;
