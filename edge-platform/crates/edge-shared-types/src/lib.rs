@@ -122,6 +122,25 @@ pub fn validate_host_registry(desired: &HostRegistry) -> Result<(), String> {
         if !allowed || spec.contains("..") {
             return Err("host desired spec reference invalid for this kind".to_owned());
         }
+        // The protected Git registry has ONE run-state authority per machine.
+        // Missing target is observe-only, not permission to infer RUNNING from
+        // a shared production spec, installed service, or a GitHub issue.
+        if let Some(target) = &host.target {
+            let run_state = FleetHostRunState::try_from(target.run_state)
+                .map_err(|_| "HOST_TARGET_RUN_STATE_INVALID")?;
+            let mode = FleetHostMode::try_from(target.windows_mode)
+                .map_err(|_| "HOST_TARGET_MODE_INVALID")?;
+            if run_state == FleetHostRunState::Unspecified {
+                return Err("HOST_TARGET_RUN_STATE_REQUIRED".to_owned());
+            }
+            if (kind == ManagedHostKind::Windows
+                && mode == FleetHostMode::Unspecified)
+                || (kind == ManagedHostKind::Vm
+                    && mode != FleetHostMode::Unspecified)
+            {
+                return Err("HOST_TARGET_MODE_KIND_MISMATCH".to_owned());
+            }
+        }
         match kind {
             ManagedHostKind::Windows => {
                 if !host_token(&host.windows_runner_label, 128)
@@ -3048,6 +3067,28 @@ mod release_set_tests {
         assert!(validate_host_registry(&invalid).is_err());
         invalid = expected.clone();
         invalid.hosts[1].desired_spec_path.clear();
+        assert!(validate_host_registry(&invalid).is_err());
+        // Operator must explicitly set the single desired run state and,
+        // only on Windows, the desired ProxyOnly/TUN mode.
+        invalid = expected.clone();
+        invalid.hosts[2].target = Some(FleetHostTarget {
+            run_state: FleetHostRunState::Stopped as i32,
+            windows_mode: FleetHostMode::ProxyOnly as i32,
+        });
+        assert!(validate_host_registry(&invalid).is_ok());
+        invalid.hosts[2].target.as_mut().unwrap().run_state =
+            FleetHostRunState::Unspecified as i32;
+        assert!(validate_host_registry(&invalid).is_err());
+        invalid = expected.clone();
+        invalid.hosts[1].target = Some(FleetHostTarget {
+            run_state: FleetHostRunState::Running as i32,
+            windows_mode: FleetHostMode::ManagedTun as i32,
+        });
+        assert!(validate_host_registry(&invalid).is_err());
+        invalid.hosts[1].target.as_mut().unwrap().windows_mode =
+            FleetHostMode::Unspecified as i32;
+        assert!(validate_host_registry(&invalid).is_ok());
+        invalid.hosts[1].target.as_mut().unwrap().run_state = 999;
         assert!(validate_host_registry(&invalid).is_err());
         let mut conflicting = bytes.clone();
         conflicting.extend_from_slice(&[0x08, 0x02]); // conflicting schema_version
