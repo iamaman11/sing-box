@@ -336,6 +336,22 @@ def verify_credential_observation_lane(source: str) -> None:
         and "test \"$GITHUB_RUN_ATTEMPT\" = 1" in source,
         "native BEGIN must be sourced from protected Windows/VM proof and read-only recover never replay",
     )
+    # Historical inspection executes the CURRENT accepted Rust owner with
+    # the exact immutable GitHub original BEGIN as DATA, never substitutes an
+    # old revision into a new executable's mutation authority.
+    historical = source.split("  existing_join_recover_readonly:\n", 1)[1]
+    require(
+        'export ACCEPTED_REVISION="$GITHUB_SHA"' in historical
+        and 'test "$EDGE_ACCEPTED_REVISION" = "$GITHUB_SHA"' in historical
+        and 'test "$EDGE_RELEASE_SET_SHA256" = "$EXPECTED_RELEASE"' in historical
+        and 'export ACCEPTED_REVISION="$begin_revision"' not in historical
+        and 'export EXPECTED_RELEASE_TAG="edge-release-$begin_release"' not in historical
+        and 'existing_join_historical_release_proof=UNPROVEN_READ_ONLY' in historical
+        and 'credentials existing-join-journal-inspect "$history"' in historical
+        and "recovery=SAFE_BLOCKED_READ_ONLY" in historical,
+        "historical A/B observation must not turn an old release into current write authority",
+    )
+
     # Post-COMMIT Windows B retains A as PREVIOUS. Read-only recovery must
     # observe that state, but a NEW BEGIN must reject any previous pointer
     # or any durable preparation/commit receipt. Do not conflate recovery and
