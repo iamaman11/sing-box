@@ -54,7 +54,8 @@ jobs:
             throw 'HOST_WINDOWS_NATIVE_OWNER_MISSING'
           }
           if ($env:COMMAND_BODY -like '* --deep' -or
-              $env:COMMAND_BODY -like '/host recover *') {
+              $env:COMMAND_BODY -like '/host recover *' -or
+              $env:COMMAND_BODY -like '/host apply *') {
             & $doctor doctor $current
             if ($LASTEXITCODE -ne 0) { throw 'HOST_WINDOWS_NATIVE_DEEP_FAILED' }
           } else {
@@ -89,7 +90,8 @@ jobs:
             exit 1
           fi
           test ! -r /var/run/docker.sock
-          if [[ "${COMMAND_BODY}" == *" --deep" || "${COMMAND_BODY}" == "/host recover "* ]]; then
+          if [[ "${COMMAND_BODY}" == *" --deep" || "${COMMAND_BODY}" == "/host recover "* ||
+                "${COMMAND_BODY}" == "/host apply "* ]]; then
             sudo -n "${owner}" local diagnose
           else
             # Old installed sudoers may not yet grant --fast. Native deep
