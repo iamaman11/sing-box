@@ -161,6 +161,59 @@ pub fn digest_host_desired(
         .to_vec())
 }
 
+/// ReleaseSet v7 hashes the transported ApplyBundleRequest protobuf; the
+/// VM release marker stores a different, logical domain-separated digest.
+/// Derive the physical expected digest ONLY from the verified exact bundle.
+pub fn native_vm_bundle_runtime_digest(
+    release: &crate::ReleaseSet,
+    vm_bundle_pb: &[u8],
+) -> Result<Vec<u8>, &'static str> {
+    if release.schema_version != 7
+        || vm_bundle_pb.is_empty()
+        || vm_bundle_pb.len() > 8 * 1024 * 1024
+    {
+        return Err("HOST_NATIVE_VM_BUNDLE_ARTIFACT_INVALID");
+    }
+    let published = &release
+        .vm_runtime
+        .as_ref()
+        .ok_or("HOST_NATIVE_VM_RUNTIME_UNAVAILABLE")?
+        .application_bundle_sha256;
+    if !sha(published)
+        || ring::digest::digest(&ring::digest::SHA256, vm_bundle_pb).as_ref() != published.as_slice()
+    {
+        return Err("HOST_NATIVE_VM_BUNDLE_TRANSPORT_MISMATCH");
+    }
+    let request = crate::ApplyBundleRequest::decode(vm_bundle_pb)
+        .map_err(|_| "HOST_NATIVE_VM_BUNDLE_PROTO_INVALID")?;
+    if request.encode_to_vec() != vm_bundle_pb
+        || !request.prune_existing
+        || !request.host_files.is_empty()
+        || request.deployment_summary.is_some()
+        || request.agent_env_file.is_some()
+    {
+        return Err("HOST_NATIVE_VM_BUNDLE_NONCANONICAL");
+    }
+    let logical = request.bundle_digest
+        .as_deref()
+        .ok_or("HOST_NATIVE_VM_BUNDLE_LOGICAL_DIGEST_MISSING")?;
+    let computed = crate::canonical_apply_bundle_digest(&request)
+        .map_err(|_| "HOST_NATIVE_VM_BUNDLE_LOGICAL_DIGEST_INVALID")?;
+    if logical != computed || logical.len() != 64 {
+        return Err("HOST_NATIVE_VM_BUNDLE_LOGICAL_DIGEST_MISMATCH");
+    }
+    let mut decoded = Vec::with_capacity(32);
+    for pair in logical.as_bytes().chunks_exact(2) {
+        let h = (pair[0] as char).to_digit(16).ok_or("HOST_NATIVE_VM_BUNDLE_HEX_INVALID")?;
+        let l = (pair[1] as char).to_digit(16).ok_or("HOST_NATIVE_VM_BUNDLE_HEX_INVALID")?;
+        decoded.push(((h << 4) | l) as u8);
+    }
+    if !sha(&decoded) {
+        return Err("HOST_NATIVE_VM_BUNDLE_LOGICAL_DIGEST_INVALID");
+    }
+    Ok(decoded)
+}
+
 /// Exact artifact digests computed from the supplied Git registry, host
 /// desired bytes, and immutable ReleaseSet. This is structural integrity,
 /// NOT Git provenance: only an existing privileged owner may supply these
@@ -179,6 +232,7 @@ pub fn bind_native_host_artifacts(
     registry_pb: &[u8],
     exact_spec_bytes: &[u8],
     release_set_pb: &[u8],
+    vm_bundle_pb: Option<&[u8]>,
 ) -> Result<(HostRegistry, BoundNativeHostArtifacts), &'static str> {
     fn digest_bytes(bytes: &[u8]) -> Vec<u8> {
         ring::digest::digest(&ring::digest::SHA256, bytes)
@@ -210,14 +264,20 @@ pub fn bind_native_host_artifacts(
     {
         return Err("HOST_NATIVE_RELEASE_SCHEMA_INVALID");
     }
+    if release.encode_to_vec() != release_set_pb {
+        return Err("HOST_NATIVE_RELEASE_NONCANONICAL");
+    }
     let runtime_release_sha256 = match FleetHostKind::try_from(intent.kind) {
-        Ok(FleetHostKind::Windows) => digest_bytes(release_set_pb),
-        Ok(FleetHostKind::Vm) => release
-            .vm_runtime
-            .as_ref()
-            .ok_or("HOST_NATIVE_VM_RUNTIME_UNAVAILABLE")?
-            .application_bundle_sha256
-            .clone(),
+        Ok(FleetHostKind::Windows) => {
+            if vm_bundle_pb.is_some() {
+                return Err("HOST_NATIVE_WINDOWS_VM_ARTIFACT_FORBIDDEN");
+            }
+            digest_bytes(release_set_pb)
+        }
+        Ok(FleetHostKind::Vm) => native_vm_bundle_runtime_digest(
+            &release,
+            vm_bundle_pb.ok_or("HOST_NATIVE_VM_BUNDLE_REQUIRED")?,
+        )?,
         _ => return Err("HOST_NATIVE_OWNER_KIND_INVALID"),
     };
     if !sha(&runtime_release_sha256) {
