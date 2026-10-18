@@ -53,10 +53,14 @@ pub fn build_native_observation(
         FleetHostKind::Vm => FleetNativeReleaseProof::ApplicationBundle,
         FleetHostKind::Unspecified => return Err("HOST_OBSERVATION_KIND_INVALID"),
     };
-    if proof != FleetNativeReleaseProof::Unproven && proof != expected {
+    if !matches!(proof, FleetNativeReleaseProof::Unproven | FleetNativeReleaseProof::VerifiedAbsent)
+        && proof != expected
+    {
         return Err("HOST_OBSERVATION_PROOF_KIND_MISMATCH");
     }
-    if release.is_empty() != (proof == FleetNativeReleaseProof::Unproven) {
+    if release.is_empty()
+        != matches!(proof, FleetNativeReleaseProof::Unproven | FleetNativeReleaseProof::VerifiedAbsent)
+    {
         return Err("HOST_OBSERVATION_RELEASE_PROOF_INCOMPLETE");
     }
     let observation = FleetNativeObservation {
@@ -92,7 +96,9 @@ pub fn validate_native_observation(
         || (kind == FleetHostKind::Windows && proof == FleetNativeReleaseProof::ApplicationBundle)
         || (kind == FleetHostKind::Vm && proof == FleetNativeReleaseProof::ActivationRecord)
         || (observed.observed_release_sha256.is_empty()
-            != (proof == FleetNativeReleaseProof::Unproven))
+            != matches!(proof, FleetNativeReleaseProof::Unproven | FleetNativeReleaseProof::VerifiedAbsent))
+        || (proof == FleetNativeReleaseProof::VerifiedAbsent
+            && (state != FleetNativeOwnerState::Stopped || observed.runtime_ready))
         || (!observed.observed_release_sha256.is_empty()
             && observed.observed_release_sha256.len() != 32)
         || (observed.runtime_ready && !observed.runtime_ready_proven)

@@ -172,11 +172,6 @@ async fn run_local_host_observe(stack_dir: &Path) -> Result<(), String> {
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(_) => return Err("VM_HOST_RELEASE_UNREADABLE".to_owned()),
     }
-    let proof = if digest.is_some() {
-        FleetNativeReleaseProof::ApplicationBundle
-    } else {
-        FleetNativeReleaseProof::Unproven
-    };
     // A running container is NOT evidence of end-to-end TLS/auth or public
     // egress. Report actual local Docker/Agent readiness only.
     let owner_state = if !state.docker_reachable {
@@ -186,8 +181,18 @@ async fn run_local_host_observe(stack_dir: &Path) -> Result<(), String> {
     } else {
         FleetNativeOwnerState::Running
     };
+    // Absence must be observed independently: Docker was inspected and no
+    // owned application containers or release marker exist. A running
+    // container with no marker is an UNKNOWN state, not a fresh installation.
+    let proof = if digest.is_some() {
+        FleetNativeReleaseProof::ApplicationBundle
+    } else if owner_state == FleetNativeOwnerState::Stopped {
+        FleetNativeReleaseProof::VerifiedAbsent
+    } else {
+        FleetNativeReleaseProof::Unproven
+    };
     let mut reasons = Vec::new();
-    if digest.is_none() {
+    if digest.is_none() && proof != FleetNativeReleaseProof::VerifiedAbsent {
         reasons.push("VM_BUNDLE_NOT_OBSERVED");
     }
     if !state.docker_reachable {

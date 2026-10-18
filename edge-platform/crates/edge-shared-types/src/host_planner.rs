@@ -38,7 +38,7 @@ pub fn propose_host_transition(
     expected_vm_bundle_sha256: &[u8],
     now_unix: u64,
 ) -> FleetHostTransitionPlan {
-    use FleetHostPlannedStep::{Blocked, Noop, ReplaceRelease, Start, Stop};
+    use FleetHostPlannedStep::{Blocked, Install, Noop, ReplaceRelease, Start, Stop};
     let kind = match FleetHostKind::try_from(host.kind) {
         Ok(FleetHostKind::Windows) => FleetHostKind::Windows,
         Ok(FleetHostKind::Vm) => FleetHostKind::Vm,
@@ -112,6 +112,16 @@ pub fn propose_host_transition(
         return plan(host, Blocked, "NATIVE_STATE_UNPROVEN", expected, actual);
     }
     let proof = FleetNativeReleaseProof::try_from(observed.release_proof);
+    // Fresh install is a different, typed state from a missing/unreadable
+    // readback. This remains a proposal; no signed intent or root authority
+    // can be inferred from an untrusted observation file.
+    if proof == Ok(FleetNativeReleaseProof::VerifiedAbsent) {
+        return if state == FleetNativeOwnerState::Stopped {
+            plan(host, Install, "VERIFIED_ABSENT_INSTALL_PROPOSAL_ONLY", expected, &[])
+        } else {
+            plan(host, Blocked, "ABSENCE_OWNER_STATE_CONFLICT", expected, &[])
+        };
+    }
     let expected_proof = if kind == FleetHostKind::Windows {
         FleetNativeReleaseProof::ActivationRecord
     } else {
@@ -212,6 +222,42 @@ mod tests {
             reason_codes: vec![],
         }
     }
+    #[test]
+    fn proven_absent_vm_proposes_fresh_install_but_never_authorizes_it() {
+        use crate::host_lifecycle::build_native_observation;
+        let vm = host(
+            FleetHostKind::Vm,
+            FleetHostMode::Unspecified,
+            FleetHostRunState::Running,
+        );
+        let absent = build_native_observation(
+            FleetHostKind::Vm,
+            FleetNativeOwnerState::Stopped,
+            FleetNativeReleaseProof::VerifiedAbsent,
+            None,
+            Some(false),
+            1000,
+            &[],
+        ).unwrap();
+        let candidate = propose_host_transition(&vm, Some(&absent), &[1; 32], &[2; 32], 1000);
+        assert_eq!(candidate.step, FleetHostPlannedStep::Install as i32);
+        assert_eq!(candidate.reason_code, "VERIFIED_ABSENT_INSTALL_PROPOSAL_ONLY");
+        assert!(!candidate.owner_attested && !candidate.mutation_authorized);
+
+        let unproven = build_native_observation(
+            FleetHostKind::Vm,
+            FleetNativeOwnerState::Stopped,
+            FleetNativeReleaseProof::Unproven,
+            None,
+            Some(false),
+            1000,
+            &["VM_BUNDLE_NOT_OBSERVED"],
+        ).unwrap();
+        let blocked = propose_host_transition(&vm, Some(&unproven), &[1; 32], &[2; 32], 1000);
+        assert_eq!(blocked.step, FleetHostPlannedStep::Blocked as i32);
+        assert_ne!(blocked.reason_code, "VERIFIED_ABSENT_INSTALL_PROPOSAL_ONLY");
+    }
+
     #[test]
     fn native_stopped_without_runtime_probe_is_noop_not_blocked() {
         use crate::host_lifecycle::build_native_observation;

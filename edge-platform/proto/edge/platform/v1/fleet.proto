@@ -150,6 +150,9 @@ enum FleetNativeReleaseProof {
   FLEET_NATIVE_RELEASE_PROOF_UNPROVEN = 1;
   FLEET_NATIVE_RELEASE_PROOF_ACTIVATION_RECORD = 2;
   FLEET_NATIVE_RELEASE_PROOF_APPLICATION_BUNDLE = 3;
+  // Native owner verified that the application release marker is absent,
+  // not merely unreadable. Only a STOPPED owner can report this.
+  FLEET_NATIVE_RELEASE_PROOF_VERIFIED_ABSENT = 4;
 }
 
 message FleetNativeObservation {
@@ -178,6 +181,7 @@ enum FleetHostPlannedStep {
   FLEET_HOST_PLANNED_STEP_START = 3;
   FLEET_HOST_PLANNED_STEP_STOP = 4;
   FLEET_HOST_PLANNED_STEP_REPLACE_RELEASE = 5;
+  FLEET_HOST_PLANNED_STEP_INSTALL = 6;
 }
 
 message FleetHostTransitionPlan {
