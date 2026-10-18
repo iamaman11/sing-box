@@ -6,8 +6,8 @@
 //! issue a VERIFIED receipt. No compatibility with legacy A/B dispatcher.
 
 use crate::{
-    FleetHostAction, FleetHostAuthorization, FleetHostIntent, FleetHostKind, FleetHostMode, FleetHostResult,
-    FleetHostResultState, HostRegistry, managed_host,
+    FleetHostAction, FleetHostAuthorization, FleetHostIntent, FleetHostKind, FleetHostMode,
+    FleetHostResult, FleetHostResultState, HostRegistry, managed_host,
 };
 use prost::Message;
 
@@ -192,12 +192,9 @@ pub fn verify_host_authorization(
         return Err("HOST_AUTHORIZATION_EXPIRED_OR_FUTURE");
     }
     let signed = host_authorization_payload(intent, authorization);
-    ring::signature::UnparsedPublicKey::new(
-        &ring::signature::ED25519,
-        trusted_ed25519_public_key,
-    )
-    .verify(&signed, &authorization.ed25519_signature)
-    .map_err(|_| "HOST_AUTHORIZATION_SIGNATURE_INVALID")
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, trusted_ed25519_public_key)
+        .verify(&signed, &authorization.ed25519_signature)
+        .map_err(|_| "HOST_AUTHORIZATION_SIGNATURE_INVALID")
 }
 
 /// Identical domain-separated byte sequence must be signed by the existing
@@ -320,9 +317,9 @@ mod tests {
         use ring::signature::{Ed25519KeyPair, KeyPair};
         let (_, intent, _, _, _) = fixture();
         let rng = SystemRandom::new();
-        let pair = Ed25519KeyPair::from_pkcs8(
-            Ed25519KeyPair::generate_pkcs8(&rng).unwrap().as_ref()
-        ).unwrap();
+        let pair =
+            Ed25519KeyPair::from_pkcs8(Ed25519KeyPair::generate_pkcs8(&rng).unwrap().as_ref())
+                .unwrap();
         let mut auth = FleetHostAuthorization {
             schema_version: 1,
             key_id: "worker-v1".to_owned(),
@@ -331,17 +328,27 @@ mod tests {
             expires_at_unix: 1_180,
             ed25519_signature: Vec::new(),
         };
-        assert!(verify_host_authorization(&intent, &auth, pair.public_key().as_ref(), 1_060).is_err());
-        auth.ed25519_signature = pair.sign(&host_authorization_payload(&intent, &auth))
-            .as_ref().to_vec();
+        assert!(
+            verify_host_authorization(&intent, &auth, pair.public_key().as_ref(), 1_060).is_err()
+        );
+        auth.ed25519_signature = pair
+            .sign(&host_authorization_payload(&intent, &auth))
+            .as_ref()
+            .to_vec();
         verify_host_authorization(&intent, &auth, pair.public_key().as_ref(), 1_060).unwrap();
         let mut forged = intent.clone();
         forged.machine_id = "other-host".to_owned();
-        assert!(verify_host_authorization(&forged, &auth, pair.public_key().as_ref(), 1_060).is_err());
+        assert!(
+            verify_host_authorization(&forged, &auth, pair.public_key().as_ref(), 1_060).is_err()
+        );
         assert!(verify_host_authorization(&intent, &auth, &[7u8; 32], 1_060).is_err());
-        assert!(verify_host_authorization(&intent, &auth, pair.public_key().as_ref(), 9_999).is_err());
+        assert!(
+            verify_host_authorization(&intent, &auth, pair.public_key().as_ref(), 9_999).is_err()
+        );
         auth.operation_id = "other-operation".to_owned();
-        assert!(verify_host_authorization(&intent, &auth, pair.public_key().as_ref(), 1_060).is_err());
+        assert!(
+            verify_host_authorization(&intent, &auth, pair.public_key().as_ref(), 1_060).is_err()
+        );
     }
 
     #[test]
