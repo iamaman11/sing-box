@@ -61,6 +61,34 @@ Rust-приёмник наблюдения; публичные команды о
 readback receipt. CI и типизированное предложение не дают права на мутацию.
 Windows остаётся STOPPED/PROXY_ONLY, отдельная TUN приёмка обязательна.
 
+## Один централизованный Host signer (кандидат PR #403)
+
+Единственный подписант HostIntent добавлен в **существующий VM credential
+Worker** (`POST /v1/host/authorize`), Windows Worker подписи не выпускает.
+Выпуск отключён при отсутствии Worker-owned Ed25519 PKCS8/ключа, Cloudflare
+Access issuer/audience и GitHub operator ID. Worker криптографически
+проверяет Access JWT (RS256), читает только канонический GitHub Issue #1,
+сверяет ID автора, неизменённую и свежую команду `/host apply|recover
+machine-id`, дату запроса и выдаёт detached protobuf разрешение на 120 с.
+**Нет ручного утверждения SHA в Cloudflare при каждой операции** и нет
+секретов подписи в GitHub/Windows/VM. Runtime verifier сверяет весь
+подписанный байтовый HostIntent и его release/desired digests.
+
+Оба прежних A/B credential slots сохранены. Только VM Worker может
+дополнительно иметь ровно пять защищённых Host-параметров — остальные
+bindings отклоняются. Existing `edge-secrets` использует тот же
+Cloudflare Access identity и Worker TLS transport, новый POST никогда не
+повторяется после неизвестного результата. Positive/negative WebCrypto
+контракт проверяется офлайн в CI против точного Rust payload.
+
+**Статус этой функции:** написан исходный код и тесты; Worker-контракт
+не развернут с signer secrets. Оставшиеся обязательные условия реальных
+mutations: trusted pinned Worker public key на native owner; физически
+доказанная SYSTEM/root identity, root/ACL journal admission, подключение
+существующих Windows Controller и VM Agent к применению выбранного
+ресурса, аутентифицированный native receipt и physical poststate.
+Подпись Worker не даёт runner прямой sudo/Docker/SCM authority.
+
 ## Текущие ограничения (не считать закрытыми)
 
 **Граница привилегий VM:** в ранее установленном sudoers для `github-runner` присутствовал прямой допуск к `bundle-converge`, rollback, bootstrap и credential mutation. PR #403 закрывает этот доступ в *исходном установщике* и добавляет read-only наблюдение `host_runner_direct_mutation_authority` на фактически установленном runner. Это не доказывает, что старый sudoers уже исправлен на VM. Любые VM writes через этот старый допуск запрещены; коррекция установленной политики требует штатного доверенного native-owner handoff и физического readback, без replay исторической A/B. В PR #403 native подписанное admission и журнал находятся в разработке, Worker signing и исполнение пока не подключены.
