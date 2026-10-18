@@ -1046,7 +1046,8 @@ mod tests {
         o.release_proof = FleetNativeReleaseProof::ApplicationBundle as i32;
         o.observed_at_unix = 1400;
         assert_eq!(
-            validate_readback_scope(&vm_host, &o, &"a".repeat(64), Some(&[0xbb; 32]), 1400).unwrap(),
+            validate_readback_scope(&vm_host, &o, &"a".repeat(64), Some(&[0xbb; 32]), 1400)
+                .unwrap(),
             "LOCAL_OBSERVATION_ONLY_NOT_PHYSICAL_ACCEPTANCE"
         );
         assert_eq!(
