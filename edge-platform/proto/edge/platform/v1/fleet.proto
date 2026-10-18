@@ -33,6 +33,22 @@ message FleetHost {
 
   // Canonical Git-owned desired-state reference, not duplicated configuration.
   string desired_spec_path = 6;
+
+  // One durable Git-owned request. Absence means OBSERVE ONLY, never RUNNING.
+  // Config renderers may not infer a host run state from a shared VM spec.
+  FleetHostTarget target = 7;
+}
+
+enum FleetHostRunState {
+  FLEET_HOST_RUN_STATE_UNSPECIFIED = 0;
+  FLEET_HOST_RUN_STATE_STOPPED = 1;
+  FLEET_HOST_RUN_STATE_RUNNING = 2;
+}
+
+message FleetHostTarget {
+  FleetHostRunState run_state = 1;
+  // Windows only. VM uses UNSPECIFIED, never a Windows TUN mode.
+  FleetHostMode windows_mode = 2;
 }
 
 
