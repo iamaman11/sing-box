@@ -120,6 +120,10 @@ fn run() -> Result<(), String> {
     {
         println!("{line}");
     }
+    // Inspect the one existing typed SYSTEM exchange result, read-only.
+    // Do not replay the request, inspect secret-bearing result.detail, infer
+    // that this belongs to a past failed client invocation, or call a task.
+    print!("{}", observe_privileged_exchange_metadata(install_root));
 
     #[cfg(windows)]
     let controller_pid = observe_windows_service(&expected_controller)?;
@@ -133,6 +137,72 @@ fn run() -> Result<(), String> {
     observe_windows_network(&state_path, datapath_mode)?;
 
     Ok(())
+}
+
+/// Expose only typed, bounded, secret-free metadata from the existing SYSTEM
+/// result.pb. This is NOT proof of which client command failed. A missing
+/// marker is EVIDENCE_NOT_RECORDED, never a reconstructed error explanation.
+fn observe_privileged_exchange_metadata(install_root: &Path) -> String {
+    const MAX_RESULT_BYTES: u64 = 8192;
+    let path = install_root.join("exchange").join("results").join("result.pb");
+    let unknown = |reason: &str| {
+        format!(
+            "privileged_exchange_state={reason}\nprivileged_exchange_error_class=UNPROVEN\nprivileged_exchange_operation=UNPROVEN\n"
+        )
+    };
+    let metadata = match std::fs::symlink_metadata(&path) {
+        Ok(value) => value,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return unknown("EVIDENCE_NOT_RECORDED");
+        }
+        Err(_) => return unknown("RESULT_METADATA_UNAVAILABLE"),
+    };
+    if !metadata.file_type().is_file() {
+        return unknown("RESULT_NOT_REGULAR_FILE");
+    }
+    if metadata.len() > MAX_RESULT_BYTES {
+        return unknown("RESULT_OVERSIZE");
+    }
+    let mut bytes = Vec::new();
+    let read = std::fs::File::open(&path).and_then(|file| {
+        file.take(MAX_RESULT_BYTES + 1).read_to_end(&mut bytes)
+    });
+    if read.is_err() {
+        return unknown("RESULT_UNREADABLE");
+    }
+    if bytes.len() as u64 > MAX_RESULT_BYTES {
+        return unknown("RESULT_OVERSIZE");
+    }
+    let result = match edge_shared_types::decode_windows_privileged_result(&bytes) {
+        Ok(value) => value,
+        Err(_) => return unknown("RESULT_INVALID_PROTOBUF"),
+    };
+    // Strictly output code and ID tokens. detail may contain credentials,
+    // URLs or raw errors and is NEVER printed from the diagnostic boundary.
+    let safe_token = |input: &str, max: usize| {
+        !input.is_empty()
+            && input.len() <= max
+            && input
+                .bytes()
+                .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+    };
+    if !safe_token(&result.request_id, 96) || !safe_token(&result.code, 96) {
+        return unknown("RESULT_INVALID_IDENTITY");
+    }
+    let recorded_at = metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|t| t.as_secs().to_string())
+        .unwrap_or_else(|| "UNPROVEN".to_owned());
+    format!(
+        "privileged_exchange_state=RESULT_RECORDED_UNCORRELATED\nprivileged_exchange_request_id={}\nprivileged_exchange_result_code={}\nprivileged_exchange_result_success={}\nprivileged_exchange_recorded_at_unix={}\nprivileged_exchange_operation=UNPROVEN\nprivileged_exchange_error_class={}\nprivileged_exchange_detail=REDACTED\n",
+        result.request_id,
+        result.code,
+        result.success,
+        recorded_at,
+        if result.success { "NONE" } else { &result.code }
+    )
 }
 
 /// Bounded read-only Fleet snapshot. It never starts a service, accesses private
@@ -1085,6 +1155,39 @@ mod tests {
     fn observes_current_process_by_exact_executable_path() {
         let current = std::env::current_exe().unwrap();
         assert!(process_running_at(&current));
+    }
+
+    #[test]
+    fn read_only_privileged_exchange_never_discloses_detail_or_invents_a_failure() {
+        let root = std::env::temp_dir().join(format!(
+            "sing-box-diagnostic-evidence-{}", std::process::id()
+        ));
+        let directory = root.join("exchange").join("results");
+        std::fs::create_dir_all(&directory).unwrap();
+        let missing = observe_privileged_exchange_metadata(&root);
+        assert!(missing.contains("privileged_exchange_state=EVIDENCE_NOT_RECORDED"));
+        assert!(missing.contains("privileged_exchange_error_class=UNPROVEN"));
+        let result = edge_shared_types::WindowsPrivilegedResult {
+            schema_version: 1,
+            request_id: "12345-77".to_owned(),
+            success: false,
+            code: "PRIVILEGED_OPERATION_FAILED".to_owned(),
+            detail: "secret=NEVER_PRINT_THIS url=https://secret.invalid".to_owned(),
+            active_release_set_sha256: None,
+        };
+        let encoded = edge_shared_types::encode_windows_privileged_result(&result).unwrap();
+        std::fs::write(directory.join("result.pb"), encoded).unwrap();
+        let observed = observe_privileged_exchange_metadata(&root);
+        assert!(observed.contains("privileged_exchange_state=RESULT_RECORDED_UNCORRELATED"));
+        assert!(observed.contains("privileged_exchange_request_id=12345-77"));
+        assert!(observed.contains("privileged_exchange_error_class=PRIVILEGED_OPERATION_FAILED"));
+        assert!(observed.contains("privileged_exchange_operation=UNPROVEN"));
+        assert!(!observed.contains("NEVER_PRINT_THIS"));
+        assert!(!observed.contains("secret.invalid"));
+        std::fs::write(directory.join("result.pb"), b"not protobuf").unwrap();
+        assert!(observe_privileged_exchange_metadata(&root)
+            .contains("privileged_exchange_state=RESULT_INVALID_PROTOBUF"));
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[cfg(windows)]
