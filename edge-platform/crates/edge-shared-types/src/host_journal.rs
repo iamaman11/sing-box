@@ -210,11 +210,12 @@ fn admit_after_protected_owner_check_once(
 pub fn execute_native_host_once<Observe, Apply>(
     intent: &FleetHostIntent,
     authorization: &FleetHostAuthorization,
-    registry: &HostRegistry,
-    expected_registry_sha256: &[u8],
-    expected_desired_sha256: &[u8],
-    expected_release_set_sha256: &[u8],
-    expected_vm_bundle_sha256: &[u8],
+    // Inputs MUST originate from the native owner's independently
+    // authenticated canonical Git revision and published immutable release,
+    // never from runner-supplied arbitrary files.
+    registry_pb: &[u8],
+    selected_spec_bytes: &[u8],
+    release_set_pb: &[u8],
     pinned_worker_public_key: &[u8],
     native_machine_id: &str,
     native_owner_kind: i32,
@@ -227,7 +228,9 @@ where
     Observe: FnMut() -> Result<crate::FleetNativeObservation, &'static str>,
     Apply: FnOnce(crate::FleetHostPlannedStep) -> Result<(), &'static str>,
 {
-    use crate::host_lifecycle::{validate_intent_against_target, validate_native_observation};
+    use crate::host_lifecycle::{
+        bind_native_host_artifacts, validate_intent_against_target, validate_native_observation,
+    };
     use crate::host_planner::propose_host_transition;
     use crate::{FleetHostAction, FleetHostPlannedStep, FleetHostResultState};
 
@@ -236,14 +239,9 @@ where
     if intent.machine_id != native_machine_id || intent.kind != native_owner_kind {
         return Err("HOST_LOCAL_OWNER_IDENTITY_MISMATCH");
     }
-    validate_host_intent(
-        intent,
-        registry,
-        expected_registry_sha256,
-        expected_desired_sha256,
-        expected_release_set_sha256,
-    )?;
-    validate_intent_against_target(intent, registry)?;
+    let (registry, bound) =
+        bind_native_host_artifacts(intent, registry_pb, selected_spec_bytes, release_set_pb)?;
+    validate_intent_against_target(intent, &registry)?;
     verify_host_authorization(intent, authorization, pinned_worker_public_key, now_unix)?;
     if !matches!(
         FleetHostAction::try_from(intent.action),
@@ -265,8 +263,8 @@ where
     let plan = propose_host_transition(
         selected,
         Some(&before),
-        expected_release_set_sha256,
-        expected_vm_bundle_sha256,
+        &bound.release_set_sha256,
+        &bound.runtime_release_sha256,
         now_unix,
     );
     let step =
@@ -296,10 +294,10 @@ where
     admit_native_host_once(
         intent,
         authorization,
-        registry,
-        expected_registry_sha256,
-        expected_desired_sha256,
-        expected_release_set_sha256,
+        &registry,
+        &bound.registry_sha256,
+        &bound.desired_sha256,
+        &bound.release_set_sha256,
         pinned_worker_public_key,
         native_machine_id,
         native_owner_kind,
@@ -309,17 +307,12 @@ where
     // From this point ANY failure is an uncertain operation. The durable
     // resource gate must remain; no replay, no unapproved compensation.
     apply_once(step)?;
-    let expected_runtime_digest = if native_owner_kind == crate::FleetHostKind::Windows as i32 {
-        expected_release_set_sha256
-    } else {
-        expected_vm_bundle_sha256
-    };
     finish_native_host_once(
         intent,
-        registry,
+        &registry,
         native_machine_id,
         native_owner_kind,
-        expected_runtime_digest,
+        &bound.runtime_release_sha256,
         now_unix,
         protected_journal_dir,
         observe,
