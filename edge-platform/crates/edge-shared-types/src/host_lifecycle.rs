@@ -14,6 +14,26 @@ use prost::Message;
 pub const MAX_HOST_INTENT_BYTES: usize = 8192;
 pub const MAX_HOST_RESULT_BYTES: usize = 8192;
 
+/// One host-specific desired digest binds the protobuf machine/run-state/mode
+/// and the exact protected Git spec bytes. A shared VM spec alone can never
+/// act as desired identity for a Windows host or override STOPPED.
+pub fn digest_host_desired(
+    host: &crate::FleetHost,
+    spec_bytes: &[u8],
+) -> Result<Vec<u8>, &'static str> {
+    if spec_bytes.is_empty() || spec_bytes.len() > 1_048_576 {
+        return Err("HOST_DESIRED_SPEC_SIZE_INVALID");
+    }
+    let host_bytes = host.encode_to_vec();
+    let mut payload = b"sing-box/host-desired/v1:".to_vec();
+    payload.extend_from_slice(&(host_bytes.len() as u32).to_be_bytes());
+    payload.extend_from_slice(&host_bytes);
+    payload.extend_from_slice(&(spec_bytes.len() as u32).to_be_bytes());
+    payload.extend_from_slice(spec_bytes);
+    Ok(ring::digest::digest(&ring::digest::SHA256, &payload)
+        .as_ref().to_vec())
+}
+
 fn token(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
@@ -310,6 +330,25 @@ mod tests {
             requested_at_unix: 1,
         };
         (registry, intent, registry_sha, desired, release)
+    }
+
+    #[test]
+    fn desired_digest_changes_for_machine_mode_and_spec() {
+        use crate::{FleetHostRunState, FleetHostTarget};
+        let (registry, _, _, _, _) = fixture();
+        let original = digest_host_desired(&registry.hosts[0], b"spec-v1").unwrap();
+        let mut changed = registry.hosts[0].clone();
+        changed.target = Some(FleetHostTarget {
+            run_state: FleetHostRunState::Stopped as i32,
+            windows_mode: FleetHostMode::ProxyOnly as i32,
+        });
+        assert_ne!(original, digest_host_desired(&changed, b"spec-v1").unwrap());
+        assert_ne!(original, digest_host_desired(&registry.hosts[0], b"spec-v2").unwrap());
+        changed.machine_id = "another-windows".to_owned();
+        assert_ne!(
+            digest_host_desired(&registry.hosts[0], b"spec-v1").unwrap(),
+            digest_host_desired(&changed, b"spec-v1").unwrap()
+        );
     }
 
     #[test]
