@@ -4,8 +4,8 @@ use edge_shared_types::{
     canonical_production_desired_state, decode_windows_activation_state,
     verify_windows_activation_files,
 };
-use std::io::{Read, Write};
 use prost::Message;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -66,7 +66,8 @@ fn run() -> Result<(), String> {
             return Err(usage());
         }
         let bytes = build_host_observation(&state_path)?;
-        std::io::stdout().write_all(&bytes)
+        std::io::stdout()
+            .write_all(&bytes)
             .map_err(|_| "HOST_OBSERVATION_STDOUT_UNAVAILABLE".to_owned())?;
         return Ok(());
     }
@@ -290,15 +291,14 @@ fn observe_pending_privileged_request_metadata(install_root: &Path) -> String {
 /// a privileged service operation and can never issue a VERIFIED receipt.
 fn build_host_observation(state_path: &Path) -> Result<Vec<u8>, String> {
     use edge_shared_types::host_lifecycle::build_native_observation;
-    use edge_shared_types::{
-        FleetHostKind, FleetNativeOwnerState, FleetNativeReleaseProof,
-    };
+    use edge_shared_types::{FleetHostKind, FleetNativeOwnerState, FleetNativeReleaseProof};
     let mut digest = None;
     let mut reason_codes: Vec<&str> = Vec::new();
     match std::fs::File::open(state_path) {
         Ok(file) => {
             let mut bytes = Vec::new();
-            file.take(4097).read_to_end(&mut bytes)
+            file.take(4097)
+                .read_to_end(&mut bytes)
                 .map_err(|_| "WINDOWS_HOST_ACTIVATION_UNREADABLE".to_owned())?;
             if bytes.is_empty() || bytes.len() > 4096 {
                 return Err("WINDOWS_HOST_ACTIVATION_SIZE_INVALID".to_owned());
@@ -315,20 +315,22 @@ fn build_host_observation(state_path: &Path) -> Result<Vec<u8>, String> {
     #[cfg(windows)]
     let owner_state = {
         (|| -> Result<FleetNativeOwnerState, &'static str> {
-            let manager = ServiceManager::local_computer(
-                None::<&str>, ServiceManagerAccess::CONNECT
-            ).map_err(|_| "WINDOWS_SCM_UNAVAILABLE")?;
-            let service = manager.open_service(
-                WINDOWS_CONTROLLER_SERVICE_NAME, ServiceAccess::QUERY_STATUS
-            ).map_err(|_| "WINDOWS_SCM_UNAVAILABLE")?;
-            let status = service.query_status()
+            let manager =
+                ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+                    .map_err(|_| "WINDOWS_SCM_UNAVAILABLE")?;
+            let service = manager
+                .open_service(WINDOWS_CONTROLLER_SERVICE_NAME, ServiceAccess::QUERY_STATUS)
+                .map_err(|_| "WINDOWS_SCM_UNAVAILABLE")?;
+            let status = service
+                .query_status()
                 .map_err(|_| "WINDOWS_SCM_UNAVAILABLE")?;
             match status.current_state {
                 ServiceState::Stopped => Ok(FleetNativeOwnerState::Stopped),
                 ServiceState::Running => Ok(FleetNativeOwnerState::Running),
                 _ => Ok(FleetNativeOwnerState::Transitioning),
             }
-        })().unwrap_or_else(|error| {
+        })()
+        .unwrap_or_else(|error| {
             reason_codes.push(error);
             FleetNativeOwnerState::Unproven
         })
@@ -358,7 +360,8 @@ fn build_host_observation(state_path: &Path) -> Result<Vec<u8>, String> {
         None,
         observed_at,
         &reason_codes,
-    ).map_err(str::to_owned)?;
+    )
+    .map_err(str::to_owned)?;
     Ok(observed.encode_to_vec())
 }
 
@@ -1309,18 +1312,27 @@ mod tests {
     #[test]
     fn host_observation_never_claims_runtime_readiness_or_verified() {
         let path = std::env::temp_dir().join(format!(
-            "sing-box-missing-activation-{}.pb", std::process::id()
+            "sing-box-missing-activation-{}.pb",
+            std::process::id()
         ));
         let _ = std::fs::remove_file(&path);
         let bytes = build_host_observation(&path).unwrap();
-        let observed = edge_shared_types::host_lifecycle::decode_native_observation(&bytes)
-            .unwrap();
+        let observed =
+            edge_shared_types::host_lifecycle::decode_native_observation(&bytes).unwrap();
         assert_eq!(observed.schema_version, 1);
-        assert_eq!(observed.host_kind, edge_shared_types::FleetHostKind::Windows as i32);
+        assert_eq!(
+            observed.host_kind,
+            edge_shared_types::FleetHostKind::Windows as i32
+        );
         assert!(!observed.runtime_ready_proven);
         assert!(!observed.runtime_ready);
         assert!(observed.observed_release_sha256.is_empty());
-        assert!(observed.reason_codes.iter().any(|x| x == "WINDOWS_ACTIVATION_UNAVAILABLE"));
+        assert!(
+            observed
+                .reason_codes
+                .iter()
+                .any(|x| x == "WINDOWS_ACTIVATION_UNAVAILABLE")
+        );
     }
 
     #[test]
