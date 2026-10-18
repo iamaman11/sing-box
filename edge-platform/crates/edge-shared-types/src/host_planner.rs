@@ -117,7 +117,13 @@ pub fn propose_host_transition(
     // can be inferred from an untrusted observation file.
     if proof == Ok(FleetNativeReleaseProof::VerifiedAbsent) {
         return if state == FleetNativeOwnerState::Stopped {
-            plan(host, Install, "VERIFIED_ABSENT_INSTALL_PROPOSAL_ONLY", expected, &[])
+            plan(
+                host,
+                Install,
+                "VERIFIED_ABSENT_INSTALL_PROPOSAL_ONLY",
+                expected,
+                &[],
+            )
         } else {
             plan(host, Blocked, "ABSENCE_OWNER_STATE_CONFLICT", expected, &[])
         };
@@ -238,10 +244,14 @@ mod tests {
             Some(false),
             1000,
             &[],
-        ).unwrap();
+        )
+        .unwrap();
         let candidate = propose_host_transition(&vm, Some(&absent), &[1; 32], &[2; 32], 1000);
         assert_eq!(candidate.step, FleetHostPlannedStep::Install as i32);
-        assert_eq!(candidate.reason_code, "VERIFIED_ABSENT_INSTALL_PROPOSAL_ONLY");
+        assert_eq!(
+            candidate.reason_code,
+            "VERIFIED_ABSENT_INSTALL_PROPOSAL_ONLY"
+        );
         assert!(!candidate.owner_attested && !candidate.mutation_authorized);
         // A tampered observation cannot turn an existing/running installation
         // or an invented digest into VERIFIED_ABSENT.
@@ -266,7 +276,8 @@ mod tests {
             Some(false),
             1000,
             &["VM_BUNDLE_NOT_OBSERVED"],
-        ).unwrap();
+        )
+        .unwrap();
         let blocked = propose_host_transition(&vm, Some(&unproven), &[1; 32], &[2; 32], 1000);
         assert_eq!(blocked.step, FleetHostPlannedStep::Blocked as i32);
         assert_ne!(blocked.reason_code, "VERIFIED_ABSENT_INSTALL_PROPOSAL_ONLY");
