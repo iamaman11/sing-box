@@ -11,7 +11,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_INVENTORY_BYTES: u64 = 65_536;
 const MAX_RUNNER_BYTES: u64 = 1_048_576;
-const MAX_JOURNAL_BYTES: u64 = 16 * 1024 * 1024;
 
 #[derive(Deserialize)]
 struct RunnerApiPage {
@@ -153,7 +152,6 @@ pub(crate) fn run(
     expected_sha256: &str,
     github_output: Option<&Path>,
     runner_inventory_json: Option<&Path>,
-    journal_history_json: Option<&Path>,
 ) -> Result<(), String> {
     let mut bytes = Vec::new();
     File::open(inventory_path)
@@ -321,7 +319,6 @@ pub(crate) fn run(
             &desired,
             &machine_id,
             HostLifecycleOperation::Apply,
-            journal_history_json,
             runner_inventory_json,
             github_output,
         ),
@@ -329,7 +326,6 @@ pub(crate) fn run(
             &desired,
             &machine_id,
             HostLifecycleOperation::Recover,
-            journal_history_json,
             runner_inventory_json,
             github_output,
         ),
@@ -342,183 +338,64 @@ enum HostLifecycleOperation {
     Recover,
 }
 
-fn read_host_journal(path: Option<&Path>) -> Result<Vec<u8>, String> {
-    let path = path.ok_or("HOST_JOURNAL_REQUIRED")?;
-    let metadata =
-        std::fs::symlink_metadata(path).map_err(|_| "HOST_JOURNAL_UNAVAILABLE".to_owned())?;
-    if !metadata.file_type().is_file() || metadata.len() > MAX_JOURNAL_BYTES {
-        return Err("HOST_JOURNAL_INVALID_FILE".to_owned());
-    }
-    let mut data = Vec::new();
-    File::open(path)
-        .map_err(|_| "HOST_JOURNAL_UNAVAILABLE".to_owned())?
-        .take(MAX_JOURNAL_BYTES + 1)
-        .read_to_end(&mut data)
-        .map_err(|_| "HOST_JOURNAL_UNREADABLE".to_owned())?;
-    if data.len() as u64 > MAX_JOURNAL_BYTES {
-        return Err("HOST_JOURNAL_TOO_LARGE".to_owned());
-    }
-    Ok(data)
-}
-
+/// A new typed Host action must never depend on old A/B journals.
+/// No native installer contract has yet passed physical acceptance, so an
+/// APPLY or RECOVER produces ONE read-only native owner preflight, not a
+/// historical installer invocation or a fabricated mutation receipt.
 fn host_lifecycle_admission(
     desired: &HostRegistry,
     machine_id: &str,
     operation: HostLifecycleOperation,
-    journal_path: Option<&Path>,
     runner_json: Option<&Path>,
     output: Option<&Path>,
 ) -> Result<(), String> {
-    let selected = desired
-        .hosts
-        .iter()
+    let selected = desired.hosts.iter()
         .find(|host| host.machine_id == machine_id)
         .ok_or("HOST_NOT_REGISTERED")?;
-    let kind =
-        ManagedHostKind::try_from(selected.kind).map_err(|_| "HOST_KIND_INVALID".to_owned())?;
+    let kind = ManagedHostKind::try_from(selected.kind)
+        .map_err(|_| "HOST_KIND_INVALID".to_owned())?;
     let owner = match (kind, selected.owner.as_ref()) {
         (ManagedHostKind::Windows, Some(managed_host::Owner::WindowsRunnerName(name))) => name,
         (ManagedHostKind::Vm, Some(managed_host::Owner::VmMachineId(name))) => name,
         _ => return Err("HOST_OWNER_MISMATCH".to_owned()),
     };
-    let journal = read_host_journal(journal_path)?;
-    // Credential and Host must agree on the EXACT historical immutable
-    // BEGIN/COMMIT_INTENT. Neither can infer a successful physical commit
-    // from a GitHub comment; uncertain results always require native readback.
-    let journal_state = crate::credential_existing_join::host_admission_status(&journal)?;
-    let unresolved = journal_state != "NO_BEGIN_NO_MUTATION_AUTHORITY";
+    let registration = if let Some(json) = runner_json {
+        runner_status(json, kind, owner, &selected.windows_runner_label)?
+    } else {
+        "UNPROVEN_NATIVE_OWNER_MUST_VERIFY".to_owned()
+    };
     println!("host_machine_id={machine_id}");
     println!("host_kind={kind:?}");
-    println!("host_original_ab_state={journal_state}");
-    println!("host_original_ab_unresolved={unresolved}");
+    println!("host_runner_registration={registration}");
+    println!("host_lifecycle_contract=FRESH_TYPED_ONLY");
+    println!("host_historical_journal_authority=FORBIDDEN");
+    println!("host_native_install_authority=NOT_YET_ACCEPTED");
+    println!("host_next_action=NEED_NATIVE_TYPED_INSTALLER_AND_RELEASE_BOUND_RECEIPTS");
     println!("host_mutations=0");
-
-    if operation == HostLifecycleOperation::Apply && unresolved {
-        return Err("HOST_APPLY_BLOCKED_UNRESOLVED_AB_NO_REPLAY".to_owned());
-    }
-    if operation == HostLifecycleOperation::Recover {
-        // This is a reconciliation request, not a blind rollback or replay.
-        // It must inspect the installed owner independently before deciding
-        // whether previous-state rollback can ever be authorized.
-        let recovery = if unresolved {
-            "UNKNOWN_NO_REPLAY_AB_UNRESOLVED"
-        } else {
-            "RECONCILE_NATIVE_OWNER_BEFORE_MUTATION"
-        };
-        println!("host_recovery_decision={recovery}");
-        if let Some(output) = output {
-            append_recovery_outputs(output, journal_state, recovery)?;
-            let labels = runner_labels(kind, owner, &selected.windows_runner_label)?;
-            // Recovery is read-only and must not queue a known offline owner.
-            let dispatch = if let Some(api) = runner_json {
-                let status = runner_status(api, kind, owner, &selected.windows_runner_label)?;
-                println!("host_runner_registration={status}");
-                status.starts_with("READY_FOR_DISPATCH:")
-            } else {
-                println!("host_runner_registration=UNPROVEN");
-                true
-            };
-            append_control_outputs(
-                output,
-                machine_id,
-                kind,
-                owner,
-                &labels,
-                &selected.windows_runner_label,
-                &selected.desired_spec_path,
-            )?;
-            append_action_output(output, "RECOVER_READ_ONLY")?;
-            let targets = if dispatch {
-                vec![observation_target(machine_id, kind, owner, &labels)?]
-            } else {
-                Vec::new()
-            };
-            append_observation_matrix(output, &targets)?;
-        }
-        return Ok(());
-    }
-
-    // The repository Actions token may lack Administration:read.
-    // A verified runner API answer is authoritative; an unavailable API
-    // merely defers owner authentication to the exact native owner.
-    // The short admission expiry stops queued jobs from mutating later.
-    if let Some(json) = runner_json {
-        let runner_id = official_runner_id(json, kind, owner, &selected.windows_runner_label)?;
-        println!("host_runner_registration=READY_FOR_DISPATCH:{runner_id}");
-    } else {
-        println!("host_runner_registration=UNPROVEN_NATIVE_OWNER_MUST_VERIFY");
-    }
-    // Generic VM admission always loads the selected Git-owned application
-    // manifest through the one native Rust parser. Never route an acceptance
-    // machine to the production bundle, or allow a manifest to borrow a
-    // different host's owner. Runtime release and receipt checks are separate.
-    if kind == ManagedHostKind::Vm {
-        let application = crate::application_lifecycle_command::load_application_desired(
-            Path::new(&selected.desired_spec_path),
-        )
-        .map_err(|_| "HOST_VM_DESIRED_SPEC_INVALID".to_owned())?;
-        if application.machine_id != machine_id {
-            return Err("HOST_VM_DESIRED_MACHINE_MISMATCH".to_owned());
-        }
-        println!("host_vm_application_spec=EXACT_GIT_MATCH");
-        // The canonical runtime currently publishes only the production
-        // application bundle in its immutable ReleaseSet. Until the
-        // per-host bundle protocol is accepted, fail closed instead of
-        // secretly routing a new VM to that unrelated production bundle.
-        if selected.desired_spec_path != "infra/production/production.textproto" {
-            return Err("HOST_VM_RELEASE_BOUND_BUNDLE_NOT_YET_PUBLISHED".to_owned());
-        }
-    }
+    let output = output.ok_or("HOST_PREFLIGHT_OUTPUT_REQUIRED")?;
     let labels = runner_labels(kind, owner, &selected.windows_runner_label)?;
-    let output = output.ok_or("HOST_APPLY_OUTPUT_REQUIRED")?;
     append_control_outputs(
-        output,
-        machine_id,
-        kind,
-        owner,
-        &labels,
-        &selected.windows_runner_label,
-        &selected.desired_spec_path,
+        output, machine_id, kind, owner, &labels,
+        &selected.windows_runner_label, &selected.desired_spec_path,
     )?;
-    append_action_output(output, "APPLY")?;
-    let admitted_at = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_err(|_| "HOST_ADMISSION_CLOCK_INVALID".to_owned())?
-        .as_secs();
-    append_admission_timestamp(output, admitted_at)?;
-    println!("host_dispatch=EXACT_NATIVE_OWNER_FRESHNESS_REQUIRED");
-    println!("host_admission_valid_seconds=900");
-    Ok(())
-}
-
-/// Publish only fixed native decisions through the existing GitHub
-/// control output. This exposes the reason immediately even if a physical
-/// runner is unregistered; the native owner status is still independent.
-fn append_recovery_outputs(path: &Path, journal_state: &str, recovery: &str) -> Result<(), String> {
-    if !matches!(
-        journal_state,
-        "BEGIN_DURABLE_NO_AUTOMATIC_REPLAY"
-            | "COMMIT_DURABLE_OWNER_RECEIPTS_UNPROVEN"
-            | "NO_BEGIN_NO_MUTATION_AUTHORITY"
-    ) || !matches!(
-        recovery,
-        "UNKNOWN_NO_REPLAY_AB_UNRESOLVED" | "RECONCILE_NATIVE_OWNER_BEFORE_MUTATION"
+    append_action_output(
+        output,
+        match operation {
+            HostLifecycleOperation::Apply => "APPLY_PREFLIGHT",
+            HostLifecycleOperation::Recover => "RECOVER_PREFLIGHT",
+        },
+    )?;
+    let targets = if matches!(
+        registration.as_str(),
+        "RUNNER_OFFLINE" | "RUNNER_UNREGISTERED" | "RUNNER_LABELS_MISMATCH"
     ) {
-        return Err("HOST_RECOVERY_DECISION_UNSUPPORTED".to_owned());
-    }
-    let metadata = std::fs::symlink_metadata(path)
-        .map_err(|_| "HOST_RECOVERY_OUTPUT_UNAVAILABLE".to_owned())?;
-    if !metadata.file_type().is_file() {
-        return Err("HOST_RECOVERY_OUTPUT_NOT_REGULAR".to_owned());
-    }
-    OpenOptions::new()
-        .append(true)
-        .open(path)
-        .and_then(|mut file| {
-            writeln!(file, "host_original_ab_state={journal_state}")?;
-            writeln!(file, "host_recovery_decision={recovery}")
-        })
-        .map_err(|_| "HOST_RECOVERY_OUTPUT_WRITE_FAILED".to_owned())
+        Vec::new()
+    } else {
+        vec![observation_target(machine_id, kind, owner, &labels)?]
+    };
+    append_observation_matrix(output, &targets)?;
+    println!("host_observation_targets={}", targets.len());
+    Ok(())
 }
 
 /// Expiring GitHub admission: queued/offline self-hosted jobs must not
