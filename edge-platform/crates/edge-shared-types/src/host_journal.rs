@@ -230,9 +230,18 @@ where
 {
     verify_native_journal_protection(protected_journal_dir)?;
     execute_after_protected_owner_check_once(
-        intent, authorization, registry_pb, selected_spec_bytes,
-        release_set_pb, pinned_worker_public_key, native_machine_id,
-        native_owner_kind, now_unix, protected_journal_dir, observe, apply_once,
+        intent,
+        authorization,
+        registry_pb,
+        selected_spec_bytes,
+        release_set_pb,
+        pinned_worker_public_key,
+        native_machine_id,
+        native_owner_kind,
+        now_unix,
+        protected_journal_dir,
+        observe,
+        apply_once,
     )
 }
 
@@ -728,7 +737,9 @@ mod tests {
 
     #[test]
     fn single_native_execution_calls_owner_once_and_requires_physical_poststate() {
-        use crate::host_lifecycle::{build_native_observation, digest_host_desired, host_authorization_payload};
+        use crate::host_lifecycle::{
+            build_native_observation, digest_host_desired, host_authorization_payload,
+        };
         use crate::release::v1::{ReleaseSet, VmRuntime};
         use crate::{
             FleetHostPlannedStep, FleetNativeOwnerState, FleetNativeReleaseProof,
@@ -751,7 +762,10 @@ mod tests {
                 windows_mode: FleetHostMode::Unspecified as i32,
             }),
         };
-        let registry = HostRegistry { schema_version: 1, hosts: vec![host.clone()] };
+        let registry = HostRegistry {
+            schema_version: 1,
+            hosts: vec![host.clone()],
+        };
         let registry_pb = encode_host_registry(&registry).unwrap();
         let spec = b"exact git typed VM desired";
         let release = ReleaseSet {
@@ -785,12 +799,17 @@ mod tests {
             expires_at_unix: 1100,
             ed25519_signature: Vec::new(),
         };
-        auth.ed25519_signature = pair.sign(&host_authorization_payload(&intent, &auth))
-            .as_ref().to_vec();
+        auth.ed25519_signature = pair
+            .sign(&host_authorization_payload(&intent, &auth))
+            .as_ref()
+            .to_vec();
         let dir = std::env::temp_dir().join(format!(
             "sing-box-host-executor-test-{}-{}",
             std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
         ));
         fs::create_dir(&dir).unwrap();
         let running = Cell::new(false);
@@ -798,8 +817,11 @@ mod tests {
         let observe = || {
             build_native_observation(
                 FleetHostKind::Vm,
-                if running.get() { FleetNativeOwnerState::Running }
-                else { FleetNativeOwnerState::Stopped },
+                if running.get() {
+                    FleetNativeOwnerState::Running
+                } else {
+                    FleetNativeOwnerState::Stopped
+                },
                 FleetNativeReleaseProof::ApplicationBundle,
                 Some(&"07".repeat(32)),
                 Some(running.get()),
@@ -808,15 +830,25 @@ mod tests {
             )
         };
         let outcome = execute_after_protected_owner_check_once(
-            &intent, &auth, &registry_pb, spec, &release_pb,
-            pair.public_key().as_ref(), "vm-exact", FleetHostKind::Vm as i32,
-            1020, &dir, observe, |step| {
+            &intent,
+            &auth,
+            &registry_pb,
+            spec,
+            &release_pb,
+            pair.public_key().as_ref(),
+            "vm-exact",
+            FleetHostKind::Vm as i32,
+            1020,
+            &dir,
+            observe,
+            |step| {
                 assert_eq!(step, FleetHostPlannedStep::Start);
                 count.set(count.get() + 1);
                 running.set(true);
                 Ok(())
-            }
-        ).unwrap();
+            },
+        )
+        .unwrap();
         assert_eq!(count.get(), 1);
         assert_eq!(outcome.state, FleetHostResultState::Verified as i32);
         assert!(outcome.physical_readback);
@@ -826,15 +858,27 @@ mod tests {
         // no mutation or fabricated VERIFIED receipt is allowed.
         intent.operation_id = "issue1-comment-982".into();
         auth.operation_id = intent.operation_id.clone();
-        auth.ed25519_signature = pair.sign(&host_authorization_payload(&intent, &auth))
-            .as_ref().to_vec();
+        auth.ed25519_signature = pair
+            .sign(&host_authorization_payload(&intent, &auth))
+            .as_ref()
+            .to_vec();
         let noop = execute_after_protected_owner_check_once(
-            &intent, &auth, &registry_pb, spec, &release_pb,
-            pair.public_key().as_ref(), "vm-exact", FleetHostKind::Vm as i32,
-            1020, &dir, observe, |_step| {
+            &intent,
+            &auth,
+            &registry_pb,
+            spec,
+            &release_pb,
+            pair.public_key().as_ref(),
+            "vm-exact",
+            FleetHostKind::Vm as i32,
+            1020,
+            &dir,
+            observe,
+            |_step| {
                 panic!("NOOP must never mutate");
-            }
-        ).unwrap();
+            },
+        )
+        .unwrap();
         assert_eq!(noop.state, FleetHostResultState::Observed as i32);
         assert!(!noop.physical_readback);
         assert_eq!(count.get(), 1);
