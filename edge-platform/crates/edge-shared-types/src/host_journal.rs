@@ -8,7 +8,7 @@
 
 use crate::{
     FleetHostAuthorization, FleetHostIntent, FleetHostResult, FleetHostResultState, HostRegistry,
-    host_lifecycle::{validate_host_intent, verify_host_authorization},
+    host_lifecycle::{validate_host_intent, validate_intent_against_target, verify_host_authorization},
 };
 use prost::Message;
 use ring::digest::{SHA256, digest};
@@ -116,6 +116,7 @@ fn admit_after_protected_owner_check_once(
         expected_desired_sha256,
         expected_release_sha256,
     )?;
+    validate_intent_against_target(intent, registry)?;
     verify_host_authorization(intent, authorization, pinned_worker_public_key, now_unix)?;
     // An existing trusted owner MUST provision this directory. Creating it
     // from an unprivileged request (or following a symlink) is forbidden.
@@ -173,7 +174,7 @@ fn admit_after_protected_owner_check_once(
 mod tests {
     use super::*;
     use crate::host_lifecycle::host_authorization_payload;
-    use crate::{FleetHost, FleetHostAction, FleetHostKind, FleetHostMode, managed_host};
+    use crate::{FleetHost, FleetHostAction, FleetHostKind, FleetHostMode, FleetHostRunState, FleetHostTarget, managed_host};
     use ring::rand::SystemRandom;
     use ring::signature::{Ed25519KeyPair, KeyPair};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -192,7 +193,10 @@ mod tests {
                 owner: Some(managed_host::Owner::VmMachineId("vm-one".into())),
                 windows_runner_label: String::new(),
                 desired_spec_path: "infra/production/production.textproto".into(),
-            target: None,
+                target: Some(FleetHostTarget {
+                    run_state: FleetHostRunState::Running as i32,
+                    windows_mode: FleetHostMode::Unspecified as i32,
+                }),
             }],
         };
         let i = FleetHostIntent {
@@ -248,6 +252,16 @@ mod tests {
             .sign(&host_authorization_payload(&i, &a))
             .as_ref()
             .to_vec();
+        let mut observe_only = registry.clone();
+        observe_only.hosts[0].target = None;
+        assert_eq!(
+            admit_after_protected_owner_check_once(
+                &i, &a, &observe_only, &[1; 32], &[2; 32], &[3; 32],
+                pair.public_key().as_ref(), "vm-one", FleetHostKind::Vm as i32,
+                1020, &dir,
+            ).unwrap_err(),
+            "HOST_TARGET_UNSET_OBSERVE_ONLY"
+        );
         let first = call(&i, &a).unwrap();
         assert_eq!(first.state, FleetHostResultState::Authorized as i32);
         assert!(!first.physical_readback);
