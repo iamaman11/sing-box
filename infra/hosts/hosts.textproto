@@ -17,4 +17,8 @@ hosts {
   windows_runner_name: "DESKTOP-0E1F6UQ"
   windows_runner_label: "sing-box-windows-lab"
   desired_spec_path: "infra/production/production.textproto"
+  target {
+    run_state: FLEET_HOST_RUN_STATE_STOPPED
+    windows_mode: FLEET_HOST_MODE_PROXY_ONLY
+  }
 }
