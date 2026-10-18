@@ -100,7 +100,12 @@ pub fn validate_host_registry(desired: &HostRegistry) -> Result<(), String> {
         // Reference to existing Git-owned desired state; never duplicate configuration.
         // Keep this narrow: no absolute paths, traversal, or runner-supplied specs.
         let spec = host.desired_spec_path.as_str();
-        let allowed = match kind {
+        // Exact per-host typed desired may be enrolled without rebuilding
+        // the Rust binaries. Its path is a pure function of the Git-owned
+        // machine identity, never runner input or a second inventory.
+        let per_host_typed = spec
+            == format!("infra/hosts/specs/{}.textproto", host.machine_id);
+        let allowed = per_host_typed || match kind {
             ManagedHostKind::Windows => spec == "infra/production/production.textproto",
             ManagedHostKind::Vm => {
                 spec == "infra/production/production.textproto"
@@ -3067,6 +3072,33 @@ mod release_set_tests {
         invalid = expected.clone();
         invalid.hosts[1].desired_spec_path.clear();
         assert!(validate_host_registry(&invalid).is_err());
+        // A new Windows or VM uses the SAME registry, with an exact typed
+        // machine-scoped spec path and no new workflow or compiled selector.
+        let mut typed = expected.clone();
+        typed.hosts[2].machine_id = "new-windows-2".to_owned();
+        typed.hosts[2].desired_spec_path =
+            "infra/hosts/specs/new-windows-2.textproto".to_owned();
+        assert!(validate_host_registry(&typed).is_ok());
+        typed.hosts[2].desired_spec_path =
+            "infra/hosts/specs/production-1.textproto".to_owned();
+        assert!(validate_host_registry(&typed).is_err());
+        typed.hosts[2].desired_spec_path =
+            "infra/hosts/specs/new-windows-2.json".to_owned();
+        assert!(validate_host_registry(&typed).is_err());
+        typed.hosts[2].desired_spec_path =
+            "infra/hosts/specs/../new-windows-2.textproto".to_owned();
+        assert!(validate_host_registry(&typed).is_err());
+        typed.hosts[2].desired_spec_path =
+            "infra/hosts/specs/new-windows-2.textproto/extra".to_owned();
+        assert!(validate_host_registry(&typed).is_err());
+        let mut typed_vm = expected.clone();
+        typed_vm.hosts[1].desired_spec_path =
+            "infra/hosts/specs/production-1.textproto".to_owned();
+        assert!(validate_host_registry(&typed_vm).is_ok());
+        typed_vm.hosts[1].desired_spec_path =
+            "infra/hosts/specs/application-acceptance-1.textproto".to_owned();
+        assert!(validate_host_registry(&typed_vm).is_err());
+
         // Operator must explicitly set the single desired run state and,
         // only on Windows, the desired ProxyOnly/TUN mode.
         invalid = expected.clone();

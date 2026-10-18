@@ -116,16 +116,26 @@ pub fn propose_host_transition(
     // readback. This remains a proposal; no signed intent or root authority
     // can be inferred from an untrusted observation file.
     if proof == Ok(FleetNativeReleaseProof::VerifiedAbsent) {
-        return if state == FleetNativeOwnerState::Stopped {
-            plan(
+        // RUNNING is the only explicit target that may request a fresh
+        // installation. STOPPED means "do not start", not "install anyway".
+        // Without a separate typed installation target, abstain rather than
+        // invent a mutation for an intentionally stopped machine.
+        return match (desired_run, state) {
+            (FleetHostRunState::Running, FleetNativeOwnerState::Stopped) => plan(
                 host,
                 Install,
                 "VERIFIED_ABSENT_INSTALL_PROPOSAL_ONLY",
                 expected,
                 &[],
-            )
-        } else {
-            plan(host, Blocked, "ABSENCE_OWNER_STATE_CONFLICT", expected, &[])
+            ),
+            (FleetHostRunState::Stopped, FleetNativeOwnerState::Stopped) => plan(
+                host,
+                Blocked,
+                "ABSENT_INSTALL_WITH_STOPPED_TARGET",
+                expected,
+                &[],
+            ),
+            _ => plan(host, Blocked, "ABSENCE_OWNER_STATE_CONFLICT", expected, &[]),
         };
     }
     let expected_proof = if kind == FleetHostKind::Windows {
@@ -253,6 +263,15 @@ mod tests {
             "VERIFIED_ABSENT_INSTALL_PROPOSAL_ONLY"
         );
         assert!(!candidate.owner_attested && !candidate.mutation_authorized);
+        let stopped = host(
+            FleetHostKind::Vm,
+            FleetHostMode::Unspecified,
+            FleetHostRunState::Stopped,
+        );
+        let stopped_plan =
+            propose_host_transition(&stopped, Some(&absent), &[1; 32], &[2; 32], 1000);
+        assert_eq!(stopped_plan.step, FleetHostPlannedStep::Blocked as i32);
+        assert_eq!(stopped_plan.reason_code, "ABSENT_INSTALL_WITH_STOPPED_TARGET");
         // A tampered observation cannot turn an existing/running installation
         // or an invented digest into VERIFIED_ABSENT.
         let mut running = absent.clone();
