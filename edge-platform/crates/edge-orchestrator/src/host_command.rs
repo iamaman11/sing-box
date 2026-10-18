@@ -449,13 +449,19 @@ fn host_lifecycle_admission(
     } else {
         println!("host_runner_registration=UNPROVEN_NATIVE_OWNER_MUST_VERIFY");
     }
-    // No default VM manifest may be silently interpreted as a production
-    // ReleaseSet: only existing canonical production lifecycle supports it.
-    if kind == ManagedHostKind::Vm
-        && (machine_id != "production-1"
-            || selected.desired_spec_path != "infra/production/production.textproto")
-    {
-        return Err("HOST_APPLY_BLOCKED_VM_MANIFEST_NOT_YET_NATIVE".to_owned());
+    // Generic VM admission always loads the selected Git-owned application
+    // manifest through the one native Rust parser. Never route an acceptance
+    // machine to the production bundle, or allow a manifest to borrow a
+    // different host's owner. Runtime release and receipt checks are separate.
+    if kind == ManagedHostKind::Vm {
+        let application = crate::application_lifecycle_command::load_application_desired(
+            Path::new(&selected.desired_spec_path),
+        )
+        .map_err(|_| "HOST_VM_DESIRED_SPEC_INVALID".to_owned())?;
+        if application.machine_id != machine_id {
+            return Err("HOST_VM_DESIRED_MACHINE_MISMATCH".to_owned());
+        }
+        println!("host_vm_application_spec=EXACT_GIT_MATCH");
     }
     let labels = runner_labels(kind, owner, &selected.windows_runner_label)?;
     let output = output.ok_or("HOST_APPLY_OUTPUT_REQUIRED")?;
