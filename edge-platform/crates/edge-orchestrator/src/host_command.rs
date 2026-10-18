@@ -494,11 +494,7 @@ fn host_lifecycle_admission(
 /// Publish only fixed native decisions through the existing GitHub
 /// control output. This exposes the reason immediately even if a physical
 /// runner is unregistered; the native owner status is still independent.
-fn append_recovery_outputs(
-    path: &Path,
-    journal_state: &str,
-    recovery: &str,
-) -> Result<(), String> {
+fn append_recovery_outputs(path: &Path, journal_state: &str, recovery: &str) -> Result<(), String> {
     if !matches!(
         journal_state,
         "BEGIN_DURABLE_NO_AUTOMATIC_REPLAY"
