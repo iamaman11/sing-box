@@ -3082,8 +3082,7 @@ mod release_set_tests {
         assert!(validate_host_registry(&typed).is_err());
         typed.hosts[2].desired_spec_path = "infra/hosts/specs/zz-windows-2.json".to_owned();
         assert!(validate_host_registry(&typed).is_err());
-        typed.hosts[2].desired_spec_path =
-            "infra/hosts/specs/../zz-windows-2.textproto".to_owned();
+        typed.hosts[2].desired_spec_path = "infra/hosts/specs/../zz-windows-2.textproto".to_owned();
         assert!(validate_host_registry(&typed).is_err());
         typed.hosts[2].desired_spec_path =
             "infra/hosts/specs/zz-windows-2.textproto/extra".to_owned();
