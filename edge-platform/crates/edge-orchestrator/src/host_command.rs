@@ -5,7 +5,7 @@ use edge_shared_types::{
     decode_host_registry,
     host_lifecycle::{
         MAX_NATIVE_OBSERVATION_BYTES, decode_native_observation, prepared_host_result,
-        validate_host_intent, validate_host_result,
+        validate_host_intent, validate_host_result, validate_intent_against_target,
     },
     managed_host,
 };
@@ -598,6 +598,10 @@ fn host_lifecycle_admission(
         &release_sha,
     )
     .map_err(str::to_owned)?;
+    // The same durable Git target is checked at PREPARE and again by
+    // the native root/SYSTEM owner before any action. An observe-only VM
+    // must never issue a misleading APPLY_PREPARED intent.
+    validate_intent_against_target(&intent, desired).map_err(str::to_owned)?;
     let prepared = prepared_host_result(&intent);
     validate_host_result(&prepared, &intent).map_err(str::to_owned)?;
     let bytes = intent.encode_to_vec();
@@ -1015,7 +1019,10 @@ mod tests {
                 )),
                 windows_runner_label: "windows-test".to_owned(),
                 desired_spec_path: spec.to_string_lossy().into_owned(),
-                target: None,
+                target: Some(edge_shared_types::FleetHostTarget {
+                    run_state: edge_shared_types::FleetHostRunState::Stopped as i32,
+                    windows_mode: FleetHostMode::ProxyOnly as i32,
+                }),
             }],
         };
         let release = "a".repeat(64);
@@ -1027,6 +1034,33 @@ mod tests {
             std::process::id()
         ));
         std::fs::write(&file, "").unwrap();
+        // Absence of Git target is OBSERVE_ONLY, even if a healthy runner
+        // has registered itself or an older VM deployment exists.
+        let mut blocked = desired.clone();
+        blocked.hosts[0].target = None;
+        assert_eq!(
+            host_lifecycle_admission(
+                &blocked, "windows-test", HostLifecycleOperation::Apply,
+                &release, &registry_sha, None, Some(&file),
+                Some(122), Some(&intent_path),
+            ).unwrap_err(),
+            "HOST_TARGET_UNSET_OBSERVE_ONLY"
+        );
+        assert!(!intent_path.exists());
+        // An invalid mode/kind must not emit any proposal either.
+        blocked.hosts[0].target = Some(edge_shared_types::FleetHostTarget {
+            run_state: edge_shared_types::FleetHostRunState::Stopped as i32,
+            windows_mode: FleetHostMode::Unspecified as i32,
+        });
+        assert_eq!(
+            host_lifecycle_admission(
+                &blocked, "windows-test", HostLifecycleOperation::Apply,
+                &release, &registry_sha, None, Some(&file),
+                Some(122), Some(&intent_path),
+            ).unwrap_err(),
+            "HOST_TARGET_MODE_KIND_MISMATCH"
+        );
+        assert!(!intent_path.exists());
         host_lifecycle_admission(
             &desired,
             "windows-test",
