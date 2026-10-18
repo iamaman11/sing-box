@@ -439,8 +439,7 @@ fn verified_release_set_bytes(
     path: &Path,
     expected_sha256: &str,
 ) -> Result<edge_shared_types::ReleaseSet, String> {
-    let metadata = std::fs::symlink_metadata(path)
-        .map_err(|_| "HOST_RELEASESET_BYTES_MISSING")?;
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| "HOST_RELEASESET_BYTES_MISSING")?;
     if !metadata.file_type().is_file() || metadata.len() == 0 || metadata.len() > 131_072 {
         return Err("HOST_RELEASESET_BYTES_NOT_REGULAR_OR_TOO_LARGE".to_owned());
     }
@@ -464,8 +463,8 @@ fn verified_release_set_bytes(
 fn verified_release_set_from_resolver(
     context: &OrchestrationContext,
 ) -> Result<edge_shared_types::ReleaseSet, String> {
-    let context_file = std::env::var_os("EDGE_RELEASE_CONTEXT_PATH")
-        .ok_or("HOST_RELEASE_CONTEXT_PATH_MISSING")?;
+    let context_file =
+        std::env::var_os("EDGE_RELEASE_CONTEXT_PATH").ok_or("HOST_RELEASE_CONTEXT_PATH_MISSING")?;
     let directory = Path::new(&context_file)
         .parent()
         .ok_or("HOST_RELEASE_CONTEXT_PARENT_MISSING")?;
@@ -920,14 +919,21 @@ mod tests {
             ..Default::default()
         });
         let bytes = release.encode_to_vec();
-        let sha = digest(&SHA256, &bytes).as_ref().iter()
-            .map(|b| format!("{b:02x}")).collect::<String>();
+        let sha = digest(&SHA256, &bytes)
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
         let path = std::env::temp_dir().join(format!(
-            "sing-box-vm-release-set-test-{}.pb", std::process::id()
+            "sing-box-vm-release-set-test-{}.pb",
+            std::process::id()
         ));
         std::fs::write(&path, &bytes).unwrap();
         let parsed = verified_release_set_bytes(&path, &sha).unwrap();
-        assert_eq!(parsed.vm_runtime.unwrap().application_bundle_sha256, vec![4; 32]);
+        assert_eq!(
+            parsed.vm_runtime.unwrap().application_bundle_sha256,
+            vec![4; 32]
+        );
         assert_eq!(
             verified_release_set_bytes(&path, &"a".repeat(64)).unwrap_err(),
             "HOST_RELEASESET_DIGEST_MISMATCH"
