@@ -279,8 +279,13 @@ where
     if intent.machine_id != native_machine_id || intent.kind != native_owner_kind {
         return Err("HOST_LOCAL_OWNER_IDENTITY_MISMATCH");
     }
-    let (registry, bound) =
-        bind_native_host_artifacts(intent, registry_pb, selected_spec_bytes, release_set_pb, vm_bundle_pb)?;
+    let (registry, bound) = bind_native_host_artifacts(
+        intent,
+        registry_pb,
+        selected_spec_bytes,
+        release_set_pb,
+        vm_bundle_pb,
+    )?;
     validate_intent_against_target(intent, &registry)?;
     verify_host_authorization(intent, authorization, pinned_worker_public_key, now_unix)?;
     if !matches!(
@@ -293,8 +298,10 @@ where
     // Every operation_id is single use, including when the machine has
     // already converged. Otherwise a previously executed signed comment
     // could be reinterpreted as a fresh OBSERVED/NOOP after a lost ACK.
-    let prior_operation = protected_journal_dir
-        .join(format!("{}.pb", journal_hex(intent.operation_id.as_bytes())));
+    let prior_operation = protected_journal_dir.join(format!(
+        "{}.pb",
+        journal_hex(intent.operation_id.as_bytes())
+    ));
     match fs::symlink_metadata(prior_operation) {
         Ok(_) => return Err("HOST_OPERATION_EXISTS_OR_JOURNAL_UNAVAILABLE"),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
@@ -796,8 +803,9 @@ mod tests {
         bundle_request.bundle_digest =
             Some(crate::canonical_apply_bundle_digest(&bundle_request).unwrap());
         let bundle_pb = bundle_request.encode_to_vec();
-        let transport_sha256 =
-            ring::digest::digest(&ring::digest::SHA256, &bundle_pb).as_ref().to_vec();
+        let transport_sha256 = ring::digest::digest(&ring::digest::SHA256, &bundle_pb)
+            .as_ref()
+            .to_vec();
         let release = ReleaseSet {
             schema_version: 7,
             source_revision: "a".repeat(40),
@@ -888,12 +896,22 @@ mod tests {
         // operation ID cannot be reused to conceal an executed mutation.
         assert_eq!(
             execute_after_protected_owner_check_once(
-                &intent, &auth, &registry_pb, spec, &release_pb,
-                pair.public_key().as_ref(), "vm-exact", FleetHostKind::Vm as i32,
-                1020, &dir, observe, |_step| {
+                &intent,
+                &auth,
+                &registry_pb,
+                spec,
+                &release_pb,
+                pair.public_key().as_ref(),
+                "vm-exact",
+                FleetHostKind::Vm as i32,
+                1020,
+                &dir,
+                observe,
+                |_step| {
                     panic!("completed signed operation must not dispatch again");
                 }
-            ).unwrap_err(),
+            )
+            .unwrap_err(),
             "HOST_OPERATION_EXISTS_OR_JOURNAL_UNAVAILABLE"
         );
 

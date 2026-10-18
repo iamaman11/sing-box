@@ -484,14 +484,13 @@ fn verified_release_set_from_resolver(
 fn verified_vm_runtime_digest_from_resolver(
     release: &edge_shared_types::ReleaseSet,
 ) -> Result<Vec<u8>, String> {
-    let context_file = std::env::var_os("EDGE_RELEASE_CONTEXT_PATH")
-        .ok_or("HOST_RELEASE_CONTEXT_PATH_MISSING")?;
+    let context_file =
+        std::env::var_os("EDGE_RELEASE_CONTEXT_PATH").ok_or("HOST_RELEASE_CONTEXT_PATH_MISSING")?;
     let directory = Path::new(&context_file)
         .parent()
         .ok_or("HOST_RELEASE_CONTEXT_PARENT_MISSING")?;
     let path = directory.join("application-bundle.pb");
-    let meta = std::fs::symlink_metadata(&path)
-        .map_err(|_| "HOST_APPLICATION_BUNDLE_MISSING")?;
+    let meta = std::fs::symlink_metadata(&path).map_err(|_| "HOST_APPLICATION_BUNDLE_MISSING")?;
     if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 8 * 1024 * 1024 {
         return Err("HOST_APPLICATION_BUNDLE_INVALID_FILE".to_owned());
     }

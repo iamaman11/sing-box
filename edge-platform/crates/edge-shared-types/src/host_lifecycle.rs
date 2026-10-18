@@ -180,7 +180,8 @@ pub fn native_vm_bundle_runtime_digest(
         .ok_or("HOST_NATIVE_VM_RUNTIME_UNAVAILABLE")?
         .application_bundle_sha256;
     if !sha(published)
-        || ring::digest::digest(&ring::digest::SHA256, vm_bundle_pb).as_ref() != published.as_slice()
+        || ring::digest::digest(&ring::digest::SHA256, vm_bundle_pb).as_ref()
+            != published.as_slice()
     {
         return Err("HOST_NATIVE_VM_BUNDLE_TRANSPORT_MISMATCH");
     }
@@ -194,7 +195,8 @@ pub fn native_vm_bundle_runtime_digest(
     {
         return Err("HOST_NATIVE_VM_BUNDLE_NONCANONICAL");
     }
-    let logical = request.bundle_digest
+    let logical = request
+        .bundle_digest
         .as_deref()
         .ok_or("HOST_NATIVE_VM_BUNDLE_LOGICAL_DIGEST_MISSING")?;
     let computed = crate::canonical_apply_bundle_digest(&request)
@@ -204,8 +206,12 @@ pub fn native_vm_bundle_runtime_digest(
     }
     let mut decoded = Vec::with_capacity(32);
     for pair in logical.as_bytes().chunks_exact(2) {
-        let h = (pair[0] as char).to_digit(16).ok_or("HOST_NATIVE_VM_BUNDLE_HEX_INVALID")?;
-        let l = (pair[1] as char).to_digit(16).ok_or("HOST_NATIVE_VM_BUNDLE_HEX_INVALID")?;
+        let h = (pair[0] as char)
+            .to_digit(16)
+            .ok_or("HOST_NATIVE_VM_BUNDLE_HEX_INVALID")?;
+        let l = (pair[1] as char)
+            .to_digit(16)
+            .ok_or("HOST_NATIVE_VM_BUNDLE_HEX_INVALID")?;
         decoded.push(((h << 4) | l) as u8);
     }
     if !sha(&decoded) {
@@ -625,8 +631,9 @@ mod tests {
         bundle_request.bundle_digest =
             Some(crate::canonical_apply_bundle_digest(&bundle_request).unwrap());
         let bundle_pb = bundle_request.encode_to_vec();
-        let transport_sha256 =
-            ring::digest::digest(&ring::digest::SHA256, &bundle_pb).as_ref().to_vec();
+        let transport_sha256 = ring::digest::digest(&ring::digest::SHA256, &bundle_pb)
+            .as_ref()
+            .to_vec();
         let release = ReleaseSet {
             schema_version: 7,
             source_revision: "a".repeat(40),
@@ -655,18 +662,22 @@ mod tests {
             requested_at_unix: 1000,
         };
         let (_, bound) =
-            bind_native_host_artifacts(&intent, &registry_pb, spec, &release_pb, Some(&bundle_pb)).unwrap();
+            bind_native_host_artifacts(&intent, &registry_pb, spec, &release_pb, Some(&bundle_pb))
+                .unwrap();
         assert_eq!(
             bound.runtime_release_sha256,
             native_vm_bundle_runtime_digest(&release, &bundle_pb).unwrap()
         );
         assert_ne!(
             bound.runtime_release_sha256,
-            release.vm_runtime.as_ref().unwrap().application_bundle_sha256
+            release
+                .vm_runtime
+                .as_ref()
+                .unwrap()
+                .application_bundle_sha256
         );
         assert_eq!(
-            bind_native_host_artifacts(&intent, &registry_pb, spec, &release_pb, None)
-                .unwrap_err(),
+            bind_native_host_artifacts(&intent, &registry_pb, spec, &release_pb, None).unwrap_err(),
             "HOST_NATIVE_VM_BUNDLE_REQUIRED"
         );
         assert_eq!(
@@ -675,15 +686,27 @@ mod tests {
             "HOST_NATIVE_VM_BUNDLE_TRANSPORT_MISMATCH"
         );
         assert_eq!(
-            bind_native_host_artifacts(&intent, &registry_pb, b"tampered", &release_pb, Some(&bundle_pb))
-                .unwrap_err(),
+            bind_native_host_artifacts(
+                &intent,
+                &registry_pb,
+                b"tampered",
+                &release_pb,
+                Some(&bundle_pb)
+            )
+            .unwrap_err(),
             "HOST_INTENT_DIGEST_MISMATCH"
         );
         let mut wrong_release = release.clone();
         wrong_release.source_revision = "b".repeat(40);
         assert_eq!(
-            bind_native_host_artifacts(&intent, &registry_pb, spec, &wrong_release.encode_to_vec(), Some(&bundle_pb))
-                .unwrap_err(),
+            bind_native_host_artifacts(
+                &intent,
+                &registry_pb,
+                spec,
+                &wrong_release.encode_to_vec(),
+                Some(&bundle_pb)
+            )
+            .unwrap_err(),
             "HOST_INTENT_DIGEST_MISMATCH"
         );
         let mut missing_bundle = release;
