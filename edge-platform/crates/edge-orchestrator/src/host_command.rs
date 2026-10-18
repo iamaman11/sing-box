@@ -1040,10 +1040,17 @@ mod tests {
         blocked.hosts[0].target = None;
         assert_eq!(
             host_lifecycle_admission(
-                &blocked, "windows-test", HostLifecycleOperation::Apply,
-                &release, &registry_sha, None, Some(&file),
-                Some(122), Some(&intent_path),
-            ).unwrap_err(),
+                &blocked,
+                "windows-test",
+                HostLifecycleOperation::Apply,
+                &release,
+                &registry_sha,
+                None,
+                Some(&file),
+                Some(122),
+                Some(&intent_path),
+            )
+            .unwrap_err(),
             "HOST_TARGET_UNSET_OBSERVE_ONLY"
         );
         assert!(!intent_path.exists());
@@ -1054,10 +1061,17 @@ mod tests {
         });
         assert_eq!(
             host_lifecycle_admission(
-                &blocked, "windows-test", HostLifecycleOperation::Apply,
-                &release, &registry_sha, None, Some(&file),
-                Some(122), Some(&intent_path),
-            ).unwrap_err(),
+                &blocked,
+                "windows-test",
+                HostLifecycleOperation::Apply,
+                &release,
+                &registry_sha,
+                None,
+                Some(&file),
+                Some(122),
+                Some(&intent_path),
+            )
+            .unwrap_err(),
             "HOST_TARGET_MODE_KIND_MISMATCH"
         );
         assert!(!intent_path.exists());
