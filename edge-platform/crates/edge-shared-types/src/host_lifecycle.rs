@@ -241,6 +241,7 @@ mod tests {
                 owner: Some(managed_host::Owner::WindowsRunnerName("WIN-1".to_owned())),
                 windows_runner_label: "windows-1".to_owned(),
                 desired_spec_path: "infra/production/production.textproto".to_owned(),
+            target: None,
             }],
         };
         let bytes = encode_host_registry(&registry).unwrap();
