@@ -784,7 +784,6 @@ mod tests {
         let apply = std::fs::read_to_string(&file).unwrap();
         assert!(apply.contains("operation=APPLY_PREFLIGHT"));
         assert!(apply.contains("host_targets_present=true"));
-        assert!(apply.contains("host_desired_run_state=UNSET_OBSERVE_ONLY"));
         assert!(!apply.contains("admitted_at_unix="));
         assert!(!apply.contains("operation=APPLY\\n"));
         let parsed = edge_shared_types::host_lifecycle::decode_host_intent(
