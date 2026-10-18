@@ -227,9 +227,9 @@ where
     Observe: FnMut() -> Result<crate::FleetNativeObservation, &'static str>,
     Apply: FnOnce(crate::FleetHostPlannedStep) -> Result<(), &'static str>,
 {
-    use crate::{FleetHostAction, FleetHostPlannedStep, FleetHostResultState};
-    use crate::host_lifecycle::{validate_native_observation, validate_intent_against_target};
+    use crate::host_lifecycle::{validate_intent_against_target, validate_native_observation};
     use crate::host_planner::propose_host_transition;
+    use crate::{FleetHostAction, FleetHostPlannedStep, FleetHostResultState};
 
     // Authentication and owner identity must precede even readback-driven
     // planning. A signed APPLY/RECOVER is not the same as an arbitrary START.
@@ -269,8 +269,8 @@ where
         expected_vm_bundle_sha256,
         now_unix,
     );
-    let step = FleetHostPlannedStep::try_from(plan.step)
-        .map_err(|_| "HOST_NATIVE_PLAN_STEP_INVALID")?;
+    let step =
+        FleetHostPlannedStep::try_from(plan.step).map_err(|_| "HOST_NATIVE_PLAN_STEP_INVALID")?;
     // The transaction does not allow a stale or untrusted observation to
     // trigger even an "idempotent" mutation. A NOOP has no journal mutation
     // and cannot be promoted to VERIFIED by an external caller.

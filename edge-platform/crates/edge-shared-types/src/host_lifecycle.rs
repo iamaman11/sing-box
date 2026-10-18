@@ -161,6 +161,71 @@ pub fn digest_host_desired(
         .to_vec())
 }
 
+/// Exact artifact digests computed from the supplied Git registry, host
+/// desired bytes, and immutable ReleaseSet. This is structural integrity,
+/// NOT Git provenance: only an existing privileged owner may supply these
+/// bytes after independently resolving the accepted canonical Git revision
+/// and release. Runner-provided bytes do not become trustworthy here.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BoundNativeHostArtifacts {
+    pub registry_sha256: Vec<u8>,
+    pub desired_sha256: Vec<u8>,
+    pub release_set_sha256: Vec<u8>,
+    pub runtime_release_sha256: Vec<u8>,
+}
+
+pub fn bind_native_host_artifacts(
+    intent: &FleetHostIntent,
+    registry_pb: &[u8],
+    exact_spec_bytes: &[u8],
+    release_set_pb: &[u8],
+) -> Result<(HostRegistry, BoundNativeHostArtifacts), &'static str> {
+    fn digest_bytes(bytes: &[u8]) -> Vec<u8> {
+        ring::digest::digest(&ring::digest::SHA256, bytes).as_ref().to_vec()
+    }
+    if registry_pb.is_empty() || registry_pb.len() > 65536
+        || release_set_pb.is_empty() || release_set_pb.len() > 65536
+    {
+        return Err("HOST_NATIVE_ARTIFACT_SIZE_INVALID");
+    }
+    let registry = crate::decode_host_registry(registry_pb)
+        .map_err(|_| "HOST_NATIVE_REGISTRY_INVALID")?;
+    let host = registry.hosts.iter()
+        .find(|h| h.machine_id == intent.machine_id && h.kind == intent.kind)
+        .ok_or("HOST_NATIVE_MACHINE_UNREGISTERED")?;
+    let release = crate::release::v1::ReleaseSet::decode(release_set_pb)
+        .map_err(|_| "HOST_NATIVE_RELEASE_PROTO_INVALID")?;
+    if release.schema_version < 7
+        || release.source_revision.len() != 40
+        || !release.source_revision.bytes().all(|ch| {
+            ch.is_ascii_digit() || (b'a'..=b'f').contains(&ch)
+        })
+    {
+        return Err("HOST_NATIVE_RELEASE_SCHEMA_INVALID");
+    }
+    let runtime_release_sha256 = match FleetHostKind::try_from(intent.kind) {
+        Ok(FleetHostKind::Windows) => digest_bytes(release_set_pb),
+        Ok(FleetHostKind::Vm) => release.vm_runtime.as_ref()
+            .ok_or("HOST_NATIVE_VM_RUNTIME_UNAVAILABLE")?
+            .application_bundle_sha256.clone(),
+        _ => return Err("HOST_NATIVE_OWNER_KIND_INVALID"),
+    };
+    if !sha(&runtime_release_sha256) {
+        return Err("HOST_NATIVE_RUNTIME_RELEASE_INVALID");
+    }
+    let bound = BoundNativeHostArtifacts {
+        registry_sha256: digest_bytes(registry_pb),
+        desired_sha256: digest_host_desired(host, exact_spec_bytes)?,
+        release_set_sha256: digest_bytes(release_set_pb),
+        runtime_release_sha256,
+    };
+    validate_host_intent(
+        intent, &registry, &bound.registry_sha256, &bound.desired_sha256,
+        &bound.release_set_sha256,
+    )?;
+    Ok((registry, bound))
+}
+
 fn token(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 128
@@ -461,6 +526,76 @@ pub fn host_authorization_payload(
 mod tests {
     use super::*;
     use crate::{FleetHost, HostRegistry, encode_host_registry};
+
+    #[test]
+    fn exact_native_artifacts_bind_all_digests_or_fail_closed() {
+        use crate::release::v1::{ReleaseSet, VmRuntime};
+        use crate::{FleetHostKind, HostRegistry, ManagedHost, ManagedHostKind, managed_host};
+        let registry = HostRegistry {
+            schema_version: 1,
+            hosts: vec![ManagedHost {
+                machine_id: "vm-one".to_owned(),
+                kind: ManagedHostKind::Vm as i32,
+                owner: Some(managed_host::Owner::VmMachineId("vm-one".to_owned())),
+                windows_runner_label: String::new(),
+                desired_spec_path: "infra/hosts/specs/vm-one.textproto".to_owned(),
+                target: None,
+            }],
+        };
+        let registry_pb = crate::encode_host_registry(&registry).unwrap();
+        let spec = b"typed exact desired";
+        let release = ReleaseSet {
+            schema_version: 7,
+            source_revision: "a".repeat(40),
+            vm_runtime: Some(VmRuntime {
+                application_bundle_sha256: vec![7; 32],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let release_pb = release.encode_to_vec();
+        let mut intent = FleetHostIntent {
+            schema_version: 1,
+            machine_id: "vm-one".to_owned(),
+            kind: FleetHostKind::Vm as i32,
+            resource_id: "sing-box".to_owned(),
+            operation_id: "issue1-comment-123".to_owned(),
+            action: FleetHostAction::Apply as i32,
+            registry_sha256: ring::digest::digest(&ring::digest::SHA256, &registry_pb)
+                .as_ref().to_vec(),
+            desired_sha256: digest_host_desired(&registry.hosts[0], spec).unwrap(),
+            release_set_sha256: ring::digest::digest(&ring::digest::SHA256, &release_pb)
+                .as_ref().to_vec(),
+            requested_mode: FleetHostMode::Unspecified as i32,
+            requested_at_unix: 1000,
+        };
+        let (_, bound) =
+            bind_native_host_artifacts(&intent, &registry_pb, spec, &release_pb).unwrap();
+        assert_eq!(bound.runtime_release_sha256, vec![7; 32]);
+        assert_eq!(
+            bind_native_host_artifacts(&intent, &registry_pb, b"tampered", &release_pb)
+                .unwrap_err(),
+            "HOST_INTENT_DIGEST_MISMATCH"
+        );
+        let mut wrong_release = release.clone();
+        wrong_release.source_revision = "b".repeat(40);
+        assert_eq!(
+            bind_native_host_artifacts(&intent, &registry_pb, spec, &wrong_release.encode_to_vec())
+                .unwrap_err(),
+            "HOST_INTENT_DIGEST_MISMATCH"
+        );
+        let mut missing_bundle = release;
+        missing_bundle.vm_runtime.as_mut().unwrap().application_bundle_sha256.clear();
+        intent.release_set_sha256 = ring::digest::digest(
+            &ring::digest::SHA256, &missing_bundle.encode_to_vec()
+        ).as_ref().to_vec();
+        assert_eq!(
+            bind_native_host_artifacts(
+                &intent, &registry_pb, spec, &missing_bundle.encode_to_vec()
+            ).unwrap_err(),
+            "HOST_NATIVE_RUNTIME_RELEASE_INVALID"
+        );
+    }
 
     fn fixture() -> (HostRegistry, FleetHostIntent, Vec<u8>, Vec<u8>, Vec<u8>) {
         let registry = HostRegistry {
