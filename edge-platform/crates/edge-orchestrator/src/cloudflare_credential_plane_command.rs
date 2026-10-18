@@ -2900,7 +2900,7 @@ fn require_exact_secret_bindings(
         expected.extend_from_slice(&[
             ("EDGE_HOST_SIGNING_PKCS8_BASE64", "secret_text"),
             ("EDGE_HOST_SIGNING_KEY_ID", "secret_text"),
-            ("EDGE_HOST_APPROVED_INTENT_SHA256", "secret_text"),
+            ("EDGE_HOST_GITHUB_ACTOR_ID", "secret_text"),
             ("EDGE_HOST_ACCESS_ISSUER", "secret_text"),
             ("EDGE_HOST_ACCESS_AUD", "secret_text"),
         ]);
@@ -2960,23 +2960,26 @@ function CAT(...xs){const n=xs.reduce((a,b)=>a+b.length,0),b=new Uint8Array(n);l
 function VI(n){let x=BigInt(n),b=[];do{let v=Number(x&127n);x>>=7n;if(x)v|=128;b.push(v)}while(x);return Uint8Array.from(b)}
 function FLD(n,bytes){return CAT(VI((BigInt(n)<<3n)|2n),VI(bytes.length),bytes)}
 function FNUM(n,value){return CAT(VI(BigInt(n)<<3n),VI(value))}
-function ID(b){let p=0,id=null;while(p<b.length){const k=V(b,p);if(!k)return null;const f=Number(k[0]>>3n),w=Number(k[0]&7n);p=k[1];if(f<1||f>11)return null;if(w===0){const z=V(b,p);if(!z)return null;p=z[1]}else if(w===2){const z=V(b,p);if(!z||z[0]>BigInt(b.length))return null;p=z[1];const n=Number(z[0]);if(n>b.length-p)return null;if(f===5){if(id!==null||n===0||n>128)return null;try{id=TD.decode(b.slice(p,p+n))}catch{return null};if(!/^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/.test(id))return null}p+=n}else return null}return id}
+function INFO(b){let p=0,id=null,m=null,action=null,kind=null,schema=null,when=null,resource=null,d=0;while(p<b.length){const k=V(b,p);if(!k)return null;const f=Number(k[0]>>3n),w=Number(k[0]&7n);p=k[1];if(f<1||f>11)return null;if(w===0){const z=V(b,p);if(!z)return null;p=z[1];if(f===1)schema=Number(z[0]);if(f===3)kind=Number(z[0]);if(f===6)action=Number(z[0]);if(f===11)when=Number(z[0]);if(f===10&&z[0]!==0n)return null}else if(w===2){const z=V(b,p);if(!z||z[0]>BigInt(b.length))return null;p=z[1];const n=Number(z[0]);if(n>b.length-p)return null;if(f===2||f===4||f===5){if(n===0||n>128)return null;let t;try{t=TD.decode(b.slice(p,p+n))}catch{return null}if(f===2)m=t;if(f===4)resource=t;if(f===5)id=t}if(f>=7&&f<=9){if(n!==32)return null;d++}p+=n}else return null}if(schema!==1||kind!==1&&kind!==2||resource!=="sing-box"||d!==3||action!==2&&action!==3||typeof id!=="string"||!/^issue1-comment-[1-9][0-9]{0,19}$/.test(id)||typeof m!=="string"||!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(m)||!Number.isSafeInteger(when))return null;return{id,m,action,when}}
+async function GITHUB(info,e,now){const actor=String(e.EDGE_HOST_GITHUB_ACTOR_ID||"");if(!/^[1-9][0-9]{0,19}$/.test(actor)||Math.abs(now-info.when)>300)return false;
+const id=info.id.slice("issue1-comment-".length),api="https://api.github.com/repos/iamaman11/sing-box/issues/comments/"+id;
+try{const res=await fetch(api,{redirect:"error",headers:{"Accept":"application/vnd.github+json","User-Agent":"sing-box-host-authorizer"}});if(!res.ok)return false;const c=await res.json(),stamp=Date.parse(c.created_at)/1000;return !!c&&String(c.user?.id)===actor&&c.issue_url==="https://api.github.com/repos/iamaman11/sing-box/issues/1"&&c.updated_at===c.created_at&&Number.isFinite(stamp)&&stamp>=now-300&&stamp<=now+30&&info.when>=stamp-30&&c.body==="/host "+(info.action===2?"apply":"recover")+" "+info.m}catch{return false}}
 async function ACCESS(q,e){const iss=e.EDGE_HOST_ACCESS_ISSUER,aud=e.EDGE_HOST_ACCESS_AUD,t=q.headers.get("Cf-Access-Jwt-Assertion");if(typeof iss!=="string"||!/^https:\/\/[a-z0-9-]+\.cloudflareaccess\.com$/.test(iss)||typeof aud!=="string"||aud.length<8||aud.length>256||!t||t.length>8192)return false;
 const parts=t.split(".");if(parts.length!==3)return false;let h,c;try{h=JSON.parse(TD.decode(B64(parts[0])));c=JSON.parse(TD.decode(B64(parts[1])))}catch{return false}
 const now=Math.floor(Date.now()/1000);if(!h||h.alg!=="RS256"||typeof h.kid!=="string"||!c||c.iss!==iss||!Array.isArray(c.aud)||!c.aud.includes(aud)||!Number.isInteger(c.exp)||c.exp<=now||!Number.isInteger(c.nbf)||c.nbf>now+60)return false;
 try{const res=await fetch(iss+"/cdn-cgi/access/certs",{redirect:"error"});if(!res.ok)return false;const certs=await res.json();const keys=Array.isArray(certs.keys)?certs.keys:[];const jwk=keys.find(k=>k.kid===h.kid&&k.kty==="RSA");if(!jwk)return false;const key=await crypto.subtle.importKey("jwk",jwk,{name:"RSASSA-PKCS1-v1_5",hash:"SHA-256"},false,["verify"]);return await crypto.subtle.verify("RSASSA-PKCS1-v1_5",key,B64(parts[2]),TE.encode(parts[0]+"."+parts[1]))}catch{return false}}
 async function AUTHORIZE(q,e,u){if(P!==__HOST_SIGNER_PROJECTION__)return new Response(null,{status:404,headers:NO});if(q.method!=="POST"||u.search||q.headers.get("Content-Type")!=="application/x-protobuf")return new Response(null,{status:404,headers:NO});
-const k=e.EDGE_HOST_SIGNING_PKCS8_BASE64,id=e.EDGE_HOST_SIGNING_KEY_ID,approved=e.EDGE_HOST_APPROVED_INTENT_SHA256;
-if(typeof k!=="string"||typeof id!=="string"||!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id)||typeof approved!=="string"||!/^[a-f0-9]{64}$/.test(approved))return new Response(null,{status:404,headers:NO});
+const k=e.EDGE_HOST_SIGNING_PKCS8_BASE64,id=e.EDGE_HOST_SIGNING_KEY_ID,actor=String(e.EDGE_HOST_GITHUB_ACTOR_ID||"");
+if(typeof k!=="string"||typeof id!=="string"||!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id)||!/^[1-9][0-9]{0,19}$/.test(actor))return new Response(null,{status:404,headers:NO});
 if(!await ACCESS(q,e))return new Response(null,{status:403,headers:NO});
 if(Number(q.headers.get("Content-Length"))>8192)return new Response(null,{status:413,headers:NO});
 let raw;try{raw=new Uint8Array(await q.arrayBuffer())}catch{return new Response(null,{status:400,headers:NO})}
 if(!raw.length||raw.length>8192)return new Response(null,{status:413,headers:NO});
-const sum=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",raw))).map(x=>x.toString(16).padStart(2,"0")).join("");
-// Exact digest belongs to ONE operator-approved protobuf. This Worker cannot
-// authorize arbitrary GitHub-runner intents, hosts or actions.
-if(sum!==approved)return new Response(null,{status:403,headers:NO});
-const op=ID(raw);if(!op)return new Response(null,{status:400,headers:NO});
+// GitHub issue #1 is the ONLY operator command source. A valid Cloudflare
+// service-token by itself cannot authorize a machine, action or an old comment.
+const info=INFO(raw);if(!info)return new Response(null,{status:400,headers:NO});
+if(!await GITHUB(info,e,Math.floor(Date.now()/1000)))return new Response(null,{status:403,headers:NO});
+const op=info.id;
 const issued=Math.floor(Date.now()/1000),expires=issued+120,kid=TE.encode(id),oid=TE.encode(op),pk=B64(k);
 if(pk===null||pk.length<40||pk.length>4096)return new Response(null,{status:503,headers:NO});
 const payload=CAT(TE.encode("sing-box/native-host-authorization/v1:"),U32(raw.length),raw,U32(kid.length),kid,U32(oid.length),oid,U64(issued),U64(expires));
@@ -3151,7 +3154,7 @@ mod tests {
             SLOT_B,
             "EDGE_HOST_ACCESS_AUD",
             "EDGE_HOST_ACCESS_ISSUER",
-            "EDGE_HOST_APPROVED_INTENT_SHA256",
+            "EDGE_HOST_GITHUB_ACTOR_ID",
             "EDGE_HOST_SIGNING_KEY_ID",
             "EDGE_HOST_SIGNING_PKCS8_BASE64",
         ];
@@ -3185,7 +3188,7 @@ mod tests {
             assert!(source.contains("if(q.method!==\"POST\""));
             assert!(source.contains("EDGE_HOST_SIGNING_PKCS8_BASE64"));
             assert!(source.contains("EDGE_HOST_SIGNING_KEY_ID"));
-            assert!(source.contains("EDGE_HOST_APPROVED_INTENT_SHA256"));
+            assert!(source.contains("EDGE_HOST_GITHUB_ACTOR_ID"));
             assert!(source.contains("EDGE_HOST_ACCESS_ISSUER"));
             assert!(source.contains("EDGE_HOST_ACCESS_AUD"));
             assert!(source.contains("Cf-Access-Jwt-Assertion"));
@@ -3194,7 +3197,7 @@ mod tests {
             assert!(source.contains("U32(raw.length),raw,U32(kid.length),kid"));
             assert!(source.contains("U64(issued),U64(expires)"));
             assert!(source.contains("crypto.subtle.sign(\"Ed25519\""));
-            assert!(source.contains("sum!==approved"));
+            assert!(source.contains("GITHUB(info,e"));
             assert!(source.contains("issued+120"));
             // Credential GET and dummy A/B proof route must remain in the
             // original Worker, never copied to a second privileged service.
