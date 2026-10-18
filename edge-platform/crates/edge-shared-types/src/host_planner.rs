@@ -271,7 +271,10 @@ mod tests {
         let stopped_plan =
             propose_host_transition(&stopped, Some(&absent), &[1; 32], &[2; 32], 1000);
         assert_eq!(stopped_plan.step, FleetHostPlannedStep::Blocked as i32);
-        assert_eq!(stopped_plan.reason_code, "ABSENT_INSTALL_WITH_STOPPED_TARGET");
+        assert_eq!(
+            stopped_plan.reason_code,
+            "ABSENT_INSTALL_WITH_STOPPED_TARGET"
+        );
         // A tampered observation cannot turn an existing/running installation
         // or an invented digest into VERIFIED_ABSENT.
         let mut running = absent.clone();

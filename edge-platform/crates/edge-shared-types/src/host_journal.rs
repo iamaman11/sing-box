@@ -157,8 +157,8 @@ fn admit_after_protected_owner_check_once(
     scope
         .sync_all()
         .map_err(|_| "HOST_SCOPE_SYNC_UNCERTAIN_NO_REPLAY")?;
-    let parent = fs::File::open(protected_journal_dir)
-        .map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNAVAILABLE")?;
+    let parent =
+        fs::File::open(protected_journal_dir).map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNAVAILABLE")?;
     parent
         .sync_all()
         .map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNCERTAIN_NO_REPLAY")?;
@@ -308,8 +308,7 @@ where
     {
         return Err("HOST_NATIVE_POSTSTATE_UNPROVEN");
     }
-    let kind = FleetHostKind::try_from(intent.kind)
-        .map_err(|_| "HOST_NATIVE_KIND_INVALID")?;
+    let kind = FleetHostKind::try_from(intent.kind).map_err(|_| "HOST_NATIVE_KIND_INVALID")?;
     let expected_proof = match kind {
         FleetHostKind::Windows => FleetNativeReleaseProof::ActivationRecord,
         FleetHostKind::Vm => FleetNativeReleaseProof::ApplicationBundle,
@@ -358,11 +357,15 @@ where
     writer
         .write_all(&result.encode_to_vec())
         .map_err(|_| "HOST_TERMINAL_RECEIPT_WRITE_UNCERTAIN")?;
-    writer.sync_all().map_err(|_| "HOST_TERMINAL_RECEIPT_SYNC_UNCERTAIN")?;
+    writer
+        .sync_all()
+        .map_err(|_| "HOST_TERMINAL_RECEIPT_SYNC_UNCERTAIN")?;
     let dir = fs::File::open(journal_dir).map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNAVAILABLE")?;
-    dir.sync_all().map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNCERTAIN_NO_REPLAY")?;
+    dir.sync_all()
+        .map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNCERTAIN_NO_REPLAY")?;
     fs::remove_file(&scope).map_err(|_| "HOST_SCOPE_RELEASE_UNCERTAIN_NO_REPLAY")?;
-    dir.sync_all().map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNCERTAIN_NO_REPLAY")?;
+    dir.sync_all()
+        .map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNCERTAIN_NO_REPLAY")?;
     Ok(result)
 }
 
@@ -512,20 +515,36 @@ mod tests {
             reason_codes: vec![],
         };
         let mut wrong_observation = stopped_observation.clone();
-        wrong_observation.reason_codes.push("VM_RUNTIME_UNPROVEN".to_owned());
+        wrong_observation
+            .reason_codes
+            .push("VM_RUNTIME_UNPROVEN".to_owned());
         assert_eq!(
             finish_after_protected_owner_check_once(
-                &i, &registry, "vm-one", FleetHostKind::Vm as i32, &[4; 32],
-                1020, &dir, || Ok(wrong_observation)
-            ).unwrap_err(),
+                &i,
+                &registry,
+                "vm-one",
+                FleetHostKind::Vm as i32,
+                &[4; 32],
+                1020,
+                &dir,
+                || Ok(wrong_observation)
+            )
+            .unwrap_err(),
             "HOST_NATIVE_POSTSTATE_UNPROVEN"
         );
         // Missing runtime readiness cannot complete a RUNNING desired target.
         assert_eq!(
             finish_after_protected_owner_check_once(
-                &i, &registry, "vm-one", FleetHostKind::Vm as i32, &[4; 32],
-                1020, &dir, || Ok(stopped_observation.clone())
-            ).unwrap_err(),
+                &i,
+                &registry,
+                "vm-one",
+                FleetHostKind::Vm as i32,
+                &[4; 32],
+                1020,
+                &dir,
+                || Ok(stopped_observation.clone())
+            )
+            .unwrap_err(),
             "HOST_NATIVE_RUNTIME_POSTSTATE_MISMATCH"
         );
         let ready_observation = crate::FleetNativeObservation {
@@ -534,9 +553,16 @@ mod tests {
             ..stopped_observation
         };
         let completed = finish_after_protected_owner_check_once(
-            &i, &registry, "vm-one", FleetHostKind::Vm as i32, &[4; 32],
-            1020, &dir, || Ok(ready_observation)
-        ).unwrap();
+            &i,
+            &registry,
+            "vm-one",
+            FleetHostKind::Vm as i32,
+            &[4; 32],
+            1020,
+            &dir,
+            || Ok(ready_observation),
+        )
+        .unwrap();
         assert_eq!(completed.state, FleetHostResultState::Verified as i32);
         assert!(completed.physical_readback);
         // A repeated, already verified operation cannot leave a new

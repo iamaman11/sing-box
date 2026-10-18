@@ -103,28 +103,28 @@ pub fn validate_host_registry(desired: &HostRegistry) -> Result<(), String> {
         // Exact per-host typed desired may be enrolled without rebuilding
         // the Rust binaries. Its path is a pure function of the Git-owned
         // machine identity, never runner input or a second inventory.
-        let per_host_typed = spec
-            == format!("infra/hosts/specs/{}.textproto", host.machine_id);
-        let allowed = per_host_typed || match kind {
-            ManagedHostKind::Windows => spec == "infra/production/production.textproto",
-            ManagedHostKind::Vm => {
-                spec == "infra/production/production.textproto"
-                    || (spec.starts_with("infra/application/")
-                        && spec.ends_with(".json")
-                        && spec.len() <= 160
-                        && spec
-                            .trim_start_matches("infra/application/")
-                            .trim_end_matches(".json")
-                            .bytes()
-                            .all(|ch| {
-                                ch.is_ascii_lowercase()
-                                    || ch.is_ascii_digit()
-                                    || matches!(ch, b'-' | b'_')
-                            })
-                        && spec != "infra/application/.json")
-            }
-            ManagedHostKind::Unspecified => false,
-        };
+        let per_host_typed = spec == format!("infra/hosts/specs/{}.textproto", host.machine_id);
+        let allowed = per_host_typed
+            || match kind {
+                ManagedHostKind::Windows => spec == "infra/production/production.textproto",
+                ManagedHostKind::Vm => {
+                    spec == "infra/production/production.textproto"
+                        || (spec.starts_with("infra/application/")
+                            && spec.ends_with(".json")
+                            && spec.len() <= 160
+                            && spec
+                                .trim_start_matches("infra/application/")
+                                .trim_end_matches(".json")
+                                .bytes()
+                                .all(|ch| {
+                                    ch.is_ascii_lowercase()
+                                        || ch.is_ascii_digit()
+                                        || matches!(ch, b'-' | b'_')
+                                })
+                            && spec != "infra/application/.json")
+                }
+                ManagedHostKind::Unspecified => false,
+            };
         if !allowed || spec.contains("..") {
             return Err("host desired spec reference invalid for this kind".to_owned());
         }
@@ -3076,14 +3076,11 @@ mod release_set_tests {
         // machine-scoped spec path and no new workflow or compiled selector.
         let mut typed = expected.clone();
         typed.hosts[2].machine_id = "new-windows-2".to_owned();
-        typed.hosts[2].desired_spec_path =
-            "infra/hosts/specs/new-windows-2.textproto".to_owned();
+        typed.hosts[2].desired_spec_path = "infra/hosts/specs/new-windows-2.textproto".to_owned();
         assert!(validate_host_registry(&typed).is_ok());
-        typed.hosts[2].desired_spec_path =
-            "infra/hosts/specs/production-1.textproto".to_owned();
+        typed.hosts[2].desired_spec_path = "infra/hosts/specs/production-1.textproto".to_owned();
         assert!(validate_host_registry(&typed).is_err());
-        typed.hosts[2].desired_spec_path =
-            "infra/hosts/specs/new-windows-2.json".to_owned();
+        typed.hosts[2].desired_spec_path = "infra/hosts/specs/new-windows-2.json".to_owned();
         assert!(validate_host_registry(&typed).is_err());
         typed.hosts[2].desired_spec_path =
             "infra/hosts/specs/../new-windows-2.textproto".to_owned();
@@ -3092,8 +3089,7 @@ mod release_set_tests {
             "infra/hosts/specs/new-windows-2.textproto/extra".to_owned();
         assert!(validate_host_registry(&typed).is_err());
         let mut typed_vm = expected.clone();
-        typed_vm.hosts[1].desired_spec_path =
-            "infra/hosts/specs/production-1.textproto".to_owned();
+        typed_vm.hosts[1].desired_spec_path = "infra/hosts/specs/production-1.textproto".to_owned();
         assert!(validate_host_registry(&typed_vm).is_ok());
         typed_vm.hosts[1].desired_spec_path =
             "infra/hosts/specs/application-acceptance-1.textproto".to_owned();
