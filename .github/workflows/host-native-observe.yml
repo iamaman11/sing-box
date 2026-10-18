@@ -116,6 +116,54 @@ jobs:
           fi
 
 
+      - name: Capture exact installed Windows typed readback when supported
+        if: env.TARGET_KIND == 'WINDOWS'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $doctor = 'C:\sing-box\bin\edge-diagnostic.exe'
+          $current = 'C:\sing-box\current.pb'
+          $output = Join-Path $env:RUNNER_TEMP 'host-native-observation.pb'
+          Remove-Item -LiteralPath $output -Force -ErrorAction SilentlyContinue
+          # An older installed ReleaseSet may not expose this read-only verb.
+          # Do not upgrade here, invoke a privileged dispatcher or claim PASS.
+          & $doctor host-observe $current > $output
+          if ($LASTEXITCODE -ne 0 -or
+              -not (Test-Path -LiteralPath $output -PathType Leaf) -or
+              (Get-Item -LiteralPath $output).Length -gt 4096 -or
+              (Get-Item -LiteralPath $output).Length -eq 0) {
+            Remove-Item -LiteralPath $output -Force -ErrorAction SilentlyContinue
+            Write-Output 'host_typed_readback=UNAVAILABLE_INSTALLED_VERSION_OR_EVIDENCE'
+          } else {
+            Write-Output 'host_typed_readback=BOUNDED_PROTOBUF_CAPTURED_UNAUTHENTICATED'
+          }
+
+      - name: Capture exact installed VM typed readback when permitted
+        if: env.TARGET_KIND == 'VM'
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner=/usr/local/libexec/sing-box/edge-agent
+          output="${RUNNER_TEMP}/host-native-observation.pb"
+          rm -f "${output}"
+          if sudo -n -l "${owner}" local host-observe >/dev/null 2>&1 &&
+             sudo -n "${owner}" local host-observe > "${output}" &&
+             test -s "${output}" && test "$(stat -c '%s' "${output}")" -le 4096; then
+            echo 'host_typed_readback=BOUNDED_PROTOBUF_CAPTURED_UNAUTHENTICATED'
+          else
+            rm -f "${output}"
+            echo 'host_typed_readback=UNAVAILABLE_INSTALLED_VERSION_OR_SUDOERS'
+          fi
+
+      - name: Retain native bounded protobuf as transport evidence
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-readback-${{ inputs.machine_id }}-${{ inputs.source_comment_id }}
+          path: ${{ runner.temp }}/host-native-observation.pb
+          if-no-files-found: ignore
+          retention-days: 7
+
   report:
     # An unavailable third runner must not hold the reports for healthy peers.
     # A runner queued forever cannot produce a PASS; no claim is inferred.
