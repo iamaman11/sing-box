@@ -400,15 +400,14 @@ fn host_lifecycle_admission(
         // This is a reconciliation request, not a blind rollback or replay.
         // It must inspect the installed owner independently before deciding
         // whether previous-state rollback can ever be authorized.
-        println!(
-            "host_recovery_decision={}",
-            if unresolved {
-                "UNKNOWN_NO_REPLAY_AB_UNRESOLVED"
-            } else {
-                "RECONCILE_NATIVE_OWNER_BEFORE_MUTATION"
-            }
-        );
+        let recovery = if unresolved {
+            "UNKNOWN_NO_REPLAY_AB_UNRESOLVED"
+        } else {
+            "RECONCILE_NATIVE_OWNER_BEFORE_MUTATION"
+        };
+        println!("host_recovery_decision={recovery}");
         if let Some(output) = output {
+            append_recovery_outputs(output, journal_state, recovery)?;
             let labels = runner_labels(kind, owner, &selected.windows_runner_label)?;
             // Recovery is read-only and must not queue a known offline owner.
             let dispatch = if let Some(api) = runner_json {
@@ -449,13 +448,26 @@ fn host_lifecycle_admission(
     } else {
         println!("host_runner_registration=UNPROVEN_NATIVE_OWNER_MUST_VERIFY");
     }
-    // No default VM manifest may be silently interpreted as a production
-    // ReleaseSet: only existing canonical production lifecycle supports it.
-    if kind == ManagedHostKind::Vm
-        && (machine_id != "production-1"
-            || selected.desired_spec_path != "infra/production/production.textproto")
-    {
-        return Err("HOST_APPLY_BLOCKED_VM_MANIFEST_NOT_YET_NATIVE".to_owned());
+    // Generic VM admission always loads the selected Git-owned application
+    // manifest through the one native Rust parser. Never route an acceptance
+    // machine to the production bundle, or allow a manifest to borrow a
+    // different host's owner. Runtime release and receipt checks are separate.
+    if kind == ManagedHostKind::Vm {
+        let application = crate::application_lifecycle_command::load_application_desired(
+            Path::new(&selected.desired_spec_path),
+        )
+        .map_err(|_| "HOST_VM_DESIRED_SPEC_INVALID".to_owned())?;
+        if application.machine_id != machine_id {
+            return Err("HOST_VM_DESIRED_MACHINE_MISMATCH".to_owned());
+        }
+        println!("host_vm_application_spec=EXACT_GIT_MATCH");
+        // The canonical runtime currently publishes only the production
+        // application bundle in its immutable ReleaseSet. Until the
+        // per-host bundle protocol is accepted, fail closed instead of
+        // secretly routing a new VM to that unrelated production bundle.
+        if selected.desired_spec_path != "infra/production/production.textproto" {
+            return Err("HOST_VM_RELEASE_BOUND_BUNDLE_NOT_YET_PUBLISHED".to_owned());
+        }
     }
     let labels = runner_labels(kind, owner, &selected.windows_runner_label)?;
     let output = output.ok_or("HOST_APPLY_OUTPUT_REQUIRED")?;
@@ -477,6 +489,36 @@ fn host_lifecycle_admission(
     println!("host_dispatch=EXACT_NATIVE_OWNER_FRESHNESS_REQUIRED");
     println!("host_admission_valid_seconds=900");
     Ok(())
+}
+
+/// Publish only fixed native decisions through the existing GitHub
+/// control output. This exposes the reason immediately even if a physical
+/// runner is unregistered; the native owner status is still independent.
+fn append_recovery_outputs(path: &Path, journal_state: &str, recovery: &str) -> Result<(), String> {
+    if !matches!(
+        journal_state,
+        "BEGIN_DURABLE_NO_AUTOMATIC_REPLAY"
+            | "COMMIT_DURABLE_OWNER_RECEIPTS_UNPROVEN"
+            | "NO_BEGIN_NO_MUTATION_AUTHORITY"
+    ) || !matches!(
+        recovery,
+        "UNKNOWN_NO_REPLAY_AB_UNRESOLVED" | "RECONCILE_NATIVE_OWNER_BEFORE_MUTATION"
+    ) {
+        return Err("HOST_RECOVERY_DECISION_UNSUPPORTED".to_owned());
+    }
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|_| "HOST_RECOVERY_OUTPUT_UNAVAILABLE".to_owned())?;
+    if !metadata.file_type().is_file() {
+        return Err("HOST_RECOVERY_OUTPUT_NOT_REGULAR".to_owned());
+    }
+    OpenOptions::new()
+        .append(true)
+        .open(path)
+        .and_then(|mut file| {
+            writeln!(file, "host_original_ab_state={journal_state}")?;
+            writeln!(file, "host_recovery_decision={recovery}")
+        })
+        .map_err(|_| "HOST_RECOVERY_OUTPUT_WRITE_FAILED".to_owned())
 }
 
 /// Expiring GitHub admission: queued/offline self-hosted jobs must not

@@ -1,0 +1,141 @@
+name: Native Host Observation
+
+on:
+  workflow_call:
+    inputs:
+      machine_id:
+        required: true
+        type: string
+      kind:
+        required: true
+        type: string
+      owner:
+        required: true
+        type: string
+      runner_labels:
+        required: true
+        type: string
+      command_body:
+        required: true
+        type: string
+      source_comment_id:
+        required: true
+        type: string
+
+permissions: {}
+
+jobs:
+  observe:
+    # Git selects a single owner from Rust's exact protobuf matrix.
+    # This job NEVER holds issues:write, Docker socket or generic root.
+    runs-on: ${{ fromJSON(inputs.runner_labels) }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    env:
+      TARGET_MACHINE: ${{ inputs.machine_id }}
+      TARGET_OWNER: ${{ inputs.owner }}
+      TARGET_KIND: ${{ inputs.kind }}
+      COMMAND_BODY: ${{ inputs.command_body }}
+    steps:
+      - name: Verify installed Windows native owner and diagnose without mutation
+        if: env.TARGET_KIND == 'WINDOWS'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_NAME -cne $env:TARGET_OWNER) {
+            throw 'HOST_WINDOWS_OWNER_MISMATCH'
+          }
+          $root = 'C:\sing-box'
+          $doctor = Join-Path $root 'bin\edge-diagnostic.exe'
+          $current = Join-Path $root 'current.pb'
+          if (-not (Test-Path -LiteralPath $doctor -PathType Leaf) -or
+              -not (Test-Path -LiteralPath $current -PathType Leaf)) {
+            throw 'HOST_WINDOWS_NATIVE_OWNER_MISSING'
+          }
+          if ($env:COMMAND_BODY -like '* --deep' -or
+              $env:COMMAND_BODY -like '/host recover *') {
+            & $doctor doctor $current
+            if ($LASTEXITCODE -ne 0) { throw 'HOST_WINDOWS_NATIVE_DEEP_FAILED' }
+          } else {
+            & $doctor doctor $current --fast
+            if ($LASTEXITCODE -ne 0) {
+              # Older accepted immutable diagnostic has only doctor <current.pb>.
+              # Its exact owner can still diagnose read-only; don't install
+              # a new version, restart SCM or claim that FAST succeeded.
+              Write-Output 'host_fast_unavailable=INSTALLED_NATIVE_VERB_NOT_ACCEPTED'
+              Write-Output 'host_observation_depth=DEEP_INSTALLED_OWNER_FALLBACK'
+              & $doctor doctor $current
+              if ($LASTEXITCODE -ne 0) { throw 'HOST_WINDOWS_NATIVE_FALLBACK_FAILED' }
+            }
+          }
+
+      - name: Verify installed VM native owner and diagnose without mutation
+        if: env.TARGET_KIND == 'VM'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${RUNNER_NAME}" = "sing-box-production-${TARGET_OWNER}"
+          owner="/usr/local/libexec/sing-box/edge-agent"
+          test -x "${owner}"
+          test ! -L "${owner}"
+          for path in /usr /usr/local /usr/local/libexec /usr/local/libexec/sing-box "${owner}"; do
+            test ! -L "${path}"
+            test "$(stat -c '%u:%g:%a' "${path}")" = "0:0:755"
+          done
+          test "$(id -u)" != 0
+          if sudo -n id -u >/dev/null 2>&1; then
+            echo 'HOST_VM_GENERIC_ROOT_AUTHORITY_FORBIDDEN' >&2
+            exit 1
+          fi
+          test ! -r /var/run/docker.sock
+          if [[ "${COMMAND_BODY}" == *" --deep" || "${COMMAND_BODY}" == "/host recover "* ]]; then
+            sudo -n "${owner}" local diagnose
+          else
+            # Old installed sudoers may not yet grant --fast. Native deep
+            # remains authorized and read-only; do not elevate privileges.
+            if sudo -n -l "${owner}" local status --fast >/dev/null 2>&1; then
+              sudo -n "${owner}" local status --fast
+            else
+              echo 'host_observation_depth=DEEP_INSTALLED_OWNER_FALLBACK'
+              echo 'host_fast_unavailable=EXACT_SUDOERS_VERB_NOT_INSTALLED'
+              sudo -n "${owner}" local diagnose
+            fi
+          fi
+
+
+  report:
+    # An unavailable third runner must not hold the reports for healthy peers.
+    # A runner queued forever cannot produce a PASS; no claim is inferred.
+    needs: observe
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET_MACHINE: ${{ inputs.machine_id }}
+      TARGET_KIND: ${{ inputs.kind }}
+      SOURCE_COMMENT_ID: ${{ inputs.source_comment_id }}
+      OBSERVED_RESULT: ${{ needs.observe.result }}
+    steps:
+      - name: Return bounded result for this ONE native owner
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${SOURCE_COMMENT_ID}" =~ ^[0-9]+$ ]]
+          [[ "${TARGET_MACHINE}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]
+          case "${TARGET_KIND}" in WINDOWS|VM) ;; *) exit 1 ;; esac
+          case "${OBSERVED_RESULT}" in
+            success) result=NATIVE_DIAGNOSTIC_EXECUTED ;;
+            failure) result=NATIVE_DIAGNOSTIC_FAILED ;;
+            cancelled) result=NATIVE_DIAGNOSTIC_CANCELLED ;;
+            skipped) result=OWNER_NOT_OBSERVED ;;
+            *) result=UNKNOWN_NOT_ACCEPTED ;;
+          esac
+          run_url="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          body="$(printf 'Host native result for operator command #%s\n\nHost: `%s`\nKind: `%s`\nResult: `%s`\nEvidence: %s\n\nA completed diagnostic is NOT acceptance of credentials, live network authentication, or fleet health. No host mutations.\n' \
+            "${SOURCE_COMMENT_ID}" "${TARGET_MACHINE}" "${TARGET_KIND}" "${result}" "${run_url}")"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/1/comments" -f "body=${body}" >/dev/null

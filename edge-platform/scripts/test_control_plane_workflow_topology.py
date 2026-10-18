@@ -735,77 +735,76 @@ def test_git_windows_host_host_contract(credentials: str) -> None:
 
 
 def test_native_host_readonly_control_boundary(router: str) -> None:
-    """Host source selection and native diagnostics must not grant mutations."""
+    """One typed Rust inventory dispatches independent, read-only native owners."""
+    child_path = Path(".github/workflows/host-native-observe.yml")
+    require(child_path.is_file(), "Native host reusable workflow absent")
+    child = child_path.read_text(encoding="utf-8")
     require("  host:\n" in router and "  host_observe:\n" in router, "Host owner route missing")
     hosted = router.split("  host:\n", 1)[1].split("\n  host_observe:\n", 1)[0]
     physical = router.split("  host_observe:\n", 1)[1].split("\n  host_report:\n", 1)[0]
     report = router.split("  host_report:\n", 1)[1].split("\n  host_apply_windows:\n", 1)[0]
+    owner = child.split("  observe:\n", 1)[1].split("\n  report:\n", 1)[0]
+    peer_report = child.split("  report:\n", 1)[1]
     require(
         "github.actor_id == '44100369'" in hosted
         and "github.event.issue.number == 1" in hosted
         and "github.run_attempt == 1" in hosted
         and "actions: read" in hosted
-        and "contents: read" in hosted
         and "issues: write" not in hosted
-        and "issues: write" not in physical
         and "host_mutations=0" in hosted
         and '--github-output "${GITHUB_OUTPUT}"' in hosted
-        and "needs.host.outputs.runner_labels" not in physical
         and "matrix: ${{ fromJSON(needs.host.outputs.host_matrix) }}" in physical
-        and "runs-on: ${{ matrix.runner_labels }}" in physical
-        and "TARGET_MACHINE: ${{ matrix.machine_id }}" in physical
-        and "TARGET_OWNER: ${{ matrix.owner }}" in physical
-        and "TARGET_KIND: ${{ matrix.kind }}" in physical
+        and "needs: [host, host_report]" in physical
+        and "uses: ./.github/workflows/host-native-observe.yml" in physical
+        and "runner_labels: ${{ toJSON(matrix.runner_labels) }}" in physical
         and "needs.host.outputs.host_targets_present == 'true'" in physical
         and "github.event.comment.body == '/host status'" in physical
-        and "Verify installed Windows native owner" in physical
-        and "HOST_WINDOWS_OWNER_MISMATCH" in physical
-        and "Verify installed VM native owner" in physical
-        and "HOST_VM_GENERIC_ROOT_AUTHORITY_FORBIDDEN" in physical
-        and 'sudo -n "${owner}" local diagnose' in physical,
-        "Host must dispatch a single Rust-selected read-only owner per available fleet host",
+        and "runs-on: ${{ fromJSON(inputs.runner_labels) }}" in owner
+        and "Verify installed Windows native owner" in owner
+        and "HOST_WINDOWS_OWNER_MISMATCH" in owner
+        and "Verify installed VM native owner" in owner
+        and "HOST_VM_GENERIC_ROOT_AUTHORITY_FORBIDDEN" in owner
+        and 'sudo -n "${owner}" local diagnose' in owner
+        and "issues: write" not in owner
+        and "issues: write" in peer_report
+        and "needs: observe" in peer_report
+        and "if: always()" in peer_report
+        and "Host native result for operator command" in peer_report
+        and "gh api -X POST" in peer_report
+        and "sudo" not in peer_report,
+        "Per-host reports must finish independently with native read-only owners",
     )
-
     require(
         "needs: host" in report
-        and "needs: [host, host_report, host_observe]" in report
         and "github.run_attempt == 1" in report
         and "needs.host.result == 'success'" in report
         and "issues: write" in report
-        and "contents: read" in report
-        and "NATIVE_DIAGNOSTIC_FAILED" in report
-        and "SOURCE_COMMENT_ID" in report
+        and "PER_HOST_NATIVE_REPORTS_INDEPENDENT" in report
         and "CI evidence:" in report
         and "gh api -X POST" in report
-        and "gh api -X PATCH" in report
-        and "comment_id" in report
+        and "host_report_finalize:" not in router
         and "sudo" not in report
         and "docker" not in report,
-        "Only the unprivileged GitHub result transport may post a bounded operator reply",
+        "No global fleet result may wait for an offline runner",
     )
-
     require(
-        'if sudo -n -l "${owner}" local status --fast >/dev/null 2>&1; then' in physical
-        and 'host_fast_unavailable=EXACT_SUDOERS_VERB_NOT_INSTALLED' in physical
-        and 'host_observation_depth=DEEP_INSTALLED_OWNER_FALLBACK' in physical
-        and 'sudo -n "${owner}" local diagnose' in physical,
-        "VM read-only host status must degrade to its existing sudoers-allowed native owner",
+        'if sudo -n -l "${owner}" local status --fast >/dev/null 2>&1; then' in owner
+        and 'host_fast_unavailable=EXACT_SUDOERS_VERB_NOT_INSTALLED' in owner
+        and 'host_observation_depth=DEEP_INSTALLED_OWNER_FALLBACK' in owner,
+        "Installed VM owner must retain read-only historical deep diagnostics",
     )
-
     require(
         "  host_apply_windows:\n" in router
         and "  host_apply_vm:\n" in router
         and "needs.host.outputs.operation == 'APPLY'" in router
-        and "'HOST_APPLY_BLOCKED_ORIGINAL_AB_BEGIN_NO_REPLAY'" not in router
         and "Read complete existing GitHub journal for mutation admission" in router
         and "--journal-history-json" in router
         and "needs.host.outputs.windows_runner_label" in router
         and "host_runner_name:" in router
         and "host_admitted_at_unix:" in router
         and "needs.host.outputs.admitted_at_unix != ''" in router,
-        "Host apply must preserve one exact journalled native Windows/VM owner",
+        "Host apply must retain typed Rust admission and native owner",
     )
-
 
 def main() -> None:
     router = ROUTER.read_text(encoding="utf-8")
@@ -3004,8 +3003,10 @@ def main() -> None:
     require(
         "startsWith(github.event.comment.body, '/production ')" in router
         and router.count("uses: ./.github/workflows/vm-application-lifecycle.yml") == 3
-        and "needs.host.outputs.machine_id == 'production-1'" in router
-        and "needs.host.outputs.operation == 'APPLY'" in router,
+        and "needs.host.outputs.desired_spec_path == 'infra/production/production.textproto'" in router
+        and "needs.host.outputs.operation == 'APPLY'" in router
+        and "HOST_VM_RELEASE_BOUND_BUNDLE_NOT_YET_PUBLISHED" in
+            Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(encoding="utf-8"),
         "router must expose production only through the existing owner-gated application lifecycle backend",
     )
     require(
