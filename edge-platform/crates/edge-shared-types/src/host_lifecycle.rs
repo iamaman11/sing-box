@@ -289,14 +289,12 @@ pub const MAX_HOST_AUTHORIZATION_BYTES: usize = 2048;
 /// A detached, exact protobuf authorization. Parsing is not a privilege:
 /// the pinned native owner MUST call verify_host_authorization and reserve its
 /// no-replay journal before executing any operation.
-pub fn decode_host_authorization(
-    bytes: &[u8],
-) -> Result<FleetHostAuthorization, &'static str> {
+pub fn decode_host_authorization(bytes: &[u8]) -> Result<FleetHostAuthorization, &'static str> {
     if bytes.is_empty() || bytes.len() > MAX_HOST_AUTHORIZATION_BYTES {
         return Err("HOST_AUTHORIZATION_SIZE_INVALID");
     }
-    let value = FleetHostAuthorization::decode(bytes)
-        .map_err(|_| "HOST_AUTHORIZATION_PROTO_INVALID")?;
+    let value =
+        FleetHostAuthorization::decode(bytes).map_err(|_| "HOST_AUTHORIZATION_PROTO_INVALID")?;
     if value.encode_to_vec() != bytes {
         return Err("HOST_AUTHORIZATION_NONCANONICAL");
     }
