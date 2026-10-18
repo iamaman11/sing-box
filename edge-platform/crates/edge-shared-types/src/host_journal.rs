@@ -221,6 +221,34 @@ pub fn execute_native_host_once<Observe, Apply>(
     native_owner_kind: i32,
     now_unix: u64,
     protected_journal_dir: &Path,
+    observe: Observe,
+    apply_once: Apply,
+) -> Result<FleetHostResult, &'static str>
+where
+    Observe: FnMut() -> Result<crate::FleetNativeObservation, &'static str>,
+    Apply: FnOnce(crate::FleetHostPlannedStep) -> Result<(), &'static str>,
+{
+    verify_native_journal_protection(protected_journal_dir)?;
+    execute_after_protected_owner_check_once(
+        intent, authorization, registry_pb, selected_spec_bytes,
+        release_set_pb, pinned_worker_public_key, native_machine_id,
+        native_owner_kind, now_unix, protected_journal_dir, observe, apply_once,
+    )
+}
+
+/// Private testable core; only the external entry point can authorize a
+/// real mutation after checking kernel owner and protected journal ancestry.
+fn execute_after_protected_owner_check_once<Observe, Apply>(
+    intent: &FleetHostIntent,
+    authorization: &FleetHostAuthorization,
+    registry_pb: &[u8],
+    selected_spec_bytes: &[u8],
+    release_set_pb: &[u8],
+    pinned_worker_public_key: &[u8],
+    native_machine_id: &str,
+    native_owner_kind: i32,
+    now_unix: u64,
+    protected_journal_dir: &Path,
     mut observe: Observe,
     apply_once: Apply,
 ) -> Result<FleetHostResult, &'static str>
@@ -250,9 +278,6 @@ where
         return Err("HOST_NATIVE_EXECUTION_ACTION_NOT_ALLOWED");
     }
 
-    // Checking the OS ownership and the pending resource marker is part of
-    // the real native boundary, never an unprivileged rehearsal.
-    verify_native_journal_protection(protected_journal_dir)?;
     let selected = registry
         .hosts
         .iter()
@@ -291,7 +316,7 @@ where
         return Err("HOST_NATIVE_PLAN_UNSUPPORTED");
     }
 
-    admit_native_host_once(
+    admit_after_protected_owner_check_once(
         intent,
         authorization,
         &registry,
@@ -307,7 +332,7 @@ where
     // From this point ANY failure is an uncertain operation. The durable
     // resource gate must remain; no replay, no unapproved compensation.
     apply_once(step)?;
-    finish_native_host_once(
+    finish_after_protected_owner_check_once(
         intent,
         &registry,
         native_machine_id,
@@ -699,6 +724,121 @@ mod tests {
             FleetHostResultState::Authorized as i32
         );
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn single_native_execution_calls_owner_once_and_requires_physical_poststate() {
+        use crate::host_lifecycle::{build_native_observation, digest_host_desired, host_authorization_payload};
+        use crate::release::v1::{ReleaseSet, VmRuntime};
+        use crate::{
+            FleetHostPlannedStep, FleetNativeOwnerState, FleetNativeReleaseProof,
+            encode_host_registry,
+        };
+        use std::cell::Cell;
+
+        let rng = SystemRandom::new();
+        let pair =
+            Ed25519KeyPair::from_pkcs8(Ed25519KeyPair::generate_pkcs8(&rng).unwrap().as_ref())
+                .unwrap();
+        let host = FleetHost {
+            machine_id: "vm-exact".into(),
+            kind: FleetHostKind::Vm as i32,
+            owner: Some(managed_host::Owner::VmMachineId("vm-exact".into())),
+            windows_runner_label: String::new(),
+            desired_spec_path: "infra/hosts/specs/vm-exact.textproto".into(),
+            target: Some(FleetHostTarget {
+                run_state: FleetHostRunState::Running as i32,
+                windows_mode: FleetHostMode::Unspecified as i32,
+            }),
+        };
+        let registry = HostRegistry { schema_version: 1, hosts: vec![host.clone()] };
+        let registry_pb = encode_host_registry(&registry).unwrap();
+        let spec = b"exact git typed VM desired";
+        let release = ReleaseSet {
+            schema_version: 7,
+            source_revision: "a".repeat(40),
+            vm_runtime: Some(VmRuntime {
+                application_bundle_sha256: vec![7; 32],
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let release_pb = release.encode_to_vec();
+        let mut intent = FleetHostIntent {
+            schema_version: 1,
+            machine_id: "vm-exact".into(),
+            kind: FleetHostKind::Vm as i32,
+            resource_id: "sing-box".into(),
+            operation_id: "issue1-comment-981".into(),
+            action: FleetHostAction::Apply as i32,
+            registry_sha256: digest(&SHA256, &registry_pb).as_ref().to_vec(),
+            desired_sha256: digest_host_desired(&host, spec).unwrap(),
+            release_set_sha256: digest(&SHA256, &release_pb).as_ref().to_vec(),
+            requested_mode: FleetHostMode::Unspecified as i32,
+            requested_at_unix: 1000,
+        };
+        let mut auth = FleetHostAuthorization {
+            schema_version: 1,
+            key_id: "worker-v1".into(),
+            operation_id: intent.operation_id.clone(),
+            issued_at_unix: 1000,
+            expires_at_unix: 1100,
+            ed25519_signature: Vec::new(),
+        };
+        auth.ed25519_signature = pair.sign(&host_authorization_payload(&intent, &auth))
+            .as_ref().to_vec();
+        let dir = std::env::temp_dir().join(format!(
+            "sing-box-host-executor-test-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        fs::create_dir(&dir).unwrap();
+        let running = Cell::new(false);
+        let count = Cell::new(0_u32);
+        let observe = || {
+            build_native_observation(
+                FleetHostKind::Vm,
+                if running.get() { FleetNativeOwnerState::Running }
+                else { FleetNativeOwnerState::Stopped },
+                FleetNativeReleaseProof::ApplicationBundle,
+                Some(&"07".repeat(32)),
+                Some(running.get()),
+                1020,
+                &[],
+            )
+        };
+        let outcome = execute_after_protected_owner_check_once(
+            &intent, &auth, &registry_pb, spec, &release_pb,
+            pair.public_key().as_ref(), "vm-exact", FleetHostKind::Vm as i32,
+            1020, &dir, observe, |step| {
+                assert_eq!(step, FleetHostPlannedStep::Start);
+                count.set(count.get() + 1);
+                running.set(true);
+                Ok(())
+            }
+        ).unwrap();
+        assert_eq!(count.get(), 1);
+        assert_eq!(outcome.state, FleetHostResultState::Verified as i32);
+        assert!(outcome.physical_readback);
+        assert!(!native_scope_pending_path(&dir, &intent).exists());
+
+        // A different operation against already-converged state is NOOP;
+        // no mutation or fabricated VERIFIED receipt is allowed.
+        intent.operation_id = "issue1-comment-982".into();
+        auth.operation_id = intent.operation_id.clone();
+        auth.ed25519_signature = pair.sign(&host_authorization_payload(&intent, &auth))
+            .as_ref().to_vec();
+        let noop = execute_after_protected_owner_check_once(
+            &intent, &auth, &registry_pb, spec, &release_pb,
+            pair.public_key().as_ref(), "vm-exact", FleetHostKind::Vm as i32,
+            1020, &dir, observe, |_step| {
+                panic!("NOOP must never mutate");
+            }
+        ).unwrap();
+        assert_eq!(noop.state, FleetHostResultState::Observed as i32);
+        assert!(!noop.physical_readback);
+        assert_eq!(count.get(), 1);
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[cfg(unix)]
