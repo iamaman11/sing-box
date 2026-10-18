@@ -18,6 +18,22 @@
 
 **D. Физическая приёмка.** Две Windows и две VM, включая новую машину: fresh install, update, reinstall, восстановление после crash/lost ACK/offline runner, config-only правка, добавление/удаление контейнера, централизованные новые Worker credentials, Line1 4/4 и Line2 6/6 с DIRECT/WARP/TLS/auth. Проверить независимость Cloudflare One и Mesh. Windows ProxyOnly и stopped SCM сохранять до отдельного явного решения о запуске; TUN принимать отдельно после DNS/route/reboot/browsing safety. Точный tested SHA → CI → immutable ReleaseSet без rebuild → native poststate; `UNPROVEN` никогда не равен PASS.
 
+## Единый нативный readback (кандидат PR #403)
+
+Без второй службы добавлен `FleetNativeObservation`: внутренние
+`edge-agent local host-observe` (VM Docker + bundle) и
+`edge-diagnostic host-observe <current.pb>` (Windows SCM + activation).
+Ответ protobuf ограничен 4096 байтами и различает digest Windows
+ReleaseSet activation record и VM application bundle. Windows дополнительно
+сверяет точный путь SCM с проверенным release binary. Значение
+`runtime_ready_proven=false` или `UNPROVEN` — не PASS.
+Это **read-only наблюдение**, не подписанный native receipt,
+не доказательство внешнего TLS/auth и не разрешение на apply.
+Пока хосты не получили новый проверенный бинарник, старый diagnostic
+остаётся только read-only; его нельзя объявлять равным новой версии.
+Окончательное включение в централизованный Host status требует
+физической установки и проверки точного SHA.
+
 ## Текущие ограничения (не считать закрытыми)
 
 **Граница привилегий VM:** в ранее установленном sudoers для `github-runner` присутствовал прямой допуск к `bundle-converge`, rollback, bootstrap и credential mutation. PR #403 закрывает этот доступ в *исходном установщике* и добавляет read-only наблюдение `host_runner_direct_mutation_authority` на фактически установленном runner. Это не доказывает, что старый sudoers уже исправлен на VM. Любые VM writes через этот старый допуск запрещены; коррекция установленной политики требует штатного доверенного native-owner handoff и физического readback, без replay исторической A/B. В PR #403 native подписанное admission и журнал находятся в разработке, Worker signing и исполнение пока не подключены.
