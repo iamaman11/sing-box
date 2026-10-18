@@ -83,6 +83,8 @@ jobs:
       operation: ${{ steps.observe.outputs.operation }}
       windows_runner_label: ${{ steps.observe.outputs.windows_runner_label }}
       admitted_at_unix: ${{ steps.observe.outputs.admitted_at_unix }}
+      host_matrix: ${{ steps.observe.outputs.host_matrix }}
+      host_targets_present: ${{ steps.observe.outputs.host_targets_present }}
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     permissions:
@@ -216,24 +218,27 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
   host_observe:
-    # Real physical diagnostics are executed on the Git-selected machine,
-    # via the existing native diagnostic/agent owner. No new service, remote
-    # shell, credential publish, SCM start, network rewrite, or host mutation.
+    # One read-only native owner job definition, distributed by the *Rust*
+    # typed inventory. Offline/unproven fleet entries are reported by the
+    # admission job, not silently counted as physically healthy.
     needs: host
     if: >-
       needs.host.result == 'success' &&
-      (startsWith(github.event.comment.body, '/host status ') ||
-       needs.host.outputs.operation == 'RECOVER_READ_ONLY') &&
-      (needs.host.outputs.kind == 'WINDOWS' ||
-       needs.host.outputs.kind == 'VM')
-    runs-on: ${{ fromJSON(needs.host.outputs.runner_labels) }}
+      needs.host.outputs.host_targets_present == 'true' &&
+      (github.event.comment.body == '/host status' ||
+       startsWith(github.event.comment.body, '/host status ') ||
+       needs.host.outputs.operation == 'RECOVER_READ_ONLY')
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.host.outputs.host_matrix) }}
+    runs-on: ${{ matrix.runner_labels }}
     timeout-minutes: 15
     permissions:
       contents: read
     env:
-      TARGET_MACHINE: ${{ needs.host.outputs.machine_id }}
-      TARGET_OWNER: ${{ needs.host.outputs.owner }}
-      TARGET_KIND: ${{ needs.host.outputs.kind }}
+      TARGET_MACHINE: ${{ matrix.machine_id }}
+      TARGET_OWNER: ${{ matrix.owner }}
+      TARGET_KIND: ${{ matrix.kind }}
       COMMAND_BODY: ${{ github.event.comment.body }}
     steps:
       - name: Verify installed Windows native owner and diagnose without mutation
@@ -300,6 +305,86 @@ jobs:
               sudo -n "${owner}" local diagnose
             fi
           fi
+
+  host_report:
+    # Post an immediate, bounded Actions run pointer. An offline runner
+    # must not postpone ChatGPT's discovery of the physical status workflow.
+    needs: host
+    if: >-
+      github.run_attempt == 1 &&
+      needs.host.result == 'success' &&
+      (github.event.comment.body == '/host status' ||
+       startsWith(github.event.comment.body, '/host status ') ||
+       needs.host.outputs.operation == 'RECOVER_READ_ONLY')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      issues: write
+    outputs:
+      comment_id: ${{ steps.publish.outputs.comment_id }}
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_COMMENT_ID: ${{ github.event.comment.id }}
+      COMMAND_BODY: ${{ github.event.comment.body }}
+      TARGETS_PRESENT: ${{ needs.host.outputs.host_targets_present }}
+    steps:
+      - name: Publish one read-only observation pointer immediately
+        id: publish
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${SOURCE_COMMENT_ID}" =~ ^[0-9]+$ ]]
+          case "${TARGETS_PRESENT}" in
+            true) result=PENDING_NATIVE_OBSERVATION ;;
+            false) result=NO_NATIVE_TARGET_AVAILABLE ;;
+            *) exit 1 ;;
+          esac
+          run_url="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          body="$(printf 'Host read-only report for operator command #%s\n\nOperation: `%s`\nResult: `%s`\nPhysical dispatch selected: `%s`\nCI evidence: %s\n\nNo credentials, SCM, DNS, routing or TUN mutation.\n' \
+            "${SOURCE_COMMENT_ID}" "${COMMAND_BODY}" "${result}" "${TARGETS_PRESENT}" "${run_url}")"
+          comment_id="$(gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/1/comments" -f "body=${body}" --jq '.id')"
+          [[ "${comment_id}" =~ ^[0-9]+$ ]]
+          echo "comment_id=${comment_id}" >> "${GITHUB_OUTPUT}"
+
+  host_report_finalize:
+    # Transport-only update of the SAME response. The native job cannot
+    # write Issues, and GitHub never infers runtime health from a queued job.
+    needs: [host, host_report, host_observe]
+    if: >-
+      always() &&
+      needs.host_report.result == 'success'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPORT_COMMENT_ID: ${{ needs.host_report.outputs.comment_id }}
+      SOURCE_COMMENT_ID: ${{ github.event.comment.id }}
+      COMMAND_BODY: ${{ github.event.comment.body }}
+      OBSERVED_RESULT: ${{ needs.host_observe.result }}
+      TARGETS_PRESENT: ${{ needs.host.outputs.host_targets_present }}
+    steps:
+      - name: Finalize exactly the existing operator result comment
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${REPORT_COMMENT_ID}" =~ ^[0-9]+$ ]]
+          [[ "${SOURCE_COMMENT_ID}" =~ ^[0-9]+$ ]]
+          case "${OBSERVED_RESULT}" in
+            success) result=NATIVE_READ_ONLY_COMPLETED ;;
+            failure) result=NATIVE_DIAGNOSTIC_FAILED ;;
+            cancelled) result=NATIVE_DIAGNOSTIC_CANCELLED ;;
+            skipped) result=NO_NATIVE_OBSERVATION ;;
+            *) result=UNKNOWN_NOT_ACCEPTED ;;
+          esac
+          case "${TARGETS_PRESENT}" in true|false) ;; *) exit 1 ;; esac
+          run_url="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          body="$(printf 'Host read-only report for operator command #%s\n\nOperation: `%s`\nResult: `%s`\nPhysical dispatch selected: `%s`\nCI evidence: %s\n\nNo credentials, SCM, DNS, routing or TUN mutation.\n' \
+            "${SOURCE_COMMENT_ID}" "${COMMAND_BODY}" "${result}" "${TARGETS_PRESENT}" "${run_url}")"
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${REPORT_COMMENT_ID}" -f "body=${body}" >/dev/null
 
   host_apply_windows:
     needs: host

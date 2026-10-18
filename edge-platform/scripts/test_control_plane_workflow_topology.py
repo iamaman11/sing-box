@@ -738,7 +738,8 @@ def test_native_host_readonly_control_boundary(router: str) -> None:
     """Host source selection and native diagnostics must not grant mutations."""
     require("  host:\n" in router and "  host_observe:\n" in router, "Host owner route missing")
     hosted = router.split("  host:\n", 1)[1].split("\n  host_observe:\n", 1)[0]
-    physical = router.split("  host_observe:\n", 1)[1].split("\n  host_apply_windows:\n", 1)[0]
+    physical = router.split("  host_observe:\n", 1)[1].split("\n  host_report:\n", 1)[0]
+    report = router.split("  host_report:\n", 1)[1].split("\n  host_apply_windows:\n", 1)[0]
     require(
         "github.actor_id == '44100369'" in hosted
         and "github.event.issue.number == 1" in hosted
@@ -749,13 +750,38 @@ def test_native_host_readonly_control_boundary(router: str) -> None:
         and "issues: write" not in physical
         and "host_mutations=0" in hosted
         and '--github-output "${GITHUB_OUTPUT}"' in hosted
-        and "needs.host.outputs.runner_labels" in physical
+        and "needs.host.outputs.runner_labels" not in physical
+        and "matrix: ${{ fromJSON(needs.host.outputs.host_matrix) }}" in physical
+        and "runs-on: ${{ matrix.runner_labels }}" in physical
+        and "TARGET_MACHINE: ${{ matrix.machine_id }}" in physical
+        and "TARGET_OWNER: ${{ matrix.owner }}" in physical
+        and "TARGET_KIND: ${{ matrix.kind }}" in physical
+        and "needs.host.outputs.host_targets_present == 'true'" in physical
+        and "github.event.comment.body == '/host status'" in physical
         and "Verify installed Windows native owner" in physical
         and "HOST_WINDOWS_OWNER_MISMATCH" in physical
         and "Verify installed VM native owner" in physical
         and "HOST_VM_GENERIC_ROOT_AUTHORITY_FORBIDDEN" in physical
         and 'sudo -n "${owner}" local diagnose' in physical,
-        "Host must select exact Git host then run existing native read-only owners only",
+        "Host must dispatch a single Rust-selected read-only owner per available fleet host",
+    )
+
+    require(
+        "needs: host" in report
+        and "needs: [host, host_report, host_observe]" in report
+        and "github.run_attempt == 1" in report
+        and "needs.host.result == 'success'" in report
+        and "issues: write" in report
+        and "contents: read" in report
+        and "NATIVE_DIAGNOSTIC_FAILED" in report
+        and "SOURCE_COMMENT_ID" in report
+        and "CI evidence:" in report
+        and "gh api -X POST" in report
+        and "gh api -X PATCH" in report
+        and "comment_id" in report
+        and "sudo" not in report
+        and "docker" not in report,
+        "Only the unprivileged GitHub result transport may post a bounded operator reply",
     )
 
     require(
