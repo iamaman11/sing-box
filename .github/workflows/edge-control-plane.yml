@@ -9,56 +9,6 @@ permissions:
   contents: read
 
 jobs:
-  application:
-    if: >-
-      github.event_name == 'issue_comment' &&
-      github.repository == 'iamaman11/sing-box' &&
-      github.repository_id == '1221750822' &&
-      github.event.issue.number == 1 &&
-      !github.event.issue.pull_request &&
-      github.actor_id == '44100369' &&
-      github.run_attempt == 1 &&
-      (startsWith(github.event.comment.body, '/application ') ||
-       startsWith(github.event.comment.body, '/vm '))
-    uses: ./.github/workflows/vm-application-lifecycle.yml
-    with:
-      command_body: ${{ github.event.comment.body }}
-    secrets: inherit
-
-  production:
-    if: >-
-      github.event_name == 'issue_comment' &&
-      github.repository == 'iamaman11/sing-box' &&
-      github.repository_id == '1221750822' &&
-      github.event.issue.number == 1 &&
-      !github.event.issue.pull_request &&
-      github.actor_id == '44100369' &&
-      github.run_attempt == 1 &&
-      startsWith(github.event.comment.body, '/production ')
-    uses: ./.github/workflows/vm-application-lifecycle.yml
-    with:
-      command_body: ${{ github.event.comment.body }}
-    secrets: inherit
-
-  credentials:
-    if: >-
-      github.event_name == 'issue_comment' &&
-      github.repository == 'iamaman11/sing-box' &&
-      github.repository_id == '1221750822' &&
-      github.event.issue.number == 1 &&
-      !github.event.issue.pull_request &&
-      github.actor_id == '44100369' &&
-      github.run_attempt == 1 &&
-      startsWith(github.event.comment.body, '/credentials ')
-    permissions:
-      contents: read
-      actions: read
-      issues: write
-    uses: ./.github/workflows/credential-lifecycle.yml
-    with:
-      command_body: ${{ github.event.comment.body }}
-    secrets: inherit
-
   host:
     # One Rust-owned host lifecycle entry point. GitHub authorizes the caller;
     # existing release identity and typed protobuf identify the exact hosts.
@@ -85,8 +35,6 @@ jobs:
       admitted_at_unix: ${{ steps.observe.outputs.admitted_at_unix }}
       host_matrix: ${{ steps.observe.outputs.host_matrix }}
       host_targets_present: ${{ steps.observe.outputs.host_targets_present }}
-      original_ab_state: ${{ steps.observe.outputs.host_original_ab_state }}
-      recovery_decision: ${{ steps.observe.outputs.host_recovery_decision }}
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     permissions:
@@ -162,23 +110,6 @@ jobs:
             test -s "${RUNNER_TEMP}/host-runners.json" || exit 1
           fi
 
-      - name: Read complete existing GitHub journal for mutation admission
-        if: startsWith(github.event.comment.body, '/host apply ') || startsWith(github.event.comment.body, '/host recover ')
-        shell: bash
-        run: |
-          set -euo pipefail
-          gh api --paginate --slurp "repos/${GITHUB_REPOSITORY}/issues/26/comments?per_page=100" \
-            > "${RUNNER_TEMP}/host-issue-pages.json"
-          jq -e 'type == "array" and length > 0 and all(.[]; type == "array")' \
-            "${RUNNER_TEMP}/host-issue-pages.json" >/dev/null
-          jq -c 'add' "${RUNNER_TEMP}/host-issue-pages.json" > "${RUNNER_TEMP}/host-issue-history.json"
-          expected="$(gh api "repos/${GITHUB_REPOSITORY}/issues/26" --jq '.comments')"
-          [[ "${expected}" =~ ^[0-9]+$ ]]
-          jq -e --argjson count "${expected}" \
-            'length == $count and all(.[]; .id != null and (.body | type == "string"))' \
-            "${RUNNER_TEMP}/host-issue-history.json" >/dev/null
-          echo "HOST_JOURNAL_PATH=${RUNNER_TEMP}/host-issue-history.json" >> "${GITHUB_ENV}"
-
       - name: Show one typed native host status
         id: observe
         shell: bash
@@ -200,16 +131,11 @@ jobs:
           if [[ -f "${RUNNER_TEMP}/host-runners.json" ]]; then
             runner_args=(--runner-inventory-json "${RUNNER_TEMP}/host-runners.json")
           fi
-          journal_args=()
-          if [[ -n "${HOST_JOURNAL_PATH:-}" ]]; then
-            journal_args=(--journal-history-json "${HOST_JOURNAL_PATH}")
-          fi
           "${HOST_OWNER}" host \
             --hosts-pb "${RUNNER_TEMP}/hosts.binpb" \
             --hosts-sha256 "${HOSTS_SHA256}" \
             --github-output "${GITHUB_OUTPUT}" \
             "${runner_args[@]}" \
-            "${journal_args[@]}" \
             "${command[@]}" | tee "${RUNNER_TEMP}/host-observation.txt"
           grep -Fxq 'host_mutations=0' "${RUNNER_TEMP}/host-observation.txt"
           {
@@ -230,7 +156,8 @@ jobs:
       needs.host.outputs.host_targets_present == 'true' &&
       (github.event.comment.body == '/host status' ||
        startsWith(github.event.comment.body, '/host status ') ||
-       needs.host.outputs.operation == 'RECOVER_READ_ONLY')
+       needs.host.outputs.operation == 'APPLY_PREFLIGHT' ||
+       needs.host.outputs.operation == 'RECOVER_PREFLIGHT')
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.host.outputs.host_matrix) }}
@@ -268,8 +195,6 @@ jobs:
       SOURCE_COMMENT_ID: ${{ github.event.comment.id }}
       COMMAND_BODY: ${{ github.event.comment.body }}
       TARGETS_PRESENT: ${{ needs.host.outputs.host_targets_present }}
-      AB_STATE: ${{ needs.host.outputs.original_ab_state }}
-      RECOVERY_DECISION: ${{ needs.host.outputs.recovery_decision }}
     steps:
       - name: Publish one read-only observation pointer immediately
         id: publish
@@ -282,123 +207,10 @@ jobs:
             false) result=NO_NATIVE_TARGET_AVAILABLE ;;
             *) exit 1 ;;
           esac
-          case "${AB_STATE}" in
-            "") AB_STATE=NOT_CHECKED ;;
-            BEGIN_DURABLE_NO_AUTOMATIC_REPLAY|COMMIT_DURABLE_OWNER_RECEIPTS_UNPROVEN|NO_BEGIN_NO_MUTATION_AUTHORITY) ;;
-            *) exit 1 ;;
-          esac
-          case "${RECOVERY_DECISION}" in
-            "") RECOVERY_DECISION=NOT_REQUESTED ;;
-            UNKNOWN_NO_REPLAY_AB_UNRESOLVED|RECONCILE_NATIVE_OWNER_BEFORE_MUTATION) ;;
-            *) exit 1 ;;
-          esac
           run_url="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          body="$(printf 'Host read-only report for operator command #%s\n\nOperation: `%s`\nResult: `%s`\nPhysical dispatch selected: `%s`\nOriginal A/B journal: `%s`\nRecovery decision: `%s`\nCI evidence: %s\n\nIndividual host outcomes arrive as separate correlated replies. Unresponsive runners remain UNPROVEN. No host mutations.\n' \
-            "${SOURCE_COMMENT_ID}" "${COMMAND_BODY}" "${result}" "${TARGETS_PRESENT}" "${AB_STATE}" "${RECOVERY_DECISION}" "${run_url}")"
+          body="$(printf 'Host read-only report for operator command #%s\n\nOperation: `%s`\nResult: `%s`\nPhysical dispatch selected: `%s`\nCI evidence: %s\n\nIndividual host outcomes arrive as separate correlated replies. Unresponsive runners remain UNPROVEN. No host mutations.\n' \
+            "${SOURCE_COMMENT_ID}" "${COMMAND_BODY}" "${result}" "${TARGETS_PRESENT}" "${run_url}")"
           comment_id="$(gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/1/comments" -f "body=${body}" --jq '.id')"
           [[ "${comment_id}" =~ ^[0-9]+$ ]]
           echo "comment_id=${comment_id}" >> "${GITHUB_OUTPUT}"
-
-  host_apply_windows:
-    needs: host
-    if: >-
-      needs.host.result == 'success' &&
-      needs.host.outputs.operation == 'APPLY' &&
-      needs.host.outputs.kind == 'WINDOWS' &&
-      needs.host.outputs.admitted_at_unix != ''
-    permissions:
-      contents: read
-      actions: read
-      issues: write
-    uses: ./.github/workflows/windows-physical.yml
-    with:
-      command_body: '/windows apply'
-      host_machine_id: ${{ needs.host.outputs.machine_id }}
-      host_runner_label: ${{ needs.host.outputs.windows_runner_label }}
-      host_runner_name: ${{ needs.host.outputs.owner }}
-      host_admitted_at_unix: ${{ needs.host.outputs.admitted_at_unix }}
-
-  host_apply_vm:
-    needs: host
-    if: >-
-      needs.host.result == 'success' &&
-      needs.host.outputs.operation == 'APPLY' &&
-      needs.host.outputs.kind == 'VM' &&
-      needs.host.outputs.desired_spec_path == 'infra/production/production.textproto' &&
-      needs.host.outputs.admitted_at_unix != ''
-    uses: ./.github/workflows/vm-application-lifecycle.yml
-    with:
-      command_body: '/production converge'
-      host_admitted_at_unix: ${{ needs.host.outputs.admitted_at_unix }}
-    secrets: inherit
-
-  windows:
-    if: >-
-      github.event_name == 'issue_comment' &&
-      github.repository == 'iamaman11/sing-box' &&
-      github.repository_id == '1221750822' &&
-      github.event.issue.number == 1 &&
-      !github.event.issue.pull_request &&
-      github.actor_id == '44100369' &&
-      github.run_attempt == 1 &&
-      (
-        github.event.comment.body == '/windows diagnose' ||
-        github.event.comment.body == '/windows apply' ||
-        github.event.comment.body == '/windows offline-preflight' ||
-        github.event.comment.body == '/windows quality-line1' ||
-        github.event.comment.body == '/windows converge' ||
-        github.event.comment.body == '/windows start' ||
-        github.event.comment.body == '/windows stop' ||
-        github.event.comment.body == '/windows restart-controller' ||
-        github.event.comment.body == '/windows repair' ||
-        github.event.comment.body == '/windows rollback' ||
-        startsWith(github.event.comment.body, '/windows acceptance-reconcile ') ||
-        startsWith(github.event.comment.body, '/windows initial-pair-stage ') ||
-        startsWith(github.event.comment.body, '/windows initial-pair-prepare ')
-      )
-    permissions:
-      contents: read
-      actions: read
-      # Only the exact durable initial-stage journal owner actually uses WRITE;
-      # unrelated Windows physical jobs retain their own job-level read-only scope.
-      issues: write
-    uses: ./.github/workflows/windows-physical.yml
-    with:
-      command_body: ${{ github.event.comment.body }}
-
-  vultr:
-    if: >-
-      github.event_name == 'issue_comment' &&
-      github.repository == 'iamaman11/sing-box' &&
-      github.repository_id == '1221750822' &&
-      github.event.issue.number == 1 &&
-      !github.event.issue.pull_request &&
-      github.actor_id == '44100369' &&
-      github.run_attempt == 1 &&
-      startsWith(github.event.comment.body, '/vultr ')
-    uses: ./.github/workflows/vultr-lifecycle.yml
-    # Exactly this reusable caller may write the one-shot non-secret
-    # BEGIN to Issue #26. Other control-plane routes keep read-only token.
-    permissions:
-      contents: read
-      actions: read
-      issues: write
-    with:
-      command_body: ${{ github.event.comment.body }}
-    secrets: inherit
-
-  vpc:
-    if: >-
-      github.event_name == 'issue_comment' &&
-      github.repository == 'iamaman11/sing-box' &&
-      github.repository_id == '1221750822' &&
-      github.event.issue.number == 1 &&
-      !github.event.issue.pull_request &&
-      github.actor_id == '44100369' &&
-      github.run_attempt == 1 &&
-      startsWith(github.event.comment.body, '/vpc ')
-    uses: ./.github/workflows/vultr-vpc-lifecycle.yml
-    with:
-      command_body: ${{ github.event.comment.body }}
-    secrets: inherit
 
