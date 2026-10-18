@@ -767,7 +767,9 @@ def test_native_host_readonly_control_boundary(router: str) -> None:
     )
 
     require(
-        "needs: [host, host_observe]" in report
+        "needs: host" in report
+        and "needs: [host, host_report, host_observe]" in report
+        and "github.run_attempt == 1" in report
         and "needs.host.result == 'success'" in report
         and "issues: write" in report
         and "contents: read" in report
@@ -775,6 +777,8 @@ def test_native_host_readonly_control_boundary(router: str) -> None:
         and "SOURCE_COMMENT_ID" in report
         and "CI evidence:" in report
         and "gh api -X POST" in report
+        and "gh api -X PATCH" in report
+        and "comment_id" in report
         and "sudo" not in report
         and "docker" not in report,
         "Only the unprivileged GitHub result transport may post a bounded operator reply",
