@@ -6,12 +6,16 @@
 use crate::{
     FleetHost, FleetHostKind, FleetHostMode, FleetHostPlannedStep, FleetHostRunState,
     FleetHostTransitionPlan, FleetNativeObservation, FleetNativeOwnerState,
-    FleetNativeReleaseProof,
-    host_lifecycle::validate_native_observation,
+    FleetNativeReleaseProof, host_lifecycle::validate_native_observation,
 };
 
-fn plan(host: &FleetHost, step: FleetHostPlannedStep, reason: &str,
-        expected: &[u8], observed: &[u8]) -> FleetHostTransitionPlan {
+fn plan(
+    host: &FleetHost,
+    step: FleetHostPlannedStep,
+    reason: &str,
+    expected: &[u8],
+    observed: &[u8],
+) -> FleetHostTransitionPlan {
     FleetHostTransitionPlan {
         schema_version: 1,
         machine_id: host.machine_id.clone(),
@@ -62,7 +66,13 @@ pub fn propose_host_transition(
         _ => return plan(host, Blocked, "TARGET_MODE_UNPROVEN", expected, &[]),
     };
     if kind == FleetHostKind::Windows && desired_mode == FleetHostMode::ManagedTun {
-        return plan(host, Blocked, "TUN_SEPARATE_PHYSICAL_GATE_REQUIRED", expected, &[]);
+        return plan(
+            host,
+            Blocked,
+            "TUN_SEPARATE_PHYSICAL_GATE_REQUIRED",
+            expected,
+            &[],
+        );
     }
     if kind == FleetHostKind::Windows && desired_mode != FleetHostMode::ProxyOnly
         || kind == FleetHostKind::Vm && desired_mode != FleetHostMode::Unspecified
@@ -75,7 +85,13 @@ pub fn propose_host_transition(
     };
     let actual = observed.observed_release_sha256.as_slice();
     if validate_native_observation(observed).is_err() || observed.host_kind != host.kind {
-        return plan(host, Blocked, "NATIVE_READBACK_INVALID_OR_WRONG_KIND", expected, actual);
+        return plan(
+            host,
+            Blocked,
+            "NATIVE_READBACK_INVALID_OR_WRONG_KIND",
+            expected,
+            actual,
+        );
     }
     if observed.observed_at_unix > now_unix.saturating_add(60)
         || now_unix.saturating_sub(observed.observed_at_unix) > 300
@@ -89,7 +105,10 @@ pub fn propose_host_transition(
         Ok(value) => value,
         Err(_) => return plan(host, Blocked, "NATIVE_STATE_UNPROVEN", expected, actual),
     };
-    if matches!(state, FleetNativeOwnerState::Unproven | FleetNativeOwnerState::Transitioning) {
+    if matches!(
+        state,
+        FleetNativeOwnerState::Unproven | FleetNativeOwnerState::Transitioning
+    ) {
         return plan(host, Blocked, "NATIVE_STATE_UNPROVEN", expected, actual);
     }
     let proof = FleetNativeReleaseProof::try_from(observed.release_proof);
@@ -99,22 +118,55 @@ pub fn propose_host_transition(
         FleetNativeReleaseProof::ApplicationBundle
     };
     if proof != Ok(expected_proof) {
-        return plan(host, Blocked, "NATIVE_RELEASE_PROOF_UNPROVEN", expected, actual);
+        return plan(
+            host,
+            Blocked,
+            "NATIVE_RELEASE_PROOF_UNPROVEN",
+            expected,
+            actual,
+        );
     }
     if actual != expected {
-        return plan(host, ReplaceRelease, "RELEASE_MISMATCH_PROPOSAL_ONLY", expected, actual);
+        return plan(
+            host,
+            ReplaceRelease,
+            "RELEASE_MISMATCH_PROPOSAL_ONLY",
+            expected,
+            actual,
+        );
     }
     match (desired_run, state) {
-        (FleetHostRunState::Stopped, FleetNativeOwnerState::Running) =>
-            plan(host, Stop, "STOP_PROPOSAL_ONLY", expected, actual),
-        (FleetHostRunState::Running, FleetNativeOwnerState::Stopped) =>
-            plan(host, Start, "START_PROPOSAL_ONLY", expected, actual),
-        (FleetHostRunState::Stopped, FleetNativeOwnerState::Stopped) =>
-            plan(host, Noop, "STOPPED_MATCHES_DESIRED_LOCAL_ONLY", expected, actual),
+        (FleetHostRunState::Stopped, FleetNativeOwnerState::Running) => {
+            plan(host, Stop, "STOP_PROPOSAL_ONLY", expected, actual)
+        }
+        (FleetHostRunState::Running, FleetNativeOwnerState::Stopped) => {
+            plan(host, Start, "START_PROPOSAL_ONLY", expected, actual)
+        }
+        (FleetHostRunState::Stopped, FleetNativeOwnerState::Stopped) => plan(
+            host,
+            Noop,
+            "STOPPED_MATCHES_DESIRED_LOCAL_ONLY",
+            expected,
+            actual,
+        ),
         (FleetHostRunState::Running, FleetNativeOwnerState::Running)
             if observed.runtime_ready_proven && observed.runtime_ready =>
-            plan(host, Noop, "RUNNING_MATCHES_LOCAL_NOT_EXTERNAL", expected, actual),
-        _ => plan(host, Blocked, "RUNTIME_READINESS_UNPROVEN", expected, actual),
+        {
+            plan(
+                host,
+                Noop,
+                "RUNNING_MATCHES_LOCAL_NOT_EXTERNAL",
+                expected,
+                actual,
+            )
+        }
+        _ => plan(
+            host,
+            Blocked,
+            "RUNTIME_READINESS_UNPROVEN",
+            expected,
+            actual,
+        ),
     }
 }
 
@@ -131,7 +183,11 @@ mod tests {
                 FleetHostKind::Vm => managed_host::Owner::VmMachineId("host-1".into()),
                 _ => managed_host::Owner::WindowsRunnerName("win-1".into()),
             }),
-            windows_runner_label: if kind == FleetHostKind::Vm { String::new() } else { "win-1".into() },
+            windows_runner_label: if kind == FleetHostKind::Vm {
+                String::new()
+            } else {
+                "win-1".into()
+            },
             desired_spec_path: "infra/production/production.textproto".into(),
             target: Some(FleetHostTarget {
                 run_state: run as i32,
@@ -158,7 +214,11 @@ mod tests {
     }
     #[test]
     fn correct_readback_proposes_but_never_authorizes() {
-        let win = host(FleetHostKind::Windows, FleetHostMode::ProxyOnly, FleetHostRunState::Stopped);
+        let win = host(
+            FleetHostKind::Windows,
+            FleetHostMode::ProxyOnly,
+            FleetHostRunState::Stopped,
+        );
         let mut o = observed(FleetHostKind::Windows, FleetNativeOwnerState::Running);
         let p = propose_host_transition(&win, Some(&o), &[1; 32], &[3; 32], 1000);
         assert_eq!(p.step, FleetHostPlannedStep::Stop as i32);
@@ -173,34 +233,60 @@ mod tests {
     }
     #[test]
     fn no_implicit_vm_start_and_no_tun_without_gate() {
-        let mut vm = host(FleetHostKind::Vm, FleetHostMode::Unspecified, FleetHostRunState::Running);
+        let mut vm = host(
+            FleetHostKind::Vm,
+            FleetHostMode::Unspecified,
+            FleetHostRunState::Running,
+        );
         let o = observed(FleetHostKind::Vm, FleetNativeOwnerState::Stopped);
-        assert_eq!(propose_host_transition(&vm, Some(&o), &[9;32], &[1;32], 1000).step,
-            FleetHostPlannedStep::Start as i32);
+        assert_eq!(
+            propose_host_transition(&vm, Some(&o), &[9; 32], &[1; 32], 1000).step,
+            FleetHostPlannedStep::Start as i32
+        );
         // Unlike Windows, the VM bundle must compare with bundle digest, not ReleaseSet.
-        assert_eq!(propose_host_transition(&vm, Some(&o), &[1;32], &[9;32], 1000).step,
-            FleetHostPlannedStep::ReplaceRelease as i32);
+        assert_eq!(
+            propose_host_transition(&vm, Some(&o), &[1; 32], &[9; 32], 1000).step,
+            FleetHostPlannedStep::ReplaceRelease as i32
+        );
         vm.target = None;
-        assert_eq!(propose_host_transition(&vm, Some(&o), &[1;32], &[1;32], 1000).step,
-            FleetHostPlannedStep::Blocked as i32);
-        let win = host(FleetHostKind::Windows, FleetHostMode::ManagedTun, FleetHostRunState::Running);
-        assert_eq!(propose_host_transition(&win, None, &[1;32], &[], 1000).reason_code,
-            "TUN_SEPARATE_PHYSICAL_GATE_REQUIRED");
+        assert_eq!(
+            propose_host_transition(&vm, Some(&o), &[1; 32], &[1; 32], 1000).step,
+            FleetHostPlannedStep::Blocked as i32
+        );
+        let win = host(
+            FleetHostKind::Windows,
+            FleetHostMode::ManagedTun,
+            FleetHostRunState::Running,
+        );
+        assert_eq!(
+            propose_host_transition(&win, None, &[1; 32], &[], 1000).reason_code,
+            "TUN_SEPARATE_PHYSICAL_GATE_REQUIRED"
+        );
     }
     #[test]
     fn forged_or_stale_readback_cannot_become_pass() {
-        let win = host(FleetHostKind::Windows, FleetHostMode::ProxyOnly, FleetHostRunState::Running);
+        let win = host(
+            FleetHostKind::Windows,
+            FleetHostMode::ProxyOnly,
+            FleetHostRunState::Running,
+        );
         let mut o = observed(FleetHostKind::Windows, FleetNativeOwnerState::Running);
         o.runtime_ready = true;
         o.runtime_ready_proven = false;
-        assert_eq!(propose_host_transition(&win, Some(&o), &[1;32], &[3;32], 1000).step,
-            FleetHostPlannedStep::Blocked as i32);
+        assert_eq!(
+            propose_host_transition(&win, Some(&o), &[1; 32], &[3; 32], 1000).step,
+            FleetHostPlannedStep::Blocked as i32
+        );
         o.runtime_ready_proven = true;
-        assert_eq!(propose_host_transition(&win, Some(&o), &[1;32], &[3;32], 1400).reason_code,
-            "NATIVE_READBACK_STALE");
+        assert_eq!(
+            propose_host_transition(&win, Some(&o), &[1; 32], &[3; 32], 1400).reason_code,
+            "NATIVE_READBACK_STALE"
+        );
         o.observed_at_unix = 1400;
         o.host_kind = FleetHostKind::Vm as i32;
-        assert_eq!(propose_host_transition(&win, Some(&o), &[1;32], &[3;32], 1400).step,
-            FleetHostPlannedStep::Blocked as i32);
+        assert_eq!(
+            propose_host_transition(&win, Some(&o), &[1; 32], &[3; 32], 1400).step,
+            FleetHostPlannedStep::Blocked as i32
+        );
     }
 }
