@@ -135,6 +135,8 @@ jobs:
             --hosts-pb "${RUNNER_TEMP}/hosts.binpb" \
             --hosts-sha256 "${HOSTS_SHA256}" \
             --github-output "${GITHUB_OUTPUT}" \
+            --source-comment-id "${{ github.event.comment.id }}" \
+            --intent-output "${RUNNER_TEMP}/host-intent.pb" \
             "${runner_args[@]}" \
             "${command[@]}" | tee "${RUNNER_TEMP}/host-observation.txt"
           grep -Fxq 'host_mutations=0' "${RUNNER_TEMP}/host-observation.txt"
@@ -144,6 +146,18 @@ jobs:
             cat "${RUNNER_TEMP}/host-observation.txt"
             echo '~~~'
           } >> "${GITHUB_STEP_SUMMARY}"
+
+
+      - name: Retain one typed intent and blocked/prepared receipt
+        if: ${{ steps.observe.outputs.operation == 'APPLY_PREFLIGHT' || steps.observe.outputs.operation == 'RECOVER_PREFLIGHT' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-intent-${{ github.event.comment.id }}
+          path: |
+            ${{ runner.temp }}/host-intent.pb
+            ${{ runner.temp }}/host-intent.receipt.pb
+          if-no-files-found: error
+          retention-days: 7
 
   host_observe:
     # Every typed host is an INDEPENDENT reusable workflow invocation.
