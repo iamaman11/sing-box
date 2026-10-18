@@ -443,6 +443,48 @@ mod tests {
     }
 
     #[test]
+    fn native_readback_is_bounded_typed_and_not_a_mutation_receipt() {
+        use crate::{FleetNativeOwnerState, FleetNativeReleaseProof};
+        let observed = build_native_observation(
+            FleetHostKind::Vm,
+            FleetNativeOwnerState::Running,
+            FleetNativeReleaseProof::ApplicationBundle,
+            Some(&"a".repeat(64)),
+            Some(false),
+            3000,
+            &["VM_RUNTIME_NOT_READY"],
+        ).unwrap();
+        let bytes = observed.encode_to_vec();
+        assert_eq!(decode_native_observation(&bytes).unwrap(), observed);
+        assert_eq!(observed.observed_release_sha256, vec![0xaa; 32]);
+        assert!(!observed.runtime_ready);
+        assert!(observed.runtime_ready_proven);
+        assert_eq!(
+            build_native_observation(
+                FleetHostKind::Windows, FleetNativeOwnerState::Stopped,
+                FleetNativeReleaseProof::ApplicationBundle, Some(&"b".repeat(64)),
+                None, 3000, &[],
+            ).unwrap_err(), "HOST_OBSERVATION_PROOF_KIND_MISMATCH"
+        );
+        assert_eq!(
+            build_native_observation(
+                FleetHostKind::Vm, FleetNativeOwnerState::Unproven,
+                FleetNativeReleaseProof::ApplicationBundle, None, None, 3000, &[],
+            ).unwrap_err(), "HOST_OBSERVATION_RELEASE_PROOF_INCOMPLETE"
+        );
+        let mut forged = observed.clone();
+        forged.runtime_ready_proven = false;
+        forged.runtime_ready = true;
+        assert!(validate_native_observation(&forged).is_err());
+        forged = observed;
+        forged.reason_codes.push("user-supplied-json".to_owned());
+        assert!(validate_native_observation(&forged).is_err());
+        let mut noncanonical = bytes;
+        noncanonical.extend_from_slice(&[8, 1]);
+        assert!(decode_native_observation(&noncanonical).is_err());
+    }
+
+    #[test]
     fn desired_digest_changes_for_machine_mode_and_spec() {
         use crate::{FleetHostRunState, FleetHostTarget};
         let (registry, _, _, _, _) = fixture();
