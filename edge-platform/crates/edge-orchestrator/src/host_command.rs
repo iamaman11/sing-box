@@ -732,6 +732,7 @@ mod tests {
                 )),
                 windows_runner_label: "windows-test".to_owned(),
                 desired_spec_path: spec.to_string_lossy().into_owned(),
+            target: None,
             }],
         };
         let release = "a".repeat(64);
@@ -817,6 +818,7 @@ mod tests {
                     )),
                     windows_runner_label: String::new(),
                     desired_spec_path: "infra/application/disposable-acceptance.json".to_owned(),
+                target: None,
                 },
                 ManagedHost {
                     machine_id: "sing-box-windows-lab".to_owned(),
@@ -826,6 +828,7 @@ mod tests {
                     )),
                     windows_runner_label: "sing-box-windows-lab".to_owned(),
                     desired_spec_path: "infra/production/production.textproto".to_owned(),
+                target: None,
                 },
             ],
         };
@@ -854,6 +857,7 @@ mod tests {
             )),
             windows_runner_label: "other-label".to_owned(),
             desired_spec_path: "infra/production/production.textproto".to_owned(),
+        target: None,
         });
         assert_eq!(
             resolve_credential_peer(&two_windows, "application-acceptance-1", "auto").unwrap_err(),
