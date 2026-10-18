@@ -787,8 +787,8 @@ mod tests {
         append_observation_matrix(&file, &[win, vm]).unwrap();
         let contents = std::fs::read_to_string(&file).unwrap();
         assert!(contents.contains("host_targets_present=true"));
-        assert!(contents.contains("\\"machine_id\\":\\"windows-02\\""));
-        assert!(contents.contains("\\"machine_id\\":\\"vm-02\\""));
+        assert!(contents.contains(r#""machine_id":"windows-02""#));
+        assert!(contents.contains(r#""machine_id":"vm-02""#));
         std::fs::remove_file(file).unwrap();
     }
 
