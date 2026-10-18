@@ -42,6 +42,10 @@ bundle_expected_assets=(
   application-bundle.pb
   application-bundle.pb.sha256
 )
+fleet_expected_assets=(
+  fleet-registry.pb
+  fleet-registry.pb.sha256
+)
 
 candidate_releases="${out}/.candidate-releases.jsonl"
 matching_releases="${out}/.matching-releases.jsonl"
@@ -121,6 +125,12 @@ case "$bundle_asset_count" in
     exit 1
     ;;
 esac
+fleet_asset_count="$(jq '[.assets[] | select(.name == "fleet-registry.pb" or .name == "fleet-registry.pb.sha256")] | length' <<<"$release_json")"
+case "$fleet_asset_count" in
+  0) has_fleet_registry=false ;;
+  2) expected_assets+=("${fleet_expected_assets[@]}"); has_fleet_registry=true ;;
+  *) echo "durable release fleet registry assets are incomplete" >&2; exit 1 ;;
+esac
 mapfile -t sorted_expected_assets < <(printf '%s\n' "${expected_assets[@]}" | sort)
 test "${#actual_assets[@]}" -eq "${#sorted_expected_assets[@]}"
 if ! diff -u <(printf '%s\n' "${sorted_expected_assets[@]}") <(printf '%s\n' "${actual_assets[@]}"); then
@@ -188,6 +198,10 @@ if [[ "$has_application_bundle" = "true" ]]; then
   download_asset application-bundle.pb
   download_asset application-bundle.pb.sha256
 fi
+if [[ "$has_fleet_registry" = "true" ]]; then
+  download_asset fleet-registry.pb
+  download_asset fleet-registry.pb.sha256
+fi
 
 verify_sidecar() {
   local file="$1"
@@ -207,6 +221,9 @@ verify_sidecar "${out}/edge-orchestrator-linux-amd64" "${out}/edge-orchestrator-
 verify_sidecar "${out}/edge-release-set-linux-amd64" "${out}/edge-release-set-linux-amd64.sha256" "edge-release-set-linux-amd64"
 if [[ "$has_application_bundle" = "true" ]]; then
   verify_sidecar "${out}/application-bundle.pb" "${out}/application-bundle.pb.sha256" "application-bundle.pb"
+fi
+if [[ "$has_fleet_registry" = "true" ]]; then
+  verify_sidecar "${out}/fleet-registry.pb" "${out}/fleet-registry.pb.sha256" "fleet-registry.pb"
 fi
 
 test "$(cat "${out}/release-set.pb.sha256")" = "${release_set_sha}  release-set.pb"
@@ -332,6 +349,11 @@ test "$orchestrator_sha" = "$(sha256sum "${out}/edge-orchestrator-linux-amd64" |
 [[ "$warp_image" =~ ^ghcr\.io/iamaman11/vultr-warp-egress@sha256:[0-9a-f]{64}$ ]]
 [[ "$mesh_image" =~ ^docker\.io/cloudflare/mesh@sha256:[0-9a-f]{64}$ ]]
 
+fleet_registry_sha=""
+if [[ "$has_fleet_registry" = true ]]; then
+  fleet_registry_sha="$(sha256sum "${out}/fleet-registry.pb" | awk '{print $1}')"
+  [[ "$fleet_registry_sha" =~ ^[0-9a-f]{64}$ ]]
+fi
 cat > "${out}/resolved.env" <<EOF
 EDGE_ACCEPTED_REVISION=$ACCEPTED_REVISION
 EDGE_CANDIDATE_REVISION=$candidate_revision
@@ -343,6 +365,7 @@ EDGE_RELEASE_SCHEMA_VERSION=$schema_version
 EDGE_RUNTIME_SOURCE_REVISION=$runtime_source_revision
 EDGE_RUNTIME_INPUT_SHA256=$runtime_input_sha
 EDGE_APPLICATION_BUNDLE_SHA256=$application_bundle_sha
+EDGE_FLEET_REGISTRY_SHA256=$fleet_registry_sha
 EDGE_WINDOWS_SOURCE_REVISION=$windows_source_revision
 EDGE_WINDOWS_INPUT_SHA256=$windows_input_sha
 EDGE_WINDOWS_ARTIFACT_SHA256=$windows_artifact_sha
