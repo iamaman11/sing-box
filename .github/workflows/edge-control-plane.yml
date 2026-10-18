@@ -311,6 +311,7 @@ jobs:
     # must not postpone ChatGPT's discovery of the physical status workflow.
     needs: host
     if: >-
+      github.run_attempt == 1 &&
       needs.host.result == 'success' &&
       (github.event.comment.body == '/host status' ||
        startsWith(github.event.comment.body, '/host status ') ||
@@ -349,7 +350,7 @@ jobs:
   host_report_finalize:
     # Transport-only update of the SAME response. The native job cannot
     # write Issues, and GitHub never infers runtime health from a queued job.
-    needs: [host_report, host_observe]
+    needs: [host, host_report, host_observe]
     if: >-
       always() &&
       needs.host_report.result == 'success'
