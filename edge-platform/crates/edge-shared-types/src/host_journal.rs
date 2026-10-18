@@ -61,18 +61,22 @@ fn verify_native_journal_protection(path: &Path) -> Result<(), &'static str> {
         return Err("HOST_NATIVE_ROOT_OWNER_REQUIRED");
     }
     let root = fs::symlink_metadata(path).map_err(|_| "HOST_JOURNAL_ROOT_MISSING")?;
-    if !root.file_type().is_dir() || root.file_type().is_symlink()
-        || root.uid() != 0 || root.mode() & 0o077 != 0
+    if !root.file_type().is_dir()
+        || root.file_type().is_symlink()
+        || root.uid() != 0
+        || root.mode() & 0o077 != 0
     {
         return Err("HOST_JOURNAL_ROOT_NOT_PROTECTED");
     }
     // Ancestors cannot be replaced by the unprivileged GitHub runner.
     // Do not silently trust /tmp, relative paths, or writable mount ancestors.
     for ancestor in path.ancestors().skip(1) {
-        let meta = fs::symlink_metadata(ancestor)
-            .map_err(|_| "HOST_JOURNAL_ANCESTOR_UNAVAILABLE")?;
-        if !meta.file_type().is_dir() || meta.file_type().is_symlink()
-            || meta.uid() != 0 || meta.mode() & 0o022 != 0
+        let meta =
+            fs::symlink_metadata(ancestor).map_err(|_| "HOST_JOURNAL_ANCESTOR_UNAVAILABLE")?;
+        if !meta.file_type().is_dir()
+            || meta.file_type().is_symlink()
+            || meta.uid() != 0
+            || meta.mode() & 0o022 != 0
         {
             return Err("HOST_JOURNAL_ANCESTOR_NOT_PROTECTED");
         }
@@ -270,7 +274,8 @@ mod tests {
         // The repo test runner is unprivileged. Even a perfectly signed
         // intent must not let its caller choose a permissive /tmp directory.
         let dir = std::env::temp_dir().join(format!(
-            "sing-box-host-root-negative-{}", std::process::id()
+            "sing-box-host-root-negative-{}",
+            std::process::id()
         ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir(&dir).unwrap();
