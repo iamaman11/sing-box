@@ -197,6 +197,135 @@ fn admit_after_protected_owner_check_once(
     Ok(recorded)
 }
 
+/// One native transaction boundary for an already independently authenticated
+/// and Git/ReleaseSet-bound owner. It never accepts a runner decision about
+/// what to execute: the privileged owner reads its OWN state and the common
+/// Rust planner selects the single permitted action. Every mutation has one
+/// durable admission followed by at most one native invocation.
+///
+/// The closure may use only existing typed Controller/Agent operations. In
+/// particular, it must not spawn an installer, hand arbitrary shell text to
+/// root/SYSTEM, or retry a partial action. An execution failure deliberately
+/// retains the per-resource gate as UNKNOWN_NO_REPLAY.
+pub fn execute_native_host_once<Observe, Apply>(
+    intent: &FleetHostIntent,
+    authorization: &FleetHostAuthorization,
+    registry: &HostRegistry,
+    expected_registry_sha256: &[u8],
+    expected_desired_sha256: &[u8],
+    expected_release_set_sha256: &[u8],
+    expected_vm_bundle_sha256: &[u8],
+    pinned_worker_public_key: &[u8],
+    native_machine_id: &str,
+    native_owner_kind: i32,
+    now_unix: u64,
+    protected_journal_dir: &Path,
+    mut observe: Observe,
+    apply_once: Apply,
+) -> Result<FleetHostResult, &'static str>
+where
+    Observe: FnMut() -> Result<crate::FleetNativeObservation, &'static str>,
+    Apply: FnOnce(crate::FleetHostPlannedStep) -> Result<(), &'static str>,
+{
+    use crate::{FleetHostAction, FleetHostPlannedStep, FleetHostResultState};
+    use crate::host_lifecycle::{validate_native_observation, validate_intent_against_target};
+    use crate::host_planner::propose_host_transition;
+
+    // Authentication and owner identity must precede even readback-driven
+    // planning. A signed APPLY/RECOVER is not the same as an arbitrary START.
+    if intent.machine_id != native_machine_id || intent.kind != native_owner_kind {
+        return Err("HOST_LOCAL_OWNER_IDENTITY_MISMATCH");
+    }
+    validate_host_intent(
+        intent,
+        registry,
+        expected_registry_sha256,
+        expected_desired_sha256,
+        expected_release_set_sha256,
+    )?;
+    validate_intent_against_target(intent, registry)?;
+    verify_host_authorization(intent, authorization, pinned_worker_public_key, now_unix)?;
+    if !matches!(
+        FleetHostAction::try_from(intent.action),
+        Ok(FleetHostAction::Apply | FleetHostAction::Recover)
+    ) {
+        return Err("HOST_NATIVE_EXECUTION_ACTION_NOT_ALLOWED");
+    }
+
+    // Checking the OS ownership and the pending resource marker is part of
+    // the real native boundary, never an unprivileged rehearsal.
+    verify_native_journal_protection(protected_journal_dir)?;
+    let selected = registry
+        .hosts
+        .iter()
+        .find(|h| h.machine_id == intent.machine_id && h.kind == intent.kind)
+        .ok_or("HOST_INTENT_UNKNOWN_MACHINE")?;
+    let before = observe()?;
+    validate_native_observation(&before)?;
+    let plan = propose_host_transition(
+        selected,
+        Some(&before),
+        expected_release_set_sha256,
+        expected_vm_bundle_sha256,
+        now_unix,
+    );
+    let step = FleetHostPlannedStep::try_from(plan.step)
+        .map_err(|_| "HOST_NATIVE_PLAN_STEP_INVALID")?;
+    // The transaction does not allow a stale or untrusted observation to
+    // trigger even an "idempotent" mutation. A NOOP has no journal mutation
+    // and cannot be promoted to VERIFIED by an external caller.
+    if step == FleetHostPlannedStep::Blocked {
+        return Err("HOST_NATIVE_PLAN_BLOCKED");
+    }
+    if step == FleetHostPlannedStep::Noop {
+        let mut observed = crate::host_lifecycle::prepared_host_result(intent);
+        observed.state = FleetHostResultState::Observed as i32;
+        observed.next_action = "NONE".to_owned();
+        return Ok(observed);
+    }
+    if !matches!(
+        step,
+        FleetHostPlannedStep::Start
+            | FleetHostPlannedStep::Stop
+            | FleetHostPlannedStep::Install
+            | FleetHostPlannedStep::ReplaceRelease
+    ) {
+        return Err("HOST_NATIVE_PLAN_UNSUPPORTED");
+    }
+
+    admit_native_host_once(
+        intent,
+        authorization,
+        registry,
+        expected_registry_sha256,
+        expected_desired_sha256,
+        expected_release_set_sha256,
+        pinned_worker_public_key,
+        native_machine_id,
+        native_owner_kind,
+        now_unix,
+        protected_journal_dir,
+    )?;
+    // From this point ANY failure is an uncertain operation. The durable
+    // resource gate must remain; no replay, no unapproved compensation.
+    apply_once(step)?;
+    let expected_runtime_digest = if native_owner_kind == crate::FleetHostKind::Windows as i32 {
+        expected_release_set_sha256
+    } else {
+        expected_vm_bundle_sha256
+    };
+    finish_native_host_once(
+        intent,
+        registry,
+        native_machine_id,
+        native_owner_kind,
+        expected_runtime_digest,
+        now_unix,
+        protected_journal_dir,
+        observe,
+    )
+}
+
 fn journal_hex(bytes: &[u8]) -> String {
     digest(&SHA256, bytes)
         .as_ref()
