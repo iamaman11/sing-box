@@ -173,6 +173,7 @@ jobs:
     timeout-minutes: 3
     permissions:
       contents: read
+      actions: read
       issues: write
     env:
       GH_TOKEN: ${{ github.token }}
@@ -181,7 +182,82 @@ jobs:
       SOURCE_COMMENT_ID: ${{ inputs.source_comment_id }}
       OBSERVED_RESULT: ${{ needs.observe.result }}
     steps:
+      - name: Validate optional native protobuf with the exact Rust Fleet Orchestrator
+        id: typed
+        if: env.OBSERVED_RESULT == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${TARGET_MACHINE}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]
+          name="native-readback-${TARGET_MACHINE}-${SOURCE_COMMENT_ID}"
+          out="${RUNNER_TEMP}/host-native-readback"
+          mkdir -p "${out}"
+          # One native owner produces this artifact. A missing installed verb
+          # is UNAVAILABLE, never PASS or a request to install a new binary.
+          if ! gh run download "${GITHUB_RUN_ID}" -R "${GITHUB_REPOSITORY}" -n "${name}" -D "${out}" >/dev/null 2>&1; then
+            echo 'typed_verdict=UNAVAILABLE_INSTALLED_OWNER_VERSION' >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          observation="${out}/host-native-observation.pb"
+          test -f "${observation}" && test ! -L "${observation}"
+          test "$(stat -c '%s' "${observation}")" -gt 0
+          test "$(stat -c '%s' "${observation}")" -le 4096
+          # Resolve the ONE accepted Git commit and exact immutable runtime,
+          # matching the primary control-plane path. Never execute a
+          # checkout-built or runner-supplied orchestrator.
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --no-tags --depth=1 origin "${GITHUB_SHA}"
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          export ACCEPTED_REVISION="${GITHUB_SHA}"
+          export REPOSITORY="${GITHUB_REPOSITORY}"
+          export OUTPUT_DIR="${RUNNER_TEMP}/host-readback-release"
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          owner="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          echo "${EDGE_ORCHESTRATOR_SHA256}  ${owner}" | sha256sum --check --status
+          chmod 0755 "${owner}"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
+          # Reparse protected Git desired with the already-pinned compiler;
+          # never consume inventory supplied by the native runner.
+          buf="${RUNNER_TEMP}/host-readback-buf"
+          curl --fail --silent --show-error --location \
+            "https://github.com/bufbuild/buf/releases/download/v1.73.0/buf-Linux-x86_64" -o "${buf}"
+          echo "8f2986298ad08f0cc1bf999b9797b7c383adf32d7edf0f73d6f1e1a701baeac1  ${buf}" | sha256sum --check --status
+          chmod 0755 "${buf}"
+          (cd edge-platform && "${buf}" convert proto/edge/platform/v1/fleet.proto \
+            --type edge.platform.v1.FleetDesiredState \
+            --from "../infra/hosts/hosts.textproto#format=txtpb" \
+            --to "${RUNNER_TEMP}/host-readback-registry.pb#format=binpb")
+          registry="${RUNNER_TEMP}/host-readback-registry.pb"
+          test -s "${registry}"
+          "${owner}" host --hosts-pb "${registry}" \
+            --hosts-sha256 "$(sha256sum "${registry}" | cut -d' ' -f1)" \
+            readback "${TARGET_MACHINE}" --observation-path "${observation}" \
+            > "${RUNNER_TEMP}/host-readback-result.txt"
+          result="${RUNNER_TEMP}/host-readback-result.txt"
+          grep -Fxq 'host_mutations=0' "${result}"
+          grep -Fxq 'host_native_readback_authorizes_mutation=false' "${result}"
+          grep -Fxq 'host_plan_mutation_authorized=false' "${result}"
+          grep -Fxq 'host_plan_owner_attested=false' "${result}"
+          grep -Fxq 'host_native_readback_source=RUNNER_COPIED_UNAUTHENTICATED' "${result}"
+          verdict="$(sed -n 's/^host_native_readback_verdict=//p' "${result}")"
+          [[ "${verdict}" =~ ^[A-Z0-9_]{1,96}$ ]]
+          printf 'typed_verdict=%s\n' "${verdict}" >> "${GITHUB_OUTPUT}"
+          {
+            echo '### Exact typed Host readback (UNAUTHENTICATED runner copy)'
+            echo '~~~text'
+            cat "${result}"
+            echo '~~~'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Return bounded result for this ONE native owner
+        if: always()
+        env:
+          TYPED_OUTCOME: ${{ steps.typed.outcome }}
+          TYPED_VERDICT: ${{ steps.typed.outputs.typed_verdict }}
         shell: bash
         run: |
           set -euo pipefail
@@ -196,6 +272,16 @@ jobs:
             *) result=UNKNOWN_NOT_ACCEPTED ;;
           esac
           run_url="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          body="$(printf 'Host native result for operator command #%s\n\nHost: `%s`\nKind: `%s`\nResult: `%s`\nEvidence: %s\n\nA completed diagnostic is NOT acceptance of credentials, live network authentication, or fleet health. No host mutations.\n' \
-            "${SOURCE_COMMENT_ID}" "${TARGET_MACHINE}" "${TARGET_KIND}" "${result}" "${run_url}")"
+          if [[ "${TYPED_OUTCOME}" = failure ]]; then
+            typed=REJECTED_EXACT_RUST_VALIDATION
+          else
+            typed="${TYPED_VERDICT:-UNPROVEN_NO_TYPED_READBACK}"
+          fi
+          [[ "${typed}" =~ ^[A-Z0-9_]{1,96}$ ]]
+          body="$(printf 'Host native result for operator command #%s\n\nHost: `%s`\nKind: `%s`\nResult: `%s`\nTyped readback: `%s`\nEvidence: %s\n\nNative mutation authority: NONE. A read-only observation is NOT authenticated owner receipt or proof of live public endpoints.\n' \
+            "${SOURCE_COMMENT_ID}" "${TARGET_MACHINE}" "${TARGET_KIND}" "${result}" "${typed}" "${run_url}")"
           gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/1/comments" -f "body=${body}" >/dev/null
+          if [[ "${TYPED_OUTCOME}" = failure ]]; then
+            echo 'HOST_TYPED_READBACK_REJECTED' >&2
+            exit 1
+          fi
