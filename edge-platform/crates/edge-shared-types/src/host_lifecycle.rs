@@ -28,15 +28,23 @@ pub fn build_native_observation(
     observed_at_unix: u64,
     reason_codes: &[&str],
 ) -> Result<crate::FleetNativeObservation, &'static str> {
-    use crate::{FleetNativeObservation, FleetNativeReleaseProof, FleetHostKind};
+    use crate::{FleetHostKind, FleetNativeObservation, FleetNativeReleaseProof};
     let mut release = Vec::new();
     if let Some(value) = release_digest_hex {
-        if value.len() != 64 || !value.bytes().all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c)) {
+        if value.len() != 64
+            || !value
+                .bytes()
+                .all(|c| c.is_ascii_digit() || (b'a'..=b'f').contains(&c))
+        {
             return Err("HOST_OBSERVATION_RELEASE_DIGEST_INVALID");
         }
         for chunk in value.as_bytes().chunks_exact(2) {
-            let high = (chunk[0] as char).to_digit(16).ok_or("HOST_OBSERVATION_DIGEST_INVALID")?;
-            let low = (chunk[1] as char).to_digit(16).ok_or("HOST_OBSERVATION_DIGEST_INVALID")?;
+            let high = (chunk[0] as char)
+                .to_digit(16)
+                .ok_or("HOST_OBSERVATION_DIGEST_INVALID")?;
+            let low = (chunk[1] as char)
+                .to_digit(16)
+                .ok_or("HOST_OBSERVATION_DIGEST_INVALID")?;
             release.push(((high << 4) | low) as u8);
         }
     }
@@ -70,27 +78,31 @@ pub fn validate_native_observation(
     observed: &crate::FleetNativeObservation,
 ) -> Result<(), &'static str> {
     use crate::{FleetHostKind, FleetNativeOwnerState, FleetNativeReleaseProof};
-    let kind = FleetHostKind::try_from(observed.host_kind)
-        .map_err(|_| "HOST_OBSERVATION_KIND_INVALID")?;
+    let kind =
+        FleetHostKind::try_from(observed.host_kind).map_err(|_| "HOST_OBSERVATION_KIND_INVALID")?;
     let state = FleetNativeOwnerState::try_from(observed.owner_state)
         .map_err(|_| "HOST_OBSERVATION_STATE_INVALID")?;
     let proof = FleetNativeReleaseProof::try_from(observed.release_proof)
         .map_err(|_| "HOST_OBSERVATION_PROOF_INVALID")?;
-    if observed.schema_version != 1 || observed.observed_at_unix == 0
+    if observed.schema_version != 1
+        || observed.observed_at_unix == 0
         || kind == FleetHostKind::Unspecified
         || matches!(state, FleetNativeOwnerState::Unspecified)
         || matches!(proof, FleetNativeReleaseProof::Unspecified)
         || (kind == FleetHostKind::Windows && proof == FleetNativeReleaseProof::ApplicationBundle)
         || (kind == FleetHostKind::Vm && proof == FleetNativeReleaseProof::ActivationRecord)
-        || (observed.observed_release_sha256.is_empty() !=
-            (proof == FleetNativeReleaseProof::Unproven))
-        || (!observed.observed_release_sha256.is_empty() &&
-            observed.observed_release_sha256.len() != 32)
+        || (observed.observed_release_sha256.is_empty()
+            != (proof == FleetNativeReleaseProof::Unproven))
+        || (!observed.observed_release_sha256.is_empty()
+            && observed.observed_release_sha256.len() != 32)
         || (observed.runtime_ready && !observed.runtime_ready_proven)
         || observed.reason_codes.len() > 12
         || observed.reason_codes.iter().any(|code| {
-            code.is_empty() || code.len() > 96 ||
-            !code.bytes().all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == b'_')
+            code.is_empty()
+                || code.len() > 96
+                || !code
+                    .bytes()
+                    .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == b'_')
         })
         || observed.encode_to_vec().len() > MAX_NATIVE_OBSERVATION_BYTES
     {
@@ -99,7 +111,9 @@ pub fn validate_native_observation(
     Ok(())
 }
 
-pub fn decode_native_observation(bytes: &[u8]) -> Result<crate::FleetNativeObservation, &'static str> {
+pub fn decode_native_observation(
+    bytes: &[u8],
+) -> Result<crate::FleetNativeObservation, &'static str> {
     if bytes.is_empty() || bytes.len() > MAX_NATIVE_OBSERVATION_BYTES {
         return Err("HOST_OBSERVATION_SIZE_INVALID");
     }
@@ -111,7 +125,6 @@ pub fn decode_native_observation(bytes: &[u8]) -> Result<crate::FleetNativeObser
     validate_native_observation(&observed)?;
     Ok(observed)
 }
-
 
 /// One host-specific desired digest binds the protobuf machine/run-state/mode
 /// and the exact protected Git spec bytes. A shared VM spec alone can never
@@ -453,7 +466,8 @@ mod tests {
             Some(false),
             3000,
             &["VM_RUNTIME_NOT_READY"],
-        ).unwrap();
+        )
+        .unwrap();
         let bytes = observed.encode_to_vec();
         assert_eq!(decode_native_observation(&bytes).unwrap(), observed);
         assert_eq!(observed.observed_release_sha256, vec![0xaa; 32]);
@@ -461,16 +475,29 @@ mod tests {
         assert!(observed.runtime_ready_proven);
         assert_eq!(
             build_native_observation(
-                FleetHostKind::Windows, FleetNativeOwnerState::Stopped,
-                FleetNativeReleaseProof::ApplicationBundle, Some(&"b".repeat(64)),
-                None, 3000, &[],
-            ).unwrap_err(), "HOST_OBSERVATION_PROOF_KIND_MISMATCH"
+                FleetHostKind::Windows,
+                FleetNativeOwnerState::Stopped,
+                FleetNativeReleaseProof::ApplicationBundle,
+                Some(&"b".repeat(64)),
+                None,
+                3000,
+                &[],
+            )
+            .unwrap_err(),
+            "HOST_OBSERVATION_PROOF_KIND_MISMATCH"
         );
         assert_eq!(
             build_native_observation(
-                FleetHostKind::Vm, FleetNativeOwnerState::Unproven,
-                FleetNativeReleaseProof::ApplicationBundle, None, None, 3000, &[],
-            ).unwrap_err(), "HOST_OBSERVATION_RELEASE_PROOF_INCOMPLETE"
+                FleetHostKind::Vm,
+                FleetNativeOwnerState::Unproven,
+                FleetNativeReleaseProof::ApplicationBundle,
+                None,
+                None,
+                3000,
+                &[],
+            )
+            .unwrap_err(),
+            "HOST_OBSERVATION_RELEASE_PROOF_INCOMPLETE"
         );
         let mut forged = observed.clone();
         forged.runtime_ready_proven = false;
