@@ -651,10 +651,17 @@ mod tests {
         let recover = std::fs::read_to_string(&file).unwrap();
         assert!(recover.contains("operation=RECOVER_PREFLIGHT"));
         assert!(!recover.contains("admitted_at_unix="));
-        assert!(host_lifecycle_admission(
-            &desired, "not-enrolled", HostLifecycleOperation::Apply,
-            &release, None, Some(&file)
-        ).is_err());
+        assert!(
+            host_lifecycle_admission(
+                &desired,
+                "not-enrolled",
+                HostLifecycleOperation::Apply,
+                &release,
+                None,
+                Some(&file)
+            )
+            .is_err()
+        );
         std::fs::remove_file(file).unwrap();
     }
 
