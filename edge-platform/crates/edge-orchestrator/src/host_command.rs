@@ -221,6 +221,9 @@ pub(crate) fn run(
             if selected.is_empty() {
                 return Err("HOST_NOT_REGISTERED".to_owned());
             }
+            // A native Git-owned matrix avoids hard-coded names, copied
+            // runner routing and one diagnostic workflow per host.
+            let mut observation_targets = Vec::new();
             for host in selected {
                 let kind = ManagedHostKind::try_from(host.kind)
                     .map_err(|_| "HOST_KIND_INVALID".to_owned())?;
@@ -261,6 +264,12 @@ pub(crate) fn run(
                         continue;
                     }
                     println!("host_dispatch=READ_ONLY_EXACT_OWNER");
+                    observation_targets.push(observation_target(
+                        &host.machine_id,
+                        kind,
+                        owner,
+                        &labels,
+                    )?);
                     println!(
                         "host_observation_depth={}",
                         if deep { "DEEP" } else { "FAST" }
@@ -283,8 +292,24 @@ pub(crate) fn run(
                         "UNPROVEN".to_owned()
                     };
                     println!("host_runner_registration={registration}");
+                    // A bulk status must not enqueue jobs for unknown/offline
+                    // runners. An explicit target remains available for
+                    // bounded native-owner observation when GitHub Admin:read
+                    // is unavailable.
+                    if registration.starts_with("READY_FOR_DISPATCH:") {
+                        observation_targets.push(observation_target(
+                            &host.machine_id,
+                            kind,
+                            owner,
+                            &labels,
+                        )?);
+                    }
                 }
                 println!("host_runtime=UNPROVEN");
+            }
+            println!("host_observation_targets={}", observation_targets.len());
+            if let Some(output) = github_output {
+                append_observation_matrix(output, &observation_targets)?;
             }
             println!("host_mutations=0");
             Ok(())
@@ -382,6 +407,15 @@ fn host_lifecycle_admission(
         );
         if let Some(output) = output {
             let labels = runner_labels(kind, owner, &selected.windows_runner_label)?;
+            // Recovery is read-only and must not queue a known offline owner.
+            let dispatch = if let Some(api) = runner_json {
+                let status = runner_status(api, kind, owner, &selected.windows_runner_label)?;
+                println!("host_runner_registration={status}");
+                status.starts_with("READY_FOR_DISPATCH:")
+            } else {
+                println!("host_runner_registration=UNPROVEN");
+                true
+            };
             append_control_outputs(
                 output,
                 machine_id,
@@ -392,6 +426,12 @@ fn host_lifecycle_admission(
                 &selected.desired_spec_path,
             )?;
             append_action_output(output, "RECOVER_READ_ONLY")?;
+            let targets = if dispatch {
+                vec![observation_target(machine_id, kind, owner, &labels)?]
+            } else {
+                Vec::new()
+            };
+            append_observation_matrix(output, &targets)?;
         }
         return Ok(());
     }
@@ -485,6 +525,56 @@ fn runner_labels(
         ManagedHostKind::Unspecified => return Err("host host kind unspecified".to_owned()),
     };
     serde_json::to_string(&labels).map_err(|_| "host runner selection encoding failed".to_owned())
+}
+
+/// A dispatch target comes exclusively from the protected protobuf registry.
+fn observation_target(
+    machine_id: &str,
+    kind: ManagedHostKind,
+    owner: &str,
+    labels: &str,
+) -> Result<serde_json::Value, String> {
+    let runner_labels: Vec<String> = serde_json::from_str(labels)
+        .map_err(|_| "HOST_MATRIX_LABELS_INVALID".to_owned())?;
+    if runner_labels.len() != 4 || runner_labels.iter().any(|s| s.is_empty()) {
+        return Err("HOST_MATRIX_LABELS_INVALID".to_owned());
+    }
+    let kind = match kind {
+        ManagedHostKind::Windows => "WINDOWS",
+        ManagedHostKind::Vm => "VM",
+        ManagedHostKind::Unspecified => return Err("HOST_MATRIX_KIND_INVALID".to_owned()),
+    };
+    Ok(serde_json::json!({
+        "machine_id": machine_id,
+        "kind": kind,
+        "owner": owner,
+        "runner_labels": runner_labels,
+    }))
+}
+
+/// One bounded GitHub matrix for both targeted and fleet-wide native diagnosis.
+/// It is transport metadata, not runtime decision authority or an observed PASS.
+fn append_observation_matrix(
+    path: &Path,
+    targets: &[serde_json::Value],
+) -> Result<(), String> {
+    if targets.len() > 64 {
+        return Err("HOST_MATRIX_TOO_LARGE".to_owned());
+    }
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|_| "HOST_MATRIX_OUTPUT_UNAVAILABLE".to_owned())?;
+    if !metadata.file_type().is_file() {
+        return Err("HOST_MATRIX_OUTPUT_NOT_REGULAR".to_owned());
+    }
+    let matrix = serde_json::json!({"include": targets});
+    OpenOptions::new()
+        .append(true)
+        .open(path)
+        .and_then(|mut target| {
+            writeln!(target, "host_matrix={matrix}")?;
+            writeln!(target, "host_targets_present={}", !targets.is_empty())
+        })
+        .map_err(|_| "HOST_MATRIX_OUTPUT_WRITE_FAILED".to_owned())
 }
 
 /// Publishes exact protobuf-validated host selection to the *existing*
@@ -663,6 +753,38 @@ mod tests {
             crate::credential_existing_join::host_admission_status(normal.as_bytes()).unwrap(),
             "NO_BEGIN_NO_MUTATION_AUTHORITY"
         );
+    }
+
+    #[test]
+    fn host_observation_matrix_is_bound_to_one_typed_owner() {
+        let win = observation_target(
+            "windows-02",
+            ManagedHostKind::Windows,
+            "DESKTOP-EXAMPLE",
+            r#"["self-hosted","Windows","X64","windows-02"]"#,
+        )
+        .unwrap();
+        let vm = observation_target(
+            "vm-02",
+            ManagedHostKind::Vm,
+            "vm-02",
+            r#"["self-hosted","Linux","X64","sing-box-production-vm"]"#,
+        )
+        .unwrap();
+        assert_eq!(win["kind"], "WINDOWS");
+        assert_eq!(vm["machine_id"], "vm-02");
+        assert!(observation_target("x", ManagedHostKind::Unspecified, "y", "[]").is_err());
+        assert!(observation_target("x", ManagedHostKind::Windows, "y", "[]").is_err());
+        let file = std::env::temp_dir().join(format!(
+            "sing-box-host-matrix-{}", std::process::id()
+        ));
+        std::fs::write(&file, "").unwrap();
+        append_observation_matrix(&file, &[win, vm]).unwrap();
+        let contents = std::fs::read_to_string(&file).unwrap();
+        assert!(contents.contains("host_targets_present=true"));
+        assert!(contents.contains("\\"machine_id\\":\\"windows-02\\""));
+        assert!(contents.contains("\\"machine_id\\":\\"vm-02\\""));
+        std::fs::remove_file(file).unwrap();
     }
 
     #[test]
