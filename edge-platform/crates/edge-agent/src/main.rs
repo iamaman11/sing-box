@@ -149,16 +149,15 @@ async fn run(parsed: cli::Cli) -> Result<(), AgentError> {
 /// credential authority here, and this cannot issue a mutation VERIFIED receipt.
 async fn run_local_host_observe(stack_dir: &Path) -> Result<(), String> {
     use edge_shared_types::host_lifecycle::build_native_observation;
-    use edge_shared_types::{
-        FleetHostKind, FleetNativeOwnerState, FleetNativeReleaseProof,
-    };
+    use edge_shared_types::{FleetHostKind, FleetNativeOwnerState, FleetNativeReleaseProof};
     let state = inspect_runtime(stack_dir, AgentMode::Runtime).await;
     let release_path = stack_dir.join(APPLICATION_RELEASE_MARKER);
     let mut digest = None;
     match fs::File::open(&release_path) {
         Ok(file) => {
             let mut bytes = Vec::new();
-            file.take(4097).read_to_end(&mut bytes)
+            file.take(4097)
+                .read_to_end(&mut bytes)
                 .map_err(|_| "VM_HOST_RELEASE_UNREADABLE".to_owned())?;
             if bytes.is_empty() || bytes.len() > 4096 {
                 return Err("VM_HOST_RELEASE_INVALID_SIZE".to_owned());
@@ -208,8 +207,10 @@ async fn run_local_host_observe(stack_dir: &Path) -> Result<(), String> {
         state.docker_reachable.then_some(state.ready),
         observed_at,
         &reasons,
-    ).map_err(str::to_owned)?;
-    io::stdout().write_all(&observed.encode_to_vec())
+    )
+    .map_err(str::to_owned)?;
+    io::stdout()
+        .write_all(&observed.encode_to_vec())
         .map_err(|_| "HOST_OBSERVATION_STDOUT_UNAVAILABLE".to_owned())
 }
 
@@ -274,9 +275,9 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             print_agent_state_evidence("STATUS", &state);
             Ok(())
         }
-        cli::LocalCommand::HostObserve => {
-            run_local_host_observe(&stack_dir).await.map_err(AgentError::Command)
-        }
+        cli::LocalCommand::HostObserve => run_local_host_observe(&stack_dir)
+            .await
+            .map_err(AgentError::Command),
         cli::LocalCommand::Verify => {
             let state = inspect_runtime(&stack_dir, AgentMode::Readiness).await;
             print_agent_state_evidence("VERIFY", &state);
