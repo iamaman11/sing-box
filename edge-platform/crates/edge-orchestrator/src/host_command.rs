@@ -378,17 +378,30 @@ pub(crate) fn run(
             // Pure typed reconcile: this is NEVER a privileged mutation
             // decision until Worker + native owner independently attest.
             let release_sha = exact_hex_sha256(&release.release().release_set_sha256)?;
-            let bundle_sha = release.release().vm_runtime.as_ref()
-                .map(|vm| vm.application_bundle_sha256.as_slice()).unwrap_or(&[]);
+            let bundle_sha = release
+                .release()
+                .vm_runtime
+                .as_ref()
+                .map(|vm| vm.application_bundle_sha256.as_slice())
+                .unwrap_or(&[]);
             let proposed = edge_shared_types::host_planner::propose_host_transition(
-                selected, Some(&observed), &release_sha, bundle_sha, now,
+                selected,
+                Some(&observed),
+                &release_sha,
+                bundle_sha,
+                now,
             );
-            println!("host_reconcile_step={:?}",
+            println!(
+                "host_reconcile_step={:?}",
                 edge_shared_types::FleetHostPlannedStep::try_from(proposed.step)
-                    .map_err(|_| "HOST_PLAN_STEP_INVALID")?);
+                    .map_err(|_| "HOST_PLAN_STEP_INVALID")?
+            );
             println!("host_reconcile_reason={}", proposed.reason_code);
             println!("host_plan_owner_attested={}", proposed.owner_attested);
-            println!("host_plan_mutation_authorized={}", proposed.mutation_authorized);
+            println!(
+                "host_plan_mutation_authorized={}",
+                proposed.mutation_authorized
+            );
             println!("host_native_readback_source=RUNNER_COPIED_UNAUTHENTICATED");
             println!("host_native_readback_authorizes_mutation=false");
             println!("host_mutations=0");
