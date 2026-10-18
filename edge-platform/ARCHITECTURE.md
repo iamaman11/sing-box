@@ -24,6 +24,29 @@ GitHub runner — транспорт без привилегий runtime; тек
 
 Line1 — четыре endpoint, Line2 — шесть, WARP egress и Mesh — типизированные ресурсы текущего VM owner; Mesh может быть не принят отдельно.
 
+## Канонический target и отсутствие скрытого запуска
+
+Единственный `FleetDesiredState` хранит для каждой машины `FleetHostTarget`:
+`run_state=STOPPED|RUNNING`; для Windows дополнительно `windows_mode=PROXY_ONLY|MANAGED_TUN`.
+`target` отсутствует — машина доступна только для наблюдения, **не** запускается
+и не принимается как mutation-ready. Сейчас Windows `sing-box-windows-lab` явно
+`STOPPED/PROXY_ONLY`; отсутствие target у VM означает `OBSERVE_ONLY` до явного
+Git-owned решения, а не автоматический RUNNING.
+
+Один host-specific `desired_sha256` вычисляется по типизированному `FleetHost`
+**вместе** с точными байтами его Git spec. Нельзя менять VM shared spec и тем
+самым незаметно управлять Windows; машина, режим и ожидаемый запуск входят в
+криптографически проверяемое desired. Форматы для рендера контейнеров и sing-box
+могут быть JSON, но **не** самостоятельным desired authority.
+Для нового хоста конфигурация отделяется от machine ID и не должна требовать
+нового Rust binary.
+
+Из ChatGPT пользователь выбирает `start/stop` или `ProxyOnly/TUN`; Orchestrator
+сверяет это с каноническим Git desired и передаёт только scoped intent.
+Пока Git desired не изменён и его immutable digest не проверен native owner,
+никакое устное пожелание, состояние Windows SCM или сообщение GitHub runner
+не считается разрешением на переключение.
+
 ## Три операции
 
 - `host status [machine-id] [--deep]`: только чтение. Типизированный, ограниченный размером ответ: `machine_id`, `observed_at`, `depth`, `installed`, `desired`, `owner`, `health`, `reason`, `next_action`. `UNPROVEN` не превращается в PASS.
