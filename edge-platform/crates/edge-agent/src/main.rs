@@ -19,7 +19,7 @@ use clap::Parser;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -145,6 +145,74 @@ async fn run(parsed: cli::Cli) -> Result<(), AgentError> {
     }
 }
 
+/// One compact native VM evidence protobuf. There is no GitHub runner or
+/// credential authority here, and this cannot issue a mutation VERIFIED receipt.
+async fn run_local_host_observe(stack_dir: &Path) -> Result<(), String> {
+    use edge_shared_types::host_lifecycle::build_native_observation;
+    use edge_shared_types::{
+        FleetHostKind, FleetNativeOwnerState, FleetNativeReleaseProof,
+    };
+    let state = inspect_runtime(stack_dir, AgentMode::Runtime).await;
+    let release_path = stack_dir.join(APPLICATION_RELEASE_MARKER);
+    let mut digest = None;
+    match fs::File::open(&release_path) {
+        Ok(file) => {
+            let mut bytes = Vec::new();
+            file.take(4097).read_to_end(&mut bytes)
+                .map_err(|_| "VM_HOST_RELEASE_UNREADABLE".to_owned())?;
+            if bytes.is_empty() || bytes.len() > 4096 {
+                return Err("VM_HOST_RELEASE_INVALID_SIZE".to_owned());
+            }
+            let release = ApplicationBundleRelease::decode(bytes.as_slice())
+                .map_err(|_| "VM_HOST_RELEASE_PROTO_INVALID".to_owned())?;
+            if release.encode_to_vec() != bytes || release.schema_version != 1 {
+                return Err("VM_HOST_RELEASE_NONCANONICAL".to_owned());
+            }
+            digest = Some(release.bundle_digest);
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => return Err("VM_HOST_RELEASE_UNREADABLE".to_owned()),
+    }
+    let proof = if digest.is_some() {
+        FleetNativeReleaseProof::ApplicationBundle
+    } else {
+        FleetNativeReleaseProof::Unproven
+    };
+    // A running container is NOT evidence of end-to-end TLS/auth or public
+    // egress. Report actual local Docker/Agent readiness only.
+    let owner_state = if !state.docker_reachable {
+        FleetNativeOwnerState::Unproven
+    } else if state.running_containers.is_empty() {
+        FleetNativeOwnerState::Stopped
+    } else {
+        FleetNativeOwnerState::Running
+    };
+    let mut reasons = Vec::new();
+    if digest.is_none() {
+        reasons.push("VM_BUNDLE_NOT_OBSERVED");
+    }
+    if !state.docker_reachable {
+        reasons.push("VM_DOCKER_UNAVAILABLE");
+    } else if !state.ready {
+        reasons.push("VM_RUNTIME_NOT_READY");
+    }
+    let observed_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "HOST_CLOCK_UNAVAILABLE".to_owned())?
+        .as_secs();
+    let observed = build_native_observation(
+        FleetHostKind::Vm,
+        owner_state,
+        proof,
+        digest.as_deref(),
+        state.docker_reachable.then_some(state.ready),
+        observed_at,
+        &reasons,
+    ).map_err(str::to_owned)?;
+    io::stdout().write_all(&observed.encode_to_vec())
+        .map_err(|_| "HOST_OBSERVATION_STDOUT_UNAVAILABLE".to_owned())
+}
+
 /// Lightweight read-only VM observation. It deliberately does not claim
 /// container health, egress success, credential equality or pair completion.
 fn run_local_fast(stack_dir: &Path) -> Result<(), String> {
@@ -205,6 +273,9 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             let state = inspect_runtime(&stack_dir, AgentMode::Runtime).await;
             print_agent_state_evidence("STATUS", &state);
             Ok(())
+        }
+        cli::LocalCommand::HostObserve => {
+            run_local_host_observe(&stack_dir).await.map_err(AgentError::Command)
         }
         cli::LocalCommand::Verify => {
             let state = inspect_runtime(&stack_dir, AgentMode::Readiness).await;
