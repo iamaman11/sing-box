@@ -103,7 +103,7 @@ Worker signer проверяет Access JWT, exact GitHub comment, канони�
 кодирование intent и опубликованный ReleaseSet. Один Rust transaction
 entrypoint связывает owner readback → signed admission → durable resource
 lock → однократную mutation callback → физический poststate. Тесты
-покрывают NOOP, успешный переход и UNKNOWN_NO_REPLAY.
+покрывают долговечный однократный NOOP, успешный переход и UNKNOWN_NO_REPLAY.
 
 **Не завершено:** доверенный per-host Git source/release resolver в
 native owner; Windows SYSTEM ACL admission; подключение entrypoint к

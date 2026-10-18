@@ -29,8 +29,9 @@ fn plan(
 }
 
 /// Compute a deterministic and strictly non-authorizing proposal. Windows
-/// compares the activation ReleaseSet digest; VM compares the exact immutable
-/// ApplyBundleRequest digest, NEVER the whole ReleaseSet digest.
+/// compares the activation ReleaseSet digest; VM compares the logical
+/// bundle digest derived from the verified exact ApplyBundleRequest,
+/// NEVER the transport digest or the whole ReleaseSet digest.
 pub fn propose_host_transition(
     host: &FleetHost,
     observed: Option<&FleetNativeObservation>,
