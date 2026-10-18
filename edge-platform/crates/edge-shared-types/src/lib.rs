@@ -22,8 +22,8 @@ pub use FleetHostKind as ManagedHostKind;
 pub use fleet_host as managed_host;
 
 // Native fleet lifecycle is a single typed wire/policy contract for both host kinds.
-pub mod host_lifecycle;
 pub mod host_journal;
+pub mod host_lifecycle;
 
 pub mod initial_credential_attestation;
 pub use initial_credential_attestation::first_use_host_attestation_sha256;
