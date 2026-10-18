@@ -788,11 +788,21 @@ mod tests {
         };
         let registry_pb = encode_host_registry(&registry).unwrap();
         let spec = b"exact git typed VM desired";
+        let mut bundle_request = crate::ApplyBundleRequest {
+            bundle_id: Some("vm-exact".to_owned()),
+            prune_existing: true,
+            ..Default::default()
+        };
+        bundle_request.bundle_digest =
+            Some(crate::canonical_apply_bundle_digest(&bundle_request).unwrap());
+        let bundle_pb = bundle_request.encode_to_vec();
+        let transport_sha256 =
+            ring::digest::digest(&ring::digest::SHA256, &bundle_pb).as_ref().to_vec();
         let release = ReleaseSet {
             schema_version: 7,
             source_revision: "a".repeat(40),
             vm_runtime: Some(VmRuntime {
-                application_bundle_sha256: vec![7; 32],
+                application_bundle_sha256: transport_sha256,
                 ..Default::default()
             }),
             ..Default::default()
@@ -843,7 +853,7 @@ mod tests {
                     FleetNativeOwnerState::Stopped
                 },
                 FleetNativeReleaseProof::ApplicationBundle,
-                Some(&"07".repeat(32)),
+                Some(bundle_request.bundle_digest.as_deref().unwrap()),
                 Some(running.get()),
                 1020,
                 &[],
@@ -855,6 +865,7 @@ mod tests {
             &registry_pb,
             spec,
             &release_pb,
+            Some(&bundle_pb),
             pair.public_key().as_ref(),
             "vm-exact",
             FleetHostKind::Vm as i32,
@@ -900,6 +911,7 @@ mod tests {
             &registry_pb,
             spec,
             &release_pb,
+            Some(&bundle_pb),
             pair.public_key().as_ref(),
             "vm-exact",
             FleetHostKind::Vm as i32,
@@ -930,6 +942,7 @@ mod tests {
                 &registry_pb,
                 spec,
                 &release_pb,
+                Some(&bundle_pb),
                 pair.public_key().as_ref(),
                 "vm-exact",
                 FleetHostKind::Vm as i32,
@@ -959,6 +972,7 @@ mod tests {
                 &registry_pb,
                 spec,
                 &release_pb,
+                Some(&bundle_pb),
                 pair.public_key().as_ref(),
                 "vm-exact",
                 FleetHostKind::Vm as i32,
