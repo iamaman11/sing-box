@@ -18,39 +18,6 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 
-/// The ONLY external native-owner entry point. A signed protobuf from a
-/// runner is not enough: execution also requires a kernel-verified protected
-/// local journal root. On Windows the stronger ACL/SYSTEM gate must be added
-/// before this admission can be enabled; fail closed until that is accepted.
-fn admit_native_host_once(
-    intent: &FleetHostIntent,
-    authorization: &FleetHostAuthorization,
-    registry: &HostRegistry,
-    expected_registry_sha256: &[u8],
-    expected_desired_sha256: &[u8],
-    expected_release_sha256: &[u8],
-    pinned_worker_public_key: &[u8],
-    native_machine_id: &str,
-    native_owner_kind: i32,
-    now_unix: u64,
-    protected_journal_dir: &Path,
-) -> Result<FleetHostResult, &'static str> {
-    verify_native_journal_protection(protected_journal_dir)?;
-    admit_after_protected_owner_check_once(
-        intent,
-        authorization,
-        registry,
-        expected_registry_sha256,
-        expected_desired_sha256,
-        expected_release_sha256,
-        pinned_worker_public_key,
-        native_machine_id,
-        native_owner_kind,
-        now_unix,
-        protected_journal_dir,
-    )
-}
-
 #[cfg(unix)]
 fn verify_native_journal_protection(path: &Path) -> Result<(), &'static str> {
     use std::os::unix::fs::MetadataExt;
@@ -400,36 +367,8 @@ fn native_scope_pending_path(root: &Path, intent: &FleetHostIntent) -> std::path
     root.join(format!("resource-{}.pending.pb", journal_hex(&bytes)))
 }
 
-/// A final result is made durable BEFORE unlocking a resource. A missing,
-/// stale or inconsistent physical poststate leaves the original scope locked
-/// as UNKNOWN_NO_REPLAY. The native owner supplies a live, local readback;
-/// a copied runner artifact is not acceptable evidence for this function.
-fn finish_native_host_once<F>(
-    intent: &FleetHostIntent,
-    registry: &HostRegistry,
-    native_machine_id: &str,
-    native_owner_kind: i32,
-    expected_runtime_digest: &[u8],
-    now_unix: u64,
-    journal_dir: &Path,
-    native_readback: F,
-) -> Result<FleetHostResult, &'static str>
-where
-    F: FnOnce() -> Result<crate::FleetNativeObservation, &'static str>,
-{
-    verify_native_journal_protection(journal_dir)?;
-    finish_after_protected_owner_check_once(
-        intent,
-        registry,
-        native_machine_id,
-        native_owner_kind,
-        expected_runtime_digest,
-        now_unix,
-        journal_dir,
-        native_readback,
-    )
-}
-
+/// Complete a locally authenticated native mutation after physical readback.
+/// Failure retains the durable resource gate; no automatic replay or rollback.
 fn finish_after_protected_owner_check_once<F>(
     intent: &FleetHostIntent,
     registry: &HostRegistry,
@@ -901,6 +840,7 @@ mod tests {
                 &registry_pb,
                 spec,
                 &release_pb,
+                Some(&bundle_pb),
                 pair.public_key().as_ref(),
                 "vm-exact",
                 FleetHostKind::Vm as i32,
