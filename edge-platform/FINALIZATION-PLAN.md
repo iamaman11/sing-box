@@ -16,7 +16,7 @@
 
 **C. Один native install/reinstall/configure/replace.** Собирать из Git единственный immutable ReleaseSet с per-host/per-resource bundle; устанавливать и изменять контейнеры, sing-box и сеть нативными owner. Отказ `UNKNOWN_NO_REPLAY` не возобновляется: отделить старый ресурс, выделить **новую идентичность** и свежий typed intent, выполнить новую ограниченную операцию после доказанной изоляции. При удалении старого — явный owner/resource-scope, сохранение доступа и rollback по новому релизу; никакого копирования старых secrets/профилей/сценариев.
 
-**D. Физическая приёмка.** Две Windows и две VM, включая новую машину: fresh install, update, reinstall, восстановление после crash/lost ACK/offline runner, config-only правка, добавление/удаление контейнера, централизованные новые Worker credentials, Line1 4/4 и Line2 6/6 с DIRECT/WARP/TLS/auth. Проверить независимость Cloudflare One и Mesh. Windows ProxyOnly и stopped SCM сохранять до отдельного явного решения о запуске; TUN принимать отдельно после DNS/route/reboot/browsing safety. Точный tested SHA → CI → immutable ReleaseSet без rebuild → native poststate; `UNPROVEN` никогда не равен PASS.
+**D. Физическая приёмка.** Две Windows и две VM, включая новую машину: fresh install, update, reinstall, восстановление после crash/lost ACK/offline runner, config-only правка, добавление/удаление контейнера, централизованные новые Worker credentials, Line1 4/4 и Line2 6/6 с DIRECT/WARP/TLS/auth. Проверить независимость Cloudflare One и Mesh. Windows ProxyOnly и stopped SCM сохранять до отдельного явного решения о запуске; TUN принимать отдельно после DNS/route/reboot/browsing safety. Exact tested SHA → CI → ReleaseSet без rebuild → native poststate; `UNPROVEN` не равен PASS.
 
 ## Единый нативный readback (кандидат PR #403)
 
@@ -119,7 +119,7 @@ transport; authenticated remote receipt; физический poststate. Эти
 3. Пока факт отсутствует, выдавать `UNPROVEN`/`BLOCKED`; никакого удаления, переключения secrets, запуска Windows/TUN или изменения сети. После ответа сверить все противоречащие источники.
 4. Каждый такой ручной пробел считать дефектом встроенной диагностики: в этом же новом Rust owner/typed protobuf contract добавить автоматический сбор, точную причину отказа (`error_class`), версию установленного ReleaseSet, physical proof и `next_action`. Конечная приёмка: **ChatGPT сам быстро видит все необходимые данные**, локальный агент больше не нужен для штатного цикла.
 
-Ни наличие доступа к GitHub, ни PASS тестов не отменяют обязательный запрос локальной помощи при сомнении. Эта помощь не превращается в старый путь выполнения, вторую систему и не разрешает исторический replay.
+PASS CI не отменяет read-only проверку при сомнении; эта проверка не разрешает replay.
 
 ## Правило выполнения
 
