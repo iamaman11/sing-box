@@ -16,10 +16,80 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 
-/// The native owner calls this *after* it has independently established the
-/// operating-system identity of its protected journal root. Neither the GitHub
-/// runner nor a writable staging directory is an authority for this path.
+/// The ONLY external native-owner entry point. A signed protobuf from a
+/// runner is not enough: execution also requires a kernel-verified protected
+/// local journal root. On Windows the stronger ACL/SYSTEM gate must be added
+/// before this admission can be enabled; fail closed until that is accepted.
 pub fn admit_native_host_once(
+    intent: &FleetHostIntent,
+    authorization: &FleetHostAuthorization,
+    registry: &HostRegistry,
+    expected_registry_sha256: &[u8],
+    expected_desired_sha256: &[u8],
+    expected_release_sha256: &[u8],
+    pinned_worker_public_key: &[u8],
+    native_machine_id: &str,
+    native_owner_kind: i32,
+    now_unix: u64,
+    protected_journal_dir: &Path,
+) -> Result<FleetHostResult, &'static str> {
+    verify_native_journal_protection(protected_journal_dir)?;
+    admit_after_protected_owner_check_once(
+        intent,
+        authorization,
+        registry,
+        expected_registry_sha256,
+        expected_desired_sha256,
+        expected_release_sha256,
+        pinned_worker_public_key,
+        native_machine_id,
+        native_owner_kind,
+        now_unix,
+        protected_journal_dir,
+    )
+}
+
+#[cfg(unix)]
+fn verify_native_journal_protection(path: &Path) -> Result<(), &'static str> {
+    use std::os::unix::fs::MetadataExt;
+
+    unsafe extern "C" {
+        fn geteuid() -> u32;
+    }
+    // This gate is specific to the installed root-owned VM agent.
+    if unsafe { geteuid() } != 0 || !path.is_absolute() {
+        return Err("HOST_NATIVE_ROOT_OWNER_REQUIRED");
+    }
+    let root = fs::symlink_metadata(path).map_err(|_| "HOST_JOURNAL_ROOT_MISSING")?;
+    if !root.file_type().is_dir() || root.file_type().is_symlink()
+        || root.uid() != 0 || root.mode() & 0o077 != 0
+    {
+        return Err("HOST_JOURNAL_ROOT_NOT_PROTECTED");
+    }
+    // Ancestors cannot be replaced by the unprivileged GitHub runner.
+    // Do not silently trust /tmp, relative paths, or writable mount ancestors.
+    for ancestor in path.ancestors().skip(1) {
+        let meta = fs::symlink_metadata(ancestor)
+            .map_err(|_| "HOST_JOURNAL_ANCESTOR_UNAVAILABLE")?;
+        if !meta.file_type().is_dir() || meta.file_type().is_symlink()
+            || meta.uid() != 0 || meta.mode() & 0o022 != 0
+        {
+            return Err("HOST_JOURNAL_ANCESTOR_NOT_PROTECTED");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(unix))]
+fn verify_native_journal_protection(_path: &Path) -> Result<(), &'static str> {
+    // No POSIX stat approximation of a Windows ACL. The Windows SYSTEM/ACL
+    // policy must be native and explicit; until then NO privileged admission.
+    Err("HOST_WINDOWS_OWNER_ACL_NOT_ACCEPTED")
+}
+
+/// Internal pure admission/journal primitive; callers outside this crate
+/// cannot bypass the native-owner root/ACL gate above.
+fn admit_after_protected_owner_check_once(
     intent: &FleetHostIntent,
     authorization: &FleetHostAuthorization,
     registry: &HostRegistry,
@@ -151,7 +221,7 @@ mod tests {
         ));
         fs::create_dir(&dir).unwrap();
         let call = |intent: &FleetHostIntent, signed: &FleetHostAuthorization| {
-            admit_native_host_once(
+            admit_after_protected_owner_check_once(
                 intent,
                 signed,
                 &registry,
@@ -192,5 +262,29 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(files.len(), 1);
         fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn cannot_use_an_unprivileged_journal_root_as_native_authority() {
+        // The repo test runner is unprivileged. Even a perfectly signed
+        // intent must not let its caller choose a permissive /tmp directory.
+        let dir = std::env::temp_dir().join(format!(
+            "sing-box-host-root-negative-{}", std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir(&dir).unwrap();
+        let outcome = verify_native_journal_protection(&dir);
+        assert!(outcome.is_err());
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_requires_native_acl_acceptance() {
+        assert_eq!(
+            verify_native_journal_protection(Path::new(r"C:\sing-box\state\host")),
+            Err("HOST_WINDOWS_OWNER_ACL_NOT_ACCEPTED")
+        );
     }
 }
