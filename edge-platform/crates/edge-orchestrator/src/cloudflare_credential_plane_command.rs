@@ -2942,7 +2942,7 @@ async function ACCESS(q,e){const iss=e.EDGE_HOST_ACCESS_ISSUER,aud=e.EDGE_HOST_A
 const parts=t.split(".");if(parts.length!==3)return false;let h,c;try{h=JSON.parse(TD.decode(B64(parts[0])));c=JSON.parse(TD.decode(B64(parts[1])))}catch{return false}
 const now=Math.floor(Date.now()/1000);if(!h||h.alg!=="RS256"||typeof h.kid!=="string"||!c||c.iss!==iss||!Array.isArray(c.aud)||!c.aud.includes(aud)||!Number.isInteger(c.exp)||c.exp<=now||!Number.isInteger(c.nbf)||c.nbf>now+60)return false;
 try{const res=await fetch(iss+"/cdn-cgi/access/certs",{redirect:"error"});if(!res.ok)return false;const certs=await res.json();const keys=Array.isArray(certs.keys)?certs.keys:[];const jwk=keys.find(k=>k.kid===h.kid&&k.kty==="RSA");if(!jwk)return false;const key=await crypto.subtle.importKey("jwk",jwk,{name:"RSASSA-PKCS1-v1_5",hash:"SHA-256"},false,["verify"]);return await crypto.subtle.verify("RSASSA-PKCS1-v1_5",key,B64(parts[2]),TE.encode(parts[0]+"."+parts[1]))}catch{return false}}
-async function AUTHORIZE(q,e,u){if(q.method!=="POST"||u.search||q.headers.get("Content-Type")!=="application/x-protobuf")return new Response(null,{status:404,headers:NO});
+async function AUTHORIZE(q,e,u){if(P!==__HOST_SIGNER_PROJECTION__)return new Response(null,{status:404,headers:NO});if(q.method!=="POST"||u.search||q.headers.get("Content-Type")!=="application/x-protobuf")return new Response(null,{status:404,headers:NO});
 const k=e.EDGE_HOST_SIGNING_PKCS8_BASE64,id=e.EDGE_HOST_SIGNING_KEY_ID,approved=e.EDGE_HOST_APPROVED_INTENT_SHA256;
 if(typeof k!=="string"||typeof id!=="string"||!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id)||typeof approved!=="string"||!/^[a-f0-9]{64}$/.test(approved))return new Response(null,{status:404,headers:NO});
 if(!await ACCESS(q,e))return new Response(null,{status:403,headers:NO});
@@ -2965,6 +2965,7 @@ export default{async fetch(q,e){const u=new URL(q.url);if(u.pathname==="/v1/host
 if(q.method==="GET"&&u.pathname==="/v1/proof-slot"){const k=u.searchParams.get("slot"),i=k==="a"?0:k==="b"?1:-1;if(u.searchParams.size!==2||i<0||x!==Q[i])return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}});const b=H(e[S[i]]);if(b===null)return new Response(null,{status:409,headers:{"Cache-Control":"no-store"}});const h=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",b))).map(x=>x.toString(16).padStart(2,"0")).join("");return new Response(null,{status:h===D[i]?204:409,headers:{"Cache-Control":"no-store"}})}
 if(q.method!=="GET"||u.pathname!=="/v1/credentials"||u.searchParams.size!==1||x===null||!/^(0|[1-9][0-9]*)$/.test(x))return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}});let n;try{n=BigInt(x)}catch{return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}})}const m=[];for(const s of S){const b=H(e[s]);if(b!==null&&G(b)===n)m.push(b)}if(m.length!==1)return new Response(null,{status:m.length?409:404,headers:{"Cache-Control":"no-store"}});return new Response(m[0],{status:200,headers:{"Content-Type":"application/x-protobuf","Cache-Control":"no-store"}})}};"#
         .replace("__PROJECTION__", &(projection_kind as i32).to_string())
+        .replace("__HOST_SIGNER_PROJECTION__", &(CredentialProjectionKind::Vm as i32).to_string())
         .replace("__DUMMY_A_DIGEST__", &sha256_hex(&slots[0].payload))
         .replace("__DUMMY_B_DIGEST__", &sha256_hex(&slots[1].payload))
         .replace(
@@ -3128,6 +3129,8 @@ mod tests {
         for projection in ["vm", "windows"] {
             let source = delivery_worker_material(projection).unwrap().source;
             assert!(source.contains("/v1/host/authorize"));
+            assert!(source.contains("if(P!=="));
+            assert!(!source.contains("__HOST_SIGNER_PROJECTION__"));
             assert!(source.contains("if(q.method!==\"POST\""));
             assert!(source.contains("EDGE_HOST_SIGNING_PKCS8_BASE64"));
             assert!(source.contains("EDGE_HOST_SIGNING_KEY_ID"));
