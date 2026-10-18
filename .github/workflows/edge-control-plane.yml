@@ -218,12 +218,13 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
   host_observe:
-    # One read-only native owner job definition, distributed by the *Rust*
-    # typed inventory. Offline/unproven fleet entries are reported by the
-    # admission job, not silently counted as physically healthy.
-    needs: host
+    # Every typed host is an INDEPENDENT reusable workflow invocation.
+    # An absent production runner cannot delay completion or reporting for
+    # a healthy Windows / acceptance VM owner.
+    needs: [host, host_report]
     if: >-
       needs.host.result == 'success' &&
+      needs.host_report.result == 'success' &&
       needs.host.outputs.host_targets_present == 'true' &&
       (github.event.comment.body == '/host status' ||
        startsWith(github.event.comment.body, '/host status ') ||
@@ -231,80 +232,17 @@ jobs:
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.host.outputs.host_matrix) }}
-    runs-on: ${{ matrix.runner_labels }}
-    timeout-minutes: 15
     permissions:
       contents: read
-    env:
-      TARGET_MACHINE: ${{ matrix.machine_id }}
-      TARGET_OWNER: ${{ matrix.owner }}
-      TARGET_KIND: ${{ matrix.kind }}
-      COMMAND_BODY: ${{ github.event.comment.body }}
-    steps:
-      - name: Verify installed Windows native owner and diagnose without mutation
-        if: env.TARGET_KIND == 'WINDOWS'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Stop'
-          if ($env:RUNNER_NAME -cne $env:TARGET_OWNER) {
-            throw 'HOST_WINDOWS_OWNER_MISMATCH'
-          }
-          $root = 'C:\sing-box'
-          $doctor = Join-Path $root 'bin\edge-diagnostic.exe'
-          $current = Join-Path $root 'current.pb'
-          if (-not (Test-Path -LiteralPath $doctor -PathType Leaf) -or
-              -not (Test-Path -LiteralPath $current -PathType Leaf)) {
-            throw 'HOST_WINDOWS_NATIVE_OWNER_MISSING'
-          }
-          if ($env:COMMAND_BODY -like '* --deep' -or
-              $env:COMMAND_BODY -like '/host recover *') {
-            & $doctor doctor $current
-            if ($LASTEXITCODE -ne 0) { throw 'HOST_WINDOWS_NATIVE_DEEP_FAILED' }
-          } else {
-            & $doctor doctor $current --fast
-            if ($LASTEXITCODE -ne 0) {
-              # Older accepted immutable diagnostic has only doctor <current.pb>.
-              # Its exact owner can still diagnose read-only; don't install
-              # a new version, restart SCM or claim that FAST succeeded.
-              Write-Output 'host_fast_unavailable=INSTALLED_NATIVE_VERB_NOT_ACCEPTED'
-              Write-Output 'host_observation_depth=DEEP_INSTALLED_OWNER_FALLBACK'
-              & $doctor doctor $current
-              if ($LASTEXITCODE -ne 0) { throw 'HOST_WINDOWS_NATIVE_FALLBACK_FAILED' }
-            }
-          }
-
-      - name: Verify installed VM native owner and diagnose without mutation
-        if: env.TARGET_KIND == 'VM'
-        shell: bash
-        run: |
-          set -euo pipefail
-          test "${RUNNER_NAME}" = "sing-box-production-${TARGET_OWNER}"
-          owner="/usr/local/libexec/sing-box/edge-agent"
-          test -x "${owner}"
-          test ! -L "${owner}"
-          for path in /usr /usr/local /usr/local/libexec /usr/local/libexec/sing-box "${owner}"; do
-            test ! -L "${path}"
-            test "$(stat -c '%u:%g:%a' "${path}")" = "0:0:755"
-          done
-          test "$(id -u)" != 0
-          if sudo -n id -u >/dev/null 2>&1; then
-            echo 'HOST_VM_GENERIC_ROOT_AUTHORITY_FORBIDDEN' >&2
-            exit 1
-          fi
-          test ! -r /var/run/docker.sock
-          if [[ "${COMMAND_BODY}" == *" --deep" || "${COMMAND_BODY}" == "/host recover "* ]]; then
-            sudo -n "${owner}" local diagnose
-          else
-            # Old installed sudoers may not yet grant --fast. Native deep
-            # remains authorized and read-only; do not elevate privileges.
-            if sudo -n -l "${owner}" local status --fast >/dev/null 2>&1; then
-              sudo -n "${owner}" local status --fast
-            else
-              echo 'host_observation_depth=DEEP_INSTALLED_OWNER_FALLBACK'
-              echo 'host_fast_unavailable=EXACT_SUDOERS_VERB_NOT_INSTALLED'
-              sudo -n "${owner}" local diagnose
-            fi
-          fi
+      issues: write
+    uses: ./.github/workflows/host-native-observe.yml
+    with:
+      machine_id: ${{ matrix.machine_id }}
+      owner: ${{ matrix.owner }}
+      kind: ${{ matrix.kind }}
+      runner_labels: ${{ toJSON(matrix.runner_labels) }}
+      command_body: ${{ github.event.comment.body }}
+      source_comment_id: ${{ github.event.comment.id }}
 
   host_report:
     # Post an immediate, bounded Actions run pointer. An offline runner
@@ -336,55 +274,16 @@ jobs:
           set -euo pipefail
           [[ "${SOURCE_COMMENT_ID}" =~ ^[0-9]+$ ]]
           case "${TARGETS_PRESENT}" in
-            true) result=PENDING_NATIVE_OBSERVATION ;;
+            true) result=PER_HOST_NATIVE_REPORTS_INDEPENDENT ;;
             false) result=NO_NATIVE_TARGET_AVAILABLE ;;
             *) exit 1 ;;
           esac
           run_url="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          body="$(printf 'Host read-only report for operator command #%s\n\nOperation: `%s`\nResult: `%s`\nPhysical dispatch selected: `%s`\nCI evidence: %s\n\nNo credentials, SCM, DNS, routing or TUN mutation.\n' \
+          body="$(printf 'Host read-only report for operator command #%s\n\nOperation: `%s`\nResult: `%s`\nPhysical dispatch selected: `%s`\nCI evidence: %s\n\nIndividual host outcomes arrive as separate correlated replies. Unresponsive runners remain UNPROVEN. No host mutations.\n' \
             "${SOURCE_COMMENT_ID}" "${COMMAND_BODY}" "${result}" "${TARGETS_PRESENT}" "${run_url}")"
           comment_id="$(gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/1/comments" -f "body=${body}" --jq '.id')"
           [[ "${comment_id}" =~ ^[0-9]+$ ]]
           echo "comment_id=${comment_id}" >> "${GITHUB_OUTPUT}"
-
-  host_report_finalize:
-    # Transport-only update of the SAME response. The native job cannot
-    # write Issues, and GitHub never infers runtime health from a queued job.
-    needs: [host, host_report, host_observe]
-    if: >-
-      always() &&
-      needs.host_report.result == 'success'
-    runs-on: ubuntu-24.04
-    timeout-minutes: 3
-    permissions:
-      contents: read
-      issues: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      REPORT_COMMENT_ID: ${{ needs.host_report.outputs.comment_id }}
-      SOURCE_COMMENT_ID: ${{ github.event.comment.id }}
-      COMMAND_BODY: ${{ github.event.comment.body }}
-      OBSERVED_RESULT: ${{ needs.host_observe.result }}
-      TARGETS_PRESENT: ${{ needs.host.outputs.host_targets_present }}
-    steps:
-      - name: Finalize exactly the existing operator result comment
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "${REPORT_COMMENT_ID}" =~ ^[0-9]+$ ]]
-          [[ "${SOURCE_COMMENT_ID}" =~ ^[0-9]+$ ]]
-          case "${OBSERVED_RESULT}" in
-            success) result=NATIVE_READ_ONLY_COMPLETED ;;
-            failure) result=NATIVE_DIAGNOSTIC_FAILED ;;
-            cancelled) result=NATIVE_DIAGNOSTIC_CANCELLED ;;
-            skipped) result=NO_NATIVE_OBSERVATION ;;
-            *) result=UNKNOWN_NOT_ACCEPTED ;;
-          esac
-          case "${TARGETS_PRESENT}" in true|false) ;; *) exit 1 ;; esac
-          run_url="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          body="$(printf 'Host read-only report for operator command #%s\n\nOperation: `%s`\nResult: `%s`\nPhysical dispatch selected: `%s`\nCI evidence: %s\n\nNo credentials, SCM, DNS, routing or TUN mutation.\n' \
-            "${SOURCE_COMMENT_ID}" "${COMMAND_BODY}" "${result}" "${TARGETS_PRESENT}" "${run_url}")"
-          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${REPORT_COMMENT_ID}" -f "body=${body}" >/dev/null
 
   host_apply_windows:
     needs: host
