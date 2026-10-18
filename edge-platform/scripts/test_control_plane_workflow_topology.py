@@ -742,7 +742,7 @@ def test_native_host_readonly_control_boundary(router: str) -> None:
     require("  host:\n" in router and "  host_observe:\n" in router, "Host owner route missing")
     hosted = router.split("  host:\n", 1)[1].split("\n  host_observe:\n", 1)[0]
     physical = router.split("  host_observe:\n", 1)[1].split("\n  host_report:\n", 1)[0]
-    report = router.split("  host_report:\n", 1)[1].split("\n  host_apply_windows:\n", 1)[0]
+    report = router.split("  host_report:\n", 1)[1]
     owner = child.split("  observe:\n", 1)[1].split("\n  report:\n", 1)[0]
     peer_report = child.split("  report:\n", 1)[1]
     require(
@@ -794,16 +794,14 @@ def test_native_host_readonly_control_boundary(router: str) -> None:
         "Installed VM owner must retain read-only historical deep diagnostics",
     )
     require(
-        "  host_apply_windows:\n" in router
-        and "  host_apply_vm:\n" in router
-        and "needs.host.outputs.operation == 'APPLY'" in router
-        and "Read complete existing GitHub journal for mutation admission" in router
-        and "--journal-history-json" in router
-        and "needs.host.outputs.windows_runner_label" in router
-        and "host_runner_name:" in router
-        and "host_admitted_at_unix:" in router
-        and "needs.host.outputs.admitted_at_unix != ''" in router,
-        "Host apply must retain typed Rust admission and native owner",
+        all(("  " + job + ":\\n") not in router for job in
+            ("host_apply_windows", "host_apply_vm", "credentials", "windows",
+             "application", "production", "vultr", "vpc"))
+        and "--journal-history-json" not in router
+        and "Read complete existing GitHub journal" not in router
+        and "APPLY_PREFLIGHT" in router
+        and "RECOVER_PREFLIGHT" in router,
+        "Only Host read-only preflight may be routed; old mutations are forbidden",
     )
 
 def main() -> None:
@@ -836,8 +834,8 @@ def main() -> None:
     windows_controller_core = WINDOWS_CONTROLLER_CORE.read_text(encoding="utf-8")
     edge_local_runtime = EDGE_LOCAL_RUNTIME.read_text(encoding="utf-8")
     require(
-        "startsWith(github.event.comment.body, '/windows initial-pair-stage ')" in router
-        and "startsWith(github.event.comment.body, '/windows initial-pair-prepare ')" in router
+        "startsWith(github.event.comment.body, '/windows initial-pair-stage ')" not in router
+        and "startsWith(github.event.comment.body, '/windows initial-pair-prepare ')" not in router
         and '"/windows initial-pair-prepare "*|' in windows_physical
         and "operation=\"initial-pair-prepare\"" in windows_physical
         and "initial_first_use_prepare:" in windows_physical
@@ -1185,9 +1183,9 @@ def main() -> None:
 
     # The protected issue operator has a separate exact-command allowlist.
     require(
-        "github.event.comment.body == '/windows offline-preflight'" in router
-        and "github.event.comment.body == '/windows diagnose'" in router
-        and "uses: ./.github/workflows/windows-physical.yml" in router,
+        "github.event.comment.body == '/windows offline-preflight'" not in router
+        and "github.event.comment.body == '/windows diagnose'" not in router
+        and "uses: ./.github/workflows/windows-physical.yml" not in router,
         "new offline preflight must be reachable through the sole protected GitHub issue control",
     )
 
@@ -1422,7 +1420,7 @@ def main() -> None:
         and "gh api --paginate" in credentials
         and "issues: read" not in credentials.split("  execute:\n", 1)[1].split("\n  rotate_release:", 1)[0]
         and "issues: write" in credentials.split("  initial_pair_intent:\n", 1)[1].split("\n  initial_pair_vm_commit:", 1)[0]
-        and "issues: write" in router.split("  credentials:\n", 1)[1].split("\n  windows:", 1)[0]
+        and "  credentials:\n" not in router
         and "credential_initial_journal_empty=true" in credentials
         and "credential_journal_mutations=0" in credentials
         and "require_empty_initial_history(&history)?" in credential_provider
@@ -2430,18 +2428,18 @@ def main() -> None:
     require(
         "/windows cutover" not in router
         and "/windows cutover" not in windows_physical
-        and "github.event.comment.body == '/windows diagnose'" in router
-        and "github.event.comment.body == '/windows converge'" in router
-        and "github.event.comment.body == '/windows apply'" in router
+        and "github.event.comment.body == '/windows diagnose'" not in router
+        and "github.event.comment.body == '/windows converge'" not in router
+        and "github.event.comment.body == '/windows apply'" not in router
         and 'operation="apply"' in windows_physical
         and "EXISTING_ACTIVE_RELEASE_ONLY" in windows_physical
         and "sing-box-windows-active-release-apply/v1" in windows_physical
         and "Single native SYSTEM offline release apply and bounded readback" in windows_physical
-        and "github.event.comment.body == '/windows start'" in router
-        and "github.event.comment.body == '/windows stop'" in router
-        and "github.event.comment.body == '/windows restart-controller'" in router
-        and "github.event.comment.body == '/windows repair'" in router
-        and "github.event.comment.body == '/windows rollback'" in router
+        and "github.event.comment.body == '/windows start'" not in router
+        and "github.event.comment.body == '/windows stop'" not in router
+        and "github.event.comment.body == '/windows restart-controller'" not in router
+        and "github.event.comment.body == '/windows repair'" not in router
+        and "github.event.comment.body == '/windows rollback'" not in router
         and 'operation="diagnose"' in windows_physical
         and 'operation="converge"' in windows_physical
         and 'operation="start"' in windows_physical
@@ -3011,34 +3009,13 @@ def main() -> None:
     )
 
     require(
-        "uses: ./.github/workflows/vm-application-lifecycle.yml" in router,
-        "router must call the application backend",
-    )
-    require(
-        "startsWith(github.event.comment.body, '/production ')" in router
-        and router.count("uses: ./.github/workflows/vm-application-lifecycle.yml") == 3
-        and "needs.host.outputs.desired_spec_path == 'infra/production/production.textproto'" in router
-        and "needs.host.outputs.operation == 'APPLY'" in router
-        and "HOST_VM_RELEASE_BOUND_BUNDLE_NOT_YET_PUBLISHED" in
-            Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(encoding="utf-8"),
-        "router must expose production only through the existing owner-gated application lifecycle backend",
-    )
-    require(
-        "uses: ./.github/workflows/credential-lifecycle.yml" in router
-        and "startsWith(github.event.comment.body, '/credentials ')" in router,
-        "router must expose credential delivery only through the dedicated owner-gated /credentials backend",
-    )
-    require(
-        "uses: ./.github/workflows/vultr-lifecycle.yml" in router,
-        "router must call the Vultr backend",
-    )
-    require(
-        "uses: ./.github/workflows/windows-physical.yml" in router
-        and "github.event.comment.body == '/windows converge'" in router
-        and "github.event.comment.body == '/windows smoke'" not in router
-        and "github.event.comment.body == '/windows status'" not in router
-        and "github.actor_id == '44100369'" in router,
-        "router must expose native converge once, without smoke/status aliases",
+        router.count("uses: ./.github/workflows/host-native-observe.yml") == 1
+        and all("uses: ./.github/workflows/" + name + ".yml" not in router
+                for name in ("windows-physical", "vm-application-lifecycle",
+                             "credential-lifecycle", "vultr-lifecycle",
+                             "vultr-vpc-lifecycle"))
+        and "host_historical_journal_authority=FORBIDDEN" in Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(encoding="utf-8"),
+        "Historical mutation backend must not be reachable by Issue command",
     )
     require(
         "vultr-root-ops.yml" not in router
@@ -3057,10 +3034,6 @@ def main() -> None:
         "/credential-plane " not in router
         and "cloudflare-credential-plane.yml" not in router,
         "router must not introduce a second credential-plane authority namespace",
-    )
-    require(
-        "uses: ./.github/workflows/vultr-vpc-lifecycle.yml" in router,
-        "router must call the VPC backend",
     )
     require(
         "startsWith(github.event.comment.body, '/dns ')" not in router
@@ -3098,15 +3071,15 @@ def main() -> None:
         and "issues: write" in credentials.split("  initial_pair_intent:\n", 1)[1].split("\n  initial_pair_vm_commit:", 1)[0]
         and "issues: write" in credentials.split("  initial_pair_recovery_intent:\n", 1)[1].split("\n  initial_pair_recovery_apply_windows:", 1)[0]
         and "issues: write" not in credentials.split("  initial_pair_recovery_source:\n", 1)[1].split("\n  initial_pair_recovery_intent:", 1)[0]
-        and "  vultr:" in router
-        and "    permissions:\n      contents: read\n      actions: read\n      issues: write" in router
+        and "  vultr:" not in router
+        and "  host:" in router
         and "    uses: ./.github/workflows/vultr-acceptance-resume.yml" in vultr
         and "      actions: read" in vultr,
         "Issue #26 BEGIN and reboot may be written only by scoped authorized Vultr initial/resume owners",
     )
     require(
-        "startsWith(github.event.comment.body, '/vm ')" in router
-        and "issues: write" not in router.split("  application:\n", 1)[1].split("\n  production:", 1)[0],
+        "startsWith(github.event.comment.body, '/vm ')" not in router
+        and "  host:" in router,
         "universal Git VM route must preserve caller, comment and least-privilege gates",
     )
     require(
