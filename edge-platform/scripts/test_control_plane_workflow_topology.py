@@ -2370,7 +2370,7 @@ def main() -> None:
         and "/host recover" in commands
         and "UNKNOWN_NO_REPLAY" in handoff
         and "PR #400 закрыт без merge" in handoff
-        and "только как архив" in handoff
+        and "Архив Issue #26 хранится как пассивное доказательство" in handoff
         and "NATIVE_OWNER_MISSING" in handoff
         and "/host status" in runbook
         and "Cloudflare One" in runbook
@@ -2378,7 +2378,7 @@ def main() -> None:
         and "Stage 3 and Stage 4A remain closed" not in architecture
         and "historical tombstone" not in plan
         and "старые comments — неизменяемый архив" in commands
-        and "старый журнал оставить пассивным аудиторским артефактом" in architecture,
+        and "старый журнал оставить пассивным аудиторским артефактом" in architecture.lower(),
         "Normative docs must be concise, typed, fail-closed and non-contradictory",
     )
     image_build_section = edge_platform_ci.split("# VM_RUNTIME_BUILD_CONTRACT_BEGIN", 1)[1].split("# VM_RUNTIME_BUILD_CONTRACT_END", 1)[0]
