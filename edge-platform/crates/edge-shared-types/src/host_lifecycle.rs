@@ -284,6 +284,35 @@ pub fn decode_host_intent(bytes: &[u8]) -> Result<FleetHostIntent, &'static str>
     Ok(intent)
 }
 
+pub const MAX_HOST_AUTHORIZATION_BYTES: usize = 2048;
+
+/// A detached, exact protobuf authorization. Parsing is not a privilege:
+/// the pinned native owner MUST call verify_host_authorization and reserve its
+/// no-replay journal before executing any operation.
+pub fn decode_host_authorization(
+    bytes: &[u8],
+) -> Result<FleetHostAuthorization, &'static str> {
+    if bytes.is_empty() || bytes.len() > MAX_HOST_AUTHORIZATION_BYTES {
+        return Err("HOST_AUTHORIZATION_SIZE_INVALID");
+    }
+    let value = FleetHostAuthorization::decode(bytes)
+        .map_err(|_| "HOST_AUTHORIZATION_PROTO_INVALID")?;
+    if value.encode_to_vec() != bytes {
+        return Err("HOST_AUTHORIZATION_NONCANONICAL");
+    }
+    if value.schema_version != 1
+        || !token(&value.key_id)
+        || !token(&value.operation_id)
+        || value.issued_at_unix == 0
+        || value.expires_at_unix <= value.issued_at_unix
+        || value.expires_at_unix - value.issued_at_unix > 300
+        || value.ed25519_signature.len() != 64
+    {
+        return Err("HOST_AUTHORIZATION_FIELDS_INVALID");
+    }
+    Ok(value)
+}
+
 pub fn decode_host_result(bytes: &[u8]) -> Result<FleetHostResult, &'static str> {
     if bytes.is_empty() || bytes.len() > MAX_HOST_RESULT_BYTES {
         return Err("HOST_RESULT_SIZE_INVALID");
@@ -531,6 +560,34 @@ mod tests {
             digest_host_desired(&registry.hosts[0], b"spec-v1").unwrap(),
             digest_host_desired(&changed, b"spec-v1").unwrap()
         );
+    }
+
+    #[test]
+    fn detached_worker_auth_is_canonical_bounded_and_cannot_grant_privilege() {
+        let mut a = FleetHostAuthorization {
+            schema_version: 1,
+            key_id: "vm-worker-key-v1".into(),
+            operation_id: "issue1-comment-123".into(),
+            issued_at_unix: 1000,
+            expires_at_unix: 1120,
+            ed25519_signature: vec![42; 64],
+        };
+        let bytes = a.encode_to_vec();
+        assert_eq!(decode_host_authorization(&bytes).unwrap(), a);
+        let mut noncanonical = bytes;
+        noncanonical.extend_from_slice(&[8, 1]);
+        assert_eq!(
+            decode_host_authorization(&noncanonical).unwrap_err(),
+            "HOST_AUTHORIZATION_NONCANONICAL"
+        );
+        a.ed25519_signature.pop();
+        assert_eq!(
+            decode_host_authorization(&a.encode_to_vec()).unwrap_err(),
+            "HOST_AUTHORIZATION_FIELDS_INVALID"
+        );
+        a.ed25519_signature.push(42);
+        a.expires_at_unix = 2000;
+        assert!(decode_host_authorization(&a.encode_to_vec()).is_err());
     }
 
     #[test]
