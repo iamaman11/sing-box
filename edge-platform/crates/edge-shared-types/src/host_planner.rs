@@ -218,33 +218,41 @@ mod tests {
         // Exactly the real Windows SCM+activation evidence, where the
         // diagnostic intentionally cannot prove external runtime readiness.
         let win = host(
-            FleetHostKind::Windows, FleetHostMode::ProxyOnly,
+            FleetHostKind::Windows,
+            FleetHostMode::ProxyOnly,
             FleetHostRunState::Stopped,
         );
         let win_observed = build_native_observation(
-            FleetHostKind::Windows, FleetNativeOwnerState::Stopped,
+            FleetHostKind::Windows,
+            FleetNativeOwnerState::Stopped,
             FleetNativeReleaseProof::ActivationRecord,
-            Some(&"01".repeat(32)), None, 1000, &[],
-        ).unwrap();
-        let proposal = propose_host_transition(
-            &win, Some(&win_observed), &[1;32], &[9;32], 1000
-        );
+            Some(&"01".repeat(32)),
+            None,
+            1000,
+            &[],
+        )
+        .unwrap();
+        let proposal = propose_host_transition(&win, Some(&win_observed), &[1; 32], &[9; 32], 1000);
         assert_eq!(proposal.step, FleetHostPlannedStep::Noop as i32);
         assert_eq!(proposal.reason_code, "STOPPED_MATCHES_DESIRED_LOCAL_ONLY");
         assert!(!proposal.owner_attested && !proposal.mutation_authorized);
 
         let vm = host(
-            FleetHostKind::Vm, FleetHostMode::Unspecified,
+            FleetHostKind::Vm,
+            FleetHostMode::Unspecified,
             FleetHostRunState::Stopped,
         );
         let vm_observed = build_native_observation(
-            FleetHostKind::Vm, FleetNativeOwnerState::Stopped,
+            FleetHostKind::Vm,
+            FleetNativeOwnerState::Stopped,
             FleetNativeReleaseProof::ApplicationBundle,
-            Some(&"02".repeat(32)), Some(false), 1000, &[],
-        ).unwrap();
-        let proposal = propose_host_transition(
-            &vm, Some(&vm_observed), &[1;32], &[2;32], 1000,
-        );
+            Some(&"02".repeat(32)),
+            Some(false),
+            1000,
+            &[],
+        )
+        .unwrap();
+        let proposal = propose_host_transition(&vm, Some(&vm_observed), &[1; 32], &[2; 32], 1000);
         assert_eq!(proposal.step, FleetHostPlannedStep::Noop as i32);
         assert!(!proposal.owner_attested && !proposal.mutation_authorized);
     }
@@ -253,32 +261,41 @@ mod tests {
     fn missing_readiness_never_claims_running_healthy_or_hides_error() {
         use crate::host_lifecycle::build_native_observation;
         let win = host(
-            FleetHostKind::Windows, FleetHostMode::ProxyOnly,
+            FleetHostKind::Windows,
+            FleetHostMode::ProxyOnly,
             FleetHostRunState::Running,
         );
         let mut observed = build_native_observation(
-            FleetHostKind::Windows, FleetNativeOwnerState::Running,
+            FleetHostKind::Windows,
+            FleetNativeOwnerState::Running,
             FleetNativeReleaseProof::ActivationRecord,
-            Some(&"01".repeat(32)), None, 1000, &[],
-        ).unwrap();
+            Some(&"01".repeat(32)),
+            None,
+            1000,
+            &[],
+        )
+        .unwrap();
         assert_eq!(
-            propose_host_transition(&win, Some(&observed), &[1;32], &[9;32], 1000).reason_code,
+            propose_host_transition(&win, Some(&observed), &[1; 32], &[9; 32], 1000).reason_code,
             "RUNTIME_READINESS_UNPROVEN",
         );
-        observed.reason_codes.push("WINDOWS_SCM_BINARY_MISMATCH".into());
+        observed
+            .reason_codes
+            .push("WINDOWS_SCM_BINARY_MISMATCH".into());
         assert_eq!(
-            propose_host_transition(&win, Some(&observed), &[1;32], &[9;32], 1000).reason_code,
+            propose_host_transition(&win, Some(&observed), &[1; 32], &[9; 32], 1000).reason_code,
             "NATIVE_READBACK_DEGRADED",
         );
         // A stopped target still requires valid SCM/release evidence;
         // ignoring missing readiness is not ignoring actual errors.
         let stopped = host(
-            FleetHostKind::Windows, FleetHostMode::ProxyOnly,
+            FleetHostKind::Windows,
+            FleetHostMode::ProxyOnly,
             FleetHostRunState::Stopped,
         );
         observed.owner_state = FleetNativeOwnerState::Stopped as i32;
         assert_eq!(
-            propose_host_transition(&stopped, Some(&observed), &[1;32], &[9;32], 1000).step,
+            propose_host_transition(&stopped, Some(&observed), &[1; 32], &[9; 32], 1000).step,
             FleetHostPlannedStep::Blocked as i32,
         );
     }
