@@ -53,11 +53,147 @@ fn verify_native_journal_protection(path: &Path) -> Result<(), &'static str> {
     Ok(())
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
+fn verify_native_journal_protection(path: &Path) -> Result<(), &'static str> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree};
+    use windows_sys::Win32::Security::Authorization::{
+        GetNamedSecurityInfoW, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::{
+        ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION, GetAce,
+        GetTokenInformation, IsWellKnownSid, OpenProcessToken,
+        OWNER_SECURITY_INFORMATION, TOKEN_QUERY, TOKEN_USER, TokenUser,
+        WinBuiltinAdministratorsSid, WinLocalSystemSid,
+    };
+    use windows_sys::Win32::System::Threading::GetCurrentProcess;
+
+    if !path.is_absolute() {
+        return Err("HOST_WINDOWS_JOURNAL_ABSOLUTE_PATH_REQUIRED");
+    }
+    // The process token, not the invoking account, must be LocalSystem.
+    // A GitHub runner with an Administrators group token is not an owner.
+    let mut token = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err("HOST_WINDOWS_TOKEN_UNAVAILABLE");
+    }
+    let system_token = (|| {
+        let mut required = 0u32;
+        unsafe {
+            GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut required);
+        }
+        if required == 0 || required > 65536 {
+            return false;
+        }
+        let mut info = vec![0u8; required as usize];
+        let ok = unsafe {
+            GetTokenInformation(
+                token,
+                TokenUser,
+                info.as_mut_ptr().cast(),
+                required,
+                &mut required,
+            )
+        };
+        if ok == 0 {
+            return false;
+        }
+        let user = unsafe { &*(info.as_ptr() as *const TOKEN_USER) };
+        !user.User.Sid.is_null()
+            && unsafe { IsWellKnownSid(user.User.Sid, WinLocalSystemSid) } != 0
+    })();
+    unsafe {
+        CloseHandle(token);
+    }
+    if !system_token {
+        return Err("HOST_WINDOWS_LOCALSYSTEM_REQUIRED");
+    }
+
+    // Examine the actual kernel DACL on every ancestor, not text output
+    // from icacls, inherited assumptions, or the runner's self-report.
+    // Fail closed on NULL DACL and every unknown write-capable principal.
+    for ancestor in path.ancestors() {
+        let meta = fs::symlink_metadata(ancestor)
+            .map_err(|_| "HOST_WINDOWS_JOURNAL_ANCESTOR_UNAVAILABLE")?;
+        if !meta.file_type().is_dir() || meta.file_type().is_symlink() {
+            return Err("HOST_WINDOWS_JOURNAL_REPARSE_OR_NOT_DIRECTORY");
+        }
+        let mut wide: Vec<u16> = ancestor.as_os_str().encode_wide().collect();
+        wide.push(0);
+        let mut owner = std::ptr::null_mut();
+        let mut dacl: *mut ACL = std::ptr::null_mut();
+        let mut descriptor = std::ptr::null_mut();
+        let status = unsafe {
+            GetNamedSecurityInfoW(
+                wide.as_mut_ptr(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                &mut owner,
+                std::ptr::null_mut(),
+                &mut dacl,
+                std::ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        if status != 0 {
+            return Err("HOST_WINDOWS_JOURNAL_SECURITY_UNAVAILABLE");
+        }
+        let safe = (|| {
+            if owner.is_null() || dacl.is_null() {
+                return false;
+            }
+            let privileged = |sid| {
+                unsafe {
+                    IsWellKnownSid(sid, WinLocalSystemSid) != 0
+                        || IsWellKnownSid(sid, WinBuiltinAdministratorsSid) != 0
+                }
+            };
+            if !privileged(owner) {
+                return false;
+            }
+            // FILE_WRITE_DATA / APPEND_DATA / EA / ATTRIBUTES / DELETE /
+            // WRITE_DAC / WRITE_OWNER, generic write and generic all.
+            const WRITE_MASK: u32 =
+                0x0000_0002 | 0x0000_0004 | 0x0000_0010 | 0x0000_0100 |
+                0x0001_0000 | 0x0004_0000 | 0x0008_0000 |
+                0x1000_0000 | 0x4000_0000 | 0x0000_0001 | 0x0000_0008;
+            let acl = unsafe { &*dacl };
+            for index in 0..acl.AceCount {
+                let mut ace = std::ptr::null_mut();
+                if unsafe { GetAce(dacl, index as u32, &mut ace) } == 0 || ace.is_null() {
+                    return false;
+                }
+                let header = unsafe { &*(ace as *const windows_sys::Win32::Security::ACE_HEADER) };
+                // Reject unsupported ACE structures, which could grant
+                // rights not correctly interpreted by this narrow verifier.
+                if header.AceType != 0 && header.AceType != 1 {
+                    return false;
+                }
+                if header.AceType == 0 {
+                    let allowed = unsafe { &*(ace as *const ACCESS_ALLOWED_ACE) };
+                    if allowed.Mask & WRITE_MASK != 0 {
+                        let sid = (&allowed.SidStart as *const u32).cast_mut().cast();
+                        if !privileged(sid) {
+                            return false;
+                        }
+                    }
+                }
+            }
+            true
+        })();
+        unsafe {
+            LocalFree(descriptor);
+        }
+        if !safe {
+            return Err("HOST_WINDOWS_JOURNAL_DACL_NOT_PROTECTED");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(any(unix, windows)))]
 fn verify_native_journal_protection(_path: &Path) -> Result<(), &'static str> {
-    // No POSIX stat approximation of a Windows ACL. The Windows SYSTEM/ACL
-    // policy must be native and explicit; until then NO privileged admission.
-    Err("HOST_WINDOWS_OWNER_ACL_NOT_ACCEPTED")
+    Err("HOST_NATIVE_JOURNAL_PLATFORM_UNSUPPORTED")
 }
 
 /// Internal pure admission/journal primitive; callers outside this crate
