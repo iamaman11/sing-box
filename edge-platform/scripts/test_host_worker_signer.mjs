@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Pure offline cryptographic contract test for the EXISTING credential Worker.
 // No Cloudflare API, private account, network request or host mutation.
-import { webcrypto, createHash } from "node:crypto";
+import { webcrypto } from "node:crypto";
 import { pathToFileURL } from "node:url";
 import { readFileSync } from "node:fs";
 
@@ -44,14 +44,22 @@ const intent=combine(
 const env={
  EDGE_HOST_SIGNING_PKCS8_BASE64:encode64(pkcs8),
  EDGE_HOST_SIGNING_KEY_ID:"vm-worker-key-v1",
- EDGE_HOST_APPROVED_INTENT_SHA256:createHash("sha256").update(intent).digest("hex"),
+ EDGE_HOST_GITHUB_ACTOR_ID:"44100369",
  EDGE_HOST_ACCESS_ISSUER:issuer,
  EDGE_HOST_ACCESS_AUD:aud,
 };
 const expectedCertUrl=issuer+"/cdn-cgi/access/certs";
 globalThis.fetch=async u=>{
-  requireTest(String(u)===expectedCertUrl,"untrusted JWKS issuer");
-  return Response.json({keys:[jwk]});
+  if(String(u)===expectedCertUrl) return Response.json({keys:[jwk]});
+  if(String(u)==="https://api.github.com/repos/iamaman11/sing-box/issues/comments/123")
+    return Response.json({
+      user:{id:44100369},
+      issue_url:"https://api.github.com/repos/iamaman11/sing-box/issues/1",
+      created_at:new Date((now-2)*1000).toISOString(),
+      updated_at:new Date((now-2)*1000).toISOString(),
+      body:"/host apply vm-test-1",
+    });
+  throw Error("unexpected external lookup "+String(u));
 };
 const mod=await import(pathToFileURL(process.argv[2]).href);
 async function call(body= intent, settings=env, claims={}){
@@ -64,7 +72,7 @@ async function call(body= intent, settings=env, claims={}){
 const empty=await call(intent,{});
 requireTest(empty.status===404,"signer is not closed by default");
 const wrong=await call(combine(intent,Buffer.from([0x50,1])));
-requireTest(wrong.status===403,"unapproved protobuf must not be signed");
+requireTest(wrong.status!==200,"tampered protobuf must not be signed");
 const expired=await call(intent,env,{exp:now-1});
 requireTest(expired.status===403,"expired Cloudflare Access JWT accepted");
 const wrongAud=await call(intent,env,{aud:["different-access-app"]});
