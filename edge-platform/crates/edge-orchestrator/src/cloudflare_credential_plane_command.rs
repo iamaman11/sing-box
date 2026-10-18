@@ -2970,7 +2970,7 @@ const k=e.EDGE_HOST_SIGNING_PKCS8_BASE64,id=e.EDGE_HOST_SIGNING_KEY_ID,approved=
 if(typeof k!=="string"||typeof id!=="string"||!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id)||typeof approved!=="string"||!/^[a-f0-9]{64}$/.test(approved))return new Response(null,{status:404,headers:NO});
 if(!await ACCESS(q,e))return new Response(null,{status:403,headers:NO});
 if(Number(q.headers.get("Content-Length"))>8192)return new Response(null,{status:413,headers:NO});
-let raw;try{raw=new Uint8Array(await q.arrayBuffer())}catch{return new Response(null,{status:400,headers:NO}}
+let raw;try{raw=new Uint8Array(await q.arrayBuffer())}catch{return new Response(null,{status:400,headers:NO})}
 if(!raw.length||raw.length>8192)return new Response(null,{status:413,headers:NO});
 const sum=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",raw))).map(x=>x.toString(16).padStart(2,"0")).join("");
 // Exact digest belongs to ONE operator-approved protobuf. This Worker cannot
@@ -2980,7 +2980,7 @@ const op=ID(raw);if(!op)return new Response(null,{status:400,headers:NO});
 const issued=Math.floor(Date.now()/1000),expires=issued+120,kid=TE.encode(id),oid=TE.encode(op),pk=B64(k);
 if(pk===null||pk.length<40||pk.length>4096)return new Response(null,{status:503,headers:NO});
 const payload=CAT(TE.encode("sing-box/native-host-authorization/v1:"),U32(raw.length),raw,U32(kid.length),kid,U32(oid.length),oid,U64(issued),U64(expires));
-let signature;try{const key=await crypto.subtle.importKey("pkcs8",pk,{name:"Ed25519"},false,["sign"]);signature=new Uint8Array(await crypto.subtle.sign("Ed25519",key,payload))}catch{return new Response(null,{status:503,headers:NO}}
+let signature;try{const key=await crypto.subtle.importKey("pkcs8",pk,{name:"Ed25519"},false,["sign"]);signature=new Uint8Array(await crypto.subtle.sign("Ed25519",key,payload))}catch{return new Response(null,{status:503,headers:NO})}
 if(signature.length!==64)return new Response(null,{status:503,headers:NO});
 const out=CAT(FNUM(1,1),FLD(2,kid),FLD(3,oid),FNUM(4,issued),FNUM(5,expires),FLD(6,signature));
 return new Response(out,{status:200,headers:{"Content-Type":"application/x-protobuf","Cache-Control":"no-store","X-Content-Type-Options":"nosniff"}})}
