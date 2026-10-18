@@ -132,3 +132,37 @@ message FleetHostAuthorization {
   uint64 expires_at_unix = 5;
   bytes ed25519_signature = 6;
 }
+
+
+// A bounded, local, non-secret physical readback. The observer reports its
+// actual source and proof scope; this message NEVER authorizes mutations or
+// constitutes an authenticated VERIFIED execution receipt.
+enum FleetNativeOwnerState {
+  FLEET_NATIVE_OWNER_STATE_UNSPECIFIED = 0;
+  FLEET_NATIVE_OWNER_STATE_UNPROVEN = 1;
+  FLEET_NATIVE_OWNER_STATE_STOPPED = 2;
+  FLEET_NATIVE_OWNER_STATE_RUNNING = 3;
+  FLEET_NATIVE_OWNER_STATE_TRANSITIONING = 4;
+}
+
+enum FleetNativeReleaseProof {
+  FLEET_NATIVE_RELEASE_PROOF_UNSPECIFIED = 0;
+  FLEET_NATIVE_RELEASE_PROOF_UNPROVEN = 1;
+  FLEET_NATIVE_RELEASE_PROOF_ACTIVATION_RECORD = 2;
+  FLEET_NATIVE_RELEASE_PROOF_APPLICATION_BUNDLE = 3;
+}
+
+message FleetNativeObservation {
+  uint32 schema_version = 1;
+  FleetHostKind host_kind = 2;
+  uint64 observed_at_unix = 3;
+  FleetNativeOwnerState owner_state = 4;
+  FleetNativeReleaseProof release_proof = 5;
+  // Exact bytes read locally: activation ReleaseSet hash on Windows,
+  // application-bundle digest on VM. The proof enum forbids conflating them.
+  bytes observed_release_sha256 = 6;
+  // Physical end-to-end network readiness is never inferred from SCM alone.
+  bool runtime_ready = 7;
+  bool runtime_ready_proven = 8;
+  repeated string reason_codes = 9;
+}
