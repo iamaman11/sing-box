@@ -294,6 +294,8 @@ fn build_host_observation(state_path: &Path) -> Result<Vec<u8>, String> {
     use edge_shared_types::{FleetHostKind, FleetNativeOwnerState, FleetNativeReleaseProof};
     let mut digest = None;
     let mut reason_codes: Vec<&str> = Vec::new();
+    #[cfg(windows)]
+    let mut exact_controller_path: Option<PathBuf> = None;
     match std::fs::File::open(state_path) {
         Ok(file) => {
             let mut bytes = Vec::new();
@@ -305,6 +307,14 @@ fn build_host_observation(state_path: &Path) -> Result<Vec<u8>, String> {
             }
             let active = decode_windows_activation_state(&bytes)
                 .map_err(|_| "WINDOWS_HOST_ACTIVATION_PROTO_INVALID".to_owned())?;
+            #[cfg(windows)]
+            {
+                if verify_windows_activation_files(&active).is_ok() {
+                    exact_controller_path = Some(PathBuf::from(&active.controller_path));
+                } else {
+                    reason_codes.push("WINDOWS_RELEASE_FILES_UNVERIFIED");
+                }
+            }
             digest = Some(active.release_set_sha256);
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -319,11 +329,25 @@ fn build_host_observation(state_path: &Path) -> Result<Vec<u8>, String> {
                 ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
                     .map_err(|_| "WINDOWS_SCM_UNAVAILABLE")?;
             let service = manager
-                .open_service(WINDOWS_CONTROLLER_SERVICE_NAME, ServiceAccess::QUERY_STATUS)
+                .open_service(
+                    WINDOWS_CONTROLLER_SERVICE_NAME,
+                    ServiceAccess::QUERY_STATUS | ServiceAccess::QUERY_CONFIG,
+                )
                 .map_err(|_| "WINDOWS_SCM_UNAVAILABLE")?;
             let status = service
                 .query_status()
                 .map_err(|_| "WINDOWS_SCM_UNAVAILABLE")?;
+            // The installed SCM entry must point to the EXACT verified release
+            // binary. A same-named foreign service cannot masquerade as the
+            // managed SYSTEM owner, even when Windows reports RUNNING.
+            let expected = exact_controller_path
+                .as_ref().ok_or("WINDOWS_OWNER_RELEASE_UNPROVEN")?;
+            let config = service.query_config()
+                .map_err(|_| "WINDOWS_SCM_CONFIG_UNAVAILABLE")?;
+            let actual = service_binary_path(&config.executable_path);
+            if !same_path(&actual, expected) {
+                return Err("WINDOWS_SCM_BINARY_MISMATCH");
+            }
             match status.current_state {
                 ServiceState::Stopped => Ok(FleetNativeOwnerState::Stopped),
                 ServiceState::Running => Ok(FleetNativeOwnerState::Running),
