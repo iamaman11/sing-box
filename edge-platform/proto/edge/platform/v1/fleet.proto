@@ -166,3 +166,28 @@ message FleetNativeObservation {
   bool runtime_ready_proven = 8;
   repeated string reason_codes = 9;
 }
+
+
+// Pure Rust reconciliation proposal, never a second operation authority.
+// Native owner and Worker admission must independently verify identity,
+// expected release and signed one-shot intent before executing ANY step.
+enum FleetHostPlannedStep {
+  FLEET_HOST_PLANNED_STEP_UNSPECIFIED = 0;
+  FLEET_HOST_PLANNED_STEP_BLOCKED = 1;
+  FLEET_HOST_PLANNED_STEP_NOOP = 2;
+  FLEET_HOST_PLANNED_STEP_START = 3;
+  FLEET_HOST_PLANNED_STEP_STOP = 4;
+  FLEET_HOST_PLANNED_STEP_REPLACE_RELEASE = 5;
+}
+
+message FleetHostTransitionPlan {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  FleetHostPlannedStep step = 3;
+  string reason_code = 4;
+  bytes expected_release_digest = 5;
+  bytes observed_release_digest = 6;
+  // Never set by a runner-copied observation or CI-only source checks.
+  bool owner_attested = 7;
+  bool mutation_authorized = 8;
+}
