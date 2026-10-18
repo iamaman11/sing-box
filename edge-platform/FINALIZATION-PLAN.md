@@ -31,8 +31,17 @@ ReleaseSet activation record и VM application bundle. Windows дополнит�
 не доказательство внешнего TLS/auth и не разрешение на apply.
 Пока хосты не получили новый проверенный бинарник, старый diagnostic
 остаётся только read-only; его нельзя объявлять равным новой версии.
-Окончательное включение в централизованный Host status требует
-физической установки и проверки точного SHA.
+Readiness выражена типизированными `runtime_ready` и
+`runtime_ready_proven`: отсутствие сетевого пробинга не является ошибкой
+наблюдения. Для STOPPED/STOPPED допускается план NOOP без сетевой проверки;
+для RUNNING без доказанной готовности — BLOCKED. Сбой SCM, ownership либо
+проверки бинарников продолжает блокировать. Нативный readback теперь
+передаётся артефактом в **тот же** exact Rust Orchestrator в существующем
+reusable workflow, проверяется по Git inventory/immutable ReleaseSet и
+возвращает отдельный verdict `UNAVAILABLE`/`REJECTED`/local-only.
+Копия с runner не аутентифицирована как root/SYSTEM receipt; никакого
+нового агента или права на мутацию. Физическая установка нового SHA
+по-прежнему обязательна.
 
 ## Rust reconcile без второй mutation authority
 
