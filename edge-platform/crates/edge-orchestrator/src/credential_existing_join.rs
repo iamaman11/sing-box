@@ -277,10 +277,9 @@ pub(crate) fn inspect_journal(
 /// immutable record against itself, never to authorize a new mutation. In
 /// particular, a durable COMMIT_INTENT is not a proven physical COMMIT.
 pub(crate) fn host_admission_status(history: &[u8]) -> Result<&'static str, String> {
-    let data = std::str::from_utf8(history)
-        .map_err(|_| "HOST_JOURNAL_INVALID_UTF8".to_owned())?;
-    let rows: Vec<serde_json::Value> = serde_json::from_str(data)
-        .map_err(|_| "HOST_JOURNAL_MALFORMED".to_owned())?;
+    let data = std::str::from_utf8(history).map_err(|_| "HOST_JOURNAL_INVALID_UTF8".to_owned())?;
+    let rows: Vec<serde_json::Value> =
+        serde_json::from_str(data).map_err(|_| "HOST_JOURNAL_MALFORMED".to_owned())?;
     if rows.is_empty() {
         return Err("HOST_JOURNAL_EMPTY".to_owned());
     }
@@ -296,8 +295,8 @@ pub(crate) fn host_admission_status(history: &[u8]) -> Result<&'static str, Stri
     let raw = begins[0]
         .strip_prefix(&format!("{BEGIN_MARKER}\n"))
         .ok_or_else(|| "HOST_JOURNAL_BEGIN_AMBIGUOUS".to_owned())?;
-    let begin: ExistingJoinBegin = serde_json::from_str(raw)
-        .map_err(|_| "HOST_JOURNAL_BEGIN_INVALID".to_owned())?;
+    let begin: ExistingJoinBegin =
+        serde_json::from_str(raw).map_err(|_| "HOST_JOURNAL_BEGIN_INVALID".to_owned())?;
     inspect_journal(data, &begin.accepted_revision, &begin.release_set_sha256)
 }
 
@@ -1032,7 +1031,10 @@ mod tests {
             host_admission_status(ordinary.as_bytes()).unwrap(),
             "NO_BEGIN_NO_MUTATION_AUTHORITY"
         );
-        assert_eq!(host_admission_status(b"[]").unwrap_err(), "HOST_JOURNAL_EMPTY");
+        assert_eq!(
+            host_admission_status(b"[]").unwrap_err(),
+            "HOST_JOURNAL_EMPTY"
+        );
         let begin = history_begin(&g);
         assert_eq!(
             host_admission_status(begin.as_bytes()).unwrap(),
@@ -1044,8 +1046,7 @@ mod tests {
             host_admission_status(history.as_bytes()).unwrap(),
             "COMMIT_DURABLE_OWNER_RECEIPTS_UNPROVEN"
         );
-        let mut duplicates: Vec<serde_json::Value> =
-            serde_json::from_str(&begin).unwrap();
+        let mut duplicates: Vec<serde_json::Value> = serde_json::from_str(&begin).unwrap();
         duplicates.push(duplicates[0].clone());
         assert_eq!(
             host_admission_status(serde_json::to_string(&duplicates).unwrap().as_bytes())
@@ -1056,7 +1057,8 @@ mod tests {
         assert!(host_admission_status(orphan.as_bytes()).is_err());
         let unsupported = serde_json::json!([
             {"body":"<!-- sing-box-credential-existing-join-begin/v2 -->\n{}"}
-        ]).to_string();
+        ])
+        .to_string();
         assert!(host_admission_status(unsupported.as_bytes()).is_err());
     }
 
