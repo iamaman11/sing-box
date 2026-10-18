@@ -534,8 +534,8 @@ fn observation_target(
     owner: &str,
     labels: &str,
 ) -> Result<serde_json::Value, String> {
-    let runner_labels: Vec<String> = serde_json::from_str(labels)
-        .map_err(|_| "HOST_MATRIX_LABELS_INVALID".to_owned())?;
+    let runner_labels: Vec<String> =
+        serde_json::from_str(labels).map_err(|_| "HOST_MATRIX_LABELS_INVALID".to_owned())?;
     let expected_labels = match kind {
         ManagedHostKind::Windows => 4,
         ManagedHostKind::Vm => 5,
@@ -559,15 +559,12 @@ fn observation_target(
 
 /// One bounded GitHub matrix for both targeted and fleet-wide native diagnosis.
 /// It is transport metadata, not runtime decision authority or an observed PASS.
-fn append_observation_matrix(
-    path: &Path,
-    targets: &[serde_json::Value],
-) -> Result<(), String> {
+fn append_observation_matrix(path: &Path, targets: &[serde_json::Value]) -> Result<(), String> {
     if targets.len() > 64 {
         return Err("HOST_MATRIX_TOO_LARGE".to_owned());
     }
-    let metadata = std::fs::symlink_metadata(path)
-        .map_err(|_| "HOST_MATRIX_OUTPUT_UNAVAILABLE".to_owned())?;
+    let metadata =
+        std::fs::symlink_metadata(path).map_err(|_| "HOST_MATRIX_OUTPUT_UNAVAILABLE".to_owned())?;
     if !metadata.file_type().is_file() {
         return Err("HOST_MATRIX_OUTPUT_NOT_REGULAR".to_owned());
     }
@@ -780,9 +777,8 @@ mod tests {
         assert_eq!(vm["machine_id"], "vm-02");
         assert!(observation_target("x", ManagedHostKind::Unspecified, "y", "[]").is_err());
         assert!(observation_target("x", ManagedHostKind::Windows, "y", "[]").is_err());
-        let file = std::env::temp_dir().join(format!(
-            "sing-box-host-matrix-{}", std::process::id()
-        ));
+        let file =
+            std::env::temp_dir().join(format!("sing-box-host-matrix-{}", std::process::id()));
         std::fs::write(&file, "").unwrap();
         append_observation_matrix(&file, &[win, vm]).unwrap();
         let contents = std::fs::read_to_string(&file).unwrap();
