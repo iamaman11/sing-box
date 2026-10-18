@@ -110,6 +110,14 @@ pub(crate) enum HostCommand {
         #[arg(long, hide = true)]
         credential_pair_windows: Option<String>,
     },
+    /// Internal read-only ingestion of a native protobuf observation.
+    /// GitHub runner output is NOT independent proof of native owner identity.
+    #[command(hide = true)]
+    Readback {
+        machine_id: String,
+        #[arg(long)]
+        observation_path: PathBuf,
+    },
     /// One bounded fresh typed install preflight; mutation is disabled until new owner acceptance.
     Apply { machine_id: String },
     /// One bounded fresh typed recovery preflight; never resumes historical operations.
