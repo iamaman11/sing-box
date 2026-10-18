@@ -83,6 +83,8 @@ jobs:
       operation: ${{ steps.observe.outputs.operation }}
       windows_runner_label: ${{ steps.observe.outputs.windows_runner_label }}
       admitted_at_unix: ${{ steps.observe.outputs.admitted_at_unix }}
+      host_matrix: ${{ steps.observe.outputs.host_matrix }}
+      host_targets_present: ${{ steps.observe.outputs.host_targets_present }}
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     permissions:
@@ -216,24 +218,27 @@ jobs:
           } >> "${GITHUB_STEP_SUMMARY}"
 
   host_observe:
-    # Real physical diagnostics are executed on the Git-selected machine,
-    # via the existing native diagnostic/agent owner. No new service, remote
-    # shell, credential publish, SCM start, network rewrite, or host mutation.
+    # One read-only native owner job definition, distributed by the *Rust*
+    # typed inventory. Offline/unproven fleet entries are reported by the
+    # admission job, not silently counted as physically healthy.
     needs: host
     if: >-
       needs.host.result == 'success' &&
-      (startsWith(github.event.comment.body, '/host status ') ||
-       needs.host.outputs.operation == 'RECOVER_READ_ONLY') &&
-      (needs.host.outputs.kind == 'WINDOWS' ||
-       needs.host.outputs.kind == 'VM')
-    runs-on: ${{ fromJSON(needs.host.outputs.runner_labels) }}
+      needs.host.outputs.host_targets_present == 'true' &&
+      (github.event.comment.body == '/host status' ||
+       startsWith(github.event.comment.body, '/host status ') ||
+       needs.host.outputs.operation == 'RECOVER_READ_ONLY')
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.host.outputs.host_matrix) }}
+    runs-on: ${{ matrix.runner_labels }}
     timeout-minutes: 15
     permissions:
       contents: read
     env:
-      TARGET_MACHINE: ${{ needs.host.outputs.machine_id }}
-      TARGET_OWNER: ${{ needs.host.outputs.owner }}
-      TARGET_KIND: ${{ needs.host.outputs.kind }}
+      TARGET_MACHINE: ${{ matrix.machine_id }}
+      TARGET_OWNER: ${{ matrix.owner }}
+      TARGET_KIND: ${{ matrix.kind }}
       COMMAND_BODY: ${{ github.event.comment.body }}
     steps:
       - name: Verify installed Windows native owner and diagnose without mutation
