@@ -12,7 +12,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const MAX_INVENTORY_BYTES: u64 = 65_536;
 const MAX_RUNNER_BYTES: u64 = 1_048_576;
 const MAX_JOURNAL_BYTES: u64 = 16 * 1024 * 1024;
-const BEGIN_MARKER: &str = "<!-- sing-box-credential-existing-join-begin/v1 -->";
 
 #[derive(Deserialize)]
 struct RunnerApiPage {
@@ -315,46 +314,6 @@ enum HostLifecycleOperation {
     Recover,
 }
 
-/// Only an exact, complete, read-only GitHub history is admissible.
-/// A BEGIN is durable even after its workflow fails; neither an Actions
-/// SUCCESS nor an apparent matching ReleaseSet makes it terminal.
-fn original_ab_unresolved(data: &[u8]) -> Result<bool, String> {
-    let history: Vec<serde_json::Value> =
-        serde_json::from_slice(data).map_err(|_| "HOST_JOURNAL_MALFORMED".to_owned())?;
-    if history.is_empty() {
-        return Err("HOST_JOURNAL_EMPTY".to_owned());
-    }
-    let mut count = 0;
-    for row in history {
-        let body = row
-            .get("body")
-            .and_then(serde_json::Value::as_str)
-            .ok_or("HOST_JOURNAL_BODY_MISSING")?;
-        if body.contains("sing-box-credential-existing-join-begin/") {
-            let literal = body
-                .strip_prefix(BEGIN_MARKER)
-                .and_then(|rest| rest.strip_prefix('\n'))
-                .ok_or("HOST_JOURNAL_BEGIN_AMBIGUOUS")?;
-            let begin: serde_json::Value =
-                serde_json::from_str(literal).map_err(|_| "HOST_JOURNAL_BEGIN_INVALID")?;
-            if begin.get("schema").and_then(serde_json::Value::as_str)
-                != Some("sing-box.credential-existing-join-begin/v1")
-                || !begin
-                    .get("run_id")
-                    .and_then(serde_json::Value::as_u64)
-                    .is_some_and(|run| run > 0)
-            {
-                return Err("HOST_JOURNAL_BEGIN_INVALID".to_owned());
-            }
-            count += 1;
-        }
-    }
-    if count > 1 {
-        return Err("HOST_JOURNAL_ORIGINAL_AB_DUPLICATE".to_owned());
-    }
-    Ok(count == 1)
-}
-
 fn read_host_journal(path: Option<&Path>) -> Result<Vec<u8>, String> {
     let path = path.ok_or("HOST_JOURNAL_REQUIRED")?;
     let metadata =
@@ -395,9 +354,14 @@ fn host_lifecycle_admission(
         _ => return Err("HOST_OWNER_MISMATCH".to_owned()),
     };
     let journal = read_host_journal(journal_path)?;
-    let unresolved = original_ab_unresolved(&journal)?;
+    // Credential and Host must agree on the EXACT historical immutable
+    // BEGIN/COMMIT_INTENT. Neither can infer a successful physical commit
+    // from a GitHub comment; uncertain results always require native readback.
+    let journal_state = crate::credential_existing_join::host_admission_status(&journal)?;
+    let unresolved = journal_state != "NO_BEGIN_NO_MUTATION_AUTHORITY";
     println!("host_machine_id={machine_id}");
     println!("host_kind={kind:?}");
+    println!("host_original_ab_state={journal_state}");
     println!("host_original_ab_unresolved={unresolved}");
     println!("host_mutations=0");
 
@@ -681,24 +645,24 @@ mod tests {
     }
 
     #[test]
-    fn host_original_ab_requires_reconciliation_without_any_replay() {
-        let begin = format!(
-            "{BEGIN_MARKER}\n{{\"schema\":\"sing-box.credential-existing-join-begin/v1\",\"run_id\":39004301614}}"
+    fn host_rejects_malformed_original_ab_rather_than_inventing_terminal_proof() {
+        // The authoritative positive BEGIN/COMMIT_INTENT and negative
+        // duplicate/orphan fixtures live beside the shared journal inspector.
+        let malformed = serde_json::json!([{
+            "body": "<!-- sing-box-credential-existing-join-begin/v1 -->\\n{\"schema\":\"sing-box.credential-existing-join-begin/v1\",\"run_id\":39004301614}"
+        }]).to_string();
+        assert!(
+            crate::credential_existing_join::host_admission_status(malformed.as_bytes())
+                .is_err()
         );
-        let rows = serde_json::to_vec(&serde_json::json!([{"body":begin}])).unwrap();
-        assert!(original_ab_unresolved(&rows).unwrap());
-        assert!(!original_ab_unresolved(br#"[{"body":"ordinary comment"}]"#).unwrap());
         assert_eq!(
-            original_ab_unresolved(b"[]").unwrap_err(),
+            crate::credential_existing_join::host_admission_status(b"[]").unwrap_err(),
             "HOST_JOURNAL_EMPTY"
         );
-        let duplicate = serde_json::to_vec(&serde_json::json!([
-            {"body": begin}, {"body": begin}
-        ]))
-        .unwrap();
+        let normal = serde_json::json!([{"body":"read-only observation"}]).to_string();
         assert_eq!(
-            original_ab_unresolved(&duplicate).unwrap_err(),
-            "HOST_JOURNAL_ORIGINAL_AB_DUPLICATE"
+            crate::credential_existing_join::host_admission_status(normal.as_bytes()).unwrap(),
+            "NO_BEGIN_NO_MUTATION_AUTHORITY"
         );
     }
 
