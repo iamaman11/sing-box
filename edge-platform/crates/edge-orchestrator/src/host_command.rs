@@ -400,9 +400,8 @@ fn host_lifecycle_admission(
         return Err("HOST_DESIRED_SPEC_INVALID_FILE".to_owned());
     }
     let spec_bytes = std::fs::read(spec_path).map_err(|_| "HOST_DESIRED_SPEC_UNREADABLE")?;
-    let desired_sha = edge_shared_types::host_lifecycle::digest_host_desired(
-        selected, &spec_bytes
-    ).map_err(str::to_owned)?;
+    let desired_sha = edge_shared_types::host_lifecycle::digest_host_desired(selected, &spec_bytes)
+        .map_err(str::to_owned)?;
     let release_sha = exact_hex_sha256(expected_release_set_sha256)?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -758,7 +757,7 @@ mod tests {
                 )),
                 windows_runner_label: "windows-test".to_owned(),
                 desired_spec_path: spec.to_string_lossy().into_owned(),
-            target: None,
+                target: None,
             }],
         };
         let release = "a".repeat(64);
@@ -845,7 +844,7 @@ mod tests {
                     )),
                     windows_runner_label: String::new(),
                     desired_spec_path: "infra/application/disposable-acceptance.json".to_owned(),
-                target: None,
+                    target: None,
                 },
                 ManagedHost {
                     machine_id: "sing-box-windows-lab".to_owned(),
@@ -855,7 +854,7 @@ mod tests {
                     )),
                     windows_runner_label: "sing-box-windows-lab".to_owned(),
                     desired_spec_path: "infra/production/production.textproto".to_owned(),
-                target: None,
+                    target: None,
                 },
             ],
         };
@@ -884,7 +883,7 @@ mod tests {
             )),
             windows_runner_label: "other-label".to_owned(),
             desired_spec_path: "infra/production/production.textproto".to_owned(),
-        target: None,
+            target: None,
         });
         assert_eq!(
             resolve_credential_peer(&two_windows, "application-acceptance-1", "auto").unwrap_err(),
