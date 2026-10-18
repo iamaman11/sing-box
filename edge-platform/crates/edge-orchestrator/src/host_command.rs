@@ -298,8 +298,7 @@ pub(crate) fn run(
                     // without runner API; GitHub queue/physical owner still
                     // cannot claim PASS until the native diagnostic runs.
                     // Authoritative offline/invalid labels are NOT dispatched.
-                    if registration == "UNPROVEN"
-                        || registration.starts_with("READY_FOR_DISPATCH:")
+                    if registration == "UNPROVEN" || registration.starts_with("READY_FOR_DISPATCH:")
                     {
                         observation_targets.push(observation_target(
                             &host.machine_id,
