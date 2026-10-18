@@ -306,6 +306,48 @@ jobs:
             fi
           fi
 
+  host_report:
+    # Transport-only report: the canonical issue inbox gains one short,
+    # correlation-bound response without copying native diagnostics, secrets,
+    # workflow decisions or another durable transaction journal.
+    needs: [host, host_observe]
+    if: >-
+      always() &&
+      needs.host.result == 'success' &&
+      (github.event.comment.body == '/host status' ||
+       startsWith(github.event.comment.body, '/host status ') ||
+       needs.host.outputs.operation == 'RECOVER_READ_ONLY')
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      SOURCE_COMMENT_ID: ${{ github.event.comment.id }}
+      COMMAND_BODY: ${{ github.event.comment.body }}
+      OBSERVED_RESULT: ${{ needs.host_observe.result }}
+      TARGETS_PRESENT: ${{ needs.host.outputs.host_targets_present }}
+    steps:
+      - name: Return bounded native observation pointer to operator inbox
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${SOURCE_COMMENT_ID}" =~ ^[0-9]+$ ]]
+          case "${OBSERVED_RESULT}" in
+            success) result=NATIVE_READ_ONLY_COMPLETED ;;
+            failure) result=NATIVE_DIAGNOSTIC_FAILED ;;
+            cancelled) result=NATIVE_DIAGNOSTIC_CANCELLED ;;
+            skipped) result=NO_NATIVE_OBSERVATION ;;
+            *) result=UNKNOWN_NOT_ACCEPTED ;;
+          esac
+          case "${TARGETS_PRESENT}" in true|false) ;; *) exit 1 ;; esac
+          run_url="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
+          # Only provenance and outcome, never arbitrary native output.
+          body="$(printf 'Host read-only report for operator command #%s\n\nOperation: `%s`\nResult: `%s`\nPhysical dispatch selected: `%s`\nCI evidence: %s\n\nThis report does not change credentials, SCM, DNS, routing or TUN.\n' \
+            "${SOURCE_COMMENT_ID}" "${COMMAND_BODY}" "${result}" "${TARGETS_PRESENT}" "${run_url}")"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/1/comments" -f "body=${body}" >/dev/null
+
   host_apply_windows:
     needs: host
     if: >-
