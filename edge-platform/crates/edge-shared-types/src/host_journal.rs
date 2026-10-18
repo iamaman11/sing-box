@@ -131,6 +131,15 @@ fn admit_after_protected_owner_check_once(
     // A directory merely appearing as a regular directory is not a security
     // check and may not grant SYSTEM/root execution authority.
     let id = journal_hex(intent.operation_id.as_bytes());
+    let path = protected_journal_dir.join(format!("{id}.pb"));
+    // Check the permanent operation journal BEFORE taking the resource gate.
+    // An already completed comment must not create a fresh orphan .pending
+    // record that blocks unrelated future work on the same resource.
+    match fs::symlink_metadata(&path) {
+        Ok(_) => return Err("HOST_OPERATION_EXISTS_OR_JOURNAL_UNAVAILABLE"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("HOST_OPERATION_JOURNAL_UNAVAILABLE"),
+    }
     // The operation-ID journal alone cannot serialize two different comments
     // acting on the SAME resource. The scope gate is durable across process
     // crashes; it is released only by a locally verified native poststate.
@@ -153,7 +162,6 @@ fn admit_after_protected_owner_check_once(
     parent
         .sync_all()
         .map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNCERTAIN_NO_REPLAY")?;
-    let path = protected_journal_dir.join(format!("{id}.pb"));
     let recorded = FleetHostResult {
         schema_version: 1,
         machine_id: intent.machine_id.clone(),
@@ -467,7 +475,7 @@ mod tests {
         assert!(!first.physical_readback);
         assert_eq!(
             call(&i, &a).unwrap_err(),
-            "HOST_RESOURCE_PENDING_OR_UNAVAILABLE"
+            "HOST_OPERATION_EXISTS_OR_JOURNAL_UNAVAILABLE"
         );
         let mut second = i.clone();
         second.operation_id = "issue1-comment-124".into();
@@ -531,6 +539,13 @@ mod tests {
         ).unwrap();
         assert_eq!(completed.state, FleetHostResultState::Verified as i32);
         assert!(completed.physical_readback);
+        // A repeated, already verified operation cannot leave a new
+        // resource gate behind or starve a different fresh operation.
+        assert_eq!(
+            call(&i, &a).unwrap_err(),
+            "HOST_OPERATION_EXISTS_OR_JOURNAL_UNAVAILABLE"
+        );
+        assert!(!native_scope_pending_path(&dir, &i).exists());
         assert_eq!(
             call(&second, &next_authorization).unwrap().state,
             FleetHostResultState::Authorized as i32
