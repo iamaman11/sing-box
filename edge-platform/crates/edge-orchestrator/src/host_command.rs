@@ -400,15 +400,14 @@ fn host_lifecycle_admission(
         // This is a reconciliation request, not a blind rollback or replay.
         // It must inspect the installed owner independently before deciding
         // whether previous-state rollback can ever be authorized.
-        println!(
-            "host_recovery_decision={}",
-            if unresolved {
-                "UNKNOWN_NO_REPLAY_AB_UNRESOLVED"
-            } else {
-                "RECONCILE_NATIVE_OWNER_BEFORE_MUTATION"
-            }
-        );
+        let recovery = if unresolved {
+            "UNKNOWN_NO_REPLAY_AB_UNRESOLVED"
+        } else {
+            "RECONCILE_NATIVE_OWNER_BEFORE_MUTATION"
+        };
+        println!("host_recovery_decision={recovery}");
         if let Some(output) = output {
+            append_recovery_outputs(output, journal_state, recovery)?;
             let labels = runner_labels(kind, owner, &selected.windows_runner_label)?;
             // Recovery is read-only and must not queue a known offline owner.
             let dispatch = if let Some(api) = runner_json {
@@ -490,6 +489,40 @@ fn host_lifecycle_admission(
     println!("host_dispatch=EXACT_NATIVE_OWNER_FRESHNESS_REQUIRED");
     println!("host_admission_valid_seconds=900");
     Ok(())
+}
+
+/// Publish only fixed native decisions through the existing GitHub
+/// control output. This exposes the reason immediately even if a physical
+/// runner is unregistered; the native owner status is still independent.
+fn append_recovery_outputs(
+    path: &Path,
+    journal_state: &str,
+    recovery: &str,
+) -> Result<(), String> {
+    if !matches!(
+        journal_state,
+        "BEGIN_DURABLE_NO_AUTOMATIC_REPLAY"
+            | "COMMIT_DURABLE_OWNER_RECEIPTS_UNPROVEN"
+            | "NO_BEGIN_NO_MUTATION_AUTHORITY"
+    ) || !matches!(
+        recovery,
+        "UNKNOWN_NO_REPLAY_AB_UNRESOLVED" | "RECONCILE_NATIVE_OWNER_BEFORE_MUTATION"
+    ) {
+        return Err("HOST_RECOVERY_DECISION_UNSUPPORTED".to_owned());
+    }
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|_| "HOST_RECOVERY_OUTPUT_UNAVAILABLE".to_owned())?;
+    if !metadata.file_type().is_file() {
+        return Err("HOST_RECOVERY_OUTPUT_NOT_REGULAR".to_owned());
+    }
+    OpenOptions::new()
+        .append(true)
+        .open(path)
+        .and_then(|mut file| {
+            writeln!(file, "host_original_ab_state={journal_state}")?;
+            writeln!(file, "host_recovery_decision={recovery}")
+        })
+        .map_err(|_| "HOST_RECOVERY_OUTPUT_WRITE_FAILED".to_owned())
 }
 
 /// Expiring GitHub admission: queued/offline self-hosted jobs must not
