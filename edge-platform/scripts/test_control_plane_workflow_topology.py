@@ -3003,8 +3003,10 @@ def main() -> None:
     require(
         "startsWith(github.event.comment.body, '/production ')" in router
         and router.count("uses: ./.github/workflows/vm-application-lifecycle.yml") == 3
-        and "needs.host.outputs.machine_id == 'production-1'" in router
-        and "needs.host.outputs.operation == 'APPLY'" in router,
+        and "needs.host.outputs.desired_spec_path == 'infra/production/production.textproto'" in router
+        and "needs.host.outputs.operation == 'APPLY'" in router
+        and "HOST_VM_RELEASE_BOUND_BUNDLE_NOT_YET_PUBLISHED" in
+            Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(encoding="utf-8"),
         "router must expose production only through the existing owner-gated application lifecycle backend",
     )
     require(
