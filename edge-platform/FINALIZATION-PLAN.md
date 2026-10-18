@@ -34,6 +34,24 @@ ReleaseSet activation record и VM application bundle. Windows дополнит�
 Окончательное включение в централизованный Host status требует
 физической установки и проверки точного SHA.
 
+## Rust reconcile без второй mutation authority
+
+В PR #403 единый `FleetHostTransitionPlan` вычисляется из Git `FleetHostTarget`,
+bounded нативного readback и точного ReleaseSet/VM bundle digest: `NOOP`,
+`START`, `STOP`, `REPLACE_RELEASE` либо `BLOCKED`. Это **предложение**,
+не permission: `owner_attested=false`, `mutation_authorized=false`;
+Runner не становится root/SYSTEM. `host readback` — скрытый внутренний
+Rust-приёмник наблюдения; публичные команды остаются только
+`host status/apply/recover`. Новый read-only workflow сохраняет protobuf
+только при наличии точной команды в установленном native binary, иначе
+возвращает `UNAVAILABLE` и не повышает права.
+
+Завершение: Worker подписывает конкретный intent, existing native owner
+проверяет машинную идентичность и root/SYSTEM state, журналирует одноразовую
+операцию, исполняет выбранное действие, возвращает **аутентифицированный**
+readback receipt. CI и типизированное предложение не дают права на мутацию.
+Windows остаётся STOPPED/PROXY_ONLY, отдельная TUN приёмка обязательна.
+
 ## Текущие ограничения (не считать закрытыми)
 
 **Граница привилегий VM:** в ранее установленном sudoers для `github-runner` присутствовал прямой допуск к `bundle-converge`, rollback, bootstrap и credential mutation. PR #403 закрывает этот доступ в *исходном установщике* и добавляет read-only наблюдение `host_runner_direct_mutation_authority` на фактически установленном runner. Это не доказывает, что старый sudoers уже исправлен на VM. Любые VM writes через этот старый допуск запрещены; коррекция установленной политики требует штатного доверенного native-owner handoff и физического readback, без replay исторической A/B. В PR #403 native подписанное admission и журнал находятся в разработке, Worker signing и исполнение пока не подключены.
