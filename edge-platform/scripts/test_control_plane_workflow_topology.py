@@ -820,7 +820,50 @@ def test_native_host_readonly_control_boundary(router: str) -> None:
         "Only Host read-only preflight may be routed; old mutations are forbidden",
     )
 
+def test_existing_worker_host_signer_is_syntactically_closed() -> None:
+    """Prove the one existing Cloudflare Worker cannot authorize unprovisioned host writes."""
+    rust = Path(
+        "edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs"
+    ).read_text(encoding="utf-8")
+    before = 'let source = r#"const S='
+    after = '"#\n        .replace("__PROJECTION__"'
+    require(rust.count(before) == 1, "Host signer must share ONE existing credential Worker")
+    body = 'const S=' + rust.split(before, 1)[1].split(after, 1)[0]
+    require('async function AUTHORIZE(' in body, "Host signer must exist in the Worker")
+    body = body.replace("__PROJECTION__", "2")
+    body = body.replace("__HOST_SIGNER_PROJECTION__", "2")
+    with tempfile.TemporaryDirectory(prefix="edge-host-worker-js-") as tmp:
+        target = Path(tmp) / "credential-worker.mjs"
+        target.write_text(body, encoding="utf-8")
+        syntax = subprocess.run(
+            ["node", "--check", str(target)], capture_output=True, text=True,
+            timeout=15, check=False,
+        )
+        require(syntax.returncode == 0, "Worker JS syntax invalid: " + syntax.stderr[-1000:])
+        check = (
+            "const m=await import(process.argv[1]);"
+            "const url='https://example.workers.dev/v1/host/authorize';"
+            "const req=new Request(url,{method:'POST',"
+            "headers:{'Content-Type':'application/x-protobuf'},body:new Uint8Array([8,1])});"
+            "const v=await m.default.fetch(req,{});"
+            "if(v.status!==404)throw Error('Unprovisioned Host signer must be 404');"
+            "const g=await m.default.fetch(new Request("
+            "'https://example.workers.dev/v1/credentials?generation=4'),{});"
+            "if(g.status!==404)throw Error('Credential route must remain fail-closed');"
+        )
+        no_secrets = subprocess.run(
+            ["node", "--input-type=module", "-e", check, str(target)],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+        require(
+            no_secrets.returncode == 0,
+            "Worker must fail closed without signer and credential secrets: "
+            + no_secrets.stderr[-1000:],
+        )
+
+
 def main() -> None:
+    test_existing_worker_host_signer_is_syntactically_closed()
     router = ROUTER.read_text(encoding="utf-8")
     test_native_host_readonly_control_boundary(router)
     application = APPLICATION.read_text(encoding="utf-8")
