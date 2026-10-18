@@ -85,6 +85,8 @@ jobs:
       admitted_at_unix: ${{ steps.observe.outputs.admitted_at_unix }}
       host_matrix: ${{ steps.observe.outputs.host_matrix }}
       host_targets_present: ${{ steps.observe.outputs.host_targets_present }}
+      original_ab_state: ${{ steps.observe.outputs.host_original_ab_state }}
+      recovery_decision: ${{ steps.observe.outputs.host_recovery_decision }}
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     permissions:
@@ -266,6 +268,8 @@ jobs:
       SOURCE_COMMENT_ID: ${{ github.event.comment.id }}
       COMMAND_BODY: ${{ github.event.comment.body }}
       TARGETS_PRESENT: ${{ needs.host.outputs.host_targets_present }}
+      AB_STATE: ${{ needs.host.outputs.original_ab_state }}
+      RECOVERY_DECISION: ${{ needs.host.outputs.recovery_decision }}
     steps:
       - name: Publish one read-only observation pointer immediately
         id: publish
@@ -278,9 +282,19 @@ jobs:
             false) result=NO_NATIVE_TARGET_AVAILABLE ;;
             *) exit 1 ;;
           esac
+          case "${AB_STATE}" in
+            "") AB_STATE=NOT_CHECKED ;;
+            BEGIN_DURABLE_NO_AUTOMATIC_REPLAY|COMMIT_DURABLE_OWNER_RECEIPTS_UNPROVEN|NO_BEGIN_NO_MUTATION_AUTHORITY) ;;
+            *) exit 1 ;;
+          esac
+          case "${RECOVERY_DECISION}" in
+            "") RECOVERY_DECISION=NOT_REQUESTED ;;
+            UNKNOWN_NO_REPLAY_AB_UNRESOLVED|RECONCILE_NATIVE_OWNER_BEFORE_MUTATION) ;;
+            *) exit 1 ;;
+          esac
           run_url="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          body="$(printf 'Host read-only report for operator command #%s\n\nOperation: `%s`\nResult: `%s`\nPhysical dispatch selected: `%s`\nCI evidence: %s\n\nIndividual host outcomes arrive as separate correlated replies. Unresponsive runners remain UNPROVEN. No host mutations.\n' \
-            "${SOURCE_COMMENT_ID}" "${COMMAND_BODY}" "${result}" "${TARGETS_PRESENT}" "${run_url}")"
+          body="$(printf 'Host read-only report for operator command #%s\n\nOperation: `%s`\nResult: `%s`\nPhysical dispatch selected: `%s`\nOriginal A/B journal: `%s`\nRecovery decision: `%s`\nCI evidence: %s\n\nIndividual host outcomes arrive as separate correlated replies. Unresponsive runners remain UNPROVEN. No host mutations.\n' \
+            "${SOURCE_COMMENT_ID}" "${COMMAND_BODY}" "${result}" "${TARGETS_PRESENT}" "${AB_STATE}" "${RECOVERY_DECISION}" "${run_url}")"
           comment_id="$(gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/1/comments" -f "body=${body}" --jq '.id')"
           [[ "${comment_id}" =~ ^[0-9]+$ ]]
           echo "comment_id=${comment_id}" >> "${GITHUB_OUTPUT}"
