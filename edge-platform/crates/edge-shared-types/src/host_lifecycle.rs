@@ -205,7 +205,7 @@ pub fn host_authorization_payload(
     authorization: &FleetHostAuthorization,
 ) -> Vec<u8> {
     let intent_bytes = intent.encode_to_vec();
-    let mut bytes = b"sing-box/native-host-authorization/v1\\0".to_vec();
+    let mut bytes = b"sing-box/native-host-authorization/v1:".to_vec();
     bytes.extend_from_slice(&(intent_bytes.len() as u32).to_be_bytes());
     bytes.extend_from_slice(&intent_bytes);
     bytes.extend_from_slice(&(authorization.key_id.len() as u32).to_be_bytes());
