@@ -292,11 +292,15 @@ pub(crate) fn run(
                         "UNPROVEN".to_owned()
                     };
                     println!("host_runner_registration={registration}");
-                    // A bulk status must not enqueue jobs for unknown/offline
-                    // runners. An explicit target remains available for
-                    // bounded native-owner observation when GitHub Admin:read
-                    // is unavailable.
-                    if registration.starts_with("READY_FOR_DISPATCH:") {
+                    // Missing GitHub Administration:read is not evidence
+                    // that a registered native owner is offline. Exact
+                    // Git-owned read-only targets may be dispatched even
+                    // without runner API; GitHub queue/physical owner still
+                    // cannot claim PASS until the native diagnostic runs.
+                    // Authoritative offline/invalid labels are NOT dispatched.
+                    if registration == "UNPROVEN"
+                        || registration.starts_with("READY_FOR_DISPATCH:")
+                    {
                         observation_targets.push(observation_target(
                             &host.machine_id,
                             kind,
