@@ -95,6 +95,21 @@ mutations: trusted pinned Worker public key на native owner; физическ�
 
 На `main` после PR #399 есть независимая read-only диагностика Windows + acceptance VM, но `production-1` не подтверждён; native FAST установлен не везде. Универсальный fresh per-host bundle, deploy/replace/rollback, новый typed secret-provision и закрытие legacy-ingress **ещё не выполнены**. Имеющийся старый A/B BEGIN — архив истории, **не задача восстановления** и не вход новой операции.
 
+## Подтверждённый прогресс текущего PR #403
+
+Нативный VM observer теперь различает `VERIFIED_ABSENT` и `UNPROVEN`.
+Единый Rust planner предлагает `INSTALL` только когда локальный VM
+owner действительно не находит marker, Compose и application-контейнеры
+и подтверждает STOPPED. Это не разрешение на запись. Worker signer
+отвергает неоднозначное protobuf-кодирование intent; положительные
+и отрицательные проверки остаются в текущем PR.
+
+**Оставшийся P0:** связать signed intent с независимо подтверждёнными
+Git desired и immutable ReleaseSet у native owner; подключить Linux
+root и Windows SYSTEM execution с защищённой блокировкой/журналом и
+аутентифицированным poststate receipt. Ни один новый физический apply
+пока не разрешён этими изменениями.
+
 ## Обязательный протокол сомнения (без гаданий и кругов)
 
 1. Получить доступный native read-only typed status и проверить его актуальность, источник и область наблюдения. Не переносить факты VM-localhost на публичный endpoint, старый SHA на установленный owner или завершение GitHub job на runtime health.
