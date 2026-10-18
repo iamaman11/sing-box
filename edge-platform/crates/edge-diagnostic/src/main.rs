@@ -367,8 +367,10 @@ fn build_host_observation(state_path: &Path) -> Result<Vec<u8>, String> {
         FleetNativeOwnerState::Unproven
     };
     // SCM state is not sing-box runtime readiness or proof of external DNS,
-    // network, TLS or authentication. No true readiness field can be emitted.
-    reason_codes.push("WINDOWS_RUNTIME_NOT_PROBED");
+    // network, TLS or authentication. The typed runtime_ready_proven=false
+    // already expresses this missing proof. Do NOT put an expected proof gap
+    // into failure reason_codes: STOPPED/STOPPED must be a legitimate NOOP.
+    // Actual SCM, release or identity failures still carry reason_codes.
     let observed_at = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| "WINDOWS_HOST_CLOCK_UNAVAILABLE".to_owned())?
