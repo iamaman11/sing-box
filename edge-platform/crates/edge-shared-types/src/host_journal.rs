@@ -216,6 +216,7 @@ pub fn execute_native_host_once<Observe, Apply>(
     registry_pb: &[u8],
     selected_spec_bytes: &[u8],
     release_set_pb: &[u8],
+    vm_bundle_pb: Option<&[u8]>,
     pinned_worker_public_key: &[u8],
     native_machine_id: &str,
     native_owner_kind: i32,
@@ -235,6 +236,7 @@ where
         registry_pb,
         selected_spec_bytes,
         release_set_pb,
+        vm_bundle_pb,
         pinned_worker_public_key,
         native_machine_id,
         native_owner_kind,
@@ -253,6 +255,7 @@ fn execute_after_protected_owner_check_once<Observe, Apply>(
     registry_pb: &[u8],
     selected_spec_bytes: &[u8],
     release_set_pb: &[u8],
+    vm_bundle_pb: Option<&[u8]>,
     pinned_worker_public_key: &[u8],
     native_machine_id: &str,
     native_owner_kind: i32,
@@ -277,7 +280,7 @@ where
         return Err("HOST_LOCAL_OWNER_IDENTITY_MISMATCH");
     }
     let (registry, bound) =
-        bind_native_host_artifacts(intent, registry_pb, selected_spec_bytes, release_set_pb)?;
+        bind_native_host_artifacts(intent, registry_pb, selected_spec_bytes, release_set_pb, vm_bundle_pb)?;
     validate_intent_against_target(intent, &registry)?;
     verify_host_authorization(intent, authorization, pinned_worker_public_key, now_unix)?;
     if !matches!(
