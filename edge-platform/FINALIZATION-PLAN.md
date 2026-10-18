@@ -20,6 +20,8 @@
 
 ## Текущие ограничения (не считать закрытыми)
 
+**Граница привилегий VM:** в ранее установленном sudoers для `github-runner` присутствовал прямой допуск к `bundle-converge`, rollback, bootstrap и credential mutation. PR #403 закрывает этот доступ в *исходном установщике* и добавляет read-only наблюдение `host_runner_direct_mutation_authority` на фактически установленном runner. Это не доказывает, что старый sudoers уже исправлен на VM. Любые VM writes через этот старый допуск запрещены; коррекция установленной политики требует штатного доверенного native-owner handoff и физического readback, без replay исторической A/B. В PR #403 native подписанное admission и журнал находятся в разработке, Worker signing и исполнение пока не подключены.
+
 На `main` после PR #399 есть независимая read-only диагностика Windows + acceptance VM, но `production-1` не подтверждён; native FAST установлен не везде. Универсальный fresh per-host bundle, deploy/replace/rollback, новый typed secret-provision и закрытие legacy-ingress **ещё не выполнены**. Имеющийся старый A/B BEGIN — архив истории, **не задача восстановления** и не вход новой операции.
 
 ## Обязательный протокол сомнения (без гаданий и кругов)
