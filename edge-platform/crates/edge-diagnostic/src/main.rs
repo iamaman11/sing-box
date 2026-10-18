@@ -124,7 +124,10 @@ fn run() -> Result<(), String> {
     // Do not replay the request, inspect secret-bearing result.detail, infer
     // that this belongs to a past failed client invocation, or call a task.
     print!("{}", observe_privileged_exchange_metadata(install_root));
-    print!("{}", observe_pending_privileged_request_metadata(install_root));
+    print!(
+        "{}",
+        observe_pending_privileged_request_metadata(install_root)
+    );
 
     #[cfg(windows)]
     let controller_pid = observe_windows_service(&expected_controller)?;
@@ -218,7 +221,9 @@ fn observe_pending_privileged_request_metadata(install_root: &Path) -> String {
         .join("requests")
         .join("request.pb");
     let unknown = |reason: &str| {
-        format!("privileged_exchange_pending_state={reason}\nprivileged_exchange_pending_operation=UNPROVEN\n")
+        format!(
+            "privileged_exchange_pending_state={reason}\nprivileged_exchange_pending_operation=UNPROVEN\n"
+        )
     };
     let metadata = match std::fs::symlink_metadata(&path) {
         Ok(value) => value,
@@ -1230,8 +1235,10 @@ mod tests {
         let directory = root.join("exchange").join("results");
         std::fs::create_dir_all(&directory).unwrap();
         let missing = observe_privileged_exchange_metadata(&root);
-        assert!(observe_pending_privileged_request_metadata(&root)
-            .contains("privileged_exchange_pending_state=NO_PENDING_REQUEST_RECORDED"));
+        assert!(
+            observe_pending_privileged_request_metadata(&root)
+                .contains("privileged_exchange_pending_state=NO_PENDING_REQUEST_RECORDED")
+        );
         assert!(missing.contains("privileged_exchange_state=EVIDENCE_NOT_RECORDED"));
         assert!(missing.contains("privileged_exchange_error_class=UNPROVEN"));
         let result = edge_shared_types::WindowsPrivilegedResult {
