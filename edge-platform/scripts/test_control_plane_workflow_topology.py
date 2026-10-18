@@ -2356,7 +2356,10 @@ def main() -> None:
         and "Issue #26" in architecture
         and "FINALIZATION-PLAN.md" in architecture
         and "A/B BEGIN" in plan
-        and "**A. Разрешить" in plan
+        and "**A. Закрыть старые входы." in plan
+        and "прежний план исторической A/B-реанимации отменён" in plan
+        and "запрещено" in plan.lower()
+        and "**A. Разрешить" not in plan
         and "10/10" in plan
         and "UNKNOWN_NO_REPLAY" in plan
         and "Issue #26" in plan
@@ -2366,12 +2369,23 @@ def main() -> None:
         and "/host apply" in commands
         and "/host recover" in commands
         and "UNKNOWN_NO_REPLAY" in handoff
-        and "39072475032" in handoff
+        and "PR #400 закрыт без merge" in handoff
+        and "Архив Issue #26 хранится как пассивное доказательство" in handoff
+        and "NATIVE_OWNER_MISSING" in handoff
         and "/host status" in runbook
         and "Cloudflare One" in runbook
         and "ProxyOnly" in runbook
         and "Stage 3 and Stage 4A remain closed" not in architecture
-        and "historical tombstone" not in plan,
+        and "historical tombstone" not in plan
+        and "старые comments — неизменяемый архив" in commands
+        and "старый журнал оставить пассивным аудиторским артефактом" in architecture.lower()
+        and "При малейшем сомнении" in architecture
+        and "обратиться за адресной read-only проверкой" in architecture
+        and "обязательный запрос локальной помощи" in plan
+        and "любой, даже минимальной неопределённости" in plan
+        and "Конечная приёмка:" in plan
+        and "при самом малом сомнении" in handoff
+        and "обязательно попросить помощи существующего локального агента" in handoff,
         "Normative docs must be concise, typed, fail-closed and non-contradictory",
     )
     image_build_section = edge_platform_ci.split("# VM_RUNTIME_BUILD_CONTRACT_BEGIN", 1)[1].split("# VM_RUNTIME_BUILD_CONTRACT_END", 1)[0]
