@@ -8,7 +8,9 @@
 
 use crate::{
     FleetHostAuthorization, FleetHostIntent, FleetHostResult, FleetHostResultState, HostRegistry,
-    host_lifecycle::{validate_host_intent, validate_intent_against_target, verify_host_authorization},
+    host_lifecycle::{
+        validate_host_intent, validate_intent_against_target, verify_host_authorization,
+    },
 };
 use prost::Message;
 use ring::digest::{SHA256, digest};
@@ -174,7 +176,10 @@ fn admit_after_protected_owner_check_once(
 mod tests {
     use super::*;
     use crate::host_lifecycle::host_authorization_payload;
-    use crate::{FleetHost, FleetHostAction, FleetHostKind, FleetHostMode, FleetHostRunState, FleetHostTarget, managed_host};
+    use crate::{
+        FleetHost, FleetHostAction, FleetHostKind, FleetHostMode, FleetHostRunState,
+        FleetHostTarget, managed_host,
+    };
     use ring::rand::SystemRandom;
     use ring::signature::{Ed25519KeyPair, KeyPair};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -256,10 +261,19 @@ mod tests {
         observe_only.hosts[0].target = None;
         assert_eq!(
             admit_after_protected_owner_check_once(
-                &i, &a, &observe_only, &[1; 32], &[2; 32], &[3; 32],
-                pair.public_key().as_ref(), "vm-one", FleetHostKind::Vm as i32,
-                1020, &dir,
-            ).unwrap_err(),
+                &i,
+                &a,
+                &observe_only,
+                &[1; 32],
+                &[2; 32],
+                &[3; 32],
+                pair.public_key().as_ref(),
+                "vm-one",
+                FleetHostKind::Vm as i32,
+                1020,
+                &dir,
+            )
+            .unwrap_err(),
             "HOST_TARGET_UNSET_OBSERVE_ONLY"
         );
         let first = call(&i, &a).unwrap();
