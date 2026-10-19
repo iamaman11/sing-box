@@ -325,9 +325,12 @@ pub fn validate_host_intent(
     exact_desired_sha256: &[u8],
     exact_release_set_sha256: &[u8],
 ) -> Result<(), &'static str> {
+    // This executor still plans the WHOLE application. A forged resource ID
+    // must never make a global START/STOP appear to be scoped to a container.
+    // Per-resource execution needs its own native plan and physical readback.
     if intent.schema_version != 1
         || !token(&intent.machine_id)
-        || !token(&intent.resource_id)
+        || intent.resource_id != "sing-box"
         || !token(&intent.operation_id)
         || intent.requested_at_unix == 0
     {
@@ -981,6 +984,10 @@ mod tests {
         assert!(check(&invalid));
         invalid = intent.clone();
         invalid.kind = FleetHostKind::Vm as i32;
+        assert!(check(&invalid));
+        invalid = intent.clone();
+        invalid.resource_id = "container.vultr-line2-proxy".to_owned();
+        // A nominal container ID cannot invoke the host-wide effector.
         assert!(check(&invalid));
         invalid = intent.clone();
         invalid.release_set_sha256[0] ^= 1;
