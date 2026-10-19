@@ -280,15 +280,17 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
     {
         return Err("HOST_NATIVE_SPEC_PATH_INVALID".into());
     }
-    // A STOP/unknown VM step cannot be implemented by the current
-    // existing bootstrap/bundle primitives. Reject it BEFORE signing and
-    // BEFORE BEGIN: a callback refusal after BEGIN would strand the journal
-    // in UNKNOWN_NO_REPLAY without any physical operation.
+    // A missing or invalid run target is not executable. The native
+    // STOP effector only touches verified application-owned Docker IDs.
+    // All unsupported transitions are rejected BEFORE signed BEGIN.
     let vm_target = host
         .target
         .as_ref()
         .ok_or("HOST_TARGET_UNSET_OBSERVE_ONLY")?;
-    if vm_target.run_state != edge_shared_types::FleetHostRunState::Running as i32 {
+    if !matches!(
+        edge_shared_types::FleetHostRunState::try_from(vm_target.run_state),
+        Ok(edge_shared_types::FleetHostRunState::Running | edge_shared_types::FleetHostRunState::Stopped)
+    ) {
         return Err("HOST_NATIVE_VM_TARGET_NOT_EXECUTABLE".into());
     }
     // A Docker container with our hard-coded application name is not
@@ -335,11 +337,17 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
             },
             |step| match step {
                 FleetHostPlannedStep::Start
+                | FleetHostPlannedStep::Stop
                 | FleetHostPlannedStep::Install
                 | FleetHostPlannedStep::ReplaceRelease => Ok(()),
                 _ => Err("HOST_NATIVE_VM_STEP_NOT_IMPLEMENTED"),
             },
             |step| match step {
+                FleetHostPlannedStep::Stop => {
+                    handle
+                        .block_on(super::docker_observation::stop_owned_application_containers())
+                        .map_err(|_| "HOST_NATIVE_VM_STOP_UNCERTAIN_NO_REPLAY")
+                }
                 FleetHostPlannedStep::Start => {
                     let completion = handle.block_on(super::run_bootstrap(
                         stack_dir,
