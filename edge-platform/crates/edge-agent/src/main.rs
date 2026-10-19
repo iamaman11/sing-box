@@ -307,7 +307,10 @@ fn run_local_fast(stack_dir: &Path) -> Result<(), String> {
     println!("fast_schema=sing-box.fleet-fast/v1");
     println!("fast_observed_unix_seconds={observed_unix_seconds}");
     println!("fast_host_kind=VM");
-    println!("fast_native_host_trust={}", host_native::local_trust_preflight());
+    println!(
+        "fast_native_host_trust={}",
+        host_native::local_trust_preflight()
+    );
     println!("fast_bundle_digest={digest}");
     println!("fast_runtime=UNPROVEN");
     println!("fast_reason=CONTAINERS_AND_ENDPOINTS_NOT_PROBED");
