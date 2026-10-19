@@ -526,17 +526,17 @@ fn bind_owned_vm_compose_dependencies(
     Ok(())
 }
 
-/// Build the sole typed VM resource graph from installed Git-owned inputs,
-/// never from caller-supplied JSON or another desired-state file.
-fn compile_native_vm_desired_graph(
-    stack_dir: &Path,
+/// One typed graph compiler for BOTH immutable Git bundle desired and
+/// root-local actual policy. This never infers desired from installed files.
+fn compile_vm_graph_from_parts(
     host: &FleetHost,
+    compose: &serde_yaml::Value,
+    env: &BTreeMap<String, String>,
+    mut template_bytes: impl FnMut(&str) -> Result<Vec<u8>, String>,
 ) -> Result<edge_shared_types::FleetVmDesiredGraph, String> {
     use edge_shared_types::{FleetVmDesiredGraph, FleetVmDesiredResource};
-    let compose = read_native_vm_compose(stack_dir)?;
-    let env = super::read_exact_image_environment(stack_dir)?;
-    let images = resolve_owned_vm_images(&compose, &env, &host.vm_containers)?;
-    let deps = resolve_compose_dependencies(&compose, &host.vm_containers)?;
+    let images = resolve_owned_vm_images(compose, env, &host.vm_containers)?;
+    let deps = resolve_compose_dependencies(compose, &host.vm_containers)?;
     let mut resources = Vec::with_capacity(host.vm_containers.len());
     for identity in &host.vm_containers {
         let template = match identity.compose_service.as_str() {
@@ -545,12 +545,9 @@ fn compile_native_vm_desired_graph(
             _ => None,
         };
         let config_template_sha256 = if let Some(path) = template {
-            ring::digest::digest(
-                &ring::digest::SHA256,
-                &exact_vm_policy_file(stack_dir, path)?,
-            )
-            .as_ref()
-            .to_vec()
+            ring::digest::digest(&ring::digest::SHA256, &template_bytes(path)?)
+                .as_ref()
+                .to_vec()
         } else {
             Vec::new()
         };
@@ -574,6 +571,89 @@ fn compile_native_vm_desired_graph(
     };
     edge_shared_types::host_resources::validate_vm_desired_graph(&graph, host)
         .map_err(str::to_owned)?;
+    Ok(graph)
+}
+
+/// ActualGraph: solely the installed policy; NEVER a target or authority.
+fn compile_native_vm_desired_graph(
+    stack_dir: &Path,
+    host: &FleetHost,
+) -> Result<edge_shared_types::FleetVmDesiredGraph, String> {
+    let compose = read_native_vm_compose(stack_dir)?;
+    let env = super::read_exact_image_environment(stack_dir)?;
+    compile_vm_graph_from_parts(host, &compose, &env, |path| {
+        exact_vm_policy_file(stack_dir, path)
+    })
+}
+
+/// Parse immutable bundle image pins in memory, without installing or
+/// temporarily mounting caller-controlled files on the privileged host.
+fn parse_vm_release_image_pins(bytes: &[u8]) -> Result<BTreeMap<String, String>, String> {
+    let text = std::str::from_utf8(bytes).map_err(|_| "HOST_VM_RELEASE_IMAGES_NOT_UTF8")?;
+    let mut images = BTreeMap::new();
+    for line in text.lines() {
+        let (key, value) = line
+            .split_once('=')
+            .ok_or("HOST_VM_RELEASE_IMAGE_LINE_INVALID")?;
+        if key.is_empty() || key.trim() != key || value.is_empty()
+            || images.insert(key.to_owned(), value.to_owned()).is_some()
+        {
+            return Err("HOST_VM_RELEASE_IMAGE_LINE_INVALID".into());
+        }
+    }
+    let keys = images.keys().map(String::as_str).collect::<BTreeSet<_>>();
+    if keys != BTreeSet::from([
+        "EDGE_GATEWAY_IMAGE",
+        "EDGE_WARP_EGRESS_IMAGE",
+        "CLOUDFLARE_MESH_IMAGE",
+    ]) {
+        return Err("HOST_VM_RELEASE_IMAGE_KEYS_INVALID".into());
+    }
+    for (key, repository) in [
+        ("EDGE_GATEWAY_IMAGE", "ghcr.io/iamaman11/vultr-edge-gateway"),
+        ("EDGE_WARP_EGRESS_IMAGE", "ghcr.io/iamaman11/vultr-warp-egress"),
+        ("CLOUDFLARE_MESH_IMAGE", "docker.io/cloudflare/mesh"),
+    ] {
+        super::validate_exact_image_ref(key, &images[key], repository)?;
+    }
+    Ok(images)
+}
+
+/// DesiredGraph: compile independently from the exact immutable signed
+/// ReleaseSet application bundle. No installed Compose/template bytes, runner
+/// variables, mutable on-host files, or second desired registry are consulted.
+pub(crate) fn compile_vm_desired_graph_from_release(
+    host: &FleetHost,
+    request: &ApplyBundleRequest,
+) -> Result<edge_shared_types::FleetVmDesiredGraph, String> {
+    super::validate_digest_bound_bundle_request(request)
+        .map_err(|_| "HOST_VM_RELEASE_BUNDLE_INVALID")?;
+    let mut files = BTreeMap::new();
+    for file in &request.stack_files {
+        if files.insert(file.relative_path.as_str(), file.content.as_slice()).is_some() {
+            return Err("HOST_VM_RELEASE_FILE_DUPLICATE".into());
+        }
+    }
+    let compose = serde_yaml::from_slice::<serde_yaml::Value>(
+        files.get("docker-compose.yml")
+            .ok_or("HOST_VM_RELEASE_COMPOSE_MISSING")?,
+    )
+    .map_err(|_| "HOST_VM_RELEASE_COMPOSE_INVALID")?;
+    let images = parse_vm_release_image_pins(
+        files.get(".images.env")
+            .ok_or("HOST_VM_RELEASE_IMAGES_MISSING")?,
+    )?;
+    let graph = compile_vm_graph_from_parts(host, &compose, &images, |path| {
+        files.get(path)
+            .filter(|content| !content.is_empty())
+            .map(|content| content.to_vec())
+            .ok_or_else(|| "HOST_VM_RELEASE_TEMPLATE_MISSING".to_owned())
+    })?;
+    validate_gateway_image_ownership(
+        &graph,
+        images.get("EDGE_GATEWAY_IMAGE")
+            .ok_or("HOST_VM_RELEASE_GATEWAY_MISSING")?,
+    )?;
     Ok(graph)
 }
 
@@ -990,21 +1070,30 @@ pub(crate) async fn preflight_native_vm_replace(
     host: &FleetHost,
     request: &ApplyBundleRequest,
 ) -> Result<NativeVmReplacePlan, String> {
+    let target_graph = compile_vm_desired_graph_from_release(host, request)?;
     let images = request
         .stack_files
         .iter()
         .find(|file| file.relative_path == ".images.env")
         .ok_or("HOST_VM_REPLACE_IMAGE_ENV_MISSING")?;
     let current = exact_vm_policy_file(stack_dir, ".images.env")?;
-    if images.content != current {
+    let plan = if images.content != current {
         preflight_gateway_image_replace(stack_dir, host, request)
             .await
-            .map(NativeVmReplacePlan::GatewayImage)
+            .map(NativeVmReplacePlan::GatewayImage)?
     } else {
         preflight_native_vm_scoped_replace(stack_dir, host, request)
             .await
-            .map(NativeVmReplacePlan::Config)
+            .map(NativeVmReplacePlan::Config)?
+    };
+    let prepared_graph = match &plan {
+        NativeVmReplacePlan::Config(value) => &value.target_graph,
+        NativeVmReplacePlan::GatewayImage(value) => &value.target_graph,
+    };
+    if prepared_graph != &target_graph {
+        return Err("HOST_VM_RELEASE_TARGET_GRAPH_MISMATCH".into());
     }
+    Ok(plan)
 }
 
 pub(crate) async fn apply_native_vm_replace_once(
@@ -1515,6 +1604,76 @@ async fn prepare_owned_vm_start(
         return Err("HOST_NATIVE_VM_START_NO_STOPPED_CONTAINER".into());
     }
     Ok((owned, order))
+}
+
+#[cfg(test)]
+mod release_desired_graph_tests {
+    use super::*;
+
+    #[test]
+    fn immutable_target_graph_is_independent_of_installed_template_bytes() {
+        let project = "vultr-edge";
+        let identities = ["line1-gateway", "line2-proxy", "warp-egress"]
+            .iter()
+            .map(|service| FleetVmContainer {
+                container_name: format!("vultr-{service}"),
+                compose_project: project.into(),
+                compose_service: (*service).into(),
+            })
+            .collect::<Vec<_>>();
+        let host = FleetHost {
+            machine_id: "vm-test".into(),
+            kind: edge_shared_types::FleetHostKind::Vm as i32,
+            vm_containers: identities,
+            ..Default::default()
+        };
+        let compose = serde_yaml::from_str::<serde_yaml::Value>(
+            "name: vultr-edge\nservices:\n  line1-gateway:\n    image: ${EDGE_GATEWAY_IMAGE:?required}\n    depends_on: [warp-egress]\n  line2-proxy:\n    image: ${EDGE_GATEWAY_IMAGE:?required}\n    depends_on: [warp-egress]\n  warp-egress:\n    image: ${EDGE_WARP_EGRESS_IMAGE:?required}\n",
+        ).unwrap();
+        let gateway = format!("ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}", "a".repeat(64));
+        let warp = format!("ghcr.io/iamaman11/vultr-warp-egress@sha256:{}", "b".repeat(64));
+        let mut images = BTreeMap::new();
+        images.insert("EDGE_GATEWAY_IMAGE".into(), gateway.clone());
+        images.insert("EDGE_WARP_EGRESS_IMAGE".into(), warp);
+        let make_graph = |line2: &[u8]| {
+            compile_vm_graph_from_parts(&host, &compose, &images, |path| {
+                if path.starts_with("line2-proxy/") {
+                    Ok(line2.to_vec())
+                } else {
+                    Ok(b"line1".to_vec())
+                }
+            })
+            .unwrap()
+        };
+        let before = make_graph(b"old-template");
+        let desired = make_graph(b"new-template");
+        validate_gateway_image_ownership(&desired, &gateway).unwrap();
+        assert_ne!(before, desired);
+        assert_eq!(before.resources[0], desired.resources[0]);
+        assert_ne!(before.resources[1], desired.resources[1]);
+        assert_eq!(before.resources[2], desired.resources[2]);
+
+        let mut foreign = compose.clone();
+        foreign["services"]["line2-proxy"]["depends_on"] =
+            serde_yaml::from_str("[foreign-mesh]").unwrap();
+        assert!(compile_vm_graph_from_parts(&host, &foreign, &images, |_| {
+            Ok(b"template".to_vec())
+        }).is_err());
+    }
+
+    #[test]
+    fn immutable_image_environment_requires_all_three_exact_digest_pins() {
+        let gateway = format!("ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}", "a".repeat(64));
+        let warp = format!("ghcr.io/iamaman11/vultr-warp-egress@sha256:{}", "b".repeat(64));
+        let mesh = format!("docker.io/cloudflare/mesh@sha256:{}", "c".repeat(64));
+        let pins = format!(
+            "EDGE_GATEWAY_IMAGE={gateway}\nEDGE_WARP_EGRESS_IMAGE={warp}\nCLOUDFLARE_MESH_IMAGE={mesh}\n"
+        );
+        assert!(parse_vm_release_image_pins(pins.as_bytes()).is_ok());
+        assert!(parse_vm_release_image_pins(pins.replace("@sha256:", ":latest").as_bytes()).is_err());
+        assert!(parse_vm_release_image_pins(format!("{pins}EDGE_GATEWAY_IMAGE={gateway}\n").as_bytes()).is_err());
+        assert!(parse_vm_release_image_pins(pins.replace("CLOUDFLARE_MESH_IMAGE", "FOREIGN_IMAGE").as_bytes()).is_err());
+    }
 }
 
 #[cfg(test)]

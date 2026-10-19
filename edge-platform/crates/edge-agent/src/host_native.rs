@@ -562,7 +562,13 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
                     *prepared.borrow_mut() = Some(proposal);
                     Ok(())
                 }
-                FleetHostPlannedStep::Install => Ok(()),
+                FleetHostPlannedStep::Install => {
+                    let request = ApplyBundleRequest::decode(bundle_pb.as_slice())
+                        .map_err(|_| "HOST_NATIVE_VM_INSTALL_BUNDLE_INVALID")?;
+                    super::docker_observation::compile_vm_desired_graph_from_release(host, &request)
+                        .map_err(|_| "HOST_NATIVE_VM_INSTALL_DESIRED_GRAPH_INVALID")?;
+                    Ok(())
+                },
                 FleetHostPlannedStep::ReplaceRelease => {
                     let request = ApplyBundleRequest::decode(bundle_pb.as_slice())
                         .map_err(|_| "HOST_NATIVE_VM_SCOPED_BUNDLE_INVALID")?;
