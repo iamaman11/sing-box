@@ -1104,12 +1104,15 @@ pub(crate) async fn preflight_native_vm_replace(
     let config_only = changed.len() == 1
         && changed[0].change == FleetVmPolicyChange::ConfigTemplateReplaced as i32
         && changed[0].resource.as_ref().is_some_and(|resource| {
-            matches!(resource.compose_service.as_str(), "line1-gateway" | "line2-proxy")
+            matches!(
+                resource.compose_service.as_str(),
+                "line1-gateway" | "line2-proxy"
+            )
         });
     let gateway_pair = changed.len() == 2
-        && changed.iter().all(|resource| {
-            resource.change == FleetVmPolicyChange::ImageReplaced as i32
-        })
+        && changed
+            .iter()
+            .all(|resource| resource.change == FleetVmPolicyChange::ImageReplaced as i32)
         && changed
             .iter()
             .filter_map(|resource| resource.resource.as_ref())

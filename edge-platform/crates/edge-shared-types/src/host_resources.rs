@@ -103,9 +103,7 @@ pub fn propose_vm_graph_reconcile(
     installed: &FleetVmDesiredGraph,
     desired: &FleetVmDesiredGraph,
 ) -> Result<crate::FleetVmGraphReconcile, &'static str> {
-    use crate::{
-        FleetVmGraphReconcile, FleetVmGraphResourceChange, FleetVmPolicyChange,
-    };
+    use crate::{FleetVmGraphReconcile, FleetVmGraphResourceChange, FleetVmPolicyChange};
     validate_vm_desired_graph(installed, host)?;
     validate_vm_desired_graph(desired, host)?;
     // The source container order is the single canonical fleet order.
@@ -122,7 +120,10 @@ pub fn propose_vm_graph_reconcile(
         if before.resource != after.resource || before.dependencies != after.dependencies {
             return Err("VM_RECONCILE_DEPENDENCY_OR_IDENTITY_CHANGED");
         }
-        old_consumers.entry(&before.image_ref).or_default().push(index);
+        old_consumers
+            .entry(&before.image_ref)
+            .or_default()
+            .push(index);
         let image_changed = before.image_ref != after.image_ref;
         let config_changed = before.config_template_sha256 != after.config_template_sha256;
         if image_changed && config_changed {
@@ -654,8 +655,16 @@ mod vm_graph_reconcile_tests {
             .enumerate()
             .map(|(index, resource)| FleetVmDesiredResource {
                 resource: Some(resource),
-                image_ref: if index == 2 { warp_image.clone() } else { image.clone() },
-                dependencies: if index == 2 { vec![] } else { vec!["warp-egress".into()] },
+                image_ref: if index == 2 {
+                    warp_image.clone()
+                } else {
+                    image.clone()
+                },
+                dependencies: if index == 2 {
+                    vec![]
+                } else {
+                    vec!["warp-egress".into()]
+                },
                 config_template_sha256: if index == 2 { vec![] } else { vec![10; 32] },
             })
             .collect();
@@ -675,13 +684,22 @@ mod vm_graph_reconcile_tests {
         let plan = propose_vm_graph_reconcile(&host, &installed, &desired).unwrap();
         assert_eq!(plan.resources.len(), 3);
         assert!(!plan.owner_attested && !plan.mutation_authorized);
-        assert_eq!(plan.resources[0].change, FleetVmPolicyChange::NoChange as i32);
+        assert_eq!(
+            plan.resources[0].change,
+            FleetVmPolicyChange::NoChange as i32
+        );
         assert_eq!(
             plan.resources[1].change,
             FleetVmPolicyChange::ConfigTemplateReplaced as i32
         );
-        assert_eq!(plan.resources[2].change, FleetVmPolicyChange::NoChange as i32);
-        assert_eq!(plan.resources[1].expected_image_ref, installed.resources[1].image_ref);
+        assert_eq!(
+            plan.resources[2].change,
+            FleetVmPolicyChange::NoChange as i32
+        );
+        assert_eq!(
+            plan.resources[1].expected_image_ref,
+            installed.resources[1].image_ref
+        );
     }
 
     #[test]
@@ -702,7 +720,10 @@ mod vm_graph_reconcile_tests {
                 .count(),
             2
         );
-        assert_eq!(plan.resources[2].change, FleetVmPolicyChange::NoChange as i32);
+        assert_eq!(
+            plan.resources[2].change,
+            FleetVmPolicyChange::NoChange as i32
+        );
     }
 
     #[test]
