@@ -330,6 +330,12 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
                     .map_err(|_| "HOST_NATIVE_READBACK_FAILED")
             },
             |step| match step {
+                FleetHostPlannedStep::Start
+                | FleetHostPlannedStep::Install
+                | FleetHostPlannedStep::ReplaceRelease => Ok(()),
+                _ => Err("HOST_NATIVE_VM_STEP_NOT_IMPLEMENTED"),
+            },
+            |step| match step {
                 FleetHostPlannedStep::Start => {
                     let completion = handle.block_on(super::run_bootstrap(
                         stack_dir,

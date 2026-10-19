@@ -311,7 +311,7 @@ fn admit_after_protected_owner_check_once(
 /// particular, it must not spawn an installer, hand arbitrary shell text to
 /// root/SYSTEM, or retry a partial action. An execution failure deliberately
 /// retains the per-resource gate as UNKNOWN_NO_REPLAY.
-pub fn execute_native_host_once<Observe, Apply>(
+pub fn execute_native_host_once<Observe, Allow, Apply>(
     intent: &FleetHostIntent,
     authorization: &FleetHostAuthorization,
     // Inputs MUST originate from the native owner's independently
@@ -327,10 +327,12 @@ pub fn execute_native_host_once<Observe, Apply>(
     now_unix: u64,
     protected_journal_dir: &Path,
     observe: Observe,
+    allow_step: Allow,
     apply_once: Apply,
 ) -> Result<FleetHostResult, &'static str>
 where
     Observe: FnMut() -> Result<crate::FleetNativeObservation, &'static str>,
+    Allow: Fn(crate::FleetHostPlannedStep) -> Result<(), &'static str>,
     Apply: FnOnce(crate::FleetHostPlannedStep) -> Result<(), &'static str>,
 {
     verify_native_journal_protection(protected_journal_dir)?;
@@ -347,13 +349,14 @@ where
         now_unix,
         protected_journal_dir,
         observe,
+        allow_step,
         apply_once,
     )
 }
 
 /// Private testable core; only the external entry point can authorize a
 /// real mutation after checking kernel owner and protected journal ancestry.
-fn execute_after_protected_owner_check_once<Observe, Apply>(
+fn execute_after_protected_owner_check_once<Observe, Allow, Apply>(
     intent: &FleetHostIntent,
     authorization: &FleetHostAuthorization,
     registry_pb: &[u8],
@@ -366,10 +369,12 @@ fn execute_after_protected_owner_check_once<Observe, Apply>(
     now_unix: u64,
     protected_journal_dir: &Path,
     mut observe: Observe,
+    allow_step: Allow,
     apply_once: Apply,
 ) -> Result<FleetHostResult, &'static str>
 where
     Observe: FnMut() -> Result<crate::FleetNativeObservation, &'static str>,
+    Allow: Fn(crate::FleetHostPlannedStep) -> Result<(), &'static str>,
     Apply: FnOnce(crate::FleetHostPlannedStep) -> Result<(), &'static str>,
 {
     use crate::host_lifecycle::{
@@ -475,6 +480,10 @@ where
     ) {
         return Err("HOST_NATIVE_PLAN_UNSUPPORTED");
     }
+    // Native owners cannot execute every valid planner proposal.
+    // Check their capabilities before BEGIN so rejecting an unsupported
+    // transition never strands the resource in UNKNOWN_NO_REPLAY.
+    allow_step(step)?;
 
     admit_after_protected_owner_check_once(
         intent,
@@ -999,6 +1008,39 @@ mod tests {
                 &[],
             )
         };
+        // A correctly signed action can be unsupported by the *installed*
+        // owner. The capability refusal must occur before BEGIN and leave
+        // both the operation ID and resource scope free for a corrected
+        // owner implementation, without touching the native mutation.
+        assert_eq!(
+            execute_after_protected_owner_check_once(
+                &intent,
+                &auth,
+                &registry_pb,
+                spec,
+                &release_pb,
+                Some(&bundle_pb),
+                pair.public_key().as_ref(),
+                "vm-exact",
+                FleetHostKind::Vm as i32,
+                1020,
+                &dir,
+                observe,
+                |step| {
+                    assert_eq!(step, FleetHostPlannedStep::Start);
+                    Err("HOST_NATIVE_STEP_NOT_IMPLEMENTED")
+                },
+                |_step| panic!("unsupported step must never reach mutation")
+            )
+            .unwrap_err(),
+            "HOST_NATIVE_STEP_NOT_IMPLEMENTED"
+        );
+        assert!(!native_scope_pending_path(&dir, &intent).exists());
+        assert!(!dir.join(format!(
+            "{}.pb",
+            journal_hex(intent.operation_id.as_bytes())
+        )).exists());
+
         let outcome = execute_after_protected_owner_check_once(
             &intent,
             &auth,
@@ -1012,6 +1054,7 @@ mod tests {
             1020,
             &dir,
             observe,
+            |_step| Ok(()),
             |step| {
                 assert_eq!(step, FleetHostPlannedStep::Start);
                 count.set(count.get() + 1);
@@ -1040,6 +1083,7 @@ mod tests {
                 1020,
                 &dir,
                 observe,
+                |_step| Ok(()),
                 |_step| {
                     panic!("completed signed operation must not dispatch again");
                 }
@@ -1069,6 +1113,7 @@ mod tests {
             1020,
             &dir,
             observe,
+            |_step| Ok(()),
             |_step| {
                 panic!("NOOP must never mutate");
             },
@@ -1102,6 +1147,7 @@ mod tests {
                 1020,
                 &dir,
                 observe,
+                |_step| Ok(()),
                 |_step| panic!("the same signed NOOP must not be accepted twice"),
             )
             .unwrap_err(),
@@ -1130,6 +1176,7 @@ mod tests {
                 1020,
                 &dir,
                 observe,
+                |_step| Ok(()),
                 |_step| {
                     count.set(count.get() + 1);
                     Err("HOST_TEST_UNKNOWN_AFTER_ADMISSION")
@@ -1160,6 +1207,7 @@ mod tests {
                 1020,
                 &dir,
                 observe,
+                |_step| Ok(()),
                 |_step| {
                     panic!("pending native resource must never replay");
                 }
