@@ -2455,6 +2455,10 @@ def main() -> None:
         and "infra/hosts/hosts.textproto" in architecture
         and "Cloudflare Worker" in architecture
         and "UNKNOWN_NO_REPLAY" in architecture
+        and "Неизменяемый контракт иерархии ресурсов" in architecture
+        and "TypedReason" in architecture
+        and "UNSUPPORTED" in architecture
+        and "resource_id=sing-box" in architecture
         and "10/10" in architecture
         and "ProxyOnly" in architecture
         and "Issue #26" in architecture
