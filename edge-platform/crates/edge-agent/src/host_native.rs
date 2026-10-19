@@ -112,7 +112,7 @@ pub(super) fn git_owned_host_spec_path(path: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'-' | b'_'))
 }
 
-fn root_file(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
+pub(super) fn root_file(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     if !path.starts_with(TRUSTED_ROOT) {
         return Err("HOST_NATIVE_PATH_OUTSIDE_OWNER_ROOT".into());
     }
