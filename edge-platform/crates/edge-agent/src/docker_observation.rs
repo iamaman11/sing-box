@@ -348,6 +348,7 @@ fn select_scoped_vm_create(
 /// Never create/adopt Mesh or an unrelated network as a side effect of
 /// recovering one missing container.
 fn verify_scoped_gateway_network_policy(
+    host: &FleetHost,
     graph: &edge_shared_types::FleetVmDesiredGraph,
     service: &str,
 ) -> Result<(), String> {
@@ -365,6 +366,30 @@ fn verify_scoped_gateway_network_policy(
             .any(|member| member == service)
     {
         return Err("HOST_VM_CREATE_NETWORK_SCOPE_UNSUPPORTED".into());
+    }
+    use edge_shared_types::{FleetResourceKind as Kind, FleetResourceOwner as Owner};
+    let hierarchy = edge_shared_types::host_resources::derive_vm_resource_hierarchy(host, graph)
+        .map_err(str::to_owned)?;
+    let selector = host
+        .vm_containers
+        .iter()
+        .find(|item| item.compose_service == service)
+        .ok_or("HOST_VM_CREATE_RESOURCE_NOT_REGISTERED")?;
+    let resource_id = edge_shared_types::host_resources::vm_container_resource_id(host, selector)
+        .map_err(str::to_owned)?;
+    let node = hierarchy
+        .nodes
+        .iter()
+        .find(|item| item.resource_id == resource_id)
+        .ok_or("HOST_VM_CREATE_RESOURCE_NODE_MISSING")?;
+    let network_id = format!("network/{}/{}", network.compose_project, network.network_name);
+    if !matches!(service, "line1-gateway" | "line2-proxy")
+        || node.kind != Kind::DockerContainer as i32
+        || node.owner != Owner::VmRootAgent as i32
+        || node.parent_resource_id != format!("host/{}", host.machine_id)
+        || !node.dependency_ids.contains(&network_id)
+    {
+        return Err("HOST_VM_CREATE_RESOURCE_GRAPH_SCOPE_INVALID".into());
     }
     Ok(())
 }
@@ -527,6 +552,7 @@ pub(crate) async fn preflight_native_vm_run(
             return Err("HOST_VM_CREATE_NEIGHBOUR_INCOMPLETE".into());
         }
         verify_scoped_gateway_network_policy(
+            host,
             desired_graph
                 .as_ref()
                 .ok_or("HOST_VM_CREATE_DESIRED_GRAPH_MISSING")?,
@@ -603,6 +629,7 @@ pub(crate) async fn apply_native_vm_run_once(
             return Err("HOST_VM_CREATE_PREADMISSION_CHANGED_NO_REPLAY".into());
         }
         verify_scoped_gateway_network_policy(
+            host,
             plan.desired_graph
                 .as_ref()
                 .ok_or("HOST_VM_CREATE_DESIRED_GRAPH_MISSING_NO_REPLAY")?,
@@ -850,6 +877,35 @@ fn compile_vm_networks_from_compose(
     Ok(graph_networks)
 }
 
+// A stage-stamped native error: provenance is assigned where a failure
+// occurs, never guessed by searching the error text. The code is bounded,
+// non-secret and never used as an admission decision.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeVmPolicyFailure {
+    status: edge_shared_types::FleetVmInstalledPolicyStatus,
+    code: String,
+}
+
+impl NativeVmPolicyFailure {
+    fn at(
+        status: edge_shared_types::FleetVmInstalledPolicyStatus,
+        error: impl AsRef<str>,
+    ) -> Self {
+        let error = error.as_ref();
+        let code = if error.starts_with("HOST_")
+            && error.len() <= 128
+            && error
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+        {
+            error.to_owned()
+        } else {
+            "HOST_VM_POLICY_ERROR_UNCLASSIFIED".to_owned()
+        };
+        Self { status, code }
+    }
+}
+
 /// One typed graph compiler for BOTH immutable Git bundle desired and
 /// root-local actual policy. This never infers desired from installed files.
 fn compile_vm_graph_from_parts(
@@ -857,11 +913,17 @@ fn compile_vm_graph_from_parts(
     compose: &serde_yaml::Value,
     env: &BTreeMap<String, String>,
     mut template_bytes: impl FnMut(&str) -> Result<Vec<u8>, String>,
-) -> Result<edge_shared_types::FleetVmDesiredGraph, String> {
-    use edge_shared_types::{FleetVmDesiredGraph, FleetVmDesiredResource};
-    let images = resolve_owned_vm_images(compose, env, &host.vm_containers)?;
-    let deps = resolve_compose_dependencies(compose, &host.vm_containers)?;
-    let networks = compile_vm_networks_from_compose(host, compose)?;
+) -> Result<edge_shared_types::FleetVmDesiredGraph, NativeVmPolicyFailure> {
+    use edge_shared_types::{
+        FleetVmDesiredGraph, FleetVmDesiredResource,
+        FleetVmInstalledPolicyStatus as Status,
+    };
+    let images = resolve_owned_vm_images(compose, env, &host.vm_containers)
+        .map_err(|error| NativeVmPolicyFailure::at(Status::ImageInvalid, error))?;
+    let deps = resolve_compose_dependencies(compose, &host.vm_containers)
+        .map_err(|error| NativeVmPolicyFailure::at(Status::DependencyInvalid, error))?;
+    let networks = compile_vm_networks_from_compose(host, compose)
+        .map_err(|error| NativeVmPolicyFailure::at(Status::NetworkInvalid, error))?;
     let mut resources = Vec::with_capacity(host.vm_containers.len());
     for identity in &host.vm_containers {
         let template = match identity.compose_service.as_str() {
@@ -870,9 +932,13 @@ fn compile_vm_graph_from_parts(
             _ => None,
         };
         let config_template_sha256 = if let Some(path) = template {
-            ring::digest::digest(&ring::digest::SHA256, &template_bytes(path)?)
-                .as_ref()
-                .to_vec()
+            ring::digest::digest(
+                &ring::digest::SHA256,
+                &template_bytes(path)
+                    .map_err(|error| NativeVmPolicyFailure::at(Status::ConfigInvalid, error))?,
+            )
+            .as_ref()
+            .to_vec()
         } else {
             Vec::new()
         };
@@ -880,11 +946,11 @@ fn compile_vm_graph_from_parts(
             resource: Some(identity.clone()),
             image_ref: images
                 .get(&identity.compose_service)
-                .ok_or("HOST_VM_GRAPH_IMAGE_MISSING")?
+                .ok_or_else(|| NativeVmPolicyFailure::at(Status::ImageInvalid, "HOST_VM_GRAPH_IMAGE_MISSING"))?
                 .clone(),
             dependencies: deps
                 .get(&identity.compose_service)
-                .ok_or("HOST_VM_GRAPH_DEPENDENCY_MISSING")?
+                .ok_or_else(|| NativeVmPolicyFailure::at(Status::DependencyInvalid, "HOST_VM_GRAPH_DEPENDENCY_MISSING"))?
                 .clone(),
             config_template_sha256,
         });
@@ -896,20 +962,32 @@ fn compile_vm_graph_from_parts(
         networks,
     };
     edge_shared_types::host_resources::derive_vm_resource_hierarchy(host, &graph)
-        .map_err(str::to_owned)?;
+        .map_err(|error| NativeVmPolicyFailure::at(Status::OtherInvalid, error))?;
     Ok(graph)
 }
 
 /// ActualGraph: solely the installed policy; NEVER a target or authority.
+/// The diagnostic caller receives a stage-stamped error; existing native
+/// mutation callers get the same static error code via the single adapter.
+fn compile_native_vm_policy_checked(
+    stack_dir: &Path,
+    host: &FleetHost,
+) -> Result<edge_shared_types::FleetVmDesiredGraph, NativeVmPolicyFailure> {
+    use edge_shared_types::FleetVmInstalledPolicyStatus as Status;
+    let compose = read_native_vm_compose(stack_dir)
+        .map_err(|error| NativeVmPolicyFailure::at(Status::ComposeInvalid, error))?;
+    let env = super::read_exact_image_environment(stack_dir)
+        .map_err(|error| NativeVmPolicyFailure::at(Status::ImageInvalid, error))?;
+    compile_vm_graph_from_parts(host, &compose, &env, |path| {
+        exact_vm_policy_file(stack_dir, path)
+    })
+}
+
 fn compile_native_vm_desired_graph(
     stack_dir: &Path,
     host: &FleetHost,
 ) -> Result<edge_shared_types::FleetVmDesiredGraph, String> {
-    let compose = read_native_vm_compose(stack_dir)?;
-    let env = super::read_exact_image_environment(stack_dir)?;
-    compile_vm_graph_from_parts(host, &compose, &env, |path| {
-        exact_vm_policy_file(stack_dir, path)
-    })
+    compile_native_vm_policy_checked(stack_dir, host).map_err(|error| error.code)
 }
 
 /// Parse immutable bundle image pins in memory, without installing or
@@ -987,7 +1065,8 @@ pub(crate) fn compile_vm_desired_graph_from_release(
             .filter(|content| !content.is_empty())
             .map(|content| content.to_vec())
             .ok_or_else(|| "HOST_VM_RELEASE_TEMPLATE_MISSING".to_owned())
-    })?;
+    })
+    .map_err(|error| error.code)?;
     validate_gateway_image_ownership(
         &graph,
         images
@@ -2023,6 +2102,24 @@ async fn prepare_owned_vm_start(
 mod release_desired_graph_tests {
     use super::*;
 
+
+    #[test]
+    fn installed_policy_stage_not_inferred_from_error_words() {
+        use edge_shared_types::FleetVmInstalledPolicyStatus as Status;
+        let mislabeled = NativeVmPolicyFailure::at(
+            Status::ImageInvalid,
+            "HOST_VM_NETWORK_POLICY_UNSUPPORTED",
+        );
+        assert_eq!(mislabeled.status, Status::ImageInvalid);
+        assert_eq!(mislabeled.code, "HOST_VM_NETWORK_POLICY_UNSUPPORTED");
+        let concealed = NativeVmPolicyFailure::at(
+            Status::ComposeInvalid,
+            "credentials=/etc/shadow",
+        );
+        assert_eq!(concealed.status, Status::ComposeInvalid);
+        assert_eq!(concealed.code, "HOST_VM_POLICY_ERROR_UNCLASSIFIED");
+    }
+
     #[test]
     fn immutable_target_graph_is_independent_of_installed_template_bytes() {
         let project = "vultr-edge";
@@ -2066,6 +2163,8 @@ mod release_desired_graph_tests {
         };
         let before = make_graph(b"old-template");
         let desired = make_graph(b"new-template");
+        verify_scoped_gateway_network_policy(&host, &desired, "line2-proxy").unwrap();
+        assert!(verify_scoped_gateway_network_policy(&host, &desired, "warp-egress").is_err());
         validate_gateway_image_ownership(&desired, &gateway).unwrap();
         assert_ne!(before, desired);
         assert_eq!(before.resources[0], desired.resources[0]);
@@ -2075,9 +2174,25 @@ mod release_desired_graph_tests {
         let mut foreign = compose.clone();
         foreign["services"]["line2-proxy"]["depends_on"] =
             serde_yaml::from_str("[foreign-mesh]").unwrap();
-        assert!(
-            compile_vm_graph_from_parts(&host, &foreign, &images, |_| { Ok(b"template".to_vec()) })
-                .is_err()
+        let failure = compile_vm_graph_from_parts(&host, &foreign, &images, |_| {
+            Ok(b"template".to_vec())
+        })
+        .unwrap_err();
+        assert_eq!(
+            failure.status,
+            edge_shared_types::FleetVmInstalledPolicyStatus::DependencyInvalid
+        );
+        // Even if the code mentions IMAGE, the failure's stage is dependency.
+        let mut no_network = compose.clone();
+        no_network["services"]["line2-proxy"]["networks"] =
+            serde_yaml::from_str("[foreign]").unwrap();
+        let failure = compile_vm_graph_from_parts(&host, &no_network, &images, |_| {
+            Ok(b"template".to_vec())
+        })
+        .unwrap_err();
+        assert_eq!(
+            failure.status,
+            edge_shared_types::FleetVmInstalledPolicyStatus::NetworkInvalid
         );
     }
 
@@ -2854,36 +2969,6 @@ fn set_vm_observed_reason(
         .to_owned();
 }
 
-fn native_policy_failure(error: &str) -> (edge_shared_types::FleetVmInstalledPolicyStatus, String) {
-    use edge_shared_types::FleetVmInstalledPolicyStatus as Status;
-    let status = if error.contains("DEPENDENCY") {
-        Status::DependencyInvalid
-    } else if error.contains("NETWORK") {
-        Status::NetworkInvalid
-    } else if error.contains("IMAGE") {
-        Status::ImageInvalid
-    } else if error.contains("TEMPLATE") || error.contains("CONFIG") {
-        Status::ConfigInvalid
-    } else if error.contains("COMPOSE") || error.contains("SERVICES") {
-        Status::ComposeInvalid
-    } else {
-        Status::OtherInvalid
-    };
-    // Return only an exact bounded static native error token, never a raw
-    // parser/file/credential error or path from an external component.
-    let code = if error.starts_with("HOST_")
-        && error.len() <= 128
-        && error
-            .bytes()
-            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
-    {
-        error
-    } else {
-        "HOST_VM_POLICY_ERROR_UNCLASSIFIED"
-    };
-    (status, code.to_owned())
-}
-
 /// Read-only, per-resource Docker evidence. Each entry is inspected once:
 /// labels, immutable ID and state come from the SAME inspect response.
 /// Never read or emit environment, credentials, mount contents or Docker logs.
@@ -3013,7 +3098,7 @@ pub(crate) async fn observe_vm_resource_report(
         }
         resources.push(row);
     }
-    let installed_policy = compile_native_vm_desired_graph(stack_dir, host);
+    let installed_policy = compile_native_vm_policy_checked(stack_dir, host);
     let (installed_policy_graph, installed_policy_status, installed_policy_error_code) =
         match installed_policy {
             Ok(graph) => (
@@ -3021,10 +3106,7 @@ pub(crate) async fn observe_vm_resource_report(
                 FleetVmInstalledPolicyStatus::Valid as i32,
                 String::new(),
             ),
-            Err(error) => {
-                let (status, code) = native_policy_failure(&error);
-                (None, status as i32, code)
-            }
+            Err(error) => (None, error.status as i32, error.code),
         };
     let report = FleetVmResourceReport {
         schema_version: 1,
