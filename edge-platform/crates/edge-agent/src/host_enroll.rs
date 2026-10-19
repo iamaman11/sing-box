@@ -12,7 +12,7 @@ unsafe extern "C" {
     fn geteuid() -> u32;
 }
 
-const HOST_PARENT: &str = "/opt/vultr-edge-stack";
+use super::host_native::HOST_PARENT;
 const MAX_RELEASE_SET: usize = 65536;
 const MAX_BUNDLE: usize = 8 * 1024 * 1024;
 const MAX_REGISTRY: usize = 65536;
@@ -133,6 +133,85 @@ fn write_protected_file(directory: &Path, name: &str, bytes: &[u8]) -> Result<()
     Ok(())
 }
 
+/// Root-owned trust can advance to a NEW accepted immutable ReleaseSet
+/// without replacing the stable journal. Pending UNKNOWN_NO_REPLAY is an
+/// explicit gate: an update must never erase the record that forbids replay.
+fn validate_existing_trust_for_refresh(
+    trusted: &Path,
+    machine_id: &str,
+    pinned_key: &str,
+) -> Result<(), String> {
+    let existing_machine = super::host_native::root_file(&trusted.join("machine-id"), 128)?;
+    let existing_key =
+        super::host_native::root_file(&trusted.join("worker-public-key.hex"), 128)?;
+    if existing_machine.as_slice() != format!("{machine_id}\n").as_bytes()
+        || existing_key.as_slice() != format!("{pinned_key}\n").as_bytes()
+    {
+        return Err("HOST_ENROLL_IMMUTABLE_IDENTITY_OR_KEY_MISMATCH".into());
+    }
+    let journal = trusted.join("journal");
+    checked_root_directory(&journal)?;
+    let entries = fs::read_dir(&journal).map_err(|_| "HOST_ENROLL_JOURNAL_UNAVAILABLE")?;
+    for entry in entries {
+        let entry = entry.map_err(|_| "HOST_ENROLL_JOURNAL_UNAVAILABLE")?;
+        let metadata =
+            fs::symlink_metadata(entry.path()).map_err(|_| "HOST_ENROLL_JOURNAL_UNAVAILABLE")?;
+        if !metadata.file_type().is_file()
+            || metadata.uid() != 0
+            || metadata.permissions().mode() & 0o077 != 0
+        {
+            return Err("HOST_ENROLL_JOURNAL_NOT_PROTECTED".into());
+        }
+        let name = entry.file_name();
+        let name = name.to_str().ok_or("HOST_ENROLL_JOURNAL_NAME_INVALID")?;
+        if name.ends_with(".pending.pb") {
+            return Err("HOST_ENROLL_UNRESOLVED_RESOURCE_NO_REPLAY".into());
+        }
+    }
+    Ok(())
+}
+
+/// Refresh only immutable release/desired snapshots. The existing journal,
+/// native owner identity and pinned Worker key are never copied or rewritten.
+/// Partial power loss leaves mixed digests and therefore fails closed on
+/// next signed host apply. Root can re-run provenance verification to repair
+/// snapshots without replaying a previous mutation.
+fn refresh_release_snapshots(
+    trusted: &Path,
+    registry_pb: &[u8],
+    release_pb: &[u8],
+    bundle_pb: &[u8],
+    spec: &[u8],
+) -> Result<(), String> {
+    let stage = trusted.join(format!(".next-release-{}", std::process::id()));
+    DirBuilder::new().mode(0o700).create(&stage)
+        .map_err(|_| "HOST_ENROLL_REFRESH_STAGE_NOT_EMPTY")?;
+    let snapshots = [
+        ("fleet-registry.pb", registry_pb),
+        ("release-set.pb", release_pb),
+        ("application-bundle.pb", bundle_pb),
+        ("desired.textproto", spec),
+    ];
+    for (name, content) in &snapshots {
+        write_protected_file(&stage, name, content)?;
+    }
+    fs::File::open(&stage)
+        .and_then(|file| file.sync_all())
+        .map_err(|_| "HOST_ENROLL_REFRESH_STAGE_SYNC_FAILED")?;
+    for (name, _) in &snapshots {
+        fs::rename(stage.join(name), trusted.join(name))
+            .map_err(|_| "HOST_ENROLL_REFRESH_UNCERTAIN")?;
+        fs::File::open(trusted)
+            .and_then(|file| file.sync_all())
+            .map_err(|_| "HOST_ENROLL_REFRESH_UNCERTAIN")?;
+    }
+    fs::remove_dir(&stage).map_err(|_| "HOST_ENROLL_REFRESH_CLEANUP_UNCERTAIN")?;
+    fs::File::open(trusted)
+        .and_then(|file| file.sync_all())
+        .map_err(|_| "HOST_ENROLL_REFRESH_UNCERTAIN")?;
+    Ok(())
+}
+
 /// One strictly explicit root install of trust files, not a host mutation.
 /// Signing authority and GitHub runner cannot choose the public-key trust
 /// anchor: root operator must supply the exact Worker Ed25519 public key.
@@ -161,9 +240,25 @@ pub(crate) async fn enroll(
     }
     checked_root_directory(Path::new("/opt"))?;
     checked_root_directory(Path::new(HOST_PARENT))?;
+    // Apply and refresh are mutually exclusive. The same lock protects the
+    // permanent native journal; no new scheduler, watchdog or ledger.
+    let _resource_lock = super::host_native::owner_operation_lock()?;
     let trusted = Path::new(super::host_native::TRUSTED_ROOT);
-    if fs::symlink_metadata(trusted).is_ok() {
-        return Err("HOST_ENROLL_EXISTING_TRUST_NEVER_OVERWRITTEN".into());
+    let refreshing = match fs::symlink_metadata(trusted) {
+        Ok(meta) => {
+            if !meta.file_type().is_dir()
+                || meta.uid() != 0
+                || meta.permissions().mode() & 0o077 != 0
+            {
+                return Err("HOST_ENROLL_EXISTING_TRUST_UNPROVEN".into());
+            }
+            true
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => return Err("HOST_ENROLL_TRUST_UNAVAILABLE".into()),
+    };
+    if refreshing {
+        validate_existing_trust_for_refresh(trusted, machine_id, worker_public_key_hex)?;
     }
 
     let client = reqwest::Client::builder()
@@ -237,8 +332,18 @@ pub(crate) async fn enroll(
     )
     .await?;
 
-    // Root-only first-use atomic publication. Never mutate or replace an
-    // existing native-host trust tree, including an uncertain prior install.
+    if refreshing {
+        validate_existing_trust_for_refresh(trusted, machine_id, worker_public_key_hex)?;
+        refresh_release_snapshots(trusted, &registry_pb, &release_pb, &bundle_pb, &spec)?;
+        println!("host_enroll=PROTECTED_TRUST_REFRESHED");
+        println!("host_machine_id={machine_id}");
+        println!("host_release_set_sha256={release_digest}");
+        println!("host_mutations=0");
+        return Ok(());
+    }
+
+    // First enrollment uses atomic publication. No existing trust or journal
+    // may be overwritten, even when a previous first-use attempt crashed.
     let stage = Path::new(HOST_PARENT).join(format!(".native-host-new-{}", std::process::id()));
     DirBuilder::new()
         .mode(0o700)
