@@ -150,7 +150,8 @@ async fn run(parsed: cli::Cli) -> Result<(), AgentError> {
 /// credential authority here, and this cannot issue a mutation VERIFIED receipt.
 async fn run_local_host_observe(stack_dir: &Path) -> Result<(), String> {
     let observed = capture_local_host_observation(stack_dir).await?;
-    io::stdout().write_all(&observed.encode_to_vec())
+    io::stdout()
+        .write_all(&observed.encode_to_vec())
         .map_err(|_| "HOST_OBSERVATION_STDOUT_UNAVAILABLE".to_owned())
 }
 
