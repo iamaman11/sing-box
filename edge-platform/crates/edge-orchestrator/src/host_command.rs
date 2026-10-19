@@ -1475,7 +1475,8 @@ mod tests {
                 None,
                 Some(&file),
                 Some(125),
-                Some(&intent_path)
+                Some(&intent_path),
+                None,
             )
             .is_err()
         );
