@@ -167,6 +167,23 @@ fn owned_application_container_running(names: &[String]) -> bool {
     })
 }
 
+/// Native status cannot promote a same-named container to this application's
+/// RUNNING state unless its exact Docker Compose ownership was checked.
+fn native_vm_owner_state(
+    docker_reachable: bool,
+    ownership_proven: bool,
+    running_containers: &[String],
+) -> edge_shared_types::FleetNativeOwnerState {
+    use edge_shared_types::FleetNativeOwnerState;
+    if !docker_reachable || !ownership_proven {
+        FleetNativeOwnerState::Unproven
+    } else if owned_application_container_running(running_containers) {
+        FleetNativeOwnerState::Running
+    } else {
+        FleetNativeOwnerState::Stopped
+    }
+}
+
 /// One local source of native VM readback, shared with authenticated execution.
 async fn capture_local_host_observation(
     stack_dir: &Path,
@@ -195,15 +212,17 @@ async fn capture_local_host_observation(
         Err(error) if error.kind() == io::ErrorKind::NotFound => {}
         Err(_) => return Err("VM_HOST_RELEASE_UNREADABLE".to_owned()),
     }
-    // A running container is NOT evidence of end-to-end TLS/auth or public
-    // egress. Report actual local Docker/Agent readiness only.
-    let owner_state = if !state.docker_reachable {
-        FleetNativeOwnerState::Unproven
-    } else if owned_application_container_running(&state.running_containers) {
-        FleetNativeOwnerState::Running
-    } else {
-        FleetNativeOwnerState::Stopped
-    };
+    // Docker names are untrusted without project/service/ID readback.
+    // A running container is also NOT evidence of public TLS/auth/egress.
+    let ownership_proven = state.docker_reachable
+        && docker_observation::verify_owned_application_containers()
+            .await
+            .is_ok();
+    let owner_state = native_vm_owner_state(
+        state.docker_reachable,
+        ownership_proven,
+        &state.running_containers,
+    );
     // Absence must be observed independently: Docker was inspected and no
     // owned application containers or release marker exist. A running
     // container with no marker is an UNKNOWN state, not a fresh installation.
@@ -224,6 +243,8 @@ async fn capture_local_host_observation(
     }
     if !state.docker_reachable {
         reasons.push("VM_DOCKER_UNAVAILABLE");
+    } else if !ownership_proven {
+        reasons.push("VM_APPLICATION_OWNER_UNPROVEN");
     }
     // Runtime readiness is already explicitly encoded as
     // runtime_ready_proven / runtime_ready. Stopped VM resources are not
@@ -238,12 +259,39 @@ async fn capture_local_host_observation(
         owner_state,
         proof,
         digest.as_deref(),
-        state.docker_reachable.then_some(state.ready),
+        ownership_proven.then_some(state.ready),
         observed_at,
         &reasons,
     )
     .map_err(str::to_owned)?;
     Ok(observed)
+}
+
+#[cfg(test)]
+mod native_host_state_tests {
+    use super::*;
+    use edge_shared_types::FleetNativeOwnerState;
+
+    #[test]
+    fn foreign_same_named_container_never_proves_native_owner() {
+        let names = vec!["vultr-line2-proxy".to_owned()];
+        assert_eq!(
+            native_vm_owner_state(true, false, &names),
+            FleetNativeOwnerState::Unproven
+        );
+        assert_eq!(
+            native_vm_owner_state(true, true, &names),
+            FleetNativeOwnerState::Running
+        );
+        assert_eq!(
+            native_vm_owner_state(false, true, &names),
+            FleetNativeOwnerState::Unproven
+        );
+        assert_eq!(
+            native_vm_owner_state(true, true, &["vultr-cloudflare-mesh".to_owned()]),
+            FleetNativeOwnerState::Stopped
+        );
+    }
 }
 
 /// Lightweight read-only VM observation. It deliberately does not claim
