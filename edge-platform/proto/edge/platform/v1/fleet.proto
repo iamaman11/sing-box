@@ -192,6 +192,11 @@ message FleetVmResourceReport {
   // No runner-copied result may claim an authenticated native owner.
   bool remote_attested = 5;
   FleetVmNetworkReadback network = 6;
+  // Optional installed Compose/image/template policy observed from
+  // root-local files. Unreadable/malformed means UNKNOWN, not a guessed
+  // dependency graph. Runner transport does NOT attest its origin, bind
+  // it to the canonical Git desired, or authorize any mutation.
+  FleetVmDesiredGraph installed_policy_graph = 7;
 }
 
 enum FleetHostRunState {

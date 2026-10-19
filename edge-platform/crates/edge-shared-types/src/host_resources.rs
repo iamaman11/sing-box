@@ -487,6 +487,11 @@ pub fn validate_vm_resource_report(
     if let Some(network) = report.network.as_ref() {
         validate_vm_network_readback(network)?;
     }
+    if let Some(installed_policy) = report.installed_policy_graph.as_ref() {
+        // Structural evidence only. In particular, this cannot establish
+        // desired convergence or grant owner privileges to the runner.
+        derive_vm_resource_hierarchy(host, installed_policy)?;
+    }
     for (row, expected) in report.resources.iter().zip(host.vm_containers.iter()) {
         if row.resource.as_ref() != Some(expected)
             || row.image.len() > 256
@@ -707,9 +712,44 @@ mod tests {
             }],
             remote_attested: false,
             network: None,
+            installed_policy_graph: None,
         };
         (host, report)
     }
+    #[test]
+    fn installed_policy_readback_requires_exact_typed_hierarchy_not_arbitrary_dependencies() {
+        let (host, mut report) = fixture();
+        let resource = host.vm_containers[0].clone();
+        let graph = FleetVmDesiredGraph {
+            schema_version: 1,
+            machine_id: host.machine_id.clone(),
+            resources: vec![crate::FleetVmDesiredResource {
+                resource: Some(resource.clone()),
+                image_ref: format!("example/image@sha256:{}", "a".repeat(64)),
+                config_template_sha256: vec![7; 32],
+                ..Default::default()
+            }],
+            networks: vec![crate::FleetVmDesiredNetwork {
+                compose_project: resource.compose_project.clone(),
+                network_name: "edge_net".into(),
+                driver: "bridge".into(),
+                attached_services: vec![resource.compose_service.clone()],
+            }],
+        };
+        report.installed_policy_graph = Some(graph.clone());
+        assert!(validate_vm_resource_report(&report, &host).is_ok());
+        let mut foreign = graph.clone();
+        foreign.networks[0].attached_services.push("foreign-mesh".into());
+        report.installed_policy_graph = Some(foreign);
+        assert!(validate_vm_resource_report(&report, &host).is_err());
+        let mut cyclic = graph;
+        cyclic.resources[0].dependencies.push(resource.compose_service);
+        report.installed_policy_graph = Some(cyclic);
+        assert!(validate_vm_resource_report(&report, &host).is_err());
+        report.installed_policy_graph = None;
+        assert!(validate_vm_resource_report(&report, &host).is_ok());
+    }
+
     #[test]
     fn network_report_cannot_forge_dns_or_firewall_proof() {
         use crate::{Ipv4AddressObservation, Ipv4LinkObservation, Ipv4NetworkObservation};
@@ -1294,6 +1334,7 @@ mod resource_planning_tests {
             }],
             remote_attested: false,
             network: None,
+            installed_policy_graph: None,
         };
         (host, report)
     }

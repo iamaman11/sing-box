@@ -444,6 +444,16 @@ pub(crate) fn run(
                         selected, &report,
                     )
                     .map_err(str::to_owned)?;
+                let installed_hierarchy = report
+                    .installed_policy_graph
+                    .as_ref()
+                    .map(|policy| {
+                        edge_shared_types::host_resources::derive_vm_resource_hierarchy(
+                            selected, policy,
+                        )
+                    })
+                    .transpose()
+                    .map_err(str::to_owned)?;
                 let problems = resource_plan
                     .resources
                     .iter()
@@ -502,6 +512,37 @@ pub(crate) fn run(
                     println!("host_vm_network_observation=UNAVAILABLE");
                 }
                 println!("host_vm_resources_schema=1");
+                println!(
+                    "host_vm_installed_policy_hierarchy_origin={}",
+                    if installed_hierarchy.is_some() {
+                        "RUNNER_COPIED_UNAUTHENTICATED"
+                    } else {
+                        "UNPROVEN"
+                    }
+                );
+                println!("host_vm_desired_hierarchy_release_proven=false");
+                println!("host_vm_installed_policy_authorizes_mutation=false");
+                if let Some(graph) = installed_hierarchy.as_ref() {
+                    println!("host_vm_hierarchy_nodes={}", graph.nodes.len());
+                    for node in &graph.nodes {
+                        println!(
+                            "host_vm_hierarchy_node={} kind={:?} parent={} owner={:?} declared_dependencies={} policy_sha256={}",
+                            node.resource_id,
+                            edge_shared_types::FleetResourceKind::try_from(node.kind)
+                                .map_err(|_| "HOST_VM_HIERARCHY_KIND_INVALID")?,
+                            node.parent_resource_id,
+                            edge_shared_types::FleetResourceOwner::try_from(node.owner)
+                                .map_err(|_| "HOST_VM_HIERARCHY_OWNER_INVALID")?,
+                            node.dependency_ids.join(","),
+                            node.expected_policy_sha256
+                                .iter()
+                                .map(|byte| format!("{byte:02x}"))
+                                .collect::<String>(),
+                        );
+                    }
+                } else {
+                    println!("host_vm_hierarchy_nodes=UNPROVEN");
+                }
                 println!("host_vm_resources_count={}", report.resources.len());
                 println!("host_vm_resources_problem_count={problems}");
                 println!("host_vm_resources_config_unproven_count={config_unproven}");
@@ -511,11 +552,16 @@ pub(crate) fn run(
                         .as_ref()
                         .ok_or("HOST_VM_RESOURCES_IDENTITY_MISSING")?;
                     let resource_id = proposal.resource_id.as_str();
+                    let dependencies = installed_hierarchy.as_ref()
+                        .and_then(|hierarchy| hierarchy.nodes.iter().find(|node| node.resource_id == resource_id))
+                        .map(|node| node.dependency_ids.join(","))
+                        .unwrap_or_else(|| "UNPROVEN".to_owned());
                     println!(
-                        "host_vm_resource={} resource_id={} resource_kind=DOCKER_CONTAINER resource_owner=VM_ROOT_AGENT resource_parent=host/{} dependencies=UNPROVEN_WITHOUT_IMMUTABLE_POLICY reason={} step={:?} plan_reason={} present={} owned={} running={} running_proven={} image={} health={} config_proof={:?} config_sha256={} restarts={}",
+                        "host_vm_resource={} resource_id={} resource_kind=DOCKER_CONTAINER resource_owner=VM_ROOT_AGENT resource_parent=host/{} installed_policy_dependencies={} installed_policy_proven=false reason={} step={:?} plan_reason={} present={} owned={} running={} running_proven={} image={} health={} config_proof={:?} config_sha256={} restarts={}",
                         identity.container_name,
                         resource_id,
                         selected.machine_id,
+                        dependencies,
                         resource.reason_code,
                         edge_shared_types::FleetHostPlannedStep::try_from(proposal.step)
                             .map_err(|_| "HOST_VM_RESOURCE_PLAN_STEP_INVALID")?,

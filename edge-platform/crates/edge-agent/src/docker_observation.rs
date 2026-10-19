@@ -2973,6 +2973,9 @@ pub(crate) async fn observe_vm_resource_report(
         resources,
         remote_attested: false,
         network: Some(observe_native_vm_network_readback().await),
+        // Installed bytes may be absent or invalid after a partial failure.
+        // Never conceal Docker evidence solely because policy cannot render.
+        installed_policy_graph: compile_native_vm_desired_graph(stack_dir, host).ok(),
     };
     edge_shared_types::host_resources::validate_vm_resource_report(&report, host)
         .map_err(str::to_owned)?;
