@@ -62,9 +62,14 @@ fn reason_consistent(row: &FleetVmResourceReadback) -> bool {
         "DOCKER_UNAVAILABLE" | "INSPECT_UNAVAILABLE" => !row.present,
         "FOREIGN_OWNER" => row.present && !row.ownership_proven,
         "STATE_UNPROVEN" => row.present && row.ownership_proven && !row.running_proven,
-        "RUNNING" | "HEALTH_DEGRADED" => {
-            row.present && row.ownership_proven && row.running_proven && row.running
-        }
+        "HEALTHY" => row.present && row.ownership_proven && row.running_proven
+            && row.running && row.health == "HEALTHY",
+        "HEALTH_STARTING" => row.present && row.ownership_proven && row.running_proven
+            && row.running && row.health == "STARTING",
+        "HEALTH_UNHEALTHY" => row.present && row.ownership_proven && row.running_proven
+            && row.running && row.health == "UNHEALTHY",
+        "RUNNING_NO_HEALTHCHECK" | "HEALTH_UNPROVEN" => row.present
+            && row.ownership_proven && row.running_proven && row.running && row.health.is_empty(),
         "STOPPED" => row.present && row.ownership_proven && row.running_proven && !row.running,
         _ => false,
     }
@@ -113,7 +118,8 @@ mod tests {
                 running: true,
                 running_proven: true,
                 container_id: "a".repeat(64),
-                reason_code: "RUNNING".into(),
+                reason_code: "HEALTHY".into(),
+                health: "HEALTHY".into(),
                 ..Default::default()
             }],
             remote_attested: false,
@@ -138,12 +144,22 @@ mod tests {
         report.resources[0].ownership_proven = false;
         assert!(validate_vm_resource_report(&report, &host).is_err());
         report.resources[0].container_id.clear();
+        report.resources[0].health.clear();
         report.resources[0].running_proven = false;
         report.resources[0].running = false;
         report.resources[0].reason_code = "FOREIGN_OWNER".into();
         assert!(validate_vm_resource_report(&report, &host).is_ok());
-        report.resources[0].reason_code = "RUNNING".into();
+        report.resources[0].reason_code = "HEALTHY".into();
         assert!(validate_vm_resource_report(&report, &host).is_err());
+        report = fixture().1;
+        report.resources[0].reason_code = "HEALTH_STARTING".into();
+        assert!(validate_vm_resource_report(&report, &host).is_err());
+        report.resources[0].health = "STARTING".into();
+        assert!(validate_vm_resource_report(&report, &host).is_ok());
+        report.resources[0].reason_code = "RUNNING_NO_HEALTHCHECK".into();
+        assert!(validate_vm_resource_report(&report, &host).is_err());
+        report.resources[0].health.clear();
+        assert!(validate_vm_resource_report(&report, &host).is_ok());
         let mut invalid = bytes;
         invalid.extend_from_slice(&[0x08, 0x01]); // noncanonical duplicate field
         assert!(decode_vm_resource_report(&invalid, &host).is_err());

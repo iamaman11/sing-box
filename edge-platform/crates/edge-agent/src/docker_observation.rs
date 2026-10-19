@@ -259,6 +259,24 @@ pub(crate) async fn stop_owned_application_containers(
     Ok(())
 }
 
+/// Running is not equivalent to readiness. A missing healthcheck is not
+/// an implicit PASS. This only describes local Docker health, not egress.
+fn native_running_health_reason(
+    running: bool,
+    health_debug: Option<&str>,
+) -> (&'static str, &'static str) {
+    if !running {
+        return ("STOPPED", "");
+    }
+    match health_debug.map(str::to_ascii_lowercase) {
+        Some(ref state) if state == "healthy" => ("HEALTHY", "HEALTHY"),
+        Some(ref state) if state == "unhealthy" => ("HEALTH_UNHEALTHY", "UNHEALTHY"),
+        Some(ref state) if state == "starting" => ("HEALTH_STARTING", "STARTING"),
+        None => ("RUNNING_NO_HEALTHCHECK", ""),
+        _ => ("HEALTH_UNPROVEN", ""),
+    }
+}
+
 /// Read-only, per-resource Docker evidence. Each entry is inspected once:
 /// labels, immutable ID and state come from the SAME inspect response.
 /// Never read or emit environment, credentials, mount contents or Docker logs.
@@ -332,21 +350,15 @@ pub(crate) async fn observe_vm_resource_report(
                             if let Ok(running) = require_known_native_container_state(state) {
                                 row.running_proven = true;
                                 row.running = running;
-                                row.reason_code = if running {
-                                    "RUNNING".to_owned()
-                                } else {
-                                    "STOPPED".to_owned()
-                                };
-                                if running {
-                                    if let Some(health) =
-                                        state.health.as_ref().and_then(|h| h.status.as_ref())
-                                    {
-                                        row.health = format!("{health:?}");
-                                        if row.health.eq_ignore_ascii_case("unhealthy") {
-                                            row.reason_code = "HEALTH_DEGRADED".to_owned();
-                                        }
-                                    }
-                                }
+                                let raw_health = state
+                                    .health
+                                    .as_ref()
+                                    .and_then(|health| health.status.as_ref())
+                                    .map(|status| format!("{status:?}"));
+                                let (reason, health) =
+                                    native_running_health_reason(running, raw_health.as_deref());
+                                row.reason_code = reason.to_owned();
+                                row.health = health.to_owned();
                             }
                         }
                     }
@@ -746,6 +758,16 @@ mod tests {
             compose_service: compose_service.to_owned(),
         })
         .collect()
+    }
+
+    #[test]
+    fn missing_or_starting_health_is_never_reported_healthy() {
+        assert_eq!(native_running_health_reason(true, Some("Healthy")), ("HEALTHY", "HEALTHY"));
+        assert_eq!(native_running_health_reason(true, Some("Starting")), ("HEALTH_STARTING", "STARTING"));
+        assert_eq!(native_running_health_reason(true, Some("Unhealthy")), ("HEALTH_UNHEALTHY", "UNHEALTHY"));
+        assert_eq!(native_running_health_reason(true, None), ("RUNNING_NO_HEALTHCHECK", ""));
+        assert_eq!(native_running_health_reason(true, Some("Unknown")), ("HEALTH_UNPROVEN", ""));
+        assert_eq!(native_running_health_reason(false, None), ("STOPPED", ""));
     }
 
     #[test]
