@@ -151,22 +151,8 @@ fn validate_existing_trust_for_refresh(
     }
     let journal = trusted.join("journal");
     checked_root_directory(&journal)?;
-    let entries = fs::read_dir(&journal).map_err(|_| "HOST_ENROLL_JOURNAL_UNAVAILABLE")?;
-    for entry in entries {
-        let entry = entry.map_err(|_| "HOST_ENROLL_JOURNAL_UNAVAILABLE")?;
-        let metadata =
-            fs::symlink_metadata(entry.path()).map_err(|_| "HOST_ENROLL_JOURNAL_UNAVAILABLE")?;
-        if !metadata.file_type().is_file()
-            || metadata.uid() != 0
-            || metadata.permissions().mode() & 0o077 != 0
-        {
-            return Err("HOST_ENROLL_JOURNAL_NOT_PROTECTED".into());
-        }
-        let name = entry.file_name();
-        let name = name.to_str().ok_or("HOST_ENROLL_JOURNAL_NAME_INVALID")?;
-        if name.ends_with(".pending.pb") {
-            return Err("HOST_ENROLL_UNRESOLVED_RESOURCE_NO_REPLAY".into());
-        }
+    if super::host_native::protected_journal_has_pending(&journal)? {
+        return Err("HOST_ENROLL_UNRESOLVED_RESOURCE_NO_REPLAY".into());
     }
     Ok(())
 }
