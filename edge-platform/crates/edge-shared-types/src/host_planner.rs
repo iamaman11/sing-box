@@ -235,6 +235,7 @@ mod tests {
             } else {
                 "win-1".into()
             },
+            vm_containers: Vec::new(),
             desired_spec_path: "infra/production/production.textproto".into(),
             target: Some(FleetHostTarget {
                 run_state: run as i32,

@@ -128,6 +128,30 @@ pub fn validate_host_registry(desired: &HostRegistry) -> Result<(), String> {
         if !allowed || spec.contains("..") {
             return Err("host desired spec reference invalid for this kind".to_owned());
         }
+        // Resource identity only: no credentials, ports or mutable Docker
+        // configuration are duplicated into fleet inventory.
+        if kind != ManagedHostKind::Vm && !host.vm_containers.is_empty() {
+            return Err("HOST_VM_RESOURCES_ON_NON_VM".to_owned());
+        }
+        if host.vm_containers.len() > 64 {
+            return Err("HOST_VM_RESOURCE_LIMIT_EXCEEDED".to_owned());
+        }
+        let mut previous: Option<&str> = None;
+        let mut services = BTreeSet::new();
+        for resource in &host.vm_containers {
+            if !host_token(&resource.container_name, 128)
+                || !host_token(&resource.compose_project, 128)
+                || !host_token(&resource.compose_service, 128)
+                || previous.is_some_and(|name| name >= resource.container_name.as_str())
+                || !services.insert((
+                    resource.compose_project.as_str(),
+                    resource.compose_service.as_str(),
+                ))
+            {
+                return Err("HOST_VM_RESOURCE_IDENTITY_INVALID_OR_DUPLICATED".to_owned());
+            }
+            previous = Some(&resource.container_name);
+        }
         // The protected Git registry has ONE run-state authority per machine.
         // Missing target is observe-only, not permission to infer RUNNING from
         // a shared production spec, installed service, or a GitHub issue.
@@ -3010,6 +3034,7 @@ mod release_set_tests {
                         "application-acceptance-1".to_owned(),
                     )),
                     windows_runner_label: String::new(),
+                    vm_containers: Vec::new(),
                     desired_spec_path: "infra/application/disposable-acceptance.json".to_owned(),
                     target: None,
                 },
@@ -3018,6 +3043,7 @@ mod release_set_tests {
                     kind: ManagedHostKind::Vm as i32,
                     owner: Some(managed_host::Owner::VmMachineId("production-1".to_owned())),
                     windows_runner_label: String::new(),
+                    vm_containers: Vec::new(),
                     desired_spec_path: "infra/production/production.textproto".to_owned(),
                     target: None,
                 },
@@ -3028,6 +3054,7 @@ mod release_set_tests {
                         "DESKTOP-0E1F6UQ".to_owned(),
                     )),
                     windows_runner_label: "sing-box-windows-lab".to_owned(),
+                    vm_containers: Vec::new(),
                     desired_spec_path: "infra/production/production.textproto".to_owned(),
                     target: None,
                 },

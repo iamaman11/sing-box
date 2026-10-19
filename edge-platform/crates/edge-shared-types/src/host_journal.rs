@@ -739,6 +739,7 @@ mod tests {
                 kind: FleetHostKind::Vm as i32,
                 owner: Some(managed_host::Owner::VmMachineId("vm-one".into())),
                 windows_runner_label: String::new(),
+                vm_containers: Vec::new(),
                 desired_spec_path: "infra/production/production.textproto".into(),
                 target: Some(FleetHostTarget {
                     run_state: FleetHostRunState::Running as i32,
@@ -947,6 +948,7 @@ mod tests {
                 kind: FleetHostKind::Vm as i32,
                 owner: Some(managed_host::Owner::VmMachineId("vm-stop".into())),
                 windows_runner_label: String::new(),
+                vm_containers: Vec::new(),
                 desired_spec_path: "infra/production/production.textproto".into(),
                 target: Some(FleetHostTarget {
                     run_state: FleetHostRunState::Stopped as i32,
@@ -1058,6 +1060,7 @@ mod tests {
             kind: FleetHostKind::Vm as i32,
             owner: Some(managed_host::Owner::VmMachineId("vm-exact".into())),
             windows_runner_label: String::new(),
+            vm_containers: Vec::new(),
             desired_spec_path: "infra/hosts/specs/vm-exact.textproto".into(),
             target: Some(FleetHostTarget {
                 run_state: FleetHostRunState::Running as i32,

@@ -937,6 +937,7 @@ fn append_control_outputs(
     owner: &str,
     labels: &str,
     windows_runner_label: &str,
+    vm_containers: Vec::new(),
     desired_spec_path: &str,
 ) -> Result<(), String> {
     let metadata = std::fs::symlink_metadata(path)
@@ -1069,6 +1070,7 @@ mod tests {
             kind: FleetHostKind::Windows as i32,
             owner: Some(managed_host::Owner::WindowsRunnerName("WIN-1".into())),
             windows_runner_label: "windows-1".into(),
+            vm_containers: Vec::new(),
             desired_spec_path: "infra/production/production.textproto".into(),
             target: None,
         };
@@ -1141,6 +1143,7 @@ mod tests {
                     "DESKTOP-TEST".to_owned(),
                 )),
                 windows_runner_label: "windows-test".to_owned(),
+                vm_containers: Vec::new(),
                 desired_spec_path: spec.to_string_lossy().into_owned(),
                 target: Some(edge_shared_types::FleetHostTarget {
                     run_state: edge_shared_types::FleetHostRunState::Stopped as i32,
@@ -1271,6 +1274,7 @@ mod tests {
                         "application-acceptance-1".to_owned(),
                     )),
                     windows_runner_label: String::new(),
+                    vm_containers: Vec::new(),
                     desired_spec_path: "infra/application/disposable-acceptance.json".to_owned(),
                     target: None,
                 },
@@ -1281,6 +1285,7 @@ mod tests {
                         "DESKTOP-0E1F6UQ".to_owned(),
                     )),
                     windows_runner_label: "sing-box-windows-lab".to_owned(),
+                    vm_containers: Vec::new(),
                     desired_spec_path: "infra/production/production.textproto".to_owned(),
                     target: None,
                 },
@@ -1310,6 +1315,7 @@ mod tests {
                 "OTHER-PC".to_owned(),
             )),
             windows_runner_label: "other-label".to_owned(),
+            vm_containers: Vec::new(),
             desired_spec_path: "infra/production/production.textproto".to_owned(),
             target: None,
         });
