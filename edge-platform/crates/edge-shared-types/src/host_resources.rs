@@ -185,3 +185,177 @@ mod tests {
         assert!(decode_vm_resource_report(&invalid, &host).is_err());
     }
 }
+
+/*
+ * One deterministic, strictly non-authorizing proposal per VM container.
+ * We deliberately do NOT treat Docker health as proof of matching config,
+ * image digest, network, DNS or TLS. All config/release mutations remain
+ * blocked until native owner-side bundle/resource comparison is wired.
+ */
+pub fn propose_vm_resource_transitions(
+    host: &FleetHost,
+    report: &FleetVmResourceReport,
+) -> Result<crate::FleetVmResourceTransitionPlan, &'static str> {
+    use crate::{
+        FleetHostPlannedStep as Step, FleetHostRunState, FleetVmResourceTransition,
+        FleetVmResourceTransitionPlan,
+    };
+    validate_vm_resource_report(report, host)?;
+    let desired = host
+        .target
+        .as_ref()
+        .and_then(|target| FleetHostRunState::try_from(target.run_state).ok());
+    let mut resources = Vec::with_capacity(report.resources.len());
+    for row in &report.resources {
+        let (step, reason) = match desired {
+            None | Some(FleetHostRunState::Unspecified) => {
+                (Step::Blocked, "TARGET_UNSET_OBSERVE_ONLY")
+            }
+            Some(FleetHostRunState::Stopped)
+                if !row.present && row.reason_code == "CONTAINER_ABSENT" =>
+            {
+                (Step::Noop, "ABSENT_AS_DESIRED")
+            }
+            Some(FleetHostRunState::Running)
+                if !row.present && row.reason_code == "CONTAINER_ABSENT" =>
+            {
+                (Step::Install, "CONTAINER_ABSENT_INSTALL_REQUIRED")
+            }
+            Some(_) if !row.present || !row.ownership_proven || !row.running_proven => {
+                (Step::Blocked, "RESOURCE_IDENTITY_OR_STATE_UNPROVEN")
+            }
+            Some(FleetHostRunState::Stopped) if row.running => {
+                (Step::Stop, "CONTAINER_RUNNING_BUT_TARGET_STOPPED")
+            }
+            Some(FleetHostRunState::Stopped) => (Step::Noop, "STOPPED_AS_DESIRED"),
+            Some(FleetHostRunState::Running) if !row.running => {
+                (Step::Start, "CONTAINER_STOPPED_BUT_TARGET_RUNNING")
+            }
+            Some(FleetHostRunState::Running) if row.reason_code == "HEALTHY" => {
+                (Step::Noop, "HEALTHY_RUNTIME_CONFIG_UNPROVEN")
+            }
+            Some(FleetHostRunState::Running) => {
+                (Step::Blocked, "RUNTIME_HEALTH_OR_CONFIG_UNPROVEN")
+            }
+        };
+        resources.push(FleetVmResourceTransition {
+            resource: row.resource.clone(),
+            step: step as i32,
+            reason_code: reason.to_owned(),
+        });
+    }
+    Ok(FleetVmResourceTransitionPlan {
+        schema_version: 1,
+        machine_id: host.machine_id.clone(),
+        resources,
+        owner_attested: false,
+        mutation_authorized: false,
+    })
+}
+
+#[cfg(test)]
+mod resource_planning_tests {
+    use super::*;
+    use crate::{
+        FleetHostMode, FleetHostPlannedStep, FleetHostRunState, FleetHostTarget, FleetVmContainer,
+        FleetVmResourceReadback,
+    };
+
+    fn fixture() -> (FleetHost, FleetVmResourceReport) {
+        let resource = FleetVmContainer {
+            container_name: "vultr-line2-proxy".into(),
+            compose_project: "vultr-edge".into(),
+            compose_service: "line2-proxy".into(),
+        };
+        let host = FleetHost {
+            machine_id: "vm-test".into(),
+            kind: FleetHostKind::Vm as i32,
+            vm_containers: vec![resource.clone()],
+            target: Some(FleetHostTarget {
+                run_state: FleetHostRunState::Running as i32,
+                windows_mode: FleetHostMode::Unspecified as i32,
+            }),
+            ..Default::default()
+        };
+        let report = FleetVmResourceReport {
+            schema_version: 1,
+            machine_id: host.machine_id.clone(),
+            observed_at_unix: 100,
+            resources: vec![FleetVmResourceReadback {
+                resource: Some(resource),
+                present: true,
+                ownership_proven: true,
+                running: true,
+                running_proven: true,
+                container_id: "a".repeat(64),
+                reason_code: "HEALTHY".into(),
+                health: "HEALTHY".into(),
+                ..Default::default()
+            }],
+            remote_attested: false,
+        };
+        (host, report)
+    }
+
+    fn step(host: &FleetHost, report: &FleetVmResourceReport) -> FleetHostPlannedStep {
+        let result = propose_vm_resource_transitions(host, report).unwrap();
+        assert!(!result.owner_attested && !result.mutation_authorized);
+        FleetHostPlannedStep::try_from(result.resources[0].step).unwrap()
+    }
+
+    #[test]
+    fn independent_runtime_states_never_fake_config_or_owner_authority() {
+        let (mut host, mut report) = fixture();
+        assert_eq!(step(&host, &report), FleetHostPlannedStep::Noop);
+        assert_eq!(
+            propose_vm_resource_transitions(&host, &report)
+                .unwrap()
+                .resources[0]
+                .reason_code,
+            "HEALTHY_RUNTIME_CONFIG_UNPROVEN"
+        );
+        report.resources[0].health.clear();
+        report.resources[0].reason_code = "RUNNING_NO_HEALTHCHECK".into();
+        assert_eq!(step(&host, &report), FleetHostPlannedStep::Blocked);
+
+        report.resources[0].running = false;
+        report.resources[0].reason_code = "STOPPED".into();
+        assert_eq!(step(&host, &report), FleetHostPlannedStep::Start);
+        host.target.as_mut().unwrap().run_state = FleetHostRunState::Stopped as i32;
+        assert_eq!(step(&host, &report), FleetHostPlannedStep::Noop);
+        report.resources[0].running = true;
+        report.resources[0].reason_code = "RUNNING_NO_HEALTHCHECK".into();
+        assert_eq!(step(&host, &report), FleetHostPlannedStep::Stop);
+
+        host.target = None;
+        assert_eq!(step(&host, &report), FleetHostPlannedStep::Blocked);
+        host.target = Some(FleetHostTarget {
+            run_state: FleetHostRunState::Running as i32,
+            windows_mode: FleetHostMode::Unspecified as i32,
+        });
+        report.resources[0].ownership_proven = false;
+        report.resources[0].container_id.clear();
+        report.resources[0].running = false;
+        report.resources[0].running_proven = false;
+        report.resources[0].reason_code = "FOREIGN_OWNER".into();
+        assert_eq!(step(&host, &report), FleetHostPlannedStep::Blocked);
+    }
+
+    #[test]
+    fn absence_and_untrusted_reports_are_not_recovery_authority() {
+        let (mut host, mut report) = fixture();
+        report.resources[0] = FleetVmResourceReadback {
+            resource: host.vm_containers.first().cloned(),
+            reason_code: "CONTAINER_ABSENT".into(),
+            ..Default::default()
+        };
+        assert_eq!(step(&host, &report), FleetHostPlannedStep::Install);
+        host.target.as_mut().unwrap().run_state = FleetHostRunState::Stopped as i32;
+        assert_eq!(step(&host, &report), FleetHostPlannedStep::Noop);
+        report.remote_attested = true;
+        assert!(propose_vm_resource_transitions(&host, &report).is_err());
+        report.remote_attested = false;
+        report.machine_id = "foreign-vm".into();
+        assert!(propose_vm_resource_transitions(&host, &report).is_err());
+    }
+}

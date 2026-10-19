@@ -491,8 +491,15 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
                     .map_err(|_| "HOST_NATIVE_READBACK_FAILED")
             },
             |step| match step {
-                FleetHostPlannedStep::Start
-                | FleetHostPlannedStep::Stop
+                FleetHostPlannedStep::Start => handle
+                    .block_on(
+                        super::docker_observation::preflight_start_owned_application_containers(
+                            stack_dir,
+                            &host.vm_containers,
+                        ),
+                    )
+                    .map_err(|_| "HOST_NATIVE_VM_START_PREADMISSION_RESOURCE_UNPROVEN"),
+                FleetHostPlannedStep::Stop
                 | FleetHostPlannedStep::Install
                 | FleetHostPlannedStep::ReplaceRelease => Ok(()),
                 _ => Err("HOST_NATIVE_VM_STEP_NOT_IMPLEMENTED"),
@@ -505,17 +512,14 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
                         ),
                     )
                     .map_err(|_| "HOST_NATIVE_VM_STOP_UNCERTAIN_NO_REPLAY"),
-                FleetHostPlannedStep::Start => {
-                    let completion = handle.block_on(super::run_bootstrap(
-                        stack_dir,
-                        BootstrapMode::BootstrapFull,
-                    ));
-                    if completion.success {
-                        Ok(())
-                    } else {
-                        Err("HOST_NATIVE_START_UNCERTAIN_NO_REPLAY")
-                    }
-                }
+                FleetHostPlannedStep::Start => handle
+                    .block_on(
+                        super::docker_observation::start_stopped_owned_application_containers(
+                            stack_dir,
+                            &host.vm_containers,
+                        ),
+                    )
+                    .map_err(|_| "HOST_NATIVE_START_UNCERTAIN_NO_REPLAY"),
                 FleetHostPlannedStep::Install | FleetHostPlannedStep::ReplaceRelease => {
                     let request = ApplyBundleRequest::decode(bundle_pb.as_slice())
                         .map_err(|_| "HOST_NATIVE_BUNDLE_INVALID")?;

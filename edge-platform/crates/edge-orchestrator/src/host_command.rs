@@ -439,23 +439,33 @@ pub(crate) fn run(
                 {
                     return Err("HOST_VM_RESOURCES_READBACK_STALE".into());
                 }
-                let problems = report
+                let resource_plan =
+                    edge_shared_types::host_resources::propose_vm_resource_transitions(
+                        selected, &report,
+                    )
+                    .map_err(str::to_owned)?;
+                let problems = resource_plan
                     .resources
                     .iter()
-                    .filter(|entry| entry.reason_code != "RUNNING")
+                    .filter(|entry| {
+                        entry.step != edge_shared_types::FleetHostPlannedStep::Noop as i32
+                    })
                     .count();
                 println!("host_vm_resources_schema=1");
                 println!("host_vm_resources_count={}", report.resources.len());
                 println!("host_vm_resources_problem_count={problems}");
-                for resource in &report.resources {
+                for (resource, proposal) in report.resources.iter().zip(&resource_plan.resources) {
                     let identity = resource
                         .resource
                         .as_ref()
                         .ok_or("HOST_VM_RESOURCES_IDENTITY_MISSING")?;
                     println!(
-                        "host_vm_resource={} reason={} present={} owned={} running={} running_proven={} image={} health={} restarts={}",
+                        "host_vm_resource={} reason={} step={:?} plan_reason={} present={} owned={} running={} running_proven={} image={} health={} restarts={}",
                         identity.container_name,
                         resource.reason_code,
+                        edge_shared_types::FleetHostPlannedStep::try_from(proposal.step)
+                            .map_err(|_| "HOST_VM_RESOURCE_PLAN_STEP_INVALID")?,
+                        proposal.reason_code,
                         resource.present,
                         resource.ownership_proven,
                         resource.running,
@@ -469,6 +479,9 @@ pub(crate) fn run(
                         }
                     );
                 }
+                println!("host_vm_resources_plan_scope=RUNTIME_ONLY_CONFIG_UNPROVEN");
+                println!("host_vm_resources_plan_owner_attested=false");
+                println!("host_vm_resources_plan_mutation_authorized=false");
                 println!("host_vm_resources_origin=RUNNER_COPIED_UNAUTHENTICATED");
                 println!("host_vm_resources_authorize_mutation=false");
             }

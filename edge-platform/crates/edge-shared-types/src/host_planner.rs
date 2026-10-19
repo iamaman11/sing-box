@@ -207,6 +207,20 @@ pub fn propose_host_transition(
                 actual,
             )
         }
+        (FleetHostRunState::Running, FleetNativeOwnerState::Running)
+            if kind == FleetHostKind::Vm && observed.runtime_ready_proven =>
+        {
+            // A degraded VM may have only one stopped container. The root
+            // Agent MUST independently inspect exact Compose IDs and prove a
+            // stopped resource before BEGIN; no blind network-only restart.
+            plan(
+                host,
+                Start,
+                "VM_DEGRADED_REQUIRES_SCOPED_CONTAINER_PREADMISSION",
+                expected,
+                actual,
+            )
+        }
         _ => plan(
             host,
             Blocked,
@@ -472,6 +486,28 @@ mod tests {
         assert_eq!(
             propose_host_transition(&win, None, &[1; 32], &[], 1000).reason_code,
             "TUN_SEPARATE_PHYSICAL_GATE_REQUIRED"
+        );
+    }
+    #[test]
+    fn degraded_vm_start_is_only_a_proposal_and_requires_scoped_owner_proof() {
+        let vm = host(
+            FleetHostKind::Vm,
+            FleetHostMode::Unspecified,
+            FleetHostRunState::Running,
+        );
+        let mut observed = observed(FleetHostKind::Vm, FleetNativeOwnerState::Running);
+        observed.runtime_ready = false;
+        let proposal = propose_host_transition(&vm, Some(&observed), &[1; 32], &[1; 32], 1000);
+        assert_eq!(proposal.step, FleetHostPlannedStep::Start as i32);
+        assert_eq!(
+            proposal.reason_code,
+            "VM_DEGRADED_REQUIRES_SCOPED_CONTAINER_PREADMISSION"
+        );
+        assert!(!proposal.owner_attested && !proposal.mutation_authorized);
+        observed.runtime_ready_proven = false;
+        assert_eq!(
+            propose_host_transition(&vm, Some(&observed), &[1; 32], &[1; 32], 1000).step,
+            FleetHostPlannedStep::Blocked as i32
         );
     }
     #[test]

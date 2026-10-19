@@ -240,3 +240,20 @@ message FleetHostTransitionPlan {
   bool owner_attested = 7;
   bool mutation_authorized = 8;
 }
+
+// A deterministic runtime-only proposal for each Git-owned VM container.
+// These proposals do NOT establish configuration convergence or execution
+// authority; native owner must bind the desired bundle before mutation.
+message FleetVmResourceTransition {
+  FleetVmContainer resource = 1;
+  FleetHostPlannedStep step = 2;
+  string reason_code = 3;
+}
+
+message FleetVmResourceTransitionPlan {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  repeated FleetVmResourceTransition resources = 3;
+  bool owner_attested = 4;
+  bool mutation_authorized = 5;
+}

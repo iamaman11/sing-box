@@ -1,5 +1,5 @@
 use edge_shared_types::FleetVmContainer;
-use std::collections::{BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -175,6 +175,15 @@ fn require_known_native_container_state(
         .ok_or("HOST_NATIVE_CONTAINER_RUNNING_UNPROVEN")
 }
 
+#[derive(Debug, Clone)]
+struct OwnedVmContainer {
+    id: String,
+    running: bool,
+    service: String,
+    dependencies: Vec<String>,
+    image_ref: String,
+}
+
 /// Inspect every application-owned container before admitting a native change.
 /// Names alone are not ownership: check the Compose project, service and
 /// immutable Docker container ID. Mesh and unrelated Docker projects are
@@ -182,7 +191,7 @@ fn require_known_native_container_state(
 async fn owned_application_container_ids(
     docker: &Docker,
     expected: &[FleetVmContainer],
-) -> Result<Vec<(String, bool)>, String> {
+) -> Result<Vec<OwnedVmContainer>, String> {
     if expected.is_empty() {
         return Err("HOST_NATIVE_VM_RESOURCE_SCOPE_MISSING".into());
     }
@@ -216,7 +225,32 @@ async fn owned_application_container_ids(
             .state
             .ok_or("HOST_NATIVE_CONTAINER_STATE_UNAVAILABLE")?;
         let running = require_known_native_container_state(&state).map_err(str::to_owned)?;
-        owned.push((id, running));
+        // Compose-generated dependency identity, not a runner-supplied
+        // shell command or hard-coded per-machine startup order.
+        let mut dependencies = Vec::new();
+        if let Some(value) = labels.get("com.docker.compose.depends_on") {
+            for entry in value.split(',').filter(|entry| !entry.is_empty()) {
+                let service = entry.split(':').next().unwrap_or("");
+                if service == resource.compose_service
+                    || !expected.iter().any(|item| item.compose_service == service)
+                    || dependencies.iter().any(|known| known == service)
+                {
+                    return Err("HOST_NATIVE_CONTAINER_DEPENDENCY_UNTRUSTED".into());
+                }
+                dependencies.push(service.to_owned());
+            }
+        }
+        let image_ref = config
+            .image
+            .clone()
+            .ok_or("HOST_NATIVE_CONTAINER_IMAGE_UNPROVEN")?;
+        owned.push(OwnedVmContainer {
+            id,
+            running,
+            service: resource.compose_service.clone(),
+            dependencies,
+            image_ref,
+        });
     }
     Ok(owned)
 }
@@ -241,11 +275,11 @@ pub(crate) async fn stop_owned_application_containers(
     let docker = docker_connection().await?;
     // Resolve and validate ALL identities before stopping the first container.
     let owned = owned_application_container_ids(&docker, expected).await?;
-    for (id, running) in owned {
-        if running {
+    for container in owned {
+        if container.running {
             docker
                 .stop_container(
-                    &id,
+                    &container.id,
                     Some(
                         bollard::query_parameters::StopContainerOptionsBuilder::default()
                             .t(20)
@@ -257,6 +291,209 @@ pub(crate) async fn stop_owned_application_containers(
         }
     }
     Ok(())
+}
+
+/// Topological order comes from inspected Compose ownership labels. Failure
+/// on absent/foreign dependencies is conservative: never start another
+/// container in an unknown order, or mutate independently owned Mesh.
+fn owned_vm_start_order(owned: &[OwnedVmContainer]) -> Result<Vec<usize>, String> {
+    let mut order = Vec::with_capacity(owned.len());
+    let mut completed = BTreeSet::new();
+    while order.len() < owned.len() {
+        let mut progressed = false;
+        for (index, resource) in owned.iter().enumerate() {
+            if !completed.contains(resource.service.as_str())
+                && resource
+                    .dependencies
+                    .iter()
+                    .all(|dependency| completed.contains(dependency.as_str()))
+            {
+                completed.insert(resource.service.as_str());
+                order.push(index);
+                progressed = true;
+            }
+        }
+        if !progressed {
+            return Err("HOST_NATIVE_VM_DEPENDENCIES_MISSING_OR_CYCLIC".into());
+        }
+    }
+    Ok(order)
+}
+
+/// The trusted installed Compose file is the ONLY service->image mapping.
+/// Image digests come from the existing ReleaseSet-owned image environment;
+/// neither runners nor a second resource registry can override them.
+fn resolve_owned_vm_images(
+    compose: &serde_yaml::Value,
+    images: &BTreeMap<String, String>,
+    expected: &[FleetVmContainer],
+) -> Result<HashMap<String, String>, String> {
+    let services = compose
+        .get("services")
+        .ok_or("HOST_NATIVE_COMPOSE_SERVICES_UNPROVEN")?;
+    let mut result = HashMap::new();
+    for resource in expected {
+        let raw = services
+            .get(resource.compose_service.as_str())
+            .and_then(|entry| entry.get("image"))
+            .and_then(serde_yaml::Value::as_str)
+            .ok_or("HOST_NATIVE_COMPOSE_IMAGE_UNPROVEN")?;
+        let inner = raw
+            .strip_prefix("${")
+            .and_then(|value| value.strip_suffix('}'))
+            .ok_or("HOST_NATIVE_COMPOSE_IMAGE_NOT_PINNED")?;
+        let (key, required) = inner
+            .split_once(":?")
+            .ok_or("HOST_NATIVE_COMPOSE_IMAGE_NOT_PINNED")?;
+        if key.is_empty() || required.is_empty() {
+            return Err("HOST_NATIVE_COMPOSE_IMAGE_NOT_PINNED".into());
+        }
+        let pinned = images
+            .get(key)
+            .ok_or("HOST_NATIVE_COMPOSE_IMAGE_KEY_MISSING")?;
+        if !pinned.contains("@sha256:") {
+            return Err("HOST_NATIVE_COMPOSE_IMAGE_DIGEST_REQUIRED".into());
+        }
+        result.insert(resource.compose_service.clone(), pinned.clone());
+    }
+    Ok(result)
+}
+
+fn read_vm_expected_image_refs(
+    stack_dir: &Path,
+    expected: &[FleetVmContainer],
+) -> Result<HashMap<String, String>, String> {
+    let compose_path = stack_dir.join("docker-compose.yml");
+    let meta =
+        fs::symlink_metadata(&compose_path).map_err(|_| "HOST_NATIVE_COMPOSE_UNAVAILABLE")?;
+    if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 65536 {
+        return Err("HOST_NATIVE_COMPOSE_UNPROVEN".into());
+    }
+    let bytes = fs::read(&compose_path).map_err(|_| "HOST_NATIVE_COMPOSE_UNREADABLE")?;
+    let compose: serde_yaml::Value =
+        serde_yaml::from_slice(&bytes).map_err(|_| "HOST_NATIVE_COMPOSE_PARSE_INVALID")?;
+    let images = super::read_exact_image_environment(stack_dir)?;
+    resolve_owned_vm_images(&compose, &images, expected)
+}
+
+async fn prepare_owned_vm_start(
+    docker: &Docker,
+    stack_dir: &Path,
+    expected: &[FleetVmContainer],
+) -> Result<(Vec<OwnedVmContainer>, Vec<usize>), String> {
+    let expected_images = read_vm_expected_image_refs(stack_dir, expected)?;
+    let owned = owned_application_container_ids(docker, expected).await?;
+    if owned.len() != expected.len() {
+        return Err("HOST_NATIVE_VM_START_REQUIRES_EXISTING_CONTAINERS".into());
+    }
+    // A root journal cannot make Docker state safe if an apparently owned
+    // container is still running an image other than the ReleaseSet image.
+    for container in &owned {
+        if expected_images.get(&container.service) != Some(&container.image_ref) {
+            return Err("HOST_NATIVE_VM_START_IMAGE_MISMATCH".into());
+        }
+    }
+    let order = owned_vm_start_order(&owned)?;
+    if !owned.iter().any(|container| !container.running) {
+        return Err("HOST_NATIVE_VM_START_NO_STOPPED_CONTAINER".into());
+    }
+    Ok((owned, order))
+}
+
+/// Native pre-BEGIN resource evidence. The caller must reserve the same
+/// signed one-shot journal before invoking the mutation helper below.
+pub(crate) async fn preflight_start_owned_application_containers(
+    stack_dir: &Path,
+    expected: &[FleetVmContainer],
+) -> Result<(), String> {
+    let docker = docker_connection().await?;
+    prepare_owned_vm_start(&docker, stack_dir, expected)
+        .await
+        .map(|_| ())
+}
+
+/// Only previously stopped, exactly Compose-owned immutable container IDs
+/// are started. A running Line1/Line2/WARP container is never recreated here.
+/// Native poststate and journal no-replay semantics are enforced by the caller.
+pub(crate) async fn start_stopped_owned_application_containers(
+    stack_dir: &Path,
+    expected: &[FleetVmContainer],
+) -> Result<(), String> {
+    let docker = docker_connection().await?;
+    let (owned, order) = prepare_owned_vm_start(&docker, stack_dir, expected).await?;
+    for index in order {
+        let container = &owned[index];
+        if !container.running {
+            docker
+                .start_container(
+                    &container.id,
+                    None::<bollard::query_parameters::StartContainerOptions>,
+                )
+                .await
+                .map_err(|_| "HOST_NATIVE_VM_START_UNCERTAIN_NO_REPLAY")?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod vm_native_start_order_tests {
+    use super::*;
+
+    fn item(service: &str, dependencies: &[&str]) -> OwnedVmContainer {
+        OwnedVmContainer {
+            id: "b".repeat(64),
+            running: false,
+            service: service.to_owned(),
+            dependencies: dependencies
+                .iter()
+                .map(|value| (*value).to_owned())
+                .collect(),
+            image_ref: "ghcr.io/example/app@sha256:".to_owned() + &"a".repeat(64),
+        }
+    }
+
+    #[test]
+    fn image_identity_is_derived_only_from_trusted_compose_and_pinned_release() {
+        let compose: serde_yaml::Value = serde_yaml::from_str(
+            "services:\n  line2-proxy:\n    image: ${EDGE_GATEWAY_IMAGE:?required}\n",
+        )
+        .unwrap();
+        let resources = vec![FleetVmContainer {
+            container_name: "test-line2".into(),
+            compose_project: "test".into(),
+            compose_service: "line2-proxy".into(),
+        }];
+        let mut images = BTreeMap::new();
+        let digest = "ghcr.io/example/app@sha256:".to_owned() + &"a".repeat(64);
+        images.insert("EDGE_GATEWAY_IMAGE".into(), digest.clone());
+        let selected = resolve_owned_vm_images(&compose, &images, &resources).unwrap();
+        assert_eq!(selected["line2-proxy"], digest);
+        images.insert(
+            "EDGE_GATEWAY_IMAGE".into(),
+            "ghcr.io/example/app:latest".into(),
+        );
+        assert!(resolve_owned_vm_images(&compose, &images, &resources).is_err());
+        images.clear();
+        assert!(resolve_owned_vm_images(&compose, &images, &resources).is_err());
+    }
+
+    #[test]
+    fn startup_order_respects_docker_dependencies_without_touching_mesh() {
+        let resources = vec![
+            item("line1-gateway", &["warp-egress"]),
+            item("line2-proxy", &["warp-egress"]),
+            item("warp-egress", &[]),
+        ];
+        assert_eq!(owned_vm_start_order(&resources).unwrap(), vec![2, 0, 1]);
+        let missing = vec![item("line2-proxy", &["foreign-mesh"])];
+        assert!(owned_vm_start_order(&missing).is_err());
+        let cycle = vec![
+            item("line1-gateway", &["line2-proxy"]),
+            item("line2-proxy", &["line1-gateway"]),
+        ];
+        assert!(owned_vm_start_order(&cycle).is_err());
+    }
 }
 
 /// Running is not equivalent to readiness. A missing healthcheck is not
