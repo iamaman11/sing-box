@@ -456,6 +456,47 @@ pub(crate) fn run(
                     .iter()
                     .filter(|entry| entry.reason_code == "RUNNING_RUNTIME_ONLY_CONFIG_UNPROVEN")
                     .count();
+                if let Some(network) = report.network.as_ref() {
+                    println!("host_vm_network_kernel_observed={}", network.ipv4.is_some());
+                    if let Some(ipv4) = &network.ipv4 {
+                        println!("host_vm_network_ipv4_links={}", ipv4.links.len());
+                        println!("host_vm_network_ipv4_addresses={}", ipv4.addresses.len());
+                        println!("host_vm_network_ipv4_routes={}", ipv4.routes.len());
+                        let mut default_routes = ipv4.routes.iter().filter(|route| {
+                            route.destination == "0.0.0.0" && route.prefix_length == 0
+                        });
+                        let default = default_routes.next();
+                        let exact = default.is_some() && default_routes.next().is_none();
+                        println!("host_vm_network_unique_default_route={exact}");
+                        if let Some(route) = default {
+                            let owner = ipv4
+                                .links
+                                .iter()
+                                .find(|link| link.interface_index == route.output_interface_index)
+                                .map(|link| link.name.as_str())
+                                .unwrap_or("UNPROVEN");
+                            println!("host_vm_network_default_route_interface={owner}");
+                        }
+                    }
+                    println!(
+                        "host_vm_dns_configuration_observed={}",
+                        network.dns_configuration_observed
+                    );
+                    println!(
+                        "host_vm_dns_configured_nameservers={}",
+                        network.dns_nameservers.join(",")
+                    );
+                    println!("host_vm_dns_resolution_proven=false");
+                    println!(
+                        "host_vm_nft_ruleset_observed={}",
+                        network.nft_ruleset_observed
+                    );
+                    println!("host_vm_nft_rule_count={}", network.nft_rule_count);
+                    println!("host_vm_firewall_desired_converged=false");
+                    println!("host_vm_routes_desired_converged=false");
+                } else {
+                    println!("host_vm_network_observation=UNAVAILABLE");
+                }
                 println!("host_vm_resources_schema=1");
                 println!("host_vm_resources_count={}", report.resources.len());
                 println!("host_vm_resources_problem_count={problems}");

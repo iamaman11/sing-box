@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package edge.platform.v1;
 
+import "edge/platform/v1/runtime.proto";
+
 // The only Git-owned selector registry for the fleet. Configuration lives in
 // existing desired state, immutable ReleaseSet and the Worker-v2 secret plane;
 // it is not duplicated into this inventory.
@@ -76,6 +78,21 @@ message FleetVmResourceReadback {
   bytes config_sha256 = 13;
 }
 
+// Native ROOT-namespace observation, not a DNS resolution test, working
+// firewall policy, public routing proof, or mutation authorization. These
+// values MUST NOT imply that the network matches Git desired.
+message FleetVmNetworkReadback {
+  // Direct kernel rtnetlink observation. Optional when netlink is unavailable.
+  Ipv4NetworkObservation ipv4 = 1;
+  // /etc/resolv.conf configuration, not an upstream DNS reply.
+  repeated string dns_nameservers = 2;
+  bool dns_configuration_observed = 3;
+  // Fixed native 'nft -j list ruleset' observation, not an access-policy PASS.
+  bytes nft_ruleset_sha256 = 4;
+  uint32 nft_rule_count = 5;
+  bool nft_ruleset_observed = 6;
+}
+
 message FleetVmResourceReport {
   uint32 schema_version = 1;
   string machine_id = 2;
@@ -83,6 +100,7 @@ message FleetVmResourceReport {
   repeated FleetVmResourceReadback resources = 4;
   // No runner-copied result may claim an authenticated native owner.
   bool remote_attested = 5;
+  FleetVmNetworkReadback network = 6;
 }
 
 enum FleetHostRunState {

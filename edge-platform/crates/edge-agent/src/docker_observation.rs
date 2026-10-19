@@ -13,6 +13,8 @@ use bollard::{
     query_parameters::{ListContainersOptionsBuilder, LogsOptionsBuilder},
 };
 use futures_util::TryStreamExt;
+use prost::Message;
+use std::net::IpAddr;
 
 const DOCKER_SOCKET: &str = "unix:///var/run/docker.sock";
 const DOCKER_API_TIMEOUT_SECONDS: u64 = 6;
@@ -1279,6 +1281,22 @@ mod vm_native_start_order_tests {
     }
 
     #[test]
+    fn native_dns_parser_is_bounded_and_never_assumes_resolution() {
+        assert_eq!(
+            parse_native_dns_configuration(
+                b"# managed by systemd\nnameserver 127.0.0.53\nsearch example.org\nnameserver 1.1.1.1\n"
+            )
+            .unwrap(),
+            vec!["127.0.0.53", "1.1.1.1"]
+        );
+        assert!(parse_native_dns_configuration(b"search example.org\n").is_err());
+        assert!(parse_native_dns_configuration(b"nameserver example.org\n").is_err());
+        assert!(
+            parse_native_dns_configuration(b"nameserver 1.1.1.1\nnameserver 1.1.1.1\n").is_err()
+        );
+    }
+
+    #[test]
     fn scoped_resource_selector_is_closed_to_only_native_line_services() {
         assert_eq!(
             ScopedVmService::from_template("line1-gateway/config.template.json").unwrap(),
@@ -1344,6 +1362,104 @@ fn native_running_health_reason(
         Some(ref state) if state == "starting" => ("HEALTH_STARTING", "STARTING"),
         None => ("RUNNING_NO_HEALTHCHECK", ""),
         _ => ("HEALTH_UNPROVEN", ""),
+    }
+}
+
+/// Bounded direct DNS configuration observation. /etc/resolv.conf may be a
+/// systemd-resolved symlink: it is a source of configuration, never proof that
+/// an upstream nameserver responds.
+fn observe_native_dns_configuration() -> Result<Vec<String>, String> {
+    let path = Path::new("/etc/resolv.conf");
+    let metadata = fs::metadata(path).map_err(|_| "HOST_VM_DNS_CONFIG_UNAVAILABLE")?;
+    if !metadata.is_file() || metadata.len() > 4096 {
+        return Err("HOST_VM_DNS_CONFIG_UNTRUSTED".into());
+    }
+    let bytes = fs::read(path).map_err(|_| "HOST_VM_DNS_CONFIG_UNREADABLE")?;
+    if bytes.len() > 4096 {
+        return Err("HOST_VM_DNS_CONFIG_TOO_LARGE".into());
+    }
+    parse_native_dns_configuration(&bytes)
+}
+
+fn parse_native_dns_configuration(bytes: &[u8]) -> Result<Vec<String>, String> {
+    let raw = std::str::from_utf8(bytes).map_err(|_| "HOST_VM_DNS_CONFIG_NOT_UTF8")?;
+    let mut nameservers = Vec::new();
+    let mut seen = BTreeSet::new();
+    for line in raw.lines() {
+        let mut fields = line.split_whitespace();
+        if fields.next() != Some("nameserver") {
+            continue;
+        }
+        let addr = fields.next().ok_or("HOST_VM_DNS_NAMESERVER_INVALID")?;
+        let parsed = addr
+            .parse::<IpAddr>()
+            .map_err(|_| "HOST_VM_DNS_NAMESERVER_INVALID")?;
+        let canonical = parsed.to_string();
+        if !seen.insert(canonical.clone()) || fields.next().is_some() {
+            return Err("HOST_VM_DNS_NAMESERVER_DUPLICATE_OR_INVALID".into());
+        }
+        nameservers.push(canonical);
+        if nameservers.len() > 8 {
+            return Err("HOST_VM_DNS_TOO_MANY_NAMESERVERS".into());
+        }
+    }
+    if nameservers.is_empty() {
+        return Err("HOST_VM_DNS_NO_NAMESERVERS".into());
+    }
+    Ok(nameservers)
+}
+
+/// Native netfilter ruleset inspection via the installed nft CLI, with no
+/// shell, dynamic arguments, mutation or polling. The digest is a fingerprint
+/// of observed bytes, NOT evidence that firewall desired rules are correct.
+async fn observe_native_nft_ruleset() -> Option<(Vec<u8>, u32)> {
+    // The installed Linux coreutils timeout bounds the fixed nft command
+    // without a Tokio process feature, background agent or polling loop.
+    // The root owner provides every argument; no runner-supplied path or shell.
+    let output = tokio::task::spawn_blocking(|| {
+        std::process::Command::new("/usr/bin/timeout")
+            .args(["-s", "KILL", "6s", "/usr/sbin/nft", "-j", "list", "ruleset"])
+            .env_clear()
+            .output()
+    })
+    .await
+    .ok()?
+    .ok()?;
+    if !output.status.success() || output.stdout.len() > 262144 {
+        return None;
+    }
+    let parsed: serde_json::Value = serde_json::from_slice(&output.stdout).ok()?;
+    let rows = parsed.get("nftables")?.as_array()?;
+    let count = rows
+        .iter()
+        .filter(|entry| entry.get("rule").is_some())
+        .count();
+    let count = u32::try_from(count).ok()?;
+    let digest = ring::digest::digest(&ring::digest::SHA256, &output.stdout)
+        .as_ref()
+        .to_vec();
+    Some((digest, count))
+}
+
+/// Same installed root Agent, same typed readback: netlink, DNS configuration,
+/// and nft ruleset are separate observations. Unknown stays UNKNOWN.
+async fn observe_native_vm_network_readback() -> edge_shared_types::FleetVmNetworkReadback {
+    let ipv4 = super::network_observation::observe_ipv4_network()
+        .await
+        .ok()
+        .filter(|value| value.encode_to_vec().len() <= 24_576);
+    let dns = observe_native_dns_configuration().ok();
+    let nft = observe_native_nft_ruleset().await;
+    edge_shared_types::FleetVmNetworkReadback {
+        ipv4,
+        dns_nameservers: dns.clone().unwrap_or_default(),
+        dns_configuration_observed: dns.is_some(),
+        nft_ruleset_sha256: nft
+            .as_ref()
+            .map(|(hash, _)| hash.clone())
+            .unwrap_or_default(),
+        nft_rule_count: nft.as_ref().map(|(_, count)| *count).unwrap_or_default(),
+        nft_ruleset_observed: nft.is_some(),
     }
 }
 
@@ -1478,6 +1594,7 @@ pub(crate) async fn observe_vm_resource_report(
         observed_at_unix: now,
         resources,
         remote_attested: false,
+        network: Some(observe_native_vm_network_readback().await),
     };
     edge_shared_types::host_resources::validate_vm_resource_report(&report, host)
         .map_err(str::to_owned)?;

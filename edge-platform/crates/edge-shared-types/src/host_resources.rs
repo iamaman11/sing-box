@@ -1,9 +1,11 @@
 //! One typed, bounded VM resource diagnostic. Data from the runner is
 //! STRUCTURAL EVIDENCE only, not authenticated native owner attestation.
 use crate::{
-    FleetHost, FleetHostKind, FleetVmConfigProof, FleetVmResourceReadback, FleetVmResourceReport,
+    FleetHost, FleetHostKind, FleetVmConfigProof, FleetVmNetworkReadback, FleetVmResourceReadback,
+    FleetVmResourceReport,
 };
 use prost::Message;
+use std::net::IpAddr;
 
 pub const MAX_VM_RESOURCE_REPORT_BYTES: usize = 32768;
 
@@ -21,6 +23,9 @@ pub fn validate_vm_resource_report(
         || report.encode_to_vec().len() > MAX_VM_RESOURCE_REPORT_BYTES
     {
         return Err("VM_RESOURCE_REPORT_SCOPE_INVALID");
+    }
+    if let Some(network) = report.network.as_ref() {
+        validate_vm_network_readback(network)?;
     }
     for (row, expected) in report.resources.iter().zip(host.vm_containers.iter()) {
         if row.resource.as_ref() != Some(expected)
@@ -50,6 +55,74 @@ pub fn validate_vm_resource_report(
             || !reason_consistent(row)
         {
             return Err("VM_RESOURCE_REPORT_EVIDENCE_INVALID");
+        }
+    }
+    Ok(())
+}
+
+/// Strict bounds and relationships for runner-copied VM network bytes.
+/// Structural validation NEVER authenticates their claimed source or proves
+/// Internet/DNS/firewall policy convergence.
+pub fn validate_vm_network_readback(network: &FleetVmNetworkReadback) -> Result<(), &'static str> {
+    if network.dns_nameservers.len() > 8
+        || network
+            .dns_nameservers
+            .iter()
+            .any(|address| address.parse::<IpAddr>().is_err())
+        || !network.dns_configuration_observed && !network.dns_nameservers.is_empty()
+        || !network.nft_ruleset_observed
+            && (!network.nft_ruleset_sha256.is_empty() || network.nft_rule_count != 0)
+        || network.nft_ruleset_observed
+            && (network.nft_ruleset_sha256.len() != 32
+                || network.nft_ruleset_sha256.iter().all(|byte| *byte == 0))
+    {
+        return Err("VM_NETWORK_EVIDENCE_INVALID");
+    }
+    let mut nameservers = std::collections::BTreeSet::new();
+    if network
+        .dns_nameservers
+        .iter()
+        .any(|address| !nameservers.insert(address))
+    {
+        return Err("VM_NETWORK_DNS_DUPLICATE");
+    }
+    if let Some(ipv4) = &network.ipv4 {
+        if ipv4.links.len() > 128
+            || ipv4.addresses.len() > 256
+            || ipv4.routes.len() > 512
+            || ipv4.links.iter().any(|link| {
+                link.interface_index == 0
+                    || link.name.is_empty()
+                    || link.name.len() > 64
+                    || !link.name.bytes().all(|byte| {
+                        byte.is_ascii_alphanumeric()
+                            || matches!(byte, b'_' | b'.' | b'-' | b':' | b'@')
+                    })
+            })
+            || ipv4.addresses.iter().any(|address| {
+                address.address.parse::<std::net::Ipv4Addr>().is_err()
+                    || address.prefix_length > 32
+                    || !ipv4
+                        .links
+                        .iter()
+                        .any(|link| link.interface_index == address.interface_index)
+            })
+            || ipv4.routes.iter().any(|route| {
+                route.destination.parse::<std::net::Ipv4Addr>().is_err()
+                    || route.prefix_length > 32
+                    || route.output_interface_index != 0
+                        && !ipv4
+                            .links
+                            .iter()
+                            .any(|link| link.interface_index == route.output_interface_index)
+                    || route
+                        .preferred_source
+                        .as_ref()
+                        .is_some_and(|source| source.parse::<std::net::Ipv4Addr>().is_err())
+            })
+            || ipv4.encode_to_vec().len() > 24_576
+        {
+            return Err("VM_NETWORK_KERNEL_EVIDENCE_INVALID");
         }
     }
     Ok(())
@@ -173,9 +246,51 @@ mod tests {
                 ..Default::default()
             }],
             remote_attested: false,
+            network: None,
         };
         (host, report)
     }
+    #[test]
+    fn network_report_cannot_forge_dns_or_firewall_proof() {
+        use crate::{Ipv4AddressObservation, Ipv4LinkObservation, Ipv4NetworkObservation};
+        let network = FleetVmNetworkReadback {
+            ipv4: Some(Ipv4NetworkObservation {
+                links: vec![Ipv4LinkObservation {
+                    interface_index: 2,
+                    name: "ens3".into(),
+                    up: true,
+                    lower_up: true,
+                    loopback: false,
+                }],
+                addresses: vec![Ipv4AddressObservation {
+                    interface_index: 2,
+                    address: "192.0.2.10".into(),
+                    prefix_length: 24,
+                    global_scope: true,
+                }],
+                ..Default::default()
+            }),
+            dns_nameservers: vec!["1.1.1.1".into()],
+            dns_configuration_observed: true,
+            nft_rule_count: 2,
+            nft_ruleset_observed: true,
+            nft_ruleset_sha256: vec![42; 32],
+        };
+        assert!(validate_vm_network_readback(&network).is_ok());
+        let mut forged = network.clone();
+        forged.nft_ruleset_observed = false;
+        assert!(validate_vm_network_readback(&forged).is_err());
+        forged = network.clone();
+        forged.dns_configuration_observed = false;
+        assert!(validate_vm_network_readback(&forged).is_err());
+        forged = network.clone();
+        forged.ipv4.as_mut().unwrap().addresses[0].interface_index = 999;
+        assert!(validate_vm_network_readback(&forged).is_err());
+        forged = network.clone();
+        forged.dns_nameservers.push("not-an-ip".into());
+        assert!(validate_vm_network_readback(&forged).is_err());
+    }
+
     #[test]
     fn resource_report_fails_closed_on_forgery_and_foreign_owner() {
         let (host, mut report) = fixture();
@@ -343,6 +458,7 @@ mod resource_planning_tests {
                 ..Default::default()
             }],
             remote_attested: false,
+            network: None,
         };
         (host, report)
     }
