@@ -330,8 +330,10 @@ fn select_scoped_vm_create(
         .resource
         .as_ref()
         .ok_or("HOST_VM_CREATE_RESOURCE_IDENTITY_MISSING")?;
-    if !matches!(resource.compose_service.as_str(), "line1-gateway" | "line2-proxy")
-        || !host.vm_containers.contains(resource)
+    if !matches!(
+        resource.compose_service.as_str(),
+        "line1-gateway" | "line2-proxy"
+    ) || !host.vm_containers.contains(resource)
         || plan.resources.iter().any(|entry| {
             entry.resource.as_ref() != Some(resource)
                 && entry.step != FleetHostPlannedStep::Noop as i32
@@ -345,10 +347,7 @@ fn select_scoped_vm_create(
 /// The two gateways use only an existing, owned Compose edge_net bridge.
 /// Never create/adopt Mesh or an unrelated network as a side effect of
 /// recovering one missing container.
-fn verify_scoped_gateway_compose_network(
-    stack_dir: &Path,
-    service: &str,
-) -> Result<(), String> {
+fn verify_scoped_gateway_compose_network(stack_dir: &Path, service: &str) -> Result<(), String> {
     let compose = read_native_vm_compose(stack_dir)?;
     let network = compose
         .get("services")
@@ -374,17 +373,18 @@ fn verify_scoped_gateway_compose_network(
 
 /// Exact Docker network ID + Compose labels, from the engine itself. A
 /// successful file read or a guessed name is not proof of network ownership.
-async fn read_owned_edge_network_id(
-    docker: &Docker,
-    host: &FleetHost,
-) -> Result<String, String> {
+async fn read_owned_edge_network_id(docker: &Docker, host: &FleetHost) -> Result<String, String> {
     let project = host
         .vm_containers
         .first()
         .ok_or("HOST_VM_CREATE_PROJECT_UNPROVEN")?
         .compose_project
         .as_str();
-    if host.vm_containers.iter().any(|item| item.compose_project != project) {
+    if host
+        .vm_containers
+        .iter()
+        .any(|item| item.compose_project != project)
+    {
         return Err("HOST_VM_CREATE_PROJECT_IDENTITY_CHANGED".into());
     }
     let name = format!("{project}_edge_net");
@@ -396,8 +396,7 @@ async fn read_owned_edge_network_id(
         || network.driver.as_deref() != Some("bridge")
         || !network.labels.as_ref().is_some_and(|labels| {
             labels.get("com.docker.compose.project").map(String::as_str) == Some(project)
-                && labels.get("com.docker.compose.network").map(String::as_str)
-                    == Some("edge_net")
+                && labels.get("com.docker.compose.network").map(String::as_str) == Some("edge_net")
         })
     {
         return Err("HOST_VM_CREATE_NETWORK_OWNER_UNPROVEN".into());
@@ -436,7 +435,10 @@ pub(crate) async fn preflight_native_vm_run(
             value if value == step && create_missing.is_none() => changed += 1,
             FleetHostPlannedStep::Install
                 if create_missing.as_deref()
-                    == resource.resource.as_ref().map(|item| item.compose_service.as_str()) =>
+                    == resource
+                        .resource
+                        .as_ref()
+                        .map(|item| item.compose_service.as_str()) =>
             {
                 changed += 1;
             }
@@ -472,9 +474,7 @@ pub(crate) async fn preflight_native_vm_run(
     check_owned_vm_snapshot(host, &owned, &identities)?;
     let mut edge_network_id = None;
     if let Some(service) = create_missing.as_deref() {
-        if owned.len() + 1 != host.vm_containers.len()
-            || owned.iter().any(|item| !item.running)
-        {
+        if owned.len() + 1 != host.vm_containers.len() || owned.iter().any(|item| !item.running) {
             return Err("HOST_VM_CREATE_NEIGHBOUR_INCOMPLETE".into());
         }
         verify_scoped_gateway_compose_network(stack_dir, service)?;
@@ -555,16 +555,30 @@ pub(crate) async fn apply_native_vm_run_once(
                 stack_dir,
                 &image_vars,
                 &[
-                    "--profile", "tunnel", "up", "-d", "--no-deps",
-                    "--no-build", "--pull", "never", "--no-recreate", "line1-gateway",
+                    "--profile",
+                    "tunnel",
+                    "up",
+                    "-d",
+                    "--no-deps",
+                    "--no-build",
+                    "--pull",
+                    "never",
+                    "--no-recreate",
+                    "line1-gateway",
                 ],
             ),
             "line2-proxy" => super::run_compose(
                 stack_dir,
                 &image_vars,
                 &[
-                    "up", "-d", "--no-deps", "--no-build", "--pull",
-                    "never", "--no-recreate", "line2-proxy",
+                    "up",
+                    "-d",
+                    "--no-deps",
+                    "--no-build",
+                    "--pull",
+                    "never",
+                    "--no-recreate",
+                    "line2-proxy",
                 ],
             ),
             _ => Err("HOST_VM_CREATE_SCOPE_INVALID".into()),
@@ -875,7 +889,8 @@ fn verify_native_vm_run_poststate(
             (None, None) if !desired_running => {}
             (None, Some(current))
                 if desired_running
-                    && plan.create_missing.as_deref() == Some(selector.compose_service.as_str())
+                    && plan.create_missing.as_deref()
+                        == Some(selector.compose_service.as_str())
                     && current.running
                     && plan.desired_graph.as_ref().is_some_and(|graph| {
                         graph.resources.iter().any(|resource| {
@@ -2021,12 +2036,9 @@ mod vm_native_start_order_tests {
         assert!(resolve_compose_dependencies(&foreign, &selectors).is_err());
     }
 
-
     #[test]
     fn scoped_create_is_only_one_gateway_with_unchanged_neighbours() {
-        use edge_shared_types::{
-            FleetVmResourceTransition, FleetVmResourceTransitionPlan,
-        };
+        use edge_shared_types::{FleetVmResourceTransition, FleetVmResourceTransitionPlan};
         let selectors = ["line1-gateway", "line2-proxy", "warp-egress"]
             .into_iter()
             .map(|service| FleetVmContainer {
@@ -2092,14 +2104,16 @@ mod vm_native_start_order_tests {
         let graph = edge_shared_types::FleetVmDesiredGraph {
             schema_version: 1,
             machine_id: host.machine_id.clone(),
-            resources: selectors.iter().enumerate().map(|(i, resource)| {
-                edge_shared_types::FleetVmDesiredResource {
+            resources: selectors
+                .iter()
+                .enumerate()
+                .map(|(i, resource)| edge_shared_types::FleetVmDesiredResource {
                     resource: Some(resource.clone()),
                     image_ref: if i == 2 { warp.clone() } else { image.clone() },
                     config_template_sha256: if i == 2 { vec![] } else { vec![8; 32] },
                     ..Default::default()
-                }
-            }).collect(),
+                })
+                .collect(),
         };
         let plan = NativeVmRunPlan {
             step: FleetHostPlannedStep::Start,
