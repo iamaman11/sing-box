@@ -25,6 +25,7 @@ pub use fleet_host as managed_host;
 pub mod host_journal;
 pub mod host_lifecycle;
 pub mod host_planner;
+pub mod host_resources;
 
 pub mod initial_credential_attestation;
 pub use initial_credential_attestation::first_use_host_attestation_sha256;

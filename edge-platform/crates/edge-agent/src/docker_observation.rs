@@ -259,6 +259,103 @@ pub(crate) async fn stop_owned_application_containers(
     Ok(())
 }
 
+/// Read-only, per-resource Docker evidence. Each entry is inspected once:
+/// labels, immutable ID and state come from the SAME inspect response.
+/// Never read or emit environment, credentials, mount contents or Docker logs.
+pub(crate) async fn observe_vm_resource_report(
+    host: &edge_shared_types::FleetHost,
+) -> Result<edge_shared_types::FleetVmResourceReport, String> {
+    use edge_shared_types::{FleetVmResourceReadback, FleetVmResourceReport};
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "HOST_VM_RESOURCES_CLOCK_UNAVAILABLE")?
+        .as_secs();
+    let docker = docker_connection().await.ok();
+    let mut resources = Vec::with_capacity(host.vm_containers.len());
+    for resource in &host.vm_containers {
+        let mut row = FleetVmResourceReadback {
+            resource: Some(resource.clone()),
+            reason_code: "DOCKER_UNAVAILABLE".to_owned(),
+            ..Default::default()
+        };
+        if let Some(docker) = &docker {
+            match docker.inspect_container(&resource.container_name, None).await {
+                Err(BollardError::DockerResponseServerError { status_code: 404, .. }) => {
+                    row.reason_code = "CONTAINER_ABSENT".to_owned();
+                }
+                Err(_) => row.reason_code = "INSPECT_UNAVAILABLE".to_owned(),
+                Ok(inspect) => {
+                    row.present = true;
+                    row.reason_code = "FOREIGN_OWNER".to_owned();
+                    let valid_labels = inspect
+                        .config
+                        .as_ref()
+                        .and_then(|cfg| cfg.labels.as_ref())
+                        .is_some_and(|labels| {
+                            exact_application_compose_owner(
+                                &resource.container_name,
+                                labels,
+                                &host.vm_containers,
+                            ).is_ok()
+                        });
+                    let id = inspect.id.as_deref().unwrap_or("");
+                    let valid_id = id.len() == 64
+                        && id.bytes().all(|b| b.is_ascii_hexdigit());
+                    if inspect.name.as_deref()
+                            == Some(format!("/{}", resource.container_name).as_str())
+                        && valid_labels && valid_id
+                    {
+                        row.ownership_proven = true;
+                        row.container_id = id.to_owned();
+                        if let Some(config) = &inspect.config {
+                            row.image = config.image.as_deref()
+                                .filter(|image| image.len() <= 256)
+                                .unwrap_or("").to_owned();
+                        }
+                        if let Some(restarts) = inspect.restart_count
+                            .and_then(|v| u64::try_from(v).ok()) {
+                            row.restart_count = restarts;
+                            row.restart_count_proven = true;
+                        }
+                        row.reason_code = "STATE_UNPROVEN".to_owned();
+                        if let Some(state) = &inspect.state {
+                            if let Ok(running) = require_known_native_container_state(state) {
+                                row.running_proven = true;
+                                row.running = running;
+                                row.reason_code = if running {
+                                    "RUNNING".to_owned()
+                                } else {
+                                    "STOPPED".to_owned()
+                                };
+                                if running {
+                                    if let Some(health) = state.health.as_ref()
+                                        .and_then(|h| h.status.as_ref()) {
+                                        row.health = format!("{health:?}");
+                                        if row.health.eq_ignore_ascii_case("unhealthy") {
+                                            row.reason_code = "HEALTH_DEGRADED".to_owned();
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        resources.push(row);
+    }
+    let report = FleetVmResourceReport {
+        schema_version: 1,
+        machine_id: host.machine_id.clone(),
+        observed_at_unix: now,
+        resources,
+        remote_attested: false,
+    };
+    edge_shared_types::host_resources::validate_vm_resource_report(&report, host)
+        .map_err(str::to_owned)?;
+    Ok(report)
+}
+
 pub(crate) async fn observe_docker() -> Result<DockerObservation, String> {
     let docker = docker_connection().await?;
 

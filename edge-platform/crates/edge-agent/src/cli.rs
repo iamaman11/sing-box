@@ -48,6 +48,8 @@ pub(crate) enum LocalCommand {
     Diagnose,
     /// Native read-only protobuf observation; not a mutation receipt.
     HostObserve,
+    /// Read-only typed per-container Docker evidence from protected Git trust.
+    HostResources,
     /// One native VM host transaction, with an exact protobuf intent on stdin.
     HostApply,
     /// First-use root-only trust enrollment. Never exposed by the runner sudoers.
@@ -122,6 +124,7 @@ impl LocalCommand {
             Self::Verify => "local-verify",
             Self::Diagnose => "local-diagnose",
             Self::HostObserve => "local-host-observe",
+            Self::HostResources => "local-host-resources",
             Self::HostApply => "local-host-apply",
             Self::HostEnroll { .. } => "local-host-enroll",
             Self::QualityLine2 => "local-quality-line2",
@@ -187,6 +190,8 @@ mod tests {
         assert!(Cli::try_parse_from(["edge-agent", "local", "verify"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "diagnose"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "host-observe"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "host-resources"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "host-resources", "stop"]).is_err());
         assert!(Cli::try_parse_from(["edge-agent", "local", "host-apply"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "host-apply", "unsafe"]).is_err());
         assert!(Cli::try_parse_from(["edge-agent", "local", "host-observe", "write"]).is_err());

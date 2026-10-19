@@ -47,6 +47,31 @@ message FleetVmContainer {
   string compose_service = 3;
 }
 
+// One strictly read-only Docker report from the installed root owner. This
+// does not attest an end-to-end network connection or authenticate a runner.
+message FleetVmResourceReadback {
+  FleetVmContainer resource = 1;
+  bool present = 2;
+  bool ownership_proven = 3;
+  bool running = 4;
+  bool running_proven = 5;
+  string container_id = 6;
+  string image = 7;
+  string health = 8;
+  uint64 restart_count = 9;
+  bool restart_count_proven = 10;
+  string reason_code = 11;
+}
+
+message FleetVmResourceReport {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  uint64 observed_at_unix = 3;
+  repeated FleetVmResourceReadback resources = 4;
+  // No runner-copied result may claim an authenticated native owner.
+  bool remote_attested = 5;
+}
+
 enum FleetHostRunState {
   FLEET_HOST_RUN_STATE_UNSPECIFIED = 0;
   FLEET_HOST_RUN_STATE_STOPPED = 1;

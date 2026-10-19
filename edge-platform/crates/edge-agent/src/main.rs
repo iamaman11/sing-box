@@ -339,6 +339,15 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
         cli::LocalCommand::HostObserve => run_local_host_observe(&stack_dir)
             .await
             .map_err(AgentError::Command),
+        cli::LocalCommand::HostResources => {
+            let host = host_native::registered_vm_host().map_err(AgentError::Command)?;
+            let report = docker_observation::observe_vm_resource_report(&host)
+                .await
+                .map_err(AgentError::Command)?;
+            io::stdout()
+                .write_all(&report.encode_to_vec())
+                .map_err(|_| AgentError::Command("HOST_RESOURCE_REPORT_STDOUT_FAILED".into()))
+        },
         cli::LocalCommand::HostApply => host_native::apply(&stack_dir)
             .await
             .map_err(AgentError::Command),
