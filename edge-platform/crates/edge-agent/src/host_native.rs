@@ -12,7 +12,6 @@ pub(super) const HOST_PARENT: &str = "/opt/vultr-edge-stack";
 pub(super) const TRUSTED_ROOT: &str = "/opt/vultr-edge-stack/native-host";
 const JOURNAL_ROOT: &str = "/opt/vultr-edge-stack/native-host/journal";
 
-
 /// A single kernel-owned exclusion guard for root enrollment AND host apply.
 /// The permanent journal is never swapped or copied across ReleaseSets.
 /// The lock file is the only new disk resource; it is not an operation ledger.
@@ -26,8 +25,7 @@ pub(super) fn owner_operation_lock() -> Result<std::fs::File, String> {
         return Err("HOST_NATIVE_OWNER_ROOT_REQUIRED".into());
     }
     let parent = Path::new(HOST_PARENT);
-    let metadata =
-        fs::symlink_metadata(parent).map_err(|_| "HOST_NATIVE_PARENT_UNAVAILABLE")?;
+    let metadata = fs::symlink_metadata(parent).map_err(|_| "HOST_NATIVE_PARENT_UNAVAILABLE")?;
     if !metadata.file_type().is_dir()
         || metadata.uid() != 0
         || metadata.permissions().mode() & 0o022 != 0
@@ -45,8 +43,8 @@ pub(super) fn owner_operation_lock() -> Result<std::fs::File, String> {
     let identity = file
         .metadata()
         .map_err(|_| "HOST_NATIVE_OWNER_LOCK_UNAVAILABLE")?;
-    let pathname = fs::symlink_metadata(&lock_path)
-        .map_err(|_| "HOST_NATIVE_OWNER_LOCK_UNAVAILABLE")?;
+    let pathname =
+        fs::symlink_metadata(&lock_path).map_err(|_| "HOST_NATIVE_OWNER_LOCK_UNAVAILABLE")?;
     if !identity.is_file()
         || !pathname.file_type().is_file()
         || identity.uid() != 0

@@ -142,8 +142,7 @@ fn validate_existing_trust_for_refresh(
     pinned_key: &str,
 ) -> Result<(), String> {
     let existing_machine = super::host_native::root_file(&trusted.join("machine-id"), 128)?;
-    let existing_key =
-        super::host_native::root_file(&trusted.join("worker-public-key.hex"), 128)?;
+    let existing_key = super::host_native::root_file(&trusted.join("worker-public-key.hex"), 128)?;
     if existing_machine.as_slice() != format!("{machine_id}\n").as_bytes()
         || existing_key.as_slice() != format!("{pinned_key}\n").as_bytes()
     {
@@ -170,7 +169,9 @@ fn refresh_release_snapshots(
     spec: &[u8],
 ) -> Result<(), String> {
     let stage = trusted.join(format!(".next-release-{}", std::process::id()));
-    DirBuilder::new().mode(0o700).create(&stage)
+    DirBuilder::new()
+        .mode(0o700)
+        .create(&stage)
         .map_err(|_| "HOST_ENROLL_REFRESH_STAGE_NOT_EMPTY")?;
     let snapshots = [
         ("fleet-registry.pb", registry_pb),
