@@ -3060,6 +3060,41 @@ mod release_set_tests {
                 },
             ],
         };
+        // Generic Git-owned resource scope: new Docker Compose services
+        // require an inventory change, not a Rust binary or a runner sudoer.
+        let mut scoped = expected.clone();
+        scoped.hosts[0].vm_containers = vec![
+            FleetVmContainer {
+                container_name: "a-gateway".to_owned(),
+                compose_project: "edge-app".to_owned(),
+                compose_service: "gateway".to_owned(),
+            },
+            FleetVmContainer {
+                container_name: "b-proxy".to_owned(),
+                compose_project: "edge-app".to_owned(),
+                compose_service: "proxy".to_owned(),
+            },
+        ];
+        assert!(validate_host_registry(&scoped).is_ok());
+        let mut invalid_scope = scoped.clone();
+        invalid_scope.hosts[0].vm_containers.reverse();
+        assert!(validate_host_registry(&invalid_scope).is_err());
+        invalid_scope = scoped.clone();
+        invalid_scope.hosts[0].vm_containers[1].container_name =
+            "a-gateway".to_owned();
+        assert!(validate_host_registry(&invalid_scope).is_err());
+        invalid_scope = scoped.clone();
+        invalid_scope.hosts[0].vm_containers[1].compose_service =
+            "gateway".to_owned();
+        assert!(validate_host_registry(&invalid_scope).is_err());
+        invalid_scope = scoped.clone();
+        invalid_scope.hosts[0].vm_containers[1].compose_project =
+            "../foreign-project".to_owned();
+        assert!(validate_host_registry(&invalid_scope).is_err());
+        invalid_scope = scoped.clone();
+        invalid_scope.hosts[2].vm_containers =
+            invalid_scope.hosts[0].vm_containers.clone();
+        assert!(validate_host_registry(&invalid_scope).is_err());
         let bytes = encode_host_registry(&expected).unwrap();
         assert_eq!(decode_host_registry(&bytes).unwrap(), expected);
         let mut invalid = expected.clone();

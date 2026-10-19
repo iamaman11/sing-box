@@ -683,6 +683,14 @@ mod tests {
             require_known_native_container_state(&missing),
             Err("HOST_NATIVE_CONTAINER_RUNNING_UNPROVEN")
         );
+        assert_eq!(
+            exact_application_compose_owner(
+                "vultr-line2-proxy",
+                &HashMap::new(),
+                &[],
+            ),
+            Err("HOST_NATIVE_CONTAINER_OUTSIDE_APPLICATION_SCOPE")
+        );
         let valid_project = HashMap::from([
             (
                 "com.docker.compose.project".to_owned(),

@@ -28,6 +28,17 @@ intent/result по registry/desired/release, но его transport-копия
 остаётся `UNAUTHENTICATED`, не физическим receipt.
 Сквозной автоматический lifecycle для Windows и VM пока не доказан.
 
+## Docker resources — один Git-owned scope
+
+`hosts.textproto` теперь задаёт для каждой VM только отсортированные
+`vm_containers` (container name + Compose project/service). Это не второй
+compose/config: образ, ports, secrets и настройки остаются в ReleaseSet.
+Rust Agent читает scope из защищённого `trust.pb` и перед STOP/RUNNING
+сверяет Docker labels + immutable ID; незаявленный/чужой контейнер не
+становится своим. Без trust или без selectors состояние `UNPROVEN`,
+а не доступ ко всем контейнерам. VM target по-прежнему unset/observe-only.
+Это код PR #403, не физическая установка или проверка публичного интернета.
+
 ## Допуск новой операции
 
 Только строго типизированные `machine_id / resource_id / desired_digest / immutable_release / operation_id / native_owner` и однозначные `READY | DEGRADED | BLOCKED | UNKNOWN_NO_REPLAY`. Нет старого `Issue #26` как mutation authority: старые comments — неизменяемый архив, не исходное желаемое состояние. Для сбоя секретов — fresh Worker-provision с **новой** resource identity, без переноса старой A/B, только после проверки границ собственности старого ресурса. Удалять старые файлы и контейнеры можно при доказанном scope и сохранённом способе доступа; не трогать Cloudflare One, Mesh других проектов и общую инфраструктуру.
