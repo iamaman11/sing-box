@@ -359,7 +359,10 @@ fn verify_scoped_gateway_network_policy(
     };
     if network.network_name != "edge_net"
         || network.driver != "bridge"
-        || !network.attached_services.iter().any(|member| member == service)
+        || !network
+            .attached_services
+            .iter()
+            .any(|member| member == service)
     {
         return Err("HOST_VM_CREATE_NETWORK_SCOPE_UNSUPPORTED".into());
     }
@@ -2208,10 +2211,7 @@ mod vm_native_start_order_tests {
         let network_id = "a".repeat(64);
         let mut endpoint = bollard::models::EndpointSettings::default();
         endpoint.network_id = Some(network_id.clone());
-        let mut endpoints = HashMap::from([(
-            "vultr-edge_edge_net".to_owned(),
-            endpoint,
-        )]);
+        let mut endpoints = HashMap::from([("vultr-edge_edge_net".to_owned(), endpoint)]);
         assert!(exact_owned_network_attachment(
             Some(&endpoints),
             "vultr-edge_edge_net",
