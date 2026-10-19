@@ -404,6 +404,24 @@ where
         return Err("HOST_NATIVE_EXECUTION_ACTION_NOT_ALLOWED");
     }
 
+    // An UNKNOWN from ANY native scope freezes further VM mutations,
+    // including host-wide ones. A narrower journal filename cannot be used
+    // as a workaround for an unresolved signed mutation.
+    let current_scope = native_scope_pending_path(protected_journal_dir, intent);
+    for item in fs::read_dir(protected_journal_dir)
+        .map_err(|_| "HOST_RESOURCE_PENDING_DIRECTORY_UNAVAILABLE")?
+    {
+        let name = item
+            .map_err(|_| "HOST_RESOURCE_PENDING_DIRECTORY_UNAVAILABLE")?
+            .file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with("resource-") && name.ends_with(".pending.pb") {
+            let path = protected_journal_dir.join(name.as_ref());
+            if path != current_scope {
+                return Err("HOST_OTHER_RESOURCE_PENDING_UNKNOWN_NO_REPLAY");
+            }
+        }
+    }
     // Every operation_id is single use, including when the machine has
     // already converged. Otherwise a previously executed signed comment
     // could be reinterpreted as a fresh OBSERVED/NOOP after a lost ACK.
@@ -462,6 +480,11 @@ where
     // and cannot be promoted to VERIFIED by an external caller.
     if step == FleetHostPlannedStep::Blocked {
         return Err("HOST_NATIVE_PLAN_BLOCKED");
+    }
+    // An exact resource signature must never be interpreted by the host
+    // planner as a host-wide START/STOP/INSTALL or an unrelated NOOP.
+    if intent.resource_id != "sing-box" && step != FleetHostPlannedStep::ReplaceRelease {
+        return Err("HOST_SCOPED_INTENT_CANNOT_EXECUTE_HOST_WIDE_STEP");
     }
     // RECOVER may inspect a stable NOOP or settle a previously signed BEGIN,
     // but must NEVER turn into a second START/STOP/INSTALL attempt.

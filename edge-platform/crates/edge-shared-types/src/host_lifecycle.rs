@@ -318,6 +318,25 @@ fn sha(value: &[u8]) -> bool {
     value.len() == 32 && value.iter().any(|b| *b != 0)
 }
 
+/// A scoped signature cannot select an arbitrary Docker or filesystem path.
+/// Only registered VM gateway configuration children have native effectors.
+pub fn validate_scoped_vm_resource_id(
+    host: &crate::FleetHost,
+    resource_id: &str,
+) -> Result<(), &'static str> {
+    if host.kind != FleetHostKind::Vm as i32 {
+        return Err("HOST_SCOPE_VM_OWNER_REQUIRED");
+    }
+    if resource_id.len() > 128 || host.vm_containers.iter().filter(|selector| {
+        matches!(selector.compose_service.as_str(), "line1-gateway" | "line2-proxy")
+            && format!("config/{}/{}", selector.compose_project, selector.compose_service)
+                == resource_id
+    }).count() != 1 {
+        return Err("HOST_SCOPE_RESOURCE_NOT_REGISTERED");
+    }
+    Ok(())
+}
+
 pub fn validate_host_intent(
     intent: &FleetHostIntent,
     registry: &HostRegistry,
@@ -330,7 +349,7 @@ pub fn validate_host_intent(
     // Per-resource execution needs its own native plan and physical readback.
     if intent.schema_version != 1
         || !token(&intent.machine_id)
-        || intent.resource_id != "sing-box"
+        || intent.resource_id.is_empty()
         || !token(&intent.operation_id)
         || intent.requested_at_unix == 0
     {
@@ -366,6 +385,12 @@ pub fn validate_host_intent(
     }
     let action =
         FleetHostAction::try_from(intent.action).map_err(|_| "HOST_INTENT_ACTION_INVALID")?;
+    if intent.resource_id != "sing-box" {
+        if action != FleetHostAction::Apply {
+            return Err("HOST_SCOPE_ACTION_NOT_APPLY");
+        }
+        validate_scoped_vm_resource_id(host, &intent.resource_id)?;
+    }
     let mode =
         FleetHostMode::try_from(intent.requested_mode).map_err(|_| "HOST_INTENT_MODE_INVALID")?;
     if action == FleetHostAction::Unspecified
@@ -1003,6 +1028,40 @@ mod tests {
         invalid = intent.clone();
         invalid.operation_id = "../forged".to_owned();
         assert!(check(&invalid));
+    }
+
+    #[test]
+    fn only_registered_vm_config_can_be_signed() {
+        let (mut registry, mut intent, reg, desired, release) = fixture();
+        registry.hosts[0].kind = FleetHostKind::Vm as i32;
+        registry.hosts[0].owner =
+            Some(crate::managed_host::Owner::VmMachineId(intent.machine_id.clone()));
+        registry.hosts[0].vm_containers = vec![
+            crate::FleetVmContainer {
+                container_name: "vultr-line2-proxy".into(),
+                compose_project: "vultr-edge".into(),
+                compose_service: "line2-proxy".into(),
+            }
+        ];
+        intent.kind = FleetHostKind::Vm as i32;
+        intent.resource_id = "config/vultr-edge/line2-proxy".into();
+        assert!(validate_host_intent(&intent, &registry, &reg, &desired, &release).is_ok());
+        for scope in [
+            "config/vultr-edge/foreign",
+            "container/vultr-edge/line2-proxy",
+            "config/vultr-edge/../line2-proxy",
+            "host/vm",
+            "config/foreign/line2-proxy",
+        ] {
+            intent.resource_id = scope.into();
+            assert!(validate_host_intent(&intent, &registry, &reg, &desired, &release).is_err());
+        }
+        intent.resource_id = "config/vultr-edge/line2-proxy".into();
+        intent.action = FleetHostAction::Recover as i32;
+        assert_eq!(
+            validate_host_intent(&intent, &registry, &reg, &desired, &release),
+            Err("HOST_SCOPE_ACTION_NOT_APPLY")
+        );
     }
 
     #[test]
