@@ -762,11 +762,26 @@ mod tests {
 
     #[test]
     fn missing_or_starting_health_is_never_reported_healthy() {
-        assert_eq!(native_running_health_reason(true, Some("Healthy")), ("HEALTHY", "HEALTHY"));
-        assert_eq!(native_running_health_reason(true, Some("Starting")), ("HEALTH_STARTING", "STARTING"));
-        assert_eq!(native_running_health_reason(true, Some("Unhealthy")), ("HEALTH_UNHEALTHY", "UNHEALTHY"));
-        assert_eq!(native_running_health_reason(true, None), ("RUNNING_NO_HEALTHCHECK", ""));
-        assert_eq!(native_running_health_reason(true, Some("Unknown")), ("HEALTH_UNPROVEN", ""));
+        assert_eq!(
+            native_running_health_reason(true, Some("Healthy")),
+            ("HEALTHY", "HEALTHY")
+        );
+        assert_eq!(
+            native_running_health_reason(true, Some("Starting")),
+            ("HEALTH_STARTING", "STARTING")
+        );
+        assert_eq!(
+            native_running_health_reason(true, Some("Unhealthy")),
+            ("HEALTH_UNHEALTHY", "UNHEALTHY")
+        );
+        assert_eq!(
+            native_running_health_reason(true, None),
+            ("RUNNING_NO_HEALTHCHECK", "")
+        );
+        assert_eq!(
+            native_running_health_reason(true, Some("Unknown")),
+            ("HEALTH_UNPROVEN", "")
+        );
         assert_eq!(native_running_health_reason(false, None), ("STOPPED", ""));
     }
 

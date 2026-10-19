@@ -62,14 +62,34 @@ fn reason_consistent(row: &FleetVmResourceReadback) -> bool {
         "DOCKER_UNAVAILABLE" | "INSPECT_UNAVAILABLE" => !row.present,
         "FOREIGN_OWNER" => row.present && !row.ownership_proven,
         "STATE_UNPROVEN" => row.present && row.ownership_proven && !row.running_proven,
-        "HEALTHY" => row.present && row.ownership_proven && row.running_proven
-            && row.running && row.health == "HEALTHY",
-        "HEALTH_STARTING" => row.present && row.ownership_proven && row.running_proven
-            && row.running && row.health == "STARTING",
-        "HEALTH_UNHEALTHY" => row.present && row.ownership_proven && row.running_proven
-            && row.running && row.health == "UNHEALTHY",
-        "RUNNING_NO_HEALTHCHECK" | "HEALTH_UNPROVEN" => row.present
-            && row.ownership_proven && row.running_proven && row.running && row.health.is_empty(),
+        "HEALTHY" => {
+            row.present
+                && row.ownership_proven
+                && row.running_proven
+                && row.running
+                && row.health == "HEALTHY"
+        }
+        "HEALTH_STARTING" => {
+            row.present
+                && row.ownership_proven
+                && row.running_proven
+                && row.running
+                && row.health == "STARTING"
+        }
+        "HEALTH_UNHEALTHY" => {
+            row.present
+                && row.ownership_proven
+                && row.running_proven
+                && row.running
+                && row.health == "UNHEALTHY"
+        }
+        "RUNNING_NO_HEALTHCHECK" | "HEALTH_UNPROVEN" => {
+            row.present
+                && row.ownership_proven
+                && row.running_proven
+                && row.running
+                && row.health.is_empty()
+        }
         "STOPPED" => row.present && row.ownership_proven && row.running_proven && !row.running,
         _ => false,
     }
