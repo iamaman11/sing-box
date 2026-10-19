@@ -219,7 +219,6 @@ jobs:
             ${{ runner.temp }}/host-native-observation.pb
             ${{ runner.temp }}/host-operation/host-result.pb
           if-no-files-found: ignore
-          if-no-files-found: ignore
           retention-days: 7
 
   report:
@@ -302,6 +301,38 @@ jobs:
           grep -Fxq 'host_plan_mutation_authorized=false' "${result}"
           grep -Fxq 'host_plan_owner_attested=false' "${result}"
           grep -Fxq 'host_native_readback_source=RUNNER_COPIED_UNAUTHENTICATED' "${result}"
+          # One exact Rust parser also audits the native transaction result.
+          # This is correlation, never authenticated SYSTEM/root attestation.
+          if [[ "${TARGET_KIND}" = VM &&
+                ( "${COMMAND_BODY}" = "/host apply ${TARGET_MACHINE}" ||
+                  "${COMMAND_BODY}" = "/host recover ${TARGET_MACHINE}" ) &&
+                -s "${out}/host-operation/host-result.pb" ]]; then
+            intent_dir="${RUNNER_TEMP}/host-readback-intent"
+            install -d -m 0700 "${intent_dir}"
+            gh run download "${GITHUB_RUN_ID}" -R "${GITHUB_REPOSITORY}" \
+              -n "host-intent-${SOURCE_COMMENT_ID}" -D "${intent_dir}"
+            intent="${intent_dir}/host-intent.pb"
+            test -f "${intent}" && test ! -L "${intent}"
+            test "$(stat -c '%s' "${intent}")" -gt 0
+            test "$(stat -c '%s' "${intent}")" -le 4096
+            "${owner}" host --hosts-pb "${registry}" \
+              --hosts-sha256 "$(sha256sum "${registry}" | cut -d' ' -f1)" \
+              native-result "${TARGET_MACHINE}" --intent-path "${intent}" \
+              --result-path "${out}/host-operation/host-result.pb" \
+              > "${RUNNER_TEMP}/host-native-result-correlation.txt"
+            audit="${RUNNER_TEMP}/host-native-result-correlation.txt"
+            grep -Fxq 'host_native_result_correlation=EXACT' "${audit}"
+            grep -Fxq 'host_native_result_authenticated=false' "${audit}"
+            grep -Fxq 'host_native_result_remote_acceptance=UNPROVEN' "${audit}"
+            grep -Fxq 'host_mutations=0' "${audit}"
+            echo 'native_result_audit=EXACT_UNAUTHENTICATED' >> "${GITHUB_OUTPUT}"
+            {
+              echo '### Native result correlation (NOT a remote receipt)'
+              echo '~~~text'
+              cat "${audit}"
+              echo '~~~'
+            } >> "${GITHUB_STEP_SUMMARY}"
+          fi
           verdict="$(sed -n 's/^host_native_readback_verdict=//p' "${result}")"
           [[ "${verdict}" =~ ^[A-Z0-9_]{1,96}$ ]]
           printf 'typed_verdict=%s\n' "${verdict}" >> "${GITHUB_OUTPUT}"

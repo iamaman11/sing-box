@@ -785,6 +785,15 @@ def test_native_host_readonly_control_boundary(router: str) -> None:
         "Legacy VM direct mutation authority must block new signed execution; retained native result is not remote attestation",
     )
     require(
+        owner.count("if-no-files-found: ignore") == 1
+        and "native-result \"${TARGET_MACHINE}\" --intent-path \"${intent}\"" in peer_report
+        and "host_native_result_correlation=EXACT" in peer_report
+        and "host_native_result_authenticated=false" in peer_report
+        and "host_native_result_remote_acceptance=UNPROVEN" in peer_report
+        and "native_result_audit=EXACT_UNAUTHENTICATED" in peer_report,
+        "Runner native transaction correlation must be typed, exact and explicitly unauthenticated",
+    )
+    require(
         "host-observe $current" in owner
         and 'local host-observe > "${output}"' in owner
         and "actions/upload-artifact@v4" in owner
