@@ -135,6 +135,199 @@ pub fn validate_vm_desired_graph(
     Ok(())
 }
 
+/// Stable hierarchical path of a registered VM resource. The identity is
+/// derived from the sole FleetHost selector; a runner does not choose it.
+pub fn vm_container_resource_id(
+    host: &FleetHost,
+    selector: &crate::FleetVmContainer,
+) -> Result<String, &'static str> {
+    if host.kind != FleetHostKind::Vm as i32
+        || !host.vm_containers.contains(selector)
+        || selector.compose_project.is_empty()
+        || selector.compose_service.is_empty()
+    {
+        return Err("VM_RESOURCE_ID_NOT_REGISTERED");
+    }
+    Ok(format!(
+        "container/{}/{}",
+        selector.compose_project, selector.compose_service
+    ))
+}
+
+fn vm_network_resource_id(project: &str, name: &str) -> String {
+    format!("network/{project}/{name}")
+}
+
+fn vm_config_resource_id(project: &str, service: &str) -> String {
+    format!("config/{project}/{service}")
+}
+
+fn vm_host_resource_id(host: &FleetHost) -> String {
+    format!("host/{}", host.machine_id)
+}
+
+/// A PURE hierarchy projection: host -> networks/containers -> config
+/// children. Container-to-network and Compose dependency edges remain
+/// explicit and typed. A missing/foreign edge blocks the whole projection;
+/// only known native owners appear and no mutation authority is conferred.
+pub fn derive_vm_resource_hierarchy(
+    host: &FleetHost,
+    desired: &FleetVmDesiredGraph,
+) -> Result<crate::FleetResourceHierarchy, &'static str> {
+    use crate::FleetResourceHierarchy;
+    validate_vm_desired_graph(desired, host)?;
+    let nodes = project_vm_hierarchy_nodes_unchecked(host, desired)?;
+    let graph = FleetResourceHierarchy {
+        schema_version: 1,
+        machine_id: host.machine_id.clone(),
+        nodes,
+        owner_attested: false,
+        mutation_authorized: false,
+    };
+    validate_vm_resource_hierarchy(&graph, host, desired)?;
+    Ok(graph)
+}
+
+/// Binds every reported node to the precise Git desired projection, not a
+/// caller-supplied parent, dependency list, or a forged owner attestation.
+pub fn validate_vm_resource_hierarchy(
+    observed: &crate::FleetResourceHierarchy,
+    host: &FleetHost,
+    desired: &FleetVmDesiredGraph,
+) -> Result<(), &'static str> {
+    if observed.schema_version != 1
+        || observed.machine_id != host.machine_id
+        || observed.nodes.is_empty()
+        || observed.nodes.len() > 128
+        || observed.owner_attested
+        || observed.mutation_authorized
+        || observed.encode_to_vec().len() > 32768
+    {
+        return Err("VM_HIERARCHY_SCOPE_OR_AUTHORITY_INVALID");
+    }
+    // Recompute from exact policy without another source of truth. This
+    // internal builder does not call this validator, preventing recursion.
+    let mut unique = std::collections::BTreeSet::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for node in &observed.nodes {
+        if !unique.insert(node.resource_id.as_str())
+            || node.owner != crate::FleetResourceOwner::VmRootAgent as i32
+            || crate::FleetResourceKind::try_from(node.kind)
+                .is_err()
+            || node.kind == crate::FleetResourceKind::Unspecified as i32
+        {
+            return Err("VM_HIERARCHY_NODE_IDENTITY_INVALID");
+        }
+        if node.parent_resource_id.is_empty() {
+            if node.resource_id != vm_host_resource_id(host)
+                || node.kind != crate::FleetResourceKind::Host as i32
+                || !node.dependency_ids.is_empty()
+            {
+                return Err("VM_HIERARCHY_ROOT_INVALID");
+            }
+        } else if !seen.contains(node.parent_resource_id.as_str()) {
+            return Err("VM_HIERARCHY_PARENT_NOT_FOUND_OR_UNORDERED");
+        }
+        for dep in &node.dependency_ids {
+            if !seen.contains(dep.as_str()) || dep == &node.resource_id {
+                return Err("VM_HIERARCHY_DEPENDENCY_NOT_FOUND_OR_UNORDERED");
+            }
+        }
+        if !node.expected_policy_sha256.is_empty()
+            && (node.expected_policy_sha256.len() != 32
+                || node.expected_policy_sha256.iter().all(|byte| *byte == 0))
+        {
+            return Err("VM_HIERARCHY_DIGEST_INVALID");
+        }
+        seen.insert(node.resource_id.as_str());
+    }
+    if observed.nodes[0].resource_id != vm_host_resource_id(host)
+        || observed.nodes.len()
+            != 1 + desired.networks.len() + desired.resources.len()
+                + desired.resources.iter().filter(|r| !r.config_template_sha256.is_empty()).count()
+    {
+        return Err("VM_HIERARCHY_INCOMPLETE");
+    }
+    // Exact parent, order, owner and dependency enforcement for each
+    // independently immutable resource, rather than merely validating form.
+    let expected = project_vm_hierarchy_nodes_unchecked(host, desired)?;
+    if observed.nodes != expected {
+        return Err("VM_HIERARCHY_POLICY_DRIFT");
+    }
+    Ok(())
+}
+
+fn project_vm_hierarchy_nodes_unchecked(
+    host: &FleetHost,
+    desired: &FleetVmDesiredGraph,
+) -> Result<Vec<crate::FleetResourceNode>, &'static str> {
+    use crate::{FleetResourceKind as Kind, FleetResourceNode, FleetResourceOwner as Owner};
+    let root = vm_host_resource_id(host);
+    let mut result = vec![FleetResourceNode {
+        resource_id: root.clone(),
+        kind: Kind::Host as i32,
+        parent_resource_id: String::new(),
+        dependency_ids: Vec::new(),
+        owner: Owner::VmRootAgent as i32,
+        expected_policy_sha256: Vec::new(),
+    }];
+    let mut networks = std::collections::BTreeMap::<&str, &str>::new();
+    for network in &desired.networks {
+        for service in &network.attached_services {
+            networks.insert(service, &network.network_name);
+        }
+        result.push(FleetResourceNode {
+            resource_id: vm_network_resource_id(&network.compose_project, &network.network_name),
+            kind: Kind::DockerNetwork as i32,
+            parent_resource_id: root.clone(),
+            dependency_ids: Vec::new(),
+            owner: Owner::VmRootAgent as i32,
+            expected_policy_sha256: ring::digest::digest(
+                &ring::digest::SHA256, &network.encode_to_vec()
+            ).as_ref().to_vec(),
+        });
+    }
+    for resource in &desired.resources {
+        let selector = resource.resource.as_ref().ok_or("VM_HIERARCHY_SELECTOR_MISSING")?;
+        let id = vm_container_resource_id(host, selector)?;
+        let network = networks
+            .get(&selector.compose_service.as_str())
+            .ok_or("VM_HIERARCHY_NETWORK_DEPENDENCY_MISSING")?;
+        let mut dependencies = vec![vm_network_resource_id(&selector.compose_project, network)];
+        for dependency in &resource.dependencies {
+            let s = host.vm_containers.iter()
+                .find(|v| v.compose_service == *dependency)
+                .ok_or("VM_HIERARCHY_FOREIGN_CONTAINER_DEPENDENCY")?;
+            dependencies.push(vm_container_resource_id(host, s)?);
+        }
+        dependencies.sort();
+        dependencies.dedup();
+        result.push(FleetResourceNode {
+            resource_id: id.clone(),
+            kind: Kind::DockerContainer as i32,
+            parent_resource_id: root.clone(),
+            dependency_ids: dependencies,
+            owner: Owner::VmRootAgent as i32,
+            expected_policy_sha256: ring::digest::digest(
+                &ring::digest::SHA256, &resource.encode_to_vec()
+            ).as_ref().to_vec(),
+        });
+        if !resource.config_template_sha256.is_empty() {
+            result.push(FleetResourceNode {
+                resource_id: vm_config_resource_id(
+                    &selector.compose_project, &selector.compose_service,
+                ),
+                kind: Kind::SingboxConfig as i32,
+                parent_resource_id: id.clone(),
+                dependency_ids: vec![id],
+                owner: Owner::VmRootAgent as i32,
+                expected_policy_sha256: resource.config_template_sha256.clone(),
+            });
+        }
+    }
+    Ok(result)
+}
+
 /// Deterministic resource policy diff. "Installed" is the protected
 /// root-local bundle, not Docker physical proof. "Desired" is independently
 /// compiled from the immutable, Git-owned ReleaseSet. This function never
@@ -809,6 +1002,53 @@ mod vm_graph_reconcile_tests {
             }],
         };
         (host, graph)
+    }
+
+    #[test]
+    fn immutable_vm_resource_hierarchy_is_closed_and_parented() {
+        use crate::{FleetResourceKind as Kind, FleetResourceOwner as Owner};
+        let (host, desired) = sample();
+        let hierarchy = derive_vm_resource_hierarchy(&host, &desired).unwrap();
+        assert!(!hierarchy.owner_attested && !hierarchy.mutation_authorized);
+        assert_eq!(hierarchy.nodes.len(), 7);
+        assert_eq!(hierarchy.nodes[0].resource_id, "host/vm-a");
+        assert_eq!(hierarchy.nodes[1].resource_id, "network/vultr-edge/edge_net");
+        assert_eq!(hierarchy.nodes[1].kind, Kind::DockerNetwork as i32);
+        assert_eq!(hierarchy.nodes[1].owner, Owner::VmRootAgent as i32);
+        let line2 = hierarchy.nodes.iter()
+            .find(|node| node.resource_id == "container/vultr-edge/line2-proxy")
+            .unwrap();
+        assert_eq!(line2.parent_resource_id, "host/vm-a");
+        assert_eq!(line2.kind, Kind::DockerContainer as i32);
+        assert_eq!(line2.dependency_ids, vec![
+            "container/vultr-edge/warp-egress".to_owned(),
+            "network/vultr-edge/edge_net".to_owned(),
+        ]);
+        let config = hierarchy.nodes.iter()
+            .find(|node| node.resource_id == "config/vultr-edge/line2-proxy")
+            .unwrap();
+        assert_eq!(config.parent_resource_id, line2.resource_id);
+        assert_eq!(config.kind, Kind::SingboxConfig as i32);
+        assert_eq!(config.expected_policy_sha256, desired.resources[1].config_template_sha256);
+        assert_eq!(
+            validate_vm_resource_hierarchy(&hierarchy, &host, &desired),
+            Ok(())
+        );
+        let mut forged = hierarchy.clone();
+        forged.nodes[1].owner = Owner::WindowsSystemController as i32;
+        assert!(validate_vm_resource_hierarchy(&forged, &host, &desired).is_err());
+        forged = hierarchy.clone();
+        forged.nodes[3].parent_resource_id = "host/foreign".into();
+        assert!(validate_vm_resource_hierarchy(&forged, &host, &desired).is_err());
+        forged = hierarchy.clone();
+        forged.nodes[3].dependency_ids.clear();
+        assert!(validate_vm_resource_hierarchy(&forged, &host, &desired).is_err());
+        forged = hierarchy.clone();
+        forged.owner_attested = true;
+        assert!(validate_vm_resource_hierarchy(&forged, &host, &desired).is_err());
+        forged = hierarchy.clone();
+        forged.nodes.push(forged.nodes[0].clone());
+        assert!(validate_vm_resource_hierarchy(&forged, &host, &desired).is_err());
     }
 
     #[test]

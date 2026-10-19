@@ -895,7 +895,7 @@ fn compile_vm_graph_from_parts(
         resources,
         networks,
     };
-    edge_shared_types::host_resources::validate_vm_desired_graph(&graph, host)
+    edge_shared_types::host_resources::derive_vm_resource_hierarchy(host, &graph)
         .map_err(str::to_owned)?;
     Ok(graph)
 }

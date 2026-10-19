@@ -454,7 +454,11 @@ pub(crate) fn run(
                 let config_unproven = resource_plan
                     .resources
                     .iter()
-                    .filter(|entry| entry.reason_code == "RUNNING_RUNTIME_ONLY_CONFIG_UNPROVEN")
+                    .filter(|entry| {
+                        entry.reason
+                            == edge_shared_types::FleetVmResourceReason::RunningRuntimeOnlyConfigUnproven
+                                as i32
+                    })
                     .count();
                 if let Some(network) = report.network.as_ref() {
                     println!("host_vm_network_kernel_observed={}", network.ipv4.is_some());
@@ -506,9 +510,16 @@ pub(crate) fn run(
                         .resource
                         .as_ref()
                         .ok_or("HOST_VM_RESOURCES_IDENTITY_MISSING")?;
+                    let resource_id =
+                        edge_shared_types::host_resources::vm_container_resource_id(
+                            selected, identity,
+                        )
+                        .map_err(str::to_owned)?;
                     println!(
-                        "host_vm_resource={} reason={} step={:?} plan_reason={} present={} owned={} running={} running_proven={} image={} health={} config_proof={:?} config_sha256={} restarts={}",
+                        "host_vm_resource={} resource_id={} resource_kind=DOCKER_CONTAINER resource_owner=VM_ROOT_AGENT resource_parent=host/{} dependencies=UNPROVEN_WITHOUT_IMMUTABLE_POLICY reason={} step={:?} plan_reason={} present={} owned={} running={} running_proven={} image={} health={} config_proof={:?} config_sha256={} restarts={}",
                         identity.container_name,
+                        resource_id,
+                        selected.machine_id,
                         resource.reason_code,
                         edge_shared_types::FleetHostPlannedStep::try_from(proposal.step)
                             .map_err(|_| "HOST_VM_RESOURCE_PLAN_STEP_INVALID")?,

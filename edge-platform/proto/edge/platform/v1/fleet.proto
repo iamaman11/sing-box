@@ -73,6 +73,46 @@ message FleetVmDesiredGraph {
   repeated FleetVmDesiredNetwork networks = 4;
 }
 
+// Deterministic read-only resource hierarchy projected from the same
+// validated, immutable VM desired graph. NOT a second authoring registry,
+// authorization, or proof that a process/network is currently healthy.
+enum FleetResourceKind {
+  FLEET_RESOURCE_KIND_UNSPECIFIED = 0;
+  FLEET_RESOURCE_KIND_HOST = 1;
+  FLEET_RESOURCE_KIND_DOCKER_NETWORK = 2;
+  FLEET_RESOURCE_KIND_DOCKER_CONTAINER = 3;
+  FLEET_RESOURCE_KIND_SINGBOX_CONFIG = 4;
+  // Future resource kinds must acquire their own native observed evidence and
+  // scoped effectors before any changes are executable.
+  FLEET_RESOURCE_KIND_DNS = 5;
+  FLEET_RESOURCE_KIND_FIREWALL = 6;
+  FLEET_RESOURCE_KIND_ROUTE = 7;
+  FLEET_RESOURCE_KIND_CREDENTIAL_REF = 8;
+}
+enum FleetResourceOwner {
+  FLEET_RESOURCE_OWNER_UNSPECIFIED = 0;
+  FLEET_RESOURCE_OWNER_VM_ROOT_AGENT = 1;
+  FLEET_RESOURCE_OWNER_WINDOWS_SYSTEM_CONTROLLER = 2;
+  FLEET_RESOURCE_OWNER_WORKER_SECRETS = 3;
+}
+message FleetResourceNode {
+  string resource_id = 1;
+  FleetResourceKind kind = 2;
+  string parent_resource_id = 3;
+  repeated string dependency_ids = 4;
+  FleetResourceOwner owner = 5;
+  // From the immutable policy bytes only, never proof of installed runtime.
+  bytes expected_policy_sha256 = 6;
+}
+message FleetResourceHierarchy {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  repeated FleetResourceNode nodes = 3;
+  // This projection is structurally valid only. Worker/owner must authenticate.
+  bool owner_attested = 4;
+  bool mutation_authorized = 5;
+}
+
 // A PURE comparison of immutable Git target versus installed policy. This
 // remains a proposal, not authorization, physical Docker state, or a network
 // readiness receipt. A shared image must be replaced for all its consumers.
