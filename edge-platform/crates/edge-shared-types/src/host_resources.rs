@@ -195,6 +195,7 @@ pub fn validate_vm_resource_hierarchy(
     host: &FleetHost,
     desired: &FleetVmDesiredGraph,
 ) -> Result<(), &'static str> {
+    validate_vm_desired_graph(desired, host)?;
     if observed.schema_version != 1
         || observed.machine_id != host.machine_id
         || observed.nodes.is_empty()
@@ -209,6 +210,11 @@ pub fn validate_vm_resource_hierarchy(
     // internal builder does not call this validator, preventing recursion.
     let mut unique = std::collections::BTreeSet::new();
     let mut seen = std::collections::BTreeSet::new();
+    let all_ids = observed
+        .nodes
+        .iter()
+        .map(|node| node.resource_id.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
     for node in &observed.nodes {
         if !unique.insert(node.resource_id.as_str())
             || node.owner != crate::FleetResourceOwner::VmRootAgent as i32
@@ -228,9 +234,12 @@ pub fn validate_vm_resource_hierarchy(
         } else if !seen.contains(node.parent_resource_id.as_str()) {
             return Err("VM_HIERARCHY_PARENT_NOT_FOUND_OR_UNORDERED");
         }
+        // Dependencies are graph edges, not serialization order. A gateway
+        // may depend on WARP declared later in the inventory. Cycles are
+        // already rejected by validate_vm_desired_graph above.
         for dep in &node.dependency_ids {
-            if !seen.contains(dep.as_str()) || dep == &node.resource_id {
-                return Err("VM_HIERARCHY_DEPENDENCY_NOT_FOUND_OR_UNORDERED");
+            if !all_ids.contains(dep.as_str()) || dep == &node.resource_id {
+                return Err("VM_HIERARCHY_DEPENDENCY_UNREGISTERED");
             }
         }
         if !node.expected_policy_sha256.is_empty()
