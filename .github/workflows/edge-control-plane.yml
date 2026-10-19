@@ -121,6 +121,8 @@ jobs:
             machine="${BASH_REMATCH[1]}"
             command=(status "${machine}")
             if [[ "${COMMAND_BODY}" == *" --deep" ]]; then command+=(--deep); fi
+          elif [[ "${COMMAND_BODY}" =~ ^/host[[:space:]]apply[[:space:]]([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})[[:space:]](config/[A-Za-z0-9][A-Za-z0-9._-]{0,63}/(line1-gateway|line2-proxy))$ ]]; then
+            command=(apply "${BASH_REMATCH[1]}" --resource-id "${BASH_REMATCH[2]}")
           elif [[ "${COMMAND_BODY}" =~ ^/host[[:space:]](apply|recover)[[:space:]]([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})$ ]]; then
             command=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")
           else

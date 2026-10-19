@@ -148,7 +148,12 @@ jobs:
           test "${RUNNER_NAME}" = "sing-box-production-${TARGET_OWNER}"
           case "${COMMAND_BODY}" in
             "/host apply ${TARGET_MACHINE}"|"/host recover ${TARGET_MACHINE}") ;;
-            *) echo 'HOST_NATIVE_VM_COMMAND_SCOPE_MISMATCH' >&2; exit 1 ;;
+            *)
+              if ! [[ "${COMMAND_BODY}" =~ ^/host[[:space:]]apply[[:space:]]${TARGET_MACHINE}[[:space:]]config/[A-Za-z0-9][A-Za-z0-9._-]{0,63}/(line1-gateway|line2-proxy)$ ]]; then
+                echo 'HOST_NATIVE_VM_COMMAND_SCOPE_MISMATCH' >&2
+                exit 1
+              fi
+              ;;
           esac
           owner=/usr/local/libexec/sing-box/edge-agent
           test -x "${owner}" && test ! -L "${owner}"
@@ -334,7 +339,8 @@ jobs:
           # This is correlation, never authenticated SYSTEM/root attestation.
           if [[ "${TARGET_KIND}" = VM &&
                 ( "${COMMAND_BODY}" = "/host apply ${TARGET_MACHINE}" ||
-                  "${COMMAND_BODY}" = "/host recover ${TARGET_MACHINE}" ) &&
+                  "${COMMAND_BODY}" = "/host recover ${TARGET_MACHINE}" ||
+                  "${COMMAND_BODY}" =~ ^/host[[:space:]]apply[[:space:]]${TARGET_MACHINE}[[:space:]]config/[A-Za-z0-9][A-Za-z0-9._-]{0,63}/(line1-gateway|line2-proxy)$ ) &&
                 -s "${out}/host-operation/host-result.pb" ]]; then
             intent_dir="${RUNNER_TEMP}/host-readback-intent"
             install -d -m 0700 "${intent_dir}"
@@ -393,7 +399,8 @@ jobs:
           native_note='Native mutation authority: NONE. A read-only observation is not an authenticated owner receipt.'
           if [[ "${TARGET_KIND}" = VM ]] && \
              [[ "${COMMAND_BODY}" = "/host apply ${TARGET_MACHINE}" ||
-                "${COMMAND_BODY}" = "/host recover ${TARGET_MACHINE}" ]]; then
+                "${COMMAND_BODY}" = "/host recover ${TARGET_MACHINE}" ||
+                "${COMMAND_BODY}" =~ ^/host[[:space:]]apply[[:space:]]${TARGET_MACHINE}[[:space:]]config/[A-Za-z0-9][A-Za-z0-9._-]{0,63}/(line1-gateway|line2-proxy)$ ]]; then
             native_note='Native VM transaction: only the signed HostIntent may reach root owner. Remote authenticated receipt: UNPROVEN.'
             if [[ "${OBSERVED_RESULT}" = success ]]; then
               result=NATIVE_EXECUTION_COMPLETED_REMOTE_ATTESTATION_UNPROVEN

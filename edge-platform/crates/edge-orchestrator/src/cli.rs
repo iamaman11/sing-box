@@ -131,8 +131,12 @@ pub(crate) enum HostCommand {
         #[arg(long)]
         result_path: PathBuf,
     },
-    /// One bounded fresh typed install preflight; mutation is disabled until new owner acceptance.
-    Apply { machine_id: String },
+    /// The same host apply operation may specify one exact signed config node.
+    Apply {
+        machine_id: String,
+        #[arg(long)]
+        resource_id: Option<String>,
+    },
     /// One bounded fresh typed recovery preflight; never resumes historical operations.
     Recover { machine_id: String },
 }

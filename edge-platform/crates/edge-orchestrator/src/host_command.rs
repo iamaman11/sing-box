@@ -694,7 +694,7 @@ pub(crate) fn run(
             println!("host_mutations=0");
             Ok(())
         }
-        HostCommand::Apply { machine_id } => host_lifecycle_admission(
+        HostCommand::Apply { machine_id, resource_id } => host_lifecycle_admission(
             &desired,
             &machine_id,
             HostLifecycleOperation::Apply,
@@ -704,6 +704,7 @@ pub(crate) fn run(
             github_output,
             source_comment_id,
             intent_output,
+            resource_id.as_deref(),
         ),
         HostCommand::Recover { machine_id } => host_lifecycle_admission(
             &desired,
@@ -715,6 +716,7 @@ pub(crate) fn run(
             github_output,
             source_comment_id,
             intent_output,
+            None,
         ),
     }
 }
@@ -863,6 +865,7 @@ fn host_lifecycle_admission(
     output: Option<&Path>,
     source_comment_id: Option<u64>,
     intent_output: Option<&Path>,
+    resource_id: Option<&str>,
 ) -> Result<(), String> {
     let selected = desired
         .hosts
@@ -905,7 +908,7 @@ fn host_lifecycle_admission(
         schema_version: 1,
         machine_id: machine_id.to_owned(),
         kind: kind as i32,
-        resource_id: "sing-box".to_owned(),
+        resource_id: resource_id.unwrap_or("sing-box").to_owned(),
         operation_id: format!("issue1-comment-{comment_id}"),
         action: match operation {
             HostLifecycleOperation::Apply => FleetHostAction::Apply as i32,
@@ -1388,6 +1391,7 @@ mod tests {
                 Some(&file),
                 Some(122),
                 Some(&intent_path),
+                None,
             )
             .unwrap_err(),
             "HOST_TARGET_UNSET_OBSERVE_ONLY"
@@ -1409,6 +1413,7 @@ mod tests {
                 Some(&file),
                 Some(122),
                 Some(&intent_path),
+                None,
             )
             .unwrap_err(),
             "HOST_TARGET_MODE_KIND_MISMATCH"
@@ -1424,6 +1429,7 @@ mod tests {
             Some(&file),
             Some(123),
             Some(&intent_path),
+                None,
         )
         .unwrap();
         let apply = std::fs::read_to_string(&file).unwrap();
@@ -1450,6 +1456,7 @@ mod tests {
             Some(&file),
             Some(124),
             Some(&intent_path),
+                None,
         )
         .unwrap();
         let recover = std::fs::read_to_string(&file).unwrap();
