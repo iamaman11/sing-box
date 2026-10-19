@@ -63,6 +63,29 @@ message FleetVmDesiredGraph {
   repeated FleetVmDesiredResource resources = 3;
 }
 
+// A PURE comparison of immutable Git target versus installed policy. This
+// remains a proposal, not authorization, physical Docker state, or a network
+// readiness receipt. A shared image must be replaced for all its consumers.
+enum FleetVmPolicyChange {
+  FLEET_VM_POLICY_CHANGE_UNSPECIFIED = 0;
+  FLEET_VM_POLICY_CHANGE_NO_CHANGE = 1;
+  FLEET_VM_POLICY_CHANGE_CONFIG_TEMPLATE_REPLACED = 2;
+  FLEET_VM_POLICY_CHANGE_IMAGE_REPLACED = 3;
+}
+message FleetVmGraphResourceChange {
+  FleetVmContainer resource = 1;
+  FleetVmPolicyChange change = 2;
+  string expected_image_ref = 3;
+  bytes expected_config_template_sha256 = 4;
+}
+message FleetVmGraphReconcile {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  repeated FleetVmGraphResourceChange resources = 3;
+  bool owner_attested = 4;
+  bool mutation_authorized = 5;
+}
+
 // One strictly read-only Docker report from the installed root owner. This
 // does not attest an end-to-end network connection or authenticate a runner.
 // What the installed root Agent proved about the file mounted into the

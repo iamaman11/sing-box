@@ -94,6 +94,77 @@ pub fn validate_vm_desired_graph(
     Ok(())
 }
 
+/// Deterministic resource policy diff. "Installed" is the protected
+/// root-local bundle, not Docker physical proof. "Desired" is independently
+/// compiled from the immutable, Git-owned ReleaseSet. This function never
+/// accepts a runner authority or performs mutations.
+pub fn propose_vm_graph_reconcile(
+    host: &FleetHost,
+    installed: &FleetVmDesiredGraph,
+    desired: &FleetVmDesiredGraph,
+) -> Result<crate::FleetVmGraphReconcile, &'static str> {
+    use crate::{
+        FleetVmGraphReconcile, FleetVmGraphResourceChange, FleetVmPolicyChange,
+    };
+    validate_vm_desired_graph(installed, host)?;
+    validate_vm_desired_graph(desired, host)?;
+    // The source container order is the single canonical fleet order.
+    // A dependency delta needs its own typed Docker/network lifecycle and
+    // must never sneak through a config-only or image-only effector.
+    let mut old_consumers = std::collections::BTreeMap::<&str, Vec<usize>>::new();
+    let mut resources = Vec::with_capacity(desired.resources.len());
+    for (index, (before, after)) in installed
+        .resources
+        .iter()
+        .zip(&desired.resources)
+        .enumerate()
+    {
+        if before.resource != after.resource || before.dependencies != after.dependencies {
+            return Err("VM_RECONCILE_DEPENDENCY_OR_IDENTITY_CHANGED");
+        }
+        old_consumers.entry(&before.image_ref).or_default().push(index);
+        let image_changed = before.image_ref != after.image_ref;
+        let config_changed = before.config_template_sha256 != after.config_template_sha256;
+        if image_changed && config_changed {
+            return Err("VM_RECONCILE_COMBINED_IMAGE_AND_CONFIG_UNSUPPORTED");
+        }
+        let change = if image_changed {
+            FleetVmPolicyChange::ImageReplaced
+        } else if config_changed {
+            FleetVmPolicyChange::ConfigTemplateReplaced
+        } else {
+            FleetVmPolicyChange::NoChange
+        };
+        resources.push(FleetVmGraphResourceChange {
+            resource: after.resource.clone(),
+            change: change as i32,
+            expected_image_ref: after.image_ref.clone(),
+            expected_config_template_sha256: after.config_template_sha256.clone(),
+        });
+    }
+    // When several services share an old OCI image, replacing a subset
+    // could start mixed releases under one logical image resource. All
+    // consumers must move to the SAME immutable digest in one transaction.
+    for consumers in old_consumers.values() {
+        if consumers.len() > 1 {
+            let replacements = consumers
+                .iter()
+                .map(|&index| &desired.resources[index].image_ref)
+                .collect::<std::collections::BTreeSet<_>>();
+            if replacements.len() != 1 {
+                return Err("VM_RECONCILE_SHARED_IMAGE_PARTIAL_REPLACE");
+            }
+        }
+    }
+    Ok(FleetVmGraphReconcile {
+        schema_version: 1,
+        machine_id: host.machine_id.clone(),
+        resources,
+        owner_attested: false,
+        mutation_authorized: false,
+    })
+}
+
 pub fn validate_vm_resource_report(
     report: &FleetVmResourceReport,
     host: &FleetHost,
@@ -551,6 +622,109 @@ pub fn propose_vm_resource_transitions(
 pub fn vm_resource_requires_attention(transition: &crate::FleetVmResourceTransition) -> bool {
     transition.step != crate::FleetHostPlannedStep::Noop as i32
         || transition.reason_code == "RUNNING_RUNTIME_ONLY_CONFIG_UNPROVEN"
+}
+
+#[cfg(test)]
+mod vm_graph_reconcile_tests {
+    use super::*;
+    use crate::{
+        FleetHostKind, FleetVmContainer, FleetVmDesiredGraph, FleetVmDesiredResource,
+        FleetVmPolicyChange,
+    };
+
+    fn sample() -> (FleetHost, FleetVmDesiredGraph) {
+        let selectors = ["line1-gateway", "line2-proxy", "warp-egress"]
+            .iter()
+            .map(|name| FleetVmContainer {
+                container_name: format!("vultr-{name}"),
+                compose_project: "vultr-edge".into(),
+                compose_service: (*name).into(),
+            })
+            .collect::<Vec<_>>();
+        let host = FleetHost {
+            machine_id: "vm-a".into(),
+            kind: FleetHostKind::Vm as i32,
+            vm_containers: selectors.clone(),
+            ..Default::default()
+        };
+        let image = format!("app/gateway@sha256:{}", "a".repeat(64));
+        let warp_image = format!("app/warp@sha256:{}", "b".repeat(64));
+        let resources = selectors
+            .into_iter()
+            .enumerate()
+            .map(|(index, resource)| FleetVmDesiredResource {
+                resource: Some(resource),
+                image_ref: if index == 2 { warp_image.clone() } else { image.clone() },
+                dependencies: if index == 2 { vec![] } else { vec!["warp-egress".into()] },
+                config_template_sha256: if index == 2 { vec![] } else { vec![10; 32] },
+            })
+            .collect();
+        let graph = FleetVmDesiredGraph {
+            schema_version: 1,
+            machine_id: host.machine_id.clone(),
+            resources,
+        };
+        (host, graph)
+    }
+
+    #[test]
+    fn line2_configuration_only_changes_one_registered_resource() {
+        let (host, installed) = sample();
+        let mut desired = installed.clone();
+        desired.resources[1].config_template_sha256 = vec![11; 32];
+        let plan = propose_vm_graph_reconcile(&host, &installed, &desired).unwrap();
+        assert_eq!(plan.resources.len(), 3);
+        assert!(!plan.owner_attested && !plan.mutation_authorized);
+        assert_eq!(plan.resources[0].change, FleetVmPolicyChange::NoChange as i32);
+        assert_eq!(
+            plan.resources[1].change,
+            FleetVmPolicyChange::ConfigTemplateReplaced as i32
+        );
+        assert_eq!(plan.resources[2].change, FleetVmPolicyChange::NoChange as i32);
+        assert_eq!(plan.resources[1].expected_image_ref, installed.resources[1].image_ref);
+    }
+
+    #[test]
+    fn shared_image_is_one_indivisible_owner_scope() {
+        let (host, installed) = sample();
+        let mut desired = installed.clone();
+        desired.resources[0].image_ref = format!("app/gateway@sha256:{}", "c".repeat(64));
+        assert_eq!(
+            propose_vm_graph_reconcile(&host, &installed, &desired),
+            Err("VM_RECONCILE_SHARED_IMAGE_PARTIAL_REPLACE")
+        );
+        desired.resources[1].image_ref = desired.resources[0].image_ref.clone();
+        let plan = propose_vm_graph_reconcile(&host, &installed, &desired).unwrap();
+        assert_eq!(
+            plan.resources
+                .iter()
+                .filter(|item| item.change == FleetVmPolicyChange::ImageReplaced as i32)
+                .count(),
+            2
+        );
+        assert_eq!(plan.resources[2].change, FleetVmPolicyChange::NoChange as i32);
+    }
+
+    #[test]
+    fn dependencies_and_combined_image_config_are_not_silent_updates() {
+        let (host, installed) = sample();
+        let mut desired = installed.clone();
+        desired.resources[0].dependencies.clear();
+        assert_eq!(
+            propose_vm_graph_reconcile(&host, &installed, &desired),
+            Err("VM_RECONCILE_DEPENDENCY_OR_IDENTITY_CHANGED")
+        );
+        desired = installed.clone();
+        desired.resources[0].image_ref = format!("app/gateway@sha256:{}", "d".repeat(64));
+        desired.resources[0].config_template_sha256 = vec![12; 32];
+        assert_eq!(
+            propose_vm_graph_reconcile(&host, &installed, &desired),
+            Err("VM_RECONCILE_COMBINED_IMAGE_AND_CONFIG_UNSUPPORTED")
+        );
+        desired = installed.clone();
+        desired.resources[0].image_ref = "app/gateway:latest".into();
+        assert!(propose_vm_graph_reconcile(&host, &installed, &desired).is_err());
+    }
 }
 
 #[cfg(test)]

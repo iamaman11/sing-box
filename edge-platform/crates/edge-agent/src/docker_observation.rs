@@ -1085,13 +1085,50 @@ pub(crate) async fn preflight_native_vm_replace(
     request: &ApplyBundleRequest,
 ) -> Result<NativeVmReplacePlan, String> {
     let target_graph = compile_vm_desired_graph_from_release(host, request)?;
+    let installed_graph = compile_native_vm_desired_graph(stack_dir, host)?;
+    let changes = edge_shared_types::host_resources::propose_vm_graph_reconcile(
+        host,
+        &installed_graph,
+        &target_graph,
+    )
+    .map_err(str::to_owned)?;
+    use edge_shared_types::FleetVmPolicyChange;
+    let changed = changes
+        .resources
+        .iter()
+        .filter(|resource| resource.change != FleetVmPolicyChange::NoChange as i32)
+        .collect::<Vec<_>>();
+    // The existing native effectors support exactly two closed, independently
+    // tested scopes. Unsupported network/dependency/combined changes never
+    // fall through to the old whole-stack BootstrapFull mutator.
+    let config_only = changed.len() == 1
+        && changed[0].change == FleetVmPolicyChange::ConfigTemplateReplaced as i32
+        && changed[0].resource.as_ref().is_some_and(|resource| {
+            matches!(resource.compose_service.as_str(), "line1-gateway" | "line2-proxy")
+        });
+    let gateway_pair = changed.len() == 2
+        && changed.iter().all(|resource| {
+            resource.change == FleetVmPolicyChange::ImageReplaced as i32
+        })
+        && changed
+            .iter()
+            .filter_map(|resource| resource.resource.as_ref())
+            .map(|resource| resource.compose_service.as_str())
+            .collect::<BTreeSet<_>>()
+            == BTreeSet::from(["line1-gateway", "line2-proxy"]);
+    if !config_only && !gateway_pair {
+        return Err("HOST_VM_RECONCILE_EFFECTOR_NOT_IMPLEMENTED".into());
+    }
     let images = request
         .stack_files
         .iter()
         .find(|file| file.relative_path == ".images.env")
         .ok_or("HOST_VM_REPLACE_IMAGE_ENV_MISSING")?;
     let current = exact_vm_policy_file(stack_dir, ".images.env")?;
-    let plan = if images.content != current {
+    if (images.content != current) != gateway_pair {
+        return Err("HOST_VM_RECONCILE_IMAGE_SCOPE_CONFLICT".into());
+    }
+    let plan = if gateway_pair {
         preflight_gateway_image_replace(stack_dir, host, request)
             .await
             .map(NativeVmReplacePlan::GatewayImage)?
