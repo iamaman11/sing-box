@@ -711,8 +711,8 @@ pub fn validate_vm_resource_transition_plan(
         if entry.resource.as_ref() != Some(selector) {
             return Err("VM_RESOURCE_PLAN_IDENTITY_INVALID");
         }
-        let reason = Reason::try_from(entry.reason)
-            .map_err(|_| "VM_RESOURCE_PLAN_REASON_UNRECOGNIZED")?;
+        let reason =
+            Reason::try_from(entry.reason).map_err(|_| "VM_RESOURCE_PLAN_REASON_UNRECOGNIZED")?;
         if reason == Reason::Unspecified {
             return Err("VM_RESOURCE_PLAN_REASON_UNSPECIFIED");
         }
@@ -951,7 +951,6 @@ mod resource_planning_tests {
         FleetHostPlannedStep::try_from(result.resources[0].step).unwrap()
     }
 
-
     #[test]
     fn typed_resource_reason_and_action_are_one_non_authorizing_contract() {
         use crate::FleetVmResourceReason as Reason;
@@ -991,7 +990,11 @@ mod resource_planning_tests {
             Err("VM_RESOURCE_PLAN_SCOPE_OR_AUTHORITY_INVALID")
         );
         invalid = plan.clone();
-        invalid.resources[0].resource.as_mut().unwrap().compose_service = "foreign".into();
+        invalid.resources[0]
+            .resource
+            .as_mut()
+            .unwrap()
+            .compose_service = "foreign".into();
         assert_eq!(
             validate_vm_resource_transition_plan(&invalid, &host),
             Err("VM_RESOURCE_PLAN_IDENTITY_INVALID")
