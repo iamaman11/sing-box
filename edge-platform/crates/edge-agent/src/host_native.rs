@@ -144,26 +144,25 @@ async fn attest_published_github_source(
             .send()
             .await
             .map_err(|_| "HOST_NATIVE_GIT_COMMIT_UNAVAILABLE")?;
-        if !response.status().is_success()
-            || response.content_length().is_some_and(|n| n > 65536)
-        {
+        if !response.status().is_success() || response.content_length().is_some_and(|n| n > 65536) {
             return Err("HOST_NATIVE_GIT_COMMIT_UNVERIFIED".into());
         }
-        let bytes = response.bytes().await
+        let bytes = response
+            .bytes()
+            .await
             .map_err(|_| "HOST_NATIVE_GIT_COMMIT_UNAVAILABLE")?;
         if bytes.len() > 65536 {
             return Err("HOST_NATIVE_GIT_COMMIT_TOO_LARGE".into());
         }
-        let commit: serde_json::Value = serde_json::from_slice(&bytes)
-            .map_err(|_| "HOST_NATIVE_GIT_COMMIT_INVALID")?;
+        let commit: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|_| "HOST_NATIVE_GIT_COMMIT_INVALID")?;
         if commit["sha"].as_str() != Some(sha) {
             return Err("HOST_NATIVE_GIT_COMMIT_SHA_MISMATCH".into());
         }
-        let tree = commit["tree"]["sha"].as_str()
+        let tree = commit["tree"]["sha"]
+            .as_str()
             .ok_or("HOST_NATIVE_GIT_TREE_ABSENT")?;
-        if tree.len() != 40
-            || !tree.bytes().all(|c| c.is_ascii_hexdigit())
-        {
+        if tree.len() != 40 || !tree.bytes().all(|c| c.is_ascii_hexdigit()) {
             return Err("HOST_NATIVE_GIT_TREE_INVALID".into());
         }
         *destination = tree.to_owned();
