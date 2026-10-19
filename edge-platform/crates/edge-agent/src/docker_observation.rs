@@ -762,8 +762,8 @@ fn compile_vm_networks_from_compose(
             .get(&network_name)
             .and_then(serde_yaml::Value::as_mapping)
             .ok_or("HOST_VM_NETWORK_POLICY_MISSING")?;
-        if policy.len() != 1 || policy.get("driver").and_then(serde_yaml::Value::as_str)
-            != Some("bridge")
+        if policy.len() != 1
+            || policy.get("driver").and_then(serde_yaml::Value::as_str) != Some("bridge")
         {
             return Err("HOST_VM_NETWORK_POLICY_UNSUPPORTED".into());
         }
@@ -1949,7 +1949,7 @@ mod release_desired_graph_tests {
             ..Default::default()
         };
         let compose = serde_yaml::from_str::<serde_yaml::Value>(
-            "name: vultr-edge\nservices:\n  line1-gateway:\n    image: ${EDGE_GATEWAY_IMAGE:?required}\n    depends_on: [warp-egress]\n  line2-proxy:\n    image: ${EDGE_GATEWAY_IMAGE:?required}\n    depends_on: [warp-egress]\n  warp-egress:\n    image: ${EDGE_WARP_EGRESS_IMAGE:?required}\n",
+            "name: vultr-edge\nservices:\n  line1-gateway:\n    image: ${EDGE_GATEWAY_IMAGE:?required}\n    depends_on: [warp-egress]\n    networks: [edge_net]\n  line2-proxy:\n    image: ${EDGE_GATEWAY_IMAGE:?required}\n    depends_on: [warp-egress]\n    networks: [edge_net]\n  warp-egress:\n    image: ${EDGE_WARP_EGRESS_IMAGE:?required}\n    networks: [edge_net]\nnetworks:\n  edge_net:\n    driver: bridge\n",
         ).unwrap();
         let gateway = format!(
             "ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}",
@@ -2058,19 +2058,20 @@ mod vm_native_start_order_tests {
         let networks = compile_vm_networks_from_compose(&host, &compose).unwrap();
         assert_eq!(networks.len(), 1);
         assert_eq!(networks[0].network_name, "edge_net");
-        assert_eq!(networks[0].attached_services, vec!["line1-gateway", "warp-egress"]);
+        assert_eq!(
+            networks[0].attached_services,
+            vec!["line1-gateway", "warp-egress"]
+        );
         let mut changed = compose.clone();
         changed["services"]["warp-egress"]["networks"] =
             serde_yaml::from_str("[mesh_net]").unwrap();
         assert!(compile_vm_networks_from_compose(&host, &changed).is_ok());
-        // It is independently represented in DesiredGraph; the native
-        // running-network effectors will still reject unsupported targets.
-        changed["networks"]["mesh_net"]["driver"] =
-            serde_yaml::from_str("host").unwrap();
+        // A changed network is independently represented in DesiredGraph;
+        // unsupported topology must not be admitted by native effectors.
+        changed["networks"]["mesh_net"]["driver"] = serde_yaml::from_str("host").unwrap();
         assert!(compile_vm_networks_from_compose(&host, &changed).is_err());
         changed = compose;
-        changed["networks"]["edge_net"]["internal"] =
-            serde_yaml::from_str("true").unwrap();
+        changed["networks"]["edge_net"]["internal"] = serde_yaml::from_str("true").unwrap();
         assert!(compile_vm_networks_from_compose(&host, &changed).is_err());
     }
 

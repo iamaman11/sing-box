@@ -50,7 +50,10 @@ pub fn validate_vm_desired_graph(
         }
         let mut members = std::collections::BTreeSet::new();
         for service in &network.attached_services {
-            if !host.vm_containers.iter().any(|item| &item.compose_service == service)
+            if !host
+                .vm_containers
+                .iter()
+                .any(|item| &item.compose_service == service)
                 || !members.insert(service.as_str())
                 || !network_membership.insert(service.as_str())
             {
@@ -529,7 +532,9 @@ mod tests {
         };
         assert!(validate_vm_desired_graph(&graph, &host).is_ok());
         let mut unknown_network = graph.clone();
-        unknown_network.networks[0].attached_services.push("cloudflare-mesh".into());
+        unknown_network.networks[0]
+            .attached_services
+            .push("cloudflare-mesh".into());
         assert_eq!(
             validate_vm_desired_graph(&unknown_network, &host),
             Err("VM_GRAPH_NETWORK_MEMBERSHIP_INVALID")
