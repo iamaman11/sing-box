@@ -127,6 +127,10 @@ message FleetVmGraphResourceChange {
   FleetVmPolicyChange change = 2;
   string expected_image_ref = 3;
   bytes expected_config_template_sha256 = 4;
+  // Exact node in FleetResourceHierarchy; config updates target the
+  // config child while OCI updates target its container parent.
+  string resource_id = 5;
+  FleetResourceKind resource_kind = 6;
 }
 message FleetVmGraphReconcile {
   uint32 schema_version = 1;
@@ -385,6 +389,8 @@ message FleetVmResourceTransition {
   FleetHostPlannedStep step = 2;
   string reason_code = 3;
   FleetVmResourceReason reason = 4;
+  // Canonical container node, never a caller-provided filename or selector.
+  string resource_id = 5;
 }
 
 message FleetVmResourceTransitionPlan {

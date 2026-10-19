@@ -1432,7 +1432,22 @@ pub(crate) async fn preflight_native_vm_replace(
         &target_graph,
     )
     .map_err(str::to_owned)?;
-    use edge_shared_types::FleetVmPolicyChange;
+    use edge_shared_types::{FleetResourceKind as Kind, FleetVmPolicyChange};
+    // Only the canonical hierarchy may determine an effector's target.
+    // Reject a mismatch before reading/writing any native container policy.
+    let hierarchy = edge_shared_types::host_resources::derive_vm_resource_hierarchy(
+        host, &target_graph,
+    ).map_err(str::to_owned)?;
+    for resource in &changes.resources {
+        let node = hierarchy.nodes.iter()
+            .find(|node| node.resource_id == resource.resource_id)
+            .ok_or("HOST_VM_RECONCILE_TARGET_NODE_UNREGISTERED")?;
+        if node.kind != resource.resource_kind
+            || node.owner != edge_shared_types::FleetResourceOwner::VmRootAgent as i32
+        {
+            return Err("HOST_VM_RECONCILE_TARGET_NODE_OWNER_INVALID".into());
+        }
+    }
     let changed = changes
         .resources
         .iter()
@@ -1443,6 +1458,7 @@ pub(crate) async fn preflight_native_vm_replace(
     // fall through to the old whole-stack BootstrapFull mutator.
     let config_only = changed.len() == 1
         && changed[0].change == FleetVmPolicyChange::ConfigTemplateReplaced as i32
+        && changed[0].resource_kind == Kind::SingboxConfig as i32
         && changed[0].resource.as_ref().is_some_and(|resource| {
             matches!(
                 resource.compose_service.as_str(),
@@ -1452,7 +1468,10 @@ pub(crate) async fn preflight_native_vm_replace(
     let gateway_pair = changed.len() == 2
         && changed
             .iter()
-            .all(|resource| resource.change == FleetVmPolicyChange::ImageReplaced as i32)
+            .all(|resource| {
+                resource.change == FleetVmPolicyChange::ImageReplaced as i32
+                    && resource.resource_kind == Kind::DockerContainer as i32
+            })
         && changed
             .iter()
             .filter_map(|resource| resource.resource.as_ref())

@@ -510,10 +510,7 @@ pub(crate) fn run(
                         .resource
                         .as_ref()
                         .ok_or("HOST_VM_RESOURCES_IDENTITY_MISSING")?;
-                    let resource_id = edge_shared_types::host_resources::vm_container_resource_id(
-                        selected, identity,
-                    )
-                    .map_err(str::to_owned)?;
+                    let resource_id = proposal.resource_id.as_str();
                     println!(
                         "host_vm_resource={} resource_id={} resource_kind=DOCKER_CONTAINER resource_owner=VM_ROOT_AGENT resource_parent=host/{} dependencies=UNPROVEN_WITHOUT_IMMUTABLE_POLICY reason={} step={:?} plan_reason={} present={} owned={} running={} running_proven={} image={} health={} config_proof={:?} config_sha256={} restarts={}",
                         identity.container_name,

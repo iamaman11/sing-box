@@ -362,9 +362,18 @@ pub fn propose_vm_graph_reconcile(
     installed: &FleetVmDesiredGraph,
     desired: &FleetVmDesiredGraph,
 ) -> Result<crate::FleetVmGraphReconcile, &'static str> {
-    use crate::{FleetVmGraphReconcile, FleetVmGraphResourceChange, FleetVmPolicyChange};
-    validate_vm_desired_graph(installed, host)?;
-    validate_vm_desired_graph(desired, host)?;
+    use crate::{
+        FleetResourceKind as Kind, FleetResourceOwner as Owner, FleetVmGraphReconcile,
+        FleetVmGraphResourceChange, FleetVmPolicyChange,
+    };
+    let installed_hierarchy = derive_vm_resource_hierarchy(host, installed)?;
+    let desired_hierarchy = derive_vm_resource_hierarchy(host, desired)?;
+    // The root and network dependency identities are an invariant across
+    // this image/config-only effector. A new network/dependency needs its
+    // own native operation rather than falling through to Compose.
+    if installed_hierarchy.nodes.len() != desired_hierarchy.nodes.len() {
+        return Err("VM_RECONCILE_HIERARCHY_SCOPE_CHANGED");
+    }
     if installed.networks != desired.networks {
         return Err("VM_RECONCILE_NETWORK_POLICY_REQUIRES_NATIVE_HANDLER");
     }
@@ -398,11 +407,34 @@ pub fn propose_vm_graph_reconcile(
         } else {
             FleetVmPolicyChange::NoChange
         };
+        let selector = after.resource.as_ref().ok_or("VM_RECONCILE_RESOURCE_MISSING")?;
+        let (resource_id, resource_kind) = if change == FleetVmPolicyChange::ConfigTemplateReplaced {
+            (
+                vm_config_resource_id(&selector.compose_project, &selector.compose_service),
+                Kind::SingboxConfig,
+            )
+        } else {
+            (vm_container_resource_id(host, selector)?, Kind::DockerContainer)
+        };
+        let exact_node = desired_hierarchy.nodes.iter()
+            .find(|node| node.resource_id == resource_id)
+            .ok_or("VM_RECONCILE_RESOURCE_NODE_NOT_IN_GRAPH")?;
+        if exact_node.kind != resource_kind as i32
+            || exact_node.owner != Owner::VmRootAgent as i32
+            || (resource_kind == Kind::SingboxConfig
+                && exact_node.parent_resource_id != vm_container_resource_id(host, selector)?)
+            || (resource_kind == Kind::DockerContainer
+                && exact_node.parent_resource_id != vm_host_resource_id(host))
+        {
+            return Err("VM_RECONCILE_NODE_OWNER_OR_PARENT_INVALID");
+        }
         resources.push(FleetVmGraphResourceChange {
             resource: after.resource.clone(),
             change: change as i32,
             expected_image_ref: after.image_ref.clone(),
             expected_config_template_sha256: after.config_template_sha256.clone(),
+            resource_id,
+            resource_kind: resource_kind as i32,
         });
     }
     // When several services share an old OCI image, replacing a subset
@@ -885,8 +917,10 @@ pub fn propose_vm_resource_transitions(
                 (Step::Blocked, Reason::RuntimeHealthOrConfigUnproven)
             }
         };
+        let selector = row.resource.as_ref().ok_or("VM_RESOURCE_PLAN_SELECTOR_MISSING")?;
         resources.push(FleetVmResourceTransition {
             resource: row.resource.clone(),
+            resource_id: vm_container_resource_id(host, selector)?,
             step: step as i32,
             reason_code: reason
                 .as_str_name()
@@ -926,7 +960,9 @@ pub fn validate_vm_resource_transition_plan(
         return Err("VM_RESOURCE_PLAN_SCOPE_OR_AUTHORITY_INVALID");
     }
     for (entry, selector) in plan.resources.iter().zip(&host.vm_containers) {
-        if entry.resource.as_ref() != Some(selector) {
+        if entry.resource.as_ref() != Some(selector)
+            || entry.resource_id != vm_container_resource_id(host, selector)?
+        {
             return Err("VM_RESOURCE_PLAN_IDENTITY_INVALID");
         }
         let reason =
@@ -1130,6 +1166,16 @@ mod vm_graph_reconcile_tests {
             plan.resources[1].expected_image_ref,
             installed.resources[1].image_ref
         );
+        assert_eq!(plan.resources[1].resource_id, "config/vultr-edge/line2-proxy");
+        assert_eq!(
+            plan.resources[1].resource_kind,
+            crate::FleetResourceKind::SingboxConfig as i32
+        );
+        assert_eq!(plan.resources[0].resource_id, "container/vultr-edge/line1-gateway");
+        assert_eq!(
+            plan.resources[0].resource_kind,
+            crate::FleetResourceKind::DockerContainer as i32
+        );
     }
 
     #[test]
@@ -1154,6 +1200,10 @@ mod vm_graph_reconcile_tests {
             plan.resources[2].change,
             FleetVmPolicyChange::NoChange as i32
         );
+        assert_eq!(plan.resources[0].resource_id, "container/vultr-edge/line1-gateway");
+        assert_eq!(plan.resources[1].resource_id, "container/vultr-edge/line2-proxy");
+        assert!(plan.resources[0].resource_kind
+            == crate::FleetResourceKind::DockerContainer as i32);
     }
 
     #[test]
@@ -1260,6 +1310,12 @@ mod resource_planning_tests {
         assert_eq!(
             validate_vm_resource_transition_plan(&invalid, &host),
             Err("VM_RESOURCE_PLAN_REASON_UNSPECIFIED")
+        );
+        invalid = plan.clone();
+        invalid.resources[0].resource_id = "container/foreign/line2-proxy".into();
+        assert_eq!(
+            validate_vm_resource_transition_plan(&invalid, &host),
+            Err("VM_RESOURCE_PLAN_IDENTITY_INVALID")
         );
         invalid = plan.clone();
         invalid.owner_attested = true;
