@@ -220,6 +220,7 @@ jobs:
       TARGET_KIND: ${{ inputs.kind }}
       SOURCE_COMMENT_ID: ${{ inputs.source_comment_id }}
       OBSERVED_RESULT: ${{ needs.observe.result }}
+      COMMAND_BODY: ${{ inputs.command_body }}
     steps:
       - name: Validate optional native protobuf with the exact Rust Fleet Orchestrator
         id: typed
@@ -310,6 +311,17 @@ jobs:
             skipped) result=OWNER_NOT_OBSERVED ;;
             *) result=UNKNOWN_NOT_ACCEPTED ;;
           esac
+          native_note='Native mutation authority: NONE. A read-only observation is not an authenticated owner receipt.'
+          if [[ "${TARGET_KIND}" = VM ]] && \
+             [[ "${COMMAND_BODY}" = "/host apply ${TARGET_MACHINE}" ||
+                "${COMMAND_BODY}" = "/host recover ${TARGET_MACHINE}" ]]; then
+            native_note='Native VM transaction: only the signed HostIntent may reach root owner. Remote authenticated receipt: UNPROVEN.'
+            if [[ "${OBSERVED_RESULT}" = success ]]; then
+              result=NATIVE_EXECUTION_COMPLETED_REMOTE_ATTESTATION_UNPROVEN
+            else
+              result=NATIVE_EXECUTION_NOT_VERIFIED_NO_REPLAY
+            fi
+          fi
           run_url="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
           if [[ "${TYPED_OUTCOME}" = failure ]]; then
             typed=REJECTED_EXACT_RUST_VALIDATION
@@ -317,8 +329,8 @@ jobs:
             typed="${TYPED_VERDICT:-UNPROVEN_NO_TYPED_READBACK}"
           fi
           [[ "${typed}" =~ ^[A-Z0-9_]{1,96}$ ]]
-          body="$(printf 'Host native result for operator command #%s\n\nHost: `%s`\nKind: `%s`\nResult: `%s`\nTyped readback: `%s`\nEvidence: %s\n\nNative mutation authority: NONE. A read-only observation is NOT authenticated owner receipt or proof of live public endpoints.\n' \
-            "${SOURCE_COMMENT_ID}" "${TARGET_MACHINE}" "${TARGET_KIND}" "${result}" "${typed}" "${run_url}")"
+          body="$(printf 'Host native result for operator command #%s\n\nHost: `%s`\nKind: `%s`\nResult: `%s`\nTyped readback: `%s`\nEvidence: %s\n\n%s\n' \
+            "${SOURCE_COMMENT_ID}" "${TARGET_MACHINE}" "${TARGET_KIND}" "${result}" "${typed}" "${run_url}" "${native_note}")"
           gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/1/comments" -f "body=${body}" >/dev/null
           if [[ "${TYPED_OUTCOME}" = failure ]]; then
             echo 'HOST_TYPED_READBACK_REJECTED' >&2
