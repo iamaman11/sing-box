@@ -937,7 +937,6 @@ fn append_control_outputs(
     owner: &str,
     labels: &str,
     windows_runner_label: &str,
-    vm_containers: Vec::new(),
     desired_spec_path: &str,
 ) -> Result<(), String> {
     let metadata = std::fs::symlink_metadata(path)
