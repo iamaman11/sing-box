@@ -267,33 +267,6 @@ async fn capture_local_host_observation(
     Ok(observed)
 }
 
-#[cfg(test)]
-mod native_host_state_tests {
-    use super::*;
-    use edge_shared_types::FleetNativeOwnerState;
-
-    #[test]
-    fn foreign_same_named_container_never_proves_native_owner() {
-        let names = vec!["vultr-line2-proxy".to_owned()];
-        assert_eq!(
-            native_vm_owner_state(true, false, &names),
-            FleetNativeOwnerState::Unproven
-        );
-        assert_eq!(
-            native_vm_owner_state(true, true, &names),
-            FleetNativeOwnerState::Running
-        );
-        assert_eq!(
-            native_vm_owner_state(false, true, &names),
-            FleetNativeOwnerState::Unproven
-        );
-        assert_eq!(
-            native_vm_owner_state(true, true, &["vultr-cloudflare-mesh".to_owned()]),
-            FleetNativeOwnerState::Stopped
-        );
-    }
-}
-
 /// Lightweight read-only VM observation. It deliberately does not claim
 /// container health, egress success, credential equality or pair completion.
 fn run_local_fast(stack_dir: &Path) -> Result<(), String> {
@@ -5369,6 +5342,27 @@ struct BundleSummary {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn foreign_same_named_container_never_proves_native_owner() {
+        use edge_shared_types::FleetNativeOwnerState;
+        let names = vec!["vultr-line2-proxy".to_owned()];
+        assert_eq!(
+            native_vm_owner_state(true, false, &names),
+            FleetNativeOwnerState::Unproven
+        );
+        assert_eq!(
+            native_vm_owner_state(true, true, &names),
+            FleetNativeOwnerState::Running
+        );
+        assert_eq!(
+            native_vm_owner_state(false, true, &names),
+            FleetNativeOwnerState::Unproven
+        );
+        assert_eq!(
+            native_vm_owner_state(true, true, &["vultr-cloudflare-mesh".to_owned()]),
+            FleetNativeOwnerState::Stopped
+        );
+    }
     #[test]
     fn vm_owned_runtime_scope_excludes_unrelated_docker_workloads() {
         let foreign = vec![
