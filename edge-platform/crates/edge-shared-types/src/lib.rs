@@ -3080,20 +3080,16 @@ mod release_set_tests {
         invalid_scope.hosts[0].vm_containers.reverse();
         assert!(validate_host_registry(&invalid_scope).is_err());
         invalid_scope = scoped.clone();
-        invalid_scope.hosts[0].vm_containers[1].container_name =
-            "a-gateway".to_owned();
+        invalid_scope.hosts[0].vm_containers[1].container_name = "a-gateway".to_owned();
         assert!(validate_host_registry(&invalid_scope).is_err());
         invalid_scope = scoped.clone();
-        invalid_scope.hosts[0].vm_containers[1].compose_service =
-            "gateway".to_owned();
+        invalid_scope.hosts[0].vm_containers[1].compose_service = "gateway".to_owned();
         assert!(validate_host_registry(&invalid_scope).is_err());
         invalid_scope = scoped.clone();
-        invalid_scope.hosts[0].vm_containers[1].compose_project =
-            "../foreign-project".to_owned();
+        invalid_scope.hosts[0].vm_containers[1].compose_project = "../foreign-project".to_owned();
         assert!(validate_host_registry(&invalid_scope).is_err());
         invalid_scope = scoped.clone();
-        invalid_scope.hosts[2].vm_containers =
-            invalid_scope.hosts[0].vm_containers.clone();
+        invalid_scope.hosts[2].vm_containers = invalid_scope.hosts[0].vm_containers.clone();
         assert!(validate_host_registry(&invalid_scope).is_err());
         let bytes = encode_host_registry(&expected).unwrap();
         assert_eq!(decode_host_registry(&bytes).unwrap(), expected);
