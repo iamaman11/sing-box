@@ -454,9 +454,7 @@ pub(crate) fn run(
                 let config_unproven = resource_plan
                     .resources
                     .iter()
-                    .filter(|entry| {
-                        entry.reason_code == "RUNNING_RUNTIME_ONLY_CONFIG_UNPROVEN"
-                    })
+                    .filter(|entry| entry.reason_code == "RUNNING_RUNTIME_ONLY_CONFIG_UNPROVEN")
                     .count();
                 println!("host_vm_resources_schema=1");
                 println!("host_vm_resources_count={}", report.resources.len());

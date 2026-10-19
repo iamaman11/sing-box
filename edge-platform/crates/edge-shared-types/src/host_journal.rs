@@ -416,18 +416,36 @@ where
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(_) => return Err("HOST_OPERATION_JOURNAL_UNAVAILABLE"),
     }
-    // An unresolved BEGIN overrides even a seemingly healthy NOOP. Do not
-    // allow another comment to hide a lost ACK/crash behind newer readback.
-    match fs::symlink_metadata(native_scope_pending_path(protected_journal_dir, intent)) {
-        Ok(_) => return Err("HOST_RESOURCE_PENDING_OR_UNAVAILABLE"),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(_) => return Err("HOST_RESOURCE_PENDING_OR_UNAVAILABLE"),
-    }
     let selected = registry
         .hosts
         .iter()
         .find(|h| h.machine_id == intent.machine_id && h.kind == intent.kind)
         .ok_or("HOST_INTENT_UNKNOWN_MACHINE")?;
+    // A signed RECOVER never calls the native mutator. If a previous BEGIN
+    // survived a crash/ACK loss, the existing SYSTEM/root owner may release
+    // it only after independently re-observing the converged physical state.
+    // A changed desired digest or uncertain readback keeps UNKNOWN_NO_REPLAY.
+    match fs::symlink_metadata(native_scope_pending_path(protected_journal_dir, intent)) {
+        Ok(_) if intent.action == FleetHostAction::Recover as i32 => {
+            let observed = observe()?;
+            return resolve_pending_native_recovery_once(
+                intent,
+                authorization,
+                &registry,
+                selected,
+                &bound,
+                pinned_worker_public_key,
+                native_machine_id,
+                native_owner_kind,
+                now_unix,
+                protected_journal_dir,
+                &observed,
+            );
+        }
+        Ok(_) => return Err("HOST_RESOURCE_PENDING_OR_UNAVAILABLE"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(_) => return Err("HOST_RESOURCE_PENDING_OR_UNAVAILABLE"),
+    }
     let before = observe()?;
     validate_native_observation(&before)?;
     let plan = propose_host_transition(
@@ -444,6 +462,11 @@ where
     // and cannot be promoted to VERIFIED by an external caller.
     if step == FleetHostPlannedStep::Blocked {
         return Err("HOST_NATIVE_PLAN_BLOCKED");
+    }
+    // RECOVER may inspect a stable NOOP or settle a previously signed BEGIN,
+    // but must NEVER turn into a second START/STOP/INSTALL attempt.
+    if intent.action == FleetHostAction::Recover as i32 && step != FleetHostPlannedStep::Noop {
+        return Err("HOST_NATIVE_RECOVER_READ_ONLY_STATE_NOT_CONVERGED");
     }
     if step == FleetHostPlannedStep::Noop {
         // A valid signed NOOP also consumes its operation ID. Otherwise an
@@ -533,6 +556,213 @@ fn native_scope_pending_path(root: &Path, intent: &FleetHostIntent) -> std::path
         bytes.extend_from_slice(field.as_bytes());
     }
     root.join(format!("resource-{}.pending.pb", journal_hex(&bytes)))
+}
+
+/// One pure proof gate shared by VM root and future Windows SYSTEM
+/// recovery. Running requires current ReleaseSet and complete native
+/// readiness; stopped requires an exact native owner with an intact release.
+/// A stopped release drift is reported, never silently reconciled.
+fn verify_read_only_recovery_state(
+    host: &crate::FleetHost,
+    observation: &crate::FleetNativeObservation,
+    expected_runtime_digest: &[u8],
+    now_unix: u64,
+) -> Result<&'static str, &'static str> {
+    use crate::{
+        FleetHostKind, FleetHostMode, FleetHostRunState, FleetNativeOwnerState,
+        FleetNativeReleaseProof, host_lifecycle::validate_native_observation,
+    };
+    validate_native_observation(observation)?;
+    if observation.host_kind != host.kind
+        || !observation.reason_codes.is_empty()
+        || observation.observed_at_unix > now_unix.saturating_add(60)
+        || now_unix.saturating_sub(observation.observed_at_unix) > 300
+        || expected_runtime_digest.len() != 32
+    {
+        return Err("HOST_NATIVE_RECOVERY_READBACK_UNPROVEN");
+    }
+    let kind =
+        FleetHostKind::try_from(host.kind).map_err(|_| "HOST_NATIVE_RECOVERY_KIND_INVALID")?;
+    let required_proof = match kind {
+        FleetHostKind::Vm => FleetNativeReleaseProof::ApplicationBundle,
+        FleetHostKind::Windows => FleetNativeReleaseProof::ActivationRecord,
+        FleetHostKind::Unspecified => return Err("HOST_NATIVE_RECOVERY_KIND_INVALID"),
+    };
+    if observation.release_proof != required_proof as i32
+        || observation.observed_release_sha256.len() != 32
+        || observation
+            .observed_release_sha256
+            .iter()
+            .all(|byte| *byte == 0)
+    {
+        return Err("HOST_NATIVE_RECOVERY_RELEASE_UNPROVEN");
+    }
+    let desired = host
+        .target
+        .as_ref()
+        .ok_or("HOST_NATIVE_RECOVERY_TARGET_UNPROVEN")?;
+    let run = FleetHostRunState::try_from(desired.run_state)
+        .map_err(|_| "HOST_NATIVE_RECOVERY_TARGET_INVALID")?;
+    let mode = FleetHostMode::try_from(desired.windows_mode)
+        .map_err(|_| "HOST_NATIVE_RECOVERY_MODE_INVALID")?;
+    if (kind == FleetHostKind::Windows && mode != FleetHostMode::ProxyOnly)
+        || (kind == FleetHostKind::Vm && mode != FleetHostMode::Unspecified)
+    {
+        return Err("HOST_NATIVE_RECOVERY_MODE_NOT_ACCEPTED");
+    }
+    let owner = FleetNativeOwnerState::try_from(observation.owner_state)
+        .map_err(|_| "HOST_NATIVE_RECOVERY_OWNER_UNPROVEN")?;
+    match (run, owner) {
+        (FleetHostRunState::Running, FleetNativeOwnerState::Running)
+            if observation.runtime_ready_proven
+                && observation.runtime_ready
+                && observation.observed_release_sha256 == expected_runtime_digest =>
+        {
+            Ok("RECOVERED_NATIVE_RUNNING")
+        }
+        (FleetHostRunState::Stopped, FleetNativeOwnerState::Stopped)
+            if observation.observed_release_sha256 == expected_runtime_digest =>
+        {
+            Ok("RECOVERED_NATIVE_STOPPED")
+        }
+        (FleetHostRunState::Stopped, FleetNativeOwnerState::Stopped) => {
+            Ok("STOPPED_RELEASE_DRIFT_REQUIRES_INSTALL_TARGET")
+        }
+        _ => Err("HOST_NATIVE_RECOVERY_NOT_CONVERGED_NO_REPLAY"),
+    }
+}
+
+/// Reconcile a durable previous BEGIN WITHOUT repeating its native effect.
+/// The original root/SYSTEM journal remains the sole mutation authority.
+/// A new separately signed RECOVER is consumed as its own read-only receipt.
+fn resolve_pending_native_recovery_once(
+    intent: &FleetHostIntent,
+    authorization: &FleetHostAuthorization,
+    registry: &HostRegistry,
+    selected: &crate::FleetHost,
+    bound: &crate::host_lifecycle::BoundNativeHostArtifacts,
+    pinned_worker_public_key: &[u8],
+    native_machine_id: &str,
+    native_owner_kind: i32,
+    now_unix: u64,
+    journal_dir: &Path,
+    observed: &crate::FleetNativeObservation,
+) -> Result<FleetHostResult, &'static str> {
+    use crate::{
+        FleetHostAction, FleetHostResultState,
+        host_lifecycle::{decode_host_intent, decode_host_result},
+    };
+    let scope = native_scope_pending_path(journal_dir, intent);
+    let pending = fs::read(&scope).map_err(|_| "HOST_RECOVERY_PENDING_RECORD_UNREADABLE")?;
+    let original = decode_host_intent(&pending)?;
+    if original.machine_id != intent.machine_id
+        || original.kind != intent.kind
+        || original.resource_id != intent.resource_id
+        || original.operation_id == intent.operation_id
+        || original.registry_sha256 != intent.registry_sha256
+        || original.desired_sha256 != intent.desired_sha256
+        || original.release_set_sha256 != intent.release_set_sha256
+        || !matches!(
+            FleetHostAction::try_from(original.action),
+            Ok(FleetHostAction::Apply | FleetHostAction::Recover)
+        )
+    {
+        return Err("HOST_NATIVE_RECOVERY_PENDING_IDENTITY_MISMATCH");
+    }
+    let prior_id = journal_hex(original.operation_id.as_bytes());
+    let original_begin = fs::read(journal_dir.join(format!("{prior_id}.pb")))
+        .map_err(|_| "HOST_NATIVE_RECOVERY_BEGIN_MISSING")?;
+    let begin = decode_host_result(&original_begin)?;
+    if begin.schema_version != 1
+        || begin.state != FleetHostResultState::Authorized as i32
+        || begin.physical_readback
+        || !begin.error_class.is_empty()
+        || begin.next_action != "NATIVE_OWNER_READBACK_REQUIRED"
+        || begin.machine_id != original.machine_id
+        || begin.resource_id != original.resource_id
+        || begin.operation_id != original.operation_id
+        || begin.action != original.action
+        || begin.release_set_sha256 != original.release_set_sha256
+        || begin.desired_sha256 != original.desired_sha256
+    {
+        return Err("HOST_NATIVE_RECOVERY_BEGIN_MISMATCH");
+    }
+    let verdict = verify_read_only_recovery_state(
+        selected,
+        observed,
+        &bound.runtime_release_sha256,
+        now_unix,
+    )?;
+    let prior_result = FleetHostResult {
+        schema_version: 1,
+        machine_id: original.machine_id.clone(),
+        resource_id: original.resource_id.clone(),
+        operation_id: original.operation_id.clone(),
+        action: original.action,
+        state: FleetHostResultState::Verified as i32,
+        release_set_sha256: original.release_set_sha256.clone(),
+        desired_sha256: original.desired_sha256.clone(),
+        observed_at_unix: observed.observed_at_unix,
+        error_class: String::new(),
+        next_action: verdict.to_owned(),
+        physical_readback: true,
+    };
+    let prior_terminal = journal_dir.join(format!("{prior_id}.verified.pb"));
+    match fs::symlink_metadata(&prior_terminal) {
+        Ok(_) => {
+            // A crash after terminal sync but before unlocking the scope
+            // is recoverable, only with the same new physical owner proof.
+            let exact = decode_host_result(
+                &fs::read(&prior_terminal)
+                    .map_err(|_| "HOST_NATIVE_RECOVERY_TERMINAL_UNREADABLE")?,
+            )?;
+            if exact.state != FleetHostResultState::Verified as i32
+                || !exact.physical_readback
+                || exact.machine_id != original.machine_id
+                || exact.resource_id != original.resource_id
+                || exact.operation_id != original.operation_id
+                || exact.action != original.action
+                || exact.release_set_sha256 != original.release_set_sha256
+                || exact.desired_sha256 != original.desired_sha256
+            {
+                return Err("HOST_NATIVE_RECOVERY_TERMINAL_MISMATCH");
+            }
+            fs::remove_file(&scope).map_err(|_| "HOST_RECOVERY_SCOPE_UNCERTAIN_NO_REPLAY")?;
+            fs::File::open(journal_dir)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|_| "HOST_RECOVERY_SCOPE_SYNC_UNCERTAIN_NO_REPLAY")?;
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            store_native_terminal_and_unlock_once(
+                &original,
+                &prior_result,
+                "verified",
+                journal_dir,
+            )?;
+        }
+        Err(_) => return Err("HOST_NATIVE_RECOVERY_TERMINAL_UNAVAILABLE"),
+    }
+    // No native action occurred for the new Recover intent.
+    admit_after_protected_owner_check_once(
+        intent,
+        authorization,
+        registry,
+        &bound.registry_sha256,
+        &bound.desired_sha256,
+        &bound.release_set_sha256,
+        pinned_worker_public_key,
+        native_machine_id,
+        native_owner_kind,
+        now_unix,
+        journal_dir,
+    )?;
+    let mut result = crate::host_lifecycle::prepared_host_result(intent);
+    result.state = FleetHostResultState::Observed as i32;
+    result.observed_at_unix = observed.observed_at_unix;
+    result.error_class.clear();
+    result.next_action = verdict.to_owned();
+    store_native_terminal_and_unlock_once(intent, &result, "observed", journal_dir)?;
+    Ok(result)
 }
 
 /// Complete a locally authenticated native mutation after physical readback.
@@ -725,6 +955,61 @@ mod tests {
     use ring::rand::SystemRandom;
     use ring::signature::{Ed25519KeyPair, KeyPair};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn recovery_requires_native_convergence_and_never_accepts_unknown() {
+        let host = crate::FleetHost {
+            machine_id: "vm-1".into(),
+            kind: crate::FleetHostKind::Vm as i32,
+            target: Some(crate::FleetHostTarget {
+                run_state: crate::FleetHostRunState::Running as i32,
+                windows_mode: crate::FleetHostMode::Unspecified as i32,
+            }),
+            ..Default::default()
+        };
+        let mut observed = crate::FleetNativeObservation {
+            schema_version: 1,
+            host_kind: crate::FleetHostKind::Vm as i32,
+            observed_at_unix: 1000,
+            owner_state: crate::FleetNativeOwnerState::Running as i32,
+            release_proof: crate::FleetNativeReleaseProof::ApplicationBundle as i32,
+            observed_release_sha256: vec![1; 32],
+            runtime_ready: true,
+            runtime_ready_proven: true,
+            reason_codes: vec![],
+        };
+        assert_eq!(
+            verify_read_only_recovery_state(&host, &observed, &[1; 32], 1000),
+            Ok("RECOVERED_NATIVE_RUNNING")
+        );
+        observed.runtime_ready = false;
+        assert!(verify_read_only_recovery_state(&host, &observed, &[1; 32], 1000).is_err());
+        observed.runtime_ready = true;
+        observed.observed_release_sha256 = vec![2; 32];
+        assert!(verify_read_only_recovery_state(&host, &observed, &[1; 32], 1000).is_err());
+        observed.observed_release_sha256 = vec![1; 32];
+        observed.reason_codes.push("VM_RUNTIME_UNPROVEN".into());
+        assert!(verify_read_only_recovery_state(&host, &observed, &[1; 32], 1000).is_err());
+        observed.reason_codes.clear();
+        let mut stopped = host;
+        stopped.target.as_mut().unwrap().run_state = crate::FleetHostRunState::Stopped as i32;
+        observed.owner_state = crate::FleetNativeOwnerState::Stopped as i32;
+        observed.runtime_ready = false;
+        observed.observed_release_sha256 = vec![2; 32];
+        assert_eq!(
+            verify_read_only_recovery_state(&stopped, &observed, &[1; 32], 1000),
+            Ok("STOPPED_RELEASE_DRIFT_REQUIRES_INSTALL_TARGET")
+        );
+        let mut windows = stopped;
+        windows.kind = crate::FleetHostKind::Windows as i32;
+        windows.target.as_mut().unwrap().windows_mode = crate::FleetHostMode::ManagedTun as i32;
+        observed.host_kind = crate::FleetHostKind::Windows as i32;
+        observed.release_proof = crate::FleetNativeReleaseProof::ActivationRecord as i32;
+        assert_eq!(
+            verify_read_only_recovery_state(&windows, &observed, &[1; 32], 1000),
+            Err("HOST_NATIVE_RECOVERY_MODE_NOT_ACCEPTED")
+        );
+    }
 
     #[test]
     fn durable_native_admission_never_replays_and_requires_signature() {
@@ -1356,6 +1641,89 @@ mod tests {
             "HOST_RESOURCE_PENDING_OR_UNAVAILABLE"
         );
         assert_eq!(count.get(), 2);
+        // Signed RECOVER must not re-run the failed operation: first it
+        // refuses an unconverged state and retains the durable BEGIN.
+        let original_operation = "issue1-comment-983";
+        intent.operation_id = "issue1-comment-985".into();
+        intent.action = FleetHostAction::Recover as i32;
+        auth.operation_id = intent.operation_id.clone();
+        auth.ed25519_signature = pair
+            .sign(&host_authorization_payload(&intent, &auth))
+            .as_ref()
+            .to_vec();
+        assert_eq!(
+            execute_after_protected_owner_check_once(
+                &intent,
+                &auth,
+                &registry_pb,
+                spec,
+                &release_pb,
+                Some(&bundle_pb),
+                pair.public_key().as_ref(),
+                "vm-exact",
+                FleetHostKind::Vm as i32,
+                1020,
+                &dir,
+                observe,
+                |_step| panic!("Recover cannot authorize a mutation"),
+                |_step| panic!("Recover cannot replay an unknown operation"),
+            )
+            .unwrap_err(),
+            "HOST_NATIVE_RECOVERY_NOT_CONVERGED_NO_REPLAY"
+        );
+        assert!(native_scope_pending_path(&dir, &intent).exists());
+        assert_eq!(count.get(), 2);
+        // A later verified physical readback can settle the earlier
+        // uncertain BEGIN without dispatching any additional mutation.
+        running.set(true);
+        let recovered = execute_after_protected_owner_check_once(
+            &intent,
+            &auth,
+            &registry_pb,
+            spec,
+            &release_pb,
+            Some(&bundle_pb),
+            pair.public_key().as_ref(),
+            "vm-exact",
+            FleetHostKind::Vm as i32,
+            1020,
+            &dir,
+            observe,
+            |_step| panic!("Recover cannot authorize a mutation"),
+            |_step| panic!("Recover cannot replay an unknown operation"),
+        )
+        .unwrap();
+        assert_eq!(recovered.state, FleetHostResultState::Observed as i32);
+        assert_eq!(recovered.next_action, "RECOVERED_NATIVE_RUNNING");
+        assert_eq!(count.get(), 2);
+        assert!(!native_scope_pending_path(&dir, &intent).exists());
+        assert!(
+            dir.join(format!(
+                "{}.verified.pb",
+                journal_hex(original_operation.as_bytes())
+            ))
+            .exists()
+        );
+        assert_eq!(
+            execute_after_protected_owner_check_once(
+                &intent,
+                &auth,
+                &registry_pb,
+                spec,
+                &release_pb,
+                Some(&bundle_pb),
+                pair.public_key().as_ref(),
+                "vm-exact",
+                FleetHostKind::Vm as i32,
+                1020,
+                &dir,
+                observe,
+                |_step| panic!("used signed recover cannot mutate"),
+                |_step| panic!("used signed recover cannot mutate"),
+            )
+            .unwrap_err(),
+            "HOST_OPERATION_EXISTS_OR_JOURNAL_UNAVAILABLE"
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 

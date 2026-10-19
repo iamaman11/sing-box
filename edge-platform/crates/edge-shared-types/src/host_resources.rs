@@ -262,9 +262,7 @@ pub fn propose_vm_resource_transitions(
 
 /// A runtime NOOP is not evidence of configuration convergence. Keep that
 /// distinction visible in the *same* operator diagnostic and typed planner.
-pub fn vm_resource_requires_attention(
-    transition: &crate::FleetVmResourceTransition,
-) -> bool {
+pub fn vm_resource_requires_attention(transition: &crate::FleetVmResourceTransition) -> bool {
     transition.step != crate::FleetHostPlannedStep::Noop as i32
         || transition.reason_code == "RUNNING_RUNTIME_ONLY_CONFIG_UNPROVEN"
 }

@@ -390,10 +390,7 @@ pub(super) async fn attest_published_github_source(
 /// GitHub application bundle already authenticated by the native owner.
 /// A release marker alone cannot prove that Compose or image pins on disk
 /// still contain the bytes published with that release.
-fn verify_installed_native_vm_policy(
-    stack_dir: &Path,
-    bundle_pb: &[u8],
-) -> Result<(), String> {
+fn verify_installed_native_vm_policy(stack_dir: &Path, bundle_pb: &[u8]) -> Result<(), String> {
     let request = ApplyBundleRequest::decode(bundle_pb)
         .map_err(|_| "HOST_NATIVE_BUNDLE_POLICY_UNDECODABLE")?;
     super::validate_digest_bound_bundle_request(&request)
@@ -568,7 +565,7 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
                     // Line1 and Line2 even when only one resource changed.
                     // Refuse before BEGIN until typed scoped replacement exists.
                     Err("HOST_NATIVE_VM_REPLACE_NOT_RESOURCE_SCOPED")
-                },
+                }
                 _ => Err("HOST_NATIVE_VM_STEP_NOT_IMPLEMENTED"),
             },
             |step| match step {
@@ -625,24 +622,12 @@ mod native_host_path_tests {
         fs::create_dir(&root).unwrap();
         let exact = b"name: vultr-edge\n";
         fs::write(root.join("docker-compose.yml"), exact).unwrap();
-        assert!(verify_installed_native_vm_file(
-            &root,
-            "docker-compose.yml",
-            exact
-        ).is_ok());
+        assert!(verify_installed_native_vm_file(&root, "docker-compose.yml", exact).is_ok());
         fs::write(root.join("docker-compose.yml"), b"name: foreign\n").unwrap();
-        assert!(verify_installed_native_vm_file(
-            &root,
-            "docker-compose.yml",
-            exact
-        ).is_err());
+        assert!(verify_installed_native_vm_file(&root, "docker-compose.yml", exact).is_err());
         fs::remove_file(root.join("docker-compose.yml")).unwrap();
         std::os::unix::fs::symlink("/etc/hosts", root.join("docker-compose.yml")).unwrap();
-        assert!(verify_installed_native_vm_file(
-            &root,
-            "docker-compose.yml",
-            exact
-        ).is_err());
+        assert!(verify_installed_native_vm_file(&root, "docker-compose.yml", exact).is_err());
         fs::remove_file(root.join("docker-compose.yml")).unwrap();
         fs::remove_dir(root).unwrap();
     }
