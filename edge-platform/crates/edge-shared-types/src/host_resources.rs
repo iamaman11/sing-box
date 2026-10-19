@@ -619,8 +619,8 @@ pub fn propose_vm_resource_transitions(
     report: &FleetVmResourceReport,
 ) -> Result<crate::FleetVmResourceTransitionPlan, &'static str> {
     use crate::{
-        FleetHostPlannedStep as Step, FleetHostRunState, FleetVmResourceTransition,
-        FleetVmResourceTransitionPlan,
+        FleetHostPlannedStep as Step, FleetHostRunState, FleetVmResourceReason as Reason,
+        FleetVmResourceTransition, FleetVmResourceTransitionPlan,
     };
     validate_vm_resource_report(report, host)?;
     let desired = host
@@ -631,27 +631,27 @@ pub fn propose_vm_resource_transitions(
     for row in &report.resources {
         let (step, reason) = match desired {
             None | Some(FleetHostRunState::Unspecified) => {
-                (Step::Blocked, "TARGET_UNSET_OBSERVE_ONLY")
+                (Step::Blocked, Reason::TargetUnsetObserveOnly)
             }
             Some(FleetHostRunState::Stopped)
                 if !row.present && row.reason_code == "CONTAINER_ABSENT" =>
             {
-                (Step::Noop, "ABSENT_AS_DESIRED")
+                (Step::Noop, Reason::AbsentAsDesired)
             }
             Some(FleetHostRunState::Running)
                 if !row.present && row.reason_code == "CONTAINER_ABSENT" =>
             {
-                (Step::Install, "CONTAINER_ABSENT_INSTALL_REQUIRED")
+                (Step::Install, Reason::ContainerAbsentInstallRequired)
             }
             Some(_) if !row.present || !row.ownership_proven || !row.running_proven => {
-                (Step::Blocked, "RESOURCE_IDENTITY_OR_STATE_UNPROVEN")
+                (Step::Blocked, Reason::ResourceIdentityOrStateUnproven)
             }
             Some(FleetHostRunState::Stopped) if row.running => {
-                (Step::Stop, "CONTAINER_RUNNING_BUT_TARGET_STOPPED")
+                (Step::Stop, Reason::ContainerRunningButTargetStopped)
             }
-            Some(FleetHostRunState::Stopped) => (Step::Noop, "STOPPED_AS_DESIRED"),
+            Some(FleetHostRunState::Stopped) => (Step::Noop, Reason::StoppedAsDesired),
             Some(FleetHostRunState::Running) if !row.running => {
-                (Step::Start, "CONTAINER_STOPPED_BUT_TARGET_RUNNING")
+                (Step::Start, Reason::ContainerStoppedButTargetRunning)
             }
             Some(FleetHostRunState::Running)
                 if matches!(
@@ -661,32 +661,93 @@ pub fn propose_vm_resource_transitions(
             {
                 // An already-running container requires no START. Docker
                 // health is NOT proof of configuration or network readiness.
-                (Step::Noop, "RUNNING_RUNTIME_ONLY_CONFIG_UNPROVEN")
+                (Step::Noop, Reason::RunningRuntimeOnlyConfigUnproven)
             }
             Some(FleetHostRunState::Running) => {
-                (Step::Blocked, "RUNTIME_HEALTH_OR_CONFIG_UNPROVEN")
+                (Step::Blocked, Reason::RuntimeHealthOrConfigUnproven)
             }
         };
         resources.push(FleetVmResourceTransition {
             resource: row.resource.clone(),
             step: step as i32,
-            reason_code: reason.to_owned(),
+            reason_code: reason
+                .as_str_name()
+                .strip_prefix("FLEET_VM_RESOURCE_REASON_")
+                .expect("typed reason uses the stable protobuf prefix")
+                .to_owned(),
+            reason: reason as i32,
         });
     }
-    Ok(FleetVmResourceTransitionPlan {
+    let proposed = FleetVmResourceTransitionPlan {
         schema_version: 1,
         machine_id: host.machine_id.clone(),
         resources,
         owner_attested: false,
         mutation_authorized: false,
-    })
+    };
+    validate_vm_resource_transition_plan(&proposed, host)?;
+    Ok(proposed)
 }
 
-/// A runtime NOOP is not evidence of configuration convergence. Keep that
-/// distinction visible in the *same* operator diagnostic and typed planner.
+/// Contract validation is distinct from authorization: even a well-formed
+/// runner-copied plan must never claim owner attestation or mutation rights.
+/// Validate exact host scope, typed reason/action pairing and the backwards-
+/// compatible reason_code projection. No new owner registry is introduced.
+pub fn validate_vm_resource_transition_plan(
+    plan: &crate::FleetVmResourceTransitionPlan,
+    host: &FleetHost,
+) -> Result<(), &'static str> {
+    use crate::{FleetHostPlannedStep as Step, FleetVmResourceReason as Reason};
+    if host.kind != FleetHostKind::Vm as i32
+        || plan.schema_version != 1
+        || plan.machine_id != host.machine_id
+        || plan.resources.len() != host.vm_containers.len()
+        || plan.owner_attested
+        || plan.mutation_authorized
+    {
+        return Err("VM_RESOURCE_PLAN_SCOPE_OR_AUTHORITY_INVALID");
+    }
+    for (entry, selector) in plan.resources.iter().zip(&host.vm_containers) {
+        if entry.resource.as_ref() != Some(selector) {
+            return Err("VM_RESOURCE_PLAN_IDENTITY_INVALID");
+        }
+        let reason = Reason::try_from(entry.reason)
+            .map_err(|_| "VM_RESOURCE_PLAN_REASON_UNRECOGNIZED")?;
+        if reason == Reason::Unspecified {
+            return Err("VM_RESOURCE_PLAN_REASON_UNSPECIFIED");
+        }
+        let code = reason
+            .as_str_name()
+            .strip_prefix("FLEET_VM_RESOURCE_REASON_")
+            .ok_or("VM_RESOURCE_PLAN_REASON_INVALID")?;
+        if entry.reason_code != code {
+            return Err("VM_RESOURCE_PLAN_REASON_CODE_MISMATCH");
+        }
+        let expected_step = match reason {
+            Reason::TargetUnsetObserveOnly
+            | Reason::ResourceIdentityOrStateUnproven
+            | Reason::RuntimeHealthOrConfigUnproven => Step::Blocked,
+            Reason::AbsentAsDesired
+            | Reason::StoppedAsDesired
+            | Reason::RunningRuntimeOnlyConfigUnproven => Step::Noop,
+            Reason::ContainerAbsentInstallRequired => Step::Install,
+            Reason::ContainerRunningButTargetStopped => Step::Stop,
+            Reason::ContainerStoppedButTargetRunning => Step::Start,
+            Reason::Unspecified => return Err("VM_RESOURCE_PLAN_REASON_UNSPECIFIED"),
+        };
+        if entry.step != expected_step as i32 {
+            return Err("VM_RESOURCE_PLAN_ACTION_REASON_CONFLICT");
+        }
+    }
+    Ok(())
+}
+
+/// A runtime NOOP is not proof of config convergence. Use the *typed* reason
+/// from the exact same plan consumed by the native owner, never free text.
 pub fn vm_resource_requires_attention(transition: &crate::FleetVmResourceTransition) -> bool {
     transition.step != crate::FleetHostPlannedStep::Noop as i32
-        || transition.reason_code == "RUNNING_RUNTIME_ONLY_CONFIG_UNPROVEN"
+        || transition.reason
+            == crate::FleetVmResourceReason::RunningRuntimeOnlyConfigUnproven as i32
 }
 
 #[cfg(test)]
@@ -888,6 +949,53 @@ mod resource_planning_tests {
         let result = propose_vm_resource_transitions(host, report).unwrap();
         assert!(!result.owner_attested && !result.mutation_authorized);
         FleetHostPlannedStep::try_from(result.resources[0].step).unwrap()
+    }
+
+
+    #[test]
+    fn typed_resource_reason_and_action_are_one_non_authorizing_contract() {
+        use crate::FleetVmResourceReason as Reason;
+        let (host, report) = fixture();
+        let plan = propose_vm_resource_transitions(&host, &report).unwrap();
+        assert_eq!(
+            plan.resources[0].reason,
+            Reason::RunningRuntimeOnlyConfigUnproven as i32
+        );
+        assert_eq!(
+            plan.resources[0].reason_code,
+            "RUNNING_RUNTIME_ONLY_CONFIG_UNPROVEN"
+        );
+        assert!(validate_vm_resource_transition_plan(&plan, &host).is_ok());
+        let mut invalid = plan.clone();
+        invalid.resources[0].reason_code = "ARBITRARY_FIX_WITH_SHELL".into();
+        assert_eq!(
+            validate_vm_resource_transition_plan(&invalid, &host),
+            Err("VM_RESOURCE_PLAN_REASON_CODE_MISMATCH")
+        );
+        invalid = plan.clone();
+        invalid.resources[0].step = FleetHostPlannedStep::Stop as i32;
+        assert_eq!(
+            validate_vm_resource_transition_plan(&invalid, &host),
+            Err("VM_RESOURCE_PLAN_ACTION_REASON_CONFLICT")
+        );
+        invalid = plan.clone();
+        invalid.resources[0].reason = Reason::Unspecified as i32;
+        assert_eq!(
+            validate_vm_resource_transition_plan(&invalid, &host),
+            Err("VM_RESOURCE_PLAN_REASON_UNSPECIFIED")
+        );
+        invalid = plan.clone();
+        invalid.owner_attested = true;
+        assert_eq!(
+            validate_vm_resource_transition_plan(&invalid, &host),
+            Err("VM_RESOURCE_PLAN_SCOPE_OR_AUTHORITY_INVALID")
+        );
+        invalid = plan.clone();
+        invalid.resources[0].resource.as_mut().unwrap().compose_service = "foreign".into();
+        assert_eq!(
+            validate_vm_resource_transition_plan(&invalid, &host),
+            Err("VM_RESOURCE_PLAN_IDENTITY_INVALID")
+        );
     }
 
     #[test]

@@ -319,13 +319,32 @@ message FleetHostTransitionPlan {
   bool mutation_authorized = 8;
 }
 
+// Each reason is a closed typed contract between Rust planner, diagnostics
+// and native owner. Legacy reason_code is a generated projection for CLI
+// readers, not a second user-editable decision input. New failures require a
+// new enum variant and a planner/diagnostic test, never an ad-hoc string.
+enum FleetVmResourceReason {
+  FLEET_VM_RESOURCE_REASON_UNSPECIFIED = 0;
+  FLEET_VM_RESOURCE_REASON_TARGET_UNSET_OBSERVE_ONLY = 1;
+  FLEET_VM_RESOURCE_REASON_ABSENT_AS_DESIRED = 2;
+  FLEET_VM_RESOURCE_REASON_CONTAINER_ABSENT_INSTALL_REQUIRED = 3;
+  FLEET_VM_RESOURCE_REASON_RESOURCE_IDENTITY_OR_STATE_UNPROVEN = 4;
+  FLEET_VM_RESOURCE_REASON_CONTAINER_RUNNING_BUT_TARGET_STOPPED = 5;
+  FLEET_VM_RESOURCE_REASON_STOPPED_AS_DESIRED = 6;
+  FLEET_VM_RESOURCE_REASON_CONTAINER_STOPPED_BUT_TARGET_RUNNING = 7;
+  FLEET_VM_RESOURCE_REASON_RUNNING_RUNTIME_ONLY_CONFIG_UNPROVEN = 8;
+  FLEET_VM_RESOURCE_REASON_RUNTIME_HEALTH_OR_CONFIG_UNPROVEN = 9;
+}
+
 // A deterministic runtime-only proposal for each Git-owned VM container.
-// These proposals do NOT establish configuration convergence or execution
-// authority; native owner must bind the desired bundle before mutation.
+// Container identity is resolved through FleetHost.vm_containers; its immutable
+// image/config and dependency graph are FleetVmDesiredGraph. This is never a
+// second desired registry, authority, physical network check or receipt.
 message FleetVmResourceTransition {
   FleetVmContainer resource = 1;
   FleetHostPlannedStep step = 2;
   string reason_code = 3;
+  FleetVmResourceReason reason = 4;
 }
 
 message FleetVmResourceTransitionPlan {
