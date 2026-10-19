@@ -289,7 +289,8 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
         .ok_or("HOST_TARGET_UNSET_OBSERVE_ONLY")?;
     if !matches!(
         edge_shared_types::FleetHostRunState::try_from(vm_target.run_state),
-        Ok(edge_shared_types::FleetHostRunState::Running | edge_shared_types::FleetHostRunState::Stopped)
+        Ok(edge_shared_types::FleetHostRunState::Running
+            | edge_shared_types::FleetHostRunState::Stopped)
     ) {
         return Err("HOST_NATIVE_VM_TARGET_NOT_EXECUTABLE".into());
     }
@@ -343,11 +344,9 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
                 _ => Err("HOST_NATIVE_VM_STEP_NOT_IMPLEMENTED"),
             },
             |step| match step {
-                FleetHostPlannedStep::Stop => {
-                    handle
-                        .block_on(super::docker_observation::stop_owned_application_containers())
-                        .map_err(|_| "HOST_NATIVE_VM_STOP_UNCERTAIN_NO_REPLAY")
-                }
+                FleetHostPlannedStep::Stop => handle
+                    .block_on(super::docker_observation::stop_owned_application_containers())
+                    .map_err(|_| "HOST_NATIVE_VM_STOP_UNCERTAIN_NO_REPLAY"),
                 FleetHostPlannedStep::Start => {
                     let completion = handle.block_on(super::run_bootstrap(
                         stack_dir,
