@@ -1478,6 +1478,19 @@ jobs:
       actions: read
       packages: read
     steps:
+      - name: Checkout exact candidate Git desired
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+
       - name: Download exact platform candidates
         shell: bash
         env:

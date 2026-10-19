@@ -145,19 +145,19 @@ fn verify_native_journal_protection(path: &Path) -> Result<(), &'static str> {
             if !privileged(owner) {
                 return false;
             }
-            // FILE_WRITE_DATA / APPEND_DATA / EA / ATTRIBUTES / DELETE /
-            // WRITE_DAC / WRITE_OWNER, generic write and generic all.
+            // File/dir creation, append, DELETE_CHILD, EA, ATTRIBUTES,
+            // DELETE, WRITE_DAC/WRITE_OWNER and generic write/all. Bit 1
+            // (list directory/read data) and bit 8 (read EA) are NOT writes.
             const WRITE_MASK: u32 = 0x0000_0002
                 | 0x0000_0004
                 | 0x0000_0010
+                | 0x0000_0040
                 | 0x0000_0100
                 | 0x0001_0000
                 | 0x0004_0000
                 | 0x0008_0000
                 | 0x1000_0000
-                | 0x4000_0000
-                | 0x0000_0001
-                | 0x0000_0008;
+                | 0x4000_0000;
             let acl = unsafe { &*dacl };
             for index in 0..acl.AceCount {
                 let mut ace = std::ptr::null_mut();

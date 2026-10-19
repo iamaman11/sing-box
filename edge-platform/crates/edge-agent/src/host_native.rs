@@ -236,6 +236,15 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
     {
         return Err("HOST_NATIVE_SPEC_PATH_INVALID".into());
     }
+    // A STOP/unknown VM step cannot be implemented by the current
+    // existing bootstrap/bundle primitives. Reject it BEFORE signing and
+    // BEFORE BEGIN: a callback refusal after BEGIN would strand the journal
+    // in UNKNOWN_NO_REPLAY without any physical operation.
+    let vm_target = host.target.as_ref()
+        .ok_or("HOST_TARGET_UNSET_OBSERVE_ONLY")?;
+    if vm_target.run_state != edge_shared_types::FleetHostRunState::Running as i32 {
+        return Err("HOST_NATIVE_VM_TARGET_NOT_EXECUTABLE".into());
+    }
     let spec = root_file(&trust_root.join("desired.textproto"), 65536)?;
     attest_published_github_source(
         &intent,
