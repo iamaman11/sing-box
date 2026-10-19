@@ -177,6 +177,7 @@ jobs:
       matrix: ${{ fromJSON(needs.host.outputs.host_matrix) }}
     permissions:
       contents: read
+      actions: read
       issues: write
     uses: ./.github/workflows/host-native-observe.yml
     with:
