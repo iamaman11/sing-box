@@ -153,6 +153,32 @@ pub fn propose_host_transition(
             actual,
         );
     }
+    // STOPPED is a safety target, not permission to roll out a different
+    // release to a running service. Even with a release mismatch, first
+    // select STOP. A stopped host with a different release remains BLOCKED
+    // until a distinct accepted installation target exists.
+    if desired_run == FleetHostRunState::Stopped {
+        return match state {
+            FleetNativeOwnerState::Running => {
+                plan(host, Stop, "STOP_TARGET_OVERRIDES_RELEASE_MISMATCH", expected, actual)
+            }
+            FleetNativeOwnerState::Stopped if actual != expected => plan(
+                host,
+                Blocked,
+                "STOPPED_RELEASE_MISMATCH_REQUIRES_INSTALL_TARGET",
+                expected,
+                actual,
+            ),
+            FleetNativeOwnerState::Stopped => plan(
+                host,
+                Noop,
+                "STOPPED_MATCHES_DESIRED_LOCAL_ONLY",
+                expected,
+                actual,
+            ),
+            _ => plan(host, Blocked, "NATIVE_STATE_UNPROVEN", expected, actual),
+        };
+    }
     if actual != expected {
         return plan(
             host,
@@ -163,19 +189,9 @@ pub fn propose_host_transition(
         );
     }
     match (desired_run, state) {
-        (FleetHostRunState::Stopped, FleetNativeOwnerState::Running) => {
-            plan(host, Stop, "STOP_PROPOSAL_ONLY", expected, actual)
-        }
         (FleetHostRunState::Running, FleetNativeOwnerState::Stopped) => {
             plan(host, Start, "START_PROPOSAL_ONLY", expected, actual)
         }
-        (FleetHostRunState::Stopped, FleetNativeOwnerState::Stopped) => plan(
-            host,
-            Noop,
-            "STOPPED_MATCHES_DESIRED_LOCAL_ONLY",
-            expected,
-            actual,
-        ),
         (FleetHostRunState::Running, FleetNativeOwnerState::Running)
             if observed.runtime_ready_proven && observed.runtime_ready =>
         {
@@ -410,8 +426,13 @@ mod tests {
         assert_eq!(p.step, FleetHostPlannedStep::Noop as i32);
         o.observed_release_sha256 = vec![2; 32];
         let p = propose_host_transition(&win, Some(&o), &[1; 32], &[3; 32], 1000);
-        assert_eq!(p.step, FleetHostPlannedStep::ReplaceRelease as i32);
+        assert_eq!(p.step, FleetHostPlannedStep::Blocked as i32);
+        assert_eq!(p.reason_code, "STOPPED_RELEASE_MISMATCH_REQUIRES_INSTALL_TARGET");
         assert!(!p.mutation_authorized);
+        o.owner_state = FleetNativeOwnerState::Running as i32;
+        let p = propose_host_transition(&win, Some(&o), &[1; 32], &[3; 32], 1000);
+        assert_eq!(p.step, FleetHostPlannedStep::Stop as i32);
+        assert_eq!(p.reason_code, "STOP_TARGET_OVERRIDES_RELEASE_MISMATCH");
     }
     #[test]
     fn no_implicit_vm_start_and_no_tun_without_gate() {
