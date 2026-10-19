@@ -3,10 +3,10 @@
 //! Immutable published GitHub assets and an out-of-band PINNED Worker public
 //! key are mandatory. A second enrollment never overwrites the first.
 use super::*;
-use edge_shared_types::{FleetHostKind, FleetHostIntent, ReleaseSet, managed_host};
+use edge_shared_types::{FleetHostIntent, FleetHostKind, ReleaseSet, managed_host};
 use std::fs::{DirBuilder, OpenOptions};
-use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::io::Write;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 
 unsafe extern "C" {
     fn geteuid() -> u32;
@@ -19,7 +19,10 @@ const MAX_REGISTRY: usize = 65536;
 const MAX_GITHUB_REPLY: usize = 262144;
 
 fn lowercase_sha(value: &str) -> bool {
-    value.len() == 64 && value.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
 fn pinned_worker_key(value: &str) -> Result<(), String> {
     if !lowercase_sha(value) || value.bytes().all(|b| b == b'0') {
@@ -52,7 +55,9 @@ async fn bounded_https_get(
         .await
         .map_err(|_| "HOST_ENROLL_GITHUB_FETCH_UNAVAILABLE")?;
     if !response.status().is_success()
-        || response.content_length().is_some_and(|size| size == 0 || size > max as u64)
+        || response
+            .content_length()
+            .is_some_and(|size| size == 0 || size > max as u64)
     {
         return Err("HOST_ENROLL_GITHUB_RESPONSE_REJECTED".into());
     }
@@ -83,7 +88,9 @@ async fn accepted_release_asset(
     let assets = release["assets"]
         .as_array()
         .ok_or("HOST_ENROLL_RELEASE_ASSETS_MISSING")?;
-    let mut matching = assets.iter().filter(|asset| asset["name"].as_str() == Some(name));
+    let mut matching = assets
+        .iter()
+        .filter(|asset| asset["name"].as_str() == Some(name));
     let asset = matching.next().ok_or("HOST_ENROLL_ASSET_MISSING")?;
     if matching.next().is_some() {
         return Err("HOST_ENROLL_DUPLICATE_RELEASE_ASSET".into());
@@ -119,8 +126,10 @@ fn write_protected_file(directory: &Path, name: &str, bytes: &[u8]) -> Result<()
         .mode(0o600)
         .open(path)
         .map_err(|_| "HOST_ENROLL_FILE_CREATE_FAILED")?;
-    file.write_all(bytes).map_err(|_| "HOST_ENROLL_FILE_WRITE_FAILED")?;
-    file.sync_all().map_err(|_| "HOST_ENROLL_FILE_SYNC_FAILED")?;
+    file.write_all(bytes)
+        .map_err(|_| "HOST_ENROLL_FILE_WRITE_FAILED")?;
+    file.sync_all()
+        .map_err(|_| "HOST_ENROLL_FILE_SYNC_FAILED")?;
     Ok(())
 }
 
@@ -144,7 +153,9 @@ pub(crate) async fn enroll(
     pinned_worker_key(worker_public_key_hex)?;
     if machine_id.is_empty()
         || machine_id.len() > 64
-        || !machine_id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        || !machine_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
     {
         return Err("HOST_ENROLL_MACHINE_ID_INVALID".into());
     }
@@ -178,15 +189,16 @@ pub(crate) async fn enroll(
     if super::host_native::sha256_hex(&release_pb) != release_digest {
         return Err("HOST_ENROLL_RELEASE_TAG_DIGEST_MISMATCH".into());
     }
-    let release_set =
-        ReleaseSet::decode(release_pb.as_slice()).map_err(|_| "HOST_ENROLL_RELEASE_PROTO_INVALID")?;
+    let release_set = ReleaseSet::decode(release_pb.as_slice())
+        .map_err(|_| "HOST_ENROLL_RELEASE_PROTO_INVALID")?;
     if release_set.encode_to_vec() != release_pb {
         return Err("HOST_ENROLL_RELEASE_NONCANONICAL".into());
     }
-    let registry =
-        edge_shared_types::decode_host_registry(&registry_pb)
-            .map_err(|_| "HOST_ENROLL_REGISTRY_INVALID")?;
-    let host = registry.hosts.iter()
+    let registry = edge_shared_types::decode_host_registry(&registry_pb)
+        .map_err(|_| "HOST_ENROLL_REGISTRY_INVALID")?;
+    let host = registry
+        .hosts
+        .iter()
         .find(|host| host.machine_id == machine_id && host.kind == FleetHostKind::Vm as i32)
         .ok_or("HOST_ENROLL_MACHINE_NOT_IN_ACCEPTED_REGISTRY")?;
     if !matches!(
@@ -201,7 +213,9 @@ pub(crate) async fn enroll(
         || !source_revision.bytes().all(|b| b.is_ascii_hexdigit())
         || !spec_path.starts_with("infra/")
         || spec_path.contains("..")
-        || !spec_path.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'-' | b'_'))
+        || !spec_path
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'-' | b'_'))
     {
         return Err("HOST_ENROLL_GIT_SPEC_INVALID".into());
     }
@@ -211,14 +225,21 @@ pub(crate) async fn enroll(
     let spec = bounded_https_get(&client, &spec_url, 65536).await?;
     let unsigned_provenance_intent = FleetHostIntent {
         release_set_sha256: ring::digest::digest(&ring::digest::SHA256, &release_pb)
-            .as_ref().to_vec(),
+            .as_ref()
+            .to_vec(),
         ..Default::default()
     };
     // Full tag, accepted commit/tree, asset digests and exact Git spec proof.
     // This call DOES NOT authorize an operation; it verifies a root bootstrap.
     super::host_native::attest_published_github_source(
-        &unsigned_provenance_intent, &registry_pb, &release_pb, &bundle_pb, &spec, spec_path,
-    ).await?;
+        &unsigned_provenance_intent,
+        &registry_pb,
+        &release_pb,
+        &bundle_pb,
+        &spec,
+        spec_path,
+    )
+    .await?;
 
     // Root-only first-use atomic publication. Never mutate or replace an
     // existing native-host trust tree, including an uncertain prior install.
@@ -232,9 +253,15 @@ pub(crate) async fn enroll(
     write_protected_file(&stage, "release-set.pb", &release_pb)?;
     write_protected_file(&stage, "application-bundle.pb", &bundle_pb)?;
     write_protected_file(&stage, "desired.textproto", &spec)?;
-    write_protected_file(&stage, "worker-public-key.hex", format!("{worker_public_key_hex}\n").as_bytes())?;
+    write_protected_file(
+        &stage,
+        "worker-public-key.hex",
+        format!("{worker_public_key_hex}\n").as_bytes(),
+    )?;
     let journal = stage.join("journal");
-    DirBuilder::new().mode(0o700).create(&journal)
+    DirBuilder::new()
+        .mode(0o700)
+        .create(&journal)
         .map_err(|_| "HOST_ENROLL_JOURNAL_CREATE_FAILED")?;
     fs::File::open(&journal)
         .and_then(|file| file.sync_all())
@@ -252,10 +279,15 @@ pub(crate) async fn enroll(
     println!("host_enroll=PROTECTED_TRUST_STAGED");
     println!("host_machine_id={machine_id}");
     println!("host_release_set_sha256={release_digest}");
-    println!("host_worker_public_key_sha256={}", super::host_native::sha256_hex(
-        &(0..64).step_by(2).map(|i| u8::from_str_radix(&worker_public_key_hex[i..i+2], 16).unwrap())
-            .collect::<Vec<_>>()
-    ));
+    println!(
+        "host_worker_public_key_sha256={}",
+        super::host_native::sha256_hex(
+            &(0..64)
+                .step_by(2)
+                .map(|i| u8::from_str_radix(&worker_public_key_hex[i..i + 2], 16).unwrap())
+                .collect::<Vec<_>>()
+        )
+    );
     println!("host_mutations=0");
     Ok(())
 }
