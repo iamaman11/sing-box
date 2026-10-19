@@ -49,6 +49,20 @@ message FleetVmContainer {
   string compose_service = 3;
 }
 
+// A single typed in-memory projection of the existing installed Git bundle.
+// Never store it as a second desired registry, or accept it from a runner.
+message FleetVmDesiredResource {
+  FleetVmContainer resource = 1;
+  string image_ref = 2;
+  repeated string dependencies = 3;
+  bytes config_template_sha256 = 4;
+}
+message FleetVmDesiredGraph {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  repeated FleetVmDesiredResource resources = 3;
+}
+
 // One strictly read-only Docker report from the installed root owner. This
 // does not attest an end-to-end network connection or authenticate a runner.
 // What the installed root Agent proved about the file mounted into the

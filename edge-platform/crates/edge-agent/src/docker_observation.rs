@@ -274,6 +274,7 @@ pub(crate) async fn verify_owned_application_containers(
 pub(crate) struct NativeVmRunPlan {
     step: FleetHostPlannedStep,
     identities: Vec<Option<(String, bool, String)>>,
+    desired_graph: Option<edge_shared_types::FleetVmDesiredGraph>,
 }
 
 fn check_owned_vm_snapshot(
@@ -330,6 +331,12 @@ pub(crate) async fn preflight_native_vm_run(
     if changed == 0 {
         return Err("HOST_NATIVE_VM_RESOURCE_NO_MUTATION_REQUIRED".into());
     }
+    let desired_graph = if step == FleetHostPlannedStep::Start {
+        Some(compile_native_vm_desired_graph(stack_dir, host)?)
+    } else {
+        // An emergency STOP must not require valid config templates.
+        None
+    };
     let identities = readback
         .resources
         .iter()
@@ -353,7 +360,11 @@ pub(crate) async fn preflight_native_vm_run(
     } else {
         owned_vm_start_order(&owned)?;
     }
-    Ok(NativeVmRunPlan { step, identities })
+    Ok(NativeVmRunPlan {
+        step,
+        identities,
+        desired_graph,
+    })
 }
 
 /// After durable BEGIN, re-inspect all exact Compose-owned Docker IDs before
@@ -368,6 +379,11 @@ pub(crate) async fn apply_native_vm_run_once(
     let mut owned = owned_application_container_ids(&docker, &host.vm_containers).await?;
     bind_owned_vm_compose_dependencies(stack_dir, &host.vm_containers, &mut owned)?;
     check_owned_vm_snapshot(host, &owned, &plan.identities)?;
+    if let Some(graph) = &plan.desired_graph
+        && compile_native_vm_desired_graph(stack_dir, host)? != *graph
+    {
+        return Err("HOST_VM_GRAPH_CHANGED_BEFORE_MUTATION".into());
+    }
     if plan.step == FleetHostPlannedStep::Start {
         let images = read_vm_expected_image_refs(stack_dir, &host.vm_containers)?;
         for container in &owned {
@@ -415,6 +431,11 @@ pub(crate) async fn apply_native_vm_run_once(
     let mut after = owned_application_container_ids(&docker, &host.vm_containers).await?;
     bind_owned_vm_compose_dependencies(stack_dir, &host.vm_containers, &mut after)?;
     verify_native_vm_run_poststate(host, &plan, &after)?;
+    if let Some(graph) = &plan.desired_graph
+        && compile_native_vm_desired_graph(stack_dir, host)? != *graph
+    {
+        return Err("HOST_VM_GRAPH_POSTSTATE_CHANGED_NO_REPLAY".into());
+    }
     Ok(())
 }
 
@@ -505,6 +526,57 @@ fn bind_owned_vm_compose_dependencies(
     Ok(())
 }
 
+/// Build the sole typed VM resource graph from installed Git-owned inputs,
+/// never from caller-supplied JSON or another desired-state file.
+fn compile_native_vm_desired_graph(
+    stack_dir: &Path,
+    host: &FleetHost,
+) -> Result<edge_shared_types::FleetVmDesiredGraph, String> {
+    use edge_shared_types::{FleetVmDesiredGraph, FleetVmDesiredResource};
+    let compose = read_native_vm_compose(stack_dir)?;
+    let env = super::read_exact_image_environment(stack_dir)?;
+    let images = resolve_owned_vm_images(&compose, &env, &host.vm_containers)?;
+    let deps = resolve_compose_dependencies(&compose, &host.vm_containers)?;
+    let mut resources = Vec::with_capacity(host.vm_containers.len());
+    for identity in &host.vm_containers {
+        let template = match identity.compose_service.as_str() {
+            "line1-gateway" => Some("line1-gateway/config.template.json"),
+            "line2-proxy" => Some("line2-proxy/config.template.json"),
+            _ => None,
+        };
+        let config_template_sha256 = if let Some(path) = template {
+            ring::digest::digest(
+                &ring::digest::SHA256,
+                &exact_vm_policy_file(stack_dir, path)?,
+            )
+            .as_ref()
+            .to_vec()
+        } else {
+            Vec::new()
+        };
+        resources.push(FleetVmDesiredResource {
+            resource: Some(identity.clone()),
+            image_ref: images
+                .get(&identity.compose_service)
+                .ok_or("HOST_VM_GRAPH_IMAGE_MISSING")?
+                .clone(),
+            dependencies: deps
+                .get(&identity.compose_service)
+                .ok_or("HOST_VM_GRAPH_DEPENDENCY_MISSING")?
+                .clone(),
+            config_template_sha256,
+        });
+    }
+    let graph = FleetVmDesiredGraph {
+        schema_version: 1,
+        machine_id: host.machine_id.clone(),
+        resources,
+    };
+    edge_shared_types::host_resources::validate_vm_desired_graph(&graph, host)
+        .map_err(str::to_owned)?;
+    Ok(graph)
+}
+
 /// Compare a complete native after-image with the prepared per-resource
 /// before-image. This is proof of a single Docker transition, NOT of external
 /// TLS/auth or of the application reading new configuration bytes.
@@ -571,11 +643,12 @@ impl ScopedVmService {
         }
     }
 
-    fn container_name(self) -> &'static str {
-        match self {
-            Self::Line1 => "vultr-line1-gateway",
-            Self::Line2 => "vultr-line2-proxy",
-        }
+    fn container_name<'a>(self, host: &'a FleetHost) -> Result<&'a str, String> {
+        host.vm_containers
+            .iter()
+            .find(|identity| identity.compose_service == self.compose_service())
+            .map(|identity| identity.container_name.as_str())
+            .ok_or_else(|| "HOST_NATIVE_VM_SCOPED_RESOURCE_NOT_REGISTERED".into())
     }
 
     fn template_relative(self) -> &'static str {
@@ -617,6 +690,8 @@ pub(crate) struct NativeVmScopedReplacePlan {
     new_template: Vec<u8>,
     // Unchanged files are checked again after BEGIN, before any mutation.
     unchanged_policy: Vec<(String, Vec<u8>)>,
+    installed_graph: edge_shared_types::FleetVmDesiredGraph,
+    target_graph: edge_shared_types::FleetVmDesiredGraph,
     release: edge_shared_types::ApplicationBundleReleaseState,
     expected_rendered_sha256: Vec<u8>,
 }
@@ -674,6 +749,37 @@ fn installed_scoped_static_files(stack_dir: &Path) -> Result<BTreeSet<String>, S
         }
     }
     Ok(files)
+}
+
+/// Strict admission for the complete installed static bundle, rather than
+/// trusting a container whose Compose/image files happen to match while its
+/// sing-box config template or another Git-owned file has been modified.
+/// Generated runtime, certs and release marker remain separately owned.
+pub(crate) fn verify_exact_installed_vm_bundle_static(
+    stack_dir: &Path,
+    request: &ApplyBundleRequest,
+) -> Result<(), String> {
+    if request.stack_files.is_empty() || request.stack_files.len() > 128 {
+        return Err("HOST_VM_STATIC_BUNDLE_SCOPE_INVALID".into());
+    }
+    let mut files = BTreeSet::new();
+    for expected in &request.stack_files {
+        super::validate_bundle_relative_path(&expected.relative_path)
+            .map_err(|_| "HOST_VM_STATIC_BUNDLE_PATH_INVALID")?;
+        if !files.insert(expected.relative_path.clone())
+            || expected.content.is_empty()
+            || expected.content.len() > 4 * 1024 * 1024
+        {
+            return Err("HOST_VM_STATIC_BUNDLE_FILE_INVALID".into());
+        }
+        if exact_vm_policy_file(stack_dir, &expected.relative_path)? != expected.content {
+            return Err("HOST_VM_STATIC_BUNDLE_DRIFT".into());
+        }
+    }
+    if files != installed_scoped_static_files(stack_dir)? {
+        return Err("HOST_VM_STATIC_BUNDLE_MANIFEST_DRIFT".into());
+    }
+    Ok(())
 }
 
 fn select_scoped_template_policy(
@@ -767,12 +873,25 @@ pub(crate) async fn preflight_native_vm_scoped_replace(
     }
     let (target, previous_template, new_template, unchanged_policy) =
         select_scoped_template_policy(stack_dir, request)?;
-    if !host.vm_containers.iter().any(|item| {
-        item.compose_service == target.compose_service()
-            && item.container_name == target.container_name()
-    }) {
-        return Err("HOST_NATIVE_VM_SCOPED_RESOURCE_NOT_REGISTERED".into());
-    }
+    // The Git-owned fleet registry, not a VM-specific hardcoded name,
+    // provides the exact Docker identity for this semantic service.
+    target.container_name(host)?;
+    let installed_graph = compile_native_vm_desired_graph(stack_dir, host)?;
+    let mut target_graph = installed_graph.clone();
+    let resource = target_graph
+        .resources
+        .iter_mut()
+        .find(|item| {
+            item.resource
+                .as_ref()
+                .is_some_and(|selector| selector.compose_service == target.compose_service())
+        })
+        .ok_or("HOST_VM_SCOPED_GRAPH_RESOURCE_MISSING")?;
+    resource.config_template_sha256 = ring::digest::digest(&ring::digest::SHA256, &new_template)
+        .as_ref()
+        .to_vec();
+    edge_shared_types::host_resources::validate_vm_desired_graph(&target_graph, host)
+        .map_err(str::to_owned)?;
     let runtime = super::read_typed_runtime_environment(stack_dir)?;
     let rendered = scoped_render_preview(target, &new_template, &runtime)?;
     let docker = docker_connection().await?;
@@ -790,7 +909,7 @@ pub(crate) async fn preflight_native_vm_scoped_replace(
         return Err("HOST_NATIVE_VM_SCOPED_IMAGE_DRIFT".into());
     }
     verify_running_container_config_binding(
-        target.container_name(),
+        target.container_name(host)?,
         &stack_dir.join(target.rendered_relative()),
     )
     .await?;
@@ -810,6 +929,8 @@ pub(crate) async fn preflight_native_vm_scoped_replace(
         previous_template,
         new_template,
         unchanged_policy,
+        installed_graph,
+        target_graph,
         release: edge_shared_types::ApplicationBundleReleaseState {
             schema_version: 1,
             bundle_id,
@@ -833,6 +954,9 @@ pub(crate) async fn apply_native_vm_scoped_replace_once(
     let mut before = owned_application_container_ids(&docker, &host.vm_containers).await?;
     bind_owned_vm_compose_dependencies(stack_dir, &host.vm_containers, &mut before)?;
     check_owned_vm_snapshot(host, &before, &plan.identities)?;
+    if compile_native_vm_desired_graph(stack_dir, host)? != plan.installed_graph {
+        return Err("HOST_VM_SCOPED_GRAPH_CHANGED_NO_REPLAY".into());
+    }
     if exact_vm_policy_file(stack_dir, plan.target.template_relative())? != plan.previous_template {
         return Err("HOST_NATIVE_VM_SCOPED_PRESTATE_CHANGED_NO_REPLAY".into());
     }
@@ -901,7 +1025,7 @@ pub(crate) async fn apply_native_vm_scoped_replace_once(
         }
     }
     verify_running_container_config_binding(
-        plan.target.container_name(),
+        plan.target.container_name(host)?,
         &stack_dir.join(plan.target.rendered_relative()),
     )
     .await
@@ -912,6 +1036,9 @@ pub(crate) async fn apply_native_vm_scoped_replace_once(
         != plan.expected_rendered_sha256.as_slice()
     {
         return Err("HOST_NATIVE_VM_SCOPED_CONFIG_HASH_MISMATCH_NO_REPLAY".into());
+    }
+    if compile_native_vm_desired_graph(stack_dir, host)? != plan.target_graph {
+        return Err("HOST_VM_SCOPED_GRAPH_POSTSTATE_UNPROVEN_NO_REPLAY".into());
     }
     super::write_application_release(stack_dir, &plan.release)
         .map_err(|_| "HOST_NATIVE_VM_SCOPED_RELEASE_UNCERTAIN_NO_REPLAY")?;
@@ -1175,6 +1302,7 @@ mod vm_native_start_order_tests {
         let start = NativeVmRunPlan {
             step: FleetHostPlannedStep::Start,
             identities: snapshot,
+            desired_graph: None,
         };
         assert!(verify_native_vm_run_poststate(&host, &start, &before).is_err());
         let mut after = before.clone();
@@ -1191,6 +1319,7 @@ mod vm_native_start_order_tests {
                 Some((before[0].id.clone(), true, before[0].image_ref.clone())),
                 Some((before[1].id.clone(), true, before[1].image_ref.clone())),
             ],
+            desired_graph: None,
         };
         let mut stopped = before;
         stopped[0].running = false;
@@ -1238,6 +1367,20 @@ mod vm_native_start_order_tests {
             ..Default::default()
         };
         assert!(select_scoped_template_policy(&root, &request).is_ok());
+        assert!(verify_exact_installed_vm_bundle_static(&root, &request).is_err());
+        let mut exact = request.clone();
+        exact.stack_files[3].content = b"old-template\n".to_vec();
+        assert!(verify_exact_installed_vm_bundle_static(&root, &exact).is_ok());
+        fs::write(root.join("line2-proxy/config.template.json"), b"edited\n").unwrap();
+        assert!(verify_exact_installed_vm_bundle_static(&root, &exact).is_err());
+        fs::write(
+            root.join("line2-proxy/config.template.json"),
+            b"old-template\n",
+        )
+        .unwrap();
+        fs::write(root.join("extra-owned-file"), b"unexpected\n").unwrap();
+        assert!(verify_exact_installed_vm_bundle_static(&root, &exact).is_err());
+        fs::remove_file(root.join("extra-owned-file")).unwrap();
         request.stack_files.pop();
         assert!(select_scoped_template_policy(&root, &request).is_err());
         request.stack_files.push(BundleFile {
@@ -1294,6 +1437,25 @@ mod vm_native_start_order_tests {
         assert!(
             parse_native_dns_configuration(b"nameserver 1.1.1.1\nnameserver 1.1.1.1\n").is_err()
         );
+    }
+
+    #[test]
+    fn scoped_names_come_only_from_the_git_owned_fleet_registry() {
+        let mut host = FleetHost {
+            vm_containers: vec![FleetVmContainer {
+                container_name: "other-vm-line1".into(),
+                compose_project: "separate-project".into(),
+                compose_service: "line1-gateway".into(),
+            }],
+            ..Default::default()
+        };
+        assert_eq!(
+            ScopedVmService::Line1.container_name(&host).unwrap(),
+            "other-vm-line1"
+        );
+        assert!(ScopedVmService::Line2.container_name(&host).is_err());
+        host.vm_containers.clear();
+        assert!(ScopedVmService::Line1.container_name(&host).is_err());
     }
 
     #[test]

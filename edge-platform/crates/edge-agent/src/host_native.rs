@@ -395,6 +395,8 @@ fn verify_installed_native_vm_policy(stack_dir: &Path, bundle_pb: &[u8]) -> Resu
         .map_err(|_| "HOST_NATIVE_BUNDLE_POLICY_UNDECODABLE")?;
     super::validate_digest_bound_bundle_request(&request)
         .map_err(|_| "HOST_NATIVE_BUNDLE_POLICY_DIGEST_INVALID")?;
+    super::docker_observation::verify_exact_installed_vm_bundle_static(stack_dir, &request)
+        .map_err(|_| "HOST_NATIVE_VM_STATIC_POLICY_DRIFT")?;
     for name in ["docker-compose.yml", ".images.env"] {
         let mut candidates = request
             .stack_files

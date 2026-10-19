@@ -1,13 +1,98 @@
 //! One typed, bounded VM resource diagnostic. Data from the runner is
 //! STRUCTURAL EVIDENCE only, not authenticated native owner attestation.
 use crate::{
-    FleetHost, FleetHostKind, FleetVmConfigProof, FleetVmNetworkReadback, FleetVmResourceReadback,
-    FleetVmResourceReport,
+    FleetHost, FleetHostKind, FleetVmConfigProof, FleetVmDesiredGraph, FleetVmNetworkReadback,
+    FleetVmResourceReadback, FleetVmResourceReport,
 };
 use prost::Message;
 use std::net::IpAddr;
 
 pub const MAX_VM_RESOURCE_REPORT_BYTES: usize = 32768;
+
+/// Validate the exact per-resource graph that the existing root Agent
+/// derives from installed Compose, image pins and templates. Validation
+/// alone is not authorization to mutate any resource.
+pub fn validate_vm_desired_graph(
+    graph: &FleetVmDesiredGraph,
+    host: &FleetHost,
+) -> Result<(), &'static str> {
+    if host.kind != FleetHostKind::Vm as i32
+        || graph.schema_version != 1
+        || graph.machine_id != host.machine_id
+        || graph.resources.is_empty()
+        || graph.resources.len() != host.vm_containers.len()
+        || graph.encode_to_vec().len() > 16384
+    {
+        return Err("VM_GRAPH_SCOPE_INVALID");
+    }
+    let mut unique = std::collections::BTreeSet::new();
+    for (row, selector) in graph.resources.iter().zip(&host.vm_containers) {
+        if row.resource.as_ref() != Some(selector)
+            || !unique.insert(selector.compose_service.as_str())
+            || row.image_ref.len() > 256
+            || !row
+                .image_ref
+                .rsplit_once("@sha256:")
+                .is_some_and(|(name, sha)| {
+                    !name.is_empty()
+                        && sha.len() == 64
+                        && sha.bytes().all(|b| b.is_ascii_hexdigit())
+                })
+            || row.dependencies.len() > graph.resources.len()
+        {
+            return Err("VM_GRAPH_RESOURCE_INVALID");
+        }
+        match selector.compose_service.as_str() {
+            "line1-gateway" | "line2-proxy"
+                if row.config_template_sha256.len() != 32
+                    || row.config_template_sha256.iter().all(|b| *b == 0) =>
+            {
+                return Err("VM_GRAPH_CONFIG_MISSING");
+            }
+            "warp-egress" if !row.config_template_sha256.is_empty() => {
+                return Err("VM_GRAPH_WARP_CONFIG_FOREIGN");
+            }
+            _ if !row.config_template_sha256.is_empty()
+                && (row.config_template_sha256.len() != 32
+                    || row.config_template_sha256.iter().all(|b| *b == 0)) =>
+            {
+                return Err("VM_GRAPH_CONFIG_INVALID");
+            }
+            _ => {}
+        }
+        let mut deps = std::collections::BTreeSet::new();
+        for dep in &row.dependencies {
+            if dep == &selector.compose_service
+                || !host
+                    .vm_containers
+                    .iter()
+                    .any(|item| item.compose_service == *dep)
+                || !deps.insert(dep)
+            {
+                return Err("VM_GRAPH_DEPENDENCY_INVALID");
+            }
+        }
+    }
+    let mut settled = std::collections::BTreeSet::new();
+    while settled.len() < graph.resources.len() {
+        let before = settled.len();
+        for resource in &graph.resources {
+            let name = resource.resource.as_ref().unwrap().compose_service.as_str();
+            if !settled.contains(name)
+                && resource
+                    .dependencies
+                    .iter()
+                    .all(|dep| settled.contains(dep.as_str()))
+            {
+                settled.insert(name);
+            }
+        }
+        if settled.len() == before {
+            return Err("VM_GRAPH_DEPENDENCY_CYCLE");
+        }
+    }
+    Ok(())
+}
 
 pub fn validate_vm_resource_report(
     report: &FleetVmResourceReport,
@@ -289,6 +374,56 @@ mod tests {
         forged = network.clone();
         forged.dns_nameservers.push("not-an-ip".into());
         assert!(validate_vm_network_readback(&forged).is_err());
+    }
+
+    #[test]
+    fn typed_vm_graph_rejects_foreign_resources_and_dependency_cycles() {
+        use crate::{FleetVmContainer, FleetVmDesiredResource};
+        let selector = |name: &str| FleetVmContainer {
+            container_name: format!("test-{name}"),
+            compose_project: "test".into(),
+            compose_service: name.into(),
+        };
+        let host = FleetHost {
+            machine_id: "vm-test".into(),
+            kind: FleetHostKind::Vm as i32,
+            vm_containers: vec![selector("line1-gateway"), selector("warp-egress")],
+            ..Default::default()
+        };
+        let image = format!("repo/app@sha256:{}", "a".repeat(64));
+        let mut graph = FleetVmDesiredGraph {
+            schema_version: 1,
+            machine_id: host.machine_id.clone(),
+            resources: vec![
+                FleetVmDesiredResource {
+                    resource: Some(host.vm_containers[0].clone()),
+                    image_ref: image.clone(),
+                    dependencies: vec!["warp-egress".into()],
+                    config_template_sha256: vec![9; 32],
+                },
+                FleetVmDesiredResource {
+                    resource: Some(host.vm_containers[1].clone()),
+                    image_ref: image.clone(),
+                    ..Default::default()
+                },
+            ],
+        };
+        assert!(validate_vm_desired_graph(&graph, &host).is_ok());
+        graph.resources[1].dependencies.push("line1-gateway".into());
+        assert_eq!(
+            validate_vm_desired_graph(&graph, &host),
+            Err("VM_GRAPH_DEPENDENCY_CYCLE")
+        );
+        graph.resources[1].dependencies.clear();
+        graph.resources[0].image_ref = "repo/app:latest".into();
+        assert!(validate_vm_desired_graph(&graph, &host).is_err());
+        graph.resources[0].image_ref = image;
+        graph.resources[0]
+            .resource
+            .as_mut()
+            .unwrap()
+            .compose_service = "foreign".into();
+        assert!(validate_vm_desired_graph(&graph, &host).is_err());
     }
 
     #[test]
