@@ -4,8 +4,10 @@ use edge_shared_types::{
     FleetHostAction, FleetHostIntent, FleetHostMode, HostRegistry, ManagedHostKind,
     decode_host_registry,
     host_lifecycle::{
-        MAX_NATIVE_OBSERVATION_BYTES, decode_native_observation, prepared_host_result,
-        validate_host_intent, validate_host_result, validate_intent_against_target,
+        MAX_NATIVE_OBSERVATION_BYTES, decode_host_intent, decode_host_result,
+        decode_native_observation, prepared_host_result, validate_host_intent,
+        validate_host_result, validate_intent_against_target,
+        validate_unattested_native_result,
     },
     managed_host,
 };
@@ -410,6 +412,72 @@ pub(crate) fn run(
             );
             println!("host_native_readback_source=RUNNER_COPIED_UNAUTHENTICATED");
             println!("host_native_readback_authorizes_mutation=false");
+            println!("host_mutations=0");
+            Ok(())
+        }
+        HostCommand::NativeResult {
+            machine_id,
+            intent_path,
+            result_path,
+        } => {
+            // Runner-copied bytes are untrusted even when both protobufs
+            // correlate with immutable Git. This is an audit, not a receipt.
+            let read_bounded = |path: &Path, max: u64| -> Result<Vec<u8>, String> {
+                let meta = std::fs::symlink_metadata(path)
+                    .map_err(|_| "HOST_NATIVE_TRANSPORT_FILE_MISSING")?;
+                if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > max {
+                    return Err("HOST_NATIVE_TRANSPORT_FILE_INVALID".to_owned());
+                }
+                let mut bytes = Vec::new();
+                File::open(path)
+                    .map_err(|_| "HOST_NATIVE_TRANSPORT_FILE_UNREADABLE")?
+                    .take(max + 1)
+                    .read_to_end(&mut bytes)
+                    .map_err(|_| "HOST_NATIVE_TRANSPORT_FILE_UNREADABLE")?;
+                if bytes.len() as u64 > max {
+                    return Err("HOST_NATIVE_TRANSPORT_FILE_TOO_LARGE".to_owned());
+                }
+                Ok(bytes)
+            };
+            let intent = decode_host_intent(&read_bounded(&intent_path, 4096)?)
+                .map_err(str::to_owned)?;
+            let result = decode_host_result(&read_bounded(&result_path, 4096)?)
+                .map_err(str::to_owned)?;
+            let selected = desired
+                .hosts
+                .iter()
+                .find(|host| host.machine_id == machine_id && host.kind == intent.kind)
+                .ok_or("HOST_NATIVE_TRANSPORT_MACHINE_UNREGISTERED")?;
+            if intent.machine_id != machine_id {
+                return Err("HOST_NATIVE_TRANSPORT_MACHINE_MISMATCH".to_owned());
+            }
+            let spec_path = Path::new(&selected.desired_spec_path);
+            let exact_spec = read_bounded(spec_path, 1_048_576)?;
+            let desired_sha =
+                edge_shared_types::host_lifecycle::digest_host_desired(selected, &exact_spec)
+                    .map_err(str::to_owned)?;
+            let release_sha = exact_hex_sha256(&release.release().release_set_sha256)?;
+            validate_host_intent(
+                &intent,
+                &desired,
+                digest.as_ref(),
+                &desired_sha,
+                &release_sha,
+            )
+            .map_err(str::to_owned)?;
+            validate_intent_against_target(&intent, &desired).map_err(str::to_owned)?;
+            validate_unattested_native_result(&result, &intent).map_err(str::to_owned)?;
+            println!("host_machine_id={machine_id}");
+            println!("host_operation_id={}", intent.operation_id);
+            println!("host_native_result_correlation=EXACT");
+            println!(
+                "host_native_result_claimed_state={:?}",
+                edge_shared_types::FleetHostResultState::try_from(result.state)
+                    .map_err(|_| "HOST_NATIVE_RESULT_STATE_INVALID")?
+            );
+            println!("host_native_result_origin=RUNNER_COPIED_UNAUTHENTICATED");
+            println!("host_native_result_authenticated=false");
+            println!("host_native_result_remote_acceptance=UNPROVEN");
             println!("host_mutations=0");
             Ok(())
         }
