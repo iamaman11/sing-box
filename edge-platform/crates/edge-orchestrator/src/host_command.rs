@@ -694,7 +694,10 @@ pub(crate) fn run(
             println!("host_mutations=0");
             Ok(())
         }
-        HostCommand::Apply { machine_id, resource_id } => host_lifecycle_admission(
+        HostCommand::Apply {
+            machine_id,
+            resource_id,
+        } => host_lifecycle_admission(
             &desired,
             &machine_id,
             HostLifecycleOperation::Apply,
@@ -1429,7 +1432,7 @@ mod tests {
             Some(&file),
             Some(123),
             Some(&intent_path),
-                None,
+            None,
         )
         .unwrap();
         let apply = std::fs::read_to_string(&file).unwrap();
@@ -1456,7 +1459,7 @@ mod tests {
             Some(&file),
             Some(124),
             Some(&intent_path),
-                None,
+            None,
         )
         .unwrap();
         let recover = std::fs::read_to_string(&file).unwrap();

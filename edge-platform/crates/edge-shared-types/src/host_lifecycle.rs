@@ -327,11 +327,22 @@ pub fn validate_scoped_vm_resource_id(
     if host.kind != FleetHostKind::Vm as i32 {
         return Err("HOST_SCOPE_VM_OWNER_REQUIRED");
     }
-    if resource_id.len() > 128 || host.vm_containers.iter().filter(|selector| {
-        matches!(selector.compose_service.as_str(), "line1-gateway" | "line2-proxy")
-            && format!("config/{}/{}", selector.compose_project, selector.compose_service)
-                == resource_id
-    }).count() != 1 {
+    if resource_id.len() > 128
+        || host
+            .vm_containers
+            .iter()
+            .filter(|selector| {
+                matches!(
+                    selector.compose_service.as_str(),
+                    "line1-gateway" | "line2-proxy"
+                ) && format!(
+                    "config/{}/{}",
+                    selector.compose_project, selector.compose_service
+                ) == resource_id
+            })
+            .count()
+            != 1
+    {
         return Err("HOST_SCOPE_RESOURCE_NOT_REGISTERED");
     }
     Ok(())
@@ -1034,15 +1045,14 @@ mod tests {
     fn only_registered_vm_config_can_be_signed() {
         let (mut registry, mut intent, reg, desired, release) = fixture();
         registry.hosts[0].kind = FleetHostKind::Vm as i32;
-        registry.hosts[0].owner =
-            Some(crate::managed_host::Owner::VmMachineId(intent.machine_id.clone()));
-        registry.hosts[0].vm_containers = vec![
-            crate::FleetVmContainer {
-                container_name: "vultr-line2-proxy".into(),
-                compose_project: "vultr-edge".into(),
-                compose_service: "line2-proxy".into(),
-            }
-        ];
+        registry.hosts[0].owner = Some(crate::managed_host::Owner::VmMachineId(
+            intent.machine_id.clone(),
+        ));
+        registry.hosts[0].vm_containers = vec![crate::FleetVmContainer {
+            container_name: "vultr-line2-proxy".into(),
+            compose_project: "vultr-edge".into(),
+            compose_service: "line2-proxy".into(),
+        }];
         intent.kind = FleetHostKind::Vm as i32;
         intent.resource_id = "config/vultr-edge/line2-proxy".into();
         assert!(validate_host_intent(&intent, &registry, &reg, &desired, &release).is_ok());

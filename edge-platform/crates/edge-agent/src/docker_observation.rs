@@ -1232,24 +1232,32 @@ impl NativeVmReplacePlan {
         let Self::Config(plan) = self else {
             return Err("HOST_NATIVE_SCOPE_IS_NOT_SINGLE_CONFIG");
         };
-        let selector = host.vm_containers.iter()
+        let selector = host
+            .vm_containers
+            .iter()
             .find(|item| item.compose_service == plan.target.compose_service())
             .ok_or("HOST_NATIVE_SCOPE_RESOURCE_NOT_REGISTERED")?;
-        let id = format!("config/{}/{}", selector.compose_project, selector.compose_service);
+        let id = format!(
+            "config/{}/{}",
+            selector.compose_project, selector.compose_service
+        );
         edge_shared_types::host_lifecycle::validate_scoped_vm_resource_id(host, &id)?;
         let hierarchy = edge_shared_types::host_resources::derive_vm_resource_hierarchy(
             host,
             &plan.target_graph,
         )?;
-        let node = hierarchy.nodes.iter()
+        let node = hierarchy
+            .nodes
+            .iter()
             .find(|item| item.resource_id == id)
             .ok_or("HOST_NATIVE_SCOPE_NODE_NOT_IN_DESIRED")?;
         if node.kind != edge_shared_types::FleetResourceKind::SingboxConfig as i32
             || node.owner != edge_shared_types::FleetResourceOwner::VmRootAgent as i32
-            || node.parent_resource_id != format!(
-                "container/{}/{}",
-                selector.compose_project, selector.compose_service
-            )
+            || node.parent_resource_id
+                != format!(
+                    "container/{}/{}",
+                    selector.compose_project, selector.compose_service
+                )
         {
             return Err("HOST_NATIVE_SCOPE_PARENT_OR_OWNER_INVALID");
         }
