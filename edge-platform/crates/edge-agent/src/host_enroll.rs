@@ -3,7 +3,9 @@
 //! Immutable published GitHub assets and an out-of-band PINNED Worker public
 //! key are mandatory. A second enrollment never overwrites the first.
 use super::*;
-use edge_shared_types::{FleetHostIntent, FleetHostKind, FleetNativeTrustSnapshot, ReleaseSet, managed_host};
+use edge_shared_types::{
+    FleetHostIntent, FleetHostKind, FleetNativeTrustSnapshot, ReleaseSet, managed_host,
+};
 use std::fs::{DirBuilder, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -143,9 +145,7 @@ fn validate_existing_trust_for_refresh(
 ) -> Result<(), String> {
     let previous = super::host_native::root_file(&trusted.join("trust.pb"), 9 * 1024 * 1024)?;
     let previous = super::host_native::decode_native_trust_snapshot(&previous)?;
-    if previous.machine_id != machine_id
-        || previous.pinned_worker_public_key != pinned_key
-    {
+    if previous.machine_id != machine_id || previous.pinned_worker_public_key != pinned_key {
         return Err("HOST_ENROLL_IMMUTABLE_IDENTITY_OR_KEY_MISMATCH".into());
     }
     let journal = trusted.join("journal");
@@ -189,8 +189,10 @@ pub(crate) async fn enroll(
     pinned_worker_key(worker_public_key_hex)?;
     let public_key = (0..64)
         .step_by(2)
-        .map(|i| u8::from_str_radix(&worker_public_key_hex[i..i + 2], 16)
-            .map_err(|_| "HOST_ENROLL_PINNED_WORKER_KEY_INVALID".to_owned()))
+        .map(|i| {
+            u8::from_str_radix(&worker_public_key_hex[i..i + 2], 16)
+                .map_err(|_| "HOST_ENROLL_PINNED_WORKER_KEY_INVALID".to_owned())
+        })
         .collect::<Result<Vec<_>, _>>()?;
     if machine_id.is_empty()
         || machine_id.len() > 64

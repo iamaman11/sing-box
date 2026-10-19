@@ -84,7 +84,9 @@ pub(super) fn protected_journal_has_pending(journal: &Path) -> Result<bool, Stri
 
 /// Canonical, typed local snapshot. This validates format and bounds only;
 /// the root executor must separately attest the published Git source.
-pub(super) fn decode_native_trust_snapshot(bytes: &[u8]) -> Result<FleetNativeTrustSnapshot, String> {
+pub(super) fn decode_native_trust_snapshot(
+    bytes: &[u8],
+) -> Result<FleetNativeTrustSnapshot, String> {
     if bytes.is_empty() || bytes.len() > 9 * 1024 * 1024 {
         return Err("HOST_NATIVE_TRUST_SNAPSHOT_SIZE_INVALID".into());
     }
@@ -94,7 +96,10 @@ pub(super) fn decode_native_trust_snapshot(bytes: &[u8]) -> Result<FleetNativeTr
         || trust.encode_to_vec() != bytes
         || trust.machine_id.is_empty()
         || trust.machine_id.len() > 64
-        || !trust.machine_id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        || !trust
+            .machine_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
         || trust.registry_pb.is_empty()
         || trust.registry_pb.len() > 65536
         || trust.release_set_pb.is_empty()
@@ -356,7 +361,6 @@ pub(super) async fn attest_published_github_source(
     }
     Ok(())
 }
-
 
 /// The existing installed root agent is the *only* mutation authority.
 /// Fail closed while the native root has not received the exact immutable
