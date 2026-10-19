@@ -165,13 +165,12 @@ fn exact_application_compose_owner(
 fn require_known_native_container_state(
     state: &bollard::models::ContainerState,
 ) -> Result<bool, &'static str> {
-    if state.paused != Some(false)
-        || state.restarting != Some(false)
-        || state.dead != Some(false)
-    {
+    if state.paused != Some(false) || state.restarting != Some(false) || state.dead != Some(false) {
         return Err("HOST_NATIVE_CONTAINER_TRANSITION_UNPROVEN");
     }
-    state.running.ok_or("HOST_NATIVE_CONTAINER_RUNNING_UNPROVEN")
+    state
+        .running
+        .ok_or("HOST_NATIVE_CONTAINER_RUNNING_UNPROVEN")
 }
 
 /// Inspect every application-owned container before admitting a native change.
@@ -208,7 +207,9 @@ async fn owned_application_container_ids(docker: &Docker) -> Result<Vec<(String,
         if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err("HOST_NATIVE_CONTAINER_ID_INVALID".into());
         }
-        let state = inspect.state.ok_or("HOST_NATIVE_CONTAINER_STATE_UNAVAILABLE")?;
+        let state = inspect
+            .state
+            .ok_or("HOST_NATIVE_CONTAINER_STATE_UNAVAILABLE")?;
         let running = require_known_native_container_state(&state).map_err(str::to_owned)?;
         owned.push((id, running));
     }
@@ -232,11 +233,14 @@ pub(crate) async fn stop_owned_application_containers() -> Result<(), String> {
     for (id, running) in owned {
         if running {
             docker
-                .stop_container(&id, Some(
-                    bollard::query_parameters::StopContainerOptionsBuilder::default()
-                        .t(20)
-                        .build(),
-                ))
+                .stop_container(
+                    &id,
+                    Some(
+                        bollard::query_parameters::StopContainerOptionsBuilder::default()
+                            .t(20)
+                            .build(),
+                    ),
+                )
                 .await
                 .map_err(|_| "HOST_NATIVE_VM_STOP_UNCERTAIN_NO_REPLAY")?;
         }
@@ -620,12 +624,18 @@ mod tests {
             dead: Some(false),
             ..Default::default()
         };
-        assert_eq!(require_known_native_container_state(&safe_running), Ok(true));
+        assert_eq!(
+            require_known_native_container_state(&safe_running),
+            Ok(true)
+        );
         let safe_stopped = ContainerState {
             running: Some(false),
             ..safe_running.clone()
         };
-        assert_eq!(require_known_native_container_state(&safe_stopped), Ok(false));
+        assert_eq!(
+            require_known_native_container_state(&safe_stopped),
+            Ok(false)
+        );
         let paused = ContainerState {
             paused: Some(true),
             ..safe_running.clone()
@@ -648,8 +658,14 @@ mod tests {
             Err("HOST_NATIVE_CONTAINER_RUNNING_UNPROVEN")
         );
         let valid_project = HashMap::from([
-            ("com.docker.compose.project".to_owned(), "vultr-edge".to_owned()),
-            ("com.docker.compose.service".to_owned(), "line2-proxy".to_owned()),
+            (
+                "com.docker.compose.project".to_owned(),
+                "vultr-edge".to_owned(),
+            ),
+            (
+                "com.docker.compose.service".to_owned(),
+                "line2-proxy".to_owned(),
+            ),
         ]);
         assert!(exact_application_compose_owner("vultr-line2-proxy", &valid_project).is_ok());
         assert!(exact_application_compose_owner("vultr-cloudflare-mesh", &valid_project).is_err());
