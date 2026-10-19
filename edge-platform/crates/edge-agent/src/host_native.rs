@@ -67,11 +67,9 @@ pub(super) fn protected_journal_has_pending(journal: &Path) -> Result<bool, Stri
     let entries = fs::read_dir(journal).map_err(|_| "HOST_NATIVE_JOURNAL_UNAVAILABLE")?;
     for entry in entries {
         let entry = entry.map_err(|_| "HOST_NATIVE_JOURNAL_UNAVAILABLE")?;
-        let meta = fs::symlink_metadata(entry.path())
-            .map_err(|_| "HOST_NATIVE_JOURNAL_UNAVAILABLE")?;
-        if !meta.file_type().is_file()
-            || meta.uid() != 0
-            || meta.permissions().mode() & 0o077 != 0
+        let meta =
+            fs::symlink_metadata(entry.path()).map_err(|_| "HOST_NATIVE_JOURNAL_UNAVAILABLE")?;
+        if !meta.file_type().is_file() || meta.uid() != 0 || meta.permissions().mode() & 0o077 != 0
         {
             return Err("HOST_NATIVE_JOURNAL_FILE_UNTRUSTED".into());
         }
