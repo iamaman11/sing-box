@@ -10,6 +10,47 @@ use std::os::unix::fs::{MetadataExt, PermissionsExt};
 pub(super) const TRUSTED_ROOT: &str = "/opt/vultr-edge-stack/native-host";
 const JOURNAL_ROOT: &str = "/opt/vultr-edge-stack/native-host/journal";
 
+/// Read-only admission prerequisite for fleet fast/deep diagnostics. This
+/// proves protected *local file metadata* only, NOT accepted remote provenance
+/// or the Worker signer being provisioned. No private credentials are read.
+pub(super) fn local_trust_preflight() -> &'static str {
+    let root = Path::new(TRUSTED_ROOT);
+    let meta = match fs::symlink_metadata(root) {
+        Ok(value) => value,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return "UNENROLLED",
+        Err(_) => return "UNPROVEN",
+    };
+    if !meta.file_type().is_dir()
+        || meta.uid() != 0
+        || meta.permissions().mode() & 0o077 != 0
+    {
+        return "UNPROVEN";
+    }
+    for (name, limit) in [
+        ("machine-id", 128),
+        ("fleet-registry.pb", 65536),
+        ("release-set.pb", 65536),
+        ("application-bundle.pb", 8 * 1024 * 1024),
+        ("desired.textproto", 65536),
+        ("worker-public-key.hex", 128),
+    ] {
+        if root_file(&root.join(name), limit).is_err() {
+            return "UNPROVEN";
+        }
+    }
+    let journal = match fs::symlink_metadata(root.join("journal")) {
+        Ok(value) => value,
+        Err(_) => return "UNPROVEN",
+    };
+    if !journal.file_type().is_dir()
+        || journal.uid() != 0
+        || journal.permissions().mode() & 0o077 != 0
+    {
+        return "UNPROVEN";
+    }
+    "PROTECTED_LOCAL_ONLY"
+}
+
 fn root_file(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     if !path.starts_with(TRUSTED_ROOT) {
         return Err("HOST_NATIVE_PATH_OUTSIDE_OWNER_ROOT".into());

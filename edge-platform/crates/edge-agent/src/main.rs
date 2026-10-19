@@ -307,6 +307,7 @@ fn run_local_fast(stack_dir: &Path) -> Result<(), String> {
     println!("fast_schema=sing-box.fleet-fast/v1");
     println!("fast_observed_unix_seconds={observed_unix_seconds}");
     println!("fast_host_kind=VM");
+    println!("fast_native_host_trust={}", host_native::local_trust_preflight());
     println!("fast_bundle_digest={digest}");
     println!("fast_runtime=UNPROVEN");
     println!("fast_reason=CONTAINERS_AND_ENDPOINTS_NOT_PROBED");
@@ -327,6 +328,7 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             }
             let state = inspect_runtime(&stack_dir, AgentMode::Runtime).await;
             print_agent_state_evidence("STATUS", &state);
+            println!("host_native_trust={}", host_native::local_trust_preflight());
             Ok(())
         }
         cli::LocalCommand::HostObserve => run_local_host_observe(&stack_dir)
@@ -377,6 +379,7 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
         cli::LocalCommand::Diagnose => {
             let state = inspect_runtime(&stack_dir, AgentMode::Runtime).await;
             print_agent_state_evidence("DIAGNOSE", &state);
+            println!("host_native_trust={}", host_native::local_trust_preflight());
             let network = network_observation::observe_ipv4_network()
                 .await
                 .map_err(AgentError::Command)?;
