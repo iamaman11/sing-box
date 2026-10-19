@@ -480,6 +480,40 @@ pub fn decode_host_result(bytes: &[u8]) -> Result<FleetHostResult, &'static str>
     Ok(result)
 }
 
+/// Only a structural comparison of a runner-copied native result. This
+/// NEVER authenticates the origin or upgrades a remote status to VERIFIED.
+/// The published exact intent and immutable digest must match byte-for-byte.
+pub fn validate_unattested_native_result(
+    result: &FleetHostResult,
+    intent: &FleetHostIntent,
+) -> Result<(), &'static str> {
+    if result.schema_version != 1
+        || result.machine_id != intent.machine_id
+        || result.resource_id != intent.resource_id
+        || result.operation_id != intent.operation_id
+        || result.action != intent.action
+        || result.release_set_sha256 != intent.release_set_sha256
+        || result.desired_sha256 != intent.desired_sha256
+    {
+        return Err("HOST_NATIVE_RESULT_CORRELATION_MISMATCH");
+    }
+    let state =
+        FleetHostResultState::try_from(result.state).map_err(|_| "HOST_NATIVE_RESULT_STATE_INVALID")?;
+    if !matches!(state, FleetHostResultState::Observed | FleetHostResultState::Verified)
+        || result.observed_at_unix == 0
+        || result.physical_readback != (state == FleetHostResultState::Verified)
+        || !result.error_class.is_empty()
+        || result.next_action.len() > 128
+        || !result
+            .next_action
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+    {
+        return Err("HOST_NATIVE_RESULT_STRUCTURE_INVALID");
+    }
+    Ok(())
+}
+
 pub fn validate_host_result(
     result: &FleetHostResult,
     intent: &FleetHostIntent,
@@ -603,6 +637,52 @@ pub fn host_authorization_payload(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn runner_copied_verified_result_is_only_structurally_correlated() {
+        let intent = FleetHostIntent {
+            schema_version: 1,
+            machine_id: "vm-1".to_owned(),
+            kind: FleetHostKind::Vm as i32,
+            resource_id: "sing-box".to_owned(),
+            operation_id: "issue1-comment-123".to_owned(),
+            action: FleetHostAction::Apply as i32,
+            release_set_sha256: vec![1; 32],
+            desired_sha256: vec![2; 32],
+            ..Default::default()
+        };
+        let mut result = FleetHostResult {
+            schema_version: 1,
+            machine_id: intent.machine_id.clone(),
+            resource_id: intent.resource_id.clone(),
+            operation_id: intent.operation_id.clone(),
+            action: intent.action,
+            state: FleetHostResultState::Verified as i32,
+            release_set_sha256: intent.release_set_sha256.clone(),
+            desired_sha256: intent.desired_sha256.clone(),
+            observed_at_unix: 1500,
+            error_class: String::new(),
+            next_action: "NONE".to_owned(),
+            physical_readback: true,
+        };
+        assert!(validate_unattested_native_result(&result, &intent).is_ok());
+        assert_eq!(
+            validate_host_result(&result, &intent),
+            Err("HOST_NATIVE_RECEIPT_ATTESTATION_REQUIRED")
+        );
+        result.desired_sha256[0] ^= 1;
+        assert_eq!(
+            validate_unattested_native_result(&result, &intent),
+            Err("HOST_NATIVE_RESULT_CORRELATION_MISMATCH")
+        );
+        result.desired_sha256 = intent.desired_sha256.clone();
+        result.physical_readback = false;
+        assert_eq!(
+            validate_unattested_native_result(&result, &intent),
+            Err("HOST_NATIVE_RESULT_STRUCTURE_INVALID")
+        );
+    }
+
+
     use super::*;
     use crate::{FleetHost, HostRegistry, encode_host_registry};
 
