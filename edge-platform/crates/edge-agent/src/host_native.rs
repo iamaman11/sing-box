@@ -4,7 +4,7 @@
 use super::*;
 use edge_shared_types::host_journal::execute_native_host_once;
 use edge_shared_types::host_lifecycle::decode_host_intent;
-use edge_shared_types::{FleetHostKind, FleetHostPlannedStep};
+use edge_shared_types::{FleetHostKind, FleetHostPlannedStep, FleetNativeTrustSnapshot};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
@@ -82,6 +82,35 @@ pub(super) fn protected_journal_has_pending(journal: &Path) -> Result<bool, Stri
     Ok(false)
 }
 
+/// Canonical, typed local snapshot. This validates format and bounds only;
+/// the root executor must separately attest the published Git source.
+pub(super) fn decode_native_trust_snapshot(bytes: &[u8]) -> Result<FleetNativeTrustSnapshot, String> {
+    if bytes.is_empty() || bytes.len() > 9 * 1024 * 1024 {
+        return Err("HOST_NATIVE_TRUST_SNAPSHOT_SIZE_INVALID".into());
+    }
+    let trust = FleetNativeTrustSnapshot::decode(bytes)
+        .map_err(|_| "HOST_NATIVE_TRUST_SNAPSHOT_PROTO_INVALID")?;
+    if trust.schema_version != 1
+        || trust.encode_to_vec() != bytes
+        || trust.machine_id.is_empty()
+        || trust.machine_id.len() > 64
+        || !trust.machine_id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        || trust.registry_pb.is_empty()
+        || trust.registry_pb.len() > 65536
+        || trust.release_set_pb.is_empty()
+        || trust.release_set_pb.len() > 65536
+        || trust.application_bundle_pb.is_empty()
+        || trust.application_bundle_pb.len() > 8 * 1024 * 1024
+        || trust.selected_spec_bytes.is_empty()
+        || trust.selected_spec_bytes.len() > 65536
+        || trust.pinned_worker_public_key.len() != 32
+        || trust.pinned_worker_public_key.iter().all(|b| *b == 0)
+    {
+        return Err("HOST_NATIVE_TRUST_SNAPSHOT_NONCANONICAL".into());
+    }
+    Ok(trust)
+}
+
 /// Read-only admission prerequisite for fleet fast/deep diagnostics. This
 /// proves protected *local file metadata* only, NOT accepted remote provenance
 /// or the Worker signer being provisioned. No private credentials are read.
@@ -95,17 +124,12 @@ pub(super) fn local_trust_preflight() -> &'static str {
     if !meta.file_type().is_dir() || meta.uid() != 0 || meta.permissions().mode() & 0o077 != 0 {
         return "UNPROVEN";
     }
-    for (name, limit) in [
-        ("machine-id", 128),
-        ("fleet-registry.pb", 65536),
-        ("release-set.pb", 65536),
-        ("application-bundle.pb", 8 * 1024 * 1024),
-        ("desired.textproto", 65536),
-        ("worker-public-key.hex", 128),
-    ] {
-        if root_file(&root.join(name), limit).is_err() {
-            return "UNPROVEN";
-        }
+    let bytes = match root_file(&root.join("trust.pb"), 9 * 1024 * 1024) {
+        Ok(value) => value,
+        Err(_) => return "UNPROVEN",
+    };
+    if decode_native_trust_snapshot(&bytes).is_err() {
+        return "UNPROVEN";
     }
     let journal = match fs::symlink_metadata(root.join("journal")) {
         Ok(value) => value,
@@ -333,20 +357,6 @@ pub(super) async fn attest_published_github_source(
     Ok(())
 }
 
-fn parse_hex_key(bytes: &[u8]) -> Result<Vec<u8>, String> {
-    let hex = std::str::from_utf8(bytes)
-        .map_err(|_| "HOST_NATIVE_KEY_INVALID")?
-        .trim_end_matches('\n');
-    if hex.len() != 64 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
-        return Err("HOST_NATIVE_KEY_INVALID".into());
-    }
-    (0..64)
-        .step_by(2)
-        .map(|i| {
-            u8::from_str_radix(&hex[i..i + 2], 16).map_err(|_| "HOST_NATIVE_KEY_INVALID".into())
-        })
-        .collect()
-}
 
 /// The existing installed root agent is the *only* mutation authority.
 /// Fail closed while the native root has not received the exact immutable
@@ -372,16 +382,17 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
     {
         return Err("HOST_NATIVE_OWNER_ROOT_NOT_PROTECTED".into());
     }
-    let machine_id = String::from_utf8(root_file(&trust_root.join("machine-id"), 128)?)
-        .map_err(|_| "HOST_NATIVE_MACHINE_ID_INVALID")?;
-    let machine_id = machine_id.trim_end_matches('\n');
+    let trust_bytes = root_file(&trust_root.join("trust.pb"), 9 * 1024 * 1024)?;
+    let trust = decode_native_trust_snapshot(&trust_bytes)?;
+    let machine_id = trust.machine_id.as_str();
     if machine_id != intent.machine_id {
         return Err("HOST_NATIVE_MACHINE_ID_MISMATCH".into());
     }
-    let registry_pb = root_file(&trust_root.join("fleet-registry.pb"), 65536)?;
-    let release_pb = root_file(&trust_root.join("release-set.pb"), 65536)?;
-    let bundle_pb = root_file(&trust_root.join("application-bundle.pb"), 8 * 1024 * 1024)?;
-    let signer_key = parse_hex_key(&root_file(&trust_root.join("worker-public-key.hex"), 128)?)?;
+    let registry_pb = trust.registry_pb;
+    let release_pb = trust.release_set_pb;
+    let bundle_pb = trust.application_bundle_pb;
+    let signer_key = trust.pinned_worker_public_key;
+    let spec = trust.selected_spec_bytes;
     // No unprivileged desired override: the native root first confirms the
     // spec path is the registered Git-owned one, staged with the accepted
     // release by the owner installation procedure.
@@ -413,7 +424,6 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
     // automatically ours. Refuse a foreign Compose project before Worker
     // signing, journalling or any filesystem/container mutation.
     super::docker_observation::verify_owned_application_containers().await?;
-    let spec = root_file(&trust_root.join("desired.textproto"), 65536)?;
     attest_published_github_source(
         &intent,
         &registry_pb,
