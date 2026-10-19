@@ -1,4 +1,4 @@
-use edge_shared_types::FleetVmContainer;
+use edge_shared_types::{FleetHost, FleetHostPlannedStep, FleetVmContainer};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -265,29 +265,143 @@ pub(crate) async fn verify_owned_application_containers(
         .map(|_| ())
 }
 
-/// Native VM STOP. Only exact, independently inspected Compose-owned Docker
-/// IDs can be stopped; never compose down, never prune, never touch Mesh.
-/// The caller has already reserved a signed one-shot resource journal.
-/// A Docker failure is ambiguous and must retain UNKNOWN_NO_REPLAY.
-pub(crate) async fn stop_owned_application_containers(
-    expected: &[FleetVmContainer],
+/// One ephemeral native pre-BEGIN snapshot. Not a new persistent journal,
+/// authority, or credential. The signed host journal still owns the one-shot
+/// transaction for the entire application.
+#[derive(Debug)]
+pub(crate) struct NativeVmRunPlan {
+    step: FleetHostPlannedStep,
+    identities: Vec<Option<(String, bool)>>,
+}
+
+fn check_owned_vm_snapshot(
+    host: &FleetHost,
+    owned: &[OwnedVmContainer],
+    identities: &[Option<(String, bool)>],
+) -> Result<(), String> {
+    if host.vm_containers.len() != identities.len() {
+        return Err("HOST_NATIVE_VM_SNAPSHOT_SCOPE_CHANGED".into());
+    }
+    for (resource, original) in host.vm_containers.iter().zip(identities) {
+        let observed = owned
+            .iter()
+            .find(|item| item.service == resource.compose_service);
+        match (original, observed) {
+            (None, None) => {}
+            (Some((id, was_running)), Some(current))
+                if id == &current.id && *was_running == current.running => {}
+            _ => return Err("HOST_NATIVE_VM_IDENTITY_OR_STATE_CHANGED_NO_REPLAY".into()),
+        }
+    }
+    Ok(())
+}
+
+/// Resolve the common typed resource planner against root-local Docker
+/// evidence BEFORE the journal BEGIN. Only START/STOP may cross this boundary,
+/// and only when every registered resource is a safe NOOP or that exact step.
+pub(crate) async fn preflight_native_vm_run(
+    stack_dir: &Path,
+    host: &FleetHost,
+    step: FleetHostPlannedStep,
+) -> Result<NativeVmRunPlan, String> {
+    if !matches!(step, FleetHostPlannedStep::Start | FleetHostPlannedStep::Stop) {
+        return Err("HOST_NATIVE_VM_RUN_STEP_INVALID".into());
+    }
+    let readback = observe_vm_resource_report(host).await?;
+    let plan = edge_shared_types::host_resources::propose_vm_resource_transitions(
+        host,
+        &readback,
+    )
+    .map_err(str::to_owned)?;
+    let mut changed = 0;
+    for resource in &plan.resources {
+        let candidate = FleetHostPlannedStep::try_from(resource.step)
+            .map_err(|_| "HOST_NATIVE_VM_RESOURCE_STEP_INVALID")?;
+        match candidate {
+            FleetHostPlannedStep::Noop => {}
+            value if value == step => changed += 1,
+            _ => return Err("HOST_NATIVE_VM_RESOURCE_PLAN_BLOCKED".into()),
+        }
+    }
+    if changed == 0 {
+        return Err("HOST_NATIVE_VM_RESOURCE_NO_MUTATION_REQUIRED".into());
+    }
+    let identities = readback
+        .resources
+        .iter()
+        .map(|item| {
+            item.present
+                .then(|| (item.container_id.clone(), item.running))
+        })
+        .collect::<Vec<_>>();
+    let docker = docker_connection().await?;
+    let owned = if step == FleetHostPlannedStep::Start {
+        prepare_owned_vm_start(&docker, stack_dir, &host.vm_containers)
+            .await?
+            .0
+    } else {
+        owned_application_container_ids(&docker, &host.vm_containers).await?
+    };
+    check_owned_vm_snapshot(host, &owned, &identities)?;
+    if step == FleetHostPlannedStep::Stop {
+        owned_vm_stop_order(&owned)?;
+    } else {
+        owned_vm_start_order(&owned)?;
+    }
+    Ok(NativeVmRunPlan { step, identities })
+}
+
+/// After durable BEGIN, re-inspect all exact Compose-owned Docker IDs before
+/// touching a single resource. Reject an ABA replacement or state race rather
+/// than silently re-targeting a signed operation to a new container.
+pub(crate) async fn apply_native_vm_run_once(
+    stack_dir: &Path,
+    host: &FleetHost,
+    plan: NativeVmRunPlan,
 ) -> Result<(), String> {
     let docker = docker_connection().await?;
-    // Resolve and validate ALL identities before stopping the first container.
-    let owned = owned_application_container_ids(&docker, expected).await?;
-    for container in owned {
-        if container.running {
-            docker
-                .stop_container(
-                    &container.id,
-                    Some(
-                        bollard::query_parameters::StopContainerOptionsBuilder::default()
-                            .t(20)
-                            .build(),
-                    ),
-                )
-                .await
-                .map_err(|_| "HOST_NATIVE_VM_STOP_UNCERTAIN_NO_REPLAY")?;
+    let owned = owned_application_container_ids(&docker, &host.vm_containers).await?;
+    check_owned_vm_snapshot(host, &owned, &plan.identities)?;
+    if plan.step == FleetHostPlannedStep::Start {
+        let images = read_vm_expected_image_refs(stack_dir, &host.vm_containers)?;
+        for container in &owned {
+            if images.get(&container.service) != Some(&container.image_ref) {
+                return Err("HOST_NATIVE_VM_START_IMAGE_MISMATCH_NO_REPLAY".into());
+            }
+        }
+    }
+    let order = if plan.step == FleetHostPlannedStep::Stop {
+        owned_vm_stop_order(&owned)?
+    } else {
+        owned_vm_start_order(&owned)?
+    };
+    for index in order {
+        let container = &owned[index];
+        match plan.step {
+            FleetHostPlannedStep::Start if !container.running => {
+                docker
+                    .start_container(
+                        &container.id,
+                        None::<bollard::query_parameters::StartContainerOptions>,
+                    )
+                    .await
+                    .map_err(|_| "HOST_NATIVE_VM_START_UNCERTAIN_NO_REPLAY")?;
+            }
+            FleetHostPlannedStep::Stop if container.running => {
+                docker
+                    .stop_container(
+                        &container.id,
+                        Some(
+                            bollard::query_parameters::StopContainerOptionsBuilder::default()
+                                .t(20)
+                                .build(),
+                        ),
+                    )
+                    .await
+                    .map_err(|_| "HOST_NATIVE_VM_STOP_UNCERTAIN_NO_REPLAY")?;
+            }
+            FleetHostPlannedStep::Start | FleetHostPlannedStep::Stop => {}
+            _ => return Err("HOST_NATIVE_VM_RUN_STEP_INVALID".into()),
         }
     }
     Ok(())
@@ -317,6 +431,25 @@ fn owned_vm_start_order(owned: &[OwnedVmContainer]) -> Result<Vec<usize>, String
             return Err("HOST_NATIVE_VM_DEPENDENCIES_MISSING_OR_CYCLIC".into());
         }
     }
+    Ok(order)
+}
+
+/// STOP is safe even if an upstream dependency has already disappeared.
+/// Reverse the order of the remaining owned containers without adopting
+/// missing/foreign dependencies. START retains its strict dependency gate.
+fn owned_vm_stop_order(owned: &[OwnedVmContainer]) -> Result<Vec<usize>, String> {
+    let services = owned
+        .iter()
+        .map(|resource| resource.service.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut present = owned.to_vec();
+    for resource in &mut present {
+        resource
+            .dependencies
+            .retain(|dependency| services.contains(dependency.as_str()));
+    }
+    let mut order = owned_vm_start_order(&present)?;
+    order.reverse();
     Ok(order)
 }
 
@@ -400,41 +533,7 @@ async fn prepare_owned_vm_start(
     Ok((owned, order))
 }
 
-/// Native pre-BEGIN resource evidence. The caller must reserve the same
-/// signed one-shot journal before invoking the mutation helper below.
-pub(crate) async fn preflight_start_owned_application_containers(
-    stack_dir: &Path,
-    expected: &[FleetVmContainer],
-) -> Result<(), String> {
-    let docker = docker_connection().await?;
-    prepare_owned_vm_start(&docker, stack_dir, expected)
-        .await
-        .map(|_| ())
-}
 
-/// Only previously stopped, exactly Compose-owned immutable container IDs
-/// are started. A running Line1/Line2/WARP container is never recreated here.
-/// Native poststate and journal no-replay semantics are enforced by the caller.
-pub(crate) async fn start_stopped_owned_application_containers(
-    stack_dir: &Path,
-    expected: &[FleetVmContainer],
-) -> Result<(), String> {
-    let docker = docker_connection().await?;
-    let (owned, order) = prepare_owned_vm_start(&docker, stack_dir, expected).await?;
-    for index in order {
-        let container = &owned[index];
-        if !container.running {
-            docker
-                .start_container(
-                    &container.id,
-                    None::<bollard::query_parameters::StartContainerOptions>,
-                )
-                .await
-                .map_err(|_| "HOST_NATIVE_VM_START_UNCERTAIN_NO_REPLAY")?;
-        }
-    }
-    Ok(())
-}
 
 #[cfg(test)]
 mod vm_native_start_order_tests {
@@ -476,6 +575,39 @@ mod vm_native_start_order_tests {
         assert!(resolve_owned_vm_images(&compose, &images, &resources).is_err());
         images.clear();
         assert!(resolve_owned_vm_images(&compose, &images, &resources).is_err());
+    }
+
+    #[test]
+    fn native_run_snapshot_rejects_id_replacement_or_state_change() {
+        let host = FleetHost {
+            vm_containers: vec![FleetVmContainer {
+                container_name: "line2".into(),
+                compose_project: "app".into(),
+                compose_service: "line2-proxy".into(),
+            }],
+            ..Default::default()
+        };
+        let before = vec![Some(("a".repeat(64), false))];
+        let observed = vec![item("line2-proxy", &[])];
+        assert!(check_owned_vm_snapshot(&host, &observed, &before).is_err());
+        let mut matching = observed;
+        matching[0].id = "a".repeat(64);
+        assert!(check_owned_vm_snapshot(&host, &matching, &before).is_ok());
+        matching[0].running = true;
+        assert!(check_owned_vm_snapshot(&host, &matching, &before).is_err());
+    }
+
+    #[test]
+    fn stop_can_complete_after_owned_upstream_disappears() {
+        let only_proxy = vec![item("line2-proxy", &["warp-egress"])];
+        assert!(owned_vm_start_order(&only_proxy).is_err());
+        assert_eq!(owned_vm_stop_order(&only_proxy).unwrap(), vec![0]);
+        let all = vec![
+            item("line1-gateway", &["warp-egress"]),
+            item("line2-proxy", &["warp-egress"]),
+            item("warp-egress", &[]),
+        ];
+        assert_eq!(owned_vm_stop_order(&all).unwrap(), vec![1, 0, 2]);
     }
 
     #[test]

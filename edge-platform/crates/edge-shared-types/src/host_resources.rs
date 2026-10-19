@@ -231,8 +231,12 @@ pub fn propose_vm_resource_transitions(
             Some(FleetHostRunState::Running) if !row.running => {
                 (Step::Start, "CONTAINER_STOPPED_BUT_TARGET_RUNNING")
             }
-            Some(FleetHostRunState::Running) if row.reason_code == "HEALTHY" => {
-                (Step::Noop, "HEALTHY_RUNTIME_CONFIG_UNPROVEN")
+            Some(FleetHostRunState::Running)
+                if matches!(row.reason_code.as_str(), "HEALTHY" | "RUNNING_NO_HEALTHCHECK") =>
+            {
+                // An already-running container requires no START. Docker
+                // health is NOT proof of configuration or network readiness.
+                (Step::Noop, "RUNNING_RUNTIME_ONLY_CONFIG_UNPROVEN")
             }
             Some(FleetHostRunState::Running) => {
                 (Step::Blocked, "RUNTIME_HEALTH_OR_CONFIG_UNPROVEN")
@@ -312,11 +316,18 @@ mod resource_planning_tests {
                 .unwrap()
                 .resources[0]
                 .reason_code,
-            "HEALTHY_RUNTIME_CONFIG_UNPROVEN"
+            "RUNNING_RUNTIME_ONLY_CONFIG_UNPROVEN"
         );
         report.resources[0].health.clear();
         report.resources[0].reason_code = "RUNNING_NO_HEALTHCHECK".into();
-        assert_eq!(step(&host, &report), FleetHostPlannedStep::Blocked);
+        assert_eq!(step(&host, &report), FleetHostPlannedStep::Noop);
+        assert_eq!(
+            propose_vm_resource_transitions(&host, &report)
+                .unwrap()
+                .resources[0]
+                .reason_code,
+            "RUNNING_RUNTIME_ONLY_CONFIG_UNPROVEN"
+        );
 
         report.resources[0].running = false;
         report.resources[0].reason_code = "STOPPED".into();

@@ -472,6 +472,9 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
         .as_secs();
     let journal = Path::new(JOURNAL_ROOT);
     let handle = tokio::runtime::Handle::current();
+    // One in-memory plan snapshot shared between pre-BEGIN admission and
+    // the single native effector. No second durable state or retry loop.
+    let prepared = std::cell::RefCell::new(None);
     let result = tokio::task::block_in_place(|| {
         execute_native_host_once(
             &intent,
@@ -491,35 +494,30 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
                     .map_err(|_| "HOST_NATIVE_READBACK_FAILED")
             },
             |step| match step {
-                FleetHostPlannedStep::Start => handle
-                    .block_on(
-                        super::docker_observation::preflight_start_owned_application_containers(
-                            stack_dir,
-                            &host.vm_containers,
-                        ),
-                    )
-                    .map_err(|_| "HOST_NATIVE_VM_START_PREADMISSION_RESOURCE_UNPROVEN"),
-                FleetHostPlannedStep::Stop
-                | FleetHostPlannedStep::Install
-                | FleetHostPlannedStep::ReplaceRelease => Ok(()),
+                FleetHostPlannedStep::Start | FleetHostPlannedStep::Stop => {
+                    let proposal = handle
+                        .block_on(super::docker_observation::preflight_native_vm_run(
+                            stack_dir, host, step,
+                        ))
+                        .map_err(|_| "HOST_NATIVE_VM_RUN_PREADMISSION_BLOCKED")?;
+                    *prepared.borrow_mut() = Some(proposal);
+                    Ok(())
+                }
+                FleetHostPlannedStep::Install | FleetHostPlannedStep::ReplaceRelease => Ok(()),
                 _ => Err("HOST_NATIVE_VM_STEP_NOT_IMPLEMENTED"),
             },
             |step| match step {
-                FleetHostPlannedStep::Stop => handle
-                    .block_on(
-                        super::docker_observation::stop_owned_application_containers(
-                            &host.vm_containers,
-                        ),
-                    )
-                    .map_err(|_| "HOST_NATIVE_VM_STOP_UNCERTAIN_NO_REPLAY"),
-                FleetHostPlannedStep::Start => handle
-                    .block_on(
-                        super::docker_observation::start_stopped_owned_application_containers(
-                            stack_dir,
-                            &host.vm_containers,
-                        ),
-                    )
-                    .map_err(|_| "HOST_NATIVE_START_UNCERTAIN_NO_REPLAY"),
+                FleetHostPlannedStep::Start | FleetHostPlannedStep::Stop => {
+                    let proposal = prepared
+                        .borrow_mut()
+                        .take()
+                        .ok_or("HOST_NATIVE_VM_PREPARED_PLAN_MISSING")?;
+                    handle
+                        .block_on(super::docker_observation::apply_native_vm_run_once(
+                            stack_dir, host, proposal,
+                        ))
+                        .map_err(|_| "HOST_NATIVE_VM_RUN_UNCERTAIN_NO_REPLAY")
+                }
                 FleetHostPlannedStep::Install | FleetHostPlannedStep::ReplaceRelease => {
                     let request = ApplyBundleRequest::decode(bundle_pb.as_slice())
                         .map_err(|_| "HOST_NATIVE_BUNDLE_INVALID")?;
