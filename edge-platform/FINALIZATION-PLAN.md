@@ -105,12 +105,11 @@ entrypoint связывает owner readback → signed admission → durable re
 lock → однократную mutation callback → физический poststate. Тесты
 покрывают долговечный однократный NOOP, успешный переход и UNKNOWN_NO_REPLAY.
 
-**Не завершено:** доверенный per-host Git source/release resolver в
-native owner; Windows SYSTEM ACL admission; подключение entrypoint к
-existing Windows Controller и Linux Agent через единственный разрешённый
-transport; authenticated remote receipt; физический poststate. Эти
-неподтверждённые действия остаются закрытыми. Успешный exact CI не
-доказывает установленное нативное исполнение.
+**Сейчас:** VM Agent получил единый signed-HostIntent вход, Git provenance,
+root journal и проверку Docker ownership. Шаги без native реализации
+запрещены до BEGIN; STOPPED важнее обновления.
+**Не завершено:** VM target/trust bootstrap, Windows execution, remote signed
+receipt, STOP/reinstall/recover и физическая приёмка. CI не равен runtime.
 
 ## Обязательный протокол сомнения (без гаданий и кругов)
 

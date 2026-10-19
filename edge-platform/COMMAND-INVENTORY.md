@@ -5,8 +5,8 @@
 | Команда | Требуемое поведение | Что сейчас доказано |
 | --- | --- | --- |
 | `/host status` | Ограниченная read-only диагностика парка, независимые ответы; `UNPROVEN` не PASS | Windows + acceptance VM работают; production runner всё ещё queued |
-| `/host apply <id>` | Один Rust intent → новый per-resource ReleaseSet → native install/reinstall/replace → физическое подтверждение | **НЕ ПРИНЯТО**: текущий Host выдаёт только `APPLY_PREFLIGHT` и `host_native_install_authority=NOT_YET_ACCEPTED`, мутаций нет |
-| `/host recover <id>` | Для *новой* типизированной операции: read-only diagnosis → ограниченная замена/переустановка только собственных ресурсов, без повтора UNKNOWN | **НЕ ПРИНЯТО**: только `RECOVER_PREFLIGHT`; старый A/B journal больше не участвует в Host-допуске |
+| `/host apply <id>` | Один Rust intent → новый per-resource ReleaseSet → native install/reinstall/replace → физическое подтверждение | **UNPROVEN**: coordinator готовит PREPARED; VM runner может передать intent root Agent, но Git target/trust не принят; Windows read-only |
+| `/host recover <id>` | Для *новой* типизированной операции: read-only diagnosis → ограниченная замена/переустановка только собственных ресурсов, без повтора UNKNOWN | **UNPROVEN**: VM — signed one-shot, без replay; Windows — только preflight; физическая приёмка отсутствует |
 
 ## Исторические входы (ЗАПРЕЩЕНЫ, даже если код ещё содержит их)
 
@@ -16,4 +16,4 @@
 
 Только строго типизированные `machine_id / resource_id / desired_digest / immutable_release / operation_id / native_owner` и однозначные `READY | DEGRADED | BLOCKED | UNKNOWN_NO_REPLAY`. Нет старого `Issue #26` как mutation authority: старые comments — неизменяемый архив, не исходное желаемое состояние. Для сбоя секретов — fresh Worker-provision с **новой** resource identity, без переноса старой A/B, только после проверки границ собственности старого ресурса. Удалять старые файлы и контейнеры можно при доказанном scope и сохранённом способе доступа; не трогать Cloudflare One, Mesh других проектов и общую инфраструктуру.
 
-До физической приёмки нового native install/replace/recover **система не 10/10**; только read-only preflight и статус. Изменения через устаревшие команды запрещены. [Нормативная архитектура](ARCHITECTURE.md), [единственный план](FINALIZATION-PLAN.md), [живой курсор](https://github.com/iamaman11/sing-box/issues/26).
+До физической приёмки **система не 10/10**. VM root execution требует Git RUNNING target, защищённый trust и подпись Worker; старые mutation-команды запрещены. [Нормативная архитектура](ARCHITECTURE.md), [единственный план](FINALIZATION-PLAN.md), [живой курсор](https://github.com/iamaman11/sing-box/issues/26).
