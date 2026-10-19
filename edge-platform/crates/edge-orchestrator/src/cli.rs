@@ -118,6 +118,16 @@ pub(crate) enum HostCommand {
         #[arg(long)]
         observation_path: PathBuf,
     },
+    /// Internal-only correlation of two runner-copied protobufs. Neither
+    /// artifact authenticates SYSTEM/root or promotes a physical receipt.
+    #[command(hide = true)]
+    NativeResult {
+        machine_id: String,
+        #[arg(long)]
+        intent_path: PathBuf,
+        #[arg(long)]
+        result_path: PathBuf,
+    },
     /// One bounded fresh typed install preflight; mutation is disabled until new owner acceptance.
     Apply { machine_id: String },
     /// One bounded fresh typed recovery preflight; never resumes historical operations.
