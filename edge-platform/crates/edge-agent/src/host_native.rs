@@ -5,10 +5,63 @@ use super::*;
 use edge_shared_types::host_journal::execute_native_host_once;
 use edge_shared_types::host_lifecycle::decode_host_intent;
 use edge_shared_types::{FleetHostKind, FleetHostPlannedStep};
-use std::os::unix::fs::{MetadataExt, PermissionsExt};
+use std::os::fd::AsRawFd;
+use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
+pub(super) const HOST_PARENT: &str = "/opt/vultr-edge-stack";
 pub(super) const TRUSTED_ROOT: &str = "/opt/vultr-edge-stack/native-host";
 const JOURNAL_ROOT: &str = "/opt/vultr-edge-stack/native-host/journal";
+
+
+/// A single kernel-owned exclusion guard for root enrollment AND host apply.
+/// The permanent journal is never swapped or copied across ReleaseSets.
+/// The lock file is the only new disk resource; it is not an operation ledger.
+unsafe extern "C" {
+    fn geteuid() -> u32;
+    fn flock(fd: i32, operation: i32) -> i32;
+}
+
+pub(super) fn owner_operation_lock() -> Result<std::fs::File, String> {
+    if unsafe { geteuid() } != 0 {
+        return Err("HOST_NATIVE_OWNER_ROOT_REQUIRED".into());
+    }
+    let parent = Path::new(HOST_PARENT);
+    let metadata =
+        fs::symlink_metadata(parent).map_err(|_| "HOST_NATIVE_PARENT_UNAVAILABLE")?;
+    if !metadata.file_type().is_dir()
+        || metadata.uid() != 0
+        || metadata.permissions().mode() & 0o022 != 0
+    {
+        return Err("HOST_NATIVE_PARENT_UNTRUSTED".into());
+    }
+    let lock_path = parent.join(".native-host.lock");
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create(true)
+        .mode(0o600)
+        .open(&lock_path)
+        .map_err(|_| "HOST_NATIVE_OWNER_LOCK_UNAVAILABLE")?;
+    let identity = file
+        .metadata()
+        .map_err(|_| "HOST_NATIVE_OWNER_LOCK_UNAVAILABLE")?;
+    let pathname = fs::symlink_metadata(&lock_path)
+        .map_err(|_| "HOST_NATIVE_OWNER_LOCK_UNAVAILABLE")?;
+    if !identity.is_file()
+        || !pathname.file_type().is_file()
+        || identity.uid() != 0
+        || identity.permissions().mode() & 0o077 != 0
+        || pathname.ino() != identity.ino()
+        || pathname.dev() != identity.dev()
+    {
+        return Err("HOST_NATIVE_OWNER_LOCK_UNTRUSTED".into());
+    }
+    // Linux LOCK_EX | LOCK_NB. Never poll or wait for an uncertain owner.
+    if unsafe { flock(file.as_raw_fd(), 2 | 4) } != 0 {
+        return Err("HOST_NATIVE_OWNER_BUSY".into());
+    }
+    Ok(file)
+}
 
 /// Read-only admission prerequisite for fleet fast/deep diagnostics. This
 /// proves protected *local file metadata* only, NOT accepted remote provenance
@@ -285,6 +338,8 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
     if intent.kind != FleetHostKind::Vm as i32 {
         return Err("HOST_NATIVE_VM_KIND_REQUIRED".into());
     }
+    // Held through Worker authorization, BEGIN, native operation and readback.
+    let _resource_lock = owner_operation_lock()?;
     let trust_root = Path::new(TRUSTED_ROOT);
     let trust_meta =
         fs::symlink_metadata(trust_root).map_err(|_| "HOST_NATIVE_OWNER_ROOT_NOT_PROVISIONED")?;
