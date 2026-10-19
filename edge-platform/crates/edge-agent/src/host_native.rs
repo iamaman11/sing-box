@@ -20,10 +20,7 @@ pub(super) fn local_trust_preflight() -> &'static str {
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return "UNENROLLED",
         Err(_) => return "UNPROVEN",
     };
-    if !meta.file_type().is_dir()
-        || meta.uid() != 0
-        || meta.permissions().mode() & 0o077 != 0
-    {
+    if !meta.file_type().is_dir() || meta.uid() != 0 || meta.permissions().mode() & 0o077 != 0 {
         return "UNPROVEN";
     }
     for (name, limit) in [
