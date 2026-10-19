@@ -41,9 +41,9 @@
 - `host apply <id>` — подписанный одноразовый переход к Git desired и ReleaseSet;
 - `host recover <id>` — диагностика/безопасная новая операция после установления фактов, никогда replay неизвестной мутации.
 
-**Реализовано частично в PR #403:** protobuf `FleetVmDesiredGraph` для Compose-owned containers/networks/image/config; `FleetVmResourceTransitionPlan` и typed `FleetVmResourceReason` с сопоставлением reason/step; общий host planner, VM root Agent с journal, Worker authorization. План всегда `owner_attested=false` и `mutation_authorized=false`.
+**Реализовано частично в PR #403:** Protobuf DAG для Compose-owned containers/networks/images/config; typed reason, Rust planner, VM root Agent, Worker authorization и одноразовый journal. Для одной конфигурации Line1/Line2 реализован подписанный `config/<project>/<service>` в существующем `host apply`: GitHub approval → Worker Ed25519 → точный DAG node/owner → native config-only handler. Чужой ресурс, image-pair, START/STOP и cross-scope UNKNOWN блокируются. Read-only планы неизменно `owner_attested=false`, `mutation_authorized=false`.
 
-**Не принято:** per-resource signed identity — сейчас `resource_id=sing-box` означает host-wide mutation; полный граф DNS/firewall/routes/TLS/CredentialRef, Windows SYSTEM apply, адресный authenticated remote receipt, глубокая физическая диагностика каждого узла. `host recover` сейчас read-only. Старые команды, остающиеся в коде, не являются разрешённым новым публичным путём; удалить их достижимость, не мигрировать. Не выдавать `UNPROVEN` за PASS.
+**Не принято:** физическая установка scoped signer/root Agent, остальные resource kinds DNS/firewall/routes/TLS/CredentialRef, Windows SYSTEM apply, authenticated remote receipt и полное deep-acceptance. Обычный `resource_id=sing-box` остаётся host-wide; `host recover` read-only. Код PR и CI не означают эксплуатационный допуск. Старые команды не возвращать; `UNPROVEN` не считать PASS.
 
 ## Неопределённость и восстановление
 
