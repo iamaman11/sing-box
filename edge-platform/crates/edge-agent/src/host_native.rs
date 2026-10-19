@@ -7,7 +7,7 @@ use edge_shared_types::host_lifecycle::decode_host_intent;
 use edge_shared_types::{FleetHostKind, FleetHostPlannedStep};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-const TRUSTED_ROOT: &str = "/opt/vultr-edge-stack/native-host";
+pub(super) const TRUSTED_ROOT: &str = "/opt/vultr-edge-stack/native-host";
 const JOURNAL_ROOT: &str = "/opt/vultr-edge-stack/native-host/journal";
 
 fn root_file(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
@@ -26,7 +26,7 @@ fn root_file(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     fs::read(path).map_err(|_| "HOST_NATIVE_OWNER_FILE_UNREADABLE".into())
 }
 
-fn sha256_hex(bytes: &[u8]) -> String {
+pub(super) fn sha256_hex(bytes: &[u8]) -> String {
     ring::digest::digest(&ring::digest::SHA256, bytes)
         .as_ref()
         .iter()
@@ -38,7 +38,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 /// independently checks published tag -> accepted Git commit, exact asset
 /// digests and the selected source-revision Git desired. The runner does NOT
 /// get to supply a replacement registry, release URL or arbitrary Git ref.
-async fn attest_published_github_source(
+pub(super) async fn attest_published_github_source(
     intent: &edge_shared_types::FleetHostIntent,
     registry_pb: &[u8],
     release_pb: &[u8],

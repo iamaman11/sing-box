@@ -50,6 +50,12 @@ pub(crate) enum LocalCommand {
     HostObserve,
     /// One native VM host transaction, with an exact protobuf intent on stdin.
     HostApply,
+    /// First-use root-only trust enrollment. Never exposed by the runner sudoers.
+    HostEnroll {
+        machine_id: String,
+        release_set_sha256: String,
+        worker_public_key_hex: String,
+    },
     QualityLine2,
     // Read-only unique public IPv4 observed on VM's live kernel interfaces.
     CredentialPublicEndpoint,
@@ -117,6 +123,7 @@ impl LocalCommand {
             Self::Diagnose => "local-diagnose",
             Self::HostObserve => "local-host-observe",
             Self::HostApply => "local-host-apply",
+            Self::HostEnroll { .. } => "local-host-enroll",
             Self::QualityLine2 => "local-quality-line2",
             Self::CredentialPublicEndpoint => "local-credential-public-endpoint",
             Self::CredentialRuntimeSource => "local-credential-runtime-source",

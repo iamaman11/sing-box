@@ -79,6 +79,7 @@ visudo -cf "${SUDOERS_FILE}" >/dev/null
 # direct runner mutation capability. All probes are sudo -l (read-only).
 for unsafe_command in \
   "local bundle-converge" \
+  "local host-enroll machine release key" \
   "local bundle-rollback" \
   "local bootstrap-full" \
   "local mesh-cleanup" \

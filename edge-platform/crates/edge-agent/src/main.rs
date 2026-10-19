@@ -3,6 +3,7 @@ mod docker_observation;
 mod error;
 mod host_diagnostics;
 mod host_native;
+mod host_enroll;
 mod line2_quality;
 mod mesh_network_diagnostics;
 mod network_observation;
@@ -332,6 +333,13 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             .await
             .map_err(AgentError::Command),
         cli::LocalCommand::HostApply => host_native::apply(&stack_dir)
+            .await
+            .map_err(AgentError::Command),
+        cli::LocalCommand::HostEnroll {
+            machine_id,
+            release_set_sha256,
+            worker_public_key_hex,
+        } => host_enroll::enroll(&machine_id, &release_set_sha256, &worker_public_key_hex)
             .await
             .map_err(AgentError::Command),
         cli::LocalCommand::Verify => {
