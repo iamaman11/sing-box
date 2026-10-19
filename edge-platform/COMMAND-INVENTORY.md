@@ -12,6 +12,18 @@
 
 `/windows`, `/vm`, `/production`, `/credentials`, `/vultr`, `/vpc`, `/application`, старые workflow исторической A/B, любые прежние профили, ручные пути, миграции и резервные secret-fallback. Не запускать их ни из ChatGPT, ни локально, ни через отдельный workflow. В PR #402 публичный Issue ingress к этим backend уже удалён; reusable backend файлы пока существуют в Git как исторический код, но не вызываются оператором. Нативная fresh install/replace реализация ещё не принята; никаких обходных вызовов backend.
 
+## VM root trust (внутренняя операция, не четвёртая публичная команда)
+
+Существующий `edge-agent local host-enroll` от root проверяет опубликованный
+ReleaseSet, точный Git tree/spec и pinned Worker key. Повторный вызов с тем же
+`machine_id` и ключом обновляет только защищённые immutable-снимки,
+**сохраняя один прежний журнал**; `*.pending.pb` блокирует обновление.
+Один kernel lock исключает пересечение с `local host-apply`. Диагностика
+отличает `UNENROLLED`, `PROTECTED_LOCAL_ONLY`,
+`UNKNOWN_NO_REPLAY` и `UNPROVEN`. Это source code PR #403, не
+физическая приёмка и не разрешение runner запускать root enrollment.
+Сквозной автоматический lifecycle для Windows и VM пока не доказан.
+
 ## Допуск новой операции
 
 Только строго типизированные `machine_id / resource_id / desired_digest / immutable_release / operation_id / native_owner` и однозначные `READY | DEGRADED | BLOCKED | UNKNOWN_NO_REPLAY`. Нет старого `Issue #26` как mutation authority: старые comments — неизменяемый архив, не исходное желаемое состояние. Для сбоя секретов — fresh Worker-provision с **новой** resource identity, без переноса старой A/B, только после проверки границ собственности старого ресурса. Удалять старые файлы и контейнеры можно при доказанном scope и сохранённом способе доступа; не трогать Cloudflare One, Mesh других проектов и общую инфраструктуру.
