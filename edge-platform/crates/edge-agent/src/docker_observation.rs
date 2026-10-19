@@ -382,7 +382,10 @@ fn verify_scoped_gateway_network_policy(
         .iter()
         .find(|item| item.resource_id == resource_id)
         .ok_or("HOST_VM_CREATE_RESOURCE_NODE_MISSING")?;
-    let network_id = format!("network/{}/{}", network.compose_project, network.network_name);
+    let network_id = format!(
+        "network/{}/{}",
+        network.compose_project, network.network_name
+    );
     if !matches!(service, "line1-gateway" | "line2-proxy")
         || node.kind != Kind::DockerContainer as i32
         || node.owner != Owner::VmRootAgent as i32
@@ -887,10 +890,7 @@ struct NativeVmPolicyFailure {
 }
 
 impl NativeVmPolicyFailure {
-    fn at(
-        status: edge_shared_types::FleetVmInstalledPolicyStatus,
-        error: impl AsRef<str>,
-    ) -> Self {
+    fn at(status: edge_shared_types::FleetVmInstalledPolicyStatus, error: impl AsRef<str>) -> Self {
         let error = error.as_ref();
         let code = if error.starts_with("HOST_")
             && error.len() <= 128
@@ -915,8 +915,7 @@ fn compile_vm_graph_from_parts(
     mut template_bytes: impl FnMut(&str) -> Result<Vec<u8>, String>,
 ) -> Result<edge_shared_types::FleetVmDesiredGraph, NativeVmPolicyFailure> {
     use edge_shared_types::{
-        FleetVmDesiredGraph, FleetVmDesiredResource,
-        FleetVmInstalledPolicyStatus as Status,
+        FleetVmDesiredGraph, FleetVmDesiredResource, FleetVmInstalledPolicyStatus as Status,
     };
     let images = resolve_owned_vm_images(compose, env, &host.vm_containers)
         .map_err(|error| NativeVmPolicyFailure::at(Status::ImageInvalid, error))?;
@@ -946,11 +945,18 @@ fn compile_vm_graph_from_parts(
             resource: Some(identity.clone()),
             image_ref: images
                 .get(&identity.compose_service)
-                .ok_or_else(|| NativeVmPolicyFailure::at(Status::ImageInvalid, "HOST_VM_GRAPH_IMAGE_MISSING"))?
+                .ok_or_else(|| {
+                    NativeVmPolicyFailure::at(Status::ImageInvalid, "HOST_VM_GRAPH_IMAGE_MISSING")
+                })?
                 .clone(),
             dependencies: deps
                 .get(&identity.compose_service)
-                .ok_or_else(|| NativeVmPolicyFailure::at(Status::DependencyInvalid, "HOST_VM_GRAPH_DEPENDENCY_MISSING"))?
+                .ok_or_else(|| {
+                    NativeVmPolicyFailure::at(
+                        Status::DependencyInvalid,
+                        "HOST_VM_GRAPH_DEPENDENCY_MISSING",
+                    )
+                })?
                 .clone(),
             config_template_sha256,
         });
@@ -2102,20 +2108,15 @@ async fn prepare_owned_vm_start(
 mod release_desired_graph_tests {
     use super::*;
 
-
     #[test]
     fn installed_policy_stage_not_inferred_from_error_words() {
         use edge_shared_types::FleetVmInstalledPolicyStatus as Status;
-        let mislabeled = NativeVmPolicyFailure::at(
-            Status::ImageInvalid,
-            "HOST_VM_NETWORK_POLICY_UNSUPPORTED",
-        );
+        let mislabeled =
+            NativeVmPolicyFailure::at(Status::ImageInvalid, "HOST_VM_NETWORK_POLICY_UNSUPPORTED");
         assert_eq!(mislabeled.status, Status::ImageInvalid);
         assert_eq!(mislabeled.code, "HOST_VM_NETWORK_POLICY_UNSUPPORTED");
-        let concealed = NativeVmPolicyFailure::at(
-            Status::ComposeInvalid,
-            "credentials=/etc/shadow",
-        );
+        let concealed =
+            NativeVmPolicyFailure::at(Status::ComposeInvalid, "credentials=/etc/shadow");
         assert_eq!(concealed.status, Status::ComposeInvalid);
         assert_eq!(concealed.code, "HOST_VM_POLICY_ERROR_UNCLASSIFIED");
     }
@@ -2174,10 +2175,9 @@ mod release_desired_graph_tests {
         let mut foreign = compose.clone();
         foreign["services"]["line2-proxy"]["depends_on"] =
             serde_yaml::from_str("[foreign-mesh]").unwrap();
-        let failure = compile_vm_graph_from_parts(&host, &foreign, &images, |_| {
-            Ok(b"template".to_vec())
-        })
-        .unwrap_err();
+        let failure =
+            compile_vm_graph_from_parts(&host, &foreign, &images, |_| Ok(b"template".to_vec()))
+                .unwrap_err();
         assert_eq!(
             failure.status,
             edge_shared_types::FleetVmInstalledPolicyStatus::DependencyInvalid
@@ -2186,10 +2186,9 @@ mod release_desired_graph_tests {
         let mut no_network = compose.clone();
         no_network["services"]["line2-proxy"]["networks"] =
             serde_yaml::from_str("[foreign]").unwrap();
-        let failure = compile_vm_graph_from_parts(&host, &no_network, &images, |_| {
-            Ok(b"template".to_vec())
-        })
-        .unwrap_err();
+        let failure =
+            compile_vm_graph_from_parts(&host, &no_network, &images, |_| Ok(b"template".to_vec()))
+                .unwrap_err();
         assert_eq!(
             failure.status,
             edge_shared_types::FleetVmInstalledPolicyStatus::NetworkInvalid
