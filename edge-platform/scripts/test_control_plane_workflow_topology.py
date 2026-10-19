@@ -3656,7 +3656,8 @@ def main() -> None:
         and "sing-box-production-vm" in production_vm_runner_installer
         and "SING_BOX_RUNTIME_READ" in vm_sudoers
         and "SING_BOX_RUNTIME_MUTATE" not in vm_sudoers
-        and "NOPASSWD: SING_BOX_RUNTIME_READ" in vm_sudoers
+        and "Cmnd_Alias SING_BOX_NATIVE_HOST_TRANSACTION = ${LOCAL_OWNER} local host-apply" in vm_sudoers
+        and "NOPASSWD: SING_BOX_RUNTIME_READ, SING_BOX_NATIVE_HOST_TRANSACTION" in vm_sudoers
         and "${LOCAL_OWNER} local status" in vm_sudoers
         and "${LOCAL_OWNER} local diagnose" in vm_sudoers
         and "${LOCAL_OWNER} local bundle-verify" in vm_sudoers
@@ -3669,7 +3670,10 @@ def main() -> None:
             )
         )
         and "runner retains forbidden native mutation sudo authority" in production_vm_runner_installer
-        and "runner_native_mutation_authority=false" in production_vm_runner_installer
+        and "runner_native_mutation_authority=EXACT_HOST_INTENT_ONLY" in production_vm_runner_installer
+        and 'sudo -n "${owner}" local host-apply < "${intent}" > "${result}"' in Path(
+            ".github/workflows/host-native-observe.yml"
+        ).read_text(encoding="utf-8")
         and "runner must not have direct Docker socket authority" in production_vm_runner_installer
         and "production enrollment must leave no edge-agent RPC listener on :50061" in production_vm_runner_installer
         and "acceptance_rpc_service_enabled" in vultr
@@ -3679,7 +3683,7 @@ def main() -> None:
         and 'index("sing-box-production-vm")' in vultr
         and 'index("vultr-root")) == null' in vultr
         and 'index($machine)' in vultr,
-        "VM runner must be strictly read-only, with no direct native mutation sudo permission",
+        "VM runner may dispatch ONLY exact Worker-signed native host transaction; no direct Docker or legacy mutation",
     )
     require(
         'verb == "access-release" and len(tokens) == 4' in vultr
