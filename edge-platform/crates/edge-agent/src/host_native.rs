@@ -50,7 +50,9 @@ pub(super) fn local_trust_preflight() -> &'static str {
 
 /// Exactly one accepted path policy for enrollment and subsequent apply.
 pub(super) fn git_owned_host_spec_path(path: &str) -> bool {
-    path.starts_with("infra/")
+    path.len() > "infra/".len()
+        && path.starts_with("infra/")
+        && !path.ends_with('/')
         && !path.contains("..")
         && path
             .bytes()
