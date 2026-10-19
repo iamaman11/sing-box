@@ -583,11 +583,13 @@ pub(crate) fn run(
                         resource_id,
                         selected.machine_id,
                         dependencies,
-                        edge_shared_types::FleetVmObservedReason::try_from(resource.observed_reason)
-                            .map_err(|_| "HOST_VM_OBSERVED_REASON_INVALID")?
-                            .as_str_name()
-                            .strip_prefix("FLEET_VM_OBSERVED_REASON_")
-                            .ok_or("HOST_VM_OBSERVED_REASON_INVALID")?,
+                        edge_shared_types::FleetVmObservedReason::try_from(
+                            resource.observed_reason
+                        )
+                        .map_err(|_| "HOST_VM_OBSERVED_REASON_INVALID")?
+                        .as_str_name()
+                        .strip_prefix("FLEET_VM_OBSERVED_REASON_")
+                        .ok_or("HOST_VM_OBSERVED_REASON_INVALID")?,
                         edge_shared_types::FleetHostPlannedStep::try_from(proposal.step)
                             .map_err(|_| "HOST_VM_RESOURCE_PLAN_STEP_INVALID")?,
                         proposal.reason_code,

@@ -2854,9 +2854,7 @@ fn set_vm_observed_reason(
         .to_owned();
 }
 
-fn native_policy_failure(
-    error: &str,
-) -> (edge_shared_types::FleetVmInstalledPolicyStatus, String) {
+fn native_policy_failure(error: &str) -> (edge_shared_types::FleetVmInstalledPolicyStatus, String) {
     use edge_shared_types::FleetVmInstalledPolicyStatus as Status;
     let status = if error.contains("DEPENDENCY") {
         Status::DependencyInvalid
@@ -2875,7 +2873,9 @@ fn native_policy_failure(
     // parser/file/credential error or path from an external component.
     let code = if error.starts_with("HOST_")
         && error.len() <= 128
-        && error.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+        && error
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
     {
         error
     } else {
@@ -3448,7 +3448,10 @@ mod tests {
             native_running_health_reason(true, Some("Unknown")),
             (Reason::HealthUnproven, "")
         );
-        assert_eq!(native_running_health_reason(false, None), (Reason::Stopped, ""));
+        assert_eq!(
+            native_running_health_reason(false, None),
+            (Reason::Stopped, "")
+        );
     }
 
     #[test]
