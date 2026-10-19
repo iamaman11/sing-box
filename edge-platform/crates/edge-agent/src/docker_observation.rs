@@ -335,13 +335,14 @@ pub(crate) async fn preflight_native_vm_run(
         })
         .collect::<Vec<_>>();
     let docker = docker_connection().await?;
-    let owned = if step == FleetHostPlannedStep::Start {
+    let mut owned = if step == FleetHostPlannedStep::Start {
         prepare_owned_vm_start(&docker, stack_dir, &host.vm_containers)
             .await?
             .0
     } else {
         owned_application_container_ids(&docker, &host.vm_containers).await?
     };
+    bind_owned_vm_compose_dependencies(stack_dir, &host.vm_containers, &mut owned)?;
     check_owned_vm_snapshot(host, &owned, &identities)?;
     if step == FleetHostPlannedStep::Stop {
         owned_vm_stop_order(&owned)?;
@@ -360,7 +361,8 @@ pub(crate) async fn apply_native_vm_run_once(
     plan: NativeVmRunPlan,
 ) -> Result<(), String> {
     let docker = docker_connection().await?;
-    let owned = owned_application_container_ids(&docker, &host.vm_containers).await?;
+    let mut owned = owned_application_container_ids(&docker, &host.vm_containers).await?;
+    bind_owned_vm_compose_dependencies(stack_dir, &host.vm_containers, &mut owned)?;
     check_owned_vm_snapshot(host, &owned, &plan.identities)?;
     if plan.step == FleetHostPlannedStep::Start {
         let images = read_vm_expected_image_refs(stack_dir, &host.vm_containers)?;
@@ -403,6 +405,93 @@ pub(crate) async fn apply_native_vm_run_once(
             FleetHostPlannedStep::Start | FleetHostPlannedStep::Stop => {}
             _ => return Err("HOST_NATIVE_VM_RUN_STEP_INVALID".into()),
         }
+    }
+    Ok(())
+}
+
+/// Trust dependencies only from the same installed Compose manifest that
+/// declares the immutable service images. Docker labels are corroborating
+/// evidence, not an alternative desired-state authority.
+fn resolve_compose_dependencies(
+    compose: &serde_yaml::Value,
+    expected: &[FleetVmContainer],
+) -> Result<HashMap<String, Vec<String>>, String> {
+    let services = compose
+        .get("services")
+        .ok_or("HOST_NATIVE_COMPOSE_SERVICES_UNPROVEN")?;
+    if expected.is_empty()
+        || expected
+            .iter()
+            .any(|item| item.compose_project != expected[0].compose_project)
+        || compose.get("name").and_then(serde_yaml::Value::as_str)
+            != Some(expected[0].compose_project.as_str())
+    {
+        return Err("HOST_NATIVE_COMPOSE_PROJECT_MISMATCH".into());
+    }
+    let mut result = HashMap::new();
+    for resource in expected {
+        let service = services
+            .get(resource.compose_service.as_str())
+            .ok_or("HOST_NATIVE_COMPOSE_SERVICE_MISSING")?;
+        let mut deps = Vec::new();
+        match service.get("depends_on") {
+            None | Some(serde_yaml::Value::Null) => {}
+            Some(serde_yaml::Value::Sequence(sequence)) => {
+                for item in sequence {
+                    deps.push(
+                        item.as_str()
+                            .ok_or("HOST_NATIVE_COMPOSE_DEPENDENCY_INVALID")?
+                            .to_owned(),
+                    );
+                }
+            }
+            Some(serde_yaml::Value::Mapping(mapping)) => {
+                for (key, _) in mapping {
+                    deps.push(
+                        key.as_str()
+                            .ok_or("HOST_NATIVE_COMPOSE_DEPENDENCY_INVALID")?
+                            .to_owned(),
+                    );
+                }
+            }
+            _ => return Err("HOST_NATIVE_COMPOSE_DEPENDENCY_INVALID".into()),
+        }
+        let mut seen = BTreeSet::new();
+        for dependency in &deps {
+            if dependency == &resource.compose_service
+                || !expected
+                    .iter()
+                    .any(|item| item.compose_service == *dependency)
+                || !seen.insert(dependency.as_str())
+            {
+                return Err("HOST_NATIVE_COMPOSE_DEPENDENCY_OUTSIDE_OWNER_SCOPE".into());
+            }
+        }
+        result.insert(resource.compose_service.clone(), deps);
+    }
+    Ok(result)
+}
+
+fn bind_owned_vm_compose_dependencies(
+    stack_dir: &Path,
+    expected: &[FleetVmContainer],
+    owned: &mut [OwnedVmContainer],
+) -> Result<(), String> {
+    let compose = read_native_vm_compose(stack_dir)?;
+    let declared = resolve_compose_dependencies(&compose, expected)?;
+    for container in owned {
+        let expected = declared
+            .get(&container.service)
+            .ok_or("HOST_NATIVE_COMPOSE_SERVICE_MISSING")?;
+        // Compose 2 sometimes omits this label. Never substitute its absent
+        // value for the canonical dependency graph, and reject contradictions.
+        if !container.dependencies.is_empty()
+            && container.dependencies.iter().collect::<BTreeSet<_>>()
+                != expected.iter().collect::<BTreeSet<_>>()
+        {
+            return Err("HOST_NATIVE_DOCKER_DEPENDENCY_LABEL_MISMATCH".into());
+        }
+        container.dependencies.clone_from(expected);
     }
     Ok(())
 }
@@ -453,6 +542,17 @@ fn owned_vm_stop_order(owned: &[OwnedVmContainer]) -> Result<Vec<usize>, String>
     Ok(order)
 }
 
+fn read_native_vm_compose(stack_dir: &Path) -> Result<serde_yaml::Value, String> {
+    let compose_path = stack_dir.join("docker-compose.yml");
+    let meta =
+        fs::symlink_metadata(&compose_path).map_err(|_| "HOST_NATIVE_COMPOSE_UNAVAILABLE")?;
+    if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 65536 {
+        return Err("HOST_NATIVE_COMPOSE_UNPROVEN".into());
+    }
+    let bytes = fs::read(&compose_path).map_err(|_| "HOST_NATIVE_COMPOSE_UNREADABLE")?;
+    serde_yaml::from_slice(&bytes).map_err(|_| "HOST_NATIVE_COMPOSE_PARSE_INVALID".into())
+}
+
 /// The trusted installed Compose file is the ONLY service->image mapping.
 /// Image digests come from the existing ReleaseSet-owned image environment;
 /// neither runners nor a second resource registry can override them.
@@ -496,15 +596,7 @@ fn read_vm_expected_image_refs(
     stack_dir: &Path,
     expected: &[FleetVmContainer],
 ) -> Result<HashMap<String, String>, String> {
-    let compose_path = stack_dir.join("docker-compose.yml");
-    let meta =
-        fs::symlink_metadata(&compose_path).map_err(|_| "HOST_NATIVE_COMPOSE_UNAVAILABLE")?;
-    if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 65536 {
-        return Err("HOST_NATIVE_COMPOSE_UNPROVEN".into());
-    }
-    let bytes = fs::read(&compose_path).map_err(|_| "HOST_NATIVE_COMPOSE_UNREADABLE")?;
-    let compose: serde_yaml::Value =
-        serde_yaml::from_slice(&bytes).map_err(|_| "HOST_NATIVE_COMPOSE_PARSE_INVALID")?;
+    let compose = read_native_vm_compose(stack_dir)?;
     let images = super::read_exact_image_environment(stack_dir)?;
     resolve_owned_vm_images(&compose, &images, expected)
 }
@@ -515,10 +607,11 @@ async fn prepare_owned_vm_start(
     expected: &[FleetVmContainer],
 ) -> Result<(Vec<OwnedVmContainer>, Vec<usize>), String> {
     let expected_images = read_vm_expected_image_refs(stack_dir, expected)?;
-    let owned = owned_application_container_ids(docker, expected).await?;
+    let mut owned = owned_application_container_ids(docker, expected).await?;
     if owned.len() != expected.len() {
         return Err("HOST_NATIVE_VM_START_REQUIRES_EXISTING_CONTAINERS".into());
     }
+    bind_owned_vm_compose_dependencies(stack_dir, expected, &mut owned)?;
     // A root journal cannot make Docker state safe if an apparently owned
     // container is still running an image other than the ReleaseSet image.
     for container in &owned {
@@ -575,6 +668,39 @@ mod vm_native_start_order_tests {
         assert!(resolve_owned_vm_images(&compose, &images, &resources).is_err());
         images.clear();
         assert!(resolve_owned_vm_images(&compose, &images, &resources).is_err());
+    }
+
+    #[test]
+    fn compose_is_sole_start_order_for_line1_line2_and_warp() {
+        let compose: serde_yaml::Value = serde_yaml::from_str(
+            "name: vultr-edge\nservices:\n  line1-gateway:\n    depends_on: [warp-egress]\n  line2-proxy:\n    depends_on:\n      warp-egress:\n        condition: service_started\n  warp-egress:\n    image: test\n  cloudflare-mesh:\n    image: foreign\n",
+        )
+        .unwrap();
+        let selectors = ["line1-gateway", "line2-proxy", "warp-egress"]
+            .iter()
+            .map(|service| FleetVmContainer {
+                container_name: format!("vultr-{service}"),
+                compose_project: "vultr-edge".into(),
+                compose_service: (*service).into(),
+            })
+            .collect::<Vec<_>>();
+        let declared = resolve_compose_dependencies(&compose, &selectors).unwrap();
+        assert_eq!(declared["line1-gateway"], vec!["warp-egress"]);
+        assert_eq!(declared["line2-proxy"], vec!["warp-egress"]);
+        assert!(declared["warp-egress"].is_empty());
+        let mut observed = vec![
+            item("line1-gateway", &[]),
+            item("line2-proxy", &[]),
+            item("warp-egress", &[]),
+        ];
+        for item in &mut observed {
+            item.dependencies = declared[&item.service].clone();
+        }
+        assert_eq!(owned_vm_start_order(&observed).unwrap(), vec![2, 0, 1]);
+        let mut foreign = compose.clone();
+        foreign["services"]["line1-gateway"]["depends_on"] =
+            serde_yaml::from_str("[cloudflare-mesh]").unwrap();
+        assert!(resolve_compose_dependencies(&foreign, &selectors).is_err());
     }
 
     #[test]

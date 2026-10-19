@@ -503,7 +503,13 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
                     *prepared.borrow_mut() = Some(proposal);
                     Ok(())
                 }
-                FleetHostPlannedStep::Install | FleetHostPlannedStep::ReplaceRelease => Ok(()),
+                FleetHostPlannedStep::Install => Ok(()),
+                FleetHostPlannedStep::ReplaceRelease => {
+                    // The legacy bundle-wide bootstrap would recreate WARP,
+                    // Line1 and Line2 even when only one resource changed.
+                    // Refuse before BEGIN until typed scoped replacement exists.
+                    Err("HOST_NATIVE_VM_REPLACE_NOT_RESOURCE_SCOPED")
+                },
                 _ => Err("HOST_NATIVE_VM_STEP_NOT_IMPLEMENTED"),
             },
             |step| match step {
@@ -518,7 +524,7 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
                         ))
                         .map_err(|_| "HOST_NATIVE_VM_RUN_UNCERTAIN_NO_REPLAY")
                 }
-                FleetHostPlannedStep::Install | FleetHostPlannedStep::ReplaceRelease => {
+                FleetHostPlannedStep::Install => {
                     let request = ApplyBundleRequest::decode(bundle_pb.as_slice())
                         .map_err(|_| "HOST_NATIVE_BUNDLE_INVALID")?;
                     super::apply_bundle(stack_dir, request)
