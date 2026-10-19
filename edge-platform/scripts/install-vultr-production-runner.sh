@@ -65,10 +65,12 @@ unset credential_access_client_id credential_access_client_secret
 
 cat > "${SUDOERS_FILE}" <<EOF
 Cmnd_Alias SING_BOX_RUNTIME_READ = ${LOCAL_OWNER} local status --fast, ${LOCAL_OWNER} local status, ${LOCAL_OWNER} local host-observe, ${LOCAL_OWNER} local verify, ${LOCAL_OWNER} local diagnose, ${LOCAL_OWNER} local quality-line2, ${LOCAL_OWNER} local credential-initial-probe, ${LOCAL_OWNER} local bundle-verify, ${LOCAL_OWNER} local mesh-verify, ${LOCAL_OWNER} local credential-state
-# The runner is transport and may only ask the installed root owner to OBSERVE.
-# No bootstrap, bundle/credential mutation, rollback, Mesh cleanup or wildcard
-# sudo arguments. Native Host mutations require independently signed admission.
-${RUNNER_USER} ALL=(root) NOPASSWD: SING_BOX_RUNTIME_READ
+Cmnd_Alias SING_BOX_NATIVE_HOST_TRANSACTION = ${LOCAL_OWNER} local host-apply
+# The runner may transport only the exact host operation to the installed
+# root Agent, which independently validates Worker signature, Git provenance,
+# machine identity, protected journal and physical readback. No generic sudo,
+# direct Docker, bundle/credential mutation, rollback or Mesh cleanup.
+${RUNNER_USER} ALL=(root) NOPASSWD: SING_BOX_RUNTIME_READ, SING_BOX_NATIVE_HOST_TRANSACTION
 EOF
 chmod 0440 "${SUDOERS_FILE}"
 visudo -cf "${SUDOERS_FILE}" >/dev/null
@@ -144,7 +146,7 @@ echo "runner_user=${RUNNER_USER}"
 echo "generic_root_authority=false"
 echo "bounded_runtime_dispatch=READ_ONLY"
 echo "docker_socket_authority=false"
-echo "runner_native_mutation_authority=false"
+echo "runner_native_mutation_authority=EXACT_HOST_INTENT_ONLY"
 echo "acceptance_rpc_service_enabled=false"
 echo "tcp_50061_listener=false"
 echo "local_owner=${LOCAL_OWNER}"

@@ -32,6 +32,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+      actions: read
     env:
       TARGET_MACHINE: ${{ inputs.machine_id }}
       TARGET_OWNER: ${{ inputs.owner }}
@@ -115,6 +116,44 @@ jobs:
             fi
           fi
 
+
+      - name: Dispatch one signed native VM host transaction
+        if: env.TARGET_KIND == 'VM' && (startsWith(env.COMMAND_BODY, '/host apply ') || startsWith(env.COMMAND_BODY, '/host recover '))
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMENT_ID: ${{ inputs.source_comment_id }}
+        run: |
+          set -euo pipefail
+          # The runner is a transport ONLY. All authority comes from the
+          # installed root Agent + Worker + exact published Git/ReleaseSet.
+          [[ "${TARGET_MACHINE}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]
+          [[ "${SOURCE_COMMENT_ID}" =~ ^[1-9][0-9]*$ ]]
+          test "${RUNNER_NAME}" = "sing-box-production-${TARGET_OWNER}"
+          case "${COMMAND_BODY}" in
+            "/host apply ${TARGET_MACHINE}"|"/host recover ${TARGET_MACHINE}") ;;
+            *) echo 'HOST_NATIVE_VM_COMMAND_SCOPE_MISMATCH' >&2; exit 1 ;;
+          esac
+          owner=/usr/local/libexec/sing-box/edge-agent
+          test -x "${owner}" && test ! -L "${owner}"
+          # No generic sudo, no bundle-converge/rollback/credentials paths.
+          # Older installed sudoers intentionally fails closed here.
+          sudo -n -l "${owner}" local host-apply >/dev/null
+          path="${RUNNER_TEMP}/host-operation"
+          install -d -m 0700 "${path}"
+          gh run download "${GITHUB_RUN_ID}" -R "${GITHUB_REPOSITORY}" \
+            -n "host-intent-${SOURCE_COMMENT_ID}" -D "${path}"
+          intent="${path}/host-intent.pb"
+          test -f "${intent}" && test ! -L "${intent}"
+          test "$(stat -c '%s' "${intent}")" -gt 0
+          test "$(stat -c '%s' "${intent}")" -le 4096
+          # Never retry after an uncertain result, even if stdout is lost.
+          result="${path}/host-result.pb"
+          sudo -n "${owner}" local host-apply < "${intent}" > "${result}"
+          test -s "${result}"
+          test "$(stat -c '%s' "${result}")" -le 4096
+          echo 'host_native_execution=ROOT_OWNER_ONE_SHOT'
+          echo 'host_native_result=LOCAL_PROTOBUF_NOT_YET_REMOTE_ATTESTED'
 
       - name: Capture exact installed Windows typed readback when supported
         if: env.TARGET_KIND == 'WINDOWS'
