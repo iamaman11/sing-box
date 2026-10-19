@@ -796,7 +796,7 @@ def test_native_host_readonly_control_boundary(router: str) -> None:
     require(
         "local host-resources" in owner
         and "host-native-resources.pb" in owner
-        and 'extra=(--resources-path "${resource_report}")' in owner
+        and 'extra=(--resources-path "${resource_report}")' in peer_report
         and "host_vm_resources_capture=UNPROVEN_INSTALLED_OWNER" in owner
         and "local host-resources" in Path("edge-platform/scripts/install-vultr-production-runner.sh").read_text(),
         "Deep VM diagnostics must use exact bounded root-owned resource protobuf and never raw Docker socket",
