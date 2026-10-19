@@ -63,6 +63,29 @@ pub(super) fn owner_operation_lock() -> Result<std::fs::File, String> {
     Ok(file)
 }
 
+/// One journal scanner for read-only diagnostics and root trust refresh.
+/// A pending scope is not a repair instruction: it is UNKNOWN_NO_REPLAY.
+pub(super) fn protected_journal_has_pending(journal: &Path) -> Result<bool, String> {
+    let entries = fs::read_dir(journal).map_err(|_| "HOST_NATIVE_JOURNAL_UNAVAILABLE")?;
+    for entry in entries {
+        let entry = entry.map_err(|_| "HOST_NATIVE_JOURNAL_UNAVAILABLE")?;
+        let meta = fs::symlink_metadata(entry.path())
+            .map_err(|_| "HOST_NATIVE_JOURNAL_UNAVAILABLE")?;
+        if !meta.file_type().is_file()
+            || meta.uid() != 0
+            || meta.permissions().mode() & 0o077 != 0
+        {
+            return Err("HOST_NATIVE_JOURNAL_FILE_UNTRUSTED".into());
+        }
+        let name = entry.file_name();
+        let name = name.to_str().ok_or("HOST_NATIVE_JOURNAL_NAME_INVALID")?;
+        if name.ends_with(".pending.pb") {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 /// Read-only admission prerequisite for fleet fast/deep diagnostics. This
 /// proves protected *local file metadata* only, NOT accepted remote provenance
 /// or the Worker signer being provisioned. No private credentials are read.
@@ -98,7 +121,11 @@ pub(super) fn local_trust_preflight() -> &'static str {
     {
         return "UNPROVEN";
     }
-    "PROTECTED_LOCAL_ONLY"
+    match protected_journal_has_pending(&root.join("journal")) {
+        Ok(true) => "UNKNOWN_NO_REPLAY",
+        Ok(false) => "PROTECTED_LOCAL_ONLY",
+        Err(_) => "UNPROVEN",
+    }
 }
 
 /// Exactly one accepted path policy for enrollment and subsequent apply.
