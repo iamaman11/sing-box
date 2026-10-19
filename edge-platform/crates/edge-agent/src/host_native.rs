@@ -291,6 +291,10 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
     if vm_target.run_state != edge_shared_types::FleetHostRunState::Running as i32 {
         return Err("HOST_NATIVE_VM_TARGET_NOT_EXECUTABLE".into());
     }
+    // A Docker container with our hard-coded application name is not
+    // automatically ours. Refuse a foreign Compose project before Worker
+    // signing, journalling or any filesystem/container mutation.
+    super::docker_observation::verify_owned_application_containers().await?;
     let spec = root_file(&trust_root.join("desired.textproto"), 65536)?;
     attest_published_github_source(
         &intent,

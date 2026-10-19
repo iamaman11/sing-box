@@ -139,6 +139,52 @@ async fn docker_connection() -> Result<Docker, String> {
     .map_err(|err| format!("failed to negotiate Docker Engine API version: {err}"))
 }
 
+/// Prevent the native lifecycle from ever adopting a same-named container
+/// belonging to another Compose project. Foreign Mesh/other containers are
+/// outside our resource scope and must not be inspected or mutated here.
+fn exact_application_compose_owner(
+    name: &str,
+    labels: &HashMap<String, String>,
+) -> Result<(), &'static str> {
+    let service = match name {
+        "vultr-warp-egress" => "warp-egress",
+        "vultr-line1-gateway" => "line1-gateway",
+        "vultr-line2-proxy" => "line2-proxy",
+        _ => return Err("HOST_NATIVE_CONTAINER_OUTSIDE_APPLICATION_SCOPE"),
+    };
+    if labels.get("com.docker.compose.project").map(String::as_str) != Some("vultr-edge")
+        || labels.get("com.docker.compose.service").map(String::as_str) != Some(service)
+    {
+        return Err("HOST_NATIVE_CONTAINER_OWNERSHIP_UNPROVEN");
+    }
+    Ok(())
+}
+
+/// Root-only, read-only preadmission check. Docker names alone do not prove
+/// ownership; verify Compose project AND service before the signed BEGIN.
+/// A missing container is valid on fresh installs and optional profiles.
+pub(crate) async fn verify_owned_application_containers() -> Result<(), String> {
+    let docker = docker_connection().await?;
+    for name in [
+        "vultr-warp-egress",
+        "vultr-line1-gateway",
+        "vultr-line2-proxy",
+    ] {
+        let inspect = match docker.inspect_container(name, None).await {
+            Ok(value) => value,
+            Err(BollardError::DockerResponseServerError { status_code: 404, .. }) => continue,
+            Err(_) => return Err("HOST_NATIVE_DOCKER_IDENTITY_UNAVAILABLE".into()),
+        };
+        if inspect.name.as_deref() != Some(format!("/{name}").as_str()) {
+            return Err("HOST_NATIVE_CONTAINER_NAME_UNPROVEN".into());
+        }
+        let config = inspect.config.as_ref().ok_or("HOST_NATIVE_CONTAINER_CONFIG_MISSING")?;
+        let labels = config.labels.as_ref().ok_or("HOST_NATIVE_CONTAINER_LABELS_MISSING")?;
+        exact_application_compose_owner(name, labels).map_err(str::to_owned)?;
+    }
+    Ok(())
+}
+
 pub(crate) async fn observe_docker() -> Result<DockerObservation, String> {
     let docker = docker_connection().await?;
 
@@ -504,6 +550,39 @@ fn normalize_containers(summaries: Vec<ContainerSummary>) -> DockerObservation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_owner_requires_exact_compose_service_identity() {
+        let mut labels = HashMap::from([
+            ("com.docker.compose.project".to_owned(), "vultr-edge".to_owned()),
+            ("com.docker.compose.service".to_owned(), "line1-gateway".to_owned()),
+        ]);
+        assert_eq!(
+            exact_application_compose_owner("vultr-line1-gateway", &labels),
+            Ok(())
+        );
+        assert_eq!(
+            exact_application_compose_owner("vultr-line2-proxy", &labels),
+            Err("HOST_NATIVE_CONTAINER_OWNERSHIP_UNPROVEN")
+        );
+        assert_eq!(
+            exact_application_compose_owner("vultr-cloudflare-mesh", &labels),
+            Err("HOST_NATIVE_CONTAINER_OUTSIDE_APPLICATION_SCOPE")
+        );
+        labels.insert("com.docker.compose.project".into(), "foreign-stack".into());
+        assert_eq!(
+            exact_application_compose_owner("vultr-line1-gateway", &labels),
+            Err("HOST_NATIVE_CONTAINER_OWNERSHIP_UNPROVEN")
+        );
+        labels.remove("com.docker.compose.project");
+        assert!(exact_application_compose_owner("vultr-line1-gateway", &labels).is_err());
+        labels.insert("com.docker.compose.project".into(), "vultr-edge".into());
+        labels.insert("com.docker.compose.service".into(), "warp-egress".into());
+        assert_eq!(
+            exact_application_compose_owner("vultr-warp-egress", &labels),
+            Ok(())
+        );
+    }
 
     #[test]
     fn bollard_inspect_string_mount_type_is_exactly_bind_without_debug_quotes() {
