@@ -1222,6 +1222,41 @@ pub(crate) enum NativeVmReplacePlan {
     GatewayImage(NativeVmGatewayImageReplacePlan),
 }
 
+impl NativeVmReplacePlan {
+    /// Only a single sing-box config child; the paired-image effector is
+    /// deliberately ineligible for a config-scoped signed operation.
+    pub(crate) fn single_config_resource_id(
+        &self,
+        host: &FleetHost,
+    ) -> Result<String, &'static str> {
+        let Self::Config(plan) = self else {
+            return Err("HOST_NATIVE_SCOPE_IS_NOT_SINGLE_CONFIG");
+        };
+        let selector = host.vm_containers.iter()
+            .find(|item| item.compose_service == plan.target.compose_service())
+            .ok_or("HOST_NATIVE_SCOPE_RESOURCE_NOT_REGISTERED")?;
+        let id = format!("config/{}/{}", selector.compose_project, selector.compose_service);
+        edge_shared_types::host_lifecycle::validate_scoped_vm_resource_id(host, &id)?;
+        let hierarchy = edge_shared_types::host_resources::derive_vm_resource_hierarchy(
+            host,
+            &plan.target_graph,
+        )?;
+        let node = hierarchy.nodes.iter()
+            .find(|item| item.resource_id == id)
+            .ok_or("HOST_NATIVE_SCOPE_NODE_NOT_IN_DESIRED")?;
+        if node.kind != edge_shared_types::FleetResourceKind::SingboxConfig as i32
+            || node.owner != edge_shared_types::FleetResourceOwner::VmRootAgent as i32
+            || node.parent_resource_id != format!(
+                "container/{}/{}",
+                selector.compose_project, selector.compose_service
+            )
+        {
+            return Err("HOST_NATIVE_SCOPE_PARENT_OR_OWNER_INVALID");
+        }
+        Ok(id)
+    }
+}
+
 /// Only EDGE_GATEWAY_IMAGE may change. Its exact value is a trusted immutable
 /// OCI digest. All other environment lines remain byte-for-byte identical.
 fn gateway_image_policy_delta(

@@ -50,6 +50,7 @@ const env={
 };
 const expectedCertUrl=issuer+"/cdn-cgi/access/certs";
 let publishedRelease=true;
+let approvedResource="sing-box";
 const testReleaseTag="edge-release-"+Buffer.alloc(32,3).toString("hex");
 globalThis.fetch=async u=>{
   if(String(u)===expectedCertUrl) return Response.json({keys:[jwk]});
@@ -59,7 +60,8 @@ globalThis.fetch=async u=>{
       issue_url:"https://api.github.com/repos/iamaman11/sing-box/issues/1",
       created_at:new Date((now-2)*1000).toISOString(),
       updated_at:new Date((now-2)*1000).toISOString(),
-      body:"/host apply vm-test-1",
+      body:"/host apply vm-test-1"+
+        (approvedResource==="sing-box"?"":" "+approvedResource),
     });
   if(String(u)==="https://api.github.com/repos/iamaman11/sing-box/releases/tags/"+testReleaseTag)
     return publishedRelease
@@ -122,6 +124,40 @@ const payload=combine(domain,u32(intent.length),intent,u32(keyId.length),keyId,
  u32(operation.length),operation,u64(issued),u64(expires));
 requireTest(await crypto.subtle.verify("Ed25519",key.publicKey,signature,payload),
  "Worker signature does not verify against the exact Rust domain-separated payload");
+// v1 signature domain binds the exact protobuf bytes, including the scope.
+const scopedId="config/vultr-edge/line2-proxy";
+const scopedIntent=combine(
+ number(1,1),field(2,TE.encode("vm-test-1")),number(3,2),
+ field(4,TE.encode(scopedId)),field(5,TE.encode("issue1-comment-123")),
+ number(6,2),field(7,Buffer.alloc(32,1)),field(8,Buffer.alloc(32,2)),
+ field(9,Buffer.alloc(32,3)),number(11,now)
+);
+requireTest((await call(scopedIntent)).status===403,
+  "scoped request signed without exact GitHub comment");
+approvedResource=scopedId;
+const scopedResponse=await call(scopedIntent);
+requireTest(scopedResponse.status===200,"approved config resource signature rejected");
+const scopedParsed=fields(Buffer.from(await scopedResponse.arrayBuffer()));
+const scopedKid=Buffer.from(scopedParsed.get(2)),scopedOp=Buffer.from(scopedParsed.get(3));
+const scopedPayload=combine(domain,u32(scopedIntent.length),scopedIntent,
+ u32(scopedKid.length),scopedKid,u32(scopedOp.length),scopedOp,
+ u64(scopedParsed.get(4)),u64(scopedParsed.get(5)));
+requireTest(await crypto.subtle.verify("Ed25519",key.publicKey,
+ scopedParsed.get(6),scopedPayload), "resource scope omitted from signature");
+requireTest((await call(combine(scopedIntent,field(4,TE.encode("sing-box"))))).status===400,
+  "duplicate protobuf resource scope accepted");
+approvedResource="sing-box";
+requireTest((await call(scopedIntent)).status===403,
+  "scoped request signed after GitHub comment changed");
+const badScope=combine(
+ number(1,1),field(2,TE.encode("vm-test-1")),number(3,2),
+ field(4,TE.encode("container/vultr-edge/line2-proxy")),
+ field(5,TE.encode("issue1-comment-123")),number(6,2),
+ field(7,Buffer.alloc(32,1)),field(8,Buffer.alloc(32,2)),
+ field(9,Buffer.alloc(32,3)),number(11,now)
+);
+requireTest((await call(badScope)).status===400,
+  "arbitrary container scope accepted by config-only Worker");
 const windowsSource=readFileSync(process.argv[2],"utf8").replace("const P=2;","const P=1;");
 const tmpUrl="data:text/javascript;base64,"+Buffer.from(windowsSource).toString("base64");
 const windows=await import(tmpUrl);

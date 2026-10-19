@@ -548,6 +548,9 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
             },
             |step| match step {
                 FleetHostPlannedStep::Start | FleetHostPlannedStep::Stop => {
+                    if intent.resource_id != "sing-box" {
+                        return Err("HOST_NATIVE_SCOPED_RUN_NOT_ALLOWED");
+                    }
                     // STOP remains possible with a missing/old bundle; START
                     // must never execute on a modified Compose or image policy.
                     if step == FleetHostPlannedStep::Start {
@@ -563,6 +566,9 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
                     Ok(())
                 }
                 FleetHostPlannedStep::Install => {
+                    if intent.resource_id != "sing-box" {
+                        return Err("HOST_NATIVE_SCOPED_INSTALL_NOT_ALLOWED");
+                    }
                     let request = ApplyBundleRequest::decode(bundle_pb.as_slice())
                         .map_err(|_| "HOST_NATIVE_VM_INSTALL_BUNDLE_INVALID")?;
                     super::docker_observation::compile_vm_desired_graph_from_release(
@@ -579,6 +585,14 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
                             stack_dir, host, &request,
                         ))
                         .map_err(|_| "HOST_NATIVE_VM_REPLACE_NOT_RESOURCE_SCOPED")?;
+                    if intent.resource_id != "sing-box" {
+                        let scope = proposal
+                            .single_config_resource_id(host)
+                            .map_err(|_| "HOST_NATIVE_SIGNED_SCOPE_UNSUPPORTED")?;
+                        if scope != intent.resource_id {
+                            return Err("HOST_NATIVE_SIGNED_SCOPE_DIFFERS_FROM_PLAN");
+                        }
+                    }
                     *prepared_replace.borrow_mut() = Some(proposal);
                     Ok(())
                 }
@@ -608,6 +622,9 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
                         .map_err(|_| "HOST_NATIVE_VM_REPLACE_UNCERTAIN_NO_REPLAY")
                 }
                 FleetHostPlannedStep::Install => {
+                    if intent.resource_id != "sing-box" {
+                        return Err("HOST_NATIVE_SCOPED_INSTALL_NOT_ALLOWED");
+                    }
                     let request = ApplyBundleRequest::decode(bundle_pb.as_slice())
                         .map_err(|_| "HOST_NATIVE_BUNDLE_INVALID")?;
                     super::apply_bundle(stack_dir, request)

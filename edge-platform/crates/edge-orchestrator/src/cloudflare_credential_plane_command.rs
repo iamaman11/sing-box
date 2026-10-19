@@ -2995,12 +2995,16 @@ function INFO(b){
   }
  }
  if([1,2,3,4,5,6,7,8,9,11].some(f=>!seen.has(f)))return null;
- if(schema!==1||(kind!==1&&kind!==2)||resource!=="sing-box"||
+ // A resource-specific approval authorizes only one gateway config change.
+ const scoped=typeof resource==="string"&&
+    /^config\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/(line1-gateway|line2-proxy)$/.test(resource);
+ if(schema!==1||(kind!==1&&kind!==2)||
+    !(resource==="sing-box"||(kind===2&&action===2&&scoped))||
     (action!==2&&action!==3)||
     typeof id!=="string"||!/^issue1-comment-[1-9][0-9]{0,19}$/.test(id)||
     typeof m!=="string"||!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(m)||
     !Number.isSafeInteger(when)||when<=0)return null;
- return{id,m,action,when,release};
+ return{id,m,action,when,release,resource};
 }
 async function GITHUB(info,e,now){
  const actor=String(e.EDGE_HOST_GITHUB_ACTOR_ID||"");
@@ -3016,7 +3020,8 @@ async function GITHUB(info,e,now){
   if(!c||String(c.user?.id)!==actor||c.issue_url!==base+"/issues/1"||
      c.updated_at!==c.created_at||!Number.isFinite(stamp)||
      stamp<now-300||stamp>now+30||info.when<stamp-30||
-     c.body!=="/host "+(info.action===2?"apply":"recover")+" "+info.m)return false;
+     c.body!=="/host "+(info.action===2?"apply":"recover")+" "+info.m+
+        (info.resource==="sing-box"?"":" "+info.resource))return false;
   // GitHub's published immutable ReleaseSet is distinct from a PR candidate.
   // This is a second check of release existence, NOT native desired admission.
   const tag="edge-release-"+info.release;
