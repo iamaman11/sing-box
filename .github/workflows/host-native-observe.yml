@@ -410,29 +410,19 @@ jobs:
           [[ "${typed}" =~ ^[A-Z0-9_]{1,96}$ ]]
           body="$(printf 'Host native result for operator command #%s\n\nHost: `%s`\nKind: `%s`\nResult: `%s`\nTyped readback: `%s`\nEvidence: %s\n\n%s\n' \
             "${SOURCE_COMMENT_ID}" "${TARGET_MACHINE}" "${TARGET_KIND}" "${result}" "${typed}" "${run_url}" "${native_note}")"
-          # Read only the exact Rust-validated report from this same report job.
-          # Never parse raw runner protobuf or claim an authenticated receipt.
+          # Summarize only Rust-validated, bounded, structurally correlated
+          # per-container evidence. Never parse arbitrary runner protobuf.
           if [[ "${TYPED_OUTCOME}" = success && "${TARGET_KIND}" = VM &&
                 "${COMMAND_BODY}" = "/host status ${TARGET_MACHINE} --deep" ]]; then
             report="${RUNNER_TEMP}/host-readback-result.txt"
             if [[ -f "${report}" && ! -L "${report}" ]] &&
                grep -q '^host_vm_resources_count=' "${report}" &&
-               grep -q '^host_vm_resources_origin=RUNNER_COPIED_UNAUTHENTICATED "repos/${GITHUB_REPOSITORY}/issues/1/comments" -f "body=${body}" >/dev/null
-          if [[ "${TYPED_OUTCOME}" = failure ]]; then
-            echo 'HOST_TYPED_READBACK_REJECTED' >&2
-            exit 1
-          fi
- "${report}"; then
+               grep -Fxq 'host_vm_resources_origin=RUNNER_COPIED_UNAUTHENTICATED' "${report}"; then
               per_resource="$(awk '/^host_vm_resource=/{print; if (++n == 24) exit}' "${report}")"
               counts="$(grep -E '^host_vm_resources_(count|problem_count)=' "${report}")"
-              body+="$(printf '\nVM containers (Rust-validated; runner copy UNAUTHENTICATED; no mutation authority):\n~~~text\n%s\n%s\n~~~\n' "${counts}" "${per_resource}")"
+              body="${body}$(printf '\nVM containers (Rust-validated; runner copy UNAUTHENTICATED; no mutation authority):\n~~~text\n%s\n%s\n~~~\n' "${counts}" "${per_resource}")"
             else
-              body+= "repos/${GITHUB_REPOSITORY}/issues/1/comments" -f "body=${body}" >/dev/null
-          if [[ "${TYPED_OUTCOME}" = failure ]]; then
-            echo 'HOST_TYPED_READBACK_REJECTED' >&2
-            exit 1
-          fi
-\nVM containers: UNPROVEN — no accepted installed-owner resource report.\n'
+              body="${body}$(printf '\nVM containers: UNPROVEN — no accepted installed-owner resource report.\n')"
             fi
           fi
           gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/1/comments" -f "body=${body}" >/dev/null
