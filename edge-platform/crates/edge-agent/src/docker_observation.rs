@@ -160,15 +160,16 @@ fn exact_application_compose_owner(
     Ok(())
 }
 
-/// Root-only, read-only preadmission check. Docker names alone do not prove
-/// ownership; verify Compose project AND service before the signed BEGIN.
-/// A missing container is valid on fresh installs and optional profiles.
-pub(crate) async fn verify_owned_application_containers() -> Result<(), String> {
-    let docker = docker_connection().await?;
+/// Inspect every application-owned container before admitting a native change.
+/// Names alone are not ownership: check the Compose project, service and
+/// immutable Docker container ID. Mesh and unrelated Docker projects are
+/// intentionally outside this scope. Missing containers are valid on fresh VMs.
+async fn owned_application_container_ids(docker: &Docker) -> Result<Vec<(String, bool)>, String> {
+    let mut owned = Vec::new();
     for name in [
-        "vultr-warp-egress",
-        "vultr-line1-gateway",
         "vultr-line2-proxy",
+        "vultr-line1-gateway",
+        "vultr-warp-egress",
     ] {
         let inspect = match docker.inspect_container(name, None).await {
             Ok(value) => value,
@@ -189,6 +190,50 @@ pub(crate) async fn verify_owned_application_containers() -> Result<(), String> 
             .as_ref()
             .ok_or("HOST_NATIVE_CONTAINER_LABELS_MISSING")?;
         exact_application_compose_owner(name, labels).map_err(str::to_owned)?;
+        let id = inspect.id.ok_or("HOST_NATIVE_CONTAINER_ID_MISSING")?;
+        if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("HOST_NATIVE_CONTAINER_ID_INVALID".into());
+        }
+        let state = inspect.state.ok_or("HOST_NATIVE_CONTAINER_STATE_UNAVAILABLE")?;
+        // Paused, restarting or dead is an uncertain transition, not a known
+        // RUNNING/STOPPED owner. Never proceed with a partially known set.
+        if state.paused.unwrap_or(false)
+            || state.restarting.unwrap_or(false)
+            || state.dead.unwrap_or(false)
+        {
+            return Err("HOST_NATIVE_CONTAINER_TRANSITION_UNPROVEN".into());
+        }
+        let running = state.running.ok_or("HOST_NATIVE_CONTAINER_RUNNING_UNPROVEN")?;
+        owned.push((id, running));
+    }
+    Ok(owned)
+}
+
+/// Root-only read-only preadmission check, shared with the STOP effector.
+pub(crate) async fn verify_owned_application_containers() -> Result<(), String> {
+    let docker = docker_connection().await?;
+    owned_application_container_ids(&docker).await.map(|_| ())
+}
+
+/// Native VM STOP. Only exact, independently inspected Compose-owned Docker
+/// IDs can be stopped; never compose down, never prune, never touch Mesh.
+/// The caller has already reserved a signed one-shot resource journal.
+/// A Docker failure is ambiguous and must retain UNKNOWN_NO_REPLAY.
+pub(crate) async fn stop_owned_application_containers() -> Result<(), String> {
+    let docker = docker_connection().await?;
+    // Resolve and validate ALL identities before stopping the first container.
+    let owned = owned_application_container_ids(&docker).await?;
+    for (id, running) in owned {
+        if running {
+            docker
+                .stop_container(&id, Some(
+                    bollard::query_parameters::StopContainerOptionsBuilder::default()
+                        .t(20)
+                        .build(),
+                ))
+                .await
+                .map_err(|_| "HOST_NATIVE_VM_STOP_UNCERTAIN_NO_REPLAY")?;
+        }
     }
     Ok(())
 }
