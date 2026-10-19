@@ -933,11 +933,13 @@ mod tests {
     #[test]
     fn stop_with_release_drift_preserves_actual_bundle_and_explains_next_action() {
         use crate::host_lifecycle::host_authorization_payload;
-        use crate::{FleetHostMode, FleetHostRunState, FleetHostTarget, FleetHostKind, managed_host};
+        use crate::{
+            FleetHostKind, FleetHostMode, FleetHostRunState, FleetHostTarget, managed_host,
+        };
         let rng = SystemRandom::new();
-        let pair = Ed25519KeyPair::from_pkcs8(
-            Ed25519KeyPair::generate_pkcs8(&rng).unwrap().as_ref(),
-        ).unwrap();
+        let pair =
+            Ed25519KeyPair::from_pkcs8(Ed25519KeyPair::generate_pkcs8(&rng).unwrap().as_ref())
+                .unwrap();
         let registry = HostRegistry {
             schema_version: 1,
             hosts: vec![FleetHost {
@@ -973,19 +975,33 @@ mod tests {
             expires_at_unix: 1100,
             ed25519_signature: Vec::new(),
         };
-        auth.ed25519_signature = pair.sign(&host_authorization_payload(&intent, &auth))
-            .as_ref().to_vec();
+        auth.ed25519_signature = pair
+            .sign(&host_authorization_payload(&intent, &auth))
+            .as_ref()
+            .to_vec();
         let dir = std::env::temp_dir().join(format!(
             "sing-box-stop-drift-{}-{}",
             std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos(),
         ));
         fs::create_dir(&dir).unwrap();
         admit_after_protected_owner_check_once(
-            &intent, &auth, &registry, &[1; 32], &[2; 32], &[3; 32],
-            pair.public_key().as_ref(), "vm-stop", FleetHostKind::Vm as i32,
-            1020, &dir,
-        ).unwrap();
+            &intent,
+            &auth,
+            &registry,
+            &[1; 32],
+            &[2; 32],
+            &[3; 32],
+            pair.public_key().as_ref(),
+            "vm-stop",
+            FleetHostKind::Vm as i32,
+            1020,
+            &dir,
+        )
+        .unwrap();
         let post = crate::FleetNativeObservation {
             schema_version: 1,
             host_kind: FleetHostKind::Vm as i32,
@@ -1000,12 +1016,23 @@ mod tests {
         // Candidate digest differs from the running release that was stopped.
         // Successful STOP must not pretend that a new release was installed.
         let done = finish_after_protected_owner_check_once(
-            &intent, &registry, "vm-stop", FleetHostKind::Vm as i32,
-            &[5; 32], FleetHostPlannedStep::Stop, &[4; 32],
-            1020, &dir, || Ok(post.clone()),
-        ).unwrap();
+            &intent,
+            &registry,
+            "vm-stop",
+            FleetHostKind::Vm as i32,
+            &[5; 32],
+            FleetHostPlannedStep::Stop,
+            &[4; 32],
+            1020,
+            &dir,
+            || Ok(post.clone()),
+        )
+        .unwrap();
         assert_eq!(done.state, FleetHostResultState::Verified as i32);
-        assert_eq!(done.next_action, "STOPPED_RELEASE_DRIFT_REQUIRES_INSTALL_TARGET");
+        assert_eq!(
+            done.next_action,
+            "STOPPED_RELEASE_DRIFT_REQUIRES_INSTALL_TARGET"
+        );
         assert!(!native_scope_pending_path(&dir, &intent).exists());
         fs::remove_dir_all(&dir).unwrap();
     }
