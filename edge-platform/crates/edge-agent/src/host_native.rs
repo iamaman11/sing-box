@@ -127,6 +127,51 @@ async fn attest_published_github_source(
     {
         return Err("HOST_NATIVE_RELEASE_GIT_REF_MISMATCH".into());
     }
+    // A release's target_commitish is the accepted main commit, while
+    // ReleaseSet.source_revision names the exact candidate that passed CI.
+    // They may have different SHA-1 commit identities after a protected
+    // merge, but must have the SAME Git tree. A published tag and matching
+    // artifact digests without this check could authorize a foreign desired.
+    let mut accepted_tree = String::new();
+    let mut candidate_tree = String::new();
+    for (sha, destination) in [
+        (accepted, &mut accepted_tree),
+        (revision, &mut candidate_tree),
+    ] {
+        let response = client
+            .get(format!("{base}/git/commits/{sha}"))
+            .header("User-Agent", "sing-box-native-owner")
+            .send()
+            .await
+            .map_err(|_| "HOST_NATIVE_GIT_COMMIT_UNAVAILABLE")?;
+        if !response.status().is_success()
+            || response.content_length().is_some_and(|n| n > 65536)
+        {
+            return Err("HOST_NATIVE_GIT_COMMIT_UNVERIFIED".into());
+        }
+        let bytes = response.bytes().await
+            .map_err(|_| "HOST_NATIVE_GIT_COMMIT_UNAVAILABLE")?;
+        if bytes.len() > 65536 {
+            return Err("HOST_NATIVE_GIT_COMMIT_TOO_LARGE".into());
+        }
+        let commit: serde_json::Value = serde_json::from_slice(&bytes)
+            .map_err(|_| "HOST_NATIVE_GIT_COMMIT_INVALID")?;
+        if commit["sha"].as_str() != Some(sha) {
+            return Err("HOST_NATIVE_GIT_COMMIT_SHA_MISMATCH".into());
+        }
+        let tree = commit["tree"]["sha"].as_str()
+            .ok_or("HOST_NATIVE_GIT_TREE_ABSENT")?;
+        if tree.len() != 40
+            || !tree.bytes().all(|c| c.is_ascii_hexdigit())
+        {
+            return Err("HOST_NATIVE_GIT_TREE_INVALID".into());
+        }
+        *destination = tree.to_owned();
+    }
+    if accepted_tree != candidate_tree {
+        return Err("HOST_NATIVE_ACCEPTED_SOURCE_TREE_MISMATCH".into());
+    }
+
     let assets = published["assets"]
         .as_array()
         .ok_or("HOST_NATIVE_RELEASE_ASSETS_INVALID")?;
@@ -240,7 +285,9 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
     // existing bootstrap/bundle primitives. Reject it BEFORE signing and
     // BEFORE BEGIN: a callback refusal after BEGIN would strand the journal
     // in UNKNOWN_NO_REPLAY without any physical operation.
-    let vm_target = host.target.as_ref()
+    let vm_target = host
+        .target
+        .as_ref()
         .ok_or("HOST_TARGET_UNSET_OBSERVE_ONLY")?;
     if vm_target.run_state != edge_shared_types::FleetHostRunState::Running as i32 {
         return Err("HOST_NATIVE_VM_TARGET_NOT_EXECUTABLE".into());
