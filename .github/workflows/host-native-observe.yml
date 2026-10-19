@@ -94,13 +94,29 @@ jobs:
           # Read-only sudo -l checks the INSTALLED runner capability, not
           # just the updated source installer. This cannot perform a mutation.
           vm_runner_mutate=ABSENT
-          if sudo -n -l "${owner}" local bundle-converge >/dev/null 2>&1 ||
-             sudo -n -l "${owner}" local bundle-rollback >/dev/null 2>&1 ||
-             sudo -n -l "${owner}" local credential-stage 1 >/dev/null 2>&1 ||
-             sudo -n -l "${owner}" local mesh-cleanup >/dev/null 2>&1; then
-            vm_runner_mutate=LEGACY_DIRECT_MUTATION_PRESENT
-          fi
+          # Same forbidden capability list as the canonical VM installer.
+          # Old installed sudoers are not silently accepted by the new flow.
+          for unsafe_command in \
+            "local bundle-converge" \
+            "local host-enroll machine release key" \
+            "local bundle-rollback" \
+            "local bootstrap-full" \
+            "local mesh-cleanup" \
+            "local credential-stage 1" \
+            "local credential-transition promote" \
+            "local credential-existing-join 1 2 3"; do
+            read -r -a argv <<< "${unsafe_command}"
+            if sudo -n -l "${owner}" "${argv[@]}" >/dev/null 2>&1; then
+              vm_runner_mutate=LEGACY_DIRECT_MUTATION_PRESENT
+              break
+            fi
+          done
           echo "host_runner_direct_mutation_authority=${vm_runner_mutate}"
+          if [[ "${COMMAND_BODY}" == "/host apply "* || "${COMMAND_BODY}" == "/host recover "* ]] &&
+             [[ "${vm_runner_mutate}" != ABSENT ]]; then
+            echo 'HOST_VM_LEGACY_DIRECT_MUTATION_AUTHORITY_FORBIDDEN' >&2
+            exit 1
+          fi
           if [[ "${COMMAND_BODY}" == *" --deep" || "${COMMAND_BODY}" == "/host recover "* ||
                 "${COMMAND_BODY}" == "/host apply "* ]]; then
             sudo -n "${owner}" local diagnose
@@ -199,7 +215,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: native-readback-${{ inputs.machine_id }}-${{ inputs.source_comment_id }}
-          path: ${{ runner.temp }}/host-native-observation.pb
+          path: |
+            ${{ runner.temp }}/host-native-observation.pb
+            ${{ runner.temp }}/host-operation/host-result.pb
+          if-no-files-found: ignore
           if-no-files-found: ignore
           retention-days: 7
 

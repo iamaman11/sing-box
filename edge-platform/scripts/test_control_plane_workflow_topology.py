@@ -775,6 +775,16 @@ def test_native_host_readonly_control_boundary(router: str) -> None:
         "Per-host reports must finish independently with native read-only owners",
     )
     require(
+        "HOST_VM_LEGACY_DIRECT_MUTATION_AUTHORITY_FORBIDDEN" in owner
+        and 'if [[ "${COMMAND_BODY}" == "/host apply "* || "${COMMAND_BODY}" == "/host recover "* ]] &&' in owner
+        and '[[ "${vm_runner_mutate}" != ABSENT ]]' in owner
+        and owner.index("HOST_VM_LEGACY_DIRECT_MUTATION_AUTHORITY_FORBIDDEN")
+            < owner.index("Dispatch one signed native VM host transaction")
+        and "${{ runner.temp }}/host-operation/host-result.pb" in owner
+        and "LOCAL_PROTOBUF_NOT_YET_REMOTE_ATTESTED" in owner,
+        "Legacy VM direct mutation authority must block new signed execution; retained native result is not remote attestation",
+    )
+    require(
         "host-observe $current" in owner
         and 'local host-observe > "${output}"' in owner
         and "actions/upload-artifact@v4" in owner
