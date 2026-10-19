@@ -1435,11 +1435,13 @@ pub(crate) async fn preflight_native_vm_replace(
     use edge_shared_types::{FleetResourceKind as Kind, FleetVmPolicyChange};
     // Only the canonical hierarchy may determine an effector's target.
     // Reject a mismatch before reading/writing any native container policy.
-    let hierarchy = edge_shared_types::host_resources::derive_vm_resource_hierarchy(
-        host, &target_graph,
-    ).map_err(str::to_owned)?;
+    let hierarchy =
+        edge_shared_types::host_resources::derive_vm_resource_hierarchy(host, &target_graph)
+            .map_err(str::to_owned)?;
     for resource in &changes.resources {
-        let node = hierarchy.nodes.iter()
+        let node = hierarchy
+            .nodes
+            .iter()
             .find(|node| node.resource_id == resource.resource_id)
             .ok_or("HOST_VM_RECONCILE_TARGET_NODE_UNREGISTERED")?;
         if node.kind != resource.resource_kind
@@ -1466,12 +1468,10 @@ pub(crate) async fn preflight_native_vm_replace(
             )
         });
     let gateway_pair = changed.len() == 2
-        && changed
-            .iter()
-            .all(|resource| {
-                resource.change == FleetVmPolicyChange::ImageReplaced as i32
-                    && resource.resource_kind == Kind::DockerContainer as i32
-            })
+        && changed.iter().all(|resource| {
+            resource.change == FleetVmPolicyChange::ImageReplaced as i32
+                && resource.resource_kind == Kind::DockerContainer as i32
+        })
         && changed
             .iter()
             .filter_map(|resource| resource.resource.as_ref())

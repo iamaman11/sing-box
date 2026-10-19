@@ -407,16 +407,25 @@ pub fn propose_vm_graph_reconcile(
         } else {
             FleetVmPolicyChange::NoChange
         };
-        let selector = after.resource.as_ref().ok_or("VM_RECONCILE_RESOURCE_MISSING")?;
-        let (resource_id, resource_kind) = if change == FleetVmPolicyChange::ConfigTemplateReplaced {
+        let selector = after
+            .resource
+            .as_ref()
+            .ok_or("VM_RECONCILE_RESOURCE_MISSING")?;
+        let (resource_id, resource_kind) = if change == FleetVmPolicyChange::ConfigTemplateReplaced
+        {
             (
                 vm_config_resource_id(&selector.compose_project, &selector.compose_service),
                 Kind::SingboxConfig,
             )
         } else {
-            (vm_container_resource_id(host, selector)?, Kind::DockerContainer)
+            (
+                vm_container_resource_id(host, selector)?,
+                Kind::DockerContainer,
+            )
         };
-        let exact_node = desired_hierarchy.nodes.iter()
+        let exact_node = desired_hierarchy
+            .nodes
+            .iter()
             .find(|node| node.resource_id == resource_id)
             .ok_or("VM_RECONCILE_RESOURCE_NODE_NOT_IN_GRAPH")?;
         if exact_node.kind != resource_kind as i32
@@ -917,7 +926,10 @@ pub fn propose_vm_resource_transitions(
                 (Step::Blocked, Reason::RuntimeHealthOrConfigUnproven)
             }
         };
-        let selector = row.resource.as_ref().ok_or("VM_RESOURCE_PLAN_SELECTOR_MISSING")?;
+        let selector = row
+            .resource
+            .as_ref()
+            .ok_or("VM_RESOURCE_PLAN_SELECTOR_MISSING")?;
         resources.push(FleetVmResourceTransition {
             resource: row.resource.clone(),
             resource_id: vm_container_resource_id(host, selector)?,
@@ -1166,12 +1178,18 @@ mod vm_graph_reconcile_tests {
             plan.resources[1].expected_image_ref,
             installed.resources[1].image_ref
         );
-        assert_eq!(plan.resources[1].resource_id, "config/vultr-edge/line2-proxy");
+        assert_eq!(
+            plan.resources[1].resource_id,
+            "config/vultr-edge/line2-proxy"
+        );
         assert_eq!(
             plan.resources[1].resource_kind,
             crate::FleetResourceKind::SingboxConfig as i32
         );
-        assert_eq!(plan.resources[0].resource_id, "container/vultr-edge/line1-gateway");
+        assert_eq!(
+            plan.resources[0].resource_id,
+            "container/vultr-edge/line1-gateway"
+        );
         assert_eq!(
             plan.resources[0].resource_kind,
             crate::FleetResourceKind::DockerContainer as i32
@@ -1200,10 +1218,17 @@ mod vm_graph_reconcile_tests {
             plan.resources[2].change,
             FleetVmPolicyChange::NoChange as i32
         );
-        assert_eq!(plan.resources[0].resource_id, "container/vultr-edge/line1-gateway");
-        assert_eq!(plan.resources[1].resource_id, "container/vultr-edge/line2-proxy");
-        assert!(plan.resources[0].resource_kind
-            == crate::FleetResourceKind::DockerContainer as i32);
+        assert_eq!(
+            plan.resources[0].resource_id,
+            "container/vultr-edge/line1-gateway"
+        );
+        assert_eq!(
+            plan.resources[1].resource_id,
+            "container/vultr-edge/line2-proxy"
+        );
+        assert!(
+            plan.resources[0].resource_kind == crate::FleetResourceKind::DockerContainer as i32
+        );
     }
 
     #[test]
