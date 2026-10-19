@@ -5329,7 +5329,11 @@ mod tests {
             "some-other-sing-box".to_owned(),
         ];
         assert!(!owned_application_container_running(&foreign));
-        for own in ["vultr-warp-egress", "vultr-line1-gateway", "vultr-line2-proxy"] {
+        for own in [
+            "vultr-warp-egress",
+            "vultr-line1-gateway",
+            "vultr-line2-proxy",
+        ] {
             let mut names = foreign.clone();
             names.push(own.to_owned());
             assert!(owned_application_container_running(&names));
@@ -5340,7 +5344,6 @@ mod tests {
             "prefix-vultr-warp-egress".into(),
         ]));
     }
-
 
     use super::*;
     use edge_shared_types::agent_service_server::AgentService;
