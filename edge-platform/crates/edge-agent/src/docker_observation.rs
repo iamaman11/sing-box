@@ -2730,16 +2730,17 @@ mod vm_native_start_order_tests {
 fn native_running_health_reason(
     running: bool,
     health_debug: Option<&str>,
-) -> (&'static str, &'static str) {
+) -> (edge_shared_types::FleetVmObservedReason, &'static str) {
+    use edge_shared_types::FleetVmObservedReason as Reason;
     if !running {
-        return ("STOPPED", "");
+        return (Reason::Stopped, "");
     }
     match health_debug.map(str::to_ascii_lowercase) {
-        Some(ref state) if state == "healthy" => ("HEALTHY", "HEALTHY"),
-        Some(ref state) if state == "unhealthy" => ("HEALTH_UNHEALTHY", "UNHEALTHY"),
-        Some(ref state) if state == "starting" => ("HEALTH_STARTING", "STARTING"),
-        None => ("RUNNING_NO_HEALTHCHECK", ""),
-        _ => ("HEALTH_UNPROVEN", ""),
+        Some(ref state) if state == "healthy" => (Reason::Healthy, "HEALTHY"),
+        Some(ref state) if state == "unhealthy" => (Reason::HealthUnhealthy, "UNHEALTHY"),
+        Some(ref state) if state == "starting" => (Reason::HealthStarting, "STARTING"),
+        None => (Reason::RunningNoHealthcheck, ""),
+        _ => (Reason::HealthUnproven, ""),
     }
 }
 
@@ -2841,6 +2842,48 @@ async fn observe_native_vm_network_readback() -> edge_shared_types::FleetVmNetwo
     }
 }
 
+fn set_vm_observed_reason(
+    row: &mut edge_shared_types::FleetVmResourceReadback,
+    reason: edge_shared_types::FleetVmObservedReason,
+) {
+    row.observed_reason = reason as i32;
+    row.reason_code = reason
+        .as_str_name()
+        .strip_prefix("FLEET_VM_OBSERVED_REASON_")
+        .expect("closed protobuf Docker reason")
+        .to_owned();
+}
+
+fn native_policy_failure(
+    error: &str,
+) -> (edge_shared_types::FleetVmInstalledPolicyStatus, String) {
+    use edge_shared_types::FleetVmInstalledPolicyStatus as Status;
+    let status = if error.contains("DEPENDENCY") {
+        Status::DependencyInvalid
+    } else if error.contains("NETWORK") {
+        Status::NetworkInvalid
+    } else if error.contains("IMAGE") {
+        Status::ImageInvalid
+    } else if error.contains("TEMPLATE") || error.contains("CONFIG") {
+        Status::ConfigInvalid
+    } else if error.contains("COMPOSE") || error.contains("SERVICES") {
+        Status::ComposeInvalid
+    } else {
+        Status::OtherInvalid
+    };
+    // Return only an exact bounded static native error token, never a raw
+    // parser/file/credential error or path from an external component.
+    let code = if error.starts_with("HOST_")
+        && error.len() <= 128
+        && error.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+    {
+        error
+    } else {
+        "HOST_VM_POLICY_ERROR_UNCLASSIFIED"
+    };
+    (status, code.to_owned())
+}
+
 /// Read-only, per-resource Docker evidence. Each entry is inspected once:
 /// labels, immutable ID and state come from the SAME inspect response.
 /// Never read or emit environment, credentials, mount contents or Docker logs.
@@ -2848,7 +2891,10 @@ pub(crate) async fn observe_vm_resource_report(
     host: &edge_shared_types::FleetHost,
     stack_dir: &Path,
 ) -> Result<edge_shared_types::FleetVmResourceReport, String> {
-    use edge_shared_types::{FleetVmConfigProof, FleetVmResourceReadback, FleetVmResourceReport};
+    use edge_shared_types::{
+        FleetVmConfigProof, FleetVmInstalledPolicyStatus, FleetVmObservedReason as Reason,
+        FleetVmResourceReadback, FleetVmResourceReport,
+    };
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| "HOST_VM_RESOURCES_CLOCK_UNAVAILABLE")?
@@ -2858,6 +2904,7 @@ pub(crate) async fn observe_vm_resource_report(
     for resource in &host.vm_containers {
         let mut row = FleetVmResourceReadback {
             resource: Some(resource.clone()),
+            observed_reason: Reason::DockerUnavailable as i32,
             reason_code: "DOCKER_UNAVAILABLE".to_owned(),
             config_proof: if resource.compose_service == "warp-egress" {
                 FleetVmConfigProof::NotApplicable as i32
@@ -2874,12 +2921,12 @@ pub(crate) async fn observe_vm_resource_report(
                 Err(BollardError::DockerResponseServerError {
                     status_code: 404, ..
                 }) => {
-                    row.reason_code = "CONTAINER_ABSENT".to_owned();
+                    set_vm_observed_reason(&mut row, Reason::ContainerAbsent);
                 }
-                Err(_) => row.reason_code = "INSPECT_UNAVAILABLE".to_owned(),
+                Err(_) => set_vm_observed_reason(&mut row, Reason::InspectUnavailable),
                 Ok(inspect) => {
                     row.present = true;
-                    row.reason_code = "FOREIGN_OWNER".to_owned();
+                    set_vm_observed_reason(&mut row, Reason::ForeignOwner);
                     let valid_labels = inspect
                         .config
                         .as_ref()
@@ -2915,7 +2962,7 @@ pub(crate) async fn observe_vm_resource_report(
                             row.restart_count = restarts;
                             row.restart_count_proven = true;
                         }
-                        row.reason_code = "STATE_UNPROVEN".to_owned();
+                        set_vm_observed_reason(&mut row, Reason::StateUnproven);
                         if let Some(state) = &inspect.state {
                             if let Ok(running) = require_known_native_container_state(state) {
                                 row.running_proven = true;
@@ -2927,7 +2974,7 @@ pub(crate) async fn observe_vm_resource_report(
                                     .map(|status| format!("{status:?}"));
                                 let (reason, health) =
                                     native_running_health_reason(running, raw_health.as_deref());
-                                row.reason_code = reason.to_owned();
+                                set_vm_observed_reason(&mut row, reason);
                                 row.health = health.to_owned();
                             }
                         }
@@ -2966,6 +3013,19 @@ pub(crate) async fn observe_vm_resource_report(
         }
         resources.push(row);
     }
+    let installed_policy = compile_native_vm_desired_graph(stack_dir, host);
+    let (installed_policy_graph, installed_policy_status, installed_policy_error_code) =
+        match installed_policy {
+            Ok(graph) => (
+                Some(graph),
+                FleetVmInstalledPolicyStatus::Valid as i32,
+                String::new(),
+            ),
+            Err(error) => {
+                let (status, code) = native_policy_failure(&error);
+                (None, status as i32, code)
+            }
+        };
     let report = FleetVmResourceReport {
         schema_version: 1,
         machine_id: host.machine_id.clone(),
@@ -2975,7 +3035,9 @@ pub(crate) async fn observe_vm_resource_report(
         network: Some(observe_native_vm_network_readback().await),
         // Installed bytes may be absent or invalid after a partial failure.
         // Never conceal Docker evidence solely because policy cannot render.
-        installed_policy_graph: compile_native_vm_desired_graph(stack_dir, host).ok(),
+        installed_policy_graph,
+        installed_policy_status,
+        installed_policy_error_code,
     };
     edge_shared_types::host_resources::validate_vm_resource_report(&report, host)
         .map_err(str::to_owned)?;
@@ -3365,27 +3427,28 @@ mod tests {
 
     #[test]
     fn missing_or_starting_health_is_never_reported_healthy() {
+        use edge_shared_types::FleetVmObservedReason as Reason;
         assert_eq!(
             native_running_health_reason(true, Some("Healthy")),
-            ("HEALTHY", "HEALTHY")
+            (Reason::Healthy, "HEALTHY")
         );
         assert_eq!(
             native_running_health_reason(true, Some("Starting")),
-            ("HEALTH_STARTING", "STARTING")
+            (Reason::HealthStarting, "STARTING")
         );
         assert_eq!(
             native_running_health_reason(true, Some("Unhealthy")),
-            ("HEALTH_UNHEALTHY", "UNHEALTHY")
+            (Reason::HealthUnhealthy, "UNHEALTHY")
         );
         assert_eq!(
             native_running_health_reason(true, None),
-            ("RUNNING_NO_HEALTHCHECK", "")
+            (Reason::RunningNoHealthcheck, "")
         );
         assert_eq!(
             native_running_health_reason(true, Some("Unknown")),
-            ("HEALTH_UNPROVEN", "")
+            (Reason::HealthUnproven, "")
         );
-        assert_eq!(native_running_health_reason(false, None), ("STOPPED", ""));
+        assert_eq!(native_running_health_reason(false, None), (Reason::Stopped, ""));
     }
 
     #[test]

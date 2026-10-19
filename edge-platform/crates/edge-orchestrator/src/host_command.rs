@@ -521,6 +521,21 @@ pub(crate) fn run(
                     }
                 );
                 println!("host_vm_desired_hierarchy_release_proven=false");
+                println!(
+                    "host_vm_installed_policy_status={:?}",
+                    edge_shared_types::FleetVmInstalledPolicyStatus::try_from(
+                        report.installed_policy_status
+                    )
+                    .map_err(|_| "HOST_VM_INSTALLED_POLICY_STATUS_INVALID")?
+                );
+                println!(
+                    "host_vm_installed_policy_error_code={}",
+                    if report.installed_policy_error_code.is_empty() {
+                        "NONE"
+                    } else {
+                        &report.installed_policy_error_code
+                    }
+                );
                 println!("host_vm_installed_policy_authorizes_mutation=false");
                 if let Some(graph) = installed_hierarchy.as_ref() {
                     println!("host_vm_hierarchy_nodes={}", graph.nodes.len());
@@ -568,7 +583,11 @@ pub(crate) fn run(
                         resource_id,
                         selected.machine_id,
                         dependencies,
-                        resource.reason_code,
+                        edge_shared_types::FleetVmObservedReason::try_from(resource.observed_reason)
+                            .map_err(|_| "HOST_VM_OBSERVED_REASON_INVALID")?
+                            .as_str_name()
+                            .strip_prefix("FLEET_VM_OBSERVED_REASON_")
+                            .ok_or("HOST_VM_OBSERVED_REASON_INVALID")?,
                         edge_shared_types::FleetHostPlannedStep::try_from(proposal.step)
                             .map_err(|_| "HOST_VM_RESOURCE_PLAN_STEP_INVALID")?,
                         proposal.reason_code,

@@ -151,6 +151,23 @@ enum FleetVmConfigProof {
   FLEET_VM_CONFIG_PROOF_BOUND_RUNNING_PROCESS = 3;
 }
 
+// Closed native Docker observation reasons. The human-readable reason_code
+// is generated from this enum, never used to plan or authorize a mutation.
+enum FleetVmObservedReason {
+  FLEET_VM_OBSERVED_REASON_UNSPECIFIED = 0;
+  FLEET_VM_OBSERVED_REASON_DOCKER_UNAVAILABLE = 1;
+  FLEET_VM_OBSERVED_REASON_CONTAINER_ABSENT = 2;
+  FLEET_VM_OBSERVED_REASON_INSPECT_UNAVAILABLE = 3;
+  FLEET_VM_OBSERVED_REASON_FOREIGN_OWNER = 4;
+  FLEET_VM_OBSERVED_REASON_STATE_UNPROVEN = 5;
+  FLEET_VM_OBSERVED_REASON_HEALTHY = 6;
+  FLEET_VM_OBSERVED_REASON_HEALTH_STARTING = 7;
+  FLEET_VM_OBSERVED_REASON_HEALTH_UNHEALTHY = 8;
+  FLEET_VM_OBSERVED_REASON_RUNNING_NO_HEALTHCHECK = 9;
+  FLEET_VM_OBSERVED_REASON_HEALTH_UNPROVEN = 10;
+  FLEET_VM_OBSERVED_REASON_STOPPED = 11;
+}
+
 message FleetVmResourceReadback {
   FleetVmContainer resource = 1;
   bool present = 2;
@@ -167,6 +184,7 @@ message FleetVmResourceReadback {
   // SHA256 of the exact root-local config file verified in the process mount
   // namespace. Never emit the file contents or credential values.
   bytes config_sha256 = 13;
+  FleetVmObservedReason observed_reason = 14;
 }
 
 // Native ROOT-namespace observation, not a DNS resolution test, working
@@ -184,6 +202,18 @@ message FleetVmNetworkReadback {
   bool nft_ruleset_observed = 6;
 }
 
+// A closed diagnosis of the INSTALLED policy readback only. Neither this
+// diagnostic nor its error_code is evidence of Git desired convergence.
+enum FleetVmInstalledPolicyStatus {
+  FLEET_VM_INSTALLED_POLICY_STATUS_UNSPECIFIED = 0;
+  FLEET_VM_INSTALLED_POLICY_STATUS_VALID = 1;
+  FLEET_VM_INSTALLED_POLICY_STATUS_COMPOSE_INVALID = 2;
+  FLEET_VM_INSTALLED_POLICY_STATUS_IMAGE_INVALID = 3;
+  FLEET_VM_INSTALLED_POLICY_STATUS_NETWORK_INVALID = 4;
+  FLEET_VM_INSTALLED_POLICY_STATUS_DEPENDENCY_INVALID = 5;
+  FLEET_VM_INSTALLED_POLICY_STATUS_CONFIG_INVALID = 6;
+  FLEET_VM_INSTALLED_POLICY_STATUS_OTHER_INVALID = 7;
+}
 message FleetVmResourceReport {
   uint32 schema_version = 1;
   string machine_id = 2;
@@ -197,6 +227,9 @@ message FleetVmResourceReport {
   // dependency graph. Runner transport does NOT attest its origin, bind
   // it to the canonical Git desired, or authorize any mutation.
   FleetVmDesiredGraph installed_policy_graph = 7;
+  FleetVmInstalledPolicyStatus installed_policy_status = 8;
+  // One bounded static native error token, not a raw exception/message.
+  string installed_policy_error_code = 9;
 }
 
 enum FleetHostRunState {

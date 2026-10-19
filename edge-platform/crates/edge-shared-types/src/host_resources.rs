@@ -487,10 +487,34 @@ pub fn validate_vm_resource_report(
     if let Some(network) = report.network.as_ref() {
         validate_vm_network_readback(network)?;
     }
-    if let Some(installed_policy) = report.installed_policy_graph.as_ref() {
-        // Structural evidence only. In particular, this cannot establish
-        // desired convergence or grant owner privileges to the runner.
-        derive_vm_resource_hierarchy(host, installed_policy)?;
+    use crate::FleetVmInstalledPolicyStatus as Policy;
+    let policy_status = Policy::try_from(report.installed_policy_status)
+        .map_err(|_| "VM_INSTALLED_POLICY_STATUS_INVALID")?;
+    match policy_status {
+        Policy::Valid => {
+            if !report.installed_policy_error_code.is_empty() {
+                return Err("VM_INSTALLED_POLICY_SUCCESS_WITH_ERROR");
+            }
+            let installed = report.installed_policy_graph.as_ref()
+                .ok_or("VM_INSTALLED_POLICY_GRAPH_MISSING")?;
+            // Structural evidence only: this does not prove Git desired.
+            derive_vm_resource_hierarchy(host, installed)?;
+        }
+        Policy::Unspecified => {
+            if report.installed_policy_graph.is_some()
+                || !report.installed_policy_error_code.is_empty()
+            {
+                return Err("VM_INSTALLED_POLICY_STATUS_UNPROVEN_CONFLICT");
+            }
+        }
+        Policy::ComposeInvalid | Policy::ImageInvalid | Policy::NetworkInvalid
+        | Policy::DependencyInvalid | Policy::ConfigInvalid | Policy::OtherInvalid => {
+            if report.installed_policy_graph.is_some()
+                || !valid_vm_policy_error_code(&report.installed_policy_error_code)
+            {
+                return Err("VM_INSTALLED_POLICY_FAILURE_INVALID");
+            }
+        }
     }
     for (row, expected) in report.resources.iter().zip(host.vm_containers.iter()) {
         if row.resource.as_ref() != Some(expected)
@@ -593,6 +617,13 @@ pub fn validate_vm_network_readback(network: &FleetVmNetworkReadback) -> Result<
     Ok(())
 }
 
+fn valid_vm_policy_error_code(code: &str) -> bool {
+    !code.is_empty() && code.len() <= 128
+        && code.starts_with("HOST_")
+        && code.bytes().all(|byte| byte.is_ascii_uppercase()
+            || byte.is_ascii_digit() || byte == b'_')
+}
+
 fn valid_container_id(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
 }
@@ -625,41 +656,52 @@ fn config_proof_consistent(
 }
 
 fn reason_consistent(row: &FleetVmResourceReadback) -> bool {
-    match row.reason_code.as_str() {
-        "CONTAINER_ABSENT" => !row.present,
-        "DOCKER_UNAVAILABLE" | "INSPECT_UNAVAILABLE" => !row.present,
-        "FOREIGN_OWNER" => row.present && !row.ownership_proven,
-        "STATE_UNPROVEN" => row.present && row.ownership_proven && !row.running_proven,
-        "HEALTHY" => {
+    use crate::FleetVmObservedReason as Reason;
+    let reason = match Reason::try_from(row.observed_reason) {
+        Ok(Reason::Unspecified) | Err(_) => return false,
+        Ok(reason) => reason,
+    };
+    if row.reason_code != reason.as_str_name()
+        .strip_prefix("FLEET_VM_OBSERVED_REASON_")
+        .unwrap_or("")
+    {
+        return false;
+    }
+    match reason {
+        Reason::ContainerAbsent => !row.present,
+        Reason::DockerUnavailable | Reason::InspectUnavailable => !row.present,
+        Reason::ForeignOwner => row.present && !row.ownership_proven,
+        Reason::StateUnproven => row.present && row.ownership_proven && !row.running_proven,
+        Reason::Healthy => {
             row.present
                 && row.ownership_proven
                 && row.running_proven
                 && row.running
                 && row.health == "HEALTHY"
         }
-        "HEALTH_STARTING" => {
+        Reason::HealthStarting => {
             row.present
                 && row.ownership_proven
                 && row.running_proven
                 && row.running
                 && row.health == "STARTING"
         }
-        "HEALTH_UNHEALTHY" => {
+        Reason::HealthUnhealthy => {
             row.present
                 && row.ownership_proven
                 && row.running_proven
                 && row.running
                 && row.health == "UNHEALTHY"
         }
-        "RUNNING_NO_HEALTHCHECK" | "HEALTH_UNPROVEN" => {
+        Reason::RunningNoHealthcheck | Reason::HealthUnproven => {
             row.present
                 && row.ownership_proven
                 && row.running_proven
                 && row.running
                 && row.health.is_empty()
         }
-        "STOPPED" => row.present && row.ownership_proven && row.running_proven && !row.running,
-        _ => false,
+        Reason::Stopped => row.present && row.ownership_proven && row.running_proven && !row.running,
+        Reason::Unspecified => false,
     }
 }
 
@@ -707,12 +749,15 @@ mod tests {
                 running_proven: true,
                 container_id: "a".repeat(64),
                 reason_code: "HEALTHY".into(),
+                observed_reason: crate::FleetVmObservedReason::Healthy as i32,
                 health: "HEALTHY".into(),
                 ..Default::default()
             }],
             remote_attested: false,
             network: None,
             installed_policy_graph: None,
+            installed_policy_status: 0,
+            installed_policy_error_code: String::new(),
         };
         (host, report)
     }
@@ -737,6 +782,7 @@ mod tests {
             }],
         };
         report.installed_policy_graph = Some(graph.clone());
+        report.installed_policy_status = crate::FleetVmInstalledPolicyStatus::Valid as i32;
         assert!(validate_vm_resource_report(&report, &host).is_ok());
         let mut foreign = graph.clone();
         foreign.networks[0]
@@ -751,7 +797,28 @@ mod tests {
         report.installed_policy_graph = Some(cyclic);
         assert!(validate_vm_resource_report(&report, &host).is_err());
         report.installed_policy_graph = None;
+        report.installed_policy_status = crate::FleetVmInstalledPolicyStatus::NetworkInvalid as i32;
+        report.installed_policy_error_code = "HOST_VM_NETWORK_POLICY_UNSUPPORTED".into();
         assert!(validate_vm_resource_report(&report, &host).is_ok());
+        report.installed_policy_error_code = "../etc/shadow".into();
+        assert!(validate_vm_resource_report(&report, &host).is_err());
+        report.installed_policy_status = crate::FleetVmInstalledPolicyStatus::Valid as i32;
+        assert!(validate_vm_resource_report(&report, &host).is_err());
+        report.installed_policy_status = 0;
+        report.installed_policy_error_code.clear();
+        assert!(validate_vm_resource_report(&report, &host).is_ok());
+    }
+
+    #[test]
+    fn native_reason_enum_rejects_forged_code_and_invalid_state() {
+        let (host, mut report) = fixture();
+        assert!(validate_vm_resource_report(&report, &host).is_ok());
+        report.resources[0].observed_reason = crate::FleetVmObservedReason::Stopped as i32;
+        assert!(validate_vm_resource_report(&report, &host).is_err());
+        report.resources[0].observed_reason = 0;
+        assert!(validate_vm_resource_report(&report, &host).is_err());
+        report.resources[0].observed_reason = 999;
+        assert!(validate_vm_resource_report(&report, &host).is_err());
     }
 
     #[test]
@@ -887,6 +954,7 @@ mod tests {
         report.resources[0].running_proven = false;
         report.resources[0].running = false;
         report.resources[0].reason_code = "FOREIGN_OWNER".into();
+        report.resources[0].observed_reason = crate::FleetVmObservedReason::ForeignOwner as i32;
         assert!(validate_vm_resource_report(&report, &host).is_ok());
         report.resources[0].reason_code = "HEALTHY".into();
         assert!(validate_vm_resource_report(&report, &host).is_err());
@@ -898,10 +966,12 @@ mod tests {
         report.resources[0].config_proof = FleetVmConfigProof::Unproven as i32;
         report.resources[0].config_sha256.clear();
         report.resources[0].reason_code = "HEALTH_STARTING".into();
+        report.resources[0].observed_reason = crate::FleetVmObservedReason::HealthStarting as i32;
         assert!(validate_vm_resource_report(&report, &host).is_err());
         report.resources[0].health = "STARTING".into();
         assert!(validate_vm_resource_report(&report, &host).is_ok());
         report.resources[0].reason_code = "RUNNING_NO_HEALTHCHECK".into();
+        report.resources[0].observed_reason = crate::FleetVmObservedReason::RunningNoHealthcheck as i32;
         assert!(validate_vm_resource_report(&report, &host).is_err());
         report.resources[0].health.clear();
         assert!(validate_vm_resource_report(&report, &host).is_ok());
@@ -937,12 +1007,14 @@ pub fn propose_vm_resource_transitions(
                 (Step::Blocked, Reason::TargetUnsetObserveOnly)
             }
             Some(FleetHostRunState::Stopped)
-                if !row.present && row.reason_code == "CONTAINER_ABSENT" =>
+                if !row.present
+                    && row.observed_reason == crate::FleetVmObservedReason::ContainerAbsent as i32 =>
             {
                 (Step::Noop, Reason::AbsentAsDesired)
             }
             Some(FleetHostRunState::Running)
-                if !row.present && row.reason_code == "CONTAINER_ABSENT" =>
+                if !row.present
+                    && row.observed_reason == crate::FleetVmObservedReason::ContainerAbsent as i32 =>
             {
                 (Step::Install, Reason::ContainerAbsentInstallRequired)
             }
@@ -958,8 +1030,8 @@ pub fn propose_vm_resource_transitions(
             }
             Some(FleetHostRunState::Running)
                 if matches!(
-                    row.reason_code.as_str(),
-                    "HEALTHY" | "RUNNING_NO_HEALTHCHECK"
+                    crate::FleetVmObservedReason::try_from(row.observed_reason),
+                    Ok(crate::FleetVmObservedReason::Healthy | crate::FleetVmObservedReason::RunningNoHealthcheck)
                 ) =>
             {
                 // An already-running container requires no START. Docker
@@ -1333,12 +1405,15 @@ mod resource_planning_tests {
                 running_proven: true,
                 container_id: "a".repeat(64),
                 reason_code: "HEALTHY".into(),
+                observed_reason: crate::FleetVmObservedReason::Healthy as i32,
                 health: "HEALTHY".into(),
                 ..Default::default()
             }],
             remote_attested: false,
             network: None,
             installed_policy_graph: None,
+            installed_policy_status: 0,
+            installed_policy_error_code: String::new(),
         };
         (host, report)
     }
@@ -1418,6 +1493,7 @@ mod resource_planning_tests {
         );
         report.resources[0].health.clear();
         report.resources[0].reason_code = "RUNNING_NO_HEALTHCHECK".into();
+        report.resources[0].observed_reason = crate::FleetVmObservedReason::RunningNoHealthcheck as i32;
         assert_eq!(step(&host, &report), FleetHostPlannedStep::Noop);
         assert_eq!(
             propose_vm_resource_transitions(&host, &report)
@@ -1429,11 +1505,13 @@ mod resource_planning_tests {
 
         report.resources[0].running = false;
         report.resources[0].reason_code = "STOPPED".into();
+        report.resources[0].observed_reason = crate::FleetVmObservedReason::Stopped as i32;
         assert_eq!(step(&host, &report), FleetHostPlannedStep::Start);
         host.target.as_mut().unwrap().run_state = FleetHostRunState::Stopped as i32;
         assert_eq!(step(&host, &report), FleetHostPlannedStep::Noop);
         report.resources[0].running = true;
         report.resources[0].reason_code = "RUNNING_NO_HEALTHCHECK".into();
+        report.resources[0].observed_reason = crate::FleetVmObservedReason::RunningNoHealthcheck as i32;
         assert_eq!(step(&host, &report), FleetHostPlannedStep::Stop);
 
         host.target = None;
@@ -1447,6 +1525,7 @@ mod resource_planning_tests {
         report.resources[0].running = false;
         report.resources[0].running_proven = false;
         report.resources[0].reason_code = "FOREIGN_OWNER".into();
+        report.resources[0].observed_reason = crate::FleetVmObservedReason::ForeignOwner as i32;
         assert_eq!(step(&host, &report), FleetHostPlannedStep::Blocked);
     }
 
@@ -1462,6 +1541,7 @@ mod resource_planning_tests {
         report.resources[0].running = false;
         report.resources[0].health.clear();
         report.resources[0].reason_code = "STOPPED".into();
+        report.resources[0].observed_reason = crate::FleetVmObservedReason::Stopped as i32;
         let plan = propose_vm_resource_transitions(&stopped, &report).unwrap();
         assert!(!vm_resource_requires_attention(&plan.resources[0]));
     }
@@ -1472,6 +1552,7 @@ mod resource_planning_tests {
         report.resources[0] = FleetVmResourceReadback {
             resource: host.vm_containers.first().cloned(),
             reason_code: "CONTAINER_ABSENT".into(),
+                observed_reason: crate::FleetVmObservedReason::ContainerAbsent as i32,
             ..Default::default()
         };
         assert_eq!(step(&host, &report), FleetHostPlannedStep::Install);
