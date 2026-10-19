@@ -3,7 +3,7 @@
 //! Immutable published GitHub assets and an out-of-band PINNED Worker public
 //! key are mandatory. A second enrollment never overwrites the first.
 use super::*;
-use edge_shared_types::{FleetHostIntent, FleetHostKind, ReleaseSet, managed_host};
+use edge_shared_types::{FleetHostIntent, FleetHostKind, FleetNativeTrustSnapshot, ReleaseSet, managed_host};
 use std::fs::{DirBuilder, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
@@ -139,12 +139,12 @@ fn write_protected_file(directory: &Path, name: &str, bytes: &[u8]) -> Result<()
 fn validate_existing_trust_for_refresh(
     trusted: &Path,
     machine_id: &str,
-    pinned_key: &str,
+    pinned_key: &[u8],
 ) -> Result<(), String> {
-    let existing_machine = super::host_native::root_file(&trusted.join("machine-id"), 128)?;
-    let existing_key = super::host_native::root_file(&trusted.join("worker-public-key.hex"), 128)?;
-    if existing_machine.as_slice() != format!("{machine_id}\n").as_bytes()
-        || existing_key.as_slice() != format!("{pinned_key}\n").as_bytes()
+    let previous = super::host_native::root_file(&trusted.join("trust.pb"), 9 * 1024 * 1024)?;
+    let previous = super::host_native::decode_native_trust_snapshot(&previous)?;
+    if previous.machine_id != machine_id
+        || previous.pinned_worker_public_key != pinned_key
     {
         return Err("HOST_ENROLL_IMMUTABLE_IDENTITY_OR_KEY_MISMATCH".into());
     }
@@ -156,43 +156,13 @@ fn validate_existing_trust_for_refresh(
     Ok(())
 }
 
-/// Refresh only immutable release/desired snapshots. The existing journal,
-/// native owner identity and pinned Worker key are never copied or rewritten.
-/// Partial power loss leaves mixed digests and therefore fails closed on
-/// next signed host apply. Root can re-run provenance verification to repair
-/// snapshots without replaying a previous mutation.
-fn refresh_release_snapshots(
-    trusted: &Path,
-    registry_pb: &[u8],
-    release_pb: &[u8],
-    bundle_pb: &[u8],
-    spec: &[u8],
-) -> Result<(), String> {
-    let stage = trusted.join(format!(".next-release-{}", std::process::id()));
-    DirBuilder::new()
-        .mode(0o700)
-        .create(&stage)
-        .map_err(|_| "HOST_ENROLL_REFRESH_STAGE_NOT_EMPTY")?;
-    let snapshots = [
-        ("fleet-registry.pb", registry_pb),
-        ("release-set.pb", release_pb),
-        ("application-bundle.pb", bundle_pb),
-        ("desired.textproto", spec),
-    ];
-    for (name, content) in &snapshots {
-        write_protected_file(&stage, name, content)?;
-    }
-    fs::File::open(&stage)
-        .and_then(|file| file.sync_all())
-        .map_err(|_| "HOST_ENROLL_REFRESH_STAGE_SYNC_FAILED")?;
-    for (name, _) in &snapshots {
-        fs::rename(stage.join(name), trusted.join(name))
-            .map_err(|_| "HOST_ENROLL_REFRESH_UNCERTAIN")?;
-        fs::File::open(trusted)
-            .and_then(|file| file.sync_all())
-            .map_err(|_| "HOST_ENROLL_REFRESH_UNCERTAIN")?;
-    }
-    fs::remove_dir(&stage).map_err(|_| "HOST_ENROLL_REFRESH_CLEANUP_UNCERTAIN")?;
+/// Replace one immutable typed snapshot via atomic rename. The journal,
+/// machine ID and signer key remain protected by root, not runner artifacts.
+fn refresh_release_snapshots(trusted: &Path, trust_pb: &[u8]) -> Result<(), String> {
+    let staging = format!(".trust-next-{}.pb", std::process::id());
+    write_protected_file(trusted, &staging, trust_pb)?;
+    fs::rename(trusted.join(staging), trusted.join("trust.pb"))
+        .map_err(|_| "HOST_ENROLL_REFRESH_UNCERTAIN")?;
     fs::File::open(trusted)
         .and_then(|file| file.sync_all())
         .map_err(|_| "HOST_ENROLL_REFRESH_UNCERTAIN")?;
@@ -217,6 +187,11 @@ pub(crate) async fn enroll(
         return Err("HOST_ENROLL_RELEASE_SHA_INVALID".into());
     }
     pinned_worker_key(worker_public_key_hex)?;
+    let public_key = (0..64)
+        .step_by(2)
+        .map(|i| u8::from_str_radix(&worker_public_key_hex[i..i + 2], 16)
+            .map_err(|_| "HOST_ENROLL_PINNED_WORKER_KEY_INVALID".to_owned()))
+        .collect::<Result<Vec<_>, _>>()?;
     if machine_id.is_empty()
         || machine_id.len() > 64
         || !machine_id
@@ -245,7 +220,7 @@ pub(crate) async fn enroll(
         Err(_) => return Err("HOST_ENROLL_TRUST_UNAVAILABLE".into()),
     };
     if refreshing {
-        validate_existing_trust_for_refresh(trusted, machine_id, worker_public_key_hex)?;
+        validate_existing_trust_for_refresh(trusted, machine_id, &public_key)?;
     }
 
     let client = reqwest::Client::builder()
@@ -319,9 +294,24 @@ pub(crate) async fn enroll(
     )
     .await?;
 
+    let snapshot = FleetNativeTrustSnapshot {
+        schema_version: 1,
+        machine_id: machine_id.to_owned(),
+        registry_pb,
+        release_set_pb: release_pb,
+        application_bundle_pb: bundle_pb,
+        selected_spec_bytes: spec,
+        pinned_worker_public_key: public_key,
+    };
+    let trust_pb = snapshot.encode_to_vec();
+    super::host_native::decode_native_trust_snapshot(&trust_pb)?;
     if refreshing {
-        validate_existing_trust_for_refresh(trusted, machine_id, worker_public_key_hex)?;
-        refresh_release_snapshots(trusted, &registry_pb, &release_pb, &bundle_pb, &spec)?;
+        validate_existing_trust_for_refresh(
+            trusted,
+            machine_id,
+            &snapshot.pinned_worker_public_key,
+        )?;
+        refresh_release_snapshots(trusted, &trust_pb)?;
         println!("host_enroll=PROTECTED_TRUST_REFRESHED");
         println!("host_machine_id={machine_id}");
         println!("host_release_set_sha256={release_digest}");
@@ -336,16 +326,7 @@ pub(crate) async fn enroll(
         .mode(0o700)
         .create(&stage)
         .map_err(|_| "HOST_ENROLL_STAGE_EXISTS_OR_UNWRITABLE")?;
-    write_protected_file(&stage, "machine-id", format!("{machine_id}\n").as_bytes())?;
-    write_protected_file(&stage, "fleet-registry.pb", &registry_pb)?;
-    write_protected_file(&stage, "release-set.pb", &release_pb)?;
-    write_protected_file(&stage, "application-bundle.pb", &bundle_pb)?;
-    write_protected_file(&stage, "desired.textproto", &spec)?;
-    write_protected_file(
-        &stage,
-        "worker-public-key.hex",
-        format!("{worker_public_key_hex}\n").as_bytes(),
-    )?;
+    write_protected_file(&stage, "trust.pb", &trust_pb)?;
     let journal = stage.join("journal");
     DirBuilder::new()
         .mode(0o700)
