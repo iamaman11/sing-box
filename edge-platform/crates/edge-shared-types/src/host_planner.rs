@@ -159,9 +159,13 @@ pub fn propose_host_transition(
     // until a distinct accepted installation target exists.
     if desired_run == FleetHostRunState::Stopped {
         return match state {
-            FleetNativeOwnerState::Running => {
-                plan(host, Stop, "STOP_TARGET_OVERRIDES_RELEASE_MISMATCH", expected, actual)
-            }
+            FleetNativeOwnerState::Running => plan(
+                host,
+                Stop,
+                "STOP_TARGET_OVERRIDES_RELEASE_MISMATCH",
+                expected,
+                actual,
+            ),
             FleetNativeOwnerState::Stopped if actual != expected => plan(
                 host,
                 Blocked,
@@ -427,7 +431,10 @@ mod tests {
         o.observed_release_sha256 = vec![2; 32];
         let p = propose_host_transition(&win, Some(&o), &[1; 32], &[3; 32], 1000);
         assert_eq!(p.step, FleetHostPlannedStep::Blocked as i32);
-        assert_eq!(p.reason_code, "STOPPED_RELEASE_MISMATCH_REQUIRES_INSTALL_TARGET");
+        assert_eq!(
+            p.reason_code,
+            "STOPPED_RELEASE_MISMATCH_REQUIRES_INSTALL_TARGET"
+        );
         assert!(!p.mutation_authorized);
         o.owner_state = FleetNativeOwnerState::Running as i32;
         let p = propose_host_transition(&win, Some(&o), &[1; 32], &[3; 32], 1000);
