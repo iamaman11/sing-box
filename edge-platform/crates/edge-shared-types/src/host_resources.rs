@@ -1140,6 +1140,93 @@ pub fn validate_vm_resource_transition_plan(
     Ok(())
 }
 
+/// Native START admission must consume the SAME immutable hierarchy as the
+/// read-only diagnostic and resource transition planner. This is a PURE scope
+/// gate, NOT a mutation authorization or an installed network health proof.
+///
+/// STOP is deliberately not routed through this function: a broken Compose
+/// policy must not prevent an emergency stop of proven owned containers.
+pub fn validate_vm_native_start_dag(
+    host: &FleetHost,
+    installed_policy: &FleetVmDesiredGraph,
+    plan: &crate::FleetVmResourceTransitionPlan,
+) -> Result<(), &'static str> {
+    use crate::{
+        FleetHostPlannedStep as Step, FleetResourceKind as Kind,
+        FleetResourceOwner as Owner,
+    };
+    validate_vm_resource_transition_plan(plan, host)?;
+    let hierarchy = derive_vm_resource_hierarchy(host, installed_policy)?;
+    let nodes = hierarchy
+        .nodes
+        .iter()
+        .map(|node| (node.resource_id.as_str(), node))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    let transitions = plan
+        .resources
+        .iter()
+        .map(|entry| (entry.resource_id.as_str(), entry))
+        .collect::<std::collections::BTreeMap<_, _>>();
+    if transitions.len() != installed_policy.resources.len() {
+        return Err("VM_START_DAG_SCOPE_INCOMPLETE");
+    }
+    let mut mutating = 0;
+    for (resource_id, transition) in &transitions {
+        let node = nodes
+            .get(resource_id)
+            .ok_or("VM_START_DAG_RESOURCE_NOT_REGISTERED")?;
+        if node.kind != Kind::DockerContainer as i32
+            || node.owner != Owner::VmRootAgent as i32
+            || node.parent_resource_id != vm_host_resource_id(host)
+            || node.dependency_ids.is_empty()
+        {
+            return Err("VM_START_DAG_OWNER_OR_PARENT_UNPROVEN");
+        }
+        let step = Step::try_from(transition.step)
+            .map_err(|_| "VM_START_DAG_STEP_INVALID")?;
+        match step {
+            Step::Noop => {}
+            Step::Start | Step::Install => {
+                mutating += 1;
+                for dependency_id in &node.dependency_ids {
+                    let dependency = nodes
+                        .get(dependency_id.as_str())
+                        .ok_or("VM_START_DAG_DEPENDENCY_UNREGISTERED")?;
+                    if dependency.owner != Owner::VmRootAgent as i32 {
+                        return Err("VM_START_DAG_DEPENDENCY_OWNER_UNPROVEN");
+                    }
+                    match Kind::try_from(dependency.kind)
+                        .map_err(|_| "VM_START_DAG_DEPENDENCY_KIND_UNRECOGNIZED")?
+                    {
+                        Kind::DockerNetwork => {
+                            if dependency.parent_resource_id != vm_host_resource_id(host) {
+                                return Err("VM_START_DAG_NETWORK_PARENT_UNPROVEN");
+                            }
+                        }
+                        Kind::DockerContainer => {
+                            let upstream = transitions
+                                .get(dependency_id.as_str())
+                                .ok_or("VM_START_DAG_CONTAINER_DEPENDENCY_NOT_IN_PLAN")?;
+                            match Step::try_from(upstream.step)
+                                .map_err(|_| "VM_START_DAG_DEPENDENCY_STEP_INVALID")?
+                            {
+                                Step::Noop | Step::Start => {}
+                                _ => return Err("VM_START_DAG_UPSTREAM_NOT_READY"),
+                            }
+                        }
+                        _ => return Err("VM_START_DAG_DEPENDENCY_KIND_UNSUPPORTED"),
+                    }
+                }
+            }
+            _ => return Err("VM_START_DAG_ACTION_NOT_START"),
+        }
+    }
+    if mutating == 0 {
+        return Err("VM_START_DAG_NO_MUTATION");
+    }
+    Ok(())
+}
+
 /// A runtime NOOP is not proof of config convergence. Use the *typed* reason
 /// from the exact same plan consumed by the native owner, never free text.
 pub fn vm_resource_requires_attention(transition: &crate::FleetVmResourceTransition) -> bool {
@@ -1267,6 +1354,64 @@ mod vm_graph_reconcile_tests {
         forged = hierarchy.clone();
         forged.nodes.push(forged.nodes[0].clone());
         assert!(validate_vm_resource_hierarchy(&forged, &host, &desired).is_err());
+    }
+
+
+    #[test]
+    fn start_dag_rejects_missing_upstream_and_sibling_mutation() {
+        use crate::{
+            FleetHostPlannedStep as Step, FleetVmResourceReason as Reason,
+            FleetVmResourceTransition, FleetVmResourceTransitionPlan,
+        };
+        let (host, graph) = sample();
+        let mut plan = FleetVmResourceTransitionPlan {
+            schema_version: 1,
+            machine_id: host.machine_id.clone(),
+            resources: host.vm_containers.iter().map(|resource| {
+                FleetVmResourceTransition {
+                    resource: Some(resource.clone()),
+                    resource_id: vm_container_resource_id(&host, resource).unwrap(),
+                    step: Step::Noop as i32,
+                    reason: Reason::RunningRuntimeOnlyConfigUnproven as i32,
+                    reason_code: "RUNNING_RUNTIME_ONLY_CONFIG_UNPROVEN".into(),
+                }
+            }).collect(),
+            ..Default::default()
+        };
+        // A single missing Line2 is admissible only when the WARP dependency
+        // is already running and its network exists in the immutable graph.
+        plan.resources[1].step = Step::Install as i32;
+        plan.resources[1].reason = Reason::ContainerAbsentInstallRequired as i32;
+        plan.resources[1].reason_code = "CONTAINER_ABSENT_INSTALL_REQUIRED".into();
+        assert_eq!(validate_vm_native_start_dag(&host, &graph, &plan), Ok(()));
+
+        // No implicit start of a missing WARP parent: a dependency is NOT
+        // silently considered ready because it exists in Git desired.
+        plan.resources[2].step = Step::Install as i32;
+        plan.resources[2].reason = Reason::ContainerAbsentInstallRequired as i32;
+        plan.resources[2].reason_code = "CONTAINER_ABSENT_INSTALL_REQUIRED".into();
+        assert_eq!(
+            validate_vm_native_start_dag(&host, &graph, &plan),
+            Err("VM_START_DAG_UPSTREAM_NOT_READY")
+        );
+        plan.resources[2].step = Step::Noop as i32;
+        plan.resources[2].reason = Reason::RunningRuntimeOnlyConfigUnproven as i32;
+        plan.resources[2].reason_code = "RUNNING_RUNTIME_ONLY_CONFIG_UNPROVEN".into();
+
+        let mut foreign = graph.clone();
+        foreign.resources[1].dependencies = vec!["foreign-mesh".into()];
+        assert!(validate_vm_native_start_dag(&host, &foreign, &plan).is_err());
+        foreign = graph.clone();
+        foreign.networks[0].attached_services.retain(|s| s != "line2-proxy");
+        assert!(validate_vm_native_start_dag(&host, &foreign, &plan).is_err());
+
+        plan.resources[1].step = Step::Stop as i32;
+        plan.resources[1].reason = Reason::ContainerRunningButTargetStopped as i32;
+        plan.resources[1].reason_code = "CONTAINER_RUNNING_BUT_TARGET_STOPPED".into();
+        assert_eq!(
+            validate_vm_native_start_dag(&host, &graph, &plan),
+            Err("VM_START_DAG_ACTION_NOT_START")
+        );
     }
 
     #[test]

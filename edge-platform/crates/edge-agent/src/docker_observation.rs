@@ -526,7 +526,10 @@ pub(crate) async fn preflight_native_vm_run(
         return Err("HOST_NATIVE_VM_RESOURCE_NO_MUTATION_REQUIRED".into());
     }
     let desired_graph = if step == FleetHostPlannedStep::Start {
-        Some(compile_native_vm_desired_graph(stack_dir, host)?)
+        let graph = compile_native_vm_desired_graph(stack_dir, host)?;
+        edge_shared_types::host_resources::validate_vm_native_start_dag(host, &graph, &plan)
+            .map_err(str::to_owned)?;
+        Some(graph)
     } else {
         // An emergency STOP must not require valid config templates.
         None
