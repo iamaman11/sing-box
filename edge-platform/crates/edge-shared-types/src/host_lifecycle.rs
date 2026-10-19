@@ -497,10 +497,12 @@ pub fn validate_unattested_native_result(
     {
         return Err("HOST_NATIVE_RESULT_CORRELATION_MISMATCH");
     }
-    let state =
-        FleetHostResultState::try_from(result.state).map_err(|_| "HOST_NATIVE_RESULT_STATE_INVALID")?;
-    if !matches!(state, FleetHostResultState::Observed | FleetHostResultState::Verified)
-        || result.observed_at_unix == 0
+    let state = FleetHostResultState::try_from(result.state)
+        .map_err(|_| "HOST_NATIVE_RESULT_STATE_INVALID")?;
+    if !matches!(
+        state,
+        FleetHostResultState::Observed | FleetHostResultState::Verified
+    ) || result.observed_at_unix == 0
         || result.physical_readback != (state == FleetHostResultState::Verified)
         || !result.error_class.is_empty()
         || result.next_action.len() > 128
@@ -681,7 +683,6 @@ mod tests {
             Err("HOST_NATIVE_RESULT_STRUCTURE_INVALID")
         );
     }
-
 
     use super::*;
     use crate::{FleetHost, HostRegistry, encode_host_registry};

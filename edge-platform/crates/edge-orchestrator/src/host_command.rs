@@ -6,8 +6,7 @@ use edge_shared_types::{
     host_lifecycle::{
         MAX_NATIVE_OBSERVATION_BYTES, decode_host_intent, decode_host_result,
         decode_native_observation, prepared_host_result, validate_host_intent,
-        validate_host_result, validate_intent_against_target,
-        validate_unattested_native_result,
+        validate_host_result, validate_intent_against_target, validate_unattested_native_result,
     },
     managed_host,
 };
@@ -439,10 +438,10 @@ pub(crate) fn run(
                 }
                 Ok(bytes)
             };
-            let intent = decode_host_intent(&read_bounded(&intent_path, 4096)?)
-                .map_err(str::to_owned)?;
-            let result = decode_host_result(&read_bounded(&result_path, 4096)?)
-                .map_err(str::to_owned)?;
+            let intent =
+                decode_host_intent(&read_bounded(&intent_path, 4096)?).map_err(str::to_owned)?;
+            let result =
+                decode_host_result(&read_bounded(&result_path, 4096)?).map_err(str::to_owned)?;
             let selected = desired
                 .hosts
                 .iter()
