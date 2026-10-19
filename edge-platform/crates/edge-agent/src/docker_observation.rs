@@ -1,5 +1,5 @@
-use std::collections::{BTreeSet, HashMap};
 use edge_shared_types::FleetVmContainer;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -226,7 +226,9 @@ pub(crate) async fn verify_owned_application_containers(
     expected: &[FleetVmContainer],
 ) -> Result<(), String> {
     let docker = docker_connection().await?;
-    owned_application_container_ids(&docker, expected).await.map(|_| ())
+    owned_application_container_ids(&docker, expected)
+        .await
+        .map(|_| ())
 }
 
 /// Native VM STOP. Only exact, independently inspected Compose-owned Docker
@@ -691,8 +693,18 @@ mod tests {
                 "line2-proxy".to_owned(),
             ),
         ]);
-        assert!(exact_application_compose_owner("vultr-line2-proxy", &valid_project, &vm_scope_test()).is_ok());
-        assert!(exact_application_compose_owner("vultr-cloudflare-mesh", &valid_project, &vm_scope_test()).is_err());
+        assert!(
+            exact_application_compose_owner("vultr-line2-proxy", &valid_project, &vm_scope_test())
+                .is_ok()
+        );
+        assert!(
+            exact_application_compose_owner(
+                "vultr-cloudflare-mesh",
+                &valid_project,
+                &vm_scope_test()
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -725,7 +737,10 @@ mod tests {
             Err("HOST_NATIVE_CONTAINER_OWNERSHIP_UNPROVEN")
         );
         labels.remove("com.docker.compose.project");
-        assert!(exact_application_compose_owner("vultr-line1-gateway", &labels, &vm_scope_test()).is_err());
+        assert!(
+            exact_application_compose_owner("vultr-line1-gateway", &labels, &vm_scope_test())
+                .is_err()
+        );
         labels.insert("com.docker.compose.project".into(), "vultr-edge".into());
         labels.insert("com.docker.compose.service".into(), "warp-egress".into());
         assert_eq!(

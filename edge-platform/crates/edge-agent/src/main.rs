@@ -161,7 +161,9 @@ fn owned_application_container_running(
     names: &[String],
     resources: &[edge_shared_types::FleetVmContainer],
 ) -> bool {
-    resources.iter().any(|resource| names.contains(&resource.container_name))
+    resources
+        .iter()
+        .any(|resource| names.contains(&resource.container_name))
 }
 
 fn native_vm_owner_state(
@@ -5388,7 +5390,12 @@ mod tests {
             FleetNativeOwnerState::Unproven
         );
         assert_eq!(
-            native_vm_owner_state(true, true, &["vultr-cloudflare-mesh".to_owned()], &vm_scope_test()),
+            native_vm_owner_state(
+                true,
+                true,
+                &["vultr-cloudflare-mesh".to_owned()],
+                &vm_scope_test()
+            ),
             FleetNativeOwnerState::Stopped
         );
     }
@@ -5399,7 +5406,10 @@ mod tests {
             "unrelated-project-db".to_owned(),
             "some-other-sing-box".to_owned(),
         ];
-        assert!(!owned_application_container_running(&foreign, &vm_scope_test()));
+        assert!(!owned_application_container_running(
+            &foreign,
+            &vm_scope_test()
+        ));
         for own in [
             "vultr-warp-egress",
             "vultr-line1-gateway",
@@ -5407,13 +5417,19 @@ mod tests {
         ] {
             let mut names = foreign.clone();
             names.push(own.to_owned());
-            assert!(owned_application_container_running(&names, &vm_scope_test()));
+            assert!(owned_application_container_running(
+                &names,
+                &vm_scope_test()
+            ));
         }
         // Names must match exactly, not by substring or prefix.
-        assert!(!owned_application_container_running(&[
-            "vultr-line1-gateway-other".into(),
-            "prefix-vultr-warp-egress".into(),
-        ], &vm_scope_test()));
+        assert!(!owned_application_container_running(
+            &[
+                "vultr-line1-gateway-other".into(),
+                "prefix-vultr-warp-egress".into(),
+            ],
+            &vm_scope_test()
+        ));
     }
 
     use super::*;
