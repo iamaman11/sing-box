@@ -347,26 +347,72 @@ fn select_scoped_vm_create(
 /// The two gateways use only an existing, owned Compose edge_net bridge.
 /// Never create/adopt Mesh or an unrelated network as a side effect of
 /// recovering one missing container.
-fn verify_scoped_gateway_compose_network(stack_dir: &Path, service: &str) -> Result<(), String> {
-    let compose = read_native_vm_compose(stack_dir)?;
-    let network = compose
-        .get("services")
-        .and_then(|services| services.get(service))
-        .and_then(|service| service.get("networks"))
-        .and_then(serde_yaml::Value::as_sequence)
-        .ok_or("HOST_VM_CREATE_NETWORK_POLICY_MISSING")?;
-    if network.len() != 1 || network[0].as_str() != Some("edge_net") {
-        return Err("HOST_VM_CREATE_NETWORK_SCOPE_INVALID".into());
-    }
-    let definition = compose
-        .get("networks")
-        .and_then(|networks| networks.get("edge_net"))
-        .ok_or("HOST_VM_CREATE_EDGE_NETWORK_NOT_DECLARED")?;
-    if definition.get("driver").and_then(serde_yaml::Value::as_str) != Some("bridge")
-        || definition.get("external").is_some()
-        || definition.get("name").is_some()
+fn verify_scoped_gateway_network_policy(
+    graph: &edge_shared_types::FleetVmDesiredGraph,
+    service: &str,
+) -> Result<(), String> {
+    // The existing native Compose effector implements exactly this network.
+    // Other Git-owned networks remain typed proposals and need their own
+    // actual native handler; never silently adopt Docker's implicit default.
+    let [network] = graph.networks.as_slice() else {
+        return Err("HOST_VM_CREATE_NETWORK_SCOPE_UNSUPPORTED".into());
+    };
+    if network.network_name != "edge_net"
+        || network.driver != "bridge"
+        || !network.attached_services.iter().any(|member| member == service)
     {
-        return Err("HOST_VM_CREATE_EDGE_NETWORK_POLICY_INVALID".into());
+        return Err("HOST_VM_CREATE_NETWORK_SCOPE_UNSUPPORTED".into());
+    }
+    Ok(())
+}
+
+/// This is an exact Docker endpoint identity, not a successful DNS lookup
+/// or public access check. No foreign/Mesh network is allowed in this native
+/// application's gateway recovery path.
+fn exact_owned_network_attachment(
+    observed: Option<&HashMap<String, bollard::models::EndpointSettings>>,
+    compose_network_name: &str,
+    expected_network_id: &str,
+) -> bool {
+    observed.is_some_and(|networks| {
+        networks.len() == 1
+            && networks
+                .get(compose_network_name)
+                .and_then(|endpoint| endpoint.network_id.as_deref())
+                == Some(expected_network_id)
+    })
+}
+
+async fn verify_vm_network_attachments(
+    docker: &Docker,
+    host: &FleetHost,
+    owned: &[OwnedVmContainer],
+    network_id: &str,
+) -> Result<(), String> {
+    let project = host
+        .vm_containers
+        .first()
+        .ok_or("HOST_VM_NETWORK_OWNER_MISSING")?
+        .compose_project
+        .as_str();
+    let name = format!("{project}_edge_net");
+    for container in owned {
+        let inspect = docker
+            .inspect_container(&container.id, None)
+            .await
+            .map_err(|_| "HOST_VM_NETWORK_CONTAINER_INSPECT_FAILED")?;
+        if inspect.id.as_deref() != Some(container.id.as_str())
+            || !exact_owned_network_attachment(
+                inspect
+                    .network_settings
+                    .as_ref()
+                    .and_then(|settings| settings.networks.as_ref()),
+                &name,
+                network_id,
+            )
+        {
+            return Err("HOST_VM_NETWORK_ATTACHMENT_UNPROVEN".into());
+        }
     }
     Ok(())
 }
@@ -477,7 +523,12 @@ pub(crate) async fn preflight_native_vm_run(
         if owned.len() + 1 != host.vm_containers.len() || owned.iter().any(|item| !item.running) {
             return Err("HOST_VM_CREATE_NEIGHBOUR_INCOMPLETE".into());
         }
-        verify_scoped_gateway_compose_network(stack_dir, service)?;
+        verify_scoped_gateway_network_policy(
+            desired_graph
+                .as_ref()
+                .ok_or("HOST_VM_CREATE_DESIRED_GRAPH_MISSING")?,
+            service,
+        )?;
         let expected = read_vm_expected_image_refs(stack_dir, &host.vm_containers)?;
         for item in &owned {
             if expected.get(&item.service) != Some(&item.image_ref) {
@@ -491,7 +542,9 @@ pub(crate) async fn preflight_native_vm_run(
             .inspect_image(missing_image)
             .await
             .map_err(|_| "HOST_VM_CREATE_LOCAL_IMAGE_UNAVAILABLE")?;
-        edge_network_id = Some(read_owned_edge_network_id(&docker, host).await?);
+        let id = read_owned_edge_network_id(&docker, host).await?;
+        verify_vm_network_attachments(&docker, host, &owned, &id).await?;
+        edge_network_id = Some(id);
     }
     if step == FleetHostPlannedStep::Stop {
         owned_vm_stop_order(&owned)?;
@@ -546,7 +599,21 @@ pub(crate) async fn apply_native_vm_run_once(
         {
             return Err("HOST_VM_CREATE_PREADMISSION_CHANGED_NO_REPLAY".into());
         }
-        verify_scoped_gateway_compose_network(stack_dir, service)?;
+        verify_scoped_gateway_network_policy(
+            plan.desired_graph
+                .as_ref()
+                .ok_or("HOST_VM_CREATE_DESIRED_GRAPH_MISSING_NO_REPLAY")?,
+            service,
+        )?;
+        verify_vm_network_attachments(
+            &docker,
+            host,
+            &owned,
+            plan.edge_network_id
+                .as_deref()
+                .ok_or("HOST_VM_CREATE_NETWORK_PRESTATE_UNPROVEN_NO_REPLAY")?,
+        )
+        .await?;
         let image_vars = super::read_exact_image_environment(stack_dir)?;
         // The image must already exist. No unbounded pull, no dependent
         // recreation and no fallback bootstrap for a single missing service.
@@ -619,10 +686,13 @@ pub(crate) async fn apply_native_vm_run_once(
     let mut after = owned_application_container_ids(&docker, &host.vm_containers).await?;
     bind_owned_vm_compose_dependencies(stack_dir, &host.vm_containers, &mut after)?;
     verify_native_vm_run_poststate(host, &plan, &after)?;
-    if let Some(expected) = plan.edge_network_id.as_deref()
-        && read_owned_edge_network_id(&docker, host).await?.as_str() != expected
-    {
-        return Err("HOST_VM_CREATE_NETWORK_CHANGED_NO_REPLAY".into());
+    if let Some(expected) = plan.edge_network_id.as_deref() {
+        if read_owned_edge_network_id(&docker, host).await?.as_str() != expected {
+            return Err("HOST_VM_CREATE_NETWORK_CHANGED_NO_REPLAY".into());
+        }
+        verify_vm_network_attachments(&docker, host, &after, expected)
+            .await
+            .map_err(|_| "HOST_VM_CREATE_NETWORK_ATTACHMENT_NO_REPLAY")?;
     }
     if let Some(graph) = &plan.desired_graph
         && compile_native_vm_desired_graph(stack_dir, host)? != *graph
@@ -2131,6 +2201,46 @@ mod vm_native_start_order_tests {
         foreign["services"]["line1-gateway"]["depends_on"] =
             serde_yaml::from_str("[cloudflare-mesh]").unwrap();
         assert!(resolve_compose_dependencies(&foreign, &selectors).is_err());
+    }
+
+    #[test]
+    fn exact_compose_network_attachment_rejects_missing_foreign_or_multiple_networks() {
+        let network_id = "a".repeat(64);
+        let mut endpoint = bollard::models::EndpointSettings::default();
+        endpoint.network_id = Some(network_id.clone());
+        let mut endpoints = HashMap::from([(
+            "vultr-edge_edge_net".to_owned(),
+            endpoint,
+        )]);
+        assert!(exact_owned_network_attachment(
+            Some(&endpoints),
+            "vultr-edge_edge_net",
+            &network_id
+        ));
+        assert!(!exact_owned_network_attachment(
+            None,
+            "vultr-edge_edge_net",
+            &network_id
+        ));
+        assert!(!exact_owned_network_attachment(
+            Some(&endpoints),
+            "foreign_edge_net",
+            &network_id
+        ));
+        assert!(!exact_owned_network_attachment(
+            Some(&endpoints),
+            "vultr-edge_edge_net",
+            &"b".repeat(64)
+        ));
+        endpoints.insert(
+            "foreign_mesh_net".into(),
+            bollard::models::EndpointSettings::default(),
+        );
+        assert!(!exact_owned_network_attachment(
+            Some(&endpoints),
+            "vultr-edge_edge_net",
+            &network_id
+        ));
     }
 
     #[test]
