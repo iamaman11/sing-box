@@ -49,6 +49,15 @@ message FleetVmContainer {
 
 // One strictly read-only Docker report from the installed root owner. This
 // does not attest an end-to-end network connection or authenticate a runner.
+// What the installed root Agent proved about the file mounted into the
+// running process. This is NOT proof of live config reload or TLS/auth.
+enum FleetVmConfigProof {
+  FLEET_VM_CONFIG_PROOF_UNPROVEN = 0;
+  FLEET_VM_CONFIG_PROOF_NOT_APPLICABLE = 1;
+  FLEET_VM_CONFIG_PROOF_NOT_RUNNING = 2;
+  FLEET_VM_CONFIG_PROOF_BOUND_RUNNING_PROCESS = 3;
+}
+
 message FleetVmResourceReadback {
   FleetVmContainer resource = 1;
   bool present = 2;
@@ -61,6 +70,10 @@ message FleetVmResourceReadback {
   uint64 restart_count = 9;
   bool restart_count_proven = 10;
   string reason_code = 11;
+  FleetVmConfigProof config_proof = 12;
+  // SHA256 of the exact root-local config file verified in the process mount
+  // namespace. Never emit the file contents or credential values.
+  bytes config_sha256 = 13;
 }
 
 message FleetVmResourceReport {

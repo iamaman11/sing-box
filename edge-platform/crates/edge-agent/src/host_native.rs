@@ -525,6 +525,7 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
     // One in-memory plan snapshot shared between pre-BEGIN admission and
     // the single native effector. No second durable state or retry loop.
     let prepared = std::cell::RefCell::new(None);
+    let prepared_replace = std::cell::RefCell::new(None);
     let result = tokio::task::block_in_place(|| {
         execute_native_host_once(
             &intent,
@@ -561,10 +562,17 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
                 }
                 FleetHostPlannedStep::Install => Ok(()),
                 FleetHostPlannedStep::ReplaceRelease => {
-                    // The legacy bundle-wide bootstrap would recreate WARP,
-                    // Line1 and Line2 even when only one resource changed.
-                    // Refuse before BEGIN until typed scoped replacement exists.
-                    Err("HOST_NATIVE_VM_REPLACE_NOT_RESOURCE_SCOPED")
+                    let request = ApplyBundleRequest::decode(bundle_pb.as_slice())
+                        .map_err(|_| "HOST_NATIVE_VM_SCOPED_BUNDLE_INVALID")?;
+                    let proposal = handle
+                        .block_on(
+                            super::docker_observation::preflight_native_vm_line2_replace(
+                                stack_dir, host, &request,
+                            ),
+                        )
+                        .map_err(|_| "HOST_NATIVE_VM_REPLACE_NOT_RESOURCE_SCOPED")?;
+                    *prepared_replace.borrow_mut() = Some(proposal);
+                    Ok(())
                 }
                 _ => Err("HOST_NATIVE_VM_STEP_NOT_IMPLEMENTED"),
             },
@@ -579,6 +587,19 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
                             stack_dir, host, proposal,
                         ))
                         .map_err(|_| "HOST_NATIVE_VM_RUN_UNCERTAIN_NO_REPLAY")
+                }
+                FleetHostPlannedStep::ReplaceRelease => {
+                    let proposal = prepared_replace
+                        .borrow_mut()
+                        .take()
+                        .ok_or("HOST_NATIVE_VM_REPLACE_PREPARED_PLAN_MISSING")?;
+                    handle
+                        .block_on(
+                            super::docker_observation::apply_native_vm_line2_replace_once(
+                                stack_dir, host, proposal,
+                            ),
+                        )
+                        .map_err(|_| "HOST_NATIVE_VM_REPLACE_UNCERTAIN_NO_REPLAY")
                 }
                 FleetHostPlannedStep::Install => {
                     let request = ApplyBundleRequest::decode(bundle_pb.as_slice())

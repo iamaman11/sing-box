@@ -1,4 +1,4 @@
-use edge_shared_types::{FleetHost, FleetHostPlannedStep, FleetVmContainer};
+use edge_shared_types::{ApplyBundleRequest, FleetHost, FleetHostPlannedStep, FleetVmContainer};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
@@ -271,13 +271,13 @@ pub(crate) async fn verify_owned_application_containers(
 #[derive(Debug)]
 pub(crate) struct NativeVmRunPlan {
     step: FleetHostPlannedStep,
-    identities: Vec<Option<(String, bool)>>,
+    identities: Vec<Option<(String, bool, String)>>,
 }
 
 fn check_owned_vm_snapshot(
     host: &FleetHost,
     owned: &[OwnedVmContainer],
-    identities: &[Option<(String, bool)>],
+    identities: &[Option<(String, bool, String)>],
 ) -> Result<(), String> {
     if host.vm_containers.len() != identities.len() {
         return Err("HOST_NATIVE_VM_SNAPSHOT_SCOPE_CHANGED".into());
@@ -288,8 +288,10 @@ fn check_owned_vm_snapshot(
             .find(|item| item.service == resource.compose_service);
         match (original, observed) {
             (None, None) => {}
-            (Some((id, was_running)), Some(current))
-                if id == &current.id && *was_running == current.running => {}
+            (Some((id, was_running, image)), Some(current))
+                if id == &current.id
+                    && *was_running == current.running
+                    && image == &current.image_ref => {}
             _ => return Err("HOST_NATIVE_VM_IDENTITY_OR_STATE_CHANGED_NO_REPLAY".into()),
         }
     }
@@ -310,7 +312,7 @@ pub(crate) async fn preflight_native_vm_run(
     ) {
         return Err("HOST_NATIVE_VM_RUN_STEP_INVALID".into());
     }
-    let readback = observe_vm_resource_report(host).await?;
+    let readback = observe_vm_resource_report(host, stack_dir).await?;
     let plan = edge_shared_types::host_resources::propose_vm_resource_transitions(host, &readback)
         .map_err(str::to_owned)?;
     let mut changed = 0;
@@ -331,7 +333,7 @@ pub(crate) async fn preflight_native_vm_run(
         .iter()
         .map(|item| {
             item.present
-                .then(|| (item.container_id.clone(), item.running))
+                .then(|| (item.container_id.clone(), item.running, item.image.clone()))
         })
         .collect::<Vec<_>>();
     let docker = docker_connection().await?;
@@ -406,6 +408,11 @@ pub(crate) async fn apply_native_vm_run_once(
             _ => return Err("HOST_NATIVE_VM_RUN_STEP_INVALID".into()),
         }
     }
+    // One exact Docker poststate for every registered resource before
+    // the existing signed host journal releases the operation gate.
+    let mut after = owned_application_container_ids(&docker, &host.vm_containers).await?;
+    bind_owned_vm_compose_dependencies(stack_dir, &host.vm_containers, &mut after)?;
+    verify_native_vm_run_poststate(host, &plan, &after)?;
     Ok(())
 }
 
@@ -493,6 +500,341 @@ fn bind_owned_vm_compose_dependencies(
         }
         container.dependencies.clone_from(expected);
     }
+    Ok(())
+}
+
+/// Compare a complete native after-image with the prepared per-resource
+/// before-image. This is proof of a single Docker transition, NOT of external
+/// TLS/auth or of the application reading new configuration bytes.
+fn verify_native_vm_run_poststate(
+    host: &FleetHost,
+    plan: &NativeVmRunPlan,
+    after: &[OwnedVmContainer],
+) -> Result<(), String> {
+    if plan.identities.len() != host.vm_containers.len() {
+        return Err("HOST_NATIVE_VM_POSTSTATE_SCOPE_MISMATCH".into());
+    }
+    let desired_running = match plan.step {
+        FleetHostPlannedStep::Start => true,
+        FleetHostPlannedStep::Stop => false,
+        _ => return Err("HOST_NATIVE_VM_POSTSTATE_STEP_UNSUPPORTED".into()),
+    };
+    let mut changes = 0;
+    for (selector, expected) in host.vm_containers.iter().zip(&plan.identities) {
+        let observed = after
+            .iter()
+            .find(|item| item.service == selector.compose_service);
+        match (expected, observed) {
+            (None, None) if !desired_running => {}
+            (Some((id, was_running, image)), Some(current))
+                if current.id == *id && current.image_ref == *image =>
+            {
+                if current.running != desired_running {
+                    return Err("HOST_NATIVE_VM_POSTSTATE_NOT_CONVERGED_NO_REPLAY".into());
+                }
+                if *was_running != desired_running {
+                    changes += 1;
+                }
+            }
+            _ => return Err("HOST_NATIVE_VM_POSTSTATE_OWNER_CHANGED_NO_REPLAY".into()),
+        }
+    }
+    if changes == 0 || after.len() > host.vm_containers.len() {
+        return Err("HOST_NATIVE_VM_POSTSTATE_CHANGE_UNPROVEN_NO_REPLAY".into());
+    }
+    Ok(())
+}
+
+/// Bounded, signed, config-only replacement. The accepted bundle may differ
+/// from the installed policy in ONE Line2 template only. All images, shared
+/// Compose, network/DNS policy, Worker credentials and Line1/WARP files must
+/// remain byte-for-byte identical. No bundle-directory rotation or global
+/// BootstrapFull is permitted.
+#[derive(Debug)]
+pub(crate) struct NativeVmLine2ReplacePlan {
+    identities: Vec<Option<(String, bool, String)>>,
+    previous_template: Vec<u8>,
+    new_template: Vec<u8>,
+    release: edge_shared_types::ApplicationBundleReleaseState,
+    expected_rendered_sha256: Vec<u8>,
+}
+
+fn exact_vm_policy_file(stack_dir: &Path, relative: &str) -> Result<Vec<u8>, String> {
+    super::validate_bundle_relative_path(relative)?;
+    let path = stack_dir.join(relative);
+    let metadata = fs::symlink_metadata(&path).map_err(|_| "HOST_NATIVE_VM_POLICY_FILE_MISSING")?;
+    if !metadata.file_type().is_file() || metadata.len() == 0 || metadata.len() > 4 * 1024 * 1024 {
+        return Err("HOST_NATIVE_VM_POLICY_FILE_UNTRUSTED".into());
+    }
+    fs::read(&path).map_err(|_| "HOST_NATIVE_VM_POLICY_FILE_UNREADABLE".into())
+}
+
+/// The active immutable bundle manifest must not silently lose a file
+/// merely because the target request omits it. Ignore only runtime-generated
+/// files owned separately by this same root Agent.
+fn installed_scoped_static_files(stack_dir: &Path) -> Result<BTreeSet<String>, String> {
+    let mut files = BTreeSet::new();
+    let mut dirs = vec![stack_dir.to_path_buf()];
+    while let Some(dir) = dirs.pop() {
+        for item in fs::read_dir(&dir).map_err(|_| "HOST_NATIVE_VM_SCOPED_LIST_UNAVAILABLE")? {
+            let item = item.map_err(|_| "HOST_NATIVE_VM_SCOPED_LIST_UNAVAILABLE")?;
+            let path = item.path();
+            let relative = path
+                .strip_prefix(stack_dir)
+                .map_err(|_| "HOST_NATIVE_VM_SCOPED_LIST_OUTSIDE_STACK")?
+                .to_str()
+                .ok_or("HOST_NATIVE_VM_SCOPED_FILE_NAME_INVALID")?
+                .replace('\\', "/");
+            let metadata = fs::symlink_metadata(&path)
+                .map_err(|_| "HOST_NATIVE_VM_SCOPED_METADATA_UNAVAILABLE")?;
+            if relative == "rendered" || relative == "certs" {
+                if !metadata.file_type().is_dir() {
+                    return Err("HOST_NATIVE_VM_SCOPED_RUNTIME_PATH_UNTRUSTED".into());
+                }
+                continue;
+            }
+            if metadata.file_type().is_dir() {
+                dirs.push(path);
+            } else if metadata.file_type().is_file() {
+                if !matches!(
+                    relative.as_str(),
+                    ".env.runtime" | ".application-release.pb"
+                ) && !files.insert(relative)
+                {
+                    return Err("HOST_NATIVE_VM_SCOPED_DUPLICATE_STATIC_FILE".into());
+                }
+            } else {
+                return Err("HOST_NATIVE_VM_SCOPED_FOREIGN_FILE_TYPE".into());
+            }
+            if files.len() > 128 || dirs.len() > 128 {
+                return Err("HOST_NATIVE_VM_SCOPED_FILE_COUNT_INVALID".into());
+            }
+        }
+    }
+    Ok(files)
+}
+
+fn select_scoped_line2_policy(
+    stack_dir: &Path,
+    request: &ApplyBundleRequest,
+) -> Result<(Vec<u8>, Vec<u8>), String> {
+    if request.stack_files.is_empty() || request.stack_files.len() > 128 {
+        return Err("HOST_NATIVE_VM_SCOPED_BUNDLE_INVALID".into());
+    }
+    let mut seen = BTreeSet::new();
+    let mut changed = None;
+    for file in &request.stack_files {
+        if !seen.insert(file.relative_path.as_str()) {
+            return Err("HOST_NATIVE_VM_SCOPED_DUPLICATE_FILE".into());
+        }
+        let original = exact_vm_policy_file(stack_dir, &file.relative_path)?;
+        if original == file.content {
+            continue;
+        }
+        if file.relative_path != "line2-proxy/config.template.json"
+            || changed.is_some()
+            || file.sensitive
+            || file.executable
+        {
+            return Err("HOST_NATIVE_VM_SCOPED_SHARED_POLICY_DRIFT".into());
+        }
+        if file.content.is_empty() || file.content.len() > 65536 {
+            return Err("HOST_NATIVE_VM_SCOPED_TEMPLATE_INVALID".into());
+        }
+        changed = Some((original, file.content.clone()));
+    }
+    if !seen.contains("docker-compose.yml")
+        || !seen.contains(".images.env")
+        || !seen.contains(".env.runtime.policy")
+        || seen.len() != installed_scoped_static_files(stack_dir)?.len()
+        || !installed_scoped_static_files(stack_dir)?
+            .iter()
+            .all(|path| seen.contains(path.as_str()))
+    {
+        return Err("HOST_NATIVE_VM_SCOPED_BUNDLE_INCOMPLETE".into());
+    }
+    changed.ok_or_else(|| "HOST_NATIVE_VM_SCOPED_NO_SINGLE_TEMPLATE_CHANGE".into())
+}
+
+fn line2_render_preview(
+    template: &[u8],
+    runtime: &BTreeMap<String, String>,
+) -> Result<Vec<u8>, String> {
+    let mut values = runtime.clone();
+    let (cert, key) = super::line2_certificate_container_paths(runtime)?;
+    values.insert("PROXY_CERT_PATH".to_owned(), cert);
+    values.insert("PROXY_KEY_PATH".to_owned(), key);
+    let mut text = std::str::from_utf8(template)
+        .map_err(|_| "HOST_NATIVE_VM_SCOPED_TEMPLATE_NOT_UTF8")?
+        .to_owned();
+    for key in super::LINE2_RUNTIME_TEMPLATE_KEYS {
+        let placeholder = format!("${{{key}}}");
+        if !text.contains(&placeholder) {
+            return Err("HOST_NATIVE_VM_SCOPED_TEMPLATE_PLACEHOLDER_MISSING".into());
+        }
+        let value = values
+            .get(key)
+            .ok_or("HOST_NATIVE_VM_SCOPED_TEMPLATE_RUNTIME_MISSING")?;
+        text = text.replace(&placeholder, value);
+    }
+    if text.contains("${") || serde_json::from_str::<serde_json::Value>(&text).is_err() {
+        return Err("HOST_NATIVE_VM_SCOPED_RENDER_INVALID".into());
+    }
+    Ok(text.into_bytes())
+}
+
+/// Root-local admission prior to BEGIN. A partial Docker stack, changed
+/// image, missing worker-projected runtime or edited unrelated policy is
+/// not a request to recreate the whole application.
+pub(crate) async fn preflight_native_vm_line2_replace(
+    stack_dir: &Path,
+    host: &FleetHost,
+    request: &ApplyBundleRequest,
+) -> Result<NativeVmLine2ReplacePlan, String> {
+    let (bundle_id, digest) = super::validate_digest_bound_bundle_request(request)?;
+    if !host
+        .vm_containers
+        .iter()
+        .any(|item| item.compose_service == "line2-proxy")
+    {
+        return Err("HOST_NATIVE_VM_SCOPED_LINE2_NOT_REGISTERED".into());
+    }
+    let previous_release = super::read_application_release(stack_dir)
+        .ok_or("HOST_NATIVE_VM_SCOPED_PREVIOUS_RELEASE_UNPROVEN")?;
+    if previous_release.bundle_digest == digest {
+        return Err("HOST_NATIVE_VM_SCOPED_RELEASE_ALREADY_INSTALLED".into());
+    }
+    let (previous_template, new_template) = select_scoped_line2_policy(stack_dir, request)?;
+    let runtime = super::read_typed_runtime_environment(stack_dir)?;
+    let rendered = line2_render_preview(&new_template, &runtime)?;
+    let docker = docker_connection().await?;
+    let mut owned = owned_application_container_ids(&docker, &host.vm_containers).await?;
+    if owned.len() != host.vm_containers.len() || owned.iter().any(|item| !item.running) {
+        return Err("HOST_NATIVE_VM_SCOPED_ALL_OWNED_CONTAINERS_MUST_RUN".into());
+    }
+    bind_owned_vm_compose_dependencies(stack_dir, &host.vm_containers, &mut owned)?;
+    owned_vm_start_order(&owned)?;
+    let image_refs = read_vm_expected_image_refs(stack_dir, &host.vm_containers)?;
+    if owned
+        .iter()
+        .any(|item| image_refs.get(&item.service) != Some(&item.image_ref))
+    {
+        return Err("HOST_NATIVE_VM_SCOPED_IMAGE_DRIFT".into());
+    }
+    verify_running_container_config_binding(
+        "vultr-line2-proxy",
+        &stack_dir.join("rendered/line2-proxy.json"),
+    )
+    .await?;
+    let identities = host
+        .vm_containers
+        .iter()
+        .map(|selector| {
+            owned
+                .iter()
+                .find(|item| item.service == selector.compose_service)
+                .map(|item| (item.id.clone(), item.running, item.image_ref.clone()))
+        })
+        .collect();
+    Ok(NativeVmLine2ReplacePlan {
+        identities,
+        previous_template,
+        new_template,
+        release: edge_shared_types::ApplicationBundleReleaseState {
+            schema_version: 1,
+            bundle_id,
+            bundle_digest: digest,
+        },
+        expected_rendered_sha256: ring::digest::digest(&ring::digest::SHA256, &rendered)
+            .as_ref()
+            .to_vec(),
+    })
+}
+
+/// One mutation authority and one existing journal. Compose is the native
+/// declarative Docker driver for a scoped --no-deps Line2 replacement; it may
+/// recreate ONLY Line2. The before/after Docker IDs of Line1 and WARP must
+/// match, and the mounted new config must match Worker-owned runtime values.
+pub(crate) async fn apply_native_vm_line2_replace_once(
+    stack_dir: &Path,
+    host: &FleetHost,
+    plan: NativeVmLine2ReplacePlan,
+) -> Result<(), String> {
+    let docker = docker_connection().await?;
+    let mut before = owned_application_container_ids(&docker, &host.vm_containers).await?;
+    bind_owned_vm_compose_dependencies(stack_dir, &host.vm_containers, &mut before)?;
+    check_owned_vm_snapshot(host, &before, &plan.identities)?;
+    if exact_vm_policy_file(stack_dir, "line2-proxy/config.template.json")?
+        != plan.previous_template
+    {
+        return Err("HOST_NATIVE_VM_SCOPED_PRESTATE_CHANGED_NO_REPLAY".into());
+    }
+    let runtime = super::read_typed_runtime_environment(stack_dir)?;
+    let rendered = line2_render_preview(&plan.new_template, &runtime)?;
+    if ring::digest::digest(&ring::digest::SHA256, &rendered).as_ref()
+        != plan.expected_rendered_sha256.as_slice()
+    {
+        return Err("HOST_NATIVE_VM_SCOPED_RENDER_CHANGED_NO_REPLAY".into());
+    }
+    let template_path = stack_dir.join("line2-proxy/config.template.json");
+    let candidate_path = stack_dir.join("line2-proxy/config.template.next");
+    if candidate_path.exists() {
+        return Err("HOST_NATIVE_VM_SCOPED_STAGING_EXISTS_NO_REPLAY".into());
+    }
+    // BEGIN already persisted by the shared native journal. Any failed write,
+    // Compose ACK or poststate is UNKNOWN; never restore/retry implicitly.
+    fs::write(&candidate_path, &plan.new_template)
+        .map_err(|_| "HOST_NATIVE_VM_SCOPED_WRITE_UNCERTAIN_NO_REPLAY")?;
+    super::set_bundle_file_permissions(&candidate_path, false, false)
+        .map_err(|_| "HOST_NATIVE_VM_SCOPED_PERMISSIONS_UNCERTAIN_NO_REPLAY")?;
+    fs::rename(&candidate_path, &template_path)
+        .map_err(|_| "HOST_NATIVE_VM_SCOPED_ACTIVATE_UNCERTAIN_NO_REPLAY")?;
+    fs::File::open(stack_dir.join("line2-proxy"))
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| "HOST_NATIVE_VM_SCOPED_SYNC_UNCERTAIN_NO_REPLAY")?;
+    super::render_line2_runtime(stack_dir, &runtime)
+        .map_err(|_| "HOST_NATIVE_VM_SCOPED_RENDER_UNCERTAIN_NO_REPLAY")?;
+    let images = super::read_exact_image_environment(stack_dir)?;
+    super::start_line2_proxy(stack_dir, &images)
+        .map_err(|_| "HOST_NATIVE_VM_SCOPED_DOCKER_UNCERTAIN_NO_REPLAY")?;
+    let after = owned_application_container_ids(&docker, &host.vm_containers).await?;
+    if after.len() != host.vm_containers.len() {
+        return Err("HOST_NATIVE_VM_SCOPED_POSTSTATE_MISSING_NO_REPLAY".into());
+    }
+    for (selector, earlier) in host.vm_containers.iter().zip(&plan.identities) {
+        let (prior_id, prior_running, prior_image) = earlier
+            .as_ref()
+            .ok_or("HOST_NATIVE_VM_SCOPED_PRESTATE_IDENTITY_MISSING")?;
+        let current = after
+            .iter()
+            .find(|item| item.service == selector.compose_service)
+            .ok_or("HOST_NATIVE_VM_SCOPED_POSTSTATE_OWNER_MISSING_NO_REPLAY")?;
+        if !current.running || !*prior_running || current.image_ref != *prior_image {
+            return Err("HOST_NATIVE_VM_SCOPED_POSTSTATE_INCORRECT_NO_REPLAY".into());
+        }
+        if selector.compose_service == "line2-proxy" {
+            if current.id == *prior_id {
+                return Err("HOST_NATIVE_VM_SCOPED_LINE2_NOT_RECREATED_NO_REPLAY".into());
+            }
+        } else if current.id != *prior_id {
+            return Err("HOST_NATIVE_VM_SCOPED_NEIGHBOUR_CHANGED_NO_REPLAY".into());
+        }
+    }
+    verify_running_container_config_binding(
+        "vultr-line2-proxy",
+        &stack_dir.join("rendered/line2-proxy.json"),
+    )
+    .await
+    .map_err(|_| "HOST_NATIVE_VM_SCOPED_CONFIG_POSTSTATE_UNPROVEN_NO_REPLAY")?;
+    let bytes = fs::read(stack_dir.join("rendered/line2-proxy.json"))
+        .map_err(|_| "HOST_NATIVE_VM_SCOPED_CONFIG_POSTSTATE_UNREADABLE")?;
+    if ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref()
+        != plan.expected_rendered_sha256.as_slice()
+    {
+        return Err("HOST_NATIVE_VM_SCOPED_CONFIG_HASH_MISMATCH_NO_REPLAY".into());
+    }
+    super::write_application_release(stack_dir, &plan.release)
+        .map_err(|_| "HOST_NATIVE_VM_SCOPED_RELEASE_UNCERTAIN_NO_REPLAY")?;
     Ok(())
 }
 
@@ -711,7 +1053,11 @@ mod vm_native_start_order_tests {
             }],
             ..Default::default()
         };
-        let before = vec![Some(("a".repeat(64), false))];
+        let before = vec![Some((
+            "a".repeat(64),
+            false,
+            "ghcr.io/example/app@sha256:".to_owned() + &"a".repeat(64),
+        ))];
         let observed = vec![item("line2-proxy", &[])];
         assert!(check_owned_vm_snapshot(&host, &observed, &before).is_err());
         let mut matching = observed;
@@ -719,6 +1065,112 @@ mod vm_native_start_order_tests {
         assert!(check_owned_vm_snapshot(&host, &matching, &before).is_ok());
         matching[0].running = true;
         assert!(check_owned_vm_snapshot(&host, &matching, &before).is_err());
+    }
+
+    #[test]
+    fn start_and_stop_require_exact_scoped_poststate() {
+        let host = FleetHost {
+            vm_containers: vec![
+                FleetVmContainer {
+                    container_name: "vultr-line1-gateway".into(),
+                    compose_project: "vultr-edge".into(),
+                    compose_service: "line1-gateway".into(),
+                },
+                FleetVmContainer {
+                    container_name: "vultr-line2-proxy".into(),
+                    compose_project: "vultr-edge".into(),
+                    compose_service: "line2-proxy".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        let mut before = vec![item("line1-gateway", &[]), item("line2-proxy", &[])];
+        before[0].id = "1".repeat(64);
+        before[1].id = "2".repeat(64);
+        before[0].running = true;
+        let snapshot = before
+            .iter()
+            .map(|item| Some((item.id.clone(), item.running, item.image_ref.clone())))
+            .collect::<Vec<_>>();
+        let start = NativeVmRunPlan {
+            step: FleetHostPlannedStep::Start,
+            identities: snapshot,
+        };
+        assert!(verify_native_vm_run_poststate(&host, &start, &before).is_err());
+        let mut after = before.clone();
+        after[1].running = true;
+        assert!(verify_native_vm_run_poststate(&host, &start, &after).is_ok());
+        after[0].id = "3".repeat(64);
+        assert!(verify_native_vm_run_poststate(&host, &start, &after).is_err());
+        after[0].id = "1".repeat(64);
+        after[0].image_ref = "foreign:latest".into();
+        assert!(verify_native_vm_run_poststate(&host, &start, &after).is_err());
+        let stop = NativeVmRunPlan {
+            step: FleetHostPlannedStep::Stop,
+            identities: vec![
+                Some((before[0].id.clone(), true, before[0].image_ref.clone())),
+                Some((before[1].id.clone(), true, before[1].image_ref.clone())),
+            ],
+        };
+        let mut stopped = before;
+        stopped[0].running = false;
+        assert!(verify_native_vm_run_poststate(&host, &stop, &stopped).is_ok());
+    }
+
+    #[test]
+    fn scoped_template_update_rejects_shared_file_change_and_missing_manifest() {
+        use edge_shared_types::BundleFile;
+        let root = std::env::temp_dir().join(format!(
+            "sing-box-scoped-manifest-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir_all(root.join("line2-proxy")).unwrap();
+        fs::write(root.join("docker-compose.yml"), b"services: {}\n").unwrap();
+        fs::write(root.join(".images.env"), b"pinned-image\n").unwrap();
+        fs::write(root.join(".env.runtime.policy"), b"policy\n").unwrap();
+        fs::write(
+            root.join("line2-proxy/config.template.json"),
+            b"old-template\n",
+        )
+        .unwrap();
+        let files = [
+            ("docker-compose.yml", b"services: {}\n".as_slice()),
+            (".images.env", b"pinned-image\n".as_slice()),
+            (".env.runtime.policy", b"policy\n".as_slice()),
+            (
+                "line2-proxy/config.template.json",
+                b"new-template\n".as_slice(),
+            ),
+        ];
+        let mut request = ApplyBundleRequest {
+            stack_files: files
+                .iter()
+                .map(|(path, content)| BundleFile {
+                    relative_path: (*path).into(),
+                    content: content.to_vec(),
+                    ..Default::default()
+                })
+                .collect(),
+            ..Default::default()
+        };
+        assert!(select_scoped_line2_policy(&root, &request).is_ok());
+        request.stack_files.pop();
+        assert!(select_scoped_line2_policy(&root, &request).is_err());
+        request.stack_files.push(BundleFile {
+            relative_path: "line2-proxy/config.template.json".into(),
+            content: b"new-template\n".to_vec(),
+            ..Default::default()
+        });
+        request.stack_files[1].content = b"changed-image\n".to_vec();
+        assert!(select_scoped_line2_policy(&root, &request).is_err());
+        request.stack_files[1].content = b"pinned-image\n".to_vec();
+        request.stack_files[3].relative_path = "line1-gateway/config.template.json".into();
+        assert!(select_scoped_line2_policy(&root, &request).is_err());
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]
@@ -775,8 +1227,9 @@ fn native_running_health_reason(
 /// Never read or emit environment, credentials, mount contents or Docker logs.
 pub(crate) async fn observe_vm_resource_report(
     host: &edge_shared_types::FleetHost,
+    stack_dir: &Path,
 ) -> Result<edge_shared_types::FleetVmResourceReport, String> {
-    use edge_shared_types::{FleetVmResourceReadback, FleetVmResourceReport};
+    use edge_shared_types::{FleetVmConfigProof, FleetVmResourceReadback, FleetVmResourceReport};
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| "HOST_VM_RESOURCES_CLOCK_UNAVAILABLE")?
@@ -787,6 +1240,11 @@ pub(crate) async fn observe_vm_resource_report(
         let mut row = FleetVmResourceReadback {
             resource: Some(resource.clone()),
             reason_code: "DOCKER_UNAVAILABLE".to_owned(),
+            config_proof: if resource.compose_service == "warp-egress" {
+                FleetVmConfigProof::NotApplicable as i32
+            } else {
+                FleetVmConfigProof::NotRunning as i32
+            },
             ..Default::default()
         };
         if let Some(docker) = &docker {
@@ -856,6 +1314,35 @@ pub(crate) async fn observe_vm_resource_report(
                         }
                     }
                 }
+            }
+        }
+        if row.ownership_proven
+            && row.running_proven
+            && row.running
+            && matches!(
+                resource.compose_service.as_str(),
+                "line1-gateway" | "line2-proxy"
+            )
+        {
+            let name = resource.compose_service.as_str();
+            let config = stack_dir.join(format!("rendered/{name}.json"));
+            row.config_proof = FleetVmConfigProof::Unproven as i32;
+            // Bounded, root-local file read. Any race or missing bind remains
+            // UNPROVEN; no secret-bearing config bytes leave the owner.
+            if let Ok(metadata) = fs::symlink_metadata(&config)
+                && metadata.file_type().is_file()
+                && metadata.len() > 0
+                && metadata.len() <= 4 * 1024 * 1024
+                && let Ok(before) = fs::read(&config)
+                && verify_running_container_config_binding(&resource.container_name, &config)
+                    .await
+                    .is_ok()
+                && fs::read(&config).is_ok_and(|after| after == before)
+            {
+                row.config_proof = FleetVmConfigProof::BoundRunningProcess as i32;
+                row.config_sha256 = ring::digest::digest(&ring::digest::SHA256, &before)
+                    .as_ref()
+                    .to_vec();
             }
         }
         resources.push(row);

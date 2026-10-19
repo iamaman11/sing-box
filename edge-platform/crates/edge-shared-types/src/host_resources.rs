@@ -1,6 +1,8 @@
 //! One typed, bounded VM resource diagnostic. Data from the runner is
 //! STRUCTURAL EVIDENCE only, not authenticated native owner attestation.
-use crate::{FleetHost, FleetHostKind, FleetVmResourceReadback, FleetVmResourceReport};
+use crate::{
+    FleetHost, FleetHostKind, FleetVmConfigProof, FleetVmResourceReadback, FleetVmResourceReport,
+};
 use prost::Message;
 
 pub const MAX_VM_RESOURCE_REPORT_BYTES: usize = 32768;
@@ -44,6 +46,7 @@ pub fn validate_vm_resource_report(
             || (row.ownership_proven && !valid_container_id(&row.container_id))
             || (!row.ownership_proven && !row.container_id.is_empty())
             || (row.restart_count != 0 && !row.restart_count_proven)
+            || !config_proof_consistent(row, expected)
             || !reason_consistent(row)
         {
             return Err("VM_RESOURCE_REPORT_EVIDENCE_INVALID");
@@ -54,6 +57,33 @@ pub fn validate_vm_resource_report(
 
 fn valid_container_id(value: &str) -> bool {
     value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit())
+}
+
+fn config_proof_consistent(
+    row: &FleetVmResourceReadback,
+    expected: &crate::FleetVmContainer,
+) -> bool {
+    let proof = FleetVmConfigProof::try_from(row.config_proof);
+    let digest_valid =
+        row.config_sha256.len() == 32 && row.config_sha256.iter().any(|byte| *byte != 0);
+    match proof {
+        Ok(FleetVmConfigProof::Unproven) => row.config_sha256.is_empty(),
+        Ok(FleetVmConfigProof::NotApplicable) => {
+            expected.compose_service == "warp-egress" && row.config_sha256.is_empty()
+        }
+        Ok(FleetVmConfigProof::NotRunning) => !row.running && row.config_sha256.is_empty(),
+        Ok(FleetVmConfigProof::BoundRunningProcess) => {
+            matches!(
+                expected.compose_service.as_str(),
+                "line1-gateway" | "line2-proxy"
+            ) && row.present
+                && row.ownership_proven
+                && row.running_proven
+                && row.running
+                && digest_valid
+        }
+        Err(_) => false,
+    }
 }
 
 fn reason_consistent(row: &FleetVmResourceReadback) -> bool {
@@ -172,6 +202,12 @@ mod tests {
         report.resources[0].reason_code = "HEALTHY".into();
         assert!(validate_vm_resource_report(&report, &host).is_err());
         report = fixture().1;
+        report.resources[0].config_proof = FleetVmConfigProof::BoundRunningProcess as i32;
+        assert!(validate_vm_resource_report(&report, &host).is_err());
+        report.resources[0].config_sha256 = vec![7; 32];
+        assert!(validate_vm_resource_report(&report, &host).is_err());
+        report.resources[0].config_proof = FleetVmConfigProof::Unproven as i32;
+        report.resources[0].config_sha256.clear();
         report.resources[0].reason_code = "HEALTH_STARTING".into();
         assert!(validate_vm_resource_report(&report, &host).is_err());
         report.resources[0].health = "STARTING".into();

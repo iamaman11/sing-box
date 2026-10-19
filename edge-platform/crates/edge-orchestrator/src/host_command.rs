@@ -466,7 +466,7 @@ pub(crate) fn run(
                         .as_ref()
                         .ok_or("HOST_VM_RESOURCES_IDENTITY_MISSING")?;
                     println!(
-                        "host_vm_resource={} reason={} step={:?} plan_reason={} present={} owned={} running={} running_proven={} image={} health={} restarts={}",
+                        "host_vm_resource={} reason={} step={:?} plan_reason={} present={} owned={} running={} running_proven={} image={} health={} config_proof={:?} config_sha256={} restarts={}",
                         identity.container_name,
                         resource.reason_code,
                         edge_shared_types::FleetHostPlannedStep::try_from(proposal.step)
@@ -478,6 +478,17 @@ pub(crate) fn run(
                         resource.running_proven,
                         resource.image,
                         resource.health,
+                        edge_shared_types::FleetVmConfigProof::try_from(resource.config_proof)
+                            .map_err(|_| "HOST_VM_CONFIG_PROOF_INVALID")?,
+                        if resource.config_sha256.is_empty() {
+                            "UNPROVEN".to_owned()
+                        } else {
+                            resource
+                                .config_sha256
+                                .iter()
+                                .map(|byte| format!("{byte:02x}"))
+                                .collect::<String>()
+                        },
                         if resource.restart_count_proven {
                             resource.restart_count.to_string()
                         } else {
