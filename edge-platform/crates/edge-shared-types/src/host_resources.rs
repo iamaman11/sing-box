@@ -739,11 +739,15 @@ mod tests {
         report.installed_policy_graph = Some(graph.clone());
         assert!(validate_vm_resource_report(&report, &host).is_ok());
         let mut foreign = graph.clone();
-        foreign.networks[0].attached_services.push("foreign-mesh".into());
+        foreign.networks[0]
+            .attached_services
+            .push("foreign-mesh".into());
         report.installed_policy_graph = Some(foreign);
         assert!(validate_vm_resource_report(&report, &host).is_err());
         let mut cyclic = graph;
-        cyclic.resources[0].dependencies.push(resource.compose_service);
+        cyclic.resources[0]
+            .dependencies
+            .push(resource.compose_service);
         report.installed_policy_graph = Some(cyclic);
         assert!(validate_vm_resource_report(&report, &host).is_err());
         report.installed_policy_graph = None;

@@ -552,8 +552,14 @@ pub(crate) fn run(
                         .as_ref()
                         .ok_or("HOST_VM_RESOURCES_IDENTITY_MISSING")?;
                     let resource_id = proposal.resource_id.as_str();
-                    let dependencies = installed_hierarchy.as_ref()
-                        .and_then(|hierarchy| hierarchy.nodes.iter().find(|node| node.resource_id == resource_id))
+                    let dependencies = installed_hierarchy
+                        .as_ref()
+                        .and_then(|hierarchy| {
+                            hierarchy
+                                .nodes
+                                .iter()
+                                .find(|node| node.resource_id == resource_id)
+                        })
                         .map(|node| node.dependency_ids.join(","))
                         .unwrap_or_else(|| "UNPROVEN".to_owned());
                     println!(
