@@ -802,8 +802,15 @@ def test_native_host_readonly_control_boundary(router: str) -> None:
         "Deep VM diagnostics must use exact bounded root-owned resource protobuf and never raw Docker socket",
     )
     require(
-        'VM containers (Rust-validated; runner copy UNAUTHENTICATED; no mutation authority)' in peer_report
-        and 'host_vm_resources_origin=RUNNER_COPIED_UNAUTHENTICATED
+        "VM containers (Rust-validated; runner copy UNAUTHENTICATED; no mutation authority)" in peer_report
+        and "VM containers: UNPROVEN" in peer_report
+        and "host_vm_resources_origin=RUNNER_COPIED_UNAUTHENTICATED" in peer_report
+        and "host_vm_resources_count=" in peer_report
+        and "host_vm_resource=" in peer_report,
+        "Issue #1 must show bounded typed VM container status or explicit UNPROVEN",
+    )
+    require(
+        "host-observe $current" in owner
         and 'local host-observe > "${output}"' in owner
         and "actions/upload-artifact@v4" in owner
         and "native-readback-${{ inputs.machine_id }}-${{ inputs.source_comment_id }}" in owner
