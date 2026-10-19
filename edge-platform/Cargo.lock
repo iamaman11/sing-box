@@ -316,6 +316,7 @@ dependencies = [
  "futures-util",
  "prost",
  "ring",
+ "reqwest",
  "rtnetlink",
  "serde",
  "serde_json",
