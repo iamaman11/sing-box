@@ -507,6 +507,8 @@ where
         native_machine_id,
         native_owner_kind,
         &bound.runtime_release_sha256,
+        step,
+        &before.observed_release_sha256,
         now_unix,
         protected_journal_dir,
         observe,
@@ -541,6 +543,8 @@ fn finish_after_protected_owner_check_once<F>(
     native_machine_id: &str,
     native_owner_kind: i32,
     expected_runtime_digest: &[u8],
+    executed_step: crate::FleetHostPlannedStep,
+    previous_runtime_digest: &[u8],
     now_unix: u64,
     journal_dir: &Path,
     native_readback: F,
@@ -602,8 +606,19 @@ where
         FleetHostKind::Vm => FleetNativeReleaseProof::ApplicationBundle,
         FleetHostKind::Unspecified => return Err("HOST_NATIVE_KIND_INVALID"),
     };
+    // STOP must preserve the installed release, not fabricate activation of
+    // the requested ReleaseSet. The planner intentionally prioritizes STOP
+    // over release drift. Every other mutation must converge to new bytes.
+    let poststate_release = if executed_step == crate::FleetHostPlannedStep::Stop {
+        if previous_runtime_digest.len() != 32 {
+            return Err("HOST_NATIVE_PRESTATE_RELEASE_UNPROVEN");
+        }
+        previous_runtime_digest
+    } else {
+        expected_runtime_digest
+    };
     if observed.release_proof != expected_proof as i32
-        || observed.observed_release_sha256 != expected_runtime_digest
+        || observed.observed_release_sha256 != poststate_release
     {
         return Err("HOST_NATIVE_RELEASE_POSTSTATE_MISMATCH");
     }
@@ -631,7 +646,13 @@ where
         desired_sha256: intent.desired_sha256.clone(),
         observed_at_unix: observed.observed_at_unix,
         error_class: String::new(),
-        next_action: "NONE".to_owned(),
+        next_action: if executed_step == crate::FleetHostPlannedStep::Stop
+            && previous_runtime_digest != expected_runtime_digest
+        {
+            "STOPPED_RELEASE_DRIFT_REQUIRES_INSTALL_TARGET".to_owned()
+        } else {
+            "NONE".to_owned()
+        },
         physical_readback: true,
     };
     // Only an existing protected native owner can reach this completion.
@@ -849,6 +870,8 @@ mod tests {
                 "vm-one",
                 FleetHostKind::Vm as i32,
                 &[4; 32],
+                FleetHostPlannedStep::Start,
+                &[4; 32],
                 1020,
                 &dir,
                 || Ok(wrong_observation)
@@ -863,6 +886,8 @@ mod tests {
                 &registry,
                 "vm-one",
                 FleetHostKind::Vm as i32,
+                &[4; 32],
+                FleetHostPlannedStep::Start,
                 &[4; 32],
                 1020,
                 &dir,
@@ -882,6 +907,8 @@ mod tests {
             "vm-one",
             FleetHostKind::Vm as i32,
             &[4; 32],
+            FleetHostPlannedStep::Start,
+            &[4; 32],
             1020,
             &dir,
             || Ok(ready_observation),
@@ -900,6 +927,86 @@ mod tests {
             call(&second, &next_authorization).unwrap().state,
             FleetHostResultState::Authorized as i32
         );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn stop_with_release_drift_preserves_actual_bundle_and_explains_next_action() {
+        use crate::host_lifecycle::host_authorization_payload;
+        use crate::{FleetHostMode, FleetHostRunState, FleetHostTarget, FleetHostKind, managed_host};
+        let rng = SystemRandom::new();
+        let pair = Ed25519KeyPair::from_pkcs8(
+            Ed25519KeyPair::generate_pkcs8(&rng).unwrap().as_ref(),
+        ).unwrap();
+        let registry = HostRegistry {
+            schema_version: 1,
+            hosts: vec![FleetHost {
+                machine_id: "vm-stop".into(),
+                kind: FleetHostKind::Vm as i32,
+                owner: Some(managed_host::Owner::VmMachineId("vm-stop".into())),
+                windows_runner_label: String::new(),
+                desired_spec_path: "infra/production/production.textproto".into(),
+                target: Some(FleetHostTarget {
+                    run_state: FleetHostRunState::Stopped as i32,
+                    windows_mode: FleetHostMode::Unspecified as i32,
+                }),
+            }],
+        };
+        let intent = FleetHostIntent {
+            schema_version: 1,
+            machine_id: "vm-stop".into(),
+            kind: FleetHostKind::Vm as i32,
+            resource_id: "sing-box".into(),
+            operation_id: "issue1-comment-800".into(),
+            action: FleetHostAction::Apply as i32,
+            registry_sha256: vec![1; 32],
+            desired_sha256: vec![2; 32],
+            release_set_sha256: vec![3; 32],
+            requested_mode: FleetHostMode::Unspecified as i32,
+            requested_at_unix: 1000,
+        };
+        let mut auth = FleetHostAuthorization {
+            schema_version: 1,
+            key_id: "worker-test".into(),
+            operation_id: intent.operation_id.clone(),
+            issued_at_unix: 1000,
+            expires_at_unix: 1100,
+            ed25519_signature: Vec::new(),
+        };
+        auth.ed25519_signature = pair.sign(&host_authorization_payload(&intent, &auth))
+            .as_ref().to_vec();
+        let dir = std::env::temp_dir().join(format!(
+            "sing-box-stop-drift-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos(),
+        ));
+        fs::create_dir(&dir).unwrap();
+        admit_after_protected_owner_check_once(
+            &intent, &auth, &registry, &[1; 32], &[2; 32], &[3; 32],
+            pair.public_key().as_ref(), "vm-stop", FleetHostKind::Vm as i32,
+            1020, &dir,
+        ).unwrap();
+        let post = crate::FleetNativeObservation {
+            schema_version: 1,
+            host_kind: FleetHostKind::Vm as i32,
+            observed_at_unix: 1020,
+            owner_state: crate::FleetNativeOwnerState::Stopped as i32,
+            release_proof: crate::FleetNativeReleaseProof::ApplicationBundle as i32,
+            observed_release_sha256: vec![4; 32],
+            runtime_ready: false,
+            runtime_ready_proven: true,
+            reason_codes: vec![],
+        };
+        // Candidate digest differs from the running release that was stopped.
+        // Successful STOP must not pretend that a new release was installed.
+        let done = finish_after_protected_owner_check_once(
+            &intent, &registry, "vm-stop", FleetHostKind::Vm as i32,
+            &[5; 32], FleetHostPlannedStep::Stop, &[4; 32],
+            1020, &dir, || Ok(post.clone()),
+        ).unwrap();
+        assert_eq!(done.state, FleetHostResultState::Verified as i32);
+        assert_eq!(done.next_action, "STOPPED_RELEASE_DRIFT_REQUIRES_INSTALL_TARGET");
+        assert!(!native_scope_pending_path(&dir, &intent).exists());
         fs::remove_dir_all(&dir).unwrap();
     }
 
