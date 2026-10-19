@@ -23,6 +23,8 @@ pub fn validate_vm_resource_report(
     for (row, expected) in report.resources.iter().zip(host.vm_containers.iter()) {
         if row.resource.as_ref() != Some(expected)
             || row.image.len() > 256
+            || !row.image.bytes().all(|b| b.is_ascii_alphanumeric()
+                || matches!(b, b'/' | b':' | b'.' | b'_' | b'-' | b'@'))
             || row.health.len() > 32
             || !row.health.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
             || (row.present && !row.ownership_proven && (!row.container_id.is_empty()

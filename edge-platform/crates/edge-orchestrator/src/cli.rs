@@ -117,6 +117,9 @@ pub(crate) enum HostCommand {
         machine_id: String,
         #[arg(long)]
         observation_path: PathBuf,
+        /// Internal, runner-copied VM diagnostic; never a native receipt.
+        #[arg(long)]
+        resources_path: Option<PathBuf>,
     },
     /// Internal-only correlation of two runner-copied protobufs. Neither
     /// artifact authenticates SYSTEM/root or promotes a physical receipt.

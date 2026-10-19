@@ -331,6 +331,7 @@ pub(crate) fn run(
         HostCommand::Readback {
             machine_id,
             observation_path,
+            resources_path,
         } => {
             let selected = desired
                 .hosts
@@ -409,6 +410,58 @@ pub(crate) fn run(
                 "host_plan_mutation_authorized={}",
                 proposed.mutation_authorized
             );
+            if let Some(path) = resources_path {
+                if selected.kind != ManagedHostKind::Vm as i32 {
+                    return Err("HOST_VM_RESOURCES_ON_NON_VM".to_owned());
+                }
+                let meta = std::fs::symlink_metadata(&path)
+                    .map_err(|_| "HOST_VM_RESOURCES_TRANSPORT_MISSING")?;
+                if !meta.file_type().is_file()
+                    || meta.len() == 0
+                    || meta.len() > edge_shared_types::host_resources::MAX_VM_RESOURCE_REPORT_BYTES as u64
+                {
+                    return Err("HOST_VM_RESOURCES_TRANSPORT_INVALID".into());
+                }
+                let mut bytes = Vec::new();
+                File::open(&path)
+                    .map_err(|_| "HOST_VM_RESOURCES_TRANSPORT_UNREADABLE")?
+                    .take(edge_shared_types::host_resources::MAX_VM_RESOURCE_REPORT_BYTES as u64 + 1)
+                    .read_to_end(&mut bytes)
+                    .map_err(|_| "HOST_VM_RESOURCES_TRANSPORT_UNREADABLE")?;
+                let report = edge_shared_types::host_resources::decode_vm_resource_report(
+                    &bytes,
+                    selected,
+                ).map_err(str::to_owned)?;
+                if report.observed_at_unix > now.saturating_add(60)
+                    || now.saturating_sub(report.observed_at_unix) > 300
+                {
+                    return Err("HOST_VM_RESOURCES_READBACK_STALE".into());
+                }
+                let problems = report.resources.iter()
+                    .filter(|entry| entry.reason_code != "RUNNING")
+                    .count();
+                println!("host_vm_resources_schema=1");
+                println!("host_vm_resources_count={}", report.resources.len());
+                println!("host_vm_resources_problem_count={problems}");
+                for resource in &report.resources {
+                    let identity = resource.resource.as_ref()
+                        .ok_or("HOST_VM_RESOURCES_IDENTITY_MISSING")?;
+                    println!(
+                        "host_vm_resource={} reason={} present={} owned={} running={} running_proven={} image={} health={} restarts={}",
+                        identity.container_name, resource.reason_code,
+                        resource.present, resource.ownership_proven,
+                        resource.running, resource.running_proven,
+                        resource.image, resource.health,
+                        if resource.restart_count_proven {
+                            resource.restart_count.to_string()
+                        } else {
+                            "UNPROVEN".to_owned()
+                        }
+                    );
+                }
+                println!("host_vm_resources_origin=RUNNER_COPIED_UNAUTHENTICATED");
+                println!("host_vm_resources_authorize_mutation=false");
+            }
             println!("host_native_readback_source=RUNNER_COPIED_UNAUTHENTICATED");
             println!("host_native_readback_authorizes_mutation=false");
             println!("host_mutations=0");

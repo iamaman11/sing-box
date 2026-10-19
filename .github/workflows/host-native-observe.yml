@@ -210,6 +210,27 @@ jobs:
             echo 'host_typed_readback=UNAVAILABLE_INSTALLED_VERSION_OR_SUDOERS'
           fi
 
+      - name: Capture bounded VM per-container resource evidence
+        if: env.TARGET_KIND == 'VM' && (endsWith(env.COMMAND_BODY, ' --deep') || startsWith(env.COMMAND_BODY, '/host apply ') || startsWith(env.COMMAND_BODY, '/host recover '))
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner=/usr/local/libexec/sing-box/edge-agent
+          output="${RUNNER_TEMP}/host-native-resources.pb"
+          rm -f "${output}"
+          # Older installations may not yet offer the exact read-only verb.
+          # Missing support is UNPROVEN, not an excuse for a direct Docker call.
+          if sudo -n -l "${owner}" local host-resources >/dev/null 2>&1 &&
+             sudo -n "${owner}" local host-resources > "${output}" &&
+             test -f "${output}" && test ! -L "${output}" &&
+             test -s "${output}" &&
+             test "$(stat -c '%s' "${output}")" -le 32768; then
+            echo 'host_vm_resources_capture=BOUNDED_UNAUTHENTICATED'
+          else
+            rm -f "${output}"
+            echo 'host_vm_resources_capture=UNPROVEN_INSTALLED_OWNER'
+          fi
+
       - name: Retain native bounded protobuf as transport evidence
         if: success()
         uses: actions/upload-artifact@v4
@@ -217,6 +238,7 @@ jobs:
           name: native-readback-${{ inputs.machine_id }}-${{ inputs.source_comment_id }}
           path: |
             ${{ runner.temp }}/host-native-observation.pb
+            ${{ runner.temp }}/host-native-resources.pb
             ${{ runner.temp }}/host-operation/host-result.pb
           if-no-files-found: ignore
           retention-days: 7
@@ -291,9 +313,16 @@ jobs:
             --to "${RUNNER_TEMP}/host-readback-registry.pb#format=binpb")
           registry="${RUNNER_TEMP}/host-readback-registry.pb"
           test -s "${registry}"
+          extra=()
+          if [[ "${TARGET_KIND}" = VM && -s "${out}/host-native-resources.pb" ]]; then
+            resource_report="${out}/host-native-resources.pb"
+            test -f "${resource_report}" && test ! -L "${resource_report}"
+            test "$(stat -c '%s' "${resource_report}")" -le 32768
+            extra=(--resources-path "${resource_report}")
+          fi
           "${owner}" host --hosts-pb "${registry}" \
             --hosts-sha256 "$(sha256sum "${registry}" | cut -d' ' -f1)" \
-            readback "${TARGET_MACHINE}" --observation-path "${observation}" \
+            readback "${TARGET_MACHINE}" --observation-path "${observation}" "${extra[@]}" \
             > "${RUNNER_TEMP}/host-readback-result.txt"
           result="${RUNNER_TEMP}/host-readback-result.txt"
           grep -Fxq 'host_mutations=0' "${result}"

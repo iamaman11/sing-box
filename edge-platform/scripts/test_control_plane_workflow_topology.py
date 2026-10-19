@@ -794,6 +794,14 @@ def test_native_host_readonly_control_boundary(router: str) -> None:
         "Runner native transaction correlation must be typed, exact and explicitly unauthenticated",
     )
     require(
+        "local host-resources" in owner
+        and "host-native-resources.pb" in owner
+        and 'extra=(--resources-path "${resource_report}")' in owner
+        and "host_vm_resources_capture=UNPROVEN_INSTALLED_OWNER" in owner
+        and "local host-resources" in Path("edge-platform/scripts/install-vultr-production-runner.sh").read_text(),
+        "Deep VM diagnostics must use exact bounded root-owned resource protobuf and never raw Docker socket",
+    )
+    require(
         "host-observe $current" in owner
         and 'local host-observe > "${output}"' in owner
         and "actions/upload-artifact@v4" in owner

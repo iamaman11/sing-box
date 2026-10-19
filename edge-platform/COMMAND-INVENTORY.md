@@ -28,6 +28,17 @@ intent/result по registry/desired/release, но его transport-копия
 остаётся `UNAUTHENTICATED`, не физическим receipt.
 Сквозной автоматический lifecycle для Windows и VM пока не доказан.
 
+## VM deep diagnostics — per-resource protobuf (source-only)
+
+`host status <id> --deep` использует один существующий root Agent
+(`local host-resources`) для bounded protobuf по каждому Git-owned Docker
+ресурсу: presence, Compose owner, container ID, running, health, image,
+restart count и reason. Не читает env, credentials или Docker logs.
+GitHub переносит копию, Rust Orchestrator сверяет её со своим
+каноническим реестром и печатает причины по контейнерам.
+Runner-копия не аутентифицирует root и не разрешает mutation;
+отсутствие установленного verb — UNPROVEN, не PASS.
+
 ## Docker resources — один Git-owned scope
 
 `hosts.textproto` теперь задаёт для каждой VM только отсортированные
