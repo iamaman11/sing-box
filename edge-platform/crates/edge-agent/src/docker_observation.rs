@@ -1,4 +1,5 @@
 use std::collections::{BTreeSet, HashMap};
+use edge_shared_types::FleetVmContainer;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -145,15 +146,16 @@ async fn docker_connection() -> Result<Docker, String> {
 fn exact_application_compose_owner(
     name: &str,
     labels: &HashMap<String, String>,
+    expected: &[FleetVmContainer],
 ) -> Result<(), &'static str> {
-    let service = match name {
-        "vultr-warp-egress" => "warp-egress",
-        "vultr-line1-gateway" => "line1-gateway",
-        "vultr-line2-proxy" => "line2-proxy",
-        _ => return Err("HOST_NATIVE_CONTAINER_OUTSIDE_APPLICATION_SCOPE"),
-    };
-    if labels.get("com.docker.compose.project").map(String::as_str) != Some("vultr-edge")
-        || labels.get("com.docker.compose.service").map(String::as_str) != Some(service)
+    let resource = expected
+        .iter()
+        .find(|item| item.container_name == name)
+        .ok_or("HOST_NATIVE_CONTAINER_OUTSIDE_APPLICATION_SCOPE")?;
+    if labels.get("com.docker.compose.project").map(String::as_str)
+        != Some(resource.compose_project.as_str())
+        || labels.get("com.docker.compose.service").map(String::as_str)
+            != Some(resource.compose_service.as_str())
     {
         return Err("HOST_NATIVE_CONTAINER_OWNERSHIP_UNPROVEN");
     }
@@ -177,13 +179,16 @@ fn require_known_native_container_state(
 /// Names alone are not ownership: check the Compose project, service and
 /// immutable Docker container ID. Mesh and unrelated Docker projects are
 /// intentionally outside this scope. Missing containers are valid on fresh VMs.
-async fn owned_application_container_ids(docker: &Docker) -> Result<Vec<(String, bool)>, String> {
+async fn owned_application_container_ids(
+    docker: &Docker,
+    expected: &[FleetVmContainer],
+) -> Result<Vec<(String, bool)>, String> {
+    if expected.is_empty() {
+        return Err("HOST_NATIVE_VM_RESOURCE_SCOPE_MISSING".into());
+    }
     let mut owned = Vec::new();
-    for name in [
-        "vultr-line2-proxy",
-        "vultr-line1-gateway",
-        "vultr-warp-egress",
-    ] {
+    for resource in expected {
+        let name = resource.container_name.as_str();
         let inspect = match docker.inspect_container(name, None).await {
             Ok(value) => value,
             Err(BollardError::DockerResponseServerError {
@@ -202,7 +207,7 @@ async fn owned_application_container_ids(docker: &Docker) -> Result<Vec<(String,
             .labels
             .as_ref()
             .ok_or("HOST_NATIVE_CONTAINER_LABELS_MISSING")?;
-        exact_application_compose_owner(name, labels).map_err(str::to_owned)?;
+        exact_application_compose_owner(name, labels, expected).map_err(str::to_owned)?;
         let id = inspect.id.ok_or("HOST_NATIVE_CONTAINER_ID_MISSING")?;
         if id.len() != 64 || !id.bytes().all(|b| b.is_ascii_hexdigit()) {
             return Err("HOST_NATIVE_CONTAINER_ID_INVALID".into());
@@ -217,19 +222,23 @@ async fn owned_application_container_ids(docker: &Docker) -> Result<Vec<(String,
 }
 
 /// Root-only read-only preadmission check, shared with the STOP effector.
-pub(crate) async fn verify_owned_application_containers() -> Result<(), String> {
+pub(crate) async fn verify_owned_application_containers(
+    expected: &[FleetVmContainer],
+) -> Result<(), String> {
     let docker = docker_connection().await?;
-    owned_application_container_ids(&docker).await.map(|_| ())
+    owned_application_container_ids(&docker, expected).await.map(|_| ())
 }
 
 /// Native VM STOP. Only exact, independently inspected Compose-owned Docker
 /// IDs can be stopped; never compose down, never prune, never touch Mesh.
 /// The caller has already reserved a signed one-shot resource journal.
 /// A Docker failure is ambiguous and must retain UNKNOWN_NO_REPLAY.
-pub(crate) async fn stop_owned_application_containers() -> Result<(), String> {
+pub(crate) async fn stop_owned_application_containers(
+    expected: &[FleetVmContainer],
+) -> Result<(), String> {
     let docker = docker_connection().await?;
     // Resolve and validate ALL identities before stopping the first container.
-    let owned = owned_application_container_ids(&docker).await?;
+    let owned = owned_application_container_ids(&docker, expected).await?;
     for (id, running) in owned {
         if running {
             docker
@@ -614,6 +623,21 @@ fn normalize_containers(summaries: Vec<ContainerSummary>) -> DockerObservation {
 mod tests {
     use super::*;
 
+    fn vm_scope_test() -> Vec<FleetVmContainer> {
+        [
+            ("vultr-line1-gateway", "line1-gateway"),
+            ("vultr-line2-proxy", "line2-proxy"),
+            ("vultr-warp-egress", "warp-egress"),
+        ]
+        .into_iter()
+        .map(|(container_name, compose_service)| FleetVmContainer {
+            container_name: container_name.to_owned(),
+            compose_project: "vultr-edge".to_owned(),
+            compose_service: compose_service.to_owned(),
+        })
+        .collect()
+    }
+
     #[test]
     fn native_stop_requires_complete_state_and_never_adopts_mesh() {
         use bollard::models::ContainerState;
@@ -667,8 +691,8 @@ mod tests {
                 "line2-proxy".to_owned(),
             ),
         ]);
-        assert!(exact_application_compose_owner("vultr-line2-proxy", &valid_project).is_ok());
-        assert!(exact_application_compose_owner("vultr-cloudflare-mesh", &valid_project).is_err());
+        assert!(exact_application_compose_owner("vultr-line2-proxy", &valid_project, &vm_scope_test()).is_ok());
+        assert!(exact_application_compose_owner("vultr-cloudflare-mesh", &valid_project, &vm_scope_test()).is_err());
     }
 
     #[test]
@@ -684,28 +708,28 @@ mod tests {
             ),
         ]);
         assert_eq!(
-            exact_application_compose_owner("vultr-line1-gateway", &labels),
+            exact_application_compose_owner("vultr-line1-gateway", &labels, &vm_scope_test()),
             Ok(())
         );
         assert_eq!(
-            exact_application_compose_owner("vultr-line2-proxy", &labels),
+            exact_application_compose_owner("vultr-line2-proxy", &labels, &vm_scope_test()),
             Err("HOST_NATIVE_CONTAINER_OWNERSHIP_UNPROVEN")
         );
         assert_eq!(
-            exact_application_compose_owner("vultr-cloudflare-mesh", &labels),
+            exact_application_compose_owner("vultr-cloudflare-mesh", &labels, &vm_scope_test()),
             Err("HOST_NATIVE_CONTAINER_OUTSIDE_APPLICATION_SCOPE")
         );
         labels.insert("com.docker.compose.project".into(), "foreign-stack".into());
         assert_eq!(
-            exact_application_compose_owner("vultr-line1-gateway", &labels),
+            exact_application_compose_owner("vultr-line1-gateway", &labels, &vm_scope_test()),
             Err("HOST_NATIVE_CONTAINER_OWNERSHIP_UNPROVEN")
         );
         labels.remove("com.docker.compose.project");
-        assert!(exact_application_compose_owner("vultr-line1-gateway", &labels).is_err());
+        assert!(exact_application_compose_owner("vultr-line1-gateway", &labels, &vm_scope_test()).is_err());
         labels.insert("com.docker.compose.project".into(), "vultr-edge".into());
         labels.insert("com.docker.compose.service".into(), "warp-egress".into());
         assert_eq!(
-            exact_application_compose_owner("vultr-warp-egress", &labels),
+            exact_application_compose_owner("vultr-warp-egress", &labels, &vm_scope_test()),
             Ok(())
         );
     }

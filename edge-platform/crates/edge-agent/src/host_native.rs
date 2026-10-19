@@ -84,6 +84,22 @@ pub(super) fn protected_journal_has_pending(journal: &Path) -> Result<bool, Stri
 
 /// Canonical, typed local snapshot. This validates format and bounds only;
 /// the root executor must separately attest the published Git source.
+/// Native readback resolves the same Git-owned identity scope as signed
+/// apply. An absent trust snapshot is UNPROVEN, never an implicit default.
+pub(super) fn registered_vm_containers() -> Result<Vec<edge_shared_types::FleetVmContainer>, String> {
+    let bytes = root_file(&Path::new(TRUSTED_ROOT).join("trust.pb"), 9 * 1024 * 1024)?;
+    let trust = decode_native_trust_snapshot(&bytes)?;
+    let registry = edge_shared_types::decode_host_registry(&trust.registry_pb)
+        .map_err(|_| "HOST_NATIVE_REGISTRY_INVALID")?;
+    let host = registry.hosts.iter()
+        .find(|host| host.machine_id == trust.machine_id && host.kind == FleetHostKind::Vm as i32)
+        .ok_or("HOST_NATIVE_VM_UNREGISTERED")?;
+    if host.vm_containers.is_empty() {
+        return Err("HOST_NATIVE_VM_RESOURCE_SCOPE_MISSING".into());
+    }
+    Ok(host.vm_containers.clone())
+}
+
 pub(super) fn decode_native_trust_snapshot(
     bytes: &[u8],
 ) -> Result<FleetNativeTrustSnapshot, String> {
@@ -424,10 +440,13 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
     ) {
         return Err("HOST_NATIVE_VM_TARGET_NOT_EXECUTABLE".into());
     }
-    // A Docker container with our hard-coded application name is not
-    // automatically ours. Refuse a foreign Compose project before Worker
-    // signing, journalling or any filesystem/container mutation.
-    super::docker_observation::verify_owned_application_containers().await?;
+    // Only identities from the immutable, typed, Git-owned host registry.
+    if host.vm_containers.is_empty() {
+        return Err("HOST_NATIVE_VM_RESOURCE_SCOPE_MISSING".into());
+    }
+    super::docker_observation::verify_owned_application_containers(
+        &host.vm_containers,
+    ).await?;
     attest_published_github_source(
         &intent,
         &registry_pb,
@@ -474,7 +493,7 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
             },
             |step| match step {
                 FleetHostPlannedStep::Stop => handle
-                    .block_on(super::docker_observation::stop_owned_application_containers())
+                    .block_on(super::docker_observation::stop_owned_application_containers(&host.vm_containers))
                     .map_err(|_| "HOST_NATIVE_VM_STOP_UNCERTAIN_NO_REPLAY"),
                 FleetHostPlannedStep::Start => {
                     let completion = handle.block_on(super::run_bootstrap(

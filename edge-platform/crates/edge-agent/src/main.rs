@@ -156,29 +156,24 @@ async fn run_local_host_observe(stack_dir: &Path) -> Result<(), String> {
         .map_err(|_| "HOST_OBSERVATION_STDOUT_UNAVAILABLE".to_owned())
 }
 
-/// Fixed native application resource scope. The Mesh service, unrelated
-/// project containers and other Docker workloads must never be mistaken for
-/// this application's RUNNING state, nor block verified first-use absence.
-fn owned_application_container_running(names: &[String]) -> bool {
-    names.iter().any(|name| {
-        matches!(
-            name.as_str(),
-            "vultr-warp-egress" | "vultr-line1-gateway" | "vultr-line2-proxy"
-        )
-    })
+/// No compiled Docker name list: native readback uses accepted Git selectors.
+fn owned_application_container_running(
+    names: &[String],
+    resources: &[edge_shared_types::FleetVmContainer],
+) -> bool {
+    resources.iter().any(|resource| names.contains(&resource.container_name))
 }
 
-/// Native status cannot promote a same-named container to this application's
-/// RUNNING state unless its exact Docker Compose ownership was checked.
 fn native_vm_owner_state(
     docker_reachable: bool,
     ownership_proven: bool,
     running_containers: &[String],
+    resources: &[edge_shared_types::FleetVmContainer],
 ) -> edge_shared_types::FleetNativeOwnerState {
     use edge_shared_types::FleetNativeOwnerState;
-    if !docker_reachable || !ownership_proven {
+    if !docker_reachable || !ownership_proven || resources.is_empty() {
         FleetNativeOwnerState::Unproven
-    } else if owned_application_container_running(running_containers) {
+    } else if owned_application_container_running(running_containers, resources) {
         FleetNativeOwnerState::Running
     } else {
         FleetNativeOwnerState::Stopped
@@ -215,14 +210,19 @@ async fn capture_local_host_observation(
     }
     // Docker names are untrusted without project/service/ID readback.
     // A running container is also NOT evidence of public TLS/auth/egress.
+    let resources = host_native::registered_vm_containers().ok();
     let ownership_proven = state.docker_reachable
-        && docker_observation::verify_owned_application_containers()
-            .await
-            .is_ok();
+        && match resources.as_deref() {
+            Some(scope) => docker_observation::verify_owned_application_containers(scope)
+                .await
+                .is_ok(),
+            None => false,
+        };
     let owner_state = native_vm_owner_state(
         state.docker_reachable,
         ownership_proven,
         &state.running_containers,
+        resources.as_deref().unwrap_or(&[]),
     );
     // Absence must be observed independently: Docker was inspected and no
     // owned application containers or release marker exist. A running
@@ -5356,24 +5356,39 @@ struct BundleSummary {
 
 #[cfg(test)]
 mod tests {
+    fn vm_scope_test() -> Vec<edge_shared_types::FleetVmContainer> {
+        [
+            ("vultr-line1-gateway", "line1-gateway"),
+            ("vultr-line2-proxy", "line2-proxy"),
+            ("vultr-warp-egress", "warp-egress"),
+        ]
+        .into_iter()
+        .map(|(name, service)| edge_shared_types::FleetVmContainer {
+            container_name: name.to_owned(),
+            compose_project: "vultr-edge".to_owned(),
+            compose_service: service.to_owned(),
+        })
+        .collect()
+    }
+
     #[test]
     fn foreign_same_named_container_never_proves_native_owner() {
         use edge_shared_types::FleetNativeOwnerState;
         let names = vec!["vultr-line2-proxy".to_owned()];
         assert_eq!(
-            native_vm_owner_state(true, false, &names),
+            native_vm_owner_state(true, false, &names, &vm_scope_test()),
             FleetNativeOwnerState::Unproven
         );
         assert_eq!(
-            native_vm_owner_state(true, true, &names),
+            native_vm_owner_state(true, true, &names, &vm_scope_test()),
             FleetNativeOwnerState::Running
         );
         assert_eq!(
-            native_vm_owner_state(false, true, &names),
+            native_vm_owner_state(false, true, &names, &vm_scope_test()),
             FleetNativeOwnerState::Unproven
         );
         assert_eq!(
-            native_vm_owner_state(true, true, &["vultr-cloudflare-mesh".to_owned()]),
+            native_vm_owner_state(true, true, &["vultr-cloudflare-mesh".to_owned()], &vm_scope_test()),
             FleetNativeOwnerState::Stopped
         );
     }
@@ -5384,7 +5399,7 @@ mod tests {
             "unrelated-project-db".to_owned(),
             "some-other-sing-box".to_owned(),
         ];
-        assert!(!owned_application_container_running(&foreign));
+        assert!(!owned_application_container_running(&foreign, &vm_scope_test()));
         for own in [
             "vultr-warp-egress",
             "vultr-line1-gateway",
@@ -5392,13 +5407,13 @@ mod tests {
         ] {
             let mut names = foreign.clone();
             names.push(own.to_owned());
-            assert!(owned_application_container_running(&names));
+            assert!(owned_application_container_running(&names, &vm_scope_test()));
         }
         // Names must match exactly, not by substring or prefix.
         assert!(!owned_application_container_running(&[
             "vultr-line1-gateway-other".into(),
             "prefix-vultr-warp-egress".into(),
-        ]));
+        ], &vm_scope_test()));
     }
 
     use super::*;
