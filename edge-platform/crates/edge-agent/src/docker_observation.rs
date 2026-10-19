@@ -172,14 +172,22 @@ pub(crate) async fn verify_owned_application_containers() -> Result<(), String> 
     ] {
         let inspect = match docker.inspect_container(name, None).await {
             Ok(value) => value,
-            Err(BollardError::DockerResponseServerError { status_code: 404, .. }) => continue,
+            Err(BollardError::DockerResponseServerError {
+                status_code: 404, ..
+            }) => continue,
             Err(_) => return Err("HOST_NATIVE_DOCKER_IDENTITY_UNAVAILABLE".into()),
         };
         if inspect.name.as_deref() != Some(format!("/{name}").as_str()) {
             return Err("HOST_NATIVE_CONTAINER_NAME_UNPROVEN".into());
         }
-        let config = inspect.config.as_ref().ok_or("HOST_NATIVE_CONTAINER_CONFIG_MISSING")?;
-        let labels = config.labels.as_ref().ok_or("HOST_NATIVE_CONTAINER_LABELS_MISSING")?;
+        let config = inspect
+            .config
+            .as_ref()
+            .ok_or("HOST_NATIVE_CONTAINER_CONFIG_MISSING")?;
+        let labels = config
+            .labels
+            .as_ref()
+            .ok_or("HOST_NATIVE_CONTAINER_LABELS_MISSING")?;
         exact_application_compose_owner(name, labels).map_err(str::to_owned)?;
     }
     Ok(())
@@ -554,8 +562,14 @@ mod tests {
     #[test]
     fn native_owner_requires_exact_compose_service_identity() {
         let mut labels = HashMap::from([
-            ("com.docker.compose.project".to_owned(), "vultr-edge".to_owned()),
-            ("com.docker.compose.service".to_owned(), "line1-gateway".to_owned()),
+            (
+                "com.docker.compose.project".to_owned(),
+                "vultr-edge".to_owned(),
+            ),
+            (
+                "com.docker.compose.service".to_owned(),
+                "line1-gateway".to_owned(),
+            ),
         ]);
         assert_eq!(
             exact_application_compose_owner("vultr-line1-gateway", &labels),
