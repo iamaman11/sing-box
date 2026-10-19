@@ -48,6 +48,15 @@ pub(super) fn local_trust_preflight() -> &'static str {
     "PROTECTED_LOCAL_ONLY"
 }
 
+/// Exactly one accepted path policy for enrollment and subsequent apply.
+pub(super) fn git_owned_host_spec_path(path: &str) -> bool {
+    path.starts_with("infra/")
+        && !path.contains("..")
+        && path
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'-' | b'_'))
+}
+
 fn root_file(path: &Path, limit: u64) -> Result<Vec<u8>, String> {
     if !path.starts_with(TRUSTED_ROOT) {
         return Err("HOST_NATIVE_PATH_OUTSIDE_OWNER_ROOT".into());
@@ -95,12 +104,7 @@ pub(super) async fn attest_published_github_source(
     let revision = release.source_revision.as_str();
     if revision.len() != 40
         || !revision.bytes().all(|c| c.is_ascii_hexdigit())
-        || spec_path.is_empty()
-        || !spec_path.starts_with("infra/")
-        || spec_path.contains("..")
-        || !spec_path
-            .bytes()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'/' | b'.' | b'-' | b'_'))
+        || !git_owned_host_spec_path(spec_path)
     {
         return Err("HOST_NATIVE_CANONICAL_SOURCE_INVALID".into());
     }
@@ -308,14 +312,7 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
         .iter()
         .find(|h| h.machine_id == intent.machine_id && h.kind == intent.kind)
         .ok_or("HOST_NATIVE_MACHINE_UNREGISTERED")?;
-    if host.desired_spec_path.is_empty()
-        || !host
-            .desired_spec_path
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'_' | b'-'))
-        || host.desired_spec_path.contains("..")
-        || !host.desired_spec_path.starts_with("infra/")
-    {
+    if !git_owned_host_spec_path(&host.desired_spec_path) {
         return Err("HOST_NATIVE_SPEC_PATH_INVALID".into());
     }
     // A missing or invalid run target is not executable. The native
@@ -419,4 +416,19 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
     io::stdout()
         .write_all(&result.encode_to_vec())
         .map_err(|_| "HOST_NATIVE_RESULT_STDOUT_UNCERTAIN_NO_REPLAY".into())
+}
+
+#[cfg(test)]
+mod native_host_path_tests {
+    use super::*;
+
+    #[test]
+    fn actual_vm_specs_are_accepted_but_traversal_is_not() {
+        assert!(git_owned_host_spec_path("infra/production/production.textproto"));
+        assert!(git_owned_host_spec_path("infra/application/disposable-acceptance.json"));
+        assert!(!git_owned_host_spec_path("infra/../secrets.env"));
+        assert!(!git_owned_host_spec_path("/etc/sudoers"));
+        assert!(!git_owned_host_spec_path("infra/prod\\secret"));
+        assert!(!git_owned_host_spec_path("infra/"));
+    }
 }
