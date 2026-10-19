@@ -218,8 +218,7 @@ pub fn validate_vm_resource_hierarchy(
     for node in &observed.nodes {
         if !unique.insert(node.resource_id.as_str())
             || node.owner != crate::FleetResourceOwner::VmRootAgent as i32
-            || crate::FleetResourceKind::try_from(node.kind)
-                .is_err()
+            || crate::FleetResourceKind::try_from(node.kind).is_err()
             || node.kind == crate::FleetResourceKind::Unspecified as i32
         {
             return Err("VM_HIERARCHY_NODE_IDENTITY_INVALID");
@@ -252,8 +251,13 @@ pub fn validate_vm_resource_hierarchy(
     }
     if observed.nodes[0].resource_id != vm_host_resource_id(host)
         || observed.nodes.len()
-            != 1 + desired.networks.len() + desired.resources.len()
-                + desired.resources.iter().filter(|r| !r.config_template_sha256.is_empty()).count()
+            != 1 + desired.networks.len()
+                + desired.resources.len()
+                + desired
+                    .resources
+                    .iter()
+                    .filter(|r| !r.config_template_sha256.is_empty())
+                    .count()
     {
         return Err("VM_HIERARCHY_INCOMPLETE");
     }
@@ -292,19 +296,27 @@ fn project_vm_hierarchy_nodes_unchecked(
             dependency_ids: Vec::new(),
             owner: Owner::VmRootAgent as i32,
             expected_policy_sha256: ring::digest::digest(
-                &ring::digest::SHA256, &network.encode_to_vec()
-            ).as_ref().to_vec(),
+                &ring::digest::SHA256,
+                &network.encode_to_vec(),
+            )
+            .as_ref()
+            .to_vec(),
         });
     }
     for resource in &desired.resources {
-        let selector = resource.resource.as_ref().ok_or("VM_HIERARCHY_SELECTOR_MISSING")?;
+        let selector = resource
+            .resource
+            .as_ref()
+            .ok_or("VM_HIERARCHY_SELECTOR_MISSING")?;
         let id = vm_container_resource_id(host, selector)?;
         let network = networks
             .get(&selector.compose_service.as_str())
             .ok_or("VM_HIERARCHY_NETWORK_DEPENDENCY_MISSING")?;
         let mut dependencies = vec![vm_network_resource_id(&selector.compose_project, network)];
         for dependency in &resource.dependencies {
-            let s = host.vm_containers.iter()
+            let s = host
+                .vm_containers
+                .iter()
                 .find(|v| v.compose_service == *dependency)
                 .ok_or("VM_HIERARCHY_FOREIGN_CONTAINER_DEPENDENCY")?;
             dependencies.push(vm_container_resource_id(host, s)?);
@@ -318,13 +330,17 @@ fn project_vm_hierarchy_nodes_unchecked(
             dependency_ids: dependencies,
             owner: Owner::VmRootAgent as i32,
             expected_policy_sha256: ring::digest::digest(
-                &ring::digest::SHA256, &resource.encode_to_vec()
-            ).as_ref().to_vec(),
+                &ring::digest::SHA256,
+                &resource.encode_to_vec(),
+            )
+            .as_ref()
+            .to_vec(),
         });
         if !resource.config_template_sha256.is_empty() {
             result.push(FleetResourceNode {
                 resource_id: vm_config_resource_id(
-                    &selector.compose_project, &selector.compose_service,
+                    &selector.compose_project,
+                    &selector.compose_service,
                 ),
                 kind: Kind::SingboxConfig as i32,
                 parent_resource_id: id.clone(),
@@ -1021,24 +1037,37 @@ mod vm_graph_reconcile_tests {
         assert!(!hierarchy.owner_attested && !hierarchy.mutation_authorized);
         assert_eq!(hierarchy.nodes.len(), 7);
         assert_eq!(hierarchy.nodes[0].resource_id, "host/vm-a");
-        assert_eq!(hierarchy.nodes[1].resource_id, "network/vultr-edge/edge_net");
+        assert_eq!(
+            hierarchy.nodes[1].resource_id,
+            "network/vultr-edge/edge_net"
+        );
         assert_eq!(hierarchy.nodes[1].kind, Kind::DockerNetwork as i32);
         assert_eq!(hierarchy.nodes[1].owner, Owner::VmRootAgent as i32);
-        let line2 = hierarchy.nodes.iter()
+        let line2 = hierarchy
+            .nodes
+            .iter()
             .find(|node| node.resource_id == "container/vultr-edge/line2-proxy")
             .unwrap();
         assert_eq!(line2.parent_resource_id, "host/vm-a");
         assert_eq!(line2.kind, Kind::DockerContainer as i32);
-        assert_eq!(line2.dependency_ids, vec![
-            "container/vultr-edge/warp-egress".to_owned(),
-            "network/vultr-edge/edge_net".to_owned(),
-        ]);
-        let config = hierarchy.nodes.iter()
+        assert_eq!(
+            line2.dependency_ids,
+            vec![
+                "container/vultr-edge/warp-egress".to_owned(),
+                "network/vultr-edge/edge_net".to_owned(),
+            ]
+        );
+        let config = hierarchy
+            .nodes
+            .iter()
             .find(|node| node.resource_id == "config/vultr-edge/line2-proxy")
             .unwrap();
         assert_eq!(config.parent_resource_id, line2.resource_id);
         assert_eq!(config.kind, Kind::SingboxConfig as i32);
-        assert_eq!(config.expected_policy_sha256, desired.resources[1].config_template_sha256);
+        assert_eq!(
+            config.expected_policy_sha256,
+            desired.resources[1].config_template_sha256
+        );
         assert_eq!(
             validate_vm_resource_hierarchy(&hierarchy, &host, &desired),
             Ok(())
