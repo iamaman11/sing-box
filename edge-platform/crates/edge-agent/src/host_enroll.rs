@@ -211,11 +211,7 @@ pub(crate) async fn enroll(
     let spec_path = &host.desired_spec_path;
     if source_revision.len() != 40
         || !source_revision.bytes().all(|b| b.is_ascii_hexdigit())
-        || !spec_path.starts_with("infra/")
-        || spec_path.contains("..")
-        || !spec_path
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'/' | b'.' | b'-' | b'_'))
+        || !super::host_native::git_owned_host_spec_path(spec_path)
     {
         return Err("HOST_ENROLL_GIT_SPEC_INVALID".into());
     }
