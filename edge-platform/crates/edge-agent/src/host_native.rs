@@ -566,7 +566,7 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
                         .map_err(|_| "HOST_NATIVE_VM_SCOPED_BUNDLE_INVALID")?;
                     let proposal = handle
                         .block_on(
-                            super::docker_observation::preflight_native_vm_line2_replace(
+                            super::docker_observation::preflight_native_vm_scoped_replace(
                                 stack_dir, host, &request,
                             ),
                         )
@@ -595,7 +595,7 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
                         .ok_or("HOST_NATIVE_VM_REPLACE_PREPARED_PLAN_MISSING")?;
                     handle
                         .block_on(
-                            super::docker_observation::apply_native_vm_line2_replace_once(
+                            super::docker_observation::apply_native_vm_scoped_replace_once(
                                 stack_dir, host, proposal,
                             ),
                         )
