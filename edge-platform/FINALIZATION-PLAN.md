@@ -105,11 +105,13 @@ entrypoint связывает owner readback → signed admission → durable re
 lock → однократную mutation callback → физический poststate. Тесты
 покрывают долговечный однократный NOOP, успешный переход и UNKNOWN_NO_REPLAY.
 
-**Сейчас:** В PR #403 VM STOP ограничен проверенными Docker ID/Compose ownership,
-не затрагивает Mesh; release drift сохраняется в журнале, RUNNING требует
-Compose proof. Это только source, не установленный runtime.
-**Остаётся:** VM trust bootstrap, Windows execution, signed remote receipt,
-reinstall/config/recover, внешний интернет и физическая приёмка. CI ≠ runtime.
+**Сейчас:** VM STOP — только Compose-owned Docker, не Mesh.
+Один атомарный `FleetNativeTrustSnapshot`, постоянный journal.
+Legacy sudo блокирует apply; Rust сверяет intent/result,
+но runner-копия НЕ authenticated receipt.
+**Остаётся:** Windows SYSTEM execution, root bootstrap,
+remote receipt, config/reinstall/recover, физические
+DNS/TLS/auth/direct/WARP пробы. CI ≠ runtime.
 
 ## Обязательный протокол сомнения (без гаданий и кругов)
 

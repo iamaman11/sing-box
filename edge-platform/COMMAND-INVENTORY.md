@@ -16,16 +16,20 @@
 
 Существующий `edge-agent local host-enroll` от root проверяет опубликованный
 ReleaseSet, точный Git tree/spec и pinned Worker key. Повторный вызов с тем же
-`machine_id` и ключом обновляет только защищённые immutable-снимки,
-**сохраняя один прежний журнал**; `*.pending.pb` блокирует обновление.
+`machine_id` и ключом атомарно заменяет **один** `trust.pb`,
+сохраняя прежний журнал; `*.pending.pb` блокирует обновление.
 Один kernel lock исключает пересечение с `local host-apply`. Диагностика
 отличает `UNENROLLED`, `PROTECTED_LOCAL_ONLY`,
 `UNKNOWN_NO_REPLAY` и `UNPROVEN`. Это source code PR #403, не
 физическая приёмка и не разрешение runner запускать root enrollment.
+Runner со старыми прямыми `sudo`-правами **не допускается** к VM
+apply/recover. Внутренний Rust `host native-result` сверяет
+intent/result по registry/desired/release, но его transport-копия
+остаётся `UNAUTHENTICATED`, не физическим receipt.
 Сквозной автоматический lifecycle для Windows и VM пока не доказан.
 
 ## Допуск новой операции
 
 Только строго типизированные `machine_id / resource_id / desired_digest / immutable_release / operation_id / native_owner` и однозначные `READY | DEGRADED | BLOCKED | UNKNOWN_NO_REPLAY`. Нет старого `Issue #26` как mutation authority: старые comments — неизменяемый архив, не исходное желаемое состояние. Для сбоя секретов — fresh Worker-provision с **новой** resource identity, без переноса старой A/B, только после проверки границ собственности старого ресурса. Удалять старые файлы и контейнеры можно при доказанном scope и сохранённом способе доступа; не трогать Cloudflare One, Mesh других проектов и общую инфраструктуру.
 
-До физической приёмки **система не 10/10**. VM root execution требует Git RUNNING target, защищённый trust и подпись Worker; старые mutation-команды запрещены. [Нормативная архитектура](ARCHITECTURE.md), [единственный план](FINALIZATION-PLAN.md), [живой курсор](https://github.com/iamaman11/sing-box/issues/26).
+До физической приёмки **система не 10/10**. VM root execution требует явный Git RUNNING/STOPPED target, защищённый trust и подпись Worker; старые mutation-команды запрещены. [Нормативная архитектура](ARCHITECTURE.md), [единственный план](FINALIZATION-PLAN.md), [живой курсор](https://github.com/iamaman11/sing-box/issues/26).
