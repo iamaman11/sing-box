@@ -595,23 +595,30 @@ fn parse_vm_release_image_pins(bytes: &[u8]) -> Result<BTreeMap<String, String>,
         let (key, value) = line
             .split_once('=')
             .ok_or("HOST_VM_RELEASE_IMAGE_LINE_INVALID")?;
-        if key.is_empty() || key.trim() != key || value.is_empty()
+        if key.is_empty()
+            || key.trim() != key
+            || value.is_empty()
             || images.insert(key.to_owned(), value.to_owned()).is_some()
         {
             return Err("HOST_VM_RELEASE_IMAGE_LINE_INVALID".into());
         }
     }
     let keys = images.keys().map(String::as_str).collect::<BTreeSet<_>>();
-    if keys != BTreeSet::from([
-        "EDGE_GATEWAY_IMAGE",
-        "EDGE_WARP_EGRESS_IMAGE",
-        "CLOUDFLARE_MESH_IMAGE",
-    ]) {
+    if keys
+        != BTreeSet::from([
+            "EDGE_GATEWAY_IMAGE",
+            "EDGE_WARP_EGRESS_IMAGE",
+            "CLOUDFLARE_MESH_IMAGE",
+        ])
+    {
         return Err("HOST_VM_RELEASE_IMAGE_KEYS_INVALID".into());
     }
     for (key, repository) in [
         ("EDGE_GATEWAY_IMAGE", "ghcr.io/iamaman11/vultr-edge-gateway"),
-        ("EDGE_WARP_EGRESS_IMAGE", "ghcr.io/iamaman11/vultr-warp-egress"),
+        (
+            "EDGE_WARP_EGRESS_IMAGE",
+            "ghcr.io/iamaman11/vultr-warp-egress",
+        ),
         ("CLOUDFLARE_MESH_IMAGE", "docker.io/cloudflare/mesh"),
     ] {
         super::validate_exact_image_ref(key, &images[key], repository)?;
@@ -630,28 +637,35 @@ pub(crate) fn compile_vm_desired_graph_from_release(
         .map_err(|_| "HOST_VM_RELEASE_BUNDLE_INVALID")?;
     let mut files = BTreeMap::new();
     for file in &request.stack_files {
-        if files.insert(file.relative_path.as_str(), file.content.as_slice()).is_some() {
+        if files
+            .insert(file.relative_path.as_str(), file.content.as_slice())
+            .is_some()
+        {
             return Err("HOST_VM_RELEASE_FILE_DUPLICATE".into());
         }
     }
     let compose = serde_yaml::from_slice::<serde_yaml::Value>(
-        files.get("docker-compose.yml")
+        files
+            .get("docker-compose.yml")
             .ok_or("HOST_VM_RELEASE_COMPOSE_MISSING")?,
     )
     .map_err(|_| "HOST_VM_RELEASE_COMPOSE_INVALID")?;
     let images = parse_vm_release_image_pins(
-        files.get(".images.env")
+        files
+            .get(".images.env")
             .ok_or("HOST_VM_RELEASE_IMAGES_MISSING")?,
     )?;
     let graph = compile_vm_graph_from_parts(host, &compose, &images, |path| {
-        files.get(path)
+        files
+            .get(path)
             .filter(|content| !content.is_empty())
             .map(|content| content.to_vec())
             .ok_or_else(|| "HOST_VM_RELEASE_TEMPLATE_MISSING".to_owned())
     })?;
     validate_gateway_image_ownership(
         &graph,
-        images.get("EDGE_GATEWAY_IMAGE")
+        images
+            .get("EDGE_GATEWAY_IMAGE")
             .ok_or("HOST_VM_RELEASE_GATEWAY_MISSING")?,
     )?;
     Ok(graph)
@@ -1630,8 +1644,14 @@ mod release_desired_graph_tests {
         let compose = serde_yaml::from_str::<serde_yaml::Value>(
             "name: vultr-edge\nservices:\n  line1-gateway:\n    image: ${EDGE_GATEWAY_IMAGE:?required}\n    depends_on: [warp-egress]\n  line2-proxy:\n    image: ${EDGE_GATEWAY_IMAGE:?required}\n    depends_on: [warp-egress]\n  warp-egress:\n    image: ${EDGE_WARP_EGRESS_IMAGE:?required}\n",
         ).unwrap();
-        let gateway = format!("ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}", "a".repeat(64));
-        let warp = format!("ghcr.io/iamaman11/vultr-warp-egress@sha256:{}", "b".repeat(64));
+        let gateway = format!(
+            "ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}",
+            "a".repeat(64)
+        );
+        let warp = format!(
+            "ghcr.io/iamaman11/vultr-warp-egress@sha256:{}",
+            "b".repeat(64)
+        );
         let mut images = BTreeMap::new();
         images.insert("EDGE_GATEWAY_IMAGE".into(), gateway.clone());
         images.insert("EDGE_WARP_EGRESS_IMAGE".into(), warp);
@@ -1656,23 +1676,41 @@ mod release_desired_graph_tests {
         let mut foreign = compose.clone();
         foreign["services"]["line2-proxy"]["depends_on"] =
             serde_yaml::from_str("[foreign-mesh]").unwrap();
-        assert!(compile_vm_graph_from_parts(&host, &foreign, &images, |_| {
-            Ok(b"template".to_vec())
-        }).is_err());
+        assert!(
+            compile_vm_graph_from_parts(&host, &foreign, &images, |_| { Ok(b"template".to_vec()) })
+                .is_err()
+        );
     }
 
     #[test]
     fn immutable_image_environment_requires_all_three_exact_digest_pins() {
-        let gateway = format!("ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}", "a".repeat(64));
-        let warp = format!("ghcr.io/iamaman11/vultr-warp-egress@sha256:{}", "b".repeat(64));
+        let gateway = format!(
+            "ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}",
+            "a".repeat(64)
+        );
+        let warp = format!(
+            "ghcr.io/iamaman11/vultr-warp-egress@sha256:{}",
+            "b".repeat(64)
+        );
         let mesh = format!("docker.io/cloudflare/mesh@sha256:{}", "c".repeat(64));
         let pins = format!(
             "EDGE_GATEWAY_IMAGE={gateway}\nEDGE_WARP_EGRESS_IMAGE={warp}\nCLOUDFLARE_MESH_IMAGE={mesh}\n"
         );
         assert!(parse_vm_release_image_pins(pins.as_bytes()).is_ok());
-        assert!(parse_vm_release_image_pins(pins.replace("@sha256:", ":latest").as_bytes()).is_err());
-        assert!(parse_vm_release_image_pins(format!("{pins}EDGE_GATEWAY_IMAGE={gateway}\n").as_bytes()).is_err());
-        assert!(parse_vm_release_image_pins(pins.replace("CLOUDFLARE_MESH_IMAGE", "FOREIGN_IMAGE").as_bytes()).is_err());
+        assert!(
+            parse_vm_release_image_pins(pins.replace("@sha256:", ":latest").as_bytes()).is_err()
+        );
+        assert!(
+            parse_vm_release_image_pins(format!("{pins}EDGE_GATEWAY_IMAGE={gateway}\n").as_bytes())
+                .is_err()
+        );
+        assert!(
+            parse_vm_release_image_pins(
+                pins.replace("CLOUDFLARE_MESH_IMAGE", "FOREIGN_IMAGE")
+                    .as_bytes()
+            )
+            .is_err()
+        );
     }
 }
 
