@@ -1036,10 +1036,13 @@ mod tests {
             "HOST_NATIVE_STEP_NOT_IMPLEMENTED"
         );
         assert!(!native_scope_pending_path(&dir, &intent).exists());
-        assert!(!dir.join(format!(
-            "{}.pb",
-            journal_hex(intent.operation_id.as_bytes())
-        )).exists());
+        assert!(
+            !dir.join(format!(
+                "{}.pb",
+                journal_hex(intent.operation_id.as_bytes())
+            ))
+            .exists()
+        );
 
         let outcome = execute_after_protected_owner_check_once(
             &intent,
