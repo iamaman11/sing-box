@@ -279,8 +279,13 @@ pub(crate) async fn observe_vm_resource_report(
             ..Default::default()
         };
         if let Some(docker) = &docker {
-            match docker.inspect_container(&resource.container_name, None).await {
-                Err(BollardError::DockerResponseServerError { status_code: 404, .. }) => {
+            match docker
+                .inspect_container(&resource.container_name, None)
+                .await
+            {
+                Err(BollardError::DockerResponseServerError {
+                    status_code: 404, ..
+                }) => {
                     row.reason_code = "CONTAINER_ABSENT".to_owned();
                 }
                 Err(_) => row.reason_code = "INSPECT_UNAVAILABLE".to_owned(),
@@ -296,24 +301,29 @@ pub(crate) async fn observe_vm_resource_report(
                                 &resource.container_name,
                                 labels,
                                 &host.vm_containers,
-                            ).is_ok()
+                            )
+                            .is_ok()
                         });
                     let id = inspect.id.as_deref().unwrap_or("");
-                    let valid_id = id.len() == 64
-                        && id.bytes().all(|b| b.is_ascii_hexdigit());
+                    let valid_id = id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit());
                     if inspect.name.as_deref()
-                            == Some(format!("/{}", resource.container_name).as_str())
-                        && valid_labels && valid_id
+                        == Some(format!("/{}", resource.container_name).as_str())
+                        && valid_labels
+                        && valid_id
                     {
                         row.ownership_proven = true;
                         row.container_id = id.to_owned();
                         if let Some(config) = &inspect.config {
-                            row.image = config.image.as_deref()
+                            row.image = config
+                                .image
+                                .as_deref()
                                 .filter(|image| image.len() <= 256)
-                                .unwrap_or("").to_owned();
+                                .unwrap_or("")
+                                .to_owned();
                         }
-                        if let Some(restarts) = inspect.restart_count
-                            .and_then(|v| u64::try_from(v).ok()) {
+                        if let Some(restarts) =
+                            inspect.restart_count.and_then(|v| u64::try_from(v).ok())
+                        {
                             row.restart_count = restarts;
                             row.restart_count_proven = true;
                         }
@@ -328,8 +338,9 @@ pub(crate) async fn observe_vm_resource_report(
                                     "STOPPED".to_owned()
                                 };
                                 if running {
-                                    if let Some(health) = state.health.as_ref()
-                                        .and_then(|h| h.status.as_ref()) {
+                                    if let Some(health) =
+                                        state.health.as_ref().and_then(|h| h.status.as_ref())
+                                    {
                                         row.health = format!("{health:?}");
                                         if row.health.eq_ignore_ascii_case("unhealthy") {
                                             row.reason_code = "HEALTH_DEGRADED".to_owned();

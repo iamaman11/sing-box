@@ -347,7 +347,7 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             io::stdout()
                 .write_all(&report.encode_to_vec())
                 .map_err(|_| AgentError::Command("HOST_RESOURCE_REPORT_STDOUT_FAILED".into()))
-        },
+        }
         cli::LocalCommand::HostApply => host_native::apply(&stack_dir)
             .await
             .map_err(AgentError::Command),

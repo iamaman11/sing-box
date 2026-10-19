@@ -23,13 +23,22 @@ pub fn validate_vm_resource_report(
     for (row, expected) in report.resources.iter().zip(host.vm_containers.iter()) {
         if row.resource.as_ref() != Some(expected)
             || row.image.len() > 256
-            || !row.image.bytes().all(|b| b.is_ascii_alphanumeric()
-                || matches!(b, b'/' | b':' | b'.' | b'_' | b'-' | b'@'))
+            || !row.image.bytes().all(|b| {
+                b.is_ascii_alphanumeric() || matches!(b, b'/' | b':' | b'.' | b'_' | b'-' | b'@')
+            })
             || row.health.len() > 32
-            || !row.health.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_')
-            || (row.present && !row.ownership_proven && (!row.container_id.is_empty()
-                || !row.image.is_empty() || !row.health.is_empty() || row.running
-                || row.running_proven || row.restart_count_proven))
+            || !row
+                .health
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_')
+            || (row.present
+                && !row.ownership_proven
+                && (!row.container_id.is_empty()
+                    || !row.image.is_empty()
+                    || !row.health.is_empty()
+                    || row.running
+                    || row.running_proven
+                    || row.restart_count_proven))
             || (!row.present && (row.ownership_proven || row.running_proven || row.running))
             || (row.running && !row.running_proven)
             || (row.ownership_proven && !valid_container_id(&row.container_id))
@@ -53,8 +62,9 @@ fn reason_consistent(row: &FleetVmResourceReadback) -> bool {
         "DOCKER_UNAVAILABLE" | "INSPECT_UNAVAILABLE" => !row.present,
         "FOREIGN_OWNER" => row.present && !row.ownership_proven,
         "STATE_UNPROVEN" => row.present && row.ownership_proven && !row.running_proven,
-        "RUNNING" | "HEALTH_DEGRADED" =>
-            row.present && row.ownership_proven && row.running_proven && row.running,
+        "RUNNING" | "HEALTH_DEGRADED" => {
+            row.present && row.ownership_proven && row.running_proven && row.running
+        }
         "STOPPED" => row.present && row.ownership_proven && row.running_proven && !row.running,
         _ => false,
     }
@@ -67,8 +77,8 @@ pub fn decode_vm_resource_report(
     if bytes.is_empty() || bytes.len() > MAX_VM_RESOURCE_REPORT_BYTES {
         return Err("VM_RESOURCE_REPORT_SIZE_INVALID");
     }
-    let report = FleetVmResourceReport::decode(bytes)
-        .map_err(|_| "VM_RESOURCE_REPORT_PROTO_INVALID")?;
+    let report =
+        FleetVmResourceReport::decode(bytes).map_err(|_| "VM_RESOURCE_REPORT_PROTO_INVALID")?;
     if report.encode_to_vec() != bytes {
         return Err("VM_RESOURCE_REPORT_NONCANONICAL");
     }
@@ -118,7 +128,11 @@ mod tests {
         report.remote_attested = true;
         assert!(validate_vm_resource_report(&report, &host).is_err());
         report.remote_attested = false;
-        report.resources[0].resource.as_mut().unwrap().compose_project = "foreign".into();
+        report.resources[0]
+            .resource
+            .as_mut()
+            .unwrap()
+            .compose_project = "foreign".into();
         assert!(validate_vm_resource_report(&report, &host).is_err());
         report.resources[0].resource = host.vm_containers.first().cloned();
         report.resources[0].ownership_proven = false;
