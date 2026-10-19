@@ -426,8 +426,12 @@ mod native_host_path_tests {
 
     #[test]
     fn actual_vm_specs_are_accepted_but_traversal_is_not() {
-        assert!(git_owned_host_spec_path("infra/production/production.textproto"));
-        assert!(git_owned_host_spec_path("infra/application/disposable-acceptance.json"));
+        assert!(git_owned_host_spec_path(
+            "infra/production/production.textproto"
+        ));
+        assert!(git_owned_host_spec_path(
+            "infra/application/disposable-acceptance.json"
+        ));
         assert!(!git_owned_host_spec_path("infra/../secrets.env"));
         assert!(!git_owned_host_spec_path("/etc/sudoers"));
         assert!(!git_owned_host_spec_path("infra/prod\\secret"));
