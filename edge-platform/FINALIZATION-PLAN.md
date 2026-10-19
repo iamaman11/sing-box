@@ -105,19 +105,11 @@ entrypoint связывает owner readback → signed admission → durable re
 lock → однократную mutation callback → физический poststate. Тесты
 покрывают долговечный однократный NOOP, успешный переход и UNKNOWN_NO_REPLAY.
 
-**Сейчас:** VM Agent получил единый signed-HostIntent вход, Git provenance,
-root journal и проверку Docker ownership. Native VM STOP выполняется только
-для проверенных Docker Compose project/service и точных container ID; Mesh и
-чужие контейнеры вне области исполнения. Неполное Docker-состояние блокирует
-мутацию до BEGIN. При STOP с release drift журнал проверяет сохранение
-исходного bundle digest и выдаёт `STOPPED_RELEASE_DRIFT_REQUIRES_INSTALL_TARGET`,
-а не требует несуществующую активацию нового ReleaseSet. Native VM readback
-не объявляет RUNNING без независимой Compose ownership проверки. Всё перечисленное
-здесь является **исходным кодом PR #403**, без утверждения об установленном owner.
-**Не завершено:** VM target/trust bootstrap, Windows execution, удалённый
-криптографически аутентифицированный receipt, full reinstall/config-only
-reconcile/recover, физическая VM STOP/START приёмка и проверка внешнего
-интернета (DNS, TLS/auth, direct/WARP, Windows↔VM). CI не равен runtime.
+**Сейчас:** В PR #403 VM STOP ограничен проверенными Docker ID/Compose ownership,
+не затрагивает Mesh; release drift сохраняется в журнале, RUNNING требует
+Compose proof. Это только source, не установленный runtime.
+**Остаётся:** VM trust bootstrap, Windows execution, signed remote receipt,
+reinstall/config/recover, внешний интернет и физическая приёмка. CI ≠ runtime.
 
 ## Обязательный протокол сомнения (без гаданий и кругов)
 
