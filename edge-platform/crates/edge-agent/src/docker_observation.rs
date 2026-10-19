@@ -719,6 +719,64 @@ fn bind_owned_vm_compose_dependencies(
     Ok(())
 }
 
+/// Compile exact Docker network ownership and service membership from the
+/// same Compose YAML as the OCI image references. Unsupported network modes
+/// are rejected before BEGIN, not hidden behind Docker Compose defaults.
+fn compile_vm_networks_from_compose(
+    host: &FleetHost,
+    compose: &serde_yaml::Value,
+) -> Result<Vec<edge_shared_types::FleetVmDesiredNetwork>, String> {
+    let mut networks = BTreeMap::<String, Vec<String>>::new();
+    let services = compose
+        .get("services")
+        .ok_or("HOST_VM_COMPOSE_SERVICES_MISSING")?;
+    let declarations = compose
+        .get("networks")
+        .ok_or("HOST_VM_NETWORK_DECLARATIONS_MISSING")?;
+    for selector in &host.vm_containers {
+        let attachments = services
+            .get(&selector.compose_service)
+            .and_then(|service| service.get("networks"))
+            .and_then(serde_yaml::Value::as_sequence)
+            .ok_or("HOST_VM_NETWORK_IMPLICIT_OR_INVALID")?;
+        if attachments.len() != 1 {
+            return Err("HOST_VM_NETWORK_MULTI_ATTACHMENT_UNSUPPORTED".into());
+        }
+        let name = attachments[0]
+            .as_str()
+            .ok_or("HOST_VM_NETWORK_ATTACHMENT_NOT_TYPED")?;
+        networks
+            .entry(name.to_owned())
+            .or_default()
+            .push(selector.compose_service.clone());
+    }
+    let project = host
+        .vm_containers
+        .first()
+        .ok_or("HOST_VM_NETWORK_OWNER_SCOPE_MISSING")?
+        .compose_project
+        .clone();
+    let mut graph_networks = Vec::new();
+    for (network_name, attached_services) in networks {
+        let policy = declarations
+            .get(&network_name)
+            .and_then(serde_yaml::Value::as_mapping)
+            .ok_or("HOST_VM_NETWORK_POLICY_MISSING")?;
+        if policy.len() != 1 || policy.get("driver").and_then(serde_yaml::Value::as_str)
+            != Some("bridge")
+        {
+            return Err("HOST_VM_NETWORK_POLICY_UNSUPPORTED".into());
+        }
+        graph_networks.push(edge_shared_types::FleetVmDesiredNetwork {
+            compose_project: project.clone(),
+            network_name,
+            driver: "bridge".into(),
+            attached_services,
+        });
+    }
+    Ok(graph_networks)
+}
+
 /// One typed graph compiler for BOTH immutable Git bundle desired and
 /// root-local actual policy. This never infers desired from installed files.
 fn compile_vm_graph_from_parts(
@@ -730,6 +788,7 @@ fn compile_vm_graph_from_parts(
     use edge_shared_types::{FleetVmDesiredGraph, FleetVmDesiredResource};
     let images = resolve_owned_vm_images(compose, env, &host.vm_containers)?;
     let deps = resolve_compose_dependencies(compose, &host.vm_containers)?;
+    let networks = compile_vm_networks_from_compose(host, compose)?;
     let mut resources = Vec::with_capacity(host.vm_containers.len());
     for identity in &host.vm_containers {
         let template = match identity.compose_service.as_str() {
@@ -761,6 +820,7 @@ fn compile_vm_graph_from_parts(
         schema_version: 1,
         machine_id: host.machine_id.clone(),
         resources,
+        networks,
     };
     edge_shared_types::host_resources::validate_vm_desired_graph(&graph, host)
         .map_err(str::to_owned)?;
@@ -1979,6 +2039,42 @@ mod vm_native_start_order_tests {
     }
 
     #[test]
+    fn compose_network_policy_is_typed_not_an_implicit_or_foreign_fallback() {
+        let compose: serde_yaml::Value = serde_yaml::from_str(
+            "name: vultr-edge\nservices:\n  line1-gateway:\n    networks: [edge_net]\n  warp-egress:\n    networks: [edge_net]\n  cloudflare-mesh:\n    networks: [mesh_net]\nnetworks:\n  edge_net:\n    driver: bridge\n  mesh_net:\n    driver: bridge\n",
+        )
+        .unwrap();
+        let host = FleetHost {
+            vm_containers: ["line1-gateway", "warp-egress"]
+                .iter()
+                .map(|name| FleetVmContainer {
+                    container_name: format!("vultr-{name}"),
+                    compose_project: "vultr-edge".into(),
+                    compose_service: (*name).into(),
+                })
+                .collect(),
+            ..Default::default()
+        };
+        let networks = compile_vm_networks_from_compose(&host, &compose).unwrap();
+        assert_eq!(networks.len(), 1);
+        assert_eq!(networks[0].network_name, "edge_net");
+        assert_eq!(networks[0].attached_services, vec!["line1-gateway", "warp-egress"]);
+        let mut changed = compose.clone();
+        changed["services"]["warp-egress"]["networks"] =
+            serde_yaml::from_str("[mesh_net]").unwrap();
+        assert!(compile_vm_networks_from_compose(&host, &changed).is_ok());
+        // It is independently represented in DesiredGraph; the native
+        // running-network effectors will still reject unsupported targets.
+        changed["networks"]["mesh_net"]["driver"] =
+            serde_yaml::from_str("host").unwrap();
+        assert!(compile_vm_networks_from_compose(&host, &changed).is_err());
+        changed = compose;
+        changed["networks"]["edge_net"]["internal"] =
+            serde_yaml::from_str("true").unwrap();
+        assert!(compile_vm_networks_from_compose(&host, &changed).is_err());
+    }
+
+    #[test]
     fn image_identity_is_derived_only_from_trusted_compose_and_pinned_release() {
         let compose: serde_yaml::Value = serde_yaml::from_str(
             "services:\n  line2-proxy:\n    image: ${EDGE_GATEWAY_IMAGE:?required}\n",
@@ -2114,6 +2210,16 @@ mod vm_native_start_order_tests {
                     ..Default::default()
                 })
                 .collect(),
+            networks: vec![edge_shared_types::FleetVmDesiredNetwork {
+                compose_project: "vultr-edge".into(),
+                network_name: "edge_net".into(),
+                driver: "bridge".into(),
+                attached_services: vec![
+                    "line1-gateway".into(),
+                    "line2-proxy".into(),
+                    "warp-egress".into(),
+                ],
+            }],
         };
         let plan = NativeVmRunPlan {
             step: FleetHostPlannedStep::Start,

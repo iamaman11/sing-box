@@ -57,10 +57,20 @@ message FleetVmDesiredResource {
   repeated string dependencies = 3;
   bytes config_template_sha256 = 4;
 }
+// Only Compose-owned networks used by registered application containers.
+// Network name/driver and membership are derived from the SAME immutable
+// Compose bytes as container images. Mesh is independent and excluded.
+message FleetVmDesiredNetwork {
+  string compose_project = 1;
+  string network_name = 2;
+  string driver = 3;
+  repeated string attached_services = 4;
+}
 message FleetVmDesiredGraph {
   uint32 schema_version = 1;
   string machine_id = 2;
   repeated FleetVmDesiredResource resources = 3;
+  repeated FleetVmDesiredNetwork networks = 4;
 }
 
 // A PURE comparison of immutable Git target versus installed policy. This

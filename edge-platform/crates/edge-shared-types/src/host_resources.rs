@@ -21,9 +21,47 @@ pub fn validate_vm_desired_graph(
         || graph.machine_id != host.machine_id
         || graph.resources.is_empty()
         || graph.resources.len() != host.vm_containers.len()
+        || graph.networks.is_empty()
+        || graph.networks.len() > 16
         || graph.encode_to_vec().len() > 16384
     {
         return Err("VM_GRAPH_SCOPE_INVALID");
+    }
+    // All network membership is typed, bounded and tied to exact Compose
+    // project ownership. Missing/default networks, foreign Mesh attachments,
+    // duplicate names and unused networks cannot silently enter a release.
+    let mut network_names = std::collections::BTreeSet::new();
+    let mut network_membership = std::collections::BTreeSet::new();
+    let project = &host.vm_containers[0].compose_project;
+    for network in &graph.networks {
+        if network.compose_project != *project
+            || network.driver != "bridge"
+            || network.network_name.is_empty()
+            || network.network_name.len() > 64
+            || !network
+                .network_name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
+            || network.network_name == "mesh_net"
+            || !network_names.insert(network.network_name.as_str())
+            || network.attached_services.is_empty()
+        {
+            return Err("VM_GRAPH_NETWORK_SCOPE_INVALID");
+        }
+        let mut members = std::collections::BTreeSet::new();
+        for service in &network.attached_services {
+            if !host.vm_containers.iter().any(|item| &item.compose_service == service)
+                || !members.insert(service.as_str())
+                || !network_membership.insert(service.as_str())
+            {
+                // Current native lifecycle deliberately permits one owned
+                // network per registered container, never implicit multi-net.
+                return Err("VM_GRAPH_NETWORK_MEMBERSHIP_INVALID");
+            }
+        }
+    }
+    if network_membership.len() != host.vm_containers.len() {
+        return Err("VM_GRAPH_NETWORK_MEMBERSHIP_INCOMPLETE");
     }
     let mut unique = std::collections::BTreeSet::new();
     for (row, selector) in graph.resources.iter().zip(&host.vm_containers) {
@@ -106,6 +144,9 @@ pub fn propose_vm_graph_reconcile(
     use crate::{FleetVmGraphReconcile, FleetVmGraphResourceChange, FleetVmPolicyChange};
     validate_vm_desired_graph(installed, host)?;
     validate_vm_desired_graph(desired, host)?;
+    if installed.networks != desired.networks {
+        return Err("VM_RECONCILE_NETWORK_POLICY_REQUIRES_NATIVE_HANDLER");
+    }
     // The source container order is the single canonical fleet order.
     // A dependency delta needs its own typed Docker/network lifecycle and
     // must never sneak through a config-only or image-only effector.
@@ -479,8 +520,26 @@ mod tests {
                     ..Default::default()
                 },
             ],
+            networks: vec![crate::FleetVmDesiredNetwork {
+                compose_project: "test".into(),
+                network_name: "edge_net".into(),
+                driver: "bridge".into(),
+                attached_services: vec!["line1-gateway".into(), "warp-egress".into()],
+            }],
         };
         assert!(validate_vm_desired_graph(&graph, &host).is_ok());
+        let mut unknown_network = graph.clone();
+        unknown_network.networks[0].attached_services.push("cloudflare-mesh".into());
+        assert_eq!(
+            validate_vm_desired_graph(&unknown_network, &host),
+            Err("VM_GRAPH_NETWORK_MEMBERSHIP_INVALID")
+        );
+        unknown_network = graph.clone();
+        unknown_network.networks[0].driver = "host".into();
+        assert_eq!(
+            validate_vm_desired_graph(&unknown_network, &host),
+            Err("VM_GRAPH_NETWORK_SCOPE_INVALID")
+        );
         graph.resources[1].dependencies.push("line1-gateway".into());
         assert_eq!(
             validate_vm_desired_graph(&graph, &host),
@@ -672,8 +731,35 @@ mod vm_graph_reconcile_tests {
             schema_version: 1,
             machine_id: host.machine_id.clone(),
             resources,
+            networks: vec![crate::FleetVmDesiredNetwork {
+                compose_project: "vultr-edge".into(),
+                network_name: "edge_net".into(),
+                driver: "bridge".into(),
+                attached_services: vec![
+                    "line1-gateway".into(),
+                    "line2-proxy".into(),
+                    "warp-egress".into(),
+                ],
+            }],
         };
         (host, graph)
+    }
+
+    #[test]
+    fn docker_network_policy_change_never_sneaks_through_image_or_config_effector() {
+        let (host, installed) = sample();
+        let mut desired = installed.clone();
+        desired.networks[0].network_name = "new_edge_net".into();
+        assert_eq!(
+            propose_vm_graph_reconcile(&host, &installed, &desired),
+            Err("VM_RECONCILE_NETWORK_POLICY_REQUIRES_NATIVE_HANDLER")
+        );
+        desired = installed.clone();
+        desired.networks[0].attached_services.swap(0, 1);
+        assert_eq!(
+            propose_vm_graph_reconcile(&host, &installed, &desired),
+            Err("VM_RECONCILE_NETWORK_POLICY_REQUIRES_NATIVE_HANDLER")
+        );
     }
 
     #[test]
