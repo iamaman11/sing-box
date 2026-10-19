@@ -304,15 +304,15 @@ pub(crate) async fn preflight_native_vm_run(
     host: &FleetHost,
     step: FleetHostPlannedStep,
 ) -> Result<NativeVmRunPlan, String> {
-    if !matches!(step, FleetHostPlannedStep::Start | FleetHostPlannedStep::Stop) {
+    if !matches!(
+        step,
+        FleetHostPlannedStep::Start | FleetHostPlannedStep::Stop
+    ) {
         return Err("HOST_NATIVE_VM_RUN_STEP_INVALID".into());
     }
     let readback = observe_vm_resource_report(host).await?;
-    let plan = edge_shared_types::host_resources::propose_vm_resource_transitions(
-        host,
-        &readback,
-    )
-    .map_err(str::to_owned)?;
+    let plan = edge_shared_types::host_resources::propose_vm_resource_transitions(host, &readback)
+        .map_err(str::to_owned)?;
     let mut changed = 0;
     for resource in &plan.resources {
         let candidate = FleetHostPlannedStep::try_from(resource.step)
@@ -625,8 +625,6 @@ async fn prepare_owned_vm_start(
     }
     Ok((owned, order))
 }
-
-
 
 #[cfg(test)]
 mod vm_native_start_order_tests {

@@ -232,7 +232,10 @@ pub fn propose_vm_resource_transitions(
                 (Step::Start, "CONTAINER_STOPPED_BUT_TARGET_RUNNING")
             }
             Some(FleetHostRunState::Running)
-                if matches!(row.reason_code.as_str(), "HEALTHY" | "RUNNING_NO_HEALTHCHECK") =>
+                if matches!(
+                    row.reason_code.as_str(),
+                    "HEALTHY" | "RUNNING_NO_HEALTHCHECK"
+                ) =>
             {
                 // An already-running container requires no START. Docker
                 // health is NOT proof of configuration or network readiness.
@@ -255,6 +258,15 @@ pub fn propose_vm_resource_transitions(
         owner_attested: false,
         mutation_authorized: false,
     })
+}
+
+/// A runtime NOOP is not evidence of configuration convergence. Keep that
+/// distinction visible in the *same* operator diagnostic and typed planner.
+pub fn vm_resource_requires_attention(
+    transition: &crate::FleetVmResourceTransition,
+) -> bool {
+    transition.step != crate::FleetHostPlannedStep::Noop as i32
+        || transition.reason_code == "RUNNING_RUNTIME_ONLY_CONFIG_UNPROVEN"
 }
 
 #[cfg(test)]
@@ -350,6 +362,22 @@ mod resource_planning_tests {
         report.resources[0].running_proven = false;
         report.resources[0].reason_code = "FOREIGN_OWNER".into();
         assert_eq!(step(&host, &report), FleetHostPlannedStep::Blocked);
+    }
+
+    #[test]
+    fn running_noop_never_conceals_unproven_config() {
+        let (host, report) = fixture();
+        let plan = propose_vm_resource_transitions(&host, &report).unwrap();
+        assert_eq!(plan.resources[0].step, FleetHostPlannedStep::Noop as i32);
+        assert!(vm_resource_requires_attention(&plan.resources[0]));
+        let mut stopped = host;
+        stopped.target.as_mut().unwrap().run_state = FleetHostRunState::Stopped as i32;
+        let mut report = report;
+        report.resources[0].running = false;
+        report.resources[0].health.clear();
+        report.resources[0].reason_code = "STOPPED".into();
+        let plan = propose_vm_resource_transitions(&stopped, &report).unwrap();
+        assert!(!vm_resource_requires_attention(&plan.resources[0]));
     }
 
     #[test]

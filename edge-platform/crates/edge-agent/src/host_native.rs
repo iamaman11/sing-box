@@ -386,6 +386,59 @@ pub(super) async fn attest_published_github_source(
     Ok(())
 }
 
+/// Bind the policy files actually used for START to the exact immutable
+/// GitHub application bundle already authenticated by the native owner.
+/// A release marker alone cannot prove that Compose or image pins on disk
+/// still contain the bytes published with that release.
+fn verify_installed_native_vm_policy(
+    stack_dir: &Path,
+    bundle_pb: &[u8],
+) -> Result<(), String> {
+    let request = ApplyBundleRequest::decode(bundle_pb)
+        .map_err(|_| "HOST_NATIVE_BUNDLE_POLICY_UNDECODABLE")?;
+    super::validate_digest_bound_bundle_request(&request)
+        .map_err(|_| "HOST_NATIVE_BUNDLE_POLICY_DIGEST_INVALID")?;
+    for name in ["docker-compose.yml", ".images.env"] {
+        let mut candidates = request
+            .stack_files
+            .iter()
+            .filter(|file| file.relative_path == name);
+        let expected = candidates
+            .next()
+            .ok_or("HOST_NATIVE_BUNDLE_POLICY_FILE_MISSING")?;
+        if candidates.next().is_some()
+            || expected.content.is_empty()
+            || expected.content.len() > 65536
+        {
+            return Err("HOST_NATIVE_BUNDLE_POLICY_FILE_INVALID".into());
+        }
+        verify_installed_native_vm_file(stack_dir, name, &expected.content)?;
+    }
+    Ok(())
+}
+
+fn verify_installed_native_vm_file(
+    stack_dir: &Path,
+    name: &str,
+    expected: &[u8],
+) -> Result<(), String> {
+    let file = stack_dir.join(name);
+    let metadata =
+        fs::symlink_metadata(&file).map_err(|_| "HOST_NATIVE_BUNDLE_POLICY_NOT_INSTALLED")?;
+    if !metadata.file_type().is_file()
+        || metadata.len() == 0
+        || metadata.len() > 65536
+        || metadata.len() as usize != expected.len()
+    {
+        return Err("HOST_NATIVE_BUNDLE_POLICY_FILE_UNSAFE".into());
+    }
+    let actual = fs::read(&file).map_err(|_| "HOST_NATIVE_BUNDLE_POLICY_READ_FAILED")?;
+    if actual != expected {
+        return Err("HOST_NATIVE_BUNDLE_POLICY_DRIFT".into());
+    }
+    Ok(())
+}
+
 /// The existing installed root agent is the *only* mutation authority.
 /// Fail closed while the native root has not received the exact immutable
 /// release and pinned signer material; no implicit provision or fetch.
@@ -495,6 +548,12 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
             },
             |step| match step {
                 FleetHostPlannedStep::Start | FleetHostPlannedStep::Stop => {
+                    // STOP remains possible with a missing/old bundle; START
+                    // must never execute on a modified Compose or image policy.
+                    if step == FleetHostPlannedStep::Start {
+                        verify_installed_native_vm_policy(stack_dir, &bundle_pb)
+                            .map_err(|_| "HOST_NATIVE_VM_POLICY_DRIFT")?;
+                    }
                     let proposal = handle
                         .block_on(super::docker_observation::preflight_native_vm_run(
                             stack_dir, host, step,
@@ -552,6 +611,41 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod native_host_path_tests {
     use super::*;
+
+    #[test]
+    fn native_start_policy_rejects_mutated_files_and_symlinks() {
+        let root = std::env::temp_dir().join(format!(
+            "sing-box-native-policy-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&root).unwrap();
+        let exact = b"name: vultr-edge\n";
+        fs::write(root.join("docker-compose.yml"), exact).unwrap();
+        assert!(verify_installed_native_vm_file(
+            &root,
+            "docker-compose.yml",
+            exact
+        ).is_ok());
+        fs::write(root.join("docker-compose.yml"), b"name: foreign\n").unwrap();
+        assert!(verify_installed_native_vm_file(
+            &root,
+            "docker-compose.yml",
+            exact
+        ).is_err());
+        fs::remove_file(root.join("docker-compose.yml")).unwrap();
+        std::os::unix::fs::symlink("/etc/hosts", root.join("docker-compose.yml")).unwrap();
+        assert!(verify_installed_native_vm_file(
+            &root,
+            "docker-compose.yml",
+            exact
+        ).is_err());
+        fs::remove_file(root.join("docker-compose.yml")).unwrap();
+        fs::remove_dir(root).unwrap();
+    }
 
     #[test]
     fn trust_snapshot_is_one_bounded_canonical_protobuf() {

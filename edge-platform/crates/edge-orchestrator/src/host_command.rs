@@ -448,12 +448,20 @@ pub(crate) fn run(
                     .resources
                     .iter()
                     .filter(|entry| {
-                        entry.step != edge_shared_types::FleetHostPlannedStep::Noop as i32
+                        edge_shared_types::host_resources::vm_resource_requires_attention(entry)
+                    })
+                    .count();
+                let config_unproven = resource_plan
+                    .resources
+                    .iter()
+                    .filter(|entry| {
+                        entry.reason_code == "RUNNING_RUNTIME_ONLY_CONFIG_UNPROVEN"
                     })
                     .count();
                 println!("host_vm_resources_schema=1");
                 println!("host_vm_resources_count={}", report.resources.len());
                 println!("host_vm_resources_problem_count={problems}");
+                println!("host_vm_resources_config_unproven_count={config_unproven}");
                 for (resource, proposal) in report.resources.iter().zip(&resource_plan.resources) {
                     let identity = resource
                         .resource
