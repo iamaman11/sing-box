@@ -155,6 +155,18 @@ async fn run_local_host_observe(stack_dir: &Path) -> Result<(), String> {
         .map_err(|_| "HOST_OBSERVATION_STDOUT_UNAVAILABLE".to_owned())
 }
 
+/// Fixed native application resource scope. The Mesh service, unrelated
+/// project containers and other Docker workloads must never be mistaken for
+/// this application's RUNNING state, nor block verified first-use absence.
+fn owned_application_container_running(names: &[String]) -> bool {
+    names.iter().any(|name| {
+        matches!(
+            name.as_str(),
+            "vultr-warp-egress" | "vultr-line1-gateway" | "vultr-line2-proxy"
+        )
+    })
+}
+
 /// One local source of native VM readback, shared with authenticated execution.
 async fn capture_local_host_observation(
     stack_dir: &Path,
@@ -187,10 +199,10 @@ async fn capture_local_host_observation(
     // egress. Report actual local Docker/Agent readiness only.
     let owner_state = if !state.docker_reachable {
         FleetNativeOwnerState::Unproven
-    } else if state.running_containers.is_empty() {
-        FleetNativeOwnerState::Stopped
-    } else {
+    } else if owned_application_container_running(&state.running_containers) {
         FleetNativeOwnerState::Running
+    } else {
+        FleetNativeOwnerState::Stopped
     };
     // Absence must be observed independently: Docker was inspected and no
     // owned application containers or release marker exist. A running
@@ -5309,6 +5321,27 @@ struct BundleSummary {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn vm_owned_runtime_scope_excludes_unrelated_docker_workloads() {
+        let foreign = vec![
+            "vultr-cloudflare-mesh".to_owned(),
+            "unrelated-project-db".to_owned(),
+            "some-other-sing-box".to_owned(),
+        ];
+        assert!(!owned_application_container_running(&foreign));
+        for own in ["vultr-warp-egress", "vultr-line1-gateway", "vultr-line2-proxy"] {
+            let mut names = foreign.clone();
+            names.push(own.to_owned());
+            assert!(owned_application_container_running(&names));
+        }
+        // Names must match exactly, not by substring or prefix.
+        assert!(!owned_application_container_running(&[
+            "vultr-line1-gateway-other".into(),
+            "prefix-vultr-warp-egress".into(),
+        ]));
+    }
+
+
     use super::*;
     use edge_shared_types::agent_service_server::AgentService;
     use edge_shared_types::{
