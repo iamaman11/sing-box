@@ -517,6 +517,30 @@ mod native_host_path_tests {
     use super::*;
 
     #[test]
+    fn trust_snapshot_is_one_bounded_canonical_protobuf() {
+        let mut snapshot = FleetNativeTrustSnapshot {
+            schema_version: 1,
+            machine_id: "vm-1".to_owned(),
+            registry_pb: vec![1],
+            release_set_pb: vec![2],
+            application_bundle_pb: vec![3],
+            selected_spec_bytes: vec![4],
+            pinned_worker_public_key: vec![5; 32],
+        };
+        let bytes = snapshot.encode_to_vec();
+        assert_eq!(
+            decode_native_trust_snapshot(&bytes).unwrap().machine_id,
+            "vm-1"
+        );
+        snapshot.pinned_worker_public_key = vec![0; 32];
+        assert!(decode_native_trust_snapshot(&snapshot.encode_to_vec()).is_err());
+        snapshot.pinned_worker_public_key = vec![5; 32];
+        snapshot.machine_id = "../other-machine".to_owned();
+        assert!(decode_native_trust_snapshot(&snapshot.encode_to_vec()).is_err());
+        assert!(decode_native_trust_snapshot(&vec![0; 9 * 1024 * 1024 + 1]).is_err());
+    }
+
+    #[test]
     fn actual_vm_specs_are_accepted_but_traversal_is_not() {
         assert!(git_owned_host_spec_path(
             "infra/production/production.textproto"
