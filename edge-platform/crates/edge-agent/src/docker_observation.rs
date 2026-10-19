@@ -160,6 +160,20 @@ fn exact_application_compose_owner(
     Ok(())
 }
 
+/// An absent flag is not proof of a safe transition state. An existing
+/// container must have a complete Docker state before any ID-based mutation.
+fn require_known_native_container_state(
+    state: &bollard::models::ContainerState,
+) -> Result<bool, &'static str> {
+    if state.paused != Some(false)
+        || state.restarting != Some(false)
+        || state.dead != Some(false)
+    {
+        return Err("HOST_NATIVE_CONTAINER_TRANSITION_UNPROVEN");
+    }
+    state.running.ok_or("HOST_NATIVE_CONTAINER_RUNNING_UNPROVEN")
+}
+
 /// Inspect every application-owned container before admitting a native change.
 /// Names alone are not ownership: check the Compose project, service and
 /// immutable Docker container ID. Mesh and unrelated Docker projects are
@@ -195,15 +209,7 @@ async fn owned_application_container_ids(docker: &Docker) -> Result<Vec<(String,
             return Err("HOST_NATIVE_CONTAINER_ID_INVALID".into());
         }
         let state = inspect.state.ok_or("HOST_NATIVE_CONTAINER_STATE_UNAVAILABLE")?;
-        // Paused, restarting or dead is an uncertain transition, not a known
-        // RUNNING/STOPPED owner. Never proceed with a partially known set.
-        if state.paused.unwrap_or(false)
-            || state.restarting.unwrap_or(false)
-            || state.dead.unwrap_or(false)
-        {
-            return Err("HOST_NATIVE_CONTAINER_TRANSITION_UNPROVEN".into());
-        }
-        let running = state.running.ok_or("HOST_NATIVE_CONTAINER_RUNNING_UNPROVEN")?;
+        let running = require_known_native_container_state(&state).map_err(str::to_owned)?;
         owned.push((id, running));
     }
     Ok(owned)
@@ -603,6 +609,51 @@ fn normalize_containers(summaries: Vec<ContainerSummary>) -> DockerObservation {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn native_stop_requires_complete_state_and_never_adopts_mesh() {
+        use bollard::models::ContainerState;
+        let safe_running = ContainerState {
+            running: Some(true),
+            paused: Some(false),
+            restarting: Some(false),
+            dead: Some(false),
+            ..Default::default()
+        };
+        assert_eq!(require_known_native_container_state(&safe_running), Ok(true));
+        let safe_stopped = ContainerState {
+            running: Some(false),
+            ..safe_running.clone()
+        };
+        assert_eq!(require_known_native_container_state(&safe_stopped), Ok(false));
+        let paused = ContainerState {
+            paused: Some(true),
+            ..safe_running.clone()
+        };
+        assert_eq!(
+            require_known_native_container_state(&paused),
+            Err("HOST_NATIVE_CONTAINER_TRANSITION_UNPROVEN")
+        );
+        let restarting = ContainerState {
+            restarting: Some(true),
+            ..safe_running.clone()
+        };
+        assert!(require_known_native_container_state(&restarting).is_err());
+        let missing = ContainerState {
+            running: None,
+            ..safe_running
+        };
+        assert_eq!(
+            require_known_native_container_state(&missing),
+            Err("HOST_NATIVE_CONTAINER_RUNNING_UNPROVEN")
+        );
+        let valid_project = HashMap::from([
+            ("com.docker.compose.project".to_owned(), "vultr-edge".to_owned()),
+            ("com.docker.compose.service".to_owned(), "line2-proxy".to_owned()),
+        ]);
+        assert!(exact_application_compose_owner("vultr-line2-proxy", &valid_project).is_ok());
+        assert!(exact_application_compose_owner("vultr-cloudflare-mesh", &valid_project).is_err());
+    }
 
     #[test]
     fn native_owner_requires_exact_compose_service_identity() {
