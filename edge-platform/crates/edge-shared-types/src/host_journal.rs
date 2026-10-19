@@ -719,8 +719,8 @@ mod tests {
     use super::*;
     use crate::host_lifecycle::host_authorization_payload;
     use crate::{
-        FleetHost, FleetHostAction, FleetHostKind, FleetHostMode, FleetHostRunState,
-        FleetHostTarget, managed_host,
+        FleetHost, FleetHostAction, FleetHostKind, FleetHostMode, FleetHostPlannedStep,
+        FleetHostRunState, FleetHostTarget, managed_host,
     };
     use ring::rand::SystemRandom;
     use ring::signature::{Ed25519KeyPair, KeyPair};
