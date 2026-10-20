@@ -1501,7 +1501,8 @@ pub(crate) async fn bootstrap_production_runner(
         &canonical_public_key,
         "if test -L /usr/local/libexec/sing-box || test -L /usr/local/libexec/sing-box/edge-agent; then echo UNPROVEN; elif test ! -e /usr/local/libexec/sing-box/edge-agent; then echo ABSENT; elif test -f /usr/local/libexec/sing-box/edge-agent && test \"$(stat -c '%u:%g:%a' /usr/local/libexec/sing-box/edge-agent)\" = 0:0:755; then sha256sum /usr/local/libexec/sing-box/edge-agent | awk '{print $1}'; else echo UNPROVEN; fi",
     )?;
-    let install_required = admit_native_first_use_owner(&observed_owner, &expected_artifact.sha256)?;
+    let install_required =
+        admit_native_first_use_owner(&observed_owner, &expected_artifact.sha256)?;
     if install_required {
         let install_owner = format!(
             "sudo install -d -o root -g root -m 0755 /usr/local/libexec/sing-box && sudo install -o root -g root -m 0755 {REMOTE_OWNER_STAGED} {LOCAL_OWNER}"
@@ -1664,7 +1665,9 @@ pub(crate) async fn bootstrap_production_runner(
 /// native lifecycle may change it. Uncertain readback is a hard stop.
 fn admit_native_first_use_owner(observed: &str, expected_sha: &str) -> Result<bool, String> {
     if expected_sha.len() != 64
-        || !expected_sha.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+        || !expected_sha
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
     {
         return Err("HOST_BOOTSTRAP_NATIVE_OWNER_EXPECTED_DIGEST_INVALID".to_owned());
     }
