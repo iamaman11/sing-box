@@ -9,6 +9,8 @@ use edge_shared_types::{
 use std::fs::{DirBuilder, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
+use ring::rand::SystemRandom;
+use ring::signature::{Ed25519KeyPair, KeyPair};
 
 unsafe extern "C" {
     fn geteuid() -> u32;
@@ -133,6 +135,54 @@ fn write_protected_file(directory: &Path, name: &str, bytes: &[u8]) -> Result<()
     file.sync_all()
         .map_err(|_| "HOST_ENROLL_FILE_SYNC_FAILED")?;
     Ok(())
+}
+
+/// A VM generates its own long-lived native receipt identity exactly once,
+/// under local root. Only the public key is returned for subsequent protected
+/// Git registry registration. A pre-registered key cannot be matched by
+/// generating a fresh private key: refusing is safer than substituting trust.
+fn generate_receipt_identity(
+    git_public_key: &[u8],
+) -> Result<(Vec<u8>, Vec<u8>), String> {
+    if !git_public_key.is_empty() {
+        return Err("HOST_ENROLL_RECEIPT_KEY_ALREADY_REGISTERED_WITHOUT_LOCAL_IDENTITY".into());
+    }
+    let key = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())
+        .map_err(|_| "HOST_ENROLL_RECEIPT_KEY_GENERATION_FAILED")?;
+    let identity = Ed25519KeyPair::from_pkcs8(key.as_ref())
+        .map_err(|_| "HOST_ENROLL_RECEIPT_KEY_INVALID")?;
+    Ok((key.as_ref().to_vec(), identity.public_key().as_ref().to_vec()))
+}
+
+/// Existing local signing key is never overwritten, even on release refresh.
+fn read_existing_receipt_identity(trusted: &Path) -> Result<Vec<u8>, String> {
+    let key = super::host_native::root_file(&trusted.join("receipt-key.pk8"), 4096)?;
+    let identity = Ed25519KeyPair::from_pkcs8(&key)
+        .map_err(|_| "HOST_ENROLL_EXISTING_RECEIPT_KEY_INVALID")?;
+    Ok(identity.public_key().as_ref().to_vec())
+}
+
+/// Both zero-registration and exact public-key registration are valid
+/// enrollment states. Zero-registration never authorizes a host mutation:
+/// native apply requires the exact Git-pinned public key before BEGIN.
+fn verify_receipt_registration(
+    registered: &[u8],
+    local_public_key: &[u8],
+) -> Result<bool, String> {
+    if registered.is_empty() {
+        return Ok(false);
+    }
+    if registered.len() != 32
+        || registered.iter().all(|b| *b == 0)
+        || registered != local_public_key
+    {
+        return Err("HOST_ENROLL_GIT_RECEIPT_KEY_MISMATCH".into());
+    }
+    Ok(true)
+}
+
+fn receipt_public_key_hex(public_key: &[u8]) -> String {
+    public_key.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
 /// Root-owned trust can advance to a NEW accepted immutable ReleaseSet
@@ -296,6 +346,19 @@ pub(crate) async fn enroll(
     )
     .await?;
 
+    // Generation is strictly local root-only, after verifying the exact
+    // published Git release, and before publishing protected trust. The
+    // public key must be registered in protected Git and released again
+    // before any signed apply can pass receipt-key preadmission.
+    let (new_receipt_key, receipt_public_key) = if refreshing {
+        (None, read_existing_receipt_identity(trusted)?)
+    } else {
+        let (private, public) = generate_receipt_identity(&host.native_receipt_public_key)?;
+        (Some(private), public)
+    };
+    let receipt_registered =
+        verify_receipt_registration(&host.native_receipt_public_key, &receipt_public_key)?;
+
     let snapshot = FleetNativeTrustSnapshot {
         schema_version: 1,
         machine_id: machine_id.to_owned(),
@@ -317,6 +380,8 @@ pub(crate) async fn enroll(
         println!("host_enroll=PROTECTED_TRUST_REFRESHED");
         println!("host_machine_id={machine_id}");
         println!("host_release_set_sha256={release_digest}");
+        println!("host_native_receipt_public_key_hex={}", receipt_public_key_hex(&receipt_public_key));
+        println!("host_native_receipt_registration={}", if receipt_registered { "PINNED_GIT_MATCH" } else { "AWAITING_PROTECTED_GIT" });
         println!("host_mutations=0");
         return Ok(());
     }
@@ -329,6 +394,12 @@ pub(crate) async fn enroll(
         .create(&stage)
         .map_err(|_| "HOST_ENROLL_STAGE_EXISTS_OR_UNWRITABLE")?;
     write_protected_file(&stage, "trust.pb", &trust_pb)?;
+    // Same atomic root-owned staging directory: never publish a trust
+    // snapshot that silently lacks its private native receipt identity.
+    let receipt_key = new_receipt_key
+        .as_deref()
+        .ok_or("HOST_ENROLL_RECEIPT_KEY_MISSING_FOR_FIRST_USE")?;
+    write_protected_file(&stage, "receipt-key.pk8", receipt_key)?;
     let journal = stage.join("journal");
     DirBuilder::new()
         .mode(0o700)
@@ -350,6 +421,8 @@ pub(crate) async fn enroll(
     println!("host_enroll=PROTECTED_TRUST_STAGED");
     println!("host_machine_id={machine_id}");
     println!("host_release_set_sha256={release_digest}");
+    println!("host_native_receipt_public_key_hex={}", receipt_public_key_hex(&receipt_public_key));
+    println!("host_native_receipt_registration={}", if receipt_registered { "PINNED_GIT_MATCH" } else { "AWAITING_PROTECTED_GIT" });
     println!(
         "host_worker_public_key_sha256={}",
         super::host_native::sha256_hex(
@@ -374,5 +447,20 @@ mod tests {
         assert!(pinned_worker_key("not-a-key").is_err());
         assert!(!lowercase_sha(&"AB".repeat(32)));
         assert!(lowercase_sha(&"ab".repeat(32)));
+    }
+
+    #[test]
+    fn receipt_identity_is_root_local_and_requires_exact_git_registration() {
+        let (private, public) = generate_receipt_identity(&[]).unwrap();
+        let key = Ed25519KeyPair::from_pkcs8(&private).unwrap();
+        assert_eq!(key.public_key().as_ref(), public.as_slice());
+        assert_eq!(public.len(), 32);
+        assert_eq!(receipt_public_key_hex(&public).len(), 64);
+        assert!(!verify_receipt_registration(&[], &public).unwrap());
+        assert!(verify_receipt_registration(&public, &public).unwrap());
+        assert!(verify_receipt_registration(&[1; 32], &public).is_err());
+        assert!(verify_receipt_registration(&[0; 32], &public).is_err());
+        assert!(verify_receipt_registration(&[1; 12], &public).is_err());
+        assert!(generate_receipt_identity(&public).is_err());
     }
 }
