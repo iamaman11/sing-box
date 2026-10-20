@@ -26,7 +26,7 @@ Runner со старыми прямыми `sudo`-правами **не допу�
 apply/recover. Внутренний Rust `host native-result` сверяет
 intent/result по registry/desired/release, но его transport-копия
 остаётся `UNAUTHENTICATED`, не физическим receipt.
-Сквозной автоматический lifecycle для Windows и VM пока не доказан.
+Windows/VM lifecycle физически UNPROVEN.
 
 ## VM deep diagnostics — per-resource protobuf (source-only)
 
@@ -36,8 +36,7 @@ intent/result по registry/desired/release, но его transport-копия
 restart count и reason. Не читает env, credentials или Docker logs.
 GitHub переносит копию, Rust Orchestrator сверяет её со своим
 каноническим реестром и печатает причины по контейнерам.
-Runner-копия не аутентифицирует root и не разрешает mutation;
-отсутствие установленного verb — UNPROVEN, не PASS.
+Runner-копия не аутентифицирует root и не даёт mutation; verb отсутствует — UNPROVEN.
 
 ## Docker resources — один Git-owned scope
 
@@ -48,18 +47,13 @@ Rust Agent читает scope из защищённого `trust.pb` и пере
 сверяет Docker labels + immutable ID; незаявленный/чужой контейнер не
 становится своим. Без trust или без selectors состояние `UNPROVEN`,
 а не доступ ко всем контейнерам. VM target по-прежнему unset/observe-only.
-Это код PR #403, не физическая установка или проверка публичного интернета.
+Это только код PR #403; физическая приёмка — UNPROVEN.
 
-## First-use VM (кандидат PR #403)
+## VM first-use (только код)
 
-Для новой VM необязательная ссылка `vm_first_use_credential` в Git
-содержит **только** Worker-v2 generation и SHA-256 канонического bundle,
-без секретов. Подписанный root INSTALL проверяет её против Worker до
-durable BEGIN, а только после BEGIN создаёт ACTIVE cursor и нативно
-устанавливает три контейнера. Любая ошибка после BEGIN — UNKNOWN_NO_REPLAY.
-Предыдущий локальный ACTIVE cursor не переписывается; исторический A/B
-commit не вызывается. Это код и offline-тесты, **не** фактическая выдача
-секрета Worker, enrollment машины или физическая приёмка.
+Git `vm_first_use_credential` — Worker-v2 generation/digest.
+Signed INSTALL: Worker proof → durable BEGIN → ACTIVE и native Docker.
+Сбой — `UNKNOWN_NO_REPLAY`. Worker issuance/physical acceptance — UNPROVEN.
 
 ## Допуск новой операции
 
