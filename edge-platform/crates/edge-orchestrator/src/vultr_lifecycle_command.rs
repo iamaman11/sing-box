@@ -1520,9 +1520,7 @@ pub(crate) async fn bootstrap_production_runner(
     // the public key. No runner credential, sudo elevation or second owner.
     // An uncertain SSH/ACK result must not cause an automatic replay.
     let release_sha = context.release().release_set_sha256.as_str();
-    if !release_sha.bytes().all(|byte| byte.is_ascii_hexdigit())
-        || release_sha.len() != 64
-    {
+    if !release_sha.bytes().all(|byte| byte.is_ascii_hexdigit()) || release_sha.len() != 64 {
         return Err("HOST_BOOTSTRAP_RELEASE_DIGEST_INVALID".to_owned());
     }
     if machine_id.is_empty()
@@ -1684,8 +1682,7 @@ fn verified_native_enrollment_result(
     if !matches!(
         properties.get("host_enroll"),
         Some(&"PROTECTED_TRUST_STAGED" | &"PROTECTED_TRUST_REFRESHED")
-    )
-        || properties.get("host_machine_id") != Some(&machine_id)
+    ) || properties.get("host_machine_id") != Some(&machine_id)
         || properties.get("host_release_set_sha256") != Some(&release_sha)
         || properties.get("host_mutations") != Some(&"0")
     {
@@ -1695,7 +1692,9 @@ fn verified_native_enrollment_result(
         .get("host_native_receipt_public_key_hex")
         .ok_or("HOST_BOOTSTRAP_RECEIPT_PUBLIC_KEY_MISSING")?;
     if key.len() != 64
-        || key.bytes().any(|byte| !byte.is_ascii_hexdigit() || byte.is_ascii_uppercase())
+        || key
+            .bytes()
+            .any(|byte| !byte.is_ascii_hexdigit() || byte.is_ascii_uppercase())
         || key.bytes().all(|byte| byte == b'0')
     {
         return Err("HOST_BOOTSTRAP_RECEIPT_PUBLIC_KEY_INVALID".to_owned());
@@ -4272,36 +4271,46 @@ mod tests {
         let parsed = verified_native_enrollment_result(&report, machine, &release).unwrap();
         assert_eq!(parsed.0, "b".repeat(64));
         assert_eq!(parsed.1, "AWAITING_PROTECTED_GIT");
-        assert!(verified_native_enrollment_result(
-            &report.replace("host_mutations=0", "host_mutations=1"),
-            machine,
-            &release,
-        )
-        .is_err());
-        assert!(verified_native_enrollment_result(
-            &report.replace("PROTECTED_TRUST_STAGED", "UNVERIFIED"),
-            machine,
-            &release,
-        )
-        .is_err());
-        assert!(verified_native_enrollment_result(
-            &report.replace(machine, "foreign-vm"),
-            machine,
-            &release,
-        )
-        .is_err());
-        assert!(verified_native_enrollment_result(
-            &report.replace(&"b".repeat(64), &"0".repeat(64)),
-            machine,
-            &release,
-        )
-        .is_err());
-        assert!(verified_native_enrollment_result(
-            &format!("{report}\nhost_mutations=0"),
-            machine,
-            &release,
-        )
-        .is_err());
+        assert!(
+            verified_native_enrollment_result(
+                &report.replace("host_mutations=0", "host_mutations=1"),
+                machine,
+                &release,
+            )
+            .is_err()
+        );
+        assert!(
+            verified_native_enrollment_result(
+                &report.replace("PROTECTED_TRUST_STAGED", "UNVERIFIED"),
+                machine,
+                &release,
+            )
+            .is_err()
+        );
+        assert!(
+            verified_native_enrollment_result(
+                &report.replace(machine, "foreign-vm"),
+                machine,
+                &release,
+            )
+            .is_err()
+        );
+        assert!(
+            verified_native_enrollment_result(
+                &report.replace(&"b".repeat(64), &"0".repeat(64)),
+                machine,
+                &release,
+            )
+            .is_err()
+        );
+        assert!(
+            verified_native_enrollment_result(
+                &format!("{report}\nhost_mutations=0"),
+                machine,
+                &release,
+            )
+            .is_err()
+        );
     }
     #[test]
     fn initial_reboot_can_only_reobserve_not_reapply_credentials() {
