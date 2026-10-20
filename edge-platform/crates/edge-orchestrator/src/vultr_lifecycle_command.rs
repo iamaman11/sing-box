@@ -1491,16 +1491,29 @@ pub(crate) async fn bootstrap_production_runner(
     // Trusted bootstrap operator installs the one exact native owner first.
     // The GitHub runner is NOT enrolled or allowed to run host-enroll.
     // No untrusted command body, hostname or arbitrary shell is accepted here.
-    let install_owner = format!(
-        "sudo install -d -o root -g root -m 0755 /usr/local/libexec/sing-box && sudo install -o root -g root -m 0755 {REMOTE_OWNER_STAGED} {LOCAL_OWNER}"
-    );
-    strict_ssh_run(
+    // First-use bootstrap is not a backdoor upgrade path. Never replace an
+    // already-installed root Agent if its digest differs: use the signed
+    // lifecycle instead. A symlink, foreign owner or untrusted parent blocks.
+    let observed_owner = strict_ssh_capture(
         target_ip,
         machine_id,
         &operator_private_key_path,
         &canonical_public_key,
-        &install_owner,
+        "if test -L /usr/local/libexec/sing-box || test -L /usr/local/libexec/sing-box/edge-agent; then echo UNPROVEN; elif test ! -e /usr/local/libexec/sing-box/edge-agent; then echo ABSENT; elif test -f /usr/local/libexec/sing-box/edge-agent && test \"$(stat -c '%u:%g:%a' /usr/local/libexec/sing-box/edge-agent)\" = 0:0:755; then sha256sum /usr/local/libexec/sing-box/edge-agent | awk '{print $1}'; else echo UNPROVEN; fi",
     )?;
+    let install_required = admit_native_first_use_owner(&observed_owner, &expected_artifact.sha256)?;
+    if install_required {
+        let install_owner = format!(
+            "sudo install -d -o root -g root -m 0755 /usr/local/libexec/sing-box && sudo install -o root -g root -m 0755 {REMOTE_OWNER_STAGED} {LOCAL_OWNER}"
+        );
+        strict_ssh_run(
+            target_ip,
+            machine_id,
+            &operator_private_key_path,
+            &canonical_public_key,
+            &install_owner,
+        )?;
+    }
     let installed_sha = strict_ssh_capture(
         target_ip,
         machine_id,
@@ -1644,6 +1657,24 @@ pub(crate) async fn bootstrap_production_runner(
         "credential_access_identity_installed": true,
         "runner_credential_access": false,
     }))
+}
+
+/// Read-only admission for first-use owner installation. An installed
+/// mismatching binary is never replaced over strict SSH; only the signed
+/// native lifecycle may change it. Uncertain readback is a hard stop.
+fn admit_native_first_use_owner(observed: &str, expected_sha: &str) -> Result<bool, String> {
+    if expected_sha.len() != 64
+        || !expected_sha.bytes().all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err("HOST_BOOTSTRAP_NATIVE_OWNER_EXPECTED_DIGEST_INVALID".to_owned());
+    }
+    if observed == "ABSENT" {
+        return Ok(true);
+    }
+    if observed == expected_sha {
+        return Ok(false);
+    }
+    Err("HOST_BOOTSTRAP_NATIVE_OWNER_DRIFT_NO_SSH_REPLACE".to_owned())
 }
 
 /// Validate ONLY the bounded public result from our already-installed root
@@ -4255,13 +4286,25 @@ fn usage() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_first_use_owner_install_refuses_implicit_binary_replacement() {
+        let exact = "a".repeat(64);
+        assert_eq!(admit_native_first_use_owner("ABSENT", &exact), Ok(true));
+        assert_eq!(admit_native_first_use_owner(&exact, &exact), Ok(false));
+        assert_eq!(
+            admit_native_first_use_owner(&"b".repeat(64), &exact),
+            Err("HOST_BOOTSTRAP_NATIVE_OWNER_DRIFT_NO_SSH_REPLACE".to_owned())
+        );
+        assert!(admit_native_first_use_owner("UNPROVEN", &exact).is_err());
+        assert!(admit_native_first_use_owner("ABSENT", "invalid").is_err());
+    }
 
     #[test]
     fn first_use_vm_enrollment_accepts_only_exact_native_public_evidence() {
         let machine = "application-acceptance-1";
         let release = "a".repeat(64);
         let report = format!(
-            "host_enroll=PROTECTED_TRUST_STAGED\n             host_machine_id={machine}\n             host_release_set_sha256={release}\n             host_native_receipt_public_key_hex={}\n             host_native_receipt_registration=AWAITING_PROTECTED_GIT\n             host_worker_public_key_sha256={}\n             host_mutations=0",
+            "host_enroll=PROTECTED_TRUST_STAGED\\nhost_machine_id={machine}\\nhost_release_set_sha256={release}\\nhost_native_receipt_public_key_hex={}\\nhost_native_receipt_registration=AWAITING_PROTECTED_GIT\\nhost_worker_public_key_sha256={}\\nhost_mutations=0",
             "b".repeat(64),
             "c".repeat(64),
         );
