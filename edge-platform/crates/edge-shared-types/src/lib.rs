@@ -3129,14 +3129,25 @@ mod release_set_tests {
             bundle_sha256: "a".repeat(64),
         });
         assert!(validate_host_registry(&first).is_ok());
-        first.hosts[2].vm_first_use_credential =
-            first.hosts[0].vm_first_use_credential.clone();
+        first.hosts[2].vm_first_use_credential = first.hosts[0].vm_first_use_credential.clone();
         assert!(validate_host_registry(&first).is_err());
         first.hosts[2].vm_first_use_credential = None;
-        first.hosts[0].vm_first_use_credential.as_mut().unwrap().generation = 0;
+        first.hosts[0]
+            .vm_first_use_credential
+            .as_mut()
+            .unwrap()
+            .generation = 0;
         assert!(validate_host_registry(&first).is_err());
-        first.hosts[0].vm_first_use_credential.as_mut().unwrap().generation = 42;
-        first.hosts[0].vm_first_use_credential.as_mut().unwrap().bundle_sha256 = "X".repeat(64);
+        first.hosts[0]
+            .vm_first_use_credential
+            .as_mut()
+            .unwrap()
+            .generation = 42;
+        first.hosts[0]
+            .vm_first_use_credential
+            .as_mut()
+            .unwrap()
+            .bundle_sha256 = "X".repeat(64);
         assert!(validate_host_registry(&first).is_err());
         let bytes = encode_host_registry(&expected).unwrap();
         assert_eq!(decode_host_registry(&bytes).unwrap(), expected);

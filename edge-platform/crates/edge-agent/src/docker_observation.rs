@@ -1626,11 +1626,9 @@ fn activate_native_vm_first_use_cursor_once(
         .map_err(|_| "HOST_VM_INSTALL_FIRST_USE_IDENTITY_DRIFT_NO_REPLAY")?;
     let root = super::vm_credential_store_root(stack_dir)
         .map_err(|_| "HOST_VM_INSTALL_FIRST_USE_STORE_UNPROVEN_NO_REPLAY")?;
-    let store = edge_secrets::CredentialStore::new(
-        root,
-        edge_shared_types::CredentialProjectionKind::Vm,
-    )
-    .map_err(|_| "HOST_VM_INSTALL_FIRST_USE_STORE_UNPROVEN_NO_REPLAY")?;
+    let store =
+        edge_secrets::CredentialStore::new(root, edge_shared_types::CredentialProjectionKind::Vm)
+            .map_err(|_| "HOST_VM_INSTALL_FIRST_USE_STORE_UNPROVEN_NO_REPLAY")?;
     let staged = store
         .stage_delivery_candidate(first)
         .map_err(|_| "HOST_VM_INSTALL_FIRST_USE_STAGE_UNCERTAIN_NO_REPLAY")?;
@@ -1731,7 +1729,9 @@ mod native_vm_first_use_tests {
         let store = edge_secrets::CredentialStore::open_existing(
             super::super::vm_credential_store_root(&stack_dir).unwrap(),
             CredentialProjectionKind::Vm,
-        ).unwrap().unwrap();
+        )
+        .unwrap()
+        .unwrap();
         let state = store.read_state().unwrap().unwrap();
         assert!(state.candidate.is_none() && state.previous.is_none());
         assert_eq!(state.active.unwrap().generation, 31);
