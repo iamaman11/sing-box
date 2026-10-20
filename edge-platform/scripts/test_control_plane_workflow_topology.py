@@ -776,6 +776,43 @@ def test_canonical_host_mutation_ingress() -> None:
         )
 
 
+
+def test_host_native_receipt_boundary_and_legacy_workflow_admission(router: str) -> None:
+    """Keep a signed root receipt intact; old workflows must not regain public mutation ingress."""
+    child = Path(".github/workflows/host-native-observe.yml").read_text(encoding="utf-8")
+    receipt = Path("edge-platform/crates/edge-shared-types/src/host_receipt.rs").read_text(encoding="utf-8")
+    orchestrator = Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(encoding="utf-8")
+    require(
+        "pub const MAX_NATIVE_RECEIPT_BYTES: usize = 8192;" in receipt
+        and """test "$(stat -c '%s' "${result}")" -le 8192""" in child
+        and "decode_native_receipt(&read_bounded(&result_path, 8192)?)" in orchestrator
+        and """sudo -n "${owner}" local host-apply < "${intent}" > "${result}" """ .strip() in child,
+        "The one native owner may emit the complete 8192-byte authenticated receipt without truncation",
+    )
+    require(
+        "host_native_source_capability={source_capability}" in orchestrator
+        and "VM_SIGNED_APPLY_SOURCE_PRESENT" in orchestrator
+        and "WINDOWS_SIGNED_SYSTEM_HANDLER_MISSING" in orchestrator
+        and "host_native_install_authority=INSTALLED_OWNER_UNPROVEN" in orchestrator
+        and "host_native_install_authority=NOT_YET_ACCEPTED" not in orchestrator,
+        "A Rust source handler cannot be confused with installed root/SYSTEM authority",
+    )
+    for filename in (
+        "credential-lifecycle.yml", "vm-application-lifecycle.yml",
+        "windows-physical.yml", "vultr-lifecycle.yml",
+        "vultr-acceptance-resume.yml",
+    ):
+        legacy = Path(".github/workflows", filename).read_text(encoding="utf-8")
+        event_header = legacy.split("permissions:", 1)[0]
+        require(
+            "workflow_call:" in event_header
+            and "workflow_dispatch:" not in event_header
+            and "issue_comment:" not in event_header
+            and f"uses: ./.github/workflows/{filename}" not in router,
+            f"Historical {filename} must remain unreachable from public control-plane mutation ingress",
+        )
+
+
 def test_native_host_readonly_control_boundary(router: str) -> None:
     """One typed Rust inventory dispatches independent, read-only native owners."""
     child_path = Path(".github/workflows/host-native-observe.yml")
@@ -956,6 +993,7 @@ def main() -> None:
     router = ROUTER.read_text(encoding="utf-8")
     test_host_native_signed_result_reporting()
     test_canonical_host_mutation_ingress()
+    test_host_native_receipt_boundary_and_legacy_workflow_admission(router)
     test_native_host_readonly_control_boundary(router)
     application = APPLICATION.read_text(encoding="utf-8")
     vultr = VULTR.read_text(encoding="utf-8")

@@ -996,8 +996,22 @@ fn host_lifecycle_admission(
         }
     );
     println!("host_historical_journal_authority=FORBIDDEN");
-    println!("host_native_install_authority=NOT_YET_ACCEPTED");
-    println!("host_next_action=NEED_NATIVE_TYPED_INSTALLER_AND_RELEASE_BOUND_RECEIPTS");
+    // Source capability must never be presented as installed owner authority.
+    // Only the native signed receipt may establish a physical result.
+    let (source_capability, next_action) = match kind {
+        ManagedHostKind::Vm => (
+            "VM_SIGNED_APPLY_SOURCE_PRESENT",
+            "VERIFY_INSTALLED_ROOT_TRUST_ACTIVE_CREDENTIALS_AND_NATIVE_RECEIPT",
+        ),
+        ManagedHostKind::Windows => (
+            "WINDOWS_SIGNED_SYSTEM_HANDLER_MISSING",
+            "IMPLEMENT_WINDOWS_SYSTEM_SIGNED_HANDLER_AND_PHYSICAL_RECEIPT",
+        ),
+        ManagedHostKind::Unspecified => return Err("HOST_KIND_INVALID".to_owned()),
+    };
+    println!("host_native_source_capability={source_capability}");
+    println!("host_native_install_authority=INSTALLED_OWNER_UNPROVEN");
+    println!("host_next_action={next_action}");
     println!("host_mutations=0");
     let output = output.ok_or("HOST_PREFLIGHT_OUTPUT_REQUIRED")?;
     let labels = runner_labels(kind, owner, &selected.windows_runner_label)?;

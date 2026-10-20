@@ -172,7 +172,7 @@ jobs:
           result="${path}/host-result.pb"
           sudo -n "${owner}" local host-apply < "${intent}" > "${result}"
           test -s "${result}"
-          test "$(stat -c '%s' "${result}")" -le 4096
+          test "$(stat -c '%s' "${result}")" -le 8192
           echo 'host_native_execution=ROOT_OWNER_ONE_SHOT'
           echo 'host_native_result=LOCAL_PROTOBUF_NOT_YET_REMOTE_ATTESTED'
 
