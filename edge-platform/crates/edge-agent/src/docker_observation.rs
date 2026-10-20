@@ -1579,7 +1579,7 @@ mod native_vm_worker_pin_tests {
     }
 }
 
-#[derive(Debug)]
+// Never derive Debug for a plan that may temporarily hold a fresh secret.
 pub(crate) struct NativeVmInstallPlan {
     request: ApplyBundleRequest,
     graph: edge_shared_types::FleetVmDesiredGraph,
@@ -1587,6 +1587,58 @@ pub(crate) struct NativeVmInstallPlan {
     gateway_image: String,
     warp_image: String,
     credential_pin: NativeVmCredentialPin,
+    first_use_bundle: Option<edge_shared_types::CredentialDeliveryBundle>,
+}
+
+/// The selected generation and the complete canonical Worker-v2 bundle
+/// digest are part of signed Git desired. No credentials, URLs or payload
+/// may be supplied by the runner or the signed command comment.
+fn verify_native_vm_first_use_identity(
+    host: &FleetHost,
+    bundle: &edge_shared_types::CredentialDeliveryBundle,
+) -> Result<NativeVmCredentialPin, &'static str> {
+    let identity = host
+        .vm_first_use_credential
+        .as_ref()
+        .ok_or("HOST_VM_INSTALL_GIT_FIRST_USE_IDENTITY_REQUIRED")?;
+    if identity.generation == 0 || bundle.generation != identity.generation {
+        return Err("HOST_VM_INSTALL_GIT_FIRST_USE_GENERATION_MISMATCH");
+    }
+    let digest = edge_shared_types::credential_delivery_bundle_sha256(bundle)
+        .map_err(|_| "HOST_VM_INSTALL_WORKER_FIRST_USE_BUNDLE_INVALID")?;
+    if digest != identity.bundle_sha256 {
+        return Err("HOST_VM_INSTALL_GIT_FIRST_USE_DIGEST_MISMATCH");
+    }
+    pin_active_native_vm_credential(bundle)
+        .map_err(|_| "HOST_VM_INSTALL_WORKER_FIRST_USE_PAYLOAD_INVALID")
+}
+
+#[cfg(test)]
+mod native_vm_first_use_tests {
+    use super::*;
+    #[test]
+    fn git_first_use_credential_identity_is_exact_and_non_authorizing() {
+        let mut host = FleetHost::default();
+        let mut bundle = edge_shared_types::CredentialDeliveryBundle::default();
+        bundle.generation = 31;
+        assert_eq!(
+            verify_native_vm_first_use_identity(&host, &bundle),
+            Err("HOST_VM_INSTALL_GIT_FIRST_USE_IDENTITY_REQUIRED")
+        );
+        host.vm_first_use_credential = Some(edge_shared_types::FleetVmFirstUseCredential {
+            generation: 32,
+            bundle_sha256: "1".repeat(64),
+        });
+        assert_eq!(
+            verify_native_vm_first_use_identity(&host, &bundle),
+            Err("HOST_VM_INSTALL_GIT_FIRST_USE_GENERATION_MISMATCH")
+        );
+        host.vm_first_use_credential.as_mut().unwrap().generation = 31;
+        assert_eq!(
+            verify_native_vm_first_use_identity(&host, &bundle),
+            Err("HOST_VM_INSTALL_GIT_FIRST_USE_DIGEST_MISMATCH")
+        );
+    }
 }
 
 /// Compare the Worker-v2 authenticated, exact-generation ACTIVE readback to
@@ -1622,6 +1674,22 @@ pub(crate) async fn attest_native_vm_install_worker_origin(
         .map_err(|_| "HOST_VM_INSTALL_WORKER_STORE_UNPROVEN")?;
     let access = super::vm_credential_access_identity_path(stack_dir)
         .map_err(|_| "HOST_VM_INSTALL_WORKER_ACCESS_UNPROVEN")?;
+    if let Some(first) = plan.first_use_bundle.as_ref() {
+        // Fresh enrollment has no local cursor yet. A second read-only GET
+        // proves Worker has not replaced the exact Git-bound generation
+        // before BEGIN; it NEVER promotes the candidate.
+        let repeated = edge_secrets::fetch_canonical_credential_bundle(
+            edge_shared_types::CredentialProjectionKind::Vm,
+            first.generation,
+            &access,
+        )
+        .await
+        .map_err(|_| "HOST_VM_INSTALL_WORKER_ORIGIN_UNPROVEN")?;
+        if repeated != *first {
+            return Err("HOST_VM_INSTALL_WORKER_ACTIVE_ORIGIN_MISMATCH");
+        }
+        return Ok(());
+    }
     let observation = edge_secrets::attest_worker_credential_origin(
         &root,
         &access,
@@ -1788,10 +1856,43 @@ pub(crate) async fn preflight_native_vm_install(
         Ok(_) => return Err("HOST_VM_INSTALL_EXISTING_NETWORK".into()),
         Err(_) => return Err("HOST_VM_INSTALL_NETWORK_UNOBSERVABLE".into()),
     }
-    let credential = super::active_vm_credential_bundle(stack_dir)
-        .map_err(|_| "HOST_VM_INSTALL_CREDENTIAL_UNPROVEN")?
-        .ok_or("HOST_VM_INSTALL_ACTIVE_V2_REQUIRED")?;
-    let credential_pin = pin_active_native_vm_credential(&credential)?;
+    let active = super::active_vm_credential_bundle(stack_dir)
+        .map_err(|_| "HOST_VM_INSTALL_CREDENTIAL_UNPROVEN")?;
+    // A fresh signed INSTALL can use one explicitly Git-pinned Worker-v2
+    // generation. Its payload stays in native root memory until journal
+    // BEGIN; cursor creation and Docker materialization are one-shot.
+    let (credential_pin, first_use_bundle) = match active {
+        Some(bundle) => {
+            let pinned = pin_active_native_vm_credential(&bundle)?;
+            if host.vm_first_use_credential.is_some() {
+                verify_native_vm_first_use_identity(host, &bundle)?;
+            }
+            (pinned, None)
+        }
+        None => {
+            super::require_empty_vm_initial_credential_host(stack_dir)
+                .map_err(|_| "HOST_VM_INSTALL_FIRST_USE_STORE_NOT_EMPTY")?;
+            let generation = host
+                .vm_first_use_credential
+                .as_ref()
+                .ok_or("HOST_VM_INSTALL_GIT_FIRST_USE_IDENTITY_REQUIRED")?
+                .generation;
+            if generation == 0 {
+                return Err("HOST_VM_INSTALL_GIT_FIRST_USE_IDENTITY_REQUIRED".into());
+            }
+            let worker = edge_secrets::fetch_canonical_credential_bundle(
+                edge_shared_types::CredentialProjectionKind::Vm,
+                generation,
+                &super::vm_credential_access_identity_path(stack_dir)
+                    .map_err(|_| "HOST_VM_INSTALL_WORKER_ACCESS_UNPROVEN")?,
+            )
+            .await
+            .map_err(|_| "HOST_VM_INSTALL_WORKER_ORIGIN_UNPROVEN")?;
+            let pin = verify_native_vm_first_use_identity(host, &worker)
+                .map_err(str::to_owned)?;
+            (pin, Some(worker))
+        }
+    };
     let pins = request
         .stack_files
         .iter()
@@ -1805,6 +1906,7 @@ pub(crate) async fn preflight_native_vm_install(
         gateway_image: images["EDGE_GATEWAY_IMAGE"].clone(),
         warp_image: images["EDGE_WARP_EGRESS_IMAGE"].clone(),
         credential_pin,
+        first_use_bundle,
     })
 }
 
@@ -2022,6 +2124,42 @@ pub(crate) async fn apply_native_vm_install_once(
             status_code: 404, ..
         }) => {}
         _ => return Err("HOST_VM_INSTALL_NETWORK_CHANGED_NO_REPLAY".into()),
+    }
+    // Only after durable BEGIN may the existing native root materialize a
+    // previously empty v2 cursor. A crash at any point is UNKNOWN_NO_REPLAY;
+    // no alternative old A/B commit, rollback or retry is permitted.
+    if let Some(ref first) = plan.first_use_bundle {
+        super::require_empty_vm_initial_credential_host(stack_dir)
+            .map_err(|_| "HOST_VM_INSTALL_FIRST_USE_PRESTATE_CHANGED_NO_REPLAY")?;
+        verify_native_vm_first_use_identity(host, first)
+            .map_err(|_| "HOST_VM_INSTALL_FIRST_USE_IDENTITY_DRIFT_NO_REPLAY")?;
+        let root = super::vm_credential_store_root(stack_dir)
+            .map_err(|_| "HOST_VM_INSTALL_FIRST_USE_STORE_UNPROVEN_NO_REPLAY")?;
+        let store = edge_secrets::CredentialStore::new(
+            root,
+            edge_shared_types::CredentialProjectionKind::Vm,
+        )
+        .map_err(|_| "HOST_VM_INSTALL_FIRST_USE_STORE_UNPROVEN_NO_REPLAY")?;
+        let staged = store
+            .stage_delivery_candidate(first)
+            .map_err(|_| "HOST_VM_INSTALL_FIRST_USE_STAGE_UNCERTAIN_NO_REPLAY")?;
+        if staged.active.is_some()
+            || staged.previous.is_some()
+            || staged.candidate.as_ref().map(|candidate| candidate.generation)
+                != Some(first.generation)
+        {
+            return Err("HOST_VM_INSTALL_FIRST_USE_CANDIDATE_UNPROVEN_NO_REPLAY".into());
+        }
+        let committed = store
+            .promote_candidate()
+            .map_err(|_| "HOST_VM_INSTALL_FIRST_USE_ACTIVE_UNCERTAIN_NO_REPLAY")?;
+        if committed.candidate.is_some()
+            || committed.previous.is_some()
+            || committed.active.as_ref().map(|active| active.generation)
+                != Some(first.generation)
+        {
+            return Err("HOST_VM_INSTALL_FIRST_USE_ACTIVE_UNPROVEN_NO_REPLAY".into());
+        }
     }
     // Bind the exact post-BEGIN projection once: all subsequent filesystem
     // rendering consumes this immutable, already verified in-memory value.

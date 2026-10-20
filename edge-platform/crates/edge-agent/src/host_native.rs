@@ -479,15 +479,21 @@ enum NativeVmInstallFailurePhase {
 fn native_vm_install_error_class(source: &str, phase: NativeVmInstallFailurePhase) -> &'static str {
     use NativeVmInstallFailurePhase::{PostBegin, Preadmission};
     match (phase, source) {
-        (Preadmission, "HOST_VM_INSTALL_ACTIVE_V2_REQUIRED") => {
-            "HOST_VM_INSTALL_WORKER_ACTIVE_CREDENTIAL_REQUIRED"
+        (Preadmission, "HOST_VM_INSTALL_ACTIVE_V2_REQUIRED"
+            | "HOST_VM_INSTALL_GIT_FIRST_USE_IDENTITY_REQUIRED") => {
+            "HOST_VM_INSTALL_GIT_FIRST_USE_CREDENTIAL_REQUIRED"
         }
         (
             Preadmission,
             "HOST_VM_INSTALL_WORKER_STORE_UNPROVEN"
             | "HOST_VM_INSTALL_WORKER_ACCESS_UNPROVEN"
             | "HOST_VM_INSTALL_WORKER_ORIGIN_UNPROVEN"
-            | "HOST_VM_INSTALL_WORKER_ACTIVE_ORIGIN_MISMATCH",
+            | "HOST_VM_INSTALL_WORKER_ACTIVE_ORIGIN_MISMATCH"
+            | "HOST_VM_INSTALL_GIT_FIRST_USE_GENERATION_MISMATCH"
+            | "HOST_VM_INSTALL_GIT_FIRST_USE_DIGEST_MISMATCH"
+            | "HOST_VM_INSTALL_WORKER_FIRST_USE_BUNDLE_INVALID"
+            | "HOST_VM_INSTALL_WORKER_FIRST_USE_PAYLOAD_INVALID"
+            | "HOST_VM_INSTALL_FIRST_USE_STORE_NOT_EMPTY",
         ) => "HOST_VM_INSTALL_WORKER_ACTIVE_ORIGIN_UNPROVEN",
         (
             Preadmission,
@@ -769,7 +775,7 @@ mod native_host_path_tests {
         use NativeVmInstallFailurePhase::{PostBegin, Preadmission};
         assert_eq!(
             native_vm_install_error_class("HOST_VM_INSTALL_ACTIVE_V2_REQUIRED", Preadmission,),
-            "HOST_VM_INSTALL_WORKER_ACTIVE_CREDENTIAL_REQUIRED",
+            "HOST_VM_INSTALL_GIT_FIRST_USE_CREDENTIAL_REQUIRED",
         );
         assert_eq!(
             native_vm_install_error_class("HOST_VM_INSTALL_CREDENTIAL_DRIFT_NO_REPLAY", PostBegin,),

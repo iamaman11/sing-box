@@ -855,6 +855,28 @@ def test_native_vm_install_requires_canonical_worker_active_origin() -> None:
     )
 
 
+def test_signed_first_use_credentials_share_native_journal() -> None:
+    """New Worker-v2 credentials must enter only a signed, one-shot native INSTALL."""
+    proto = Path("edge-platform/proto/edge/platform/v1/fleet.proto").read_text(encoding="utf-8")
+    model = Path("edge-platform/crates/edge-shared-types/src/lib.rs").read_text(encoding="utf-8")
+    docker = Path("edge-platform/crates/edge-agent/src/docker_observation.rs").read_text(encoding="utf-8")
+    owner = Path("edge-platform/crates/edge-agent/src/host_native.rs").read_text(encoding="utf-8")
+    require(
+        "FleetVmFirstUseCredential vm_first_use_credential = 10;" in proto
+        and "HOST_VM_FIRST_USE_CREDENTIAL_IDENTITY_INVALID" in model
+        and "verify_native_vm_first_use_identity(" in docker
+        and "first_use_bundle" in docker
+        and "stage_delivery_candidate(first)" in docker
+        and "promote_candidate()" in docker
+        and docker.index("pub(crate) async fn apply_native_vm_install_once")
+            < docker.index("stage_delivery_candidate(first)")
+        and "attest_native_vm_install_worker_origin(" in owner
+        and "execute_native_host_once(" in owner
+        and "HOST_VM_INSTALL_FIRST_USE_ACTIVE_UNCERTAIN_NO_REPLAY" in docker,
+        "Fresh credentials must be Git-pinned Worker-v2 source under the native signed BEGIN",
+    )
+
+
 def test_native_host_readonly_control_boundary(router: str) -> None:
     """One typed Rust inventory dispatches independent, read-only native owners."""
     child_path = Path(".github/workflows/host-native-observe.yml")
@@ -1038,6 +1060,7 @@ def main() -> None:
     test_host_native_receipt_boundary_and_legacy_workflow_admission(router)
     test_typed_vm_bootstrap_evidence_is_non_authorizing()
     test_native_vm_install_requires_canonical_worker_active_origin()
+    test_signed_first_use_credentials_share_native_journal()
     test_native_host_readonly_control_boundary(router)
     application = APPLICATION.read_text(encoding="utf-8")
     vultr = VULTR.read_text(encoding="utf-8")

@@ -136,6 +136,22 @@ pub fn validate_host_registry(desired: &HostRegistry) -> Result<(), String> {
         {
             return Err("HOST_NATIVE_RECEIPT_PUBLIC_KEY_INVALID".to_owned());
         }
+        // A fresh VM may adopt exactly one pre-published Worker-v2 bundle,
+        // but only when its exact identity is pinned by immutable Git. Zero
+        // generation, malformed digests and Windows use are forbidden.
+        if let Some(first) = host.vm_first_use_credential.as_ref() {
+            if kind != ManagedHostKind::Vm
+                || first.generation == 0
+                || first.bundle_sha256.len() != 64
+                || !first
+                    .bundle_sha256
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                || first.bundle_sha256.bytes().all(|b| b == b'0')
+            {
+                return Err("HOST_VM_FIRST_USE_CREDENTIAL_IDENTITY_INVALID".to_owned());
+            }
+        }
         // Resource identity only: no credentials, ports or mutable Docker
         // configuration are duplicated into fleet inventory.
         if kind != ManagedHostKind::Vm && !host.vm_containers.is_empty() {
@@ -3046,6 +3062,7 @@ mod release_set_tests {
                     desired_spec_path: "infra/application/disposable-acceptance.json".to_owned(),
                     target: None,
                     native_receipt_public_key: Vec::new(),
+                    vm_first_use_credential: None,
                 },
                 ManagedHost {
                     machine_id: "production-1".to_owned(),
@@ -3056,6 +3073,7 @@ mod release_set_tests {
                     desired_spec_path: "infra/production/production.textproto".to_owned(),
                     target: None,
                     native_receipt_public_key: Vec::new(),
+                    vm_first_use_credential: None,
                 },
                 ManagedHost {
                     machine_id: "sing-box-windows-lab".to_owned(),
@@ -3068,6 +3086,7 @@ mod release_set_tests {
                     desired_spec_path: "infra/production/production.textproto".to_owned(),
                     target: None,
                     native_receipt_public_key: Vec::new(),
+                    vm_first_use_credential: None,
                 },
             ],
         };
