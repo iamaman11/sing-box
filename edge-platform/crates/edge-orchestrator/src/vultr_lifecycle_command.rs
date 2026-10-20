@@ -1702,10 +1702,7 @@ fn verified_native_enrollment_result(
     let registration = properties
         .get("host_native_receipt_registration")
         .ok_or("HOST_BOOTSTRAP_RECEIPT_REGISTRATION_MISSING")?;
-    if !matches!(
-        *registration,
-        &"AWAITING_PROTECTED_GIT" | &"PINNED_GIT_MATCH"
-    ) {
+    if !matches!(*registration, "AWAITING_PROTECTED_GIT" | "PINNED_GIT_MATCH") {
         return Err("HOST_BOOTSTRAP_RECEIPT_REGISTRATION_INVALID".to_owned());
     }
     Ok(((*key).to_owned(), (*registration).to_owned()))
