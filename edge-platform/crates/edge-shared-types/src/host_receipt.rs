@@ -136,6 +136,7 @@ mod tests {
             observed_at_unix: 123,
             physical_readback: true,
             next_action: "NONE".into(),
+            reason: crate::FleetHostResultReason::NoFurtherAction as i32,
             ..Default::default()
         };
         let receipt = sign_native_receipt(&intent, &result, &host, pkcs8.as_ref()).unwrap();

@@ -370,6 +370,18 @@ message FleetHostIntent {
   uint64 requested_at_unix = 11;
 }
 
+// A single closed reason determines BOTH printable error_class and
+// next_action. No independently selectable second outcome registry.
+enum FleetHostResultReason {
+  FLEET_HOST_RESULT_REASON_UNSPECIFIED = 0;
+  FLEET_HOST_RESULT_REASON_PREPARED_NEEDS_OWNER_TRUST = 1;
+  FLEET_HOST_RESULT_REASON_AUTHORIZED_AWAIT_NATIVE_READBACK = 2;
+  FLEET_HOST_RESULT_REASON_NO_FURTHER_ACTION = 3;
+  FLEET_HOST_RESULT_REASON_RECOVERED_NATIVE_RUNNING = 4;
+  FLEET_HOST_RESULT_REASON_RECOVERED_NATIVE_STOPPED = 5;
+  FLEET_HOST_RESULT_REASON_STOPPED_RELEASE_DRIFT_REQUIRES_INSTALL_TARGET = 6;
+}
+
 message FleetHostResult {
   uint32 schema_version = 1;
   string machine_id = 2;
@@ -384,6 +396,7 @@ message FleetHostResult {
   string next_action = 11;
   // A final VERIFIED result requires a physical native-owner readback.
   bool physical_readback = 12;
+  FleetHostResultReason reason = 13;
 }
 
  // Independent admission evidence. Never infer authority from ownership of

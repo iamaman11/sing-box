@@ -519,6 +519,57 @@ pub fn decode_host_result(bytes: &[u8]) -> Result<FleetHostResult, &'static str>
     Ok(result)
 }
 
+/// Exactly one typed reason, with two derived diagnostic projections.
+/// Neither the enum nor either projection grants physical mutation authority.
+pub fn set_host_result_reason(
+    result: &mut FleetHostResult,
+    reason: crate::FleetHostResultReason,
+) {
+    let (error, action) = host_result_reason_projection(reason);
+    result.reason = reason as i32;
+    result.error_class = error.to_owned();
+    result.next_action = action.to_owned();
+}
+
+fn host_result_reason_projection(
+    reason: crate::FleetHostResultReason,
+) -> (&'static str, &'static str) {
+    use crate::FleetHostResultReason as Reason;
+    match reason {
+        Reason::Unspecified => ("", "UNSPECIFIED"),
+        Reason::PreparedNeedsOwnerTrust => (
+            "NATIVE_INSTALL_AUTHORITY_NOT_ACCEPTED",
+            "NEED_TRUSTED_OWNER_BOOTSTRAP",
+        ),
+        Reason::AuthorizedAwaitNativeReadback => ("", "NATIVE_OWNER_READBACK_REQUIRED"),
+        Reason::NoFurtherAction => ("", "NONE"),
+        Reason::RecoveredNativeRunning => ("", "RECOVERED_NATIVE_RUNNING"),
+        Reason::RecoveredNativeStopped => ("", "RECOVERED_NATIVE_STOPPED"),
+        Reason::StoppedReleaseDriftRequiresInstallTarget => (
+            "",
+            "STOPPED_RELEASE_DRIFT_REQUIRES_INSTALL_TARGET",
+        ),
+    }
+}
+
+pub fn validate_host_result_reason(result: &FleetHostResult) -> Result<(), &'static str> {
+    use crate::{FleetHostResultReason as Reason, FleetHostResultState as State};
+    let reason =
+        Reason::try_from(result.reason).map_err(|_| "HOST_RESULT_REASON_UNKNOWN")?;
+    let state = State::try_from(result.state).map_err(|_| "HOST_RESULT_STATE_INVALID")?;
+    let allowed = match reason {
+        Reason::Unspecified => false,
+        Reason::PreparedNeedsOwnerTrust => state == State::Prepared,
+        Reason::AuthorizedAwaitNativeReadback => state == State::Authorized,
+        _ => matches!(state, State::Observed | State::Verified),
+    };
+    let (error, action) = host_result_reason_projection(reason);
+    if !allowed || result.error_class != error || result.next_action != action {
+        return Err("HOST_RESULT_REASON_STATE_OR_PROJECTION_MISMATCH");
+    }
+    Ok(())
+}
+
 /// Only a structural comparison of a runner-copied native result. This
 /// NEVER authenticates the origin or upgrades a remote status to VERIFIED.
 /// The published exact intent and immutable digest must match byte-for-byte.
@@ -536,6 +587,7 @@ pub fn validate_unattested_native_result(
     {
         return Err("HOST_NATIVE_RESULT_CORRELATION_MISMATCH");
     }
+    validate_host_result_reason(result).map_err(|_| "HOST_NATIVE_RESULT_STRUCTURE_INVALID")?;
     let state = FleetHostResultState::try_from(result.state)
         .map_err(|_| "HOST_NATIVE_RESULT_STATE_INVALID")?;
     if !matches!(
@@ -581,6 +633,7 @@ pub fn validate_host_result(
     ) {
         return Err("HOST_NATIVE_RECEIPT_ATTESTATION_REQUIRED");
     }
+    validate_host_result_reason(result).map_err(|_| "HOST_RESULT_EVIDENCE_INVALID")?;
     if state == FleetHostResultState::Unspecified
         || (state == FleetHostResultState::Verified
             && (!result.physical_readback
@@ -604,7 +657,7 @@ pub fn validate_host_result(
 }
 
 pub fn prepared_host_result(intent: &FleetHostIntent) -> FleetHostResult {
-    FleetHostResult {
+    let mut result = FleetHostResult {
         schema_version: 1,
         machine_id: intent.machine_id.clone(),
         resource_id: intent.resource_id.clone(),
@@ -614,10 +667,13 @@ pub fn prepared_host_result(intent: &FleetHostIntent) -> FleetHostResult {
         release_set_sha256: intent.release_set_sha256.clone(),
         desired_sha256: intent.desired_sha256.clone(),
         observed_at_unix: 0,
-        error_class: "NATIVE_INSTALL_AUTHORITY_NOT_ACCEPTED".to_owned(),
-        next_action: "NEED_TRUSTED_OWNER_BOOTSTRAP".to_owned(),
+        error_class: String::new(),
+        next_action: String::new(),
         physical_readback: false,
-    }
+        reason: 0,
+    };
+    set_host_result_reason(&mut result, crate::FleetHostResultReason::PreparedNeedsOwnerTrust);
+    result
 }
 
 /// The existing Cloudflare Worker is the sole issuer of this detached
@@ -704,8 +760,27 @@ mod tests {
             error_class: String::new(),
             next_action: "NONE".to_owned(),
             physical_readback: true,
+            reason: crate::FleetHostResultReason::NoFurtherAction as i32,
         };
         assert!(validate_unattested_native_result(&result, &intent).is_ok());
+        let mut forged = result.clone();
+        forged.next_action = "SHELL_COMMAND".into();
+        assert_eq!(
+            validate_unattested_native_result(&forged, &intent),
+            Err("HOST_NATIVE_RESULT_STRUCTURE_INVALID")
+        );
+        forged = result.clone();
+        forged.reason = 999;
+        assert_eq!(
+            validate_unattested_native_result(&forged, &intent),
+            Err("HOST_NATIVE_RESULT_STRUCTURE_INVALID")
+        );
+        forged = result.clone();
+        forged.reason = crate::FleetHostResultReason::AuthorizedAwaitNativeReadback as i32;
+        assert_eq!(
+            validate_unattested_native_result(&forged, &intent),
+            Err("HOST_NATIVE_RESULT_STRUCTURE_INVALID")
+        );
         assert_eq!(
             validate_host_result(&result, &intent),
             Err("HOST_NATIVE_RECEIPT_ATTESTATION_REQUIRED")

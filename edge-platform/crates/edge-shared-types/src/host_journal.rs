@@ -266,7 +266,7 @@ fn admit_after_protected_owner_check_once(
     parent
         .sync_all()
         .map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNCERTAIN_NO_REPLAY")?;
-    let recorded = FleetHostResult {
+    let mut recorded = FleetHostResult {
         schema_version: 1,
         machine_id: intent.machine_id.clone(),
         resource_id: intent.resource_id.clone(),
@@ -277,9 +277,14 @@ fn admit_after_protected_owner_check_once(
         desired_sha256: intent.desired_sha256.clone(),
         observed_at_unix: now_unix,
         error_class: String::new(),
-        next_action: "NATIVE_OWNER_READBACK_REQUIRED".to_owned(),
+        next_action: String::new(),
         physical_readback: false,
+        reason: 0,
     };
+    crate::host_lifecycle::set_host_result_reason(
+        &mut recorded,
+        crate::FleetHostResultReason::AuthorizedAwaitNativeReadback,
+    );
     // This permanent, non-replaceable record is the BEGIN. If a process
     // crashes after create_new but before sync_all, it is UNKNOWN_NO_REPLAY,
     // never permission to resume the same mutation.
@@ -513,8 +518,10 @@ where
         let mut result = crate::host_lifecycle::prepared_host_result(intent);
         result.state = FleetHostResultState::Observed as i32;
         result.observed_at_unix = before.observed_at_unix;
-        result.error_class.clear();
-        result.next_action = "NONE".to_owned();
+        crate::host_lifecycle::set_host_result_reason(
+            &mut result,
+            crate::FleetHostResultReason::NoFurtherAction,
+        );
         store_native_terminal_and_unlock_once(intent, &result, "observed", protected_journal_dir)?;
         return Ok(result);
     }
@@ -591,7 +598,7 @@ fn verify_read_only_recovery_state(
     observation: &crate::FleetNativeObservation,
     expected_runtime_digest: &[u8],
     now_unix: u64,
-) -> Result<&'static str, &'static str> {
+) -> Result<crate::FleetHostResultReason, &'static str> {
     use crate::{
         FleetHostKind, FleetHostMode, FleetHostRunState, FleetNativeOwnerState,
         FleetNativeReleaseProof, host_lifecycle::validate_native_observation,
@@ -642,15 +649,15 @@ fn verify_read_only_recovery_state(
                 && observation.runtime_ready
                 && observation.observed_release_sha256 == expected_runtime_digest =>
         {
-            Ok("RECOVERED_NATIVE_RUNNING")
+            Ok(crate::FleetHostResultReason::RecoveredNativeRunning)
         }
         (FleetHostRunState::Stopped, FleetNativeOwnerState::Stopped)
             if observation.observed_release_sha256 == expected_runtime_digest =>
         {
-            Ok("RECOVERED_NATIVE_STOPPED")
+            Ok(crate::FleetHostResultReason::RecoveredNativeStopped)
         }
         (FleetHostRunState::Stopped, FleetNativeOwnerState::Stopped) => {
-            Ok("STOPPED_RELEASE_DRIFT_REQUIRES_INSTALL_TARGET")
+            Ok(crate::FleetHostResultReason::StoppedReleaseDriftRequiresInstallTarget)
         }
         _ => Err("HOST_NATIVE_RECOVERY_NOT_CONVERGED_NO_REPLAY"),
     }
@@ -701,7 +708,8 @@ fn resolve_pending_native_recovery_once(
         || begin.state != FleetHostResultState::Authorized as i32
         || begin.physical_readback
         || !begin.error_class.is_empty()
-        || begin.next_action != "NATIVE_OWNER_READBACK_REQUIRED"
+        || crate::host_lifecycle::validate_host_result_reason(&begin).is_err()
+        || begin.reason != crate::FleetHostResultReason::AuthorizedAwaitNativeReadback as i32
         || begin.machine_id != original.machine_id
         || begin.resource_id != original.resource_id
         || begin.operation_id != original.operation_id
@@ -717,7 +725,7 @@ fn resolve_pending_native_recovery_once(
         &bound.runtime_release_sha256,
         now_unix,
     )?;
-    let prior_result = FleetHostResult {
+    let mut prior_result = FleetHostResult {
         schema_version: 1,
         machine_id: original.machine_id.clone(),
         resource_id: original.resource_id.clone(),
@@ -728,9 +736,11 @@ fn resolve_pending_native_recovery_once(
         desired_sha256: original.desired_sha256.clone(),
         observed_at_unix: observed.observed_at_unix,
         error_class: String::new(),
-        next_action: verdict.to_owned(),
+        next_action: String::new(),
         physical_readback: true,
+        reason: 0,
     };
+    crate::host_lifecycle::set_host_result_reason(&mut prior_result, verdict);
     let prior_terminal = journal_dir.join(format!("{prior_id}.verified.pb"));
     match fs::symlink_metadata(&prior_terminal) {
         Ok(_) => {
@@ -783,8 +793,7 @@ fn resolve_pending_native_recovery_once(
     let mut result = crate::host_lifecycle::prepared_host_result(intent);
     result.state = FleetHostResultState::Observed as i32;
     result.observed_at_unix = observed.observed_at_unix;
-    result.error_class.clear();
-    result.next_action = verdict.to_owned();
+    crate::host_lifecycle::set_host_result_reason(&mut result, verdict);
     store_native_terminal_and_unlock_once(intent, &result, "observed", journal_dir)?;
     Ok(result)
 }
@@ -889,7 +898,7 @@ where
     {
         return Err("HOST_NATIVE_RUNTIME_POSTSTATE_MISMATCH");
     }
-    let result = FleetHostResult {
+    let mut result = FleetHostResult {
         schema_version: 1,
         machine_id: intent.machine_id.clone(),
         resource_id: intent.resource_id.clone(),
@@ -900,15 +909,18 @@ where
         desired_sha256: intent.desired_sha256.clone(),
         observed_at_unix: observed.observed_at_unix,
         error_class: String::new(),
-        next_action: if executed_step == crate::FleetHostPlannedStep::Stop
-            && previous_runtime_digest != expected_runtime_digest
-        {
-            "STOPPED_RELEASE_DRIFT_REQUIRES_INSTALL_TARGET".to_owned()
-        } else {
-            "NONE".to_owned()
-        },
+        next_action: String::new(),
         physical_readback: true,
+        reason: 0,
     };
+    let reason = if executed_step == crate::FleetHostPlannedStep::Stop
+        && previous_runtime_digest != expected_runtime_digest
+    {
+        crate::FleetHostResultReason::StoppedReleaseDriftRequiresInstallTarget
+    } else {
+        crate::FleetHostResultReason::NoFurtherAction
+    };
+    crate::host_lifecycle::set_host_result_reason(&mut result, reason);
     // Only an existing protected native owner can reach this completion.
     // No GitHub artifact or unsigned caller-provided protobuf is a receipt.
     store_native_terminal_and_unlock_once(intent, &result, "verified", journal_dir)?;
@@ -1004,7 +1016,7 @@ mod tests {
         };
         assert_eq!(
             verify_read_only_recovery_state(&host, &observed, &[1; 32], 1000),
-            Ok("RECOVERED_NATIVE_RUNNING")
+            Ok(crate::FleetHostResultReason::RecoveredNativeRunning)
         );
         observed.runtime_ready = false;
         assert!(verify_read_only_recovery_state(&host, &observed, &[1; 32], 1000).is_err());
@@ -1022,7 +1034,7 @@ mod tests {
         observed.observed_release_sha256 = vec![2; 32];
         assert_eq!(
             verify_read_only_recovery_state(&stopped, &observed, &[1; 32], 1000),
-            Ok("STOPPED_RELEASE_DRIFT_REQUIRES_INSTALL_TARGET")
+            Ok(crate::FleetHostResultReason::StoppedReleaseDriftRequiresInstallTarget)
         );
         let mut windows = stopped;
         windows.kind = crate::FleetHostKind::Windows as i32;
