@@ -529,7 +529,7 @@ fn native_gateway_create_body(
             != Some(selector.container_name.as_str())
         || row.get("restart").and_then(serde_yaml::Value::as_str) != Some("unless-stopped")
         || row.get("image").and_then(serde_yaml::Value::as_str)
-            != Some("$"+"{EDGE_GATEWAY_IMAGE:?EDGE_GATEWAY_IMAGE is required}")
+            != Some("${EDGE_GATEWAY_IMAGE:?EDGE_GATEWAY_IMAGE is required}")
         || sequence("command")? != ["run", "-c", "/etc/sing-box/config.json"]
         || sequence("depends_on")? != ["warp-egress"]
         || sequence("networks")? != ["edge_net"] {
