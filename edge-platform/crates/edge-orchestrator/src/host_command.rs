@@ -246,6 +246,22 @@ pub(crate) fn run(
                 println!("host_machine_id={}", host.machine_id);
                 println!("host_desired_spec_path={}", host.desired_spec_path);
                 print_host_target(host)?;
+                if kind == ManagedHostKind::Vm {
+                    // Proven only by the canonical Git registry; these flags
+                    // never claim Worker activation or installed root trust.
+                    println!(
+                        "host_vm_git_worker_signer_pinned={}",
+                        host.worker_authority_public_key.len() == 32
+                    );
+                    println!(
+                        "host_vm_git_receipt_registered={}",
+                        host.native_receipt_public_key.len() == 32
+                    );
+                    println!(
+                        "host_vm_git_first_use_identity_pinned={}",
+                        host.vm_first_use_credential.is_some()
+                    );
+                }
                 println!(
                     "host_kind={}",
                     match kind {
@@ -956,6 +972,11 @@ fn host_lifecycle_admission(
     // the native root/SYSTEM owner before any action. An observe-only VM
     // must never issue a misleading APPLY_PREPARED intent.
     validate_intent_against_target(&intent, desired).map_err(str::to_owned)?;
+    // Never prepare or schedule an executable VM intent while protected Git
+    // lacks signer/receipt identity. Owner enrollment is a distinct root-only
+    // first-use operation, not something the runner may improvise.
+    edge_shared_types::host_lifecycle::verify_vm_signed_git_prerequisites(selected)
+        .map_err(str::to_owned)?;
     let prepared = prepared_host_result(&intent);
     validate_host_result(&prepared, &intent).map_err(str::to_owned)?;
     let bytes = intent.encode_to_vec();
@@ -1281,6 +1302,32 @@ fn append_credential_peer_outputs(
 mod tests {
     use super::*;
     use edge_shared_types::ManagedHost;
+
+    #[test]
+    fn vm_signed_preflight_requires_git_trust_without_blocking_observation() {
+        use edge_shared_types::{FleetHost, FleetHostKind, FleetVmContainer};
+        let mut host = FleetHost {
+            machine_id: "vm-signing-preflight".into(),
+            kind: FleetHostKind::Vm as i32,
+            ..Default::default()
+        };
+        let check = edge_shared_types::host_lifecycle::verify_vm_signed_git_prerequisites;
+        assert_eq!(check(&host), Err("HOST_GIT_WORKER_SIGNER_KEY_REQUIRED"));
+        host.worker_authority_public_key = vec![7; 32];
+        assert_eq!(check(&host), Err("HOST_VM_GIT_RECEIPT_REGISTRATION_REQUIRED"));
+        host.native_receipt_public_key = vec![9; 32];
+        assert_eq!(check(&host), Err("HOST_VM_GIT_RESOURCE_SCOPE_REQUIRED"));
+        host.vm_containers.push(FleetVmContainer {
+            container_name: "vultr-line1-gateway".into(),
+            compose_project: "vultr-edge".into(),
+            compose_service: "line1-gateway".into(),
+        });
+        assert_eq!(check(&host), Ok(()));
+        host.worker_authority_public_key = vec![0; 32];
+        assert_eq!(check(&host), Err("HOST_GIT_WORKER_SIGNER_KEY_REQUIRED"));
+        host.kind = FleetHostKind::Windows as i32;
+        assert_eq!(check(&host), Ok(()));
+    }
 
     #[test]
     fn release_set_bundle_digest_is_verified_by_exact_immutable_bytes() {
