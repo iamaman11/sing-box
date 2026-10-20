@@ -232,7 +232,10 @@ def main():
     # Published fleet must be complete and content-addressed before HostIntent.
     s,m=make_state(schema=7)
     s["releases"][-1]["assets"]=[a for a in s["releases"][-1]["assets"] if not a["name"].startswith("fleet-registry.")]
-    run(s,m)
+    m["fleet_sha"]=""
+    # Historical published base may be read for a CI reuse decision,
+    # but never becomes a signed host operation: workflow enforces exact Git.
+    run(s,m,ok=True)
     s,m=make_state(schema=7)
     s["releases"][-1]["assets"]=[a for a in s["releases"][-1]["assets"] if a["name"]!="fleet-registry.pb.sha256"]
     run(s,m)

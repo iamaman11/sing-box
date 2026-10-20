@@ -293,13 +293,10 @@ fi
 
 application_bundle_sha=""
 if [[ "$schema_version" = "7" ]]; then
-  # Host v1 cannot enroll a root owner without the exact Git fleet input.
-  # Historic published ReleaseSets without registry remain read-only only.
+  # Old schema-7 ReleaseSets may be inspected solely as build-reuse inputs.
+  # Only the public host apply/recover ingress requires the full registry and
+  # exact Git byte equality. Do not break read-only base-release resolution.
   test "$has_application_bundle" = "true"
-  if [[ "$has_fleet_registry" != "true" ]]; then
-    echo "typed host ReleaseSet requires the complete Git fleet registry" >&2
-    exit 1
-  fi
   application_bundle_sha="$(extract_single application_bundle_sha256)"
   [[ "$application_bundle_sha" =~ ^[0-9a-f]{64}$ ]]
   test "$application_bundle_sha" = "$(sha256sum "${out}/application-bundle.pb" | awk '{print $1}')"
