@@ -255,6 +255,7 @@ mod tests {
                 run_state: run as i32,
                 windows_mode: mode as i32,
             }),
+            native_receipt_public_key: Vec::new(),
         }
     }
     fn observed(kind: FleetHostKind, state: FleetNativeOwnerState) -> FleetNativeObservation {

@@ -740,6 +740,7 @@ mod tests {
                 vm_containers: Vec::new(),
                 desired_spec_path: "infra/hosts/specs/vm-one.textproto".to_owned(),
                 target: None,
+                native_receipt_public_key: Vec::new(),
             }],
         };
         let registry_pb = crate::encode_host_registry(&registry).unwrap();
@@ -865,6 +866,7 @@ mod tests {
                 vm_containers: Vec::new(),
                 desired_spec_path: "infra/production/production.textproto".to_owned(),
                 target: None,
+                native_receipt_public_key: Vec::new(),
             }],
         };
         let bytes = encode_host_registry(&registry).unwrap();

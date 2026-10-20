@@ -1053,6 +1053,7 @@ mod tests {
                     run_state: FleetHostRunState::Running as i32,
                     windows_mode: FleetHostMode::Unspecified as i32,
                 }),
+                native_receipt_public_key: Vec::new(),
             }],
         };
         let i = FleetHostIntent {
@@ -1262,6 +1263,7 @@ mod tests {
                     run_state: FleetHostRunState::Stopped as i32,
                     windows_mode: FleetHostMode::Unspecified as i32,
                 }),
+                native_receipt_public_key: Vec::new(),
             }],
         };
         let intent = FleetHostIntent {
@@ -1374,6 +1376,7 @@ mod tests {
                 run_state: FleetHostRunState::Running as i32,
                 windows_mode: FleetHostMode::Unspecified as i32,
             }),
+            native_receipt_public_key: Vec::new(),
         };
         let registry = HostRegistry {
             schema_version: 1,
