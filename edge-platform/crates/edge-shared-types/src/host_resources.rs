@@ -1255,11 +1255,31 @@ pub fn propose_vm_resource_transitions(
     let credential_ready = report.credential.as_ref().is_some_and(|credential| {
         credential.state == crate::FleetVmCredentialState::ActiveLocalValid as i32
     });
+    // A VM with no local ACTIVE is not generally INSTALL-ready. A signed
+    // first-use application install can only be PROPOSED when the root Agent
+    // has observed the exact Git-pinned Worker source and ALL registered
+    // containers are independently observed absent. A partial installation,
+    // uncertain Docker readback or candidate-only credentials stay BLOCKED.
+    // This remains a runner-copied, non-authorizing diagnostic projection:
+    // the signed root owner repeats preflight before durable journal BEGIN.
+    let first_use_install_proposal = !credential_ready
+        && report.bootstrap_phase
+            == crate::FleetVmBootstrapPhase::FirstUseWorkerSourceVerifiedLocal as i32
+        && report.credential.as_ref().is_some_and(|credential| {
+            credential.state == crate::FleetVmCredentialState::StoreAbsent as i32
+        })
+        && report.resources.iter().all(|row| {
+            !row.present
+                && row.observed_reason == crate::FleetVmObservedReason::ContainerAbsent as i32
+        });
     let mut resources = Vec::with_capacity(report.resources.len());
     for row in &report.resources {
         let (step, reason) = match desired {
             // An explicit STOP is always allowed to address an already-owned
             // container; credential outages may NOT force continued running.
+            Some(FleetHostRunState::Running) if first_use_install_proposal => {
+                (Step::Install, Reason::FirstUseWorkerVerifiedInstallProposalOnly)
+            }
             Some(FleetHostRunState::Running) if !credential_ready => {
                 (Step::Blocked, Reason::CredentialDependencyUnproven)
             }
@@ -1376,7 +1396,8 @@ pub fn validate_vm_resource_transition_plan(
             Reason::AbsentAsDesired
             | Reason::StoppedAsDesired
             | Reason::RunningRuntimeOnlyConfigUnproven => Step::Noop,
-            Reason::ContainerAbsentInstallRequired => Step::Install,
+            Reason::ContainerAbsentInstallRequired
+            | Reason::FirstUseWorkerVerifiedInstallProposalOnly => Step::Install,
             Reason::ContainerRunningButTargetStopped => Step::Stop,
             Reason::ContainerStoppedButTargetRunning => Step::Start,
             Reason::Unspecified => return Err("VM_RESOURCE_PLAN_REASON_UNSPECIFIED"),
@@ -1900,6 +1921,89 @@ mod resource_planning_tests {
             stopped.resources[0].reason,
             Reason::ContainerRunningButTargetStopped as i32
         );
+    }
+
+
+    #[test]
+    fn first_use_resource_plan_matches_host_install_without_granting_authority() {
+        use crate::{
+            FleetVmBootstrapPhase as Phase, FleetVmCredentialState as Cred,
+            FleetVmFirstUseCredential, FleetVmObservedReason as Observed,
+            FleetVmResourceReason as Reason,
+        };
+        let (mut host, mut report) = fixture();
+        host.native_receipt_public_key = vec![9; 32];
+        host.vm_first_use_credential = Some(FleetVmFirstUseCredential {
+            generation: 19,
+            bundle_sha256: "b".repeat(64),
+        });
+        report.credential.as_mut().unwrap().state = Cred::StoreAbsent as i32;
+        report.credential.as_mut().unwrap().active_generation = 0;
+        report.bootstrap_phase = Phase::FirstUseWorkerSourceVerifiedLocal as i32;
+        report.resources[0] = FleetVmResourceReadback {
+            resource: Some(host.vm_containers[0].clone()),
+            observed_reason: Observed::ContainerAbsent as i32,
+            reason_code: "CONTAINER_ABSENT".into(),
+            ..Default::default()
+        };
+        let proposal = propose_vm_resource_transitions(&host, &report).unwrap();
+        assert_eq!(proposal.resources[0].step, FleetHostPlannedStep::Install as i32);
+        assert_eq!(
+            proposal.resources[0].reason,
+            Reason::FirstUseWorkerVerifiedInstallProposalOnly as i32
+        );
+        assert_eq!(
+            proposal.resources[0].reason_code,
+            "FIRST_USE_WORKER_VERIFIED_INSTALL_PROPOSAL_ONLY"
+        );
+        assert!(!proposal.owner_attested && !proposal.mutation_authorized);
+        assert!(validate_vm_resource_transition_plan(&proposal, &host).is_ok());
+        let mut forged = proposal.clone();
+        forged.resources[0].step = FleetHostPlannedStep::Start as i32;
+        assert_eq!(
+            validate_vm_resource_transition_plan(&forged, &host),
+            Err("VM_RESOURCE_PLAN_ACTION_REASON_CONFLICT")
+        );
+
+        // A stale/unavailable Worker, or an unverified bootstrap, does not
+        // become a credential bypass merely because Docker is empty.
+        for phase in [
+            Phase::FirstUseWorkerSourceUnverified,
+            Phase::FirstUseWorkerSourceMismatch,
+            Phase::FirstUseWorkerSourceUnavailable,
+        ] {
+            report.bootstrap_phase = phase as i32;
+            let blocked = propose_vm_resource_transitions(&host, &report).unwrap();
+            assert_eq!(blocked.resources[0].step, FleetHostPlannedStep::Blocked as i32);
+            assert_eq!(
+                blocked.resources[0].reason,
+                Reason::CredentialDependencyUnproven as i32
+            );
+        }
+
+        // The STOPPED desired state never installs an absent application.
+        report.bootstrap_phase = Phase::FirstUseWorkerSourceVerifiedLocal as i32;
+        host.target.as_mut().unwrap().run_state = FleetHostRunState::Stopped as i32;
+        assert_eq!(step(&host, &report), FleetHostPlannedStep::Noop);
+        host.target.as_mut().unwrap().run_state = FleetHostRunState::Running as i32;
+
+        // A partially present application is a different state from the
+        // fresh all-absent VM; it must not borrow the first-use exemption.
+        let mut existing = fixture().1.resources.remove(0);
+        let mut sibling = host.vm_containers[0].clone();
+        sibling.container_name = "vultr-line1-gateway".into();
+        sibling.compose_service = "line1-gateway".into();
+        existing.resource = Some(sibling.clone());
+        host.vm_containers.push(sibling);
+        report.resources.push(existing);
+        let partial = propose_vm_resource_transitions(&host, &report).unwrap();
+        assert!(partial
+            .resources
+            .iter()
+            .all(|item| item.step == FleetHostPlannedStep::Blocked as i32));
+        assert!(partial.resources.iter().all(|item| {
+            item.reason == Reason::CredentialDependencyUnproven as i32
+        }));
     }
 
     #[test]

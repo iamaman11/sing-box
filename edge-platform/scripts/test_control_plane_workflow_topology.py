@@ -956,6 +956,22 @@ def test_vm_first_use_deep_status_checks_worker_without_mutation() -> None:
     )
 
 
+def test_vm_first_use_resource_and_host_proposals_are_safe() -> None:
+    """VM first-use proposes only fully absent resource install, never mutation."""
+    proto = Path("edge-platform/proto/edge/platform/v1/fleet.proto").read_text(encoding="utf-8")
+    types = Path("edge-platform/crates/edge-shared-types/src/host_resources.rs").read_text(encoding="utf-8")
+    require(
+        "FIRST_USE_WORKER_VERIFIED_INSTALL_PROPOSAL_ONLY = 11;" in proto
+        and "first_use_install_proposal" in types
+        and "FirstUseWorkerSourceVerifiedLocal as i32" in types
+        and "credential.state == crate::FleetVmCredentialState::StoreAbsent as i32" in types
+        and "FirstUseWorkerVerifiedInstallProposalOnly => Step::Install" in types
+        and "first_use_resource_plan_matches_host_install_without_granting_authority" in types
+        and "let partial = propose_vm_resource_transitions(&host, &report).unwrap();" in types,
+        "First-use per-resource status must agree with host INSTALL only for all-absent VM",
+    )
+
+
 def test_native_host_readonly_control_boundary(router: str) -> None:
     """One typed Rust inventory dispatches independent, read-only native owners."""
     child_path = Path(".github/workflows/host-native-observe.yml")
@@ -1143,6 +1159,7 @@ def main() -> None:
     test_signed_first_use_credentials_share_native_journal()
     test_vm_first_use_warp_safety_and_bootstrap_source()
     test_vm_first_use_deep_status_checks_worker_without_mutation()
+    test_vm_first_use_resource_and_host_proposals_are_safe()
     test_native_host_readonly_control_boundary(router)
     application = APPLICATION.read_text(encoding="utf-8")
     vultr = VULTR.read_text(encoding="utf-8")

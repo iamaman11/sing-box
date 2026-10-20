@@ -489,6 +489,10 @@ enum FleetVmResourceReason {
   // Explicit Worker-v2 prerequisite; never work around it with local files
   // or assume that candidate-only credentials can start a production VM.
   FLEET_VM_RESOURCE_REASON_CREDENTIAL_DEPENDENCY_UNPROVEN = 10;
+  // Only a proposal for an ENTIRELY ABSENT application with a verified
+  // first-use Worker source. No local ACTIVE, Docker ownership or native
+  // mutation authority is implied; signed INSTALL rechecks everything.
+  FLEET_VM_RESOURCE_REASON_FIRST_USE_WORKER_VERIFIED_INSTALL_PROPOSAL_ONLY = 11;
 }
 
 // A deterministic runtime-only proposal for each Git-owned VM container.
