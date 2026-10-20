@@ -543,6 +543,15 @@ pub fn vm_bootstrap_next_action(phase: crate::FleetVmBootstrapPhase) -> &'static
         Phase::FirstUseGitSourceRequired => {
             "PUBLISH_WORKER_BUNDLE_AND_PIN_FIRST_USE_IDENTITY_IN_GIT"
         }
+        Phase::FirstUseWorkerSourceVerifiedLocal => {
+            "REQUEST_FRESH_SIGNED_INSTALL_WITH_INDEPENDENT_NATIVE_RECEIPT"
+        }
+        Phase::FirstUseWorkerSourceMismatch => {
+            "RECONCILE_WORKER_BUNDLE_AND_GIT_IDENTITY_WITHOUT_LOCAL_MUTATION"
+        }
+        Phase::FirstUseWorkerSourceUnavailable => {
+            "VERIFY_WORKER_ACCESS_OR_GENERATION_READ_ONLY"
+        }
     }
 }
 
@@ -566,7 +575,10 @@ fn validate_vm_bootstrap_phase(
             git_pinned && !active && credential.state != State::StoreAbsent as i32
         }
         Phase::LocalPrerequisitesOnly => git_pinned && active,
-        Phase::FirstUseWorkerSourceUnverified => {
+        Phase::FirstUseWorkerSourceUnverified
+        | Phase::FirstUseWorkerSourceVerifiedLocal
+        | Phase::FirstUseWorkerSourceMismatch
+        | Phase::FirstUseWorkerSourceUnavailable => {
             git_pinned
                 && credential.state == State::StoreAbsent as i32
                 && host.vm_first_use_credential.is_some()
@@ -949,6 +961,28 @@ mod tests {
             vm_bootstrap_next_action(Phase::FirstUseWorkerSourceUnverified),
             "VERIFY_GIT_PINNED_WORKER_BUNDLE_DURING_SIGNED_INSTALL"
         );
+        for phase in [
+            Phase::FirstUseWorkerSourceVerifiedLocal,
+            Phase::FirstUseWorkerSourceMismatch,
+            Phase::FirstUseWorkerSourceUnavailable,
+        ] {
+            report.bootstrap_phase = phase as i32;
+            assert!(validate_vm_resource_report(&report, &host).is_ok());
+        }
+        assert_eq!(
+            vm_bootstrap_next_action(Phase::FirstUseWorkerSourceVerifiedLocal),
+            "REQUEST_FRESH_SIGNED_INSTALL_WITH_INDEPENDENT_NATIVE_RECEIPT"
+        );
+        host.vm_first_use_credential = None;
+        report.bootstrap_phase = Phase::FirstUseWorkerSourceVerifiedLocal as i32;
+        assert_eq!(
+            validate_vm_resource_report(&report, &host),
+            Err("VM_BOOTSTRAP_PHASE_DEPENDENCY_CONFLICT")
+        );
+        host.vm_first_use_credential = Some(crate::FleetVmFirstUseCredential {
+            generation: 19,
+            bundle_sha256: "b".repeat(64),
+        });
         report.bootstrap_phase = Phase::JournalUnknownNoReplay as i32;
         assert!(validate_vm_resource_report(&report, &host).is_ok());
         report.bootstrap_phase = 7777;

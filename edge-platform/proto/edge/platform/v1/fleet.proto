@@ -261,6 +261,12 @@ enum FleetVmBootstrapPhase {
   FLEET_VM_BOOTSTRAP_PHASE_FIRST_USE_WORKER_SOURCE_UNVERIFIED = 7;
   // No local ACTIVE and no immutable first-use source selected in Git.
   FLEET_VM_BOOTSTRAP_PHASE_FIRST_USE_GIT_SOURCE_REQUIRED = 8;
+  // A root-local, authenticated Worker GET matches Git generation/digest.
+  // This is a point-in-time prerequisite, NOT remote native attestation or
+  // authorization to mutate; signed INSTALL performs its own fresh check.
+  FLEET_VM_BOOTSTRAP_PHASE_FIRST_USE_WORKER_SOURCE_VERIFIED_LOCAL = 9;
+  FLEET_VM_BOOTSTRAP_PHASE_FIRST_USE_WORKER_SOURCE_MISMATCH = 10;
+  FLEET_VM_BOOTSTRAP_PHASE_FIRST_USE_WORKER_SOURCE_UNAVAILABLE = 11;
 }
 message FleetVmResourceReport {
   uint32 schema_version = 1;

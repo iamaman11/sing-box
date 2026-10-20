@@ -933,6 +933,29 @@ def test_release_acceptance_gates_do_not_mutate_hosts_on_merge() -> None:
     )
 
 
+def test_vm_first_use_deep_status_checks_worker_without_mutation() -> None:
+    """Deep diagnosis resolves Git-pinned Worker source without bypassing signed INSTALL."""
+    proto = Path("edge-platform/proto/edge/platform/v1/fleet.proto").read_text(encoding="utf-8")
+    types = Path("edge-platform/crates/edge-shared-types/src/host_resources.rs").read_text(encoding="utf-8")
+    docker = Path("edge-platform/crates/edge-agent/src/docker_observation.rs").read_text(encoding="utf-8")
+    owner = Path("edge-platform/crates/edge-agent/src/host_native.rs").read_text(encoding="utf-8")
+    require(
+        "FIRST_USE_WORKER_SOURCE_VERIFIED_LOCAL = 9;" in proto
+        and "FIRST_USE_WORKER_SOURCE_MISMATCH = 10;" in proto
+        and "FIRST_USE_WORKER_SOURCE_UNAVAILABLE = 11;" in proto
+        and "fn classify_native_vm_first_use_source(" in docker
+        and "async fn observe_native_vm_first_use_source(" in docker
+        and "classify_native_vm_first_use_source(host, remote)" in docker
+        and "first_use_deep_status_classifies_exact_worker_source_without_leaking_secrets" in docker
+        and "Phase::FirstUseWorkerSourceVerifiedLocal" in types
+        and "attest_native_vm_install_worker_origin(" in owner
+        and "host_vm_bootstrap_authorizes_mutation=false" in Path(
+            "edge-platform/crates/edge-orchestrator/src/host_command.rs"
+        ).read_text(encoding="utf-8"),
+        "Deep first-use Worker evidence must be classified but never authorize mutation",
+    )
+
+
 def test_native_host_readonly_control_boundary(router: str) -> None:
     """One typed Rust inventory dispatches independent, read-only native owners."""
     child_path = Path(".github/workflows/host-native-observe.yml")
@@ -1119,6 +1142,7 @@ def main() -> None:
     test_native_vm_install_requires_canonical_worker_active_origin()
     test_signed_first_use_credentials_share_native_journal()
     test_vm_first_use_warp_safety_and_bootstrap_source()
+    test_vm_first_use_deep_status_checks_worker_without_mutation()
     test_native_host_readonly_control_boundary(router)
     application = APPLICATION.read_text(encoding="utf-8")
     vultr = VULTR.read_text(encoding="utf-8")

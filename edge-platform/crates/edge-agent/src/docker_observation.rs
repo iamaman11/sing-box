@@ -1614,6 +1614,44 @@ fn verify_native_vm_first_use_identity(
         .map_err(|_| "HOST_VM_INSTALL_WORKER_FIRST_USE_PAYLOAD_INVALID")
 }
 
+/// A read-only, point-in-time Worker proof for deep status. Never outputs
+/// credential values and never gives the runner mutation authority. The
+/// signed native INSTALL always repeats this check after taking the root lock.
+fn classify_native_vm_first_use_source(
+    host: &FleetHost,
+    remote: Result<edge_shared_types::CredentialDeliveryBundle, String>,
+) -> edge_shared_types::FleetVmBootstrapPhase {
+    use edge_shared_types::FleetVmBootstrapPhase as Phase;
+    match remote {
+        Ok(bundle) if verify_native_vm_first_use_identity(host, &bundle).is_ok() => {
+            Phase::FirstUseWorkerSourceVerifiedLocal
+        }
+        Ok(_) => Phase::FirstUseWorkerSourceMismatch,
+        Err(_) => Phase::FirstUseWorkerSourceUnavailable,
+    }
+}
+
+async fn observe_native_vm_first_use_source(
+    host: &FleetHost,
+    stack_dir: &Path,
+) -> edge_shared_types::FleetVmBootstrapPhase {
+    let remote = async {
+        let first = host
+            .vm_first_use_credential
+            .as_ref()
+            .ok_or("HOST_VM_FIRST_USE_GIT_SOURCE_MISSING".to_owned())?;
+        let access = super::vm_credential_access_identity_path(stack_dir)?;
+        edge_secrets::fetch_canonical_credential_bundle(
+            edge_shared_types::CredentialProjectionKind::Vm,
+            first.generation,
+            &access,
+        )
+        .await
+    }
+    .await;
+    classify_native_vm_first_use_source(host, remote)
+}
+
 /// Called ONLY after the shared signed native journal persisted BEGIN.
 /// A crash or failed local pointer write cannot authorize a replay.
 fn activate_native_vm_first_use_cursor_once(
@@ -1702,6 +1740,33 @@ mod native_vm_first_use_tests {
                 },
             )),
         }
+    }
+
+    #[test]
+    fn first_use_deep_status_classifies_exact_worker_source_without_leaking_secrets() {
+        use edge_shared_types::{FleetVmBootstrapPhase as Phase, FleetVmFirstUseCredential};
+        let bundle = valid_vm_bundle();
+        let digest = edge_shared_types::credential_delivery_bundle_sha256(&bundle).unwrap();
+        let mut host = FleetHost {
+            vm_first_use_credential: Some(FleetVmFirstUseCredential {
+                generation: bundle.generation,
+                bundle_sha256: digest,
+            }),
+            ..Default::default()
+        };
+        assert_eq!(
+            classify_native_vm_first_use_source(&host, Ok(bundle.clone())),
+            Phase::FirstUseWorkerSourceVerifiedLocal
+        );
+        host.vm_first_use_credential.as_mut().unwrap().generation += 1;
+        assert_eq!(
+            classify_native_vm_first_use_source(&host, Ok(bundle)),
+            Phase::FirstUseWorkerSourceMismatch
+        );
+        assert_eq!(
+            classify_native_vm_first_use_source(&host, Err("redacted".into())),
+            Phase::FirstUseWorkerSourceUnavailable
+        );
     }
 
     #[test]
@@ -4652,7 +4717,15 @@ pub(crate) async fn observe_vm_resource_report(
             Err(error) => (None, error.status as i32, error.code),
         };
     let credential = observe_native_vm_credential_readback(stack_dir);
-    let bootstrap_phase = super::host_native::local_vm_bootstrap_phase(host, &credential);
+    let mut bootstrap_phase = super::host_native::local_vm_bootstrap_phase(host, &credential);
+    // Run only for a trust-verified, Git-pinned first use with no local ACTIVE.
+    // A failed GET becomes an exact read-only dependency reason, never a
+    // failed deep report, a credential write or permission to start Docker.
+    if bootstrap_phase
+        == edge_shared_types::FleetVmBootstrapPhase::FirstUseWorkerSourceUnverified
+    {
+        bootstrap_phase = observe_native_vm_first_use_source(host, stack_dir).await;
+    }
     let report = FleetVmResourceReport {
         schema_version: 2,
         machine_id: host.machine_id.clone(),
