@@ -475,16 +475,25 @@ mod tests {
             Err("HOST_GIT_WORKER_SIGNER_KEY_REQUIRED")
         );
         host.worker_authority_public_key = signer_a.to_vec();
-        assert_eq!(edge_shared_types::host_lifecycle::verify_git_worker_signer_pin(&host, &signer_a), Ok(()));
+        assert_eq!(
+            edge_shared_types::host_lifecycle::verify_git_worker_signer_pin(&host, &signer_a),
+            Ok(())
+        );
         assert_eq!(
             edge_shared_types::host_lifecycle::verify_git_worker_signer_pin(&host, &signer_b),
             Err("HOST_WORKER_SIGNER_DIFFERS_FROM_PROTECTED_GIT")
         );
         host.kind = FleetHostKind::Windows as i32;
-        assert!(edge_shared_types::host_lifecycle::verify_git_worker_signer_pin(&host, &signer_a).is_err());
+        assert!(
+            edge_shared_types::host_lifecycle::verify_git_worker_signer_pin(&host, &signer_a)
+                .is_err()
+        );
         host.kind = FleetHostKind::Vm as i32;
         host.worker_authority_public_key = vec![0; 32];
-        assert!(edge_shared_types::host_lifecycle::verify_git_worker_signer_pin(&host, &signer_a).is_err());
+        assert!(
+            edge_shared_types::host_lifecycle::verify_git_worker_signer_pin(&host, &signer_a)
+                .is_err()
+        );
     }
 
     #[test]
