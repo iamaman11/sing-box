@@ -170,6 +170,13 @@ fn vm_host_resource_id(host: &FleetHost) -> String {
 /// children. Container-to-network and Compose dependency edges remain
 /// explicit and typed. A missing/foreign edge blocks the whole projection;
 /// only known native owners appear and no mutation authority is conferred.
+/// One Worker-owned CredentialRef is a real dependency of the two
+/// sing-box gateways. It is NOT a second secret store, a generated value,
+/// an owner attestation or a permission for the VM root to issue credentials.
+fn vm_worker_credential_resource_id(host: &FleetHost) -> String {
+    format!("credential/{}/application-v2", host.machine_id)
+}
+
 pub fn derive_vm_resource_hierarchy(
     host: &FleetHost,
     desired: &FleetVmDesiredGraph,
@@ -216,8 +223,13 @@ pub fn validate_vm_resource_hierarchy(
         .map(|node| node.resource_id.as_str())
         .collect::<std::collections::BTreeSet<_>>();
     for node in &observed.nodes {
+        let expected_owner = if node.kind == crate::FleetResourceKind::CredentialRef as i32 {
+            crate::FleetResourceOwner::WorkerSecrets
+        } else {
+            crate::FleetResourceOwner::VmRootAgent
+        };
         if !unique.insert(node.resource_id.as_str())
-            || node.owner != crate::FleetResourceOwner::VmRootAgent as i32
+            || node.owner != expected_owner as i32
             || crate::FleetResourceKind::try_from(node.kind).is_err()
             || node.kind == crate::FleetResourceKind::Unspecified as i32
         {
@@ -251,7 +263,7 @@ pub fn validate_vm_resource_hierarchy(
     }
     if observed.nodes[0].resource_id != vm_host_resource_id(host)
         || observed.nodes.len()
-            != 1 + desired.networks.len()
+            != 2 + desired.networks.len()
                 + desired.resources.len()
                 + desired
                     .resources
@@ -284,6 +296,17 @@ fn project_vm_hierarchy_nodes_unchecked(
         owner: Owner::VmRootAgent as i32,
         expected_policy_sha256: Vec::new(),
     }];
+    // The Provider of the credential is the Worker; projection and
+    // process binding belong to the SAME VM root owner used for INSTALL.
+    let worker_credential = vm_worker_credential_resource_id(host);
+    result.push(FleetResourceNode {
+        resource_id: worker_credential.clone(),
+        kind: Kind::CredentialRef as i32,
+        parent_resource_id: root.clone(),
+        dependency_ids: Vec::new(),
+        owner: Owner::WorkerSecrets as i32,
+        expected_policy_sha256: Vec::new(),
+    });
     let mut networks = std::collections::BTreeMap::<&str, &str>::new();
     for network in &desired.networks {
         for service in &network.attached_services {
@@ -313,6 +336,12 @@ fn project_vm_hierarchy_nodes_unchecked(
             .get(&selector.compose_service.as_str())
             .ok_or("VM_HIERARCHY_NETWORK_DEPENDENCY_MISSING")?;
         let mut dependencies = vec![vm_network_resource_id(&selector.compose_project, network)];
+        if matches!(
+            selector.compose_service.as_str(),
+            "line1-gateway" | "line2-proxy"
+        ) {
+            dependencies.push(worker_credential.clone());
+        }
         for dependency in &resource.dependencies {
             let s = host
                 .vm_containers
@@ -1255,12 +1284,25 @@ pub fn validate_vm_native_start_dag(
                     let dependency = nodes
                         .get(dependency_id.as_str())
                         .ok_or("VM_START_DAG_DEPENDENCY_UNREGISTERED")?;
+                    let dependency_kind = Kind::try_from(dependency.kind)
+                        .map_err(|_| "VM_START_DAG_DEPENDENCY_KIND_UNRECOGNIZED")?;
+                    // A Worker credential is a real graph prerequisite but
+                    // its presence is NEVER a credential authorization.
+                    // Physical ACTIVE must be proven by root ResourceReport/v2
+                    // before the resource planner can return START/INSTALL.
+                    if dependency_kind == Kind::CredentialRef {
+                        if dependency.owner != Owner::WorkerSecrets as i32
+                            || dependency.resource_id != vm_worker_credential_resource_id(host)
+                            || dependency.parent_resource_id != vm_host_resource_id(host)
+                        {
+                            return Err("VM_START_DAG_CREDENTIAL_OWNER_UNPROVEN");
+                        }
+                        continue;
+                    }
                     if dependency.owner != Owner::VmRootAgent as i32 {
                         return Err("VM_START_DAG_DEPENDENCY_OWNER_UNPROVEN");
                     }
-                    match Kind::try_from(dependency.kind)
-                        .map_err(|_| "VM_START_DAG_DEPENDENCY_KIND_UNRECOGNIZED")?
-                    {
+                    match dependency_kind {
                         Kind::DockerNetwork => {
                             if dependency.parent_resource_id != vm_host_resource_id(host) {
                                 return Err("VM_START_DAG_NETWORK_PARENT_UNPROVEN");
@@ -1365,14 +1407,21 @@ mod vm_graph_reconcile_tests {
         let (host, desired) = sample();
         let hierarchy = derive_vm_resource_hierarchy(&host, &desired).unwrap();
         assert!(!hierarchy.owner_attested && !hierarchy.mutation_authorized);
-        assert_eq!(hierarchy.nodes.len(), 7);
+        assert_eq!(hierarchy.nodes.len(), 8);
         assert_eq!(hierarchy.nodes[0].resource_id, "host/vm-a");
         assert_eq!(
             hierarchy.nodes[1].resource_id,
+            "credential/vm-a/application-v2"
+        );
+        assert_eq!(hierarchy.nodes[1].kind, Kind::CredentialRef as i32);
+        assert_eq!(hierarchy.nodes[1].owner, Owner::WorkerSecrets as i32);
+        assert_eq!(hierarchy.nodes[1].parent_resource_id, "host/vm-a");
+        assert_eq!(
+            hierarchy.nodes[2].resource_id,
             "network/vultr-edge/edge_net"
         );
-        assert_eq!(hierarchy.nodes[1].kind, Kind::DockerNetwork as i32);
-        assert_eq!(hierarchy.nodes[1].owner, Owner::VmRootAgent as i32);
+        assert_eq!(hierarchy.nodes[2].kind, Kind::DockerNetwork as i32);
+        assert_eq!(hierarchy.nodes[2].owner, Owner::VmRootAgent as i32);
         let line2 = hierarchy
             .nodes
             .iter()
@@ -1384,6 +1433,7 @@ mod vm_graph_reconcile_tests {
             line2.dependency_ids,
             vec![
                 "container/vultr-edge/warp-egress".to_owned(),
+                "credential/vm-a/application-v2".to_owned(),
                 "network/vultr-edge/edge_net".to_owned(),
             ]
         );
@@ -1404,6 +1454,18 @@ mod vm_graph_reconcile_tests {
         );
         let mut forged = hierarchy.clone();
         forged.nodes[1].owner = Owner::WindowsSystemController as i32;
+        assert!(validate_vm_resource_hierarchy(&forged, &host, &desired).is_err());
+        forged = hierarchy.clone();
+        forged.nodes[1].parent_resource_id = "host/foreign".into();
+        assert!(validate_vm_resource_hierarchy(&forged, &host, &desired).is_err());
+        forged = hierarchy.clone();
+        forged
+            .nodes
+            .iter_mut()
+            .find(|node| node.resource_id == "container/vultr-edge/line2-proxy")
+            .unwrap()
+            .dependency_ids
+            .retain(|dependency| dependency != "credential/vm-a/application-v2");
         assert!(validate_vm_resource_hierarchy(&forged, &host, &desired).is_err());
         forged = hierarchy.clone();
         forged.nodes[3].parent_resource_id = "host/foreign".into();

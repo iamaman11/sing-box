@@ -45,7 +45,7 @@
 
 **Реализовано частично в PR #403:** Protobuf DAG для Compose-owned containers/networks/images/config; typed reason, Rust planner, VM root Agent, Worker authorization и одноразовый journal. Для одной конфигурации Line1/Line2 реализован подписанный `config/<project>/<service>` в существующем `host apply`: GitHub approval → Worker Ed25519 → точный DAG node/owner → native config-only handler. Чужой ресурс, image-pair, START/STOP и cross-scope UNKNOWN блокируются. Read-only планы неизменно `owner_attested=false`, `mutation_authorized=false`.
 
-**VM INSTALL:** `ResourceReport/v2` фиксирует ACTIVE/CANDIDATE/ABSENT/UNPROVEN Worker credentials. Без ACTIVE запуск BLOCKED; STOP разрешён. Root Agent закрепляет generation/digest до BEGIN, после BEGIN отклоняет drift. Bollard без Compose. First-use Worker выдача и физический receipt пока UNPROVEN.
+**VM INSTALL:** `ResourceHierarchy` содержит Worker-owned CredentialRef и ребро к Line1/Line2; `ResourceReport/v2` проверяет ACTIVE/CANDIDATE/ABSENT/UNPROVEN. Без ACTIVE — BLOCKED, STOP допустим. Pinned snapshot рендерится и сверяется до receipt; drift → UNKNOWN_NO_REPLAY. Bollard без Compose. First-use Worker/physical receipt — UNPROVEN.
 
 **Native receipt и legacy boundary (PR #403):** root `host-enroll` создаёт защищённый Ed25519 receipt key, выдаёт public key для регистрации в Git; без exact key match apply BLOCKED. VM CLI допускает только host apply, enrollment и чтение; старый RPC listener отключён. VM/Windows legacy mutating RPC всегда PermissionDenied; новые RPC проверяются CI по умолчанию. Windows SYSTEM signed apply и физическая приёмка НЕ готовы.
 

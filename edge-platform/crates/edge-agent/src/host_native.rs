@@ -438,6 +438,47 @@ fn verify_installed_native_vm_file(
     Ok(())
 }
 
+/// One closed diagnostic contract for native INSTALL. Only known,
+/// non-secret owner error classes may cross the native RPC/CLI boundary.
+/// Arbitrary Docker/credential-store errors cannot become operator commands.
+#[derive(Debug, Clone, Copy)]
+enum NativeVmInstallFailurePhase {
+    Preadmission,
+    PostBegin,
+}
+
+fn native_vm_install_error_class(source: &str, phase: NativeVmInstallFailurePhase) -> &'static str {
+    use NativeVmInstallFailurePhase::{PostBegin, Preadmission};
+    match (phase, source) {
+        (Preadmission, "HOST_VM_INSTALL_ACTIVE_V2_REQUIRED") => {
+            "HOST_VM_INSTALL_WORKER_ACTIVE_CREDENTIAL_REQUIRED"
+        }
+        (
+            Preadmission,
+            "HOST_VM_INSTALL_CREDENTIAL_UNPROVEN"
+            | "HOST_VM_INSTALL_CREDENTIAL_INVALID"
+            | "HOST_VM_INSTALL_V2_ACTIVE_IDENTITY_INVALID"
+            | "HOST_VM_INSTALL_V2_ACTIVE_PAYLOAD_INVALID",
+        ) => "HOST_VM_INSTALL_WORKER_CREDENTIAL_UNPROVEN",
+        (
+            Preadmission,
+            "HOST_VM_INSTALL_EXISTING_STACK"
+            | "HOST_VM_INSTALL_CONTAINER_ALREADY_PRESENT"
+            | "HOST_VM_INSTALL_EXISTING_NETWORK",
+        ) => "HOST_VM_INSTALL_OWNER_PRESTATE_NOT_EMPTY",
+        (Preadmission, _) => "HOST_NATIVE_VM_INSTALL_PREADMISSION_BLOCKED",
+        (
+            PostBegin,
+            "HOST_VM_INSTALL_CREDENTIAL_DRIFT_NO_REPLAY"
+            | "HOST_VM_INSTALL_ACTIVE_CREDENTIAL_DISAPPEARED_NO_REPLAY"
+            | "HOST_VM_INSTALL_CREDENTIAL_CURSOR_UNPROVEN_NO_REPLAY"
+            | "HOST_VM_INSTALL_CREDENTIAL_CHANGED_NO_REPLAY"
+            | "HOST_VM_INSTALL_CREDENTIAL_PROJECTION_INVALID_NO_REPLAY",
+        ) => "HOST_VM_INSTALL_WORKER_CREDENTIAL_DRIFT_NO_REPLAY",
+        (PostBegin, _) => "HOST_NATIVE_VM_INSTALL_UNCERTAIN_NO_REPLAY",
+    }
+}
+
 /// The existing installed root agent is the *only* mutation authority.
 /// Fail closed while the native root has not received the exact immutable
 /// release and pinned signer material; no implicit provision or fetch.
@@ -582,7 +623,12 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
                         .block_on(super::docker_observation::preflight_native_vm_install(
                             stack_dir, host, &request,
                         ))
-                        .map_err(|_| "HOST_NATIVE_VM_INSTALL_PREADMISSION_BLOCKED")?;
+                        .map_err(|error| {
+                            native_vm_install_error_class(
+                                &error,
+                                NativeVmInstallFailurePhase::Preadmission,
+                            )
+                        })?;
                     *prepared_install.borrow_mut() = Some(plan);
                     Ok(())
                 }
@@ -639,7 +685,12 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
                         .block_on(super::docker_observation::apply_native_vm_install_once(
                             stack_dir, host, plan,
                         ))
-                        .map_err(|_| "HOST_NATIVE_VM_INSTALL_UNCERTAIN_NO_REPLAY")
+                        .map_err(|error| {
+                            native_vm_install_error_class(
+                                &error,
+                                NativeVmInstallFailurePhase::PostBegin,
+                            )
+                        })
                 }
                 _ => Err("HOST_NATIVE_STEP_UNSUPPORTED_NO_REPLAY"),
             },
@@ -661,6 +712,27 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod native_host_path_tests {
     use super::*;
+
+    #[test]
+    fn native_install_diagnostics_preserve_only_known_typed_failure_classes() {
+        use NativeVmInstallFailurePhase::{PostBegin, Preadmission};
+        assert_eq!(
+            native_vm_install_error_class("HOST_VM_INSTALL_ACTIVE_V2_REQUIRED", Preadmission,),
+            "HOST_VM_INSTALL_WORKER_ACTIVE_CREDENTIAL_REQUIRED",
+        );
+        assert_eq!(
+            native_vm_install_error_class("HOST_VM_INSTALL_CREDENTIAL_DRIFT_NO_REPLAY", PostBegin,),
+            "HOST_VM_INSTALL_WORKER_CREDENTIAL_DRIFT_NO_REPLAY",
+        );
+        assert_eq!(
+            native_vm_install_error_class("some private credential bytes", Preadmission),
+            "HOST_NATIVE_VM_INSTALL_PREADMISSION_BLOCKED",
+        );
+        assert_eq!(
+            native_vm_install_error_class("unexpected Docker daemon message", PostBegin),
+            "HOST_NATIVE_VM_INSTALL_UNCERTAIN_NO_REPLAY",
+        );
+    }
 
     #[test]
     fn native_start_policy_rejects_mutated_files_and_symlinks() {

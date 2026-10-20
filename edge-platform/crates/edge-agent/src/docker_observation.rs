@@ -1734,9 +1734,30 @@ pub(crate) async fn preflight_native_vm_install(
     })
 }
 
+/// Read the Worker-v2 ACTIVE snapshot under the existing root owner lock
+/// and compare its exact generation+canonical bundle digest with preadmission.
+/// Never read candidate/previous, create credentials, or fall back to v1.
+/// The projection returned here is the ONLY one installed by signed INSTALL.
+fn verify_native_vm_install_credential_pin(
+    stack_dir: &Path,
+    expected: &NativeVmCredentialPin,
+) -> Result<super::ApplicationRuntimeSecrets, String> {
+    let bundle = super::active_vm_credential_bundle(stack_dir)
+        .map_err(|_| "HOST_VM_INSTALL_CREDENTIAL_CURSOR_UNPROVEN_NO_REPLAY")?
+        .ok_or("HOST_VM_INSTALL_ACTIVE_CREDENTIAL_DISAPPEARED_NO_REPLAY")?;
+    let actual = pin_active_native_vm_credential(&bundle)
+        .map_err(|_| "HOST_VM_INSTALL_CREDENTIAL_CHANGED_NO_REPLAY")?;
+    if &actual != expected {
+        return Err("HOST_VM_INSTALL_CREDENTIAL_DRIFT_NO_REPLAY".into());
+    }
+    super::ApplicationRuntimeSecrets::from_vm_bundle(&bundle)
+        .map_err(|_| "HOST_VM_INSTALL_CREDENTIAL_PROJECTION_INVALID_NO_REPLAY".into())
+}
+
 fn stage_native_first_vm_bundle(
     stack_dir: &Path,
     request: &ApplyBundleRequest,
+    pinned_secrets: &super::ApplicationRuntimeSecrets,
 ) -> Result<(), String> {
     // BEGIN has been durably recorded. No cleanup or implicit rollback is
     // allowed for any scratch state following an uncertain operation.
@@ -1750,7 +1771,10 @@ fn stage_native_first_vm_bundle(
         super::write_bundle_file(&stage, file, &mut written)
             .map_err(|_| "HOST_VM_INSTALL_BUNDLE_WRITE_UNCERTAIN_NO_REPLAY")?;
     }
-    super::materialize_vm_owned_runtime_environment(&stage)
+    // Project exactly the bundle verified against signed pre-BEGIN pin.
+    // Reopening the A/B store here would permit a TOCTOU credential swap
+    // after the last check and before the runtime is materialized.
+    super::write_vm_runtime_environment(&stage, pinned_secrets)
         .map_err(|_| "HOST_VM_INSTALL_CREDENTIAL_PROJECTION_UNCERTAIN_NO_REPLAY")?;
     super::prepare_runtime_directories(&stage)
         .map_err(|_| "HOST_VM_INSTALL_RUNTIME_DIR_UNCERTAIN_NO_REPLAY")?;
@@ -1925,18 +1949,10 @@ pub(crate) async fn apply_native_vm_install_once(
         }) => {}
         _ => return Err("HOST_VM_INSTALL_NETWORK_CHANGED_NO_REPLAY".into()),
     }
-    // Re-read the same root-local A/B cursor after signed BEGIN, before
-    // creating a file, network or container. A changed/removed active bundle
-    // cannot be silently projected into the originally authorized plan.
-    let current = super::active_vm_credential_bundle(stack_dir)
-        .map_err(|_| "HOST_VM_INSTALL_CREDENTIAL_CURSOR_UNPROVEN_NO_REPLAY")?
-        .ok_or("HOST_VM_INSTALL_ACTIVE_CREDENTIAL_DISAPPEARED_NO_REPLAY")?;
-    let pin = pin_active_native_vm_credential(&current)
-        .map_err(|_| "HOST_VM_INSTALL_CREDENTIAL_CHANGED_NO_REPLAY")?;
-    if pin != plan.credential_pin {
-        return Err("HOST_VM_INSTALL_CREDENTIAL_DRIFT_NO_REPLAY".into());
-    }
-    stage_native_first_vm_bundle(stack_dir, &plan.request)?;
+    // Bind the exact post-BEGIN projection once: all subsequent filesystem
+    // rendering consumes this immutable, already verified in-memory value.
+    let pinned_secrets = verify_native_vm_install_credential_pin(stack_dir, &plan.credential_pin)?;
+    stage_native_first_vm_bundle(stack_dir, &plan.request, &pinned_secrets)?;
     if compile_native_vm_desired_graph(stack_dir, host)? != plan.graph {
         return Err("HOST_VM_INSTALL_GRAPH_CHANGED_NO_REPLAY".into());
     }
@@ -1999,6 +2015,10 @@ pub(crate) async fn apply_native_vm_install_once(
     if compile_native_vm_desired_graph(stack_dir, host)? != plan.graph {
         return Err("HOST_VM_INSTALL_POSTSTATE_GRAPH_CHANGED_NO_REPLAY".into());
     }
+    // The durable terminal VERIFIED receipt is forbidden if local A/B
+    // changed while Docker containers were being created. No compensation,
+    // cursor promotion or mutation replay is attempted.
+    verify_native_vm_install_credential_pin(stack_dir, &plan.credential_pin)?;
     Ok(())
 }
 

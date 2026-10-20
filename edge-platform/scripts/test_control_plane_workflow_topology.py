@@ -2511,6 +2511,26 @@ def main() -> None:
         and "super::run_compose(" not in signed_vm_effectors,
         "Signed VM INSTALL must use native Docker graph instead of Compose",
     )
+    # Native INSTALL must project only the *pinned* Worker ACTIVE bundle
+    # through one root owner; no unguarded second credential read on staging.
+    installed_stage = signed_vm_effectors.split(
+        "fn stage_native_first_vm_bundle(", 1
+    )[1].split("async fn pull_native_vm_image_once(", 1)[0]
+    native_install_apply = signed_vm_effectors.split(
+        "pub(crate) async fn apply_native_vm_install_once(", 1
+    )[1].split("/// One application-owned service selector.", 1)[0]
+    require(
+        "pinned_secrets: &super::ApplicationRuntimeSecrets" in installed_stage
+        and "write_vm_runtime_environment(&stage, pinned_secrets)" in installed_stage
+        and "materialize_vm_owned_runtime_environment" not in installed_stage
+        and native_install_apply.count(
+            "verify_native_vm_install_credential_pin("
+        ) == 2
+        and "stage_native_first_vm_bundle(stack_dir, &plan.request, &pinned_secrets)"
+        in native_install_apply,
+        "Signed VM INSTALL must use one pinned Worker-v2 secret snapshot "
+        "before file writes and at terminal poststate",
+    )
     # Default deny: future protobuf RPCs must be explicitly read-only or
     # pass the native fail-closed guard inside their handler.
     def rpc_is_guarded(code, name, guard):
