@@ -116,9 +116,9 @@ CI ≠ runtime.
 
 ## Два допуска — один ReleaseSet
 
-**Code gate:** exact PR HEAD → tests → Windows/Linux/ReleaseSet candidates. Merge только exact tested tree; push-main publisher использует те же артефакты **без rebuild** и не вызывает `host apply`. CI ≠ physical PASS.
+**Code gate:** exact HEAD → CI + review → merge tested tree. Push-main публикует тот же ReleaseSet **без rebuild** и без `host apply`. Merge ≠ physical PASS.
 
-**Operational gate:** root enrollment принимает только опубликованный main ReleaseSet и pinned Worker key. VM создаёт receipt key; public key попадает в Git и следующий ReleaseSet. Worker issuance → typed target → signed apply → receipt → внешний TLS/auth/DIRECT/WARP. Испытания: новая VM, существующая VM, Windows STOPPED/PROXY_ONLY. Merge не запускает production/TUN.
+**Operational gate ПОСЛЕ merge:** root enrollment допускает только опубликованный main ReleaseSet и Git-pinned Worker key, не PR candidate. VM создаёт receipt key, его public key регистрируется следующим Git ReleaseSet. Worker issuance → typed target → signed apply → receipt → внешний TLS/auth/DIRECT/WARP. Испытания: новая и существующая VM, Windows STOPPED/PROXY_ONLY; без physical proof остаётся UNPROVEN. Merge не запускает production/TUN.
 
 ## Обязательный протокол сомнения (без гаданий и кругов)
 
