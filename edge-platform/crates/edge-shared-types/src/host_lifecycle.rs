@@ -6,7 +6,8 @@
 //! issue a VERIFIED receipt. No compatibility with legacy A/B dispatcher.
 
 use crate::{
-    FleetHostAction, FleetHostAuthorization, FleetHostIntent, FleetHostKind, FleetHostMode,
+    FleetHost, FleetHostAction, FleetHostAuthorization, FleetHostIntent, FleetHostKind,
+    FleetHostMode,
     FleetHostResult, FleetHostResultState, HostRegistry, managed_host,
 };
 use prost::Message;
