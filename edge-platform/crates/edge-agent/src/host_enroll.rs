@@ -434,7 +434,7 @@ pub(crate) async fn enroll(machine_id: &str, release_digest: &str) -> Result<(),
     );
     println!(
         "host_worker_public_key_sha256={}",
-        super::host_native::sha256_hex(&public_key)
+        super::host_native::sha256_hex(&snapshot.pinned_worker_public_key)
     );
     println!("host_mutations=0");
     Ok(())
