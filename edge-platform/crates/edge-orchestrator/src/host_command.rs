@@ -8,8 +8,8 @@ use edge_shared_types::{
         decode_native_observation, prepared_host_result, validate_host_intent,
         validate_host_result, validate_intent_against_target,
     },
-    managed_host,
     host_receipt::{decode_native_receipt, verify_native_receipt},
+    managed_host,
 };
 use prost::Message;
 use ring::digest::{SHA256, digest};
@@ -656,8 +656,7 @@ pub(crate) fn run(
             let intent =
                 decode_host_intent(&read_bounded(&intent_path, 4096)?).map_err(str::to_owned)?;
             let native_receipt =
-                decode_native_receipt(&read_bounded(&result_path, 8192)?)
-                    .map_err(str::to_owned)?;
+                decode_native_receipt(&read_bounded(&result_path, 8192)?).map_err(str::to_owned)?;
             let selected = desired
                 .hosts
                 .iter()
@@ -681,8 +680,8 @@ pub(crate) fn run(
             )
             .map_err(str::to_owned)?;
             validate_intent_against_target(&intent, &desired).map_err(str::to_owned)?;
-            let result = verify_native_receipt(&intent, &native_receipt, selected)
-                .map_err(str::to_owned)?;
+            let result =
+                verify_native_receipt(&intent, &native_receipt, selected).map_err(str::to_owned)?;
             println!("host_machine_id={machine_id}");
             println!("host_operation_id={}", intent.operation_id);
             println!("host_native_result_correlation=EXACT");
@@ -695,7 +694,11 @@ pub(crate) fn run(
             println!("host_native_result_authenticated=true");
             println!(
                 "host_native_result_remote_acceptance={}",
-                if result.physical_readback { "VERIFIED_PHYSICAL" } else { "OBSERVED_ONLY" }
+                if result.physical_readback {
+                    "VERIFIED_PHYSICAL"
+                } else {
+                    "OBSERVED_ONLY"
+                }
             );
             println!("host_mutations=0");
             Ok(())

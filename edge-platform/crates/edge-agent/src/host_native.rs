@@ -651,8 +651,12 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
     })
     .map_err(str::to_owned)?;
     let receipt = edge_shared_types::host_receipt::sign_native_receipt(
-        &intent, &result, host, &receipt_pkcs8,
-    ).map_err(str::to_owned)?;
+        &intent,
+        &result,
+        host,
+        &receipt_pkcs8,
+    )
+    .map_err(str::to_owned)?;
     io::stdout()
         .write_all(&receipt.encode_to_vec())
         .map_err(|_| "HOST_NATIVE_RESULT_STDOUT_UNCERTAIN_NO_REPLAY".into())
