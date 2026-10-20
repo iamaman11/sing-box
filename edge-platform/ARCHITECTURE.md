@@ -41,6 +41,8 @@
 - `host apply <id>` — подписанный одноразовый переход к Git desired и ReleaseSet;
 - `host recover <id>` — диагностика/безопасная новая операция после установления фактов, никогда replay неизвестной мутации.
 
+**Граница CLI (PR #403):** старые мутационные операции application-lifecycle, credentials, production enroll-runtime, vultr-lifecycle, vultr-vpc, Cloudflare converge и acceptance/cleanup отклоняются до Rust dispatch; namespace скрыты из справки. Сохранены только host, внутренний build immutable ReleaseSet и ограниченные read-only проверки. Библиотеки и старые GitHub workflows ещё существуют: их удаление/закрытие требует отдельной проверки без разрушения CI.
+
 **Реализовано частично в PR #403:** Protobuf DAG для Compose-owned containers/networks/images/config; typed reason, Rust planner, VM root Agent, Worker authorization и одноразовый journal. Для одной конфигурации Line1/Line2 реализован подписанный `config/<project>/<service>` в существующем `host apply`: GitHub approval → Worker Ed25519 → точный DAG node/owner → native config-only handler. Чужой ресурс, image-pair, START/STOP и cross-scope UNKNOWN блокируются. Read-only планы неизменно `owner_attested=false`, `mutation_authorized=false`.
 
 **Не принято:** физическая установка scoped signer/root Agent, остальные resource kinds DNS/firewall/routes/TLS/CredentialRef, Windows SYSTEM apply, authenticated remote receipt и полное deep-acceptance. Обычный `resource_id=sing-box` остаётся host-wide; `host recover` read-only. Код PR и CI не означают эксплуатационный допуск. Старые команды не возвращать; `UNPROVEN` не считать PASS.

@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[command(
     name = "edge-orchestrator",
     version,
-    about = "GitHub-only typed provider and VM lifecycle orchestrator"
+    about = "Git-owned host lifecycle; legacy domain mutations disabled"
 )]
 pub(crate) struct Cli {
     #[command(subcommand)]
@@ -20,21 +20,28 @@ impl Cli {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
+    #[command(hide = true)]
     ApplicationLifecycle {
         #[command(subcommand)]
         command: ApplicationLifecycleCommand,
     },
+    #[command(hide = true)]
     ApplicationAcceptance(ApplicationAcceptanceArgs),
+    #[command(hide = true)]
     ApplicationBundleBuild(ApplicationBundleBuildArgs),
+    #[command(hide = true)]
     ApplicationCleanup(ApplicationCleanupArgs),
+    #[command(hide = true)]
     CloudflareTargetPlane {
         #[command(subcommand)]
         command: CloudflareTargetPlaneCommand,
     },
+    #[command(hide = true)]
     CloudflareZeroTrust {
         #[command(subcommand)]
         command: CloudflareZeroTrustCommand,
     },
+    #[command(hide = true)]
     Credentials {
         #[command(subcommand)]
         command: CredentialDeliveryCommand,
@@ -66,14 +73,17 @@ pub(crate) enum Command {
         #[command(subcommand)]
         command: HostCommand,
     },
+    #[command(hide = true)]
     Production {
         #[command(subcommand)]
         command: ProductionCommand,
     },
+    #[command(hide = true)]
     VultrLifecycle {
         #[command(subcommand)]
         command: VultrLifecycleCommand,
     },
+    #[command(hide = true)]
     VultrVpc {
         #[command(subcommand)]
         command: VultrVpcCommand,

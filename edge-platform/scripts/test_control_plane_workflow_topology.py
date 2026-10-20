@@ -734,6 +734,31 @@ def test_git_windows_host_host_contract(credentials: str) -> None:
     )
 
 
+def test_canonical_host_mutation_ingress() -> None:
+    """Only the host chain may mutate; old domain namespaces are sealed."""
+    source = Path("edge-platform/crates/edge-orchestrator/src/main.rs").read_text(
+        encoding="utf-8"
+    )
+    cli = CREDENTIAL_CLI.read_text(encoding="utf-8")
+    require(
+        "fn legacy_entrypoint_allowed(" in source
+        and source.count("if !legacy_entrypoint_allowed(&parsed.command)") == 2
+        and "HOST_LEGACY_MUTATION_INGRESS_DISABLED_USE_HOST" in source
+        and "Command::Host { .. } | Command::ApplicationBundleBuild(_) => true" in source
+        and "legacy_mutations_blocked_before_release_context_and_dispatch" in source,
+        "legacy domain mutations must fail closed before release/native dispatch",
+    )
+    for name in (
+        "ApplicationLifecycle", "ApplicationAcceptance", "ApplicationBundleBuild",
+        "ApplicationCleanup", "CloudflareTargetPlane", "CloudflareZeroTrust",
+        "Credentials", "Production", "VultrLifecycle", "VultrVpc",
+    ):
+        require(
+            ("    #[command(hide = true)]\\n    " + name) in cli,
+            f"legacy {name} must remain hidden from public host CLI help",
+        )
+
+
 def test_native_host_readonly_control_boundary(router: str) -> None:
     """One typed Rust inventory dispatches independent, read-only native owners."""
     child_path = Path(".github/workflows/host-native-observe.yml")
@@ -912,6 +937,7 @@ def test_existing_worker_host_signer_is_syntactically_closed() -> None:
 def main() -> None:
     test_existing_worker_host_signer_is_syntactically_closed()
     router = ROUTER.read_text(encoding="utf-8")
+    test_canonical_host_mutation_ingress()
     test_native_host_readonly_control_boundary(router)
     application = APPLICATION.read_text(encoding="utf-8")
     vultr = VULTR.read_text(encoding="utf-8")
