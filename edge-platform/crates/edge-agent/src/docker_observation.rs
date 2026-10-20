@@ -683,6 +683,92 @@ fn native_gateway_create_body(
     })
 }
 
+
+/// Recreate exactly one already-owned gateway using Docker Engine API.
+/// All image, network, mount and port policy is prepared before BEGIN.
+/// A failed STOP/DELETE/CREATE/START ACK is UNKNOWN_NO_REPLAY; the shared
+/// journal remains pending and no automatic compensation is attempted.
+async fn recreate_native_gateway_once(
+    docker: &Docker,
+    host: &FleetHost,
+    service: &str,
+    previous_id: &str,
+    network_id: &str,
+    body: bollard::models::ContainerCreateBody,
+) -> Result<(), String> {
+    let selector = host
+        .vm_containers
+        .iter()
+        .find(|item| item.compose_service == service)
+        .ok_or("HOST_VM_NATIVE_RECREATE_SELECTOR_MISSING_NO_REPLAY")?;
+    if !matches!(service, "line1-gateway" | "line2-proxy")
+        || read_owned_edge_network_id(docker, host).await?.as_str() != network_id
+    {
+        return Err("HOST_VM_NATIVE_RECREATE_SCOPE_CHANGED_NO_REPLAY".into());
+    }
+    let inspected = docker
+        .inspect_container(previous_id, None)
+        .await
+        .map_err(|_| "HOST_VM_NATIVE_RECREATE_OLD_ID_UNAVAILABLE_NO_REPLAY")?;
+    if inspected.id.as_deref() != Some(previous_id)
+        || inspected.name.as_deref() != Some(format!("/{}", selector.container_name).as_str())
+        || !inspected.state.as_ref().is_some_and(|state| state.running == Some(true))
+    {
+        return Err("HOST_VM_NATIVE_RECREATE_PRESTATE_CHANGED_NO_REPLAY".into());
+    }
+    let labels = inspected
+        .config
+        .as_ref()
+        .and_then(|config| config.labels.as_ref())
+        .ok_or("HOST_VM_NATIVE_RECREATE_OLD_LABELS_MISSING_NO_REPLAY")?;
+    exact_application_compose_owner(&selector.container_name, labels, &host.vm_containers)
+        .map_err(|_| "HOST_VM_NATIVE_RECREATE_OWNER_CHANGED_NO_REPLAY")?;
+    let expected_image = body
+        .image
+        .as_deref()
+        .ok_or("HOST_VM_NATIVE_RECREATE_IMAGE_MISSING_NO_REPLAY")?;
+    docker
+        .inspect_image(expected_image)
+        .await
+        .map_err(|_| "HOST_VM_NATIVE_RECREATE_PINNED_IMAGE_MISSING_NO_REPLAY")?;
+    docker
+        .stop_container(
+            previous_id,
+            Some(
+                bollard::query_parameters::StopContainerOptionsBuilder::default()
+                    .t(20)
+                    .build(),
+            ),
+        )
+        .await
+        .map_err(|_| "HOST_VM_NATIVE_RECREATE_STOP_UNCERTAIN_NO_REPLAY")?;
+    docker
+        .remove_container(
+            previous_id,
+            None::<bollard::query_parameters::RemoveContainerOptions>,
+        )
+        .await
+        .map_err(|_| "HOST_VM_NATIVE_RECREATE_DELETE_UNCERTAIN_NO_REPLAY")?;
+    let options = bollard::query_parameters::CreateContainerOptionsBuilder::default()
+        .name(&selector.container_name)
+        .build();
+    let created = docker
+        .create_container(Some(options), body)
+        .await
+        .map_err(|_| "HOST_VM_NATIVE_RECREATE_CREATE_UNCERTAIN_NO_REPLAY")?;
+    if created.id.len() != 64 || !created.id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err("HOST_VM_NATIVE_RECREATE_NEW_ID_UNPROVEN_NO_REPLAY".into());
+    }
+    docker
+        .start_container(
+            &created.id,
+            None::<bollard::query_parameters::StartContainerOptions>,
+        )
+        .await
+        .map_err(|_| "HOST_VM_NATIVE_RECREATE_START_UNCERTAIN_NO_REPLAY")?;
+    Ok(())
+}
+
 /// Resolve the common typed resource planner against root-local Docker
 /// evidence BEFORE the journal BEGIN. A single absent owned gateway may
 /// use native Docker CREATE; other resources must be unchanged and ready.
@@ -1427,6 +1513,9 @@ struct NativeVmGatewayImageReplacePlan {
     installed_graph: edge_shared_types::FleetVmDesiredGraph,
     target_graph: edge_shared_types::FleetVmDesiredGraph,
     release: edge_shared_types::ApplicationBundleReleaseState,
+    edge_network_id: String,
+    prepared_gateways: Vec<(String, bollard::models::ContainerCreateBody)>,
+    compose_sha256: Vec<u8>,
 }
 
 #[derive(Debug)]
@@ -1655,6 +1744,28 @@ async fn preflight_gateway_image_replace(
         )
         .await?;
     }
+    let edge_network_id = read_owned_edge_network_id(&docker, host).await?;
+    verify_vm_network_attachments(&docker, host, &owned, &edge_network_id).await?;
+    // Require both replacement image and exact network policy to be
+    // available before committing the one-shot journal transaction.
+    docker
+        .inspect_image(&new_gateway_image)
+        .await
+        .map_err(|_| "HOST_VM_IMAGE_PINNED_IMAGE_NOT_LOCAL")?;
+    let mut prepared_gateways = Vec::new();
+    for service in ["line2-proxy", "line1-gateway"] {
+        prepared_gateways.push((
+            service.to_owned(),
+            native_gateway_create_body(
+                stack_dir,
+                host,
+                service,
+                &new_gateway_image,
+                &edge_network_id,
+            )?,
+        ));
+    }
+    let compose_sha256 = native_vm_compose_digest(stack_dir)?;
     let identities = host
         .vm_containers
         .iter()
@@ -1672,6 +1783,9 @@ async fn preflight_gateway_image_replace(
         identities,
         installed_graph,
         target_graph,
+        edge_network_id,
+        prepared_gateways,
+        compose_sha256,
         release: edge_shared_types::ApplicationBundleReleaseState {
             schema_version: 1,
             bundle_id,
@@ -1691,9 +1805,13 @@ async fn apply_gateway_image_replace_once(
     check_owned_vm_snapshot(host, &owned, &plan.identities)?;
     if compile_native_vm_desired_graph(stack_dir, host)? != plan.installed_graph
         || exact_vm_policy_file(stack_dir, ".images.env")? != plan.previous_images
+        || native_vm_compose_digest(stack_dir)? != plan.compose_sha256
+        || read_owned_edge_network_id(&docker, host).await? != plan.edge_network_id
     {
         return Err("HOST_VM_IMAGE_PRESTATE_CHANGED_NO_REPLAY".into());
     }
+    verify_vm_network_attachments(&docker, host, &owned, &plan.edge_network_id).await?;
+
     let staging = stack_dir.join(".images.env.next");
     if fs::symlink_metadata(&staging).is_ok() {
         return Err("HOST_VM_IMAGE_STAGING_EXISTS_NO_REPLAY".into());
@@ -1712,12 +1830,23 @@ async fn apply_gateway_image_replace_once(
     if image_vars.get("EDGE_GATEWAY_IMAGE") != Some(&plan.new_gateway_image) {
         return Err("HOST_VM_IMAGE_ENV_NOT_CONVERGED_NO_REPLAY".into());
     }
-    // Two services sharing one image form one logical image resource.
-    // --no-deps never recreates the WARP container or independent Mesh.
-    super::start_line2_proxy(stack_dir, &image_vars)
-        .map_err(|_| "HOST_VM_IMAGE_LINE2_UNCERTAIN_NO_REPLAY")?;
-    super::start_line1_gateway(stack_dir, &image_vars)
-        .map_err(|_| "HOST_VM_IMAGE_LINE1_UNCERTAIN_NO_REPLAY")?;
+    // Recreate the two gateway children through one root-owned Docker API
+    // boundary, leaving WARP, network and foreign Mesh untouched.
+    for (service, body) in plan.prepared_gateways {
+        let previous = owned
+            .iter()
+            .find(|item| item.service == service)
+            .ok_or("HOST_VM_IMAGE_TARGET_ID_MISSING_NO_REPLAY")?;
+        recreate_native_gateway_once(
+            &docker,
+            host,
+            &service,
+            &previous.id,
+            &plan.edge_network_id,
+            body,
+        )
+        .await?;
+    }
     let after = owned_application_container_ids(&docker, &host.vm_containers).await?;
     if after.len() != host.vm_containers.len() {
         return Err("HOST_VM_IMAGE_POSTSTATE_MISSING_NO_REPLAY".into());
@@ -1882,6 +2011,9 @@ pub(crate) struct NativeVmScopedReplacePlan {
     target_graph: edge_shared_types::FleetVmDesiredGraph,
     release: edge_shared_types::ApplicationBundleReleaseState,
     expected_rendered_sha256: Vec<u8>,
+    edge_network_id: String,
+    prepared_gateway: bollard::models::ContainerCreateBody,
+    compose_sha256: Vec<u8>,
 }
 
 fn exact_vm_policy_file(stack_dir: &Path, relative: &str) -> Result<Vec<u8>, String> {
@@ -2101,6 +2233,19 @@ pub(crate) async fn preflight_native_vm_scoped_replace(
         &stack_dir.join(target.rendered_relative()),
     )
     .await?;
+    let edge_network_id = read_owned_edge_network_id(&docker, host).await?;
+    verify_vm_network_attachments(&docker, host, &owned, &edge_network_id).await?;
+    let image_ref = image_refs
+        .get(target.compose_service())
+        .ok_or("HOST_VM_SCOPED_IMAGE_MISSING")?;
+    let prepared_gateway = native_gateway_create_body(
+        stack_dir,
+        host,
+        target.compose_service(),
+        image_ref,
+        &edge_network_id,
+    )?;
+    let compose_sha256 = native_vm_compose_digest(stack_dir)?;
     let identities = host
         .vm_containers
         .iter()
@@ -2127,11 +2272,14 @@ pub(crate) async fn preflight_native_vm_scoped_replace(
         expected_rendered_sha256: ring::digest::digest(&ring::digest::SHA256, &rendered)
             .as_ref()
             .to_vec(),
+        edge_network_id,
+        prepared_gateway,
+        compose_sha256,
     })
 }
 
-/// One mutation authority and one existing journal. Compose is the native
-/// declarative Docker driver for scoped --no-deps Line1/Line2 replacement.
+/// One mutation authority and one existing journal. The prepared exact
+/// Docker Engine API body replaces the scoped gateway without Compose.
 /// All other resource identities and image references must remain unchanged.
 pub(crate) async fn apply_native_vm_scoped_replace_once(
     stack_dir: &Path,
@@ -2142,9 +2290,13 @@ pub(crate) async fn apply_native_vm_scoped_replace_once(
     let mut before = owned_application_container_ids(&docker, &host.vm_containers).await?;
     bind_owned_vm_compose_dependencies(stack_dir, &host.vm_containers, &mut before)?;
     check_owned_vm_snapshot(host, &before, &plan.identities)?;
-    if compile_native_vm_desired_graph(stack_dir, host)? != plan.installed_graph {
+    if compile_native_vm_desired_graph(stack_dir, host)? != plan.installed_graph
+        || native_vm_compose_digest(stack_dir)? != plan.compose_sha256
+        || read_owned_edge_network_id(&docker, host).await? != plan.edge_network_id
+    {
         return Err("HOST_VM_SCOPED_GRAPH_CHANGED_NO_REPLAY".into());
     }
+    verify_vm_network_attachments(&docker, host, &before, &plan.edge_network_id).await?;
     if exact_vm_policy_file(stack_dir, plan.target.template_relative())? != plan.previous_template {
         return Err("HOST_NATIVE_VM_SCOPED_PRESTATE_CHANGED_NO_REPLAY".into());
     }
@@ -2168,7 +2320,7 @@ pub(crate) async fn apply_native_vm_scoped_replace_once(
         return Err("HOST_NATIVE_VM_SCOPED_STAGING_EXISTS_NO_REPLAY".into());
     }
     // BEGIN already persisted by the shared native journal. Any failed write,
-    // Compose ACK or poststate is UNKNOWN; never restore/retry implicitly.
+    // Docker ACK or poststate is UNKNOWN; never restore/retry implicitly.
     fs::write(&candidate_path, &plan.new_template)
         .map_err(|_| "HOST_NATIVE_VM_SCOPED_WRITE_UNCERTAIN_NO_REPLAY")?;
     super::set_bundle_file_permissions(&candidate_path, false, false)
@@ -2185,10 +2337,21 @@ pub(crate) async fn apply_native_vm_scoped_replace_once(
     plan.target
         .render(stack_dir, &runtime)
         .map_err(|_| "HOST_NATIVE_VM_SCOPED_RENDER_UNCERTAIN_NO_REPLAY")?;
-    let images = super::read_exact_image_environment(stack_dir)?;
-    plan.target
-        .recreate(stack_dir, &images)
-        .map_err(|_| "HOST_NATIVE_VM_SCOPED_DOCKER_UNCERTAIN_NO_REPLAY")?;
+    let previous_id = before
+        .iter()
+        .find(|item| item.service == plan.target.compose_service())
+        .ok_or("HOST_NATIVE_VM_SCOPED_OLD_ID_MISSING_NO_REPLAY")?
+        .id
+        .clone();
+    recreate_native_gateway_once(
+        &docker,
+        host,
+        plan.target.compose_service(),
+        &previous_id,
+        &plan.edge_network_id,
+        plan.prepared_gateway,
+    )
+    .await?;
     let after = owned_application_container_ids(&docker, &host.vm_containers).await?;
     if after.len() != host.vm_containers.len() {
         return Err("HOST_NATIVE_VM_SCOPED_POSTSTATE_MISSING_NO_REPLAY".into());
