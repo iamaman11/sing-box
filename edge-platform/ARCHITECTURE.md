@@ -2,7 +2,7 @@
 
 Это **единственный нормативный архитектурный контракт**. Единственный [план завершения](FINALIZATION-PLAN.md); [Issue #26](https://github.com/iamaman11/sing-box/issues/26) — живой курсор и архив, НЕ источник допуска к операциям. Истина — защищённый удалённый GitHub `main`, не локальные файлы или устные статусы.
 
-**Решение владельца 18.10.2026:** старые A/B, credential workflow, копии `/windows`/`/vm`/`/production`/`/credentials`, резервные secret paths, миграционные fallback и восстановление прежних транзакций запрещены. Никаких новых агентов, служб, вторых реестров, профилей, планировщиков и обходных путей.
+**Запрещены:** историческая A/B, старые credential workflows, дубли команд, reserve secrets, migration fallback, replay и новые агенты/службы/реестры.
 
 ## Единственная цепочка ответственности
 
@@ -41,7 +41,7 @@
 - `host apply <id>` — подписанный одноразовый переход к Git desired и ReleaseSet;
 - `host recover <id>` — диагностика/безопасная новая операция после установления фактов, никогда replay неизвестной мутации.
 
-**Граница CLI (PR #403):** старые мутационные операции application-lifecycle, credentials, production enroll-runtime, vultr-lifecycle, vultr-vpc, Cloudflare converge и acceptance/cleanup отклоняются до Rust dispatch; namespace скрыты из справки. Сохранены только host, внутренний build immutable ReleaseSet и ограниченные read-only проверки. Библиотеки и старые GitHub workflows ещё существуют: их удаление/закрытие требует отдельной проверки без разрушения CI.
+**CLI:** прежние mutation-команды заблокированы до Rust dispatch и скрыты; доступны host, immutable ReleaseSet build и read-only проверки. Архивные workflows ещё требуют закрытия.
 
 **Реализовано частично в PR #403:** Protobuf DAG для Compose-owned containers/networks/images/config; typed reason, Rust planner, VM root Agent, Worker authorization и одноразовый journal. Для одной конфигурации Line1/Line2 реализован подписанный `config/<project>/<service>` в существующем `host apply`: GitHub approval → Worker Ed25519 → точный DAG node/owner → native config-only handler. Чужой ресурс, image-pair, START/STOP и cross-scope UNKNOWN блокируются. Read-only планы неизменно `owner_attested=false`, `mutation_authorized=false`.
 
