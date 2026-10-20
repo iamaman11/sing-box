@@ -821,6 +821,32 @@ def test_host_native_receipt_boundary_and_legacy_workflow_admission(router: str)
         )
 
 
+def test_vm_runner_enrollment_is_never_an_executable_sudo_capability() -> None:
+    """Reject both the current and legacy enrollment shapes on real VM runners."""
+    workflow = Path(".github/workflows/host-native-observe.yml").read_text(encoding="utf-8")
+    installer = Path("edge-platform/scripts/install-vultr-production-runner.sh").read_text(encoding="utf-8")
+    old = "local host-enroll machine release key"
+    current = "local host-enroll machine release"
+    assert workflow.count('"' + old + '"') == 1
+    assert workflow.count('"' + current + '"') == 1
+    assert installer.count('"' + old + '"') == 1
+    assert installer.count('"' + current + '"') == 1
+    for source in (workflow, installer):
+        assert source.index('"' + current + '"') < source.index('"' + old + '"')
+    sudoers = installer.split('cat > "${SUDOERS_FILE}" <<EOF', 1)[1].split("\\nEOF", 1)[0]
+    # Root enrollment is never granted to GitHub transport, even with old
+    # sudoers installed on a machine that predates the latest CLI change.
+    require(
+        "host-enroll" not in sudoers
+        and "local host-apply" in sudoers
+        and "HOST_VM_LEGACY_DIRECT_MUTATION_AUTHORITY_FORBIDDEN" in workflow
+        and workflow.index('"' + old + '"') < workflow.index(
+            "Dispatch one signed native VM host transaction"
+        ),
+        "VM runner must deny current and legacy host-enroll without a second mutation authority",
+    )
+
+
 def test_root_enrollment_has_no_second_worker_signer_input() -> None:
     """Only accepted protected Git supplies Worker signer identity."""
     cli = Path("edge-platform/crates/edge-agent/src/cli.rs").read_text(encoding="utf-8")
@@ -1180,6 +1206,7 @@ def main() -> None:
     test_canonical_host_mutation_ingress()
     test_host_native_receipt_boundary_and_legacy_workflow_admission(router)
     test_release_acceptance_gates_do_not_mutate_hosts_on_merge()
+    test_vm_runner_enrollment_is_never_an_executable_sudo_capability()
     test_root_enrollment_has_no_second_worker_signer_input()
     test_typed_vm_bootstrap_evidence_is_non_authorizing()
     test_native_vm_install_requires_canonical_worker_active_origin()

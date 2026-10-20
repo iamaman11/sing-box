@@ -98,6 +98,7 @@ jobs:
           # Old installed sudoers are not silently accepted by the new flow.
           for unsafe_command in \
             "local bundle-converge" \
+            "local host-enroll machine release" \
             "local host-enroll machine release key" \
             "local bundle-rollback" \
             "local bootstrap-full" \

@@ -80,6 +80,7 @@ visudo -cf "${SUDOERS_FILE}" >/dev/null
 for unsafe_command in \
   "local bundle-converge" \
   "local host-enroll machine release" \
+  "local host-enroll machine release key" \
   "local bundle-rollback" \
   "local bootstrap-full" \
   "local mesh-cleanup" \
