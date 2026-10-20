@@ -287,9 +287,11 @@ mod canonical_host_ingress_tests {
         for cmd in &blocked {
             assert!(!legacy_entrypoint_allowed(cmd));
         }
-        assert!(legacy_entrypoint_allowed(&cli::Command::CloudflareTargetPlane {
-            command: Cloudflare::Inventory
-        }));
+        assert!(legacy_entrypoint_allowed(
+            &cli::Command::CloudflareTargetPlane {
+                command: Cloudflare::Inventory
+            }
+        ));
         assert!(legacy_entrypoint_allowed(&cli::Command::Production {
             command: Production::Diagnose
         }));
