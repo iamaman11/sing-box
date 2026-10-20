@@ -855,6 +855,7 @@ mod tests {
         };
         let report = FleetVmResourceReport {
             schema_version: 2,
+            bootstrap_phase: crate::FleetVmBootstrapPhase::Unspecified as i32,
             machine_id: "vm-a".into(),
             observed_at_unix: 100,
             resources: vec![FleetVmResourceReadback {
@@ -1770,6 +1771,7 @@ mod resource_planning_tests {
         };
         let report = FleetVmResourceReport {
             schema_version: 2,
+            bootstrap_phase: crate::FleetVmBootstrapPhase::Unspecified as i32,
             machine_id: host.machine_id.clone(),
             observed_at_unix: 100,
             resources: vec![FleetVmResourceReadback {
