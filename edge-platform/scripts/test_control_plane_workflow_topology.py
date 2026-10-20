@@ -834,6 +834,27 @@ def test_typed_vm_bootstrap_evidence_is_non_authorizing() -> None:
     )
 
 
+def test_native_vm_install_requires_canonical_worker_active_origin() -> None:
+    """Signed INSTALL must prove ACTIVE from Worker before native journal BEGIN."""
+    native = Path("edge-platform/crates/edge-agent/src/host_native.rs").read_text(encoding="utf-8")
+    docker = Path("edge-platform/crates/edge-agent/src/docker_observation.rs").read_text(encoding="utf-8")
+    required = [
+        "attest_native_vm_install_worker_origin(",
+        "attest_worker_credential_origin(",
+        "CredentialOriginSelection::Active",
+        "verify_native_vm_install_worker_pin(",
+        "HOST_VM_INSTALL_WORKER_ACTIVE_ORIGIN_UNPROVEN",
+        "worker_active_origin_must_match_exact_pinned_generation_and_sha256",
+    ]
+    require(
+        all(item in native + docker for item in required)
+        and native.index("attest_native_vm_install_worker_origin(")
+            < native.index("*prepared_install.borrow_mut() = Some(plan)")
+        and "native_vm_install_error_class(" in native,
+        "Native INSTALL must authenticate Worker-v2 ACTIVE origin before reserving one-shot journal",
+    )
+
+
 def test_native_host_readonly_control_boundary(router: str) -> None:
     """One typed Rust inventory dispatches independent, read-only native owners."""
     child_path = Path(".github/workflows/host-native-observe.yml")
@@ -1016,6 +1037,7 @@ def main() -> None:
     test_canonical_host_mutation_ingress()
     test_host_native_receipt_boundary_and_legacy_workflow_admission(router)
     test_typed_vm_bootstrap_evidence_is_non_authorizing()
+    test_native_vm_install_requires_canonical_worker_active_origin()
     test_native_host_readonly_control_boundary(router)
     application = APPLICATION.read_text(encoding="utf-8")
     vultr = VULTR.read_text(encoding="utf-8")

@@ -1549,6 +1549,36 @@ fn pin_active_native_vm_credential(
     })
 }
 
+#[cfg(test)]
+mod native_vm_worker_pin_tests {
+    use super::*;
+
+    #[test]
+    fn worker_active_origin_must_match_exact_pinned_generation_and_sha256() {
+        let expected = NativeVmCredentialPin {
+            delivery_generation: 17,
+            exact_bundle_sha256: [0x7a; 32],
+        };
+        let mut origin = edge_secrets::CredentialOriginObservation {
+            generation: 17,
+            slot: "B",
+            bundle_sha256: "7a".repeat(32),
+        };
+        assert!(verify_native_vm_install_worker_pin(&expected, &origin).is_ok());
+        origin.generation = 18;
+        assert_eq!(
+            verify_native_vm_install_worker_pin(&expected, &origin),
+            Err("HOST_VM_INSTALL_WORKER_ACTIVE_ORIGIN_MISMATCH"),
+        );
+        origin.generation = 17;
+        origin.bundle_sha256 = "7b".repeat(32);
+        assert!(verify_native_vm_install_worker_pin(&expected, &origin).is_err());
+        origin.bundle_sha256 = "7a".repeat(32);
+        origin.slot = "C";
+        assert!(verify_native_vm_install_worker_pin(&expected, &origin).is_err());
+    }
+}
+
 #[derive(Debug)]
 pub(crate) struct NativeVmInstallPlan {
     request: ApplyBundleRequest,
@@ -1557,6 +1587,50 @@ pub(crate) struct NativeVmInstallPlan {
     gateway_image: String,
     warp_image: String,
     credential_pin: NativeVmCredentialPin,
+}
+
+/// Compare the Worker-v2 authenticated, exact-generation ACTIVE readback to
+/// the same in-memory credential pin produced by native INSTALL preflight.
+/// This is proof of source, NOT authorization to mutate or credential
+/// publication. A/B promotions still belong exclusively to Worker-v2.
+fn verify_native_vm_install_worker_pin(
+    expected: &NativeVmCredentialPin,
+    observed: &edge_secrets::CredentialOriginObservation,
+) -> Result<(), &'static str> {
+    let exact_sha256 = expected
+        .exact_bundle_sha256
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    if observed.generation != expected.delivery_generation
+        || observed.bundle_sha256 != exact_sha256
+        || !matches!(observed.slot, "A" | "B")
+    {
+        return Err("HOST_VM_INSTALL_WORKER_ACTIVE_ORIGIN_MISMATCH");
+    }
+    Ok(())
+}
+
+/// A read-only canonical Worker-v2 GET under the native owner lock, BEFORE
+/// journal BEGIN. No credentials are copied into GitHub or stdout; the local
+/// A/B cursor is checked for drift by credential_origin and later by INSTALL.
+pub(crate) async fn attest_native_vm_install_worker_origin(
+    stack_dir: &Path,
+    plan: &NativeVmInstallPlan,
+) -> Result<(), &'static str> {
+    let root = super::vm_credential_store_root(stack_dir)
+        .map_err(|_| "HOST_VM_INSTALL_WORKER_STORE_UNPROVEN")?;
+    let access = super::vm_credential_access_identity_path(stack_dir)
+        .map_err(|_| "HOST_VM_INSTALL_WORKER_ACCESS_UNPROVEN")?;
+    let observation = edge_secrets::attest_worker_credential_origin(
+        &root,
+        &access,
+        edge_shared_types::CredentialProjectionKind::Vm,
+        edge_secrets::CredentialOriginSelection::Active,
+    )
+    .await
+    .map_err(|_| "HOST_VM_INSTALL_WORKER_ORIGIN_UNPROVEN")?;
+    verify_native_vm_install_worker_pin(&plan.credential_pin, &observation)
 }
 
 /// A signed install is allowed only on an empty exact Docker namespace.

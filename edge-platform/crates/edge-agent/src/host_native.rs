@@ -484,6 +484,13 @@ fn native_vm_install_error_class(source: &str, phase: NativeVmInstallFailurePhas
         }
         (
             Preadmission,
+            "HOST_VM_INSTALL_WORKER_STORE_UNPROVEN"
+            | "HOST_VM_INSTALL_WORKER_ACCESS_UNPROVEN"
+            | "HOST_VM_INSTALL_WORKER_ORIGIN_UNPROVEN"
+            | "HOST_VM_INSTALL_WORKER_ACTIVE_ORIGIN_MISMATCH",
+        ) => "HOST_VM_INSTALL_WORKER_ACTIVE_ORIGIN_UNPROVEN",
+        (
+            Preadmission,
             "HOST_VM_INSTALL_CREDENTIAL_UNPROVEN"
             | "HOST_VM_INSTALL_CREDENTIAL_INVALID"
             | "HOST_VM_INSTALL_V2_ACTIVE_IDENTITY_INVALID"
@@ -658,6 +665,21 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
                                 NativeVmInstallFailurePhase::Preadmission,
                             )
                         })?;
+                    // Never reach durable BEGIN on a locally valid but
+                    // unverified Worker-v2 ACTIVE cursor. The existing
+                    // authenticated origin verifier performs read-only GET.
+                    handle
+                        .block_on(
+                            super::docker_observation::attest_native_vm_install_worker_origin(
+                                stack_dir, &plan,
+                            ),
+                        )
+                        .map_err(|error| {
+                            native_vm_install_error_class(
+                                error,
+                                NativeVmInstallFailurePhase::Preadmission,
+                            )
+                        })?;
                     *prepared_install.borrow_mut() = Some(plan);
                     Ok(())
                 }
@@ -752,6 +774,17 @@ mod native_host_path_tests {
         assert_eq!(
             native_vm_install_error_class("HOST_VM_INSTALL_CREDENTIAL_DRIFT_NO_REPLAY", PostBegin,),
             "HOST_VM_INSTALL_WORKER_CREDENTIAL_DRIFT_NO_REPLAY",
+        );
+        assert_eq!(
+            native_vm_install_error_class("HOST_VM_INSTALL_WORKER_ORIGIN_UNPROVEN", Preadmission,),
+            "HOST_VM_INSTALL_WORKER_ACTIVE_ORIGIN_UNPROVEN",
+        );
+        assert_eq!(
+            native_vm_install_error_class(
+                "HOST_VM_INSTALL_WORKER_ACTIVE_ORIGIN_MISMATCH",
+                Preadmission,
+            ),
+            "HOST_VM_INSTALL_WORKER_ACTIVE_ORIGIN_UNPROVEN",
         );
         assert_eq!(
             native_vm_install_error_class("some private credential bytes", Preadmission),
