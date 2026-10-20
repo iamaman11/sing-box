@@ -491,6 +491,174 @@ async fn read_owned_edge_network_id(docker: &Docker, host: &FleetHost) -> Result
 
 /// Compile exactly one owned gateway into native Docker Engine API fields.
 /// All policy/mount parsing happens before the signed durable BEGIN; no shell.
+/// One parsed, bounded, immutable gateway policy shared by pre-BEGIN
+/// admission and the post-BEGIN native Docker effector. Policy checking
+/// cannot create directories, start processes or inspect arbitrary paths.
+#[derive(Debug)]
+struct NativeGatewayPolicy {
+    ports: Vec<(String, String, String)>,
+    mounts: Vec<(String, String, String)>,
+}
+
+fn compile_native_gateway_policy(
+    host: &FleetHost,
+    compose: &serde_yaml::Value,
+    service: &str,
+) -> Result<NativeGatewayPolicy, String> {
+    if !matches!(service, "line1-gateway" | "line2-proxy") {
+        return Err("HOST_VM_GATEWAY_SCOPE_UNSUPPORTED".into());
+    }
+    let identity = host
+        .vm_containers
+        .iter()
+        .find(|item| item.compose_service == service)
+        .ok_or("HOST_VM_GATEWAY_IDENTITY_NOT_REGISTERED")?;
+    let row = compose
+        .get("services")
+        .and_then(|services| services.get(service))
+        .ok_or("HOST_VM_GATEWAY_POLICY_MISSING")?;
+    let mapping = row.as_mapping().ok_or("HOST_VM_GATEWAY_POLICY_INVALID")?;
+    let expected_keys = if service == "line1-gateway" {
+        BTreeSet::from([
+            "image",
+            "container_name",
+            "restart",
+            "depends_on",
+            "command",
+            "ports",
+            "volumes",
+            "networks",
+            "profiles",
+        ])
+    } else {
+        BTreeSet::from([
+            "image",
+            "container_name",
+            "restart",
+            "depends_on",
+            "command",
+            "ports",
+            "volumes",
+            "networks",
+        ])
+    };
+    if mapping
+        .keys()
+        .map(|key| key.as_str().unwrap_or(""))
+        .collect::<BTreeSet<_>>()
+        != expected_keys
+    {
+        return Err("HOST_VM_GATEWAY_FIELDS_UNSUPPORTED".into());
+    }
+    let sequence = |name: &str| -> Result<Vec<String>, String> {
+        row.get(name)
+            .and_then(serde_yaml::Value::as_sequence)
+            .ok_or("HOST_VM_GATEWAY_SEQUENCE_MISSING")?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| "HOST_VM_GATEWAY_SEQUENCE_INVALID".to_owned())
+            })
+            .collect()
+    };
+    if row
+        .get("container_name")
+        .and_then(serde_yaml::Value::as_str)
+        != Some(identity.container_name.as_str())
+        || row.get("restart").and_then(serde_yaml::Value::as_str) != Some("unless-stopped")
+        || row.get("image").and_then(serde_yaml::Value::as_str)
+            != Some("${EDGE_GATEWAY_IMAGE:?EDGE_GATEWAY_IMAGE is required}")
+        || sequence("command")? != ["run", "-c", "/etc/sing-box/config.json"]
+        || sequence("depends_on")? != ["warp-egress"]
+        || sequence("networks")? != ["edge_net"]
+        || (service == "line1-gateway" && sequence("profiles")? != ["tunnel"])
+    {
+        return Err("HOST_VM_GATEWAY_POLICY_MISMATCH".into());
+    }
+
+    let port_entries = sequence("ports")?;
+    let mount_entries = sequence("volumes")?;
+    if port_entries.is_empty()
+        || port_entries.len() > 16
+        || mount_entries.is_empty()
+        || mount_entries.len() > 8
+    {
+        return Err("HOST_VM_GATEWAY_RESOURCE_BOUNDS_INVALID".into());
+    }
+    let mut ports = Vec::new();
+    let mut published = BTreeSet::new();
+    let mut exposed = BTreeSet::new();
+    for raw in port_entries {
+        let (host_port, endpoint) = raw
+            .split_once(':')
+            .ok_or("HOST_VM_GATEWAY_PORT_FORMAT_INVALID")?;
+        let (guest_port, protocol) = endpoint
+            .split_once('/')
+            .ok_or("HOST_VM_GATEWAY_PORT_PROTOCOL_MISSING")?;
+        if !matches!(protocol, "tcp" | "udp")
+            || host_port
+                .parse::<u16>()
+                .ok()
+                .filter(|port| *port > 0)
+                .is_none()
+            || guest_port
+                .parse::<u16>()
+                .ok()
+                .filter(|port| *port > 0)
+                .is_none()
+            || !published.insert((host_port.to_owned(), protocol.to_owned()))
+            || !exposed.insert((guest_port.to_owned(), protocol.to_owned()))
+        {
+            return Err("HOST_VM_GATEWAY_PORT_DUPLICATE_OR_INVALID".into());
+        }
+        ports.push((
+            host_port.to_owned(),
+            guest_port.to_owned(),
+            protocol.to_owned(),
+        ));
+    }
+
+    let mut mounts = Vec::new();
+    let mut targets = BTreeSet::new();
+    for raw in mount_entries {
+        let parts = raw.split(':').collect::<Vec<_>>();
+        if !(parts.len() == 2 || parts.len() == 3)
+            || !(parts[0].starts_with("./") || parts[0].starts_with("../"))
+            || !parts[1].starts_with('/')
+            || parts[1].contains("..")
+            || !matches!(parts.get(2), None | Some(&"ro"))
+            || !targets.insert(parts[1].to_owned())
+        {
+            return Err("HOST_VM_GATEWAY_MOUNT_POLICY_INVALID".into());
+        }
+        // The stack is one directory below the owner root. Parent traversal
+        // can reach that owner root but never the OS or another project.
+        let mut depth: i32 = 1;
+        for component in Path::new(parts[0]).components() {
+            match component {
+                std::path::Component::CurDir => {}
+                std::path::Component::Normal(_) => depth += 1,
+                std::path::Component::ParentDir => depth -= 1,
+                _ => return Err("HOST_VM_GATEWAY_MOUNT_PATH_INVALID".into()),
+            }
+            if depth < 0 {
+                return Err("HOST_VM_GATEWAY_MOUNT_ESCAPE_FORBIDDEN".into());
+            }
+        }
+        mounts.push((
+            parts[0].to_owned(),
+            parts[1].to_owned(),
+            parts.get(2).copied().unwrap_or("rw").to_owned(),
+        ));
+    }
+    Ok(NativeGatewayPolicy { ports, mounts })
+}
+
+/// Build one application-owned gateway through Bollard from the *same*
+/// pure admission policy. Canonicalized paths are rechecked under root;
+/// symlinks leading outside the owner root are never accepted.
 fn native_gateway_create_body(
     stack_dir: &Path,
     host: &FleetHost,
@@ -505,154 +673,62 @@ fn native_gateway_create_body(
     if !matches!(service, "line1-gateway" | "line2-proxy")
         || image_ref.is_empty()
         || network_id.len() != 64
-        || !network_id.bytes().all(|b| b.is_ascii_hexdigit())
+        || !network_id.bytes().all(|byte| byte.is_ascii_hexdigit())
     {
         return Err("HOST_VM_CREATE_NATIVE_SCOPE_INVALID".into());
     }
-    let selector = host
+    let identity = host
         .vm_containers
         .iter()
-        .find(|v| v.compose_service == service)
+        .find(|item| item.compose_service == service)
         .ok_or("HOST_VM_CREATE_NATIVE_SELECTOR_UNREGISTERED")?;
     let compose = read_native_vm_compose(stack_dir)?;
-    let row = compose
-        .get("services")
-        .and_then(|v| v.get(service))
-        .ok_or("HOST_VM_CREATE_NATIVE_COMPOSE_SERVICE_MISSING")?;
-    let map = row
-        .as_mapping()
-        .ok_or("HOST_VM_CREATE_NATIVE_SERVICE_INVALID")?;
-    for key in map.keys() {
-        if !matches!(
-            key.as_str(),
-            Some(
-                "image"
-                    | "container_name"
-                    | "restart"
-                    | "depends_on"
-                    | "command"
-                    | "ports"
-                    | "volumes"
-                    | "networks"
-                    | "profiles"
-            )
-        ) {
-            return Err("HOST_VM_CREATE_NATIVE_UNSUPPORTED_SERVICE_FIELD".into());
-        }
-    }
-    let sequence = |name: &str| -> Result<Vec<String>, String> {
-        row.get(name)
-            .and_then(serde_yaml::Value::as_sequence)
-            .ok_or_else(|| "HOST_VM_CREATE_NATIVE_SEQUENCE_MISSING".to_owned())?
-            .iter()
-            .map(|value| {
-                value
-                    .as_str()
-                    .map(str::to_owned)
-                    .ok_or_else(|| "HOST_VM_CREATE_NATIVE_SEQUENCE_VALUE_INVALID".to_owned())
-            })
-            .collect()
-    };
-    if row
-        .get("container_name")
-        .and_then(serde_yaml::Value::as_str)
-        != Some(selector.container_name.as_str())
-        || row.get("restart").and_then(serde_yaml::Value::as_str) != Some("unless-stopped")
-        || row.get("image").and_then(serde_yaml::Value::as_str)
-            != Some("${EDGE_GATEWAY_IMAGE:?EDGE_GATEWAY_IMAGE is required}")
-        || sequence("command")? != ["run", "-c", "/etc/sing-box/config.json"]
-        || sequence("depends_on")? != ["warp-egress"]
-        || sequence("networks")? != ["edge_net"]
-    {
-        return Err("HOST_VM_CREATE_NATIVE_POLICY_MISMATCH".into());
-    }
-    match row.get("profiles") {
-        None if service == "line2-proxy" => {}
-        Some(_) if service == "line1-gateway" && sequence("profiles")? == ["tunnel"] => {}
-        _ => return Err("HOST_VM_CREATE_NATIVE_PROFILE_UNSUPPORTED".into()),
-    }
-    let ports = sequence("ports")?;
-    let volumes = sequence("volumes")?;
-    if ports.is_empty() || ports.len() > 16 || volumes.is_empty() || volumes.len() > 8 {
-        return Err("HOST_VM_CREATE_NATIVE_BINDINGS_INVALID".into());
-    }
-    let mut exposed = Vec::new();
-    let mut bindings = HashMap::new();
-    for raw in ports {
-        let (host_port, endpoint) = raw
-            .split_once(':')
-            .ok_or("HOST_VM_CREATE_NATIVE_PORT_FORMAT_INVALID")?;
-        let (guest_port, protocol) = endpoint
-            .split_once('/')
-            .ok_or("HOST_VM_CREATE_NATIVE_PORT_PROTOCOL_MISSING")?;
-        if !matches!(protocol, "tcp" | "udp")
-            || host_port.parse::<u16>().ok().filter(|p| *p > 0).is_none()
-            || guest_port.parse::<u16>().ok().filter(|p| *p > 0).is_none()
-        {
-            return Err("HOST_VM_CREATE_NATIVE_PORT_OUT_OF_SCOPE".into());
-        }
+    let policy = compile_native_gateway_policy(host, &compose, service)?;
+    let mut exposed_ports = Vec::new();
+    let mut port_bindings = HashMap::new();
+    for (host_port, guest_port, protocol) in policy.ports {
         let key = format!("{guest_port}/{protocol}");
-        if bindings
-            .insert(
-                key.clone(),
-                Some(vec![PortBinding {
-                    host_ip: Some("0.0.0.0".to_owned()),
-                    host_port: Some(host_port.to_owned()),
-                }]),
-            )
-            .is_some()
-        {
-            return Err("HOST_VM_CREATE_NATIVE_PORT_DUPLICATE".into());
-        }
-        exposed.push(key);
+        exposed_ports.push(key.clone());
+        port_bindings.insert(
+            key,
+            Some(vec![PortBinding {
+                host_ip: Some("0.0.0.0".to_owned()),
+                host_port: Some(host_port),
+            }]),
+        );
     }
     let root = stack_dir
         .parent()
-        .ok_or("HOST_VM_CREATE_NATIVE_ROOT_UNAVAILABLE")?
+        .ok_or("HOST_VM_GATEWAY_ROOT_UNAVAILABLE")?
         .canonicalize()
-        .map_err(|_| "HOST_VM_CREATE_NATIVE_ROOT_UNAVAILABLE")?;
+        .map_err(|_| "HOST_VM_GATEWAY_ROOT_UNAVAILABLE")?;
     let mut binds = Vec::new();
-    let mut targets = BTreeSet::new();
-    for raw in volumes {
-        let items = raw.split(':').collect::<Vec<_>>();
-        if !(items.len() == 2 || items.len() == 3)
-            || !(items[0].starts_with("./") || items[0].starts_with("../"))
-            || !items[1].starts_with('/')
-            || items[1].contains("..")
-            || !matches!(items.get(2), None | Some(&"ro"))
-        {
-            return Err("HOST_VM_CREATE_NATIVE_MOUNT_UNSUPPORTED".into());
-        }
+    for (relative, target, mode) in policy.mounts {
         let absolute = stack_dir
-            .join(items[0])
+            .join(relative)
             .canonicalize()
-            .map_err(|_| "HOST_VM_CREATE_NATIVE_MOUNT_MISSING")?;
-        if !absolute.starts_with(&root) || !targets.insert(items[1].to_owned()) {
-            return Err("HOST_VM_CREATE_NATIVE_MOUNT_OUTSIDE_OWNER".into());
+            .map_err(|_| "HOST_VM_GATEWAY_MOUNT_UNAVAILABLE")?;
+        if !absolute.starts_with(&root) {
+            return Err("HOST_VM_GATEWAY_MOUNT_OWNER_MISMATCH".into());
         }
-        binds.push(format!(
-            "{}:{}:{}",
-            absolute.display(),
-            items[1],
-            items.get(2).copied().unwrap_or("rw")
-        ));
+        binds.push(format!("{}:{target}:{mode}", absolute.display()));
     }
     let mut labels = HashMap::new();
     labels.insert(
-        "com.docker.compose.project".into(),
-        selector.compose_project.clone(),
+        "com.docker.compose.project".to_owned(),
+        identity.compose_project.clone(),
     );
     labels.insert(
-        "com.docker.compose.service".into(),
-        selector.compose_service.clone(),
+        "com.docker.compose.service".to_owned(),
+        identity.compose_service.clone(),
     );
     labels.insert(
-        "com.docker.compose.depends_on".into(),
-        "warp-egress:service_started:false".into(),
+        "com.docker.compose.depends_on".to_owned(),
+        "warp-egress:service_started:false".to_owned(),
     );
     let mut endpoints = HashMap::new();
     endpoints.insert(
-        format!("{}_edge_net", selector.compose_project),
+        format!("{}_edge_net", identity.compose_project),
         EndpointSettings {
             network_id: Some(network_id.to_owned()),
             ..Default::default()
@@ -661,15 +737,15 @@ fn native_gateway_create_body(
     Ok(ContainerCreateBody {
         image: Some(image_ref.to_owned()),
         cmd: Some(vec![
-            "run".into(),
-            "-c".into(),
-            "/etc/sing-box/config.json".into(),
+            "run".to_owned(),
+            "-c".to_owned(),
+            "/etc/sing-box/config.json".to_owned(),
         ]),
-        exposed_ports: Some(exposed),
+        exposed_ports: Some(exposed_ports),
         labels: Some(labels),
         host_config: Some(HostConfig {
             binds: Some(binds),
-            port_bindings: Some(bindings),
+            port_bindings: Some(port_bindings),
             restart_policy: Some(RestartPolicy {
                 name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
                 ..Default::default()
@@ -1580,6 +1656,15 @@ pub(crate) async fn preflight_native_vm_install(
     let compose: serde_yaml::Value = serde_yaml::from_slice(&compose_bytes.content)
         .map_err(|_| "HOST_VM_INSTALL_COMPOSE_INVALID")?;
     validate_native_warp_install_compose(host, &compose)?;
+    let mut published = BTreeSet::new();
+    for service in ["line1-gateway", "line2-proxy"] {
+        let policy = compile_native_gateway_policy(host, &compose, service)?;
+        for (host_port, _, protocol) in policy.ports {
+            if !published.insert((host_port, protocol)) {
+                return Err("HOST_VM_INSTALL_GATEWAY_PUBLISHED_PORT_COLLISION".into());
+            }
+        }
+    }
     super::require_empty_vm_initial_bundle_host(stack_dir)
         .map_err(|_| "HOST_VM_INSTALL_EXISTING_STACK")?;
     let docker = docker_connection().await?;
@@ -4758,6 +4843,56 @@ mod native_vm_install_policy_tests {
         ] {
             let value = serde_yaml::from_str::<serde_yaml::Value>(&changed).unwrap();
             assert!(validate_native_warp_install_compose(&host, &value).is_err());
+        }
+    }
+}
+
+#[cfg(test)]
+mod native_vm_gateway_policy_tests {
+    use super::*;
+
+    #[test]
+    fn signed_gateway_policy_rejects_new_execution_fields_and_path_escape() {
+        let compose = include_str!("../../../../win/vultr-waw/stack/docker-compose.yml");
+        let host = FleetHost {
+            vm_containers: vec![
+                FleetVmContainer {
+                    compose_project: "vultr-edge".into(),
+                    compose_service: "line1-gateway".into(),
+                    container_name: "vultr-line1-gateway".into(),
+                },
+                FleetVmContainer {
+                    compose_project: "vultr-edge".into(),
+                    compose_service: "line2-proxy".into(),
+                    container_name: "vultr-line2-proxy".into(),
+                },
+            ],
+            ..Default::default()
+        };
+        let valid = serde_yaml::from_str::<serde_yaml::Value>(compose).unwrap();
+        for service in ["line1-gateway", "line2-proxy"] {
+            assert!(compile_native_gateway_policy(&host, &valid, service).is_ok());
+        }
+        for (field, entries) in [
+            ("depends_on", vec!["cloudflare-mesh"]),
+            (
+                "volumes",
+                vec!["../../etc/passwd:/etc/sing-box/config.json:ro"],
+            ),
+            ("ports", vec!["3128:3128/tcp", "3128:3128/tcp"]),
+            ("command", vec!["run", "-c", "/bin/sh"]),
+        ] {
+            let mut changed = valid.clone();
+            changed["services"]["line2-proxy"][field] = serde_yaml::Value::Sequence(
+                entries
+                    .into_iter()
+                    .map(|value| serde_yaml::Value::String(value.to_owned()))
+                    .collect(),
+            );
+            assert!(
+                compile_native_gateway_policy(&host, &changed, "line2-proxy").is_err(),
+                "unexpected acceptance of changed {field}",
+            );
         }
     }
 }
