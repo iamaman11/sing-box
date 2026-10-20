@@ -108,7 +108,8 @@ lock → однократную mutation callback → физический posts
 **Сейчас:** VM START/STOP/INSTALL/scoped REPLACE через signed root Agent (код).
 `ResourceReport/v2` выявляет credential dependency: без ACTIVE запуск
 BLOCKED, STOP разрешён. Snapshot generation/digest привязан к BEGIN.
-**Остаётся:** first-use Worker ACTIVE, Windows SYSTEM signed apply, DNS/firewall/routes, reinstall/recover, установленный receipt/TLS/auth/WARP.
+**First-use VM (код):** Git-pinned Worker bundle → подписанный journal BEGIN → ACTIVE cursor и native INSTALL.
+**Остаётся:** Worker issuance, Windows SYSTEM handler, DNS/firewall/routes, reinstall/recover, физический receipt/TLS/auth/WARP.
 CI ≠ runtime.
 
 ## Обязательный протокол сомнения (без гаданий и кругов)

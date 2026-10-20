@@ -50,6 +50,17 @@ Rust Agent читает scope из защищённого `trust.pb` и пере
 а не доступ ко всем контейнерам. VM target по-прежнему unset/observe-only.
 Это код PR #403, не физическая установка или проверка публичного интернета.
 
+## First-use VM (кандидат PR #403)
+
+Для новой VM необязательная ссылка `vm_first_use_credential` в Git
+содержит **только** Worker-v2 generation и SHA-256 канонического bundle,
+без секретов. Подписанный root INSTALL проверяет её против Worker до
+durable BEGIN, а только после BEGIN создаёт ACTIVE cursor и нативно
+устанавливает три контейнера. Любая ошибка после BEGIN — UNKNOWN_NO_REPLAY.
+Предыдущий локальный ACTIVE cursor не переписывается; исторический A/B
+commit не вызывается. Это код и offline-тесты, **не** фактическая выдача
+секрета Worker, enrollment машины или физическая приёмка.
+
 ## Допуск новой операции
 
 Только строго типизированные `machine_id / resource_id / desired_digest / immutable_release / operation_id / native_owner` и однозначные `READY | DEGRADED | BLOCKED | UNKNOWN_NO_REPLAY`. Нет старого `Issue #26` как mutation authority: старые comments — неизменяемый архив, не исходное желаемое состояние. Для сбоя секретов — fresh Worker-provision с **новой** resource identity, без переноса старой A/B, только после проверки границ собственности старого ресурса. Удалять старые файлы и контейнеры можно при доказанном scope и сохранённом способе доступа; не трогать Cloudflare One, Mesh других проектов и общую инфраструктуру.

@@ -1616,6 +1616,85 @@ fn verify_native_vm_first_use_identity(
 #[cfg(test)]
 mod native_vm_first_use_tests {
     use super::*;
+
+    fn valid_vm_bundle() -> edge_shared_types::CredentialDeliveryBundle {
+        use edge_shared_types::{
+            CredentialDeliverySlot, CredentialProjectionKind, ProxyCredentialGeneration,
+            RealityPrivateIdentity, RealityPrivateIdentityGeneration, TunnelAuthentication,
+            TunnelAuthenticationGeneration, VmCredentialProjection, credential_delivery_bundle,
+        };
+        let tunnel = |uuid: &str, value: char| TunnelAuthentication {
+            vless_uuid: uuid.to_owned(),
+            hysteria2_password: value.to_string().repeat(64),
+            reality_short_id: "b".repeat(16),
+        };
+        edge_shared_types::CredentialDeliveryBundle {
+            schema_version: 1,
+            generation: 31,
+            projection: CredentialProjectionKind::Vm as i32,
+            slot: CredentialDeliverySlot::A as i32,
+            dummy_non_secret: false,
+            payload: Some(credential_delivery_bundle::Payload::Vm(
+                VmCredentialProjection {
+                    tunnel_auth: Some(TunnelAuthenticationGeneration {
+                        generation: 31,
+                        direct: Some(tunnel("00000000-0000-4000-8000-000000000001", 'a')),
+                        warp: Some(tunnel("00000000-0000-4000-8000-000000000002", 'c')),
+                    }),
+                    reality_identity: Some(RealityPrivateIdentityGeneration {
+                        generation: 31,
+                        direct: Some(RealityPrivateIdentity {
+                            private_key: "A".repeat(43),
+                        }),
+                        warp: Some(RealityPrivateIdentity {
+                            private_key: "B".repeat(43),
+                        }),
+                    }),
+                    line2_proxy: Some(ProxyCredentialGeneration {
+                        generation: 31,
+                        password: "e".repeat(64),
+                    }),
+                },
+            )),
+        }
+    }
+
+    #[test]
+    fn signed_first_use_cursor_converges_once_and_rejects_replay() {
+        use edge_shared_types::{CredentialProjectionKind, FleetVmFirstUseCredential};
+        let bundle = valid_vm_bundle();
+        let digest = edge_shared_types::credential_delivery_bundle_sha256(&bundle).unwrap();
+        let host = FleetHost {
+            vm_first_use_credential: Some(FleetVmFirstUseCredential {
+                generation: 31,
+                bundle_sha256: digest,
+            }),
+            ..Default::default()
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "native-first-use-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&dir).unwrap();
+        let stack_dir = dir.join("stack");
+        activate_native_vm_first_use_cursor_once(&stack_dir, &host, &bundle).unwrap();
+        let pin = verify_native_vm_first_use_identity(&host, &bundle).unwrap();
+        assert!(verify_native_vm_install_credential_pin(&stack_dir, &pin).is_ok());
+        assert!(activate_native_vm_first_use_cursor_once(&stack_dir, &host, &bundle).is_err());
+        let store = edge_secrets::CredentialStore::open_existing(
+            super::super::vm_credential_store_root(&stack_dir).unwrap(),
+            CredentialProjectionKind::Vm,
+        ).unwrap().unwrap();
+        let state = store.read_state().unwrap().unwrap();
+        assert!(state.candidate.is_none() && state.previous.is_none());
+        assert_eq!(state.active.unwrap().generation, 31);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn git_first_use_credential_identity_is_exact_and_non_authorizing() {
         let mut host = FleetHost::default();
@@ -2124,43 +2203,10 @@ pub(crate) async fn apply_native_vm_install_once(
         }) => {}
         _ => return Err("HOST_VM_INSTALL_NETWORK_CHANGED_NO_REPLAY".into()),
     }
-    // Only after durable BEGIN may the existing native root materialize a
-    // previously empty v2 cursor. A crash at any point is UNKNOWN_NO_REPLAY;
-    // no alternative old A/B commit, rollback or retry is permitted.
+    // BEGIN is durable before this one-time, root-owned credential mutation.
+    // A crash or partial cursor write retains UNKNOWN_NO_REPLAY.
     if let Some(ref first) = plan.first_use_bundle {
-        super::require_empty_vm_initial_credential_host(stack_dir)
-            .map_err(|_| "HOST_VM_INSTALL_FIRST_USE_PRESTATE_CHANGED_NO_REPLAY")?;
-        verify_native_vm_first_use_identity(host, first)
-            .map_err(|_| "HOST_VM_INSTALL_FIRST_USE_IDENTITY_DRIFT_NO_REPLAY")?;
-        let root = super::vm_credential_store_root(stack_dir)
-            .map_err(|_| "HOST_VM_INSTALL_FIRST_USE_STORE_UNPROVEN_NO_REPLAY")?;
-        let store = edge_secrets::CredentialStore::new(
-            root,
-            edge_shared_types::CredentialProjectionKind::Vm,
-        )
-        .map_err(|_| "HOST_VM_INSTALL_FIRST_USE_STORE_UNPROVEN_NO_REPLAY")?;
-        let staged = store
-            .stage_delivery_candidate(first)
-            .map_err(|_| "HOST_VM_INSTALL_FIRST_USE_STAGE_UNCERTAIN_NO_REPLAY")?;
-        if staged.active.is_some()
-            || staged.previous.is_some()
-            || staged
-                .candidate
-                .as_ref()
-                .map(|candidate| candidate.generation)
-                != Some(first.generation)
-        {
-            return Err("HOST_VM_INSTALL_FIRST_USE_CANDIDATE_UNPROVEN_NO_REPLAY".into());
-        }
-        let committed = store
-            .promote_candidate()
-            .map_err(|_| "HOST_VM_INSTALL_FIRST_USE_ACTIVE_UNCERTAIN_NO_REPLAY")?;
-        if committed.candidate.is_some()
-            || committed.previous.is_some()
-            || committed.active.as_ref().map(|active| active.generation) != Some(first.generation)
-        {
-            return Err("HOST_VM_INSTALL_FIRST_USE_ACTIVE_UNPROVEN_NO_REPLAY".into());
-        }
+        activate_native_vm_first_use_cursor_once(stack_dir, host, first)?;
     }
     // Bind the exact post-BEGIN projection once: all subsequent filesystem
     // rendering consumes this immutable, already verified in-memory value.
