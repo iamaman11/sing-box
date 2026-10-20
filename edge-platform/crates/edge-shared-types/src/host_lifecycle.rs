@@ -7,8 +7,7 @@
 
 use crate::{
     FleetHost, FleetHostAction, FleetHostAuthorization, FleetHostIntent, FleetHostKind,
-    FleetHostMode,
-    FleetHostResult, FleetHostResultState, HostRegistry, managed_host,
+    FleetHostMode, FleetHostResult, FleetHostResultState, HostRegistry, managed_host,
 };
 use prost::Message;
 
