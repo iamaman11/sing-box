@@ -56,7 +56,6 @@ pub(crate) enum LocalCommand {
     HostEnroll {
         machine_id: String,
         release_set_sha256: String,
-        worker_public_key_hex: String,
     },
     QualityLine2,
     // Read-only unique public IPv4 observed on VM's live kernel interfaces.

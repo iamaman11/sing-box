@@ -394,8 +394,7 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
         cli::LocalCommand::HostEnroll {
             machine_id,
             release_set_sha256,
-            worker_public_key_hex,
-        } => host_enroll::enroll(&machine_id, &release_set_sha256, &worker_public_key_hex)
+        } => host_enroll::enroll(&machine_id, &release_set_sha256)
             .await
             .map_err(AgentError::Command),
         cli::LocalCommand::Verify => {

@@ -14,8 +14,10 @@
 
 ## VM root trust (внутренняя операция, не четвёртая публичная команда)
 
-Существующий `edge-agent local host-enroll` от root проверяет опубликованный
-ReleaseSet, точный Git tree/spec и pinned Worker key. Повторный вызов с тем же
+Существующий `edge-agent local host-enroll <machine-id> <release-set-sha256>`
+от root проверяет опубликованный ReleaseSet, точный Git tree/spec и
+Worker signer public key, закреплённый в том же Git registry. Никакого
+аргумента с ключом, резервного ключа или второго реестра. Повторный вызов с тем же
 `machine_id` и ключом атомарно заменяет **один** `trust.pb`,
 сохраняя прежний журнал; `*.pending.pb` блокирует обновление.
 Один kernel lock исключает пересечение с `local host-apply`. Диагностика

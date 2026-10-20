@@ -28,12 +28,6 @@ fn lowercase_sha(value: &str) -> bool {
             .bytes()
             .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
 }
-fn pinned_worker_key(value: &str) -> Result<(), String> {
-    if !lowercase_sha(value) || value.bytes().all(|b| b == b'0') {
-        return Err("HOST_ENROLL_PINNED_WORKER_KEY_REQUIRED".into());
-    }
-    Ok(())
-}
 fn checked_root_directory(path: &Path) -> Result<(), String> {
     let meta = fs::symlink_metadata(path).map_err(|_| "HOST_ENROLL_PARENT_MISSING")?;
     if !meta.file_type().is_dir() || meta.uid() != 0 || meta.permissions().mode() & 0o022 != 0 {
@@ -222,29 +216,17 @@ fn refresh_release_snapshots(trusted: &Path, trust_pb: &[u8]) -> Result<(), Stri
 
 /// One strictly explicit root install of trust files, not a host mutation.
 /// Signing authority and GitHub runner cannot choose the public-key trust
-/// anchor: root operator must supply the exact Worker Ed25519 public key.
+/// anchor: ONLY the accepted Git registry supplies the Worker public key.
 /// An enrollment never starts containers, writes credential slots or
 /// alters a running application. Rollout remains an independently signed
 /// apply/recover request with a fresh operation ID.
-pub(crate) async fn enroll(
-    machine_id: &str,
-    release_digest: &str,
-    worker_public_key_hex: &str,
-) -> Result<(), String> {
+pub(crate) async fn enroll(machine_id: &str, release_digest: &str) -> Result<(), String> {
     if unsafe { geteuid() } != 0 {
         return Err("HOST_ENROLL_REQUIRES_LOCAL_ROOT".into());
     }
     if !lowercase_sha(release_digest) {
         return Err("HOST_ENROLL_RELEASE_SHA_INVALID".into());
     }
-    pinned_worker_key(worker_public_key_hex)?;
-    let public_key = (0..64)
-        .step_by(2)
-        .map(|i| {
-            u8::from_str_radix(&worker_public_key_hex[i..i + 2], 16)
-                .map_err(|_| "HOST_ENROLL_PINNED_WORKER_KEY_INVALID".to_owned())
-        })
-        .collect::<Result<Vec<_>, _>>()?;
     if machine_id.is_empty()
         || machine_id.len() > 64
         || !machine_id
@@ -272,10 +254,6 @@ pub(crate) async fn enroll(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
         Err(_) => return Err("HOST_ENROLL_TRUST_UNAVAILABLE".into()),
     };
-    if refreshing {
-        validate_existing_trust_for_refresh(trusted, machine_id, &public_key)?;
-    }
-
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(25))
         .build()
@@ -317,6 +295,9 @@ pub(crate) async fn enroll(
     ) {
         return Err("HOST_ENROLL_ROOT_OWNER_MISMATCH".into());
     }
+    // A missing Git signer is an explicit first-use blocker, never an
+    // invitation to take a key from the caller or a Worker HTTP response.
+    let public_key = host.worker_authority_public_key.clone();
     edge_shared_types::host_lifecycle::verify_git_worker_signer_pin(host, &public_key)
         .map_err(str::to_owned)?;
     let source_revision = &release_set.source_revision;
@@ -349,6 +330,11 @@ pub(crate) async fn enroll(
     )
     .await?;
 
+    // Exact Git source is verified before even comparing an earlier trust
+    // signer. An existing protected identity cannot be silently rotated.
+    if refreshing {
+        validate_existing_trust_for_refresh(trusted, machine_id, &public_key)?;
+    }
     // Generation is strictly local root-only, after verifying the exact
     // published Git release, and before publishing protected trust. The
     // public key must be registered in protected Git and released again
@@ -448,12 +434,7 @@ pub(crate) async fn enroll(
     );
     println!(
         "host_worker_public_key_sha256={}",
-        super::host_native::sha256_hex(
-            &(0..64)
-                .step_by(2)
-                .map(|i| u8::from_str_radix(&worker_public_key_hex[i..i + 2], 16).unwrap())
-                .collect::<Vec<_>>()
-        )
+        super::host_native::sha256_hex(&public_key)
     );
     println!("host_mutations=0");
     Ok(())
@@ -498,10 +479,6 @@ mod tests {
 
     #[test]
     fn first_use_key_and_digest_are_exact_and_nonzero() {
-        assert!(pinned_worker_key(&"ab".repeat(32)).is_ok());
-        assert!(pinned_worker_key(&"00".repeat(32)).is_err());
-        assert!(pinned_worker_key(&"AB".repeat(32)).is_err());
-        assert!(pinned_worker_key("not-a-key").is_err());
         assert!(!lowercase_sha(&"AB".repeat(32)));
         assert!(lowercase_sha(&"ab".repeat(32)));
     }

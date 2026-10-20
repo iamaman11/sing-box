@@ -821,6 +821,24 @@ def test_host_native_receipt_boundary_and_legacy_workflow_admission(router: str)
         )
 
 
+def test_root_enrollment_has_no_second_worker_signer_input() -> None:
+    """Only accepted protected Git supplies Worker signer identity."""
+    cli = Path("edge-platform/crates/edge-agent/src/cli.rs").read_text(encoding="utf-8")
+    owner = Path("edge-platform/crates/edge-agent/src/host_enroll.rs").read_text(encoding="utf-8")
+    runner = Path("edge-platform/scripts/install-vultr-production-runner.sh").read_text(encoding="utf-8")
+    require(
+        'HostEnroll {\n        machine_id: String,\n        release_set_sha256: String,\n    }' in cli
+        and 'worker_public_key_hex' not in cli
+        and 'pub(crate) async fn enroll(machine_id: &str, release_digest: &str)' in owner
+        and 'let public_key = host.worker_authority_public_key.clone();' in owner
+        and 'verify_git_worker_signer_pin(host, &public_key)' in owner
+        and 'attest_published_github_source(' in owner
+        and 'validate_existing_trust_for_refresh(trusted, machine_id, &public_key)' in owner
+        and '"local host-enroll machine release"' in runner,
+        "Root host-enroll must derive only its Git-pinned Worker identity from accepted release",
+    )
+
+
 def test_typed_vm_bootstrap_evidence_is_non_authorizing() -> None:
     """Missing Git receipt identity/ACTIVE credentials must have ONE typed owner."""
     proto = Path("edge-platform/proto/edge/platform/v1/fleet.proto").read_text(encoding="utf-8")
@@ -1162,6 +1180,7 @@ def main() -> None:
     test_canonical_host_mutation_ingress()
     test_host_native_receipt_boundary_and_legacy_workflow_admission(router)
     test_release_acceptance_gates_do_not_mutate_hosts_on_merge()
+    test_root_enrollment_has_no_second_worker_signer_input()
     test_typed_vm_bootstrap_evidence_is_non_authorizing()
     test_native_vm_install_requires_canonical_worker_active_origin()
     test_signed_first_use_credentials_share_native_journal()
