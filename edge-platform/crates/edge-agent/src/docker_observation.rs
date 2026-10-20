@@ -1,6 +1,7 @@
 use edge_shared_types::{ApplyBundleRequest, FleetHost, FleetHostPlannedStep, FleetVmContainer};
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fs;
+use std::os::unix::fs::{DirBuilderExt, MetadataExt, PermissionsExt};
 use std::path::{Path, PathBuf};
 
 use bollard::{
@@ -1766,6 +1767,61 @@ mod native_vm_first_use_tests {
     }
 }
 
+#[cfg(test)]
+mod native_vm_warp_state_tests {
+    use super::*;
+    use std::os::unix::fs::symlink;
+
+    fn isolated_parent() -> PathBuf {
+        let path = std::env::temp_dir().join(format!(
+            "native-warp-state-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::DirBuilder::new().mode(0o700).create(&path).unwrap();
+        path
+    }
+
+    #[test]
+    fn fresh_warp_state_is_created_once_in_exact_owned_parent() {
+        let parent = isolated_parent();
+        let uid = fs::symlink_metadata(&parent).unwrap().uid();
+        assert_eq!(inspect_native_warp_state(&parent, uid), Ok(false));
+        ensure_native_warp_state_once(&parent, uid).unwrap();
+        assert_eq!(inspect_native_warp_state(&parent, uid), Ok(true));
+        ensure_native_warp_state_once(&parent, uid).unwrap();
+        fs::remove_dir_all(parent).unwrap();
+    }
+
+    #[test]
+    fn warp_state_rejects_symlinks_files_foreign_owners_and_writable_parent() {
+        let parent = isolated_parent();
+        let uid = fs::symlink_metadata(&parent).unwrap().uid();
+        assert!(inspect_native_warp_state(&parent, uid.saturating_add(1)).is_err());
+        let state = parent.join("warp-state");
+        symlink("/tmp", &state).unwrap();
+        assert_eq!(
+            inspect_native_warp_state(&parent, uid),
+            Err("HOST_VM_INSTALL_WARP_STATE_UNTRUSTED")
+        );
+        assert!(ensure_native_warp_state_once(&parent, uid).is_err());
+        fs::remove_file(&state).unwrap();
+        fs::write(&state, b"foreign").unwrap();
+        assert!(inspect_native_warp_state(&parent, uid).is_err());
+        fs::remove_file(&state).unwrap();
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o777)).unwrap();
+        assert_eq!(
+            inspect_native_warp_state(&parent, uid),
+            Err("HOST_VM_INSTALL_WARP_PARENT_UNTRUSTED")
+        );
+        fs::set_permissions(&parent, fs::Permissions::from_mode(0o700)).unwrap();
+        fs::remove_dir_all(parent).unwrap();
+    }
+}
+
 /// Compare the Worker-v2 authenticated, exact-generation ACTIVE readback to
 /// the same in-memory credential pin produced by native INSTALL preflight.
 /// This is proof of source, NOT authorization to mutate or credential
@@ -1955,6 +2011,11 @@ pub(crate) async fn preflight_native_vm_install(
     let compose: serde_yaml::Value = serde_yaml::from_slice(&compose_bytes.content)
         .map_err(|_| "HOST_VM_INSTALL_COMPOSE_INVALID")?;
     validate_native_warp_install_compose(host, &compose)?;
+    inspect_native_warp_state(
+        native_vm_warp_state_parent(stack_dir).map_err(str::to_owned)?,
+        0,
+    )
+    .map_err(str::to_owned)?;
     let mut published = BTreeSet::new();
     for service in ["line1-gateway", "line2-proxy"] {
         let policy = compile_native_gateway_policy(host, &compose, service)?;
@@ -2132,6 +2193,69 @@ async fn pull_native_vm_image_once(docker: &Docker, image: &str) -> Result<(), S
     Ok(())
 }
 
+/// The WARP bind lives only in the registered application's root-owned
+/// host-state parent, never in an arbitrary Docker or Mesh directory.
+fn native_vm_warp_state_parent(stack_dir: &Path) -> Result<&Path, &'static str> {
+    if stack_dir != Path::new(super::DEFAULT_STACK_DIR) {
+        return Err("HOST_VM_INSTALL_WARP_STACK_SCOPE_INVALID");
+    }
+    stack_dir
+        .parent()
+        .ok_or("HOST_VM_INSTALL_WARP_PARENT_MISSING")
+}
+
+/// Read-only admission: no symlink resolution, no adoption of foreign state,
+/// and no writable parent that another owner could swap before BEGIN.
+fn inspect_native_warp_state(
+    parent: &Path,
+    expected_uid: u32,
+) -> Result<bool, &'static str> {
+    let parent_meta =
+        fs::symlink_metadata(parent).map_err(|_| "HOST_VM_INSTALL_WARP_PARENT_UNPROVEN")?;
+    if !parent.is_absolute()
+        || !parent_meta.file_type().is_dir()
+        || parent_meta.uid() != expected_uid
+        || parent_meta.permissions().mode() & 0o022 != 0
+    {
+        return Err("HOST_VM_INSTALL_WARP_PARENT_UNTRUSTED");
+    }
+    match fs::symlink_metadata(parent.join("warp-state")) {
+        Ok(meta)
+            if meta.file_type().is_dir()
+                && meta.uid() == expected_uid
+                && meta.permissions().mode() & 0o022 == 0 =>
+        {
+            Ok(true)
+        }
+        Ok(_) => Err("HOST_VM_INSTALL_WARP_STATE_UNTRUSTED"),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err("HOST_VM_INSTALL_WARP_STATE_UNOBSERVABLE"),
+    }
+}
+
+/// Called only inside the already signed root owner operation, after durable
+/// BEGIN. One native mkdir in the exact application namespace, not a second
+/// installer, daemon, shell, or mutation authority.
+fn ensure_native_warp_state_once(
+    parent: &Path,
+    expected_uid: u32,
+) -> Result<(), &'static str> {
+    if inspect_native_warp_state(parent, expected_uid)? {
+        return Ok(());
+    }
+    fs::DirBuilder::new()
+        .mode(0o700)
+        .create(parent.join("warp-state"))
+        .map_err(|_| "HOST_VM_INSTALL_WARP_STATE_CREATE_UNCERTAIN_NO_REPLAY")?;
+    fs::File::open(parent)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|_| "HOST_VM_INSTALL_WARP_STATE_SYNC_UNCERTAIN_NO_REPLAY")?;
+    if !inspect_native_warp_state(parent, expected_uid)? {
+        return Err("HOST_VM_INSTALL_WARP_STATE_CHANGED_NO_REPLAY");
+    }
+    Ok(())
+}
+
 fn native_warp_create_body(
     stack_dir: &Path,
     host: &FleetHost,
@@ -2147,12 +2271,12 @@ fn native_warp_create_body(
         .iter()
         .find(|id| id.compose_service == "warp-egress")
         .ok_or("HOST_VM_INSTALL_WARP_SELECTOR_MISSING")?;
-    let state = stack_dir
-        .parent()
-        .ok_or("HOST_VM_INSTALL_PARENT_MISSING")?
-        .join("warp-state")
-        .canonicalize()
-        .map_err(|_| "HOST_VM_INSTALL_WARP_STATE_MISSING")?;
+    let parent = native_vm_warp_state_parent(stack_dir).map_err(str::to_owned)?;
+    if inspect_native_warp_state(parent, 0).map_err(str::to_owned)? != true {
+        return Err("HOST_VM_INSTALL_WARP_STATE_MISSING".into());
+    }
+    // The root-owned path was inspected without following any symlink.
+    let state = parent.join("warp-state");
     let mut labels = HashMap::new();
     labels.insert(
         "com.docker.compose.project".to_owned(),
@@ -2249,6 +2373,14 @@ pub(crate) async fn apply_native_vm_install_once(
         }) => {}
         _ => return Err("HOST_VM_INSTALL_NETWORK_CHANGED_NO_REPLAY".into()),
     }
+    // Pre-BEGIN has already inspected the root-owned WARP namespace.
+    // After BEGIN, create it once before any Docker or credential writes.
+    // A partial mkdir/sync fails closed through the existing native journal.
+    ensure_native_warp_state_once(
+        native_vm_warp_state_parent(stack_dir).map_err(str::to_owned)?,
+        0,
+    )
+    .map_err(str::to_owned)?;
     // BEGIN is durable before this one-time, root-owned credential mutation.
     // A crash or partial cursor write retains UNKNOWN_NO_REPLAY.
     if let Some(ref first) = plan.first_use_bundle {

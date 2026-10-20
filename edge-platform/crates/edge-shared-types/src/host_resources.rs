@@ -537,6 +537,12 @@ pub fn vm_bootstrap_next_action(phase: crate::FleetVmBootstrapPhase) -> &'static
             "COMPLETE_WORKER_V2_FIRST_USE_ACTIVE_CREDENTIAL_DELIVERY"
         }
         Phase::LocalPrerequisitesOnly => "VERIFY_WORKER_SIGNER_NATIVE_RECEIPT_AND_PHYSICAL_STATE",
+        Phase::FirstUseWorkerSourceUnverified => {
+            "VERIFY_GIT_PINNED_WORKER_BUNDLE_DURING_SIGNED_INSTALL"
+        }
+        Phase::FirstUseGitSourceRequired => {
+            "PUBLISH_WORKER_BUNDLE_AND_PIN_FIRST_USE_IDENTITY_IN_GIT"
+        },
     }
 }
 
@@ -556,8 +562,20 @@ fn validate_vm_bootstrap_phase(
         Phase::Unspecified | Phase::TrustUnproven | Phase::JournalUnknownNoReplay => true,
         Phase::ReceiptKeyGitRegistrationRequired => git_key.is_empty(),
         Phase::ReceiptKeyMismatchOrUnproven => git_pinned,
-        Phase::WorkerActiveCredentialRequired => git_pinned && !active,
+        Phase::WorkerActiveCredentialRequired => {
+            git_pinned && !active && credential.state != State::StoreAbsent as i32
+        }
         Phase::LocalPrerequisitesOnly => git_pinned && active,
+        Phase::FirstUseWorkerSourceUnverified => {
+            git_pinned
+                && credential.state == State::StoreAbsent as i32
+                && host.vm_first_use_credential.is_some()
+        }
+        Phase::FirstUseGitSourceRequired => {
+            git_pinned
+                && credential.state == State::StoreAbsent as i32
+                && host.vm_first_use_credential.is_none()
+        },
     };
     if !consistent {
         return Err("VM_BOOTSTRAP_PHASE_DEPENDENCY_CONFLICT");
@@ -911,7 +929,26 @@ mod tests {
             Err("VM_BOOTSTRAP_PHASE_DEPENDENCY_CONFLICT")
         );
         report.bootstrap_phase = Phase::WorkerActiveCredentialRequired as i32;
+        assert_eq!(
+            validate_vm_resource_report(&report, &host),
+            Err("VM_BOOTSTRAP_PHASE_DEPENDENCY_CONFLICT")
+        );
+        report.bootstrap_phase = Phase::FirstUseGitSourceRequired as i32;
         assert!(validate_vm_resource_report(&report, &host).is_ok());
+        host.vm_first_use_credential = Some(crate::FleetVmFirstUseCredential {
+            generation: 19,
+            bundle_sha256: "b".repeat(64),
+        });
+        assert_eq!(
+            validate_vm_resource_report(&report, &host),
+            Err("VM_BOOTSTRAP_PHASE_DEPENDENCY_CONFLICT")
+        );
+        report.bootstrap_phase = Phase::FirstUseWorkerSourceUnverified as i32;
+        assert!(validate_vm_resource_report(&report, &host).is_ok());
+        assert_eq!(
+            vm_bootstrap_next_action(Phase::FirstUseWorkerSourceUnverified),
+            "VERIFY_GIT_PINNED_WORKER_BUNDLE_DURING_SIGNED_INSTALL"
+        );
         report.bootstrap_phase = Phase::JournalUnknownNoReplay as i32;
         assert!(validate_vm_resource_report(&report, &host).is_ok());
         report.bootstrap_phase = 7777;

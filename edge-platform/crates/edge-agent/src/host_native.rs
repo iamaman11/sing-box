@@ -201,6 +201,12 @@ pub(super) fn local_vm_bootstrap_phase(
     }
     if credential.state == Credential::ActiveLocalValid as i32 && credential.active_generation > 0 {
         Phase::LocalPrerequisitesOnly
+    } else if credential.state == Credential::StoreAbsent as i32 {
+        if host.vm_first_use_credential.is_some() {
+            Phase::FirstUseWorkerSourceUnverified
+        } else {
+            Phase::FirstUseGitSourceRequired
+        }
     } else {
         Phase::WorkerActiveCredentialRequired
     }

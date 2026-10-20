@@ -877,6 +877,26 @@ def test_signed_first_use_credentials_share_native_journal() -> None:
     )
 
 
+def test_vm_first_use_warp_safety_and_bootstrap_source() -> None:
+    """First-use must handle a fresh root-owned WARP state before Docker writes."""
+    docker = Path("edge-platform/crates/edge-agent/src/docker_observation.rs").read_text(encoding="utf-8")
+    native = Path("edge-platform/crates/edge-agent/src/host_native.rs").read_text(encoding="utf-8")
+    proto = Path("edge-platform/proto/edge/platform/v1/fleet.proto").read_text(encoding="utf-8")
+    types = Path("edge-platform/crates/edge-shared-types/src/host_resources.rs").read_text(encoding="utf-8")
+    require(
+        "inspect_native_warp_state(" in docker
+        and "ensure_native_warp_state_once(" in docker
+        and "warp_state_rejects_symlinks_files_foreign_owners_and_writable_parent" in docker
+        and docker.index("ensure_native_warp_state_once(", docker.index("pub(crate) async fn apply_native_vm_install_once("))
+            < docker.index("pull_native_vm_image_once(", docker.index("pub(crate) async fn apply_native_vm_install_once("))
+        and "FIRST_USE_WORKER_SOURCE_UNVERIFIED = 7;" in proto
+        and "FIRST_USE_GIT_SOURCE_REQUIRED = 8;" in proto
+        and "Phase::FirstUseWorkerSourceUnverified" in native
+        and "Phase::FirstUseGitSourceRequired" in types,
+        "Signed VM first-use requires safe WARP root preflight and truthful Worker provenance status",
+    )
+
+
 def test_native_host_readonly_control_boundary(router: str) -> None:
     """One typed Rust inventory dispatches independent, read-only native owners."""
     child_path = Path(".github/workflows/host-native-observe.yml")
@@ -1061,6 +1081,7 @@ def main() -> None:
     test_typed_vm_bootstrap_evidence_is_non_authorizing()
     test_native_vm_install_requires_canonical_worker_active_origin()
     test_signed_first_use_credentials_share_native_journal()
+    test_vm_first_use_warp_safety_and_bootstrap_source()
     test_native_host_readonly_control_boundary(router)
     application = APPLICATION.read_text(encoding="utf-8")
     vultr = VULTR.read_text(encoding="utf-8")
