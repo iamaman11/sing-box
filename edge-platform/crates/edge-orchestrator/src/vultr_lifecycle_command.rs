@@ -1488,8 +1488,68 @@ pub(crate) async fn bootstrap_production_runner(
         REMOTE_OWNER_STAGED,
     )?;
 
+    // Trusted bootstrap operator installs the one exact native owner first.
+    // The GitHub runner is NOT enrolled or allowed to run host-enroll.
+    // No untrusted command body, hostname or arbitrary shell is accepted here.
+    let install_owner = format!(
+        "sudo install -d -o root -g root -m 0755 /usr/local/libexec/sing-box && sudo install -o root -g root -m 0755 {REMOTE_OWNER_STAGED} {LOCAL_OWNER}"
+    );
+    strict_ssh_run(
+        target_ip,
+        machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        &install_owner,
+    )?;
+    let installed_sha = strict_ssh_capture(
+        target_ip,
+        machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        "sha256sum /usr/local/libexec/sing-box/edge-agent | awk '{print $1}'",
+    )?;
+    if installed_sha != expected_artifact.sha256 {
+        return Err(
+            "installed local runtime owner digest does not match exact ReleaseSet".to_owned(),
+        );
+    }
+
+    // Root-only first-use: the native agent independently fetches the
+    // accepted immutable main ReleaseSet and its Git-pinned Worker signer,
+    // generates one private receipt identity under root, then reports ONLY
+    // the public key. No runner credential, sudo elevation or second owner.
+    // An uncertain SSH/ACK result must not cause an automatic replay.
+    let release_sha = context.release().release_set_sha256.as_str();
+    if !release_sha.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || release_sha.len() != 64
+    {
+        return Err("HOST_BOOTSTRAP_RELEASE_DIGEST_INVALID".to_owned());
+    }
+    if machine_id.is_empty()
+        || machine_id.len() > 64
+        || !machine_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err("HOST_BOOTSTRAP_MACHINE_ID_INVALID".to_owned());
+    }
+    let enrollment_command =
+        format!("sudo -n {LOCAL_OWNER} local host-enroll {machine_id} {release_sha}");
+    let enrollment_output = strict_ssh_capture(
+        target_ip,
+        machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        &enrollment_command,
+    )?;
+    let (receipt_public_key, receipt_registration) =
+        verified_native_enrollment_result(&enrollment_output, machine_id, release_sha)?;
+
+    // Only after a root receipt identity exists may the low-privilege
+    // transport runner be installed. It never receives the receipt private
+    // key, Worker signer, root enrollment verb or Docker socket.
     let remote_command = format!(
-        "sudo install -d -o root -g root -m 0755 /usr/local/libexec/sing-box &&          sudo install -o root -g root -m 0755 {REMOTE_OWNER_STAGED} {LOCAL_OWNER} &&          sudo bash {REMOTE_INSTALLER} {machine_id}; rc=$?;          rm -f {REMOTE_INSTALLER} {REMOTE_OWNER_STAGED}; exit $rc"
+        "sudo bash {REMOTE_INSTALLER} {machine_id}; rc=$?; rm -f {REMOTE_INSTALLER} {REMOTE_OWNER_STAGED}; exit $rc"
     );
     let token_stdin = format!(
         "{registration_token}\n{credential_access_client_id}\n{credential_access_client_secret}\n"
@@ -1503,18 +1563,6 @@ pub(crate) async fn bootstrap_production_runner(
         token_stdin.as_bytes(),
     )?;
 
-    let installed_sha = strict_ssh_capture(
-        target_ip,
-        machine_id,
-        &operator_private_key_path,
-        &canonical_public_key,
-        "sha256sum /usr/local/libexec/sing-box/edge-agent | awk '{print $1}'",
-    )?;
-    if installed_sha != expected_artifact.sha256 {
-        return Err(
-            "installed local runtime owner digest does not match exact ReleaseSet".to_owned(),
-        );
-    }
     let generic_root_denied = strict_ssh_capture(
         target_ip,
         machine_id,
@@ -1589,11 +1637,79 @@ pub(crate) async fn bootstrap_production_runner(
         "acceptance_rpc_service_enabled": false,
         "tcp_50061_listener": false,
         "local_owner_sha256": installed_sha,
+        "native_receipt_public_key_hex": receipt_public_key,
+        "native_receipt_registration": receipt_registration,
+        "root_enrollment": "GIT_RELEASE_ATTESTED",
+        "native_application_mutations": 0,
         "listener": "PASS",
         "registration_token_persisted": false,
         "credential_access_identity_installed": true,
         "runner_credential_access": false,
     }))
+}
+
+/// Validate ONLY the bounded public result from our already-installed root
+/// Agent. Transport text never becomes enrollment authority, and uncertainty
+/// never triggers another first-use mutation.
+fn verified_native_enrollment_result(
+    output: &str,
+    machine_id: &str,
+    release_sha: &str,
+) -> Result<(String, String), String> {
+    if output.is_empty() || output.len() > 1024 || !output.is_ascii() {
+        return Err("HOST_BOOTSTRAP_ENROLLMENT_EVIDENCE_INVALID".to_owned());
+    }
+    let mut properties = BTreeMap::new();
+    for line in output.lines() {
+        let (name, value) = line
+            .split_once('=')
+            .ok_or("HOST_BOOTSTRAP_ENROLLMENT_EVIDENCE_INVALID")?;
+        if value.is_empty()
+            || !value.bytes().all(|byte| byte.is_ascii_graphic())
+            || !matches!(
+                name,
+                "host_enroll"
+                    | "host_machine_id"
+                    | "host_release_set_sha256"
+                    | "host_native_receipt_public_key_hex"
+                    | "host_native_receipt_registration"
+                    | "host_worker_public_key_sha256"
+                    | "host_mutations"
+            )
+            || properties.insert(name, value).is_some()
+        {
+            return Err("HOST_BOOTSTRAP_ENROLLMENT_EVIDENCE_INVALID".to_owned());
+        }
+    }
+    if !matches!(
+        properties.get("host_enroll"),
+        Some(&"PROTECTED_TRUST_STAGED" | &"PROTECTED_TRUST_REFRESHED")
+    )
+        || properties.get("host_machine_id") != Some(&machine_id)
+        || properties.get("host_release_set_sha256") != Some(&release_sha)
+        || properties.get("host_mutations") != Some(&"0")
+    {
+        return Err("HOST_BOOTSTRAP_ENROLLMENT_IDENTITY_MISMATCH".to_owned());
+    }
+    let key = properties
+        .get("host_native_receipt_public_key_hex")
+        .ok_or("HOST_BOOTSTRAP_RECEIPT_PUBLIC_KEY_MISSING")?;
+    if key.len() != 64
+        || key.bytes().any(|byte| !byte.is_ascii_hexdigit() || byte.is_ascii_uppercase())
+        || key.bytes().all(|byte| byte == b'0')
+    {
+        return Err("HOST_BOOTSTRAP_RECEIPT_PUBLIC_KEY_INVALID".to_owned());
+    }
+    let registration = properties
+        .get("host_native_receipt_registration")
+        .ok_or("HOST_BOOTSTRAP_RECEIPT_REGISTRATION_MISSING")?;
+    if !matches!(
+        *registration,
+        &"AWAITING_PROTECTED_GIT" | &"PINNED_GIT_MATCH"
+    ) {
+        return Err("HOST_BOOTSTRAP_RECEIPT_REGISTRATION_INVALID".to_owned());
+    }
+    Ok(((*key).to_owned(), (*registration).to_owned()))
 }
 
 fn validate_bootstrap_secret(label: &str, value: &str) -> Result<(), String> {
@@ -4143,6 +4259,50 @@ fn usage() -> String {
 
 #[cfg(test)]
 mod tests {
+
+    #[test]
+    fn first_use_vm_enrollment_accepts_only_exact_native_public_evidence() {
+        let machine = "application-acceptance-1";
+        let release = "a".repeat(64);
+        let report = format!(
+            "host_enroll=PROTECTED_TRUST_STAGED\n             host_machine_id={machine}\n             host_release_set_sha256={release}\n             host_native_receipt_public_key_hex={}\n             host_native_receipt_registration=AWAITING_PROTECTED_GIT\n             host_worker_public_key_sha256={}\n             host_mutations=0",
+            "b".repeat(64),
+            "c".repeat(64),
+        );
+        let parsed = verified_native_enrollment_result(&report, machine, &release).unwrap();
+        assert_eq!(parsed.0, "b".repeat(64));
+        assert_eq!(parsed.1, "AWAITING_PROTECTED_GIT");
+        assert!(verified_native_enrollment_result(
+            &report.replace("host_mutations=0", "host_mutations=1"),
+            machine,
+            &release,
+        )
+        .is_err());
+        assert!(verified_native_enrollment_result(
+            &report.replace("PROTECTED_TRUST_STAGED", "UNVERIFIED"),
+            machine,
+            &release,
+        )
+        .is_err());
+        assert!(verified_native_enrollment_result(
+            &report.replace(machine, "foreign-vm"),
+            machine,
+            &release,
+        )
+        .is_err());
+        assert!(verified_native_enrollment_result(
+            &report.replace(&"b".repeat(64), &"0".repeat(64)),
+            machine,
+            &release,
+        )
+        .is_err());
+        assert!(verified_native_enrollment_result(
+            &format!("{report}\nhost_mutations=0"),
+            machine,
+            &release,
+        )
+        .is_err());
+    }
     #[test]
     fn initial_reboot_can_only_reobserve_not_reapply_credentials() {
         assert!(super::authorize_initial_runtime_job("initial_vm_runtime", true).is_ok());
