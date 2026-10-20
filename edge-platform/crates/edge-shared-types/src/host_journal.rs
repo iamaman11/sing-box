@@ -473,6 +473,7 @@ where
         &bound.runtime_release_sha256,
         now_unix,
     );
+    crate::host_planner::validate_host_transition_plan(&plan, selected)?;
     let step =
         FleetHostPlannedStep::try_from(plan.step).map_err(|_| "HOST_NATIVE_PLAN_STEP_INVALID")?;
     // The transaction does not allow a stale or untrusted observation to

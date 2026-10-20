@@ -400,6 +400,8 @@ pub(crate) fn run(
                 &native_bundle_sha,
                 now,
             );
+            edge_shared_types::host_planner::validate_host_transition_plan(&proposed, selected)
+                .map_err(str::to_owned)?;
             println!(
                 "host_reconcile_step={:?}",
                 edge_shared_types::FleetHostPlannedStep::try_from(proposed.step)

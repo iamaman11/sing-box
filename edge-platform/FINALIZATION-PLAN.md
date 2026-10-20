@@ -112,6 +112,8 @@ BLOCKED, STOP разрешён. Snapshot generation/digest привязан к B
 **Остаётся:** Worker issuance, Windows SYSTEM handler, DNS/firewall/routes, reinstall/recover, физический receipt/TLS/auth/WARP.
 CI ≠ runtime.
 
+**Source-only typed Host Planner:** `FleetHostPlanReason` закрывает произвольные host-level `reason_code`; строка только производная от protobuf enum. Native journal и read-only status проверяют соответствие `Reason → PlannedStep` до какой-либо мутации. `FleetHostResult.error_class/next_action`, first-use Worker и Windows SYSTEM остаются отдельными незакрытыми задачами.
+
 ## Два допуска — один ReleaseSet
 
 **Code gate:** exact PR HEAD → tests → Windows/Linux/ReleaseSet candidates. Merge только exact tested tree; push-main publisher использует те же артефакты **без rebuild** и не вызывает `host apply`. CI ≠ physical PASS.

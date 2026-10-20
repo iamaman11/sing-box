@@ -4,7 +4,7 @@
 //! observation protobuf bytes. Native owner identity, Worker authorization,
 //! durable journal admission and physical readback are separate requirements.
 use crate::{
-    FleetHost, FleetHostKind, FleetHostMode, FleetHostPlannedStep, FleetHostRunState,
+    FleetHost, FleetHostKind, FleetHostMode, FleetHostPlanReason, FleetHostPlannedStep, FleetHostRunState,
     FleetHostTransitionPlan, FleetNativeObservation, FleetNativeOwnerState,
     FleetNativeReleaseProof, host_lifecycle::validate_native_observation,
 };
@@ -12,7 +12,7 @@ use crate::{
 fn plan(
     host: &FleetHost,
     step: FleetHostPlannedStep,
-    reason: &str,
+    reason: FleetHostPlanReason,
     expected: &[u8],
     observed: &[u8],
 ) -> FleetHostTransitionPlan {
@@ -20,7 +20,12 @@ fn plan(
         schema_version: 1,
         machine_id: host.machine_id.clone(),
         step: step as i32,
-        reason_code: reason.to_owned(),
+        reason_code: reason
+            .as_str_name()
+            .strip_prefix("FLEET_HOST_PLAN_REASON_")
+            .expect("protobuf host reason prefix")
+            .to_owned(),
+        reason: reason as i32,
         expected_release_digest: expected.to_vec(),
         observed_release_digest: observed.to_vec(),
         owner_attested: false,
@@ -43,7 +48,7 @@ pub fn propose_host_transition(
     let kind = match FleetHostKind::try_from(host.kind) {
         Ok(FleetHostKind::Windows) => FleetHostKind::Windows,
         Ok(FleetHostKind::Vm) => FleetHostKind::Vm,
-        _ => return plan(host, Blocked, "HOST_KIND_INVALID", &[], &[]),
+        _ => return plan(host, Blocked, FleetHostPlanReason::HostKindInvalid, &[], &[]),
     };
     let expected = if kind == FleetHostKind::Windows {
         expected_release_set_sha256
@@ -51,26 +56,26 @@ pub fn propose_host_transition(
         expected_vm_bundle_sha256
     };
     if expected.len() != 32 || !expected.iter().any(|b| *b != 0) {
-        return plan(host, Blocked, "EXPECTED_RELEASE_UNPROVEN", expected, &[]);
+        return plan(host, Blocked, FleetHostPlanReason::ExpectedReleaseUnproven, expected, &[]);
     }
     let target = match &host.target {
         Some(target) => target,
-        None => return plan(host, Blocked, "TARGET_UNSET_OBSERVE_ONLY", expected, &[]),
+        None => return plan(host, Blocked, FleetHostPlanReason::TargetUnsetObserveOnly, expected, &[]),
     };
     let desired_run = match FleetHostRunState::try_from(target.run_state) {
         Ok(FleetHostRunState::Running) => FleetHostRunState::Running,
         Ok(FleetHostRunState::Stopped) => FleetHostRunState::Stopped,
-        _ => return plan(host, Blocked, "TARGET_RUN_STATE_UNPROVEN", expected, &[]),
+        _ => return plan(host, Blocked, FleetHostPlanReason::TargetRunStateUnproven, expected, &[]),
     };
     let desired_mode = match FleetHostMode::try_from(target.windows_mode) {
         Ok(mode) => mode,
-        _ => return plan(host, Blocked, "TARGET_MODE_UNPROVEN", expected, &[]),
+        _ => return plan(host, Blocked, FleetHostPlanReason::TargetModeUnproven, expected, &[]),
     };
     if kind == FleetHostKind::Windows && desired_mode == FleetHostMode::ManagedTun {
         return plan(
             host,
             Blocked,
-            "TUN_SEPARATE_PHYSICAL_GATE_REQUIRED",
+            FleetHostPlanReason::TunSeparatePhysicalGateRequired,
             expected,
             &[],
         );
@@ -78,18 +83,18 @@ pub fn propose_host_transition(
     if kind == FleetHostKind::Windows && desired_mode != FleetHostMode::ProxyOnly
         || kind == FleetHostKind::Vm && desired_mode != FleetHostMode::Unspecified
     {
-        return plan(host, Blocked, "TARGET_MODE_KIND_MISMATCH", expected, &[]);
+        return plan(host, Blocked, FleetHostPlanReason::TargetModeKindMismatch, expected, &[]);
     }
     let observed = match observed {
         Some(observed) => observed,
-        None => return plan(host, Blocked, "NATIVE_READBACK_REQUIRED", expected, &[]),
+        None => return plan(host, Blocked, FleetHostPlanReason::NativeReadbackRequired, expected, &[]),
     };
     let actual = observed.observed_release_sha256.as_slice();
     if validate_native_observation(observed).is_err() || observed.host_kind != host.kind {
         return plan(
             host,
             Blocked,
-            "NATIVE_READBACK_INVALID_OR_WRONG_KIND",
+            FleetHostPlanReason::NativeReadbackInvalidOrWrongKind,
             expected,
             actual,
         );
@@ -97,20 +102,20 @@ pub fn propose_host_transition(
     if observed.observed_at_unix > now_unix.saturating_add(60)
         || now_unix.saturating_sub(observed.observed_at_unix) > 300
     {
-        return plan(host, Blocked, "NATIVE_READBACK_STALE", expected, actual);
+        return plan(host, Blocked, FleetHostPlanReason::NativeReadbackStale, expected, actual);
     }
     if !observed.reason_codes.is_empty() {
-        return plan(host, Blocked, "NATIVE_READBACK_DEGRADED", expected, actual);
+        return plan(host, Blocked, FleetHostPlanReason::NativeReadbackDegraded, expected, actual);
     }
     let state = match FleetNativeOwnerState::try_from(observed.owner_state) {
         Ok(value) => value,
-        Err(_) => return plan(host, Blocked, "NATIVE_STATE_UNPROVEN", expected, actual),
+        Err(_) => return plan(host, Blocked, FleetHostPlanReason::NativeStateUnproven, expected, actual),
     };
     if matches!(
         state,
         FleetNativeOwnerState::Unproven | FleetNativeOwnerState::Transitioning
     ) {
-        return plan(host, Blocked, "NATIVE_STATE_UNPROVEN", expected, actual);
+        return plan(host, Blocked, FleetHostPlanReason::NativeStateUnproven, expected, actual);
     }
     let proof = FleetNativeReleaseProof::try_from(observed.release_proof);
     // Fresh install is a different, typed state from a missing/unreadable
@@ -125,18 +130,18 @@ pub fn propose_host_transition(
             (FleetHostRunState::Running, FleetNativeOwnerState::Stopped) => plan(
                 host,
                 Install,
-                "VERIFIED_ABSENT_INSTALL_PROPOSAL_ONLY",
+                FleetHostPlanReason::VerifiedAbsentInstallProposalOnly,
                 expected,
                 &[],
             ),
             (FleetHostRunState::Stopped, FleetNativeOwnerState::Stopped) => plan(
                 host,
                 Blocked,
-                "ABSENT_INSTALL_WITH_STOPPED_TARGET",
+                FleetHostPlanReason::AbsentInstallWithStoppedTarget,
                 expected,
                 &[],
             ),
-            _ => plan(host, Blocked, "ABSENCE_OWNER_STATE_CONFLICT", expected, &[]),
+            _ => plan(host, Blocked, FleetHostPlanReason::AbsenceOwnerStateConflict, expected, &[]),
         };
     }
     let expected_proof = if kind == FleetHostKind::Windows {
@@ -148,7 +153,7 @@ pub fn propose_host_transition(
         return plan(
             host,
             Blocked,
-            "NATIVE_RELEASE_PROOF_UNPROVEN",
+            FleetHostPlanReason::NativeReleaseProofUnproven,
             expected,
             actual,
         );
@@ -162,39 +167,39 @@ pub fn propose_host_transition(
             FleetNativeOwnerState::Running => plan(
                 host,
                 Stop,
-                "STOP_TARGET_OVERRIDES_RELEASE_MISMATCH",
+                FleetHostPlanReason::StopTargetOverridesReleaseMismatch,
                 expected,
                 actual,
             ),
             FleetNativeOwnerState::Stopped if actual != expected => plan(
                 host,
                 Blocked,
-                "STOPPED_RELEASE_MISMATCH_REQUIRES_INSTALL_TARGET",
+                FleetHostPlanReason::StoppedReleaseMismatchRequiresInstallTarget,
                 expected,
                 actual,
             ),
             FleetNativeOwnerState::Stopped => plan(
                 host,
                 Noop,
-                "STOPPED_MATCHES_DESIRED_LOCAL_ONLY",
+                FleetHostPlanReason::StoppedMatchesDesiredLocalOnly,
                 expected,
                 actual,
             ),
-            _ => plan(host, Blocked, "NATIVE_STATE_UNPROVEN", expected, actual),
+            _ => plan(host, Blocked, FleetHostPlanReason::NativeStateUnproven, expected, actual),
         };
     }
     if actual != expected {
         return plan(
             host,
             ReplaceRelease,
-            "RELEASE_MISMATCH_PROPOSAL_ONLY",
+            FleetHostPlanReason::ReleaseMismatchProposalOnly,
             expected,
             actual,
         );
     }
     match (desired_run, state) {
         (FleetHostRunState::Running, FleetNativeOwnerState::Stopped) => {
-            plan(host, Start, "START_PROPOSAL_ONLY", expected, actual)
+            plan(host, Start, FleetHostPlanReason::StartProposalOnly, expected, actual)
         }
         (FleetHostRunState::Running, FleetNativeOwnerState::Running)
             if observed.runtime_ready_proven && observed.runtime_ready =>
@@ -202,7 +207,7 @@ pub fn propose_host_transition(
             plan(
                 host,
                 Noop,
-                "RUNNING_MATCHES_LOCAL_NOT_EXTERNAL",
+                FleetHostPlanReason::RunningMatchesLocalNotExternal,
                 expected,
                 actual,
             )
@@ -216,7 +221,7 @@ pub fn propose_host_transition(
             plan(
                 host,
                 Start,
-                "VM_DEGRADED_REQUIRES_SCOPED_CONTAINER_PREADMISSION",
+                FleetHostPlanReason::VmDegradedRequiresScopedContainerPreadmission,
                 expected,
                 actual,
             )
@@ -224,11 +229,72 @@ pub fn propose_host_transition(
         _ => plan(
             host,
             Blocked,
-            "RUNTIME_READINESS_UNPROVEN",
+            FleetHostPlanReason::RuntimeReadinessUnproven,
             expected,
             actual,
         ),
     }
+}
+
+
+/* Host and per-resource plans obey the same fail-closed contract: one
+ * Protobuf reason, one planned step, no inferred privilege from observation.
+ */
+pub fn validate_host_transition_plan(
+    proposal: &FleetHostTransitionPlan,
+    host: &FleetHost,
+) -> Result<(), &'static str> {
+    use crate::FleetHostPlanReason as Reason;
+    if proposal.schema_version != 1
+        || proposal.machine_id != host.machine_id
+        || proposal.owner_attested
+        || proposal.mutation_authorized
+    {
+        return Err("HOST_PLAN_SCOPE_OR_AUTHORITY_INVALID");
+    }
+    let reason =
+        Reason::try_from(proposal.reason).map_err(|_| "HOST_PLAN_REASON_UNRECOGNIZED")?;
+    if reason == Reason::Unspecified {
+        return Err("HOST_PLAN_REASON_UNSPECIFIED");
+    }
+    let code = reason
+        .as_str_name()
+        .strip_prefix("FLEET_HOST_PLAN_REASON_")
+        .ok_or("HOST_PLAN_REASON_INVALID")?;
+    if proposal.reason_code != code {
+        return Err("HOST_PLAN_REASON_CODE_MISMATCH");
+    }
+    let expected_step = match reason {
+        Reason::HostKindInvalid
+        |         Reason::ExpectedReleaseUnproven
+        |         Reason::TargetUnsetObserveOnly
+        |         Reason::TargetRunStateUnproven
+        |         Reason::TargetModeUnproven
+        |         Reason::TunSeparatePhysicalGateRequired
+        |         Reason::TargetModeKindMismatch
+        |         Reason::NativeReadbackRequired
+        |         Reason::NativeReadbackInvalidOrWrongKind
+        |         Reason::NativeReadbackStale
+        |         Reason::NativeReadbackDegraded
+        |         Reason::NativeStateUnproven
+        |         Reason::AbsentInstallWithStoppedTarget
+        |         Reason::AbsenceOwnerStateConflict
+        |         Reason::NativeReleaseProofUnproven
+        |         Reason::StoppedReleaseMismatchRequiresInstallTarget
+        |         Reason::RuntimeReadinessUnproven => FleetHostPlannedStep::Blocked,
+        Reason::VerifiedAbsentInstallProposalOnly => FleetHostPlannedStep::Install,
+        Reason::StopTargetOverridesReleaseMismatch => FleetHostPlannedStep::Stop,
+        Reason::StoppedMatchesDesiredLocalOnly
+        | Reason::RunningMatchesLocalNotExternal => FleetHostPlannedStep::Noop,
+        Reason::ReleaseMismatchProposalOnly => FleetHostPlannedStep::ReplaceRelease,
+        Reason::StartProposalOnly
+        | Reason::VmDegradedRequiresScopedContainerPreadmission => FleetHostPlannedStep::Start,
+        Reason::Unspecified => return Err("HOST_PLAN_REASON_UNSPECIFIED"),
+    };
+    if proposal.step != expected_step as i32 {
+        return Err("HOST_PLAN_ACTION_REASON_CONFLICT");
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -276,6 +342,51 @@ mod tests {
             reason_codes: vec![],
         }
     }
+
+    #[test]
+    fn host_plan_rejects_forged_reason_step_and_authority() {
+        let vm = host(
+            FleetHostKind::Vm,
+            FleetHostMode::Unspecified,
+            FleetHostRunState::Running,
+        );
+        let proposal = propose_host_transition(&vm, None, &[1; 32], &[2; 32], 1000);
+        assert_eq!(
+            proposal.reason,
+            FleetHostPlanReason::NativeReadbackRequired as i32
+        );
+        assert_eq!(proposal.reason_code, "NATIVE_READBACK_REQUIRED");
+        assert_eq!(validate_host_transition_plan(&proposal, &vm), Ok(()));
+
+        let mut forged = proposal.clone();
+        forged.reason_code = "RUNTIME_READINESS_UNPROVEN".into();
+        assert_eq!(
+            validate_host_transition_plan(&forged, &vm),
+            Err("HOST_PLAN_REASON_CODE_MISMATCH")
+        );
+
+        let mut forged = proposal.clone();
+        forged.step = FleetHostPlannedStep::Install as i32;
+        assert_eq!(
+            validate_host_transition_plan(&forged, &vm),
+            Err("HOST_PLAN_ACTION_REASON_CONFLICT")
+        );
+
+        let mut forged = proposal.clone();
+        forged.reason = 9876;
+        assert_eq!(
+            validate_host_transition_plan(&forged, &vm),
+            Err("HOST_PLAN_REASON_UNRECOGNIZED")
+        );
+
+        let mut forged = proposal.clone();
+        forged.mutation_authorized = true;
+        assert_eq!(
+            validate_host_transition_plan(&forged, &vm),
+            Err("HOST_PLAN_SCOPE_OR_AUTHORITY_INVALID")
+        );
+    }
+
     #[test]
     fn proven_absent_vm_proposes_fresh_install_but_never_authorizes_it() {
         use crate::host_lifecycle::build_native_observation;
