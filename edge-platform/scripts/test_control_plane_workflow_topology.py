@@ -2486,9 +2486,11 @@ def main() -> None:
     )
     native_host = Path("edge-platform/crates/edge-agent/src/host_native.rs").read_text(encoding="utf-8")
     require(
-        "HOST_NATIVE_VM_INSTALL_REQUIRES_NATIVE_HANDLER" in native_host
-        and "run_bootstrap" not in native_host
-        and "super::apply_bundle" not in native_host,
+        "run_bootstrap" not in native_host
+        and "super::apply_bundle" not in native_host
+        and "preflight_native_vm_install(" in native_host
+        and "apply_native_vm_install_once(" in native_host
+        and "HOST_NATIVE_VM_INSTALL_REQUIRES_NATIVE_HANDLER" not in native_host,
         "Signed native install must not fall through to legacy compose bootstrap",
     )
     signed_vm_effectors = Path(
@@ -2499,6 +2501,15 @@ def main() -> None:
         and "super::start_line1_gateway(" not in signed_vm_effectors
         and "super::start_line2_proxy(" not in signed_vm_effectors,
         "Signed VM gateway replacement must use native Docker Engine, not Compose",
+    )
+    require(
+        "pub(crate) async fn preflight_native_vm_install(" in signed_vm_effectors
+        and "pub(crate) async fn apply_native_vm_install_once(" in signed_vm_effectors
+        and "pull_native_vm_image_once(" in signed_vm_effectors
+        and "native_warp_create_body(" in signed_vm_effectors
+        and "super::run_bootstrap(" not in signed_vm_effectors
+        and "super::run_compose(" not in signed_vm_effectors,
+        "Signed VM INSTALL must use native Docker graph instead of Compose",
     )
     # Default deny: future protobuf RPCs must be explicitly read-only or
     # pass the native fail-closed guard inside their handler.

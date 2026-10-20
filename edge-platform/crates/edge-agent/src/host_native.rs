@@ -534,6 +534,7 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
     // the single native effector. No second durable state or retry loop.
     let prepared = std::cell::RefCell::new(None);
     let prepared_replace = std::cell::RefCell::new(None);
+    let prepared_install = std::cell::RefCell::new(None);
     let result = tokio::task::block_in_place(|| {
         execute_native_host_once(
             &intent,
@@ -571,12 +572,19 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
                     *prepared.borrow_mut() = Some(proposal);
                     Ok(())
                 }
-                // A signed fresh-install must use the same resource-scoped
-                // Bollard planner as updates. The historical BootstrapFull
-                // implementation still invokes docker compose, so it must
-                // never be dispatched after signed BEGIN.
                 FleetHostPlannedStep::Install => {
-                    Err("HOST_NATIVE_VM_INSTALL_REQUIRES_NATIVE_HANDLER")
+                    if intent.resource_id != "sing-box" {
+                        return Err("HOST_NATIVE_VM_INSTALL_HOST_SCOPE_REQUIRED");
+                    }
+                    let request = ApplyBundleRequest::decode(bundle_pb.as_slice())
+                        .map_err(|_| "HOST_NATIVE_VM_INSTALL_BUNDLE_INVALID")?;
+                    let plan = handle
+                        .block_on(super::docker_observation::preflight_native_vm_install(
+                            stack_dir, host, &request,
+                        ))
+                        .map_err(|_| "HOST_NATIVE_VM_INSTALL_PREADMISSION_BLOCKED")?;
+                    *prepared_install.borrow_mut() = Some(plan);
+                    Ok(())
                 }
                 FleetHostPlannedStep::ReplaceRelease => {
                     let request = ApplyBundleRequest::decode(bundle_pb.as_slice())
@@ -623,7 +631,15 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
                         .map_err(|_| "HOST_NATIVE_VM_REPLACE_UNCERTAIN_NO_REPLAY")
                 }
                 FleetHostPlannedStep::Install => {
-                    Err("HOST_NATIVE_VM_INSTALL_REQUIRES_NATIVE_HANDLER")
+                    let plan = prepared_install
+                        .borrow_mut()
+                        .take()
+                        .ok_or("HOST_NATIVE_VM_INSTALL_PLAN_MISSING")?;
+                    handle
+                        .block_on(super::docker_observation::apply_native_vm_install_once(
+                            stack_dir, host, plan,
+                        ))
+                        .map_err(|_| "HOST_NATIVE_VM_INSTALL_UNCERTAIN_NO_REPLAY")
                 }
                 _ => Err("HOST_NATIVE_STEP_UNSUPPORTED_NO_REPLAY"),
             },

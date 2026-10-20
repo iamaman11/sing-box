@@ -12,7 +12,7 @@ use bollard::{
     },
     query_parameters::{ListContainersOptionsBuilder, LogsOptionsBuilder},
 };
-use futures_util::TryStreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use prost::Message;
 use std::net::IpAddr;
 
@@ -1438,6 +1438,438 @@ fn verify_native_vm_run_poststate(
     }
     if changes == 0 || after.len() > host.vm_containers.len() {
         return Err("HOST_NATIVE_VM_POSTSTATE_CHANGE_UNPROVEN_NO_REPLAY".into());
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+pub(crate) struct NativeVmInstallPlan {
+    request: ApplyBundleRequest,
+    graph: edge_shared_types::FleetVmDesiredGraph,
+    project: String,
+    gateway_image: String,
+    warp_image: String,
+}
+
+/// A signed install is allowed only on an empty exact Docker namespace.
+/// No Compose/default Docker network and no adoption of a foreign resource.
+/// Admission for the WARP child is pure and independent of the Docker
+/// mutator. Reject any Compose capability, device, mount or network drift.
+fn validate_native_warp_install_compose(
+    host: &FleetHost,
+    compose: &serde_yaml::Value,
+) -> Result<(), String> {
+    let warp = compose
+        .get("services")
+        .and_then(|v| v.get("warp-egress"))
+        .ok_or("HOST_VM_INSTALL_WARP_UNPROVEN")?;
+    let mapping = warp.as_mapping().ok_or("HOST_VM_INSTALL_WARP_INVALID")?;
+    let keys = mapping
+        .keys()
+        .map(|key| key.as_str().ok_or("HOST_VM_INSTALL_WARP_KEY_INVALID"))
+        .collect::<Result<BTreeSet<_>, _>>()?;
+    if keys
+        != BTreeSet::from([
+            "image",
+            "container_name",
+            "restart",
+            "cap_add",
+            "devices",
+            "volumes",
+            "networks",
+        ])
+    {
+        return Err("HOST_VM_INSTALL_WARP_FIELD_UNSUPPORTED".into());
+    }
+    let selector = host
+        .vm_containers
+        .iter()
+        .find(|item| item.compose_service == "warp-egress")
+        .ok_or("HOST_VM_INSTALL_WARP_SELECTOR_MISSING")?;
+    let sequence = |field: &str| -> Result<Vec<String>, String> {
+        warp.get(field)
+            .and_then(serde_yaml::Value::as_sequence)
+            .ok_or("HOST_VM_INSTALL_WARP_SEQUENCE_MISSING")?
+            .iter()
+            .map(|value| {
+                value
+                    .as_str()
+                    .map(str::to_owned)
+                    .ok_or_else(|| "HOST_VM_INSTALL_WARP_SEQUENCE_INVALID".to_owned())
+            })
+            .collect()
+    };
+    if warp.get("image").and_then(serde_yaml::Value::as_str)
+        != Some("${EDGE_WARP_EGRESS_IMAGE:?EDGE_WARP_EGRESS_IMAGE is required}")
+        || warp
+            .get("container_name")
+            .and_then(serde_yaml::Value::as_str)
+            != Some(selector.container_name.as_str())
+        || warp.get("restart").and_then(serde_yaml::Value::as_str) != Some("unless-stopped")
+        || sequence("cap_add")? != ["NET_ADMIN"]
+        || sequence("devices")? != ["/dev/net/tun:/dev/net/tun"]
+        || sequence("volumes")? != ["../warp-state:/var/lib/cloudflare-warp"]
+        || sequence("networks")? != ["edge_net"]
+    {
+        return Err("HOST_VM_INSTALL_WARP_POLICY_MISMATCH".into());
+    }
+    Ok(())
+}
+
+pub(crate) async fn preflight_native_vm_install(
+    stack_dir: &Path,
+    host: &FleetHost,
+    request: &ApplyBundleRequest,
+) -> Result<NativeVmInstallPlan, String> {
+    super::validate_digest_bound_bundle_request(request)
+        .map_err(|_| "HOST_VM_INSTALL_BUNDLE_INVALID")?;
+    super::validate_initial_policy_bundle_request(request)
+        .map_err(|_| "HOST_VM_INSTALL_POLICY_INVALID")?;
+    let graph = compile_vm_desired_graph_from_release(host, request)?;
+    let project = host
+        .vm_containers
+        .first()
+        .ok_or("HOST_VM_INSTALL_OWNER_MISSING")?
+        .compose_project
+        .clone();
+    let names = host
+        .vm_containers
+        .iter()
+        .map(|item| item.compose_service.as_str())
+        .collect::<BTreeSet<_>>();
+    if host.vm_containers.len() != 3
+        || names != BTreeSet::from(["line1-gateway", "line2-proxy", "warp-egress"])
+        || project.is_empty()
+        || host
+            .vm_containers
+            .iter()
+            .any(|item| item.compose_project != project)
+    {
+        return Err("HOST_VM_INSTALL_RESOURCE_SCOPE_INVALID".into());
+    }
+    let [network] = graph.networks.as_slice() else {
+        return Err("HOST_VM_INSTALL_NETWORK_SCOPE_INVALID".into());
+    };
+    if network.network_name != "edge_net"
+        || network.driver != "bridge"
+        || network.compose_project != project
+        || network
+            .attached_services
+            .iter()
+            .map(String::as_str)
+            .collect::<BTreeSet<_>>()
+            != names
+    {
+        return Err("HOST_VM_INSTALL_NETWORK_SCOPE_INVALID".into());
+    }
+    for service in ["line1-gateway", "line2-proxy"] {
+        if !graph.resources.iter().any(|item| {
+            item.resource
+                .as_ref()
+                .is_some_and(|id| id.compose_service == service)
+                && item.dependencies.iter().any(|dep| dep == "warp-egress")
+        }) {
+            return Err("HOST_VM_INSTALL_DEPENDENCY_INVALID".into());
+        }
+    }
+    let compose_bytes = request
+        .stack_files
+        .iter()
+        .find(|file| file.relative_path == "docker-compose.yml")
+        .ok_or("HOST_VM_INSTALL_COMPOSE_MISSING")?;
+    let compose: serde_yaml::Value = serde_yaml::from_slice(&compose_bytes.content)
+        .map_err(|_| "HOST_VM_INSTALL_COMPOSE_INVALID")?;
+    validate_native_warp_install_compose(host, &compose)?;
+    super::require_empty_vm_initial_bundle_host(stack_dir)
+        .map_err(|_| "HOST_VM_INSTALL_EXISTING_STACK")?;
+    let docker = docker_connection().await?;
+    if !owned_application_container_ids(&docker, &host.vm_containers)
+        .await?
+        .is_empty()
+    {
+        return Err("HOST_VM_INSTALL_CONTAINER_ALREADY_PRESENT".into());
+    }
+    let network_name = format!("{project}_edge_net");
+    match docker.inspect_network(&network_name, None).await {
+        Err(BollardError::DockerResponseServerError {
+            status_code: 404, ..
+        }) => {}
+        Ok(_) => return Err("HOST_VM_INSTALL_EXISTING_NETWORK".into()),
+        Err(_) => return Err("HOST_VM_INSTALL_NETWORK_UNOBSERVABLE".into()),
+    }
+    let credential = super::active_vm_credential_bundle(stack_dir)
+        .map_err(|_| "HOST_VM_INSTALL_CREDENTIAL_UNPROVEN")?
+        .ok_or("HOST_VM_INSTALL_ACTIVE_V2_REQUIRED")?;
+    super::ApplicationRuntimeSecrets::from_vm_bundle(&credential)
+        .map_err(|_| "HOST_VM_INSTALL_CREDENTIAL_INVALID")?;
+    let pins = request
+        .stack_files
+        .iter()
+        .find(|file| file.relative_path == ".images.env")
+        .ok_or("HOST_VM_INSTALL_IMAGE_POLICY_MISSING")?;
+    let images = parse_vm_release_image_pins(&pins.content)?;
+    Ok(NativeVmInstallPlan {
+        request: request.clone(),
+        graph,
+        project,
+        gateway_image: images["EDGE_GATEWAY_IMAGE"].clone(),
+        warp_image: images["EDGE_WARP_EGRESS_IMAGE"].clone(),
+    })
+}
+
+fn stage_native_first_vm_bundle(
+    stack_dir: &Path,
+    request: &ApplyBundleRequest,
+) -> Result<(), String> {
+    // BEGIN has been durably recorded. No cleanup or implicit rollback is
+    // allowed for any scratch state following an uncertain operation.
+    super::require_empty_vm_initial_bundle_host(stack_dir)
+        .map_err(|_| "HOST_VM_INSTALL_PRESTATE_CHANGED_NO_REPLAY")?;
+    let parent = stack_dir.parent().ok_or("HOST_VM_INSTALL_PARENT_MISSING")?;
+    let stage = parent.join(super::STAGING_STACK_DIR);
+    fs::create_dir(&stage).map_err(|_| "HOST_VM_INSTALL_STAGE_UNCERTAIN_NO_REPLAY")?;
+    let mut written = Vec::new();
+    for file in &request.stack_files {
+        super::write_bundle_file(&stage, file, &mut written)
+            .map_err(|_| "HOST_VM_INSTALL_BUNDLE_WRITE_UNCERTAIN_NO_REPLAY")?;
+    }
+    super::materialize_vm_owned_runtime_environment(&stage)
+        .map_err(|_| "HOST_VM_INSTALL_CREDENTIAL_PROJECTION_UNCERTAIN_NO_REPLAY")?;
+    super::prepare_runtime_directories(&stage)
+        .map_err(|_| "HOST_VM_INSTALL_RUNTIME_DIR_UNCERTAIN_NO_REPLAY")?;
+    let runtime = super::read_typed_runtime_environment(&stage)
+        .map_err(|_| "HOST_VM_INSTALL_RUNTIME_UNPROVEN_NO_REPLAY")?;
+    super::require_line2_policy(&runtime)
+        .map_err(|_| "HOST_VM_INSTALL_LINE2_POLICY_INVALID_NO_REPLAY")?;
+    super::require_tunnel_policy(&runtime)
+        .map_err(|_| "HOST_VM_INSTALL_LINE1_POLICY_INVALID_NO_REPLAY")?;
+    super::render_line1_runtime(&stage, &runtime)
+        .map_err(|_| "HOST_VM_INSTALL_LINE1_RENDER_UNCERTAIN_NO_REPLAY")?;
+    super::render_line2_runtime(&stage, &runtime)
+        .map_err(|_| "HOST_VM_INSTALL_LINE2_RENDER_UNCERTAIN_NO_REPLAY")?;
+    let (bundle_id, bundle_digest) = super::validate_digest_bound_bundle_request(request)
+        .map_err(|_| "HOST_VM_INSTALL_DIGEST_CHANGED_NO_REPLAY")?;
+    super::write_application_release(
+        &stage,
+        &super::ApplicationBundleRelease {
+            schema_version: 1,
+            bundle_id,
+            bundle_digest,
+        },
+    )
+    .map_err(|_| "HOST_VM_INSTALL_MARKER_UNCERTAIN_NO_REPLAY")?;
+    // An installer may precreate an empty target. Remove only that exact
+    // empty directory; any foreign/nonempty path is UNKNOWN_NO_REPLAY.
+    if stack_dir.exists() {
+        fs::remove_dir(stack_dir).map_err(|_| "HOST_VM_INSTALL_TARGET_NOT_EMPTY_NO_REPLAY")?;
+    }
+    fs::rename(&stage, stack_dir)
+        .map_err(|_| "HOST_VM_INSTALL_ACTIVATE_UNCERTAIN_NO_REPLAY".to_owned())
+}
+
+async fn pull_native_vm_image_once(docker: &Docker, image: &str) -> Result<(), String> {
+    if docker.inspect_image(image).await.is_ok() {
+        return Ok(());
+    }
+    let options = bollard::query_parameters::CreateImageOptionsBuilder::default()
+        .from_image(image)
+        .build();
+    let pull = async {
+        let mut stream = docker.create_image(Some(options), None, None);
+        while let Some(result) = stream.next().await {
+            result.map_err(|_| "HOST_VM_INSTALL_PULL_ACK_UNCERTAIN_NO_REPLAY")?;
+        }
+        Ok::<(), String>(())
+    };
+    tokio::time::timeout(std::time::Duration::from_secs(180), pull)
+        .await
+        .map_err(|_| "HOST_VM_INSTALL_PULL_TIMEOUT_NO_REPLAY")??;
+    docker
+        .inspect_image(image)
+        .await
+        .map_err(|_| "HOST_VM_INSTALL_IMAGE_DIGEST_UNPROVEN_NO_REPLAY")?;
+    Ok(())
+}
+
+fn native_warp_create_body(
+    stack_dir: &Path,
+    host: &FleetHost,
+    image: &str,
+    network_id: &str,
+) -> Result<bollard::models::ContainerCreateBody, String> {
+    use bollard::models::{
+        ContainerCreateBody, DeviceMapping, EndpointSettings, HostConfig, NetworkingConfig,
+        RestartPolicy, RestartPolicyNameEnum,
+    };
+    let identity = host
+        .vm_containers
+        .iter()
+        .find(|id| id.compose_service == "warp-egress")
+        .ok_or("HOST_VM_INSTALL_WARP_SELECTOR_MISSING")?;
+    let state = stack_dir
+        .parent()
+        .ok_or("HOST_VM_INSTALL_PARENT_MISSING")?
+        .join("warp-state")
+        .canonicalize()
+        .map_err(|_| "HOST_VM_INSTALL_WARP_STATE_MISSING")?;
+    let mut labels = HashMap::new();
+    labels.insert(
+        "com.docker.compose.project".to_owned(),
+        identity.compose_project.clone(),
+    );
+    labels.insert(
+        "com.docker.compose.service".to_owned(),
+        identity.compose_service.clone(),
+    );
+    let mut endpoints = HashMap::new();
+    endpoints.insert(
+        format!("{}_edge_net", identity.compose_project),
+        EndpointSettings {
+            network_id: Some(network_id.to_owned()),
+            ..Default::default()
+        },
+    );
+    Ok(ContainerCreateBody {
+        image: Some(image.to_owned()),
+        labels: Some(labels),
+        host_config: Some(HostConfig {
+            binds: Some(vec![format!(
+                "{}:/var/lib/cloudflare-warp:rw",
+                state.display()
+            )]),
+            cap_add: Some(vec!["NET_ADMIN".to_owned()]),
+            devices: Some(vec![DeviceMapping {
+                path_on_host: Some("/dev/net/tun".to_owned()),
+                path_in_container: Some("/dev/net/tun".to_owned()),
+                cgroup_permissions: Some("rwm".to_owned()),
+            }]),
+            restart_policy: Some(RestartPolicy {
+                name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        networking_config: Some(NetworkingConfig {
+            endpoints_config: Some(endpoints),
+        }),
+        ..Default::default()
+    })
+}
+
+async fn native_create_vm_container_once(
+    docker: &Docker,
+    host: &FleetHost,
+    service: &str,
+    body: bollard::models::ContainerCreateBody,
+) -> Result<(), String> {
+    let identity = host
+        .vm_containers
+        .iter()
+        .find(|id| id.compose_service == service)
+        .ok_or("HOST_VM_INSTALL_SELECTOR_MISSING")?;
+    let options = bollard::query_parameters::CreateContainerOptionsBuilder::default()
+        .name(&identity.container_name)
+        .build();
+    let created = docker
+        .create_container(Some(options), body)
+        .await
+        .map_err(|_| "HOST_VM_INSTALL_CREATE_ACK_UNCERTAIN_NO_REPLAY")?;
+    if created.id.len() != 64 || !created.id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("HOST_VM_INSTALL_CREATED_ID_UNPROVEN_NO_REPLAY".into());
+    }
+    docker
+        .start_container(
+            &created.id,
+            None::<bollard::query_parameters::StartContainerOptions>,
+        )
+        .await
+        .map_err(|_| "HOST_VM_INSTALL_START_ACK_UNCERTAIN_NO_REPLAY")?;
+    Ok(())
+}
+
+/// One signed journal authority; no Docker Compose or shell is executable
+/// in fresh install, including pulls, owned network and WARP creation.
+pub(crate) async fn apply_native_vm_install_once(
+    stack_dir: &Path,
+    host: &FleetHost,
+    plan: NativeVmInstallPlan,
+) -> Result<(), String> {
+    let docker = docker_connection().await?;
+    if !owned_application_container_ids(&docker, &host.vm_containers)
+        .await?
+        .is_empty()
+    {
+        return Err("HOST_VM_INSTALL_PRESTATE_CHANGED_NO_REPLAY".into());
+    }
+    let network_name = format!("{}_edge_net", plan.project);
+    match docker.inspect_network(&network_name, None).await {
+        Err(BollardError::DockerResponseServerError {
+            status_code: 404, ..
+        }) => {}
+        _ => return Err("HOST_VM_INSTALL_NETWORK_CHANGED_NO_REPLAY".into()),
+    }
+    stage_native_first_vm_bundle(stack_dir, &plan.request)?;
+    if compile_native_vm_desired_graph(stack_dir, host)? != plan.graph {
+        return Err("HOST_VM_INSTALL_GRAPH_CHANGED_NO_REPLAY".into());
+    }
+    pull_native_vm_image_once(&docker, &plan.warp_image).await?;
+    pull_native_vm_image_once(&docker, &plan.gateway_image).await?;
+    let mut labels = HashMap::new();
+    labels.insert(
+        "com.docker.compose.project".to_owned(),
+        plan.project.clone(),
+    );
+    labels.insert(
+        "com.docker.compose.network".to_owned(),
+        "edge_net".to_owned(),
+    );
+    docker
+        .create_network(bollard::models::NetworkCreateRequest {
+            name: network_name,
+            driver: Some("bridge".to_owned()),
+            labels: Some(labels),
+            ..Default::default()
+        })
+        .await
+        .map_err(|_| "HOST_VM_INSTALL_NETWORK_CREATE_UNCERTAIN_NO_REPLAY")?;
+    let id = read_owned_edge_network_id(&docker, host).await?;
+    native_create_vm_container_once(
+        &docker,
+        host,
+        "warp-egress",
+        native_warp_create_body(stack_dir, host, &plan.warp_image, &id)?,
+    )
+    .await?;
+    for service in ["line1-gateway", "line2-proxy"] {
+        let body = native_gateway_create_body(stack_dir, host, service, &plan.gateway_image, &id)?;
+        native_create_vm_container_once(&docker, host, service, body).await?;
+    }
+    let mut after = owned_application_container_ids(&docker, &host.vm_containers).await?;
+    if after.len() != host.vm_containers.len() || after.iter().any(|item| !item.running) {
+        return Err("HOST_VM_INSTALL_POSTSTATE_MISSING_NO_REPLAY".into());
+    }
+    bind_owned_vm_compose_dependencies(stack_dir, &host.vm_containers, &mut after)?;
+    verify_vm_network_attachments(&docker, host, &after, &id).await?;
+    if after.iter().any(|item| {
+        item.image_ref.as_str()
+            != if item.service == "warp-egress" {
+                plan.warp_image.as_str()
+            } else {
+                plan.gateway_image.as_str()
+            }
+    }) {
+        return Err("HOST_VM_INSTALL_IMAGE_POSTSTATE_CHANGED_NO_REPLAY".into());
+    }
+    for service in [ScopedVmService::Line1, ScopedVmService::Line2] {
+        verify_running_container_config_binding(
+            service.container_name(host)?,
+            &stack_dir.join(service.rendered_relative()),
+        )
+        .await
+        .map_err(|_| "HOST_VM_INSTALL_CONFIG_UNPROVEN_NO_REPLAY")?;
+    }
+    if compile_native_vm_desired_graph(stack_dir, host)? != plan.graph {
+        return Err("HOST_VM_INSTALL_POSTSTATE_GRAPH_CHANGED_NO_REPLAY".into());
     }
     Ok(())
 }
@@ -4291,5 +4723,41 @@ mod tests {
             &["vultr-edge_edge_net"],
         )]);
         assert!(!observation.container_on_mesh_network("vultr-cloudflare-mesh"));
+    }
+}
+
+#[cfg(test)]
+mod native_vm_install_policy_tests {
+    use super::*;
+
+    fn warp_host() -> FleetHost {
+        FleetHost {
+            vm_containers: vec![FleetVmContainer {
+                container_name: "vultr-warp-egress".to_owned(),
+                compose_project: "vultr-edge".to_owned(),
+                compose_service: "warp-egress".to_owned(),
+            }],
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn signed_native_warp_admits_only_exact_immutable_compose_policy() {
+        let policy = include_str!("../../../../win/vultr-waw/stack/docker-compose.yml");
+        let host = warp_host();
+        let valid = serde_yaml::from_str::<serde_yaml::Value>(policy).unwrap();
+        assert!(validate_native_warp_install_compose(&host, &valid).is_ok());
+
+        for changed in [
+            policy.replace("      - NET_ADMIN", "      - SYS_ADMIN"),
+            policy.replace(
+                "      - ../warp-state:/var/lib/cloudflare-warp",
+                "      - /:/host",
+            ),
+            policy.replace("      - edge_net", "      - host"),
+        ] {
+            let value = serde_yaml::from_str::<serde_yaml::Value>(&changed).unwrap();
+            assert!(validate_native_warp_install_compose(&host, &value).is_err());
+        }
     }
 }

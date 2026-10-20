@@ -105,13 +105,11 @@ entrypoint связывает owner readback → signed admission → durable re
 lock → однократную mutation callback → физический poststate. Тесты
 покрывают долговечный однократный NOOP, успешный переход и UNKNOWN_NO_REPLAY.
 
-**Сейчас:** VM STOP — только Compose-owned Docker, не Mesh.
-Один атомарный `FleetNativeTrustSnapshot`, постоянный journal.
-Legacy sudo блокирует apply; Rust сверяет intent/result,
-но runner-копия НЕ authenticated receipt.
-**Остаётся:** Windows SYSTEM execution, root bootstrap,
-remote receipt, config/reinstall/recover, физические
-DNS/TLS/auth/direct/WARP пробы. CI ≠ runtime.
+**Сейчас:** VM STOP и signed native INSTALL (bridge/WARP/Line1/Line2)
+через Bollard, без Compose, лишь при пустом scope и ACTIVE Worker v2.
+Журнал единый, physical receipt не принят; CI ≠ runtime.
+**Остаётся:** Worker first-use credentials, Windows SYSTEM signed apply,
+DNS/firewall/routes, reinstall/recover, physical TLS/auth/WARP.
 
 ## Обязательный протокол сомнения (без гаданий и кругов)
 
