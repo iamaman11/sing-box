@@ -6,11 +6,11 @@ use super::*;
 use edge_shared_types::{
     FleetHostIntent, FleetHostKind, FleetNativeTrustSnapshot, ReleaseSet, managed_host,
 };
+use ring::rand::SystemRandom;
+use ring::signature::{Ed25519KeyPair, KeyPair};
 use std::fs::{DirBuilder, OpenOptions};
 use std::io::Write;
 use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt, PermissionsExt};
-use ring::rand::SystemRandom;
-use ring::signature::{Ed25519KeyPair, KeyPair};
 
 unsafe extern "C" {
     fn geteuid() -> u32;
@@ -147,8 +147,8 @@ fn generate_receipt_identity(git_public_key: &[u8]) -> Result<(Vec<u8>, Vec<u8>)
     }
     let key = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())
         .map_err(|_| "HOST_ENROLL_RECEIPT_KEY_GENERATION_FAILED")?;
-    let identity = Ed25519KeyPair::from_pkcs8(key.as_ref())
-        .map_err(|_| "HOST_ENROLL_RECEIPT_KEY_INVALID")?;
+    let identity =
+        Ed25519KeyPair::from_pkcs8(key.as_ref()).map_err(|_| "HOST_ENROLL_RECEIPT_KEY_INVALID")?;
     Ok((
         key.as_ref().to_vec(),
         identity.public_key().as_ref().to_vec(),
@@ -158,18 +158,15 @@ fn generate_receipt_identity(git_public_key: &[u8]) -> Result<(Vec<u8>, Vec<u8>)
 /// Existing local signing key is never overwritten, even on release refresh.
 fn read_existing_receipt_identity(trusted: &Path) -> Result<Vec<u8>, String> {
     let key = super::host_native::root_file(&trusted.join("receipt-key.pk8"), 4096)?;
-    let identity = Ed25519KeyPair::from_pkcs8(&key)
-        .map_err(|_| "HOST_ENROLL_EXISTING_RECEIPT_KEY_INVALID")?;
+    let identity =
+        Ed25519KeyPair::from_pkcs8(&key).map_err(|_| "HOST_ENROLL_EXISTING_RECEIPT_KEY_INVALID")?;
     Ok(identity.public_key().as_ref().to_vec())
 }
 
 /// Both zero-registration and exact public-key registration are valid
 /// enrollment states. Zero-registration never authorizes a host mutation:
 /// native apply requires the exact Git-pinned public key before BEGIN.
-fn verify_receipt_registration(
-    registered: &[u8],
-    local_public_key: &[u8],
-) -> Result<bool, String> {
+fn verify_receipt_registration(registered: &[u8], local_public_key: &[u8]) -> Result<bool, String> {
     if registered.is_empty() {
         return Ok(false);
     }
@@ -183,7 +180,10 @@ fn verify_receipt_registration(
 }
 
 fn receipt_public_key_hex(public_key: &[u8]) -> String {
-    public_key.iter().map(|byte| format!("{byte:02x}")).collect()
+    public_key
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
 }
 
 /// Root-owned trust can advance to a NEW accepted immutable ReleaseSet
