@@ -1314,7 +1314,10 @@ mod tests {
         let check = edge_shared_types::host_lifecycle::verify_vm_signed_git_prerequisites;
         assert_eq!(check(&host), Err("HOST_GIT_WORKER_SIGNER_KEY_REQUIRED"));
         host.worker_authority_public_key = vec![7; 32];
-        assert_eq!(check(&host), Err("HOST_VM_GIT_RECEIPT_REGISTRATION_REQUIRED"));
+        assert_eq!(
+            check(&host),
+            Err("HOST_VM_GIT_RECEIPT_REGISTRATION_REQUIRED")
+        );
         host.native_receipt_public_key = vec![9; 32];
         assert_eq!(check(&host), Err("HOST_VM_GIT_RESOURCE_SCOPE_REQUIRED"));
         host.vm_containers.push(FleetVmContainer {
