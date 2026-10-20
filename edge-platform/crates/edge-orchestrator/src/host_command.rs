@@ -559,10 +559,9 @@ pub(crate) fn run(
                 } else {
                     println!("host_vm_hierarchy_nodes=UNPROVEN");
                 }
-                let bootstrap = edge_shared_types::FleetVmBootstrapPhase::try_from(
-                    report.bootstrap_phase
-                )
-                .map_err(|_| "HOST_VM_BOOTSTRAP_PHASE_INVALID")?;
+                let bootstrap =
+                    edge_shared_types::FleetVmBootstrapPhase::try_from(report.bootstrap_phase)
+                        .map_err(|_| "HOST_VM_BOOTSTRAP_PHASE_INVALID")?;
                 println!("host_vm_bootstrap_phase={}", bootstrap.as_str_name());
                 println!(
                     "host_vm_bootstrap_next_action={}",

@@ -184,9 +184,7 @@ pub(super) fn local_vm_bootstrap_phase(
     host: &edge_shared_types::FleetHost,
     credential: &edge_shared_types::FleetVmCredentialReadback,
 ) -> edge_shared_types::FleetVmBootstrapPhase {
-    use edge_shared_types::{
-        FleetVmBootstrapPhase as Phase, FleetVmCredentialState as Credential,
-    };
+    use edge_shared_types::{FleetVmBootstrapPhase as Phase, FleetVmCredentialState as Credential};
     match local_trust_preflight() {
         "UNKNOWN_NO_REPLAY" => return Phase::JournalUnknownNoReplay,
         "PROTECTED_LOCAL_ONLY" => {}
@@ -201,9 +199,7 @@ pub(super) fn local_vm_bootstrap_phase(
     }) {
         return Phase::ReceiptKeyMismatchOrUnproven;
     }
-    if credential.state == Credential::ActiveLocalValid as i32
-        && credential.active_generation > 0
-    {
+    if credential.state == Credential::ActiveLocalValid as i32 && credential.active_generation > 0 {
         Phase::LocalPrerequisitesOnly
     } else {
         Phase::WorkerActiveCredentialRequired

@@ -523,9 +523,7 @@ pub fn validate_vm_credential_readback(
 
 /// A single typed explanation for first-use prerequisites. This never
 /// authorizes provisioning, install or a new journal BEGIN.
-pub fn vm_bootstrap_next_action(
-    phase: crate::FleetVmBootstrapPhase,
-) -> &'static str {
+pub fn vm_bootstrap_next_action(phase: crate::FleetVmBootstrapPhase) -> &'static str {
     use crate::FleetVmBootstrapPhase as Phase;
     match phase {
         Phase::Unspecified => "UPDATE_INSTALLED_NATIVE_OWNER_FOR_TYPED_BOOTSTRAP_EVIDENCE",
@@ -551,8 +549,8 @@ fn validate_vm_bootstrap_phase(
     let phase = Phase::try_from(phase).map_err(|_| "VM_BOOTSTRAP_PHASE_UNKNOWN")?;
     let git_key = host.native_receipt_public_key.as_slice();
     let git_pinned = git_key.len() == 32 && git_key.iter().any(|byte| *byte != 0);
-    let active = credential.state == State::ActiveLocalValid as i32
-        && credential.active_generation > 0;
+    let active =
+        credential.state == State::ActiveLocalValid as i32 && credential.active_generation > 0;
     let consistent = match phase {
         // Old installed owners only express unavailable bootstrap evidence.
         Phase::Unspecified | Phase::TrustUnproven | Phase::JournalUnknownNoReplay => true,
