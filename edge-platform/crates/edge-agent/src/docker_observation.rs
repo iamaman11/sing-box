@@ -279,6 +279,9 @@ pub(crate) struct NativeVmRunPlan {
     // existing WARP, sibling gateway, shared network, or release marker.
     create_missing: Option<String>,
     prepared_create: Option<bollard::models::ContainerCreateBody>,
+    // Raw immutable Compose bytes complement the projected DAG, which does
+    // not itself cover published ports and host mount sources.
+    compose_sha256: Option<Vec<u8>>,
     edge_network_id: Option<String>,
 }
 
@@ -729,6 +732,11 @@ pub(crate) async fn preflight_native_vm_run(
         // An emergency STOP must not require valid config templates.
         None
     };
+    let compose_sha256 = if desired_graph.is_some() {
+        Some(native_vm_compose_digest(stack_dir)?)
+    } else {
+        None
+    };
     let identities = readback
         .resources
         .iter()
@@ -782,6 +790,9 @@ pub(crate) async fn preflight_native_vm_run(
             missing_image,
             &id,
         )?);
+        if compose_sha256.as_deref() != Some(native_vm_compose_digest(stack_dir)?.as_slice()) {
+            return Err("HOST_VM_CREATE_COMPOSE_CHANGED_DURING_PREFLIGHT".into());
+        }
         edge_network_id = Some(id);
     }
     if step == FleetHostPlannedStep::Stop {
@@ -795,6 +806,7 @@ pub(crate) async fn preflight_native_vm_run(
         desired_graph,
         create_missing,
         prepared_create,
+        compose_sha256,
         edge_network_id,
     })
 }
@@ -811,6 +823,11 @@ pub(crate) async fn apply_native_vm_run_once(
     let mut owned = owned_application_container_ids(&docker, &host.vm_containers).await?;
     bind_owned_vm_compose_dependencies(stack_dir, &host.vm_containers, &mut owned)?;
     check_owned_vm_snapshot(host, &owned, &plan.identities)?;
+    if let Some(expected) = plan.compose_sha256.as_deref()
+        && native_vm_compose_digest(stack_dir)?.as_slice() != expected
+    {
+        return Err("HOST_VM_COMPOSE_BYTES_CHANGED_BEFORE_MUTATION_NO_REPLAY".into());
+    }
     if let Some(graph) = &plan.desired_graph
         && compile_native_vm_desired_graph(stack_dir, host)? != *graph
     {
@@ -2262,6 +2279,20 @@ fn owned_vm_stop_order(owned: &[OwnedVmContainer]) -> Result<Vec<usize>, String>
     Ok(order)
 }
 
+fn native_vm_compose_digest(stack_dir: &Path) -> Result<Vec<u8>, String> {
+    let path = stack_dir.join("docker-compose.yml");
+    let meta = fs::symlink_metadata(&path).map_err(|_| "HOST_VM_COMPOSE_BYTES_UNAVAILABLE")?;
+    if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 65536 {
+        return Err("HOST_VM_COMPOSE_BYTES_UNTRUSTED".into());
+    }
+    let raw = fs::read(&path).map_err(|_| "HOST_VM_COMPOSE_BYTES_UNREADABLE")?;
+    if raw.len() as u64 != meta.len() {
+        return Err("HOST_VM_COMPOSE_BYTES_UNSTABLE".into());
+    }
+    Ok(ring::digest::digest(&ring::digest::SHA256, &raw)
+        .as_ref().to_vec())
+}
+
 fn read_native_vm_compose(stack_dir: &Path) -> Result<serde_yaml::Value, String> {
     let compose_path = stack_dir.join("docker-compose.yml");
     let meta =
@@ -2743,6 +2774,8 @@ mod vm_native_start_order_tests {
             ],
             desired_graph: Some(graph),
             create_missing: Some("line2-proxy".into()),
+            prepared_create: None,
+            compose_sha256: None,
             edge_network_id: None,
         };
         let after = vec![
@@ -2834,6 +2867,8 @@ mod vm_native_start_order_tests {
             identities: snapshot,
             desired_graph: None,
             create_missing: None,
+            prepared_create: None,
+            compose_sha256: None,
             edge_network_id: None,
         };
         assert!(verify_native_vm_run_poststate(&host, &start, &before).is_err());
@@ -2853,6 +2888,8 @@ mod vm_native_start_order_tests {
             ],
             desired_graph: None,
             create_missing: None,
+            prepared_create: None,
+            compose_sha256: None,
             edge_network_id: None,
         };
         let mut stopped = before;
