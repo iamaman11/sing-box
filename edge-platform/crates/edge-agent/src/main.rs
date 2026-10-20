@@ -134,16 +134,51 @@ async fn main() -> ExitCode {
     }
 }
 
+/// Production ingress permits only read-only diagnostics, one signed
+/// HostIntent, and protected local-root enrollment. Deprecated commands
+/// stay parseable for old clients but cannot reach any mutation effector.
+fn native_local_entrypoint_allowed(command: &cli::LocalCommand) -> bool {
+    matches!(
+        command,
+        cli::LocalCommand::Status { .. }
+            | cli::LocalCommand::Verify
+            | cli::LocalCommand::Diagnose
+            | cli::LocalCommand::HostObserve
+            | cli::LocalCommand::HostResources
+            | cli::LocalCommand::HostApply
+            | cli::LocalCommand::HostEnroll { .. }
+            | cli::LocalCommand::QualityLine2
+            | cli::LocalCommand::CredentialPublicEndpoint
+            | cli::LocalCommand::CredentialRuntimeSource
+            | cli::LocalCommand::MeshVerify
+            | cli::LocalCommand::CredentialState
+            | cli::LocalCommand::CredentialInitialProbe
+    )
+}
+
+/// No legacy gRPC mutator may bypass the signed native host journal.
+/// Enforcement lives in each method, independently of listener/sudoers.
+fn deny_legacy_vm_rpc_mutation() -> Result<(), Status> {
+    Err(Status::permission_denied(
+        "HOST_VM_LEGACY_RPC_MUTATION_DISABLED_USE_SIGNED_HOST_INTENT",
+    ))
+}
+
 async fn run(parsed: cli::Cli) -> Result<(), AgentError> {
     use cli::Command;
 
     match parsed.command {
-        Command::AcceptanceServe(args) => {
-            let (addr, stack_dir) = args.resolve().map_err(AgentError::Command)?;
-            serve_acceptance_rpc(addr, stack_dir).await?;
-            Ok(())
+        Command::AcceptanceServe(_) => Err(AgentError::Command(
+            "HOST_VM_LEGACY_RPC_LISTENER_DISABLED_USE_HOST".to_owned(),
+        )),
+        Command::Local { command } => {
+            if !native_local_entrypoint_allowed(&command) {
+                return Err(AgentError::Command(
+                    "HOST_VM_LEGACY_LOCAL_MUTATION_DISABLED_USE_SIGNED_HOST_INTENT".to_owned(),
+                ));
+            }
+            run_local(command).await
         }
-        Command::Local { command } => run_local(command).await,
     }
 }
 
@@ -325,6 +360,11 @@ fn run_local_fast(stack_dir: &Path) -> Result<(), String> {
 }
 
 async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
+    if !native_local_entrypoint_allowed(&command) {
+        return Err(AgentError::Command(
+            "HOST_VM_LEGACY_LOCAL_MUTATION_DISABLED_USE_SIGNED_HOST_INTENT".to_owned(),
+        ));
+    }
     let stack_dir = PathBuf::from(DEFAULT_STACK_DIR);
     match command {
         cli::LocalCommand::Status { fast } => {
@@ -1346,6 +1386,7 @@ impl AgentService for AgentServerImpl {
         &self,
         request: Request<InitialVmCredentialRuntimeRequest>,
     ) -> Result<Response<InitialVmCredentialRuntimeResponse>, Status> {
+        deny_legacy_vm_rpc_mutation()?;
         let request = request.into_inner();
         validate_initial_vm_runtime_request(&request).map_err(Status::failed_precondition)?;
         initial_apply_vm_credential(&self.stack_dir, request.generation)
@@ -1379,6 +1420,7 @@ impl AgentService for AgentServerImpl {
         &self,
         request: Request<BootstrapRuntimeRequest>,
     ) -> Result<Response<BootstrapRuntimeResponse>, Status> {
+        deny_legacy_vm_rpc_mutation()?;
         let mode = BootstrapMode::try_from(request.into_inner().mode)
             .map_err(|_| Status::invalid_argument("unknown bootstrap mode"))?;
         if mode == BootstrapMode::Unspecified {
@@ -1392,6 +1434,7 @@ impl AgentService for AgentServerImpl {
         &self,
         request: Request<ApplyBundleRequest>,
     ) -> Result<Response<ApplyBundleResponse>, Status> {
+        deny_legacy_vm_rpc_mutation()?;
         let applied = stage_initial_vm_policy_bundle(&self.stack_dir, request.into_inner())
             .await
             .map_err(Status::failed_precondition)?;
@@ -1402,6 +1445,7 @@ impl AgentService for AgentServerImpl {
         &self,
         request: Request<ApplyBundleRequest>,
     ) -> Result<Response<ApplyBundleResponse>, Status> {
+        deny_legacy_vm_rpc_mutation()?;
         let response = apply_bundle(&self.stack_dir, request.into_inner())
             .map_err(|err| Status::internal(format!("failed to apply bundle: {err}")))?;
         Ok(Response::new(response))
@@ -1411,6 +1455,7 @@ impl AgentService for AgentServerImpl {
         &self,
         request: Request<RollbackBundleRequest>,
     ) -> Result<Response<RollbackBundleResponse>, Status> {
+        deny_legacy_vm_rpc_mutation()?;
         let response = rollback_bundle(&self.stack_dir, request.into_inner()).map_err(|err| {
             Status::failed_precondition(format!("bundle rollback refused: {err}"))
         })?;
@@ -1495,6 +1540,7 @@ impl AgentService for AgentServerImpl {
         &self,
         request: Request<MeshRuntimeConvergeRequest>,
     ) -> Result<Response<MeshRuntimeState>, Status> {
+        deny_legacy_vm_rpc_mutation()?;
         let request = request.into_inner();
         let state = converge_mesh_runtime(
             &self.stack_dir,
@@ -1521,6 +1567,7 @@ impl AgentService for AgentServerImpl {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<MeshRuntimeState>, Status> {
+        deny_legacy_vm_rpc_mutation()?;
         let state = cleanup_mesh_runtime(&self.stack_dir).await.map_err(|err| {
             Status::failed_precondition(format!("Mesh runtime cleanup failed: {err}"))
         })?;
@@ -1531,6 +1578,7 @@ impl AgentService for AgentServerImpl {
         &self,
         request: Request<StageCredentialCandidateRequest>,
     ) -> Result<Response<CredentialStateObservation>, Status> {
+        deny_legacy_vm_rpc_mutation()?;
         let bundle = request
             .into_inner()
             .bundle
@@ -5366,6 +5414,41 @@ struct BundleSummary {
 }
 
 #[cfg(test)]
+mod native_mutation_ingress_tests {
+    use super::*;
+
+    #[test]
+    fn vm_legacy_mutators_cannot_reach_dispatch() {
+        for command in [
+            cli::LocalCommand::BootstrapBase,
+            cli::LocalCommand::BootstrapTunnel,
+            cli::LocalCommand::BootstrapFull,
+            cli::LocalCommand::BundleConverge,
+            cli::LocalCommand::BundleStageInitial,
+            cli::LocalCommand::BundleRollback,
+            cli::LocalCommand::MeshCleanup,
+            cli::LocalCommand::CredentialStage { generation: 1 },
+            cli::LocalCommand::CredentialTransition {
+                action: "promote".to_owned(),
+            },
+            cli::LocalCommand::CredentialInitialApply { generation: 1 },
+        ] {
+            assert!(!native_local_entrypoint_allowed(&command));
+        }
+        assert!(native_local_entrypoint_allowed(
+            &cli::LocalCommand::HostApply
+        ));
+        assert!(native_local_entrypoint_allowed(
+            &cli::LocalCommand::HostObserve
+        ));
+        assert!(native_local_entrypoint_allowed(
+            &cli::LocalCommand::HostResources
+        ));
+        assert!(deny_legacy_vm_rpc_mutation().is_err());
+    }
+}
+
+#[cfg(test)]
 mod tests {
     fn vm_scope_test() -> Vec<edge_shared_types::FleetVmContainer> {
         [
@@ -5628,7 +5711,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stages_vm_credential_candidate_without_changing_active_and_survives_reopen() {
+    async fn legacy_rpc_stage_refuses_mutation_and_preserves_active_credential() {
         let root = unique_test_dir();
         let stack = root.join("stack");
         fs::create_dir_all(&stack).unwrap();
@@ -5646,22 +5729,13 @@ mod tests {
         let server = AgentServerImpl {
             stack_dir: stack.clone(),
         };
-        let staged = server
+        let denied = server
             .stage_credential_candidate(Request::new(StageCredentialCandidateRequest {
                 bundle: Some(vm_test_credential_bundle(101, CredentialDeliverySlot::B)),
             }))
             .await
-            .unwrap()
-            .into_inner()
-            .state
-            .unwrap();
-
-        assert_eq!(staged.active.as_ref().unwrap(), &active);
-        assert_eq!(staged.candidate.as_ref().unwrap().generation, 101);
-        assert_eq!(
-            staged.candidate.as_ref().unwrap().slot,
-            CredentialDeliverySlot::B as i32
-        );
+            .unwrap_err();
+        assert_eq!(denied.code(), tonic::Code::PermissionDenied);
 
         let reopened = AgentServerImpl { stack_dir: stack };
         let observed = reopened
@@ -5671,7 +5745,9 @@ mod tests {
             .into_inner()
             .state
             .unwrap();
-        assert_eq!(observed, staged);
+        assert_eq!(observed.active.as_ref(), Some(&active));
+        assert!(observed.candidate.is_none());
+        assert!(observed.previous.is_none());
 
         fs::remove_dir_all(root).unwrap();
     }

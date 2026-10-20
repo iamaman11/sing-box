@@ -2500,6 +2500,110 @@ def main() -> None:
         and "super::start_line2_proxy(" not in signed_vm_effectors,
         "Signed VM gateway replacement must use native Docker Engine, not Compose",
     )
+    # Default deny: future protobuf RPCs must be explicitly read-only or
+    # pass the native fail-closed guard inside their handler.
+    def rpc_is_guarded(code, name, guard):
+        token = "    async fn " + name + "("
+        if code.count(token) != 1:
+            return False
+        body = code.split(token, 1)[1].split(" {", 1)
+        return len(body) == 2 and body[1].lstrip().startswith(guard + "()?;")
+
+    def rpc_methods(code):
+        return {
+            line.strip().split("(", 1)[0].split()[-1]
+            for line in code.splitlines()
+            if line.startswith("    async fn ")
+        }
+
+    vm_read_only_rpc = {
+        "get_health", "get_readiness", "get_runtime_state", "get_version",
+        "observe_ipv4_network", "verify_initial_credential_host", "verify_initial_vm_credential",
+        "verify_runtime", "read_bundle_identity", "read_rendered_artifacts",
+        "verify_mesh_runtime", "get_credential_state",
+    }
+    windows_read_only_rpc = {
+        "get_status", "doctor", "list_secret_refs", "get_selector_state",
+        "get_trace", "get_operation", "list_operation_events",
+        "get_credential_state",
+    }
+    # Inspect only the generated protobuf service implementations, not
+    # unrelated private async helpers (e.g. read-only network observation).
+    vm_rpc_impl = vm_agent_runtime.split(
+        "impl AgentService for AgentServerImpl {", 1
+    )[1].split("\n}\n", 1)[0]
+    windows_rpc_impl = windows_controller_runtime.split(
+        "impl ControllerService for ControllerServerImpl {", 1
+    )[1].split("\n}\n", 1)[0]
+    vm_rpc_methods = rpc_methods(vm_rpc_impl)
+    windows_rpc_methods = rpc_methods(windows_rpc_impl)
+    require(
+        "fn native_local_entrypoint_allowed(" in vm_agent_runtime
+        and vm_agent_runtime.count("if !native_local_entrypoint_allowed(&command)") == 2
+        and "HOST_VM_LEGACY_RPC_LISTENER_DISABLED_USE_HOST" in vm_agent_runtime
+        and vm_read_only_rpc <= vm_rpc_methods
+        and windows_read_only_rpc <= windows_rpc_methods
+        and all(
+            rpc_is_guarded(vm_rpc_impl, name, "deny_legacy_vm_rpc_mutation")
+            for name in vm_rpc_methods - vm_read_only_rpc
+        )
+        and all(
+            rpc_is_guarded(windows_rpc_impl, name,
+                           "deny_legacy_windows_rpc_mutation")
+            for name in windows_rpc_methods - windows_read_only_rpc
+        ),
+        "New VM/Windows RPC mutation entrypoint must be fail-closed: "
+        + "vm=" + str(sorted(
+            name for name in vm_rpc_methods - vm_read_only_rpc
+            if not rpc_is_guarded(vm_rpc_impl, name, "deny_legacy_vm_rpc_mutation")
+        ))
+        + " windows=" + str(sorted(
+            name for name in windows_rpc_methods - windows_read_only_rpc
+            if not rpc_is_guarded(
+                windows_rpc_impl, name, "deny_legacy_windows_rpc_mutation"
+            )
+        ))
+        + " vm_read_only_missing=" + str(sorted(vm_read_only_rpc - vm_rpc_methods))
+        + " windows_read_only_missing=" + str(
+            sorted(windows_read_only_rpc - windows_rpc_methods)
+        ),
+    )
+    # Windows SCM start and child-exit events are observations, not a
+    # second HostIntent authority. A future refactor must never silently
+    # reenable these historical implicit runtime mutations.
+    windows_scm_start = windows_controller_runtime.split(
+        "fn converge_windows_runtime_on_service_start(", 1
+    )[1].split("fn windows_startup_decision(", 1)[0]
+    windows_child_exit = windows_controller_runtime.split(
+        "fn reconcile_windows_child_exit(", 1
+    )[1].split("fn run_windows_service(", 1)[0]
+    require(
+        'return Ok("HOST_WINDOWS_UNSIGNED_SCM_AUTOSTART_BLOCKED");'
+        in windows_scm_start
+        and "if is_installed_windows_root(repo_root)" in windows_child_exit
+        and windows_child_exit.index("return Ok(None);")
+        < windows_child_exit.index("start_runtime_process(&paths, false)"),
+        "Windows SCM auto-start/child-recovery must not bypass signed HostIntent",
+    )
+    # The SYSTEM scheduled privileged task is NOT a second HostIntent
+    # authority. Deny legacy release/credential/SCM writes at task dispatch,
+    # not merely in its caller, CLI, ACL or GitHub workflow.
+    windows_console_owner = Path(
+        "edge-platform/crates/edge-console/src/main.rs"
+    ).read_text(encoding="utf-8")
+    windows_privileged_dispatch = windows_console_owner.split(
+        "async fn process_privileged_request(", 1
+    )[1].split("let outcome = match WindowsPrivilegedOperation::try_from", 1)[0]
+    require(
+        "fn legacy_console_entrypoint_allowed(" in windows_console_owner
+        and "HOST_WINDOWS_LEGACY_CONSOLE_MUTATION_DISABLED_USE_HOST"
+        in windows_console_owner
+        and "legacy_privileged_read_only(request.operation)"
+        in windows_privileged_dispatch
+        and "HOST_WINDOWS_LEGACY_PRIVILEGED_MUTATION_DISABLED"
+        in windows_privileged_dispatch,
+        "Windows SYSTEM privileged dispatch must deny unsigned mutations",
+    )
     # Current normative docs replace dated paragraphs with one authority.
     plan = Path("edge-platform/FINALIZATION-PLAN.md").read_text(encoding="utf-8")
     handoff = Path("edge-platform/NEXT-CHAT.md").read_text(encoding="utf-8")

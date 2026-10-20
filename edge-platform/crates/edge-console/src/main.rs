@@ -166,9 +166,54 @@ async fn main() -> ExitCode {
     }
 }
 
+/// Only inspected read-only commands reach the old console. Typed native
+/// HostIntent is the sole mutation authority; privileged Task Scheduler,
+/// menu actions and offline bootstrap cannot reinstate an alternate path.
+fn legacy_console_entrypoint_allowed(command: &cli::Command) -> bool {
+    use cli::Command;
+    matches!(
+        command,
+        Command::Status(_)
+            | Command::Doctor(_)
+            | Command::CredentialState(_)
+            | Command::CredentialInitialProbe(_)
+            | Command::PrivilegedPing(_)
+            | Command::PrivilegedRuntimeEvidence(_)
+            | Command::PrivilegedDispatch(_)
+            | Command::VerifyRuntime
+            | Command::QualityLine1
+            | Command::Secrets(_)
+            | Command::GetSelector(_)
+            | Command::GetUbuntuSelector(_)
+            | Command::Trace(_)
+            | Command::TraceUbuntu(_)
+            | Command::GetOperation(_)
+            | Command::WatchOperation(_)
+    )
+}
+
+/// SYSTEM privilege alone is not authorization. A legacy privileged
+/// request can only inspect evidence; actual release/credential/SCM writes
+/// must be expressed as a new signed HostIntent and native journal BEGIN.
+fn legacy_privileged_read_only(operation: i32) -> bool {
+    matches!(
+        WindowsPrivilegedOperation::try_from(operation),
+        Ok(WindowsPrivilegedOperation::Ping | WindowsPrivilegedOperation::RuntimeEvidence)
+    )
+}
+
 async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
     use cli::Command;
 
+    if parsed
+        .command
+        .as_ref()
+        .is_none_or(|command| !legacy_console_entrypoint_allowed(command))
+    {
+        return Err(ConsoleError::Command(
+            "HOST_WINDOWS_LEGACY_CONSOLE_MUTATION_DISABLED_USE_HOST".to_owned(),
+        ));
+    }
     match parsed
         .command
         .unwrap_or_else(|| Command::Menu(cli::EndpointArgs::default()))
@@ -1750,6 +1795,19 @@ async fn process_privileged_request(
     install_root: &Path,
     request: &WindowsPrivilegedRequest,
 ) -> WindowsPrivilegedResult {
+    // Checked inside the exact SYSTEM task: even a forged/scheduled old
+    // request cannot activate a release or change credentials without the
+    // new native one-shot authorization. No cleanup/retry mutation occurs.
+    if !legacy_privileged_read_only(request.operation) {
+        return WindowsPrivilegedResult {
+            schema_version: PRIVILEGED_RESULT_SCHEMA_VERSION,
+            request_id: request.request_id.clone(),
+            success: false,
+            code: "HOST_WINDOWS_LEGACY_PRIVILEGED_MUTATION_DISABLED".to_owned(),
+            detail: "Use signed native HostIntent; legacy operation is denied".to_owned(),
+            active_release_set_sha256: None,
+        };
+    }
     let outcome = match WindowsPrivilegedOperation::try_from(request.operation) {
         Ok(WindowsPrivilegedOperation::Ping) => {
             let active = load_verified_activation(install_root)
@@ -6226,6 +6284,34 @@ fn finish_selector_result(response: SetSelectorResponse) -> Result<(), Box<dyn s
         Ok(())
     } else {
         Err("selector update failed".into())
+    }
+}
+
+#[cfg(test)]
+mod legacy_windows_privileged_ingress_tests {
+    use super::*;
+
+    #[test]
+    fn old_system_dispatcher_rejects_every_mutation_opcode() {
+        assert!(legacy_privileged_read_only(
+            WindowsPrivilegedOperation::Ping as i32
+        ));
+        assert!(legacy_privileged_read_only(
+            WindowsPrivilegedOperation::RuntimeEvidence as i32
+        ));
+        for operation in [
+            WindowsPrivilegedOperation::ActivateRelease,
+            WindowsPrivilegedOperation::RollbackPreviousRelease,
+            WindowsPrivilegedOperation::ReinstallAcceptedRelease,
+            WindowsPrivilegedOperation::OfflineActivateRelease,
+            WindowsPrivilegedOperation::OfflineRollbackPreviousRelease,
+            WindowsPrivilegedOperation::RestartControllerService,
+            WindowsPrivilegedOperation::StartProxyOnlyController,
+            WindowsPrivilegedOperation::StopProxyOnlyController,
+            WindowsPrivilegedOperation::StageCredential,
+        ] {
+            assert!(!legacy_privileged_read_only(operation as i32));
+        }
     }
 }
 

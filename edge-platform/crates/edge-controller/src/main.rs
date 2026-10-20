@@ -421,6 +421,15 @@ async fn controller_server(
     })
 }
 
+/// The Windows SYSTEM Controller is the native owner, not a second
+/// RPC mutation authority. Old gRPC endpoints retain schema compatibility
+/// but have no right to modify credentials, SCM or runtime.
+fn deny_legacy_windows_rpc_mutation() -> Result<(), Status> {
+    Err(Status::permission_denied(
+        "HOST_WINDOWS_LEGACY_RPC_MUTATION_DISABLED_USE_SIGNED_HOST_INTENT",
+    ))
+}
+
 async fn serve(repo_root: PathBuf, addr: SocketAddr) -> Result<(), Box<dyn std::error::Error>> {
     let service = controller_server(repo_root).await?;
     Server::builder()
@@ -669,6 +678,12 @@ fn reconcile_windows_child_exit(
         .lock()
         .map_err(|_| "Windows runtime owner gate poisoned".to_owned())?;
     if WINDOWS_SERVICE_STOP_REQUESTED.load(Ordering::Acquire) {
+        return Ok(None);
+    }
+    // Legacy child-exit recovery was an implicit SCM mutation. A restarted
+    // service cannot acquire a new signed HostIntent merely by seeing an
+    // exited PID; read-only status remains available, never silent replay.
+    if is_installed_windows_root(repo_root) {
         return Ok(None);
     }
     // The exact privileged request exists BEFORE its intended sing-box stop
@@ -1144,6 +1159,13 @@ fn converge_windows_runtime_on_service_start(repo_root: &Path) -> Result<&'stati
     let state_bytes = fs::read(&state_path)
         .map_err(|err| format!("failed to read installed Windows runtime state: {err}"))?;
     decode_windows_runtime_state(&state_bytes)?;
+
+    // A Windows service start is not a signed host apply. Until the native
+    // SYSTEM HostIntent handler is accepted, expose controller diagnostics
+    // but never launch, restart or adopt the managed sing-box process.
+    if is_installed_windows_root(repo_root) {
+        return Ok("HOST_WINDOWS_UNSIGNED_SCM_AUTOSTART_BLOCKED");
+    }
 
     let desired = canonical_production_desired_state()
         .map_err(|err| format!("failed to load canonical production desired state: {err}"))?;
@@ -1743,6 +1765,7 @@ impl ControllerService for ControllerServerImpl {
         &self,
         request: Request<GetSecretRefRequest>,
     ) -> Result<Response<SecretRefEntry>, Status> {
+        deny_legacy_windows_rpc_mutation()?;
         let name = request.into_inner().name;
         validate_secret_name(&name)?;
         let default_ref = default_env_ref(secret_name_to_env(&name));
@@ -1773,6 +1796,7 @@ impl ControllerService for ControllerServerImpl {
         &self,
         request: Request<SetSecretRefRequest>,
     ) -> Result<Response<SecretRefEntry>, Status> {
+        deny_legacy_windows_rpc_mutation()?;
         let request = request.into_inner();
         validate_secret_name(&request.name)?;
         edge_secrets::parse_secret_reference(&request.secret_ref)
@@ -1809,6 +1833,7 @@ impl ControllerService for ControllerServerImpl {
         &self,
         request: Request<BootstrapRuntimeRequest>,
     ) -> Result<Response<BootstrapRuntimeResponse>, Status> {
+        deny_legacy_windows_rpc_mutation()?;
         let mode = BootstrapMode::try_from(request.into_inner().mode)
             .map_err(|_| Status::invalid_argument("unknown bootstrap mode"))?;
         if mode == BootstrapMode::Unspecified {
@@ -1838,6 +1863,7 @@ impl ControllerService for ControllerServerImpl {
         &self,
         request: Request<StartLocalRuntimeRequest>,
     ) -> Result<Response<LocalRuntimeResponse>, Status> {
+        deny_legacy_windows_rpc_mutation()?;
         let request = request.into_inner();
         require_nonrestarting_start(request.force_restart)?;
         let operation = self
@@ -1954,6 +1980,7 @@ impl ControllerService for ControllerServerImpl {
         &self,
         request: Request<StopLocalRuntimeRequest>,
     ) -> Result<Response<LocalRuntimeResponse>, Status> {
+        deny_legacy_windows_rpc_mutation()?;
         #[cfg(windows)]
         edge_local_runtime::reject_unproven_windows_tun_teardown("stop-local")
             .map_err(Status::failed_precondition)?;
@@ -2010,6 +2037,7 @@ impl ControllerService for ControllerServerImpl {
         &self,
         request: Request<RestartLocalRuntimeRequest>,
     ) -> Result<Response<LocalRuntimeResponse>, Status> {
+        deny_legacy_windows_rpc_mutation()?;
         let request = request.into_inner();
         let operation = self
             .state
@@ -2170,6 +2198,7 @@ impl ControllerService for ControllerServerImpl {
         &self,
         request: Request<SetSelectorRequest>,
     ) -> Result<Response<SetSelectorResponse>, Status> {
+        deny_legacy_windows_rpc_mutation()?;
         let request = request.into_inner();
         let operation = self
             .state
@@ -2286,6 +2315,7 @@ impl ControllerService for ControllerServerImpl {
         &self,
         request: Request<DeployRequest>,
     ) -> Result<Response<DeployResponse>, Status> {
+        deny_legacy_windows_rpc_mutation()?;
         let request = request.into_inner();
         if !request.mock_provider {
             return Err(Status::failed_precondition(
@@ -2305,6 +2335,7 @@ impl ControllerService for ControllerServerImpl {
         &self,
         request: Request<DestroyRequest>,
     ) -> Result<Response<DestroyResponse>, Status> {
+        deny_legacy_windows_rpc_mutation()?;
         let mut request = request.into_inner();
         request.instance_id = blank_option(request.instance_id.take());
         request.target_ip = blank_option(request.target_ip.take());
@@ -2502,6 +2533,7 @@ impl ControllerService for ControllerServerImpl {
         &self,
         request: Request<StageCredentialCandidateRequest>,
     ) -> Result<Response<CredentialStateObservation>, Status> {
+        deny_legacy_windows_rpc_mutation()?;
         let bundle = request
             .into_inner()
             .bundle
@@ -5086,6 +5118,19 @@ fn platform_error_to_status(err: PlatformError) -> Status {
 }
 
 #[cfg(test)]
+mod legacy_windows_rpc_boundary_tests {
+    use super::*;
+
+    #[test]
+    fn windows_legacy_rpc_mutations_are_denied() {
+        assert!(matches!(
+            deny_legacy_windows_rpc_mutation(),
+            Err(status) if status.code() == tonic::Code::PermissionDenied
+        ));
+    }
+}
+
+#[cfg(test)]
 mod tests {
     #[cfg(windows)]
     #[test]
@@ -5343,7 +5388,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn installed_controller_stages_candidate_without_changing_active_state() {
+    async fn installed_controller_legacy_rpc_stage_denied_without_changing_active_state() {
         let root = installed_windows_test_root();
         let store = CredentialStore::new(
             windows_credential_store_path(&root),
@@ -5364,7 +5409,7 @@ mod tests {
             state: Arc::new(Mutex::new(EdgeState::open_or_create(&db_path).unwrap())),
             agent_endpoint: DEFAULT_AGENT_ENDPOINT.to_owned(),
         };
-        let staged = server
+        let denied = server
             .stage_credential_candidate(Request::new(StageCredentialCandidateRequest {
                 bundle: Some(windows_test_credential_bundle(
                     101,
@@ -5372,17 +5417,8 @@ mod tests {
                 )),
             }))
             .await
-            .unwrap()
-            .into_inner()
-            .state
-            .unwrap();
-
-        assert_eq!(staged.active.as_ref().unwrap(), &active);
-        assert_eq!(staged.candidate.as_ref().unwrap().generation, 101);
-        assert_eq!(
-            staged.candidate.as_ref().unwrap().slot,
-            CredentialDeliverySlot::B as i32
-        );
+            .unwrap_err();
+        assert_eq!(denied.code(), tonic::Code::PermissionDenied);
 
         let observed = server
             .get_credential_state(Request::new(Empty {}))
@@ -5391,7 +5427,9 @@ mod tests {
             .into_inner()
             .state
             .unwrap();
-        assert_eq!(observed, staged);
+        assert_eq!(observed.active.as_ref(), Some(&active));
+        assert!(observed.candidate.is_none());
+        assert!(observed.previous.is_none());
 
         drop(server);
         std::fs::remove_dir_all(root).unwrap();

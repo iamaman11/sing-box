@@ -47,7 +47,7 @@
 
 **Docker CREATE:** Line1/Line2 создаются native Bollard из checked Compose и DAG. Порты, mounts, owner, соседи и Compose SHA-256 проверяются до/после BEGIN; ACK loss → `UNKNOWN_NO_REPLAY`. Произвольные контейнеры запрещены.
 
-**Native receipt (PR #403):** код Ed25519 проверяет квитанцию native owner и точный HostIntent. Первичный root `host-enroll` генерирует `receipt-key.pk8` локально и выдаёт только публичный ключ; его нужно зарегистрировать в защищённом Git и принять в следующем ReleaseSet. Без точного совпадения с Git native apply блокируется. На реальных VM ключи пока не подготовлены, физическая приёмка не выполнена.
+**Native receipt и legacy boundary (PR #403):** root `host-enroll` создаёт защищённый Ed25519 receipt key, выдаёт public key для регистрации в Git; без exact key match apply BLOCKED. VM CLI допускает только host apply, enrollment и чтение; старый RPC listener отключён. VM/Windows legacy mutating RPC всегда PermissionDenied; новые RPC проверяются CI по умолчанию. Windows SYSTEM signed apply и физическая приёмка НЕ готовы.
 
 **Не принято:** физическая установка scoped signer/root Agent и ключей receipt, остальные resource kinds DNS/firewall/routes/TLS/CredentialRef, Windows SYSTEM apply и полное deep-acceptance. Обычный `resource_id=sing-box` остаётся host-wide; `host recover` read-only. Код PR и CI не означают эксплуатационный допуск. Старые команды не возвращать; `UNPROVEN` не считать PASS.
 
