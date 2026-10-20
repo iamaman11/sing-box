@@ -521,10 +521,7 @@ pub fn decode_host_result(bytes: &[u8]) -> Result<FleetHostResult, &'static str>
 
 /// Exactly one typed reason, with two derived diagnostic projections.
 /// Neither the enum nor either projection grants physical mutation authority.
-pub fn set_host_result_reason(
-    result: &mut FleetHostResult,
-    reason: crate::FleetHostResultReason,
-) {
+pub fn set_host_result_reason(result: &mut FleetHostResult, reason: crate::FleetHostResultReason) {
     let (error, action) = host_result_reason_projection(reason);
     result.reason = reason as i32;
     result.error_class = error.to_owned();
@@ -545,17 +542,15 @@ fn host_result_reason_projection(
         Reason::NoFurtherAction => ("", "NONE"),
         Reason::RecoveredNativeRunning => ("", "RECOVERED_NATIVE_RUNNING"),
         Reason::RecoveredNativeStopped => ("", "RECOVERED_NATIVE_STOPPED"),
-        Reason::StoppedReleaseDriftRequiresInstallTarget => (
-            "",
-            "STOPPED_RELEASE_DRIFT_REQUIRES_INSTALL_TARGET",
-        ),
+        Reason::StoppedReleaseDriftRequiresInstallTarget => {
+            ("", "STOPPED_RELEASE_DRIFT_REQUIRES_INSTALL_TARGET")
+        }
     }
 }
 
 pub fn validate_host_result_reason(result: &FleetHostResult) -> Result<(), &'static str> {
     use crate::{FleetHostResultReason as Reason, FleetHostResultState as State};
-    let reason =
-        Reason::try_from(result.reason).map_err(|_| "HOST_RESULT_REASON_UNKNOWN")?;
+    let reason = Reason::try_from(result.reason).map_err(|_| "HOST_RESULT_REASON_UNKNOWN")?;
     let state = State::try_from(result.state).map_err(|_| "HOST_RESULT_STATE_INVALID")?;
     let allowed = match reason {
         Reason::Unspecified => false,
@@ -672,7 +667,10 @@ pub fn prepared_host_result(intent: &FleetHostIntent) -> FleetHostResult {
         physical_readback: false,
         reason: 0,
     };
-    set_host_result_reason(&mut result, crate::FleetHostResultReason::PreparedNeedsOwnerTrust);
+    set_host_result_reason(
+        &mut result,
+        crate::FleetHostResultReason::PreparedNeedsOwnerTrust,
+    );
     result
 }
 
