@@ -105,7 +105,7 @@ entrypoint связывает owner readback → signed admission → durable re
 lock → однократную mutation callback → физический poststate. Тесты
 покрывают долговечный однократный NOOP, успешный переход и UNKNOWN_NO_REPLAY.
 
-**Сейчас:** VM START/STOP/INSTALL и scoped REPLACE через signed root Agent/Bollard (только исходный код).
+**Сейчас:** VM START/STOP/INSTALL/scoped REPLACE через signed root Agent (код).
 `ResourceReport/v2` выявляет credential dependency: без ACTIVE запуск
 BLOCKED, STOP разрешён. Snapshot generation/digest привязан к BEGIN.
 **Остаётся:** first-use Worker ACTIVE, Windows SYSTEM signed apply, DNS/firewall/routes, reinstall/recover, установленный receipt/TLS/auth/WARP.
