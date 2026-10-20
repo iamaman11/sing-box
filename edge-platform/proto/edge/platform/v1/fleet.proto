@@ -217,6 +217,22 @@ enum FleetVmInstalledPolicyStatus {
   FLEET_VM_INSTALLED_POLICY_STATUS_CONFIG_INVALID = 6;
   FLEET_VM_INSTALLED_POLICY_STATUS_OTHER_INVALID = 7;
 }
+// Root-local Worker-v2 credential slot evidence. Neither candidate nor
+// ACTIVE_LOCAL_VALID proves remote Worker authorization or runtime traffic.
+// Never expose payload, digest, key material, or filesystem path in this report.
+enum FleetVmCredentialState {
+  FLEET_VM_CREDENTIAL_STATE_UNSPECIFIED = 0;
+  FLEET_VM_CREDENTIAL_STATE_STORE_ABSENT = 1;
+  FLEET_VM_CREDENTIAL_STATE_ACTIVE_LOCAL_VALID = 2;
+  FLEET_VM_CREDENTIAL_STATE_CANDIDATE_ONLY = 3;
+  FLEET_VM_CREDENTIAL_STATE_LEGACY_PRESENT = 4;
+  FLEET_VM_CREDENTIAL_STATE_UNPROVEN = 5;
+}
+message FleetVmCredentialReadback {
+  FleetVmCredentialState state = 1;
+  uint64 active_generation = 2;
+  uint64 candidate_generation = 3;
+}
 message FleetVmResourceReport {
   uint32 schema_version = 1;
   string machine_id = 2;
@@ -233,6 +249,9 @@ message FleetVmResourceReport {
   FleetVmInstalledPolicyStatus installed_policy_status = 8;
   // One bounded static native error token, not a raw exception/message.
   string installed_policy_error_code = 9;
+  // Required for schema v2; one root-local credential reference readback.
+  // This is not a Worker receipt and cannot authorize native INSTALL.
+  FleetVmCredentialReadback credential = 10;
 }
 
 enum FleetHostRunState {
@@ -428,6 +447,9 @@ enum FleetVmResourceReason {
   FLEET_VM_RESOURCE_REASON_CONTAINER_STOPPED_BUT_TARGET_RUNNING = 7;
   FLEET_VM_RESOURCE_REASON_RUNNING_RUNTIME_ONLY_CONFIG_UNPROVEN = 8;
   FLEET_VM_RESOURCE_REASON_RUNTIME_HEALTH_OR_CONFIG_UNPROVEN = 9;
+  // Explicit Worker-v2 prerequisite; never work around it with local files
+  // or assume that candidate-only credentials can start a production VM.
+  FLEET_VM_RESOURCE_REASON_CREDENTIAL_DEPENDENCY_UNPROVEN = 10;
 }
 
 // A deterministic runtime-only proposal for each Git-owned VM container.

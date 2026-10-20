@@ -105,11 +105,12 @@ entrypoint связывает owner readback → signed admission → durable re
 lock → однократную mutation callback → физический poststate. Тесты
 покрывают долговечный однократный NOOP, успешный переход и UNKNOWN_NO_REPLAY.
 
-**Сейчас:** VM STOP и signed native INSTALL (bridge/WARP/Line1/Line2)
-через Bollard, без Compose, лишь при пустом scope и ACTIVE Worker v2.
-Журнал единый, physical receipt не принят; CI ≠ runtime.
-**Остаётся:** Worker first-use credentials, Windows SYSTEM signed apply,
-DNS/firewall/routes, reinstall/recover, physical TLS/auth/WARP.
+**Сейчас:** VM STOP/INSTALL через signed root Agent и Bollard.
+`ResourceReport/v2` выявляет credential dependency: без ACTIVE запуск
+BLOCKED, STOP разрешён. Snapshot generation/digest привязан к BEGIN.
+**Остаётся:** Worker first-use issuance, Windows SYSTEM signed apply,
+DNS/firewall/routes, reinstall/recover, installed receipt/TLS/auth/WARP.
+CI ≠ runtime.
 
 ## Обязательный протокол сомнения (без гаданий и кругов)
 

@@ -469,12 +469,35 @@ pub fn propose_vm_graph_reconcile(
     })
 }
 
+/// Local credential evidence is strictly non-secret and does not imply
+/// authorized Worker delivery, successful TLS, or an installed signer receipt.
+pub fn validate_vm_credential_readback(
+    readback: &crate::FleetVmCredentialReadback,
+) -> Result<(), &'static str> {
+    use crate::FleetVmCredentialState as State;
+    let state = State::try_from(readback.state).map_err(|_| "VM_CREDENTIAL_STATE_INVALID")?;
+    match state {
+        State::ActiveLocalValid if readback.active_generation > 0 => Ok(()),
+        State::CandidateOnly
+            if readback.active_generation == 0 && readback.candidate_generation > 0 =>
+        {
+            Ok(())
+        }
+        State::StoreAbsent | State::LegacyPresent | State::Unproven
+            if readback.active_generation == 0 && readback.candidate_generation == 0 =>
+        {
+            Ok(())
+        }
+        _ => Err("VM_CREDENTIAL_READBACK_INCONSISTENT"),
+    }
+}
+
 pub fn validate_vm_resource_report(
     report: &FleetVmResourceReport,
     host: &FleetHost,
 ) -> Result<(), &'static str> {
     if host.kind != FleetHostKind::Vm as i32
-        || report.schema_version != 1
+        || report.schema_version != 2
         || report.remote_attested
         || report.machine_id != host.machine_id
         || report.observed_at_unix == 0
@@ -487,6 +510,12 @@ pub fn validate_vm_resource_report(
     if let Some(network) = report.network.as_ref() {
         validate_vm_network_readback(network)?;
     }
+    validate_vm_credential_readback(
+        report
+            .credential
+            .as_ref()
+            .ok_or("VM_CREDENTIAL_READBACK_REQUIRED")?,
+    )?;
     use crate::FleetVmInstalledPolicyStatus as Policy;
     let policy_status = Policy::try_from(report.installed_policy_status)
         .map_err(|_| "VM_INSTALLED_POLICY_STATUS_INVALID")?;
@@ -750,7 +779,7 @@ mod tests {
             ..Default::default()
         };
         let report = FleetVmResourceReport {
-            schema_version: 1,
+            schema_version: 2,
             machine_id: "vm-a".into(),
             observed_at_unix: 100,
             resources: vec![FleetVmResourceReadback {
@@ -770,9 +799,36 @@ mod tests {
             installed_policy_graph: None,
             installed_policy_status: 0,
             installed_policy_error_code: String::new(),
+            credential: Some(crate::FleetVmCredentialReadback {
+                state: crate::FleetVmCredentialState::ActiveLocalValid as i32,
+                active_generation: 42,
+                ..Default::default()
+            }),
         };
         (host, report)
     }
+    #[test]
+    fn credential_reference_cannot_claim_active_or_candidate_without_exact_generation() {
+        use crate::{FleetVmCredentialReadback as Readback, FleetVmCredentialState as State};
+        for (state, active, candidate, valid) in [
+            (State::StoreAbsent, 0, 0, true),
+            (State::ActiveLocalValid, 42, 0, true),
+            (State::ActiveLocalValid, 42, 43, true),
+            (State::CandidateOnly, 0, 9, true),
+            (State::CandidateOnly, 0, 0, false),
+            (State::ActiveLocalValid, 0, 9, false),
+            (State::StoreAbsent, 42, 0, false),
+            (State::Unproven, 0, 2, false),
+        ] {
+            let proof = Readback {
+                state: state as i32,
+                active_generation: active,
+                candidate_generation: candidate,
+            };
+            assert_eq!(validate_vm_credential_readback(&proof).is_ok(), valid);
+        }
+    }
+
     #[test]
     fn installed_policy_readback_requires_exact_typed_hierarchy_not_arbitrary_dependencies() {
         let (host, mut report) = fixture();
@@ -1013,9 +1069,17 @@ pub fn propose_vm_resource_transitions(
         .target
         .as_ref()
         .and_then(|target| FleetHostRunState::try_from(target.run_state).ok());
+    let credential_ready = report.credential.as_ref().is_some_and(|credential| {
+        credential.state == crate::FleetVmCredentialState::ActiveLocalValid as i32
+    });
     let mut resources = Vec::with_capacity(report.resources.len());
     for row in &report.resources {
         let (step, reason) = match desired {
+            // An explicit STOP is always allowed to address an already-owned
+            // container; credential outages may NOT force continued running.
+            Some(FleetHostRunState::Running) if !credential_ready => {
+                (Step::Blocked, Reason::CredentialDependencyUnproven)
+            }
             None | Some(FleetHostRunState::Unspecified) => {
                 (Step::Blocked, Reason::TargetUnsetObserveOnly)
             }
@@ -1124,7 +1188,8 @@ pub fn validate_vm_resource_transition_plan(
         let expected_step = match reason {
             Reason::TargetUnsetObserveOnly
             | Reason::ResourceIdentityOrStateUnproven
-            | Reason::RuntimeHealthOrConfigUnproven => Step::Blocked,
+            | Reason::RuntimeHealthOrConfigUnproven
+            | Reason::CredentialDependencyUnproven => Step::Blocked,
             Reason::AbsentAsDesired
             | Reason::StoppedAsDesired
             | Reason::RunningRuntimeOnlyConfigUnproven => Step::Noop,
@@ -1556,7 +1621,7 @@ mod resource_planning_tests {
             ..Default::default()
         };
         let report = FleetVmResourceReport {
-            schema_version: 1,
+            schema_version: 2,
             machine_id: host.machine_id.clone(),
             observed_at_unix: 100,
             resources: vec![FleetVmResourceReadback {
@@ -1576,6 +1641,11 @@ mod resource_planning_tests {
             installed_policy_graph: None,
             installed_policy_status: 0,
             installed_policy_error_code: String::new(),
+            credential: Some(crate::FleetVmCredentialReadback {
+                state: crate::FleetVmCredentialState::ActiveLocalValid as i32,
+                active_generation: 42,
+                ..Default::default()
+            }),
         };
         (host, report)
     }
@@ -1584,6 +1654,35 @@ mod resource_planning_tests {
         let result = propose_vm_resource_transitions(host, report).unwrap();
         assert!(!result.owner_attested && !result.mutation_authorized);
         FleetHostPlannedStep::try_from(result.resources[0].step).unwrap()
+    }
+
+    #[test]
+    fn credential_dependency_blocks_running_but_never_prevents_emergency_stop() {
+        use crate::{
+            FleetHostPlannedStep as Step, FleetHostRunState, FleetVmCredentialState,
+            FleetVmResourceReason as Reason,
+        };
+        let (mut host, mut report) = fixture();
+        let credential = report.credential.as_mut().unwrap();
+        credential.state = FleetVmCredentialState::StoreAbsent as i32;
+        credential.active_generation = 0;
+        let blocked = propose_vm_resource_transitions(&host, &report).unwrap();
+        assert_eq!(blocked.resources[0].step, Step::Blocked as i32);
+        assert_eq!(
+            blocked.resources[0].reason,
+            Reason::CredentialDependencyUnproven as i32
+        );
+        report.credential.as_mut().unwrap().state = FleetVmCredentialState::CandidateOnly as i32;
+        report.credential.as_mut().unwrap().candidate_generation = 101;
+        let candidate = propose_vm_resource_transitions(&host, &report).unwrap();
+        assert_eq!(candidate.resources[0].step, Step::Blocked as i32);
+        host.target.as_mut().unwrap().run_state = FleetHostRunState::Stopped as i32;
+        let stopped = propose_vm_resource_transitions(&host, &report).unwrap();
+        assert_eq!(stopped.resources[0].step, Step::Stop as i32);
+        assert_eq!(
+            stopped.resources[0].reason,
+            Reason::ContainerRunningButTargetStopped as i32
+        );
     }
 
     #[test]

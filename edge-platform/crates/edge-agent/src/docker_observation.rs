@@ -1518,6 +1518,37 @@ fn verify_native_vm_run_poststate(
     Ok(())
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct NativeVmCredentialPin {
+    delivery_generation: u64,
+    // In-memory only. Never returned through host status or the Worker.
+    exact_bundle_sha256: [u8; 32],
+}
+
+/// Bind one worker-authored active generation to an immutable signed
+/// HostIntent preflight. Any A/B cursor change before BEGIN-owned materialization
+/// is an explicit fail-closed no-replay result, never a credential fallback.
+fn pin_active_native_vm_credential(
+    bundle: &edge_shared_types::CredentialDeliveryBundle,
+) -> Result<NativeVmCredentialPin, String> {
+    if bundle.schema_version != 1
+        || bundle.generation == 0
+        || bundle.projection != edge_shared_types::CredentialProjectionKind::Vm as i32
+        || bundle.dummy_non_secret
+    {
+        return Err("HOST_VM_INSTALL_V2_ACTIVE_IDENTITY_INVALID".into());
+    }
+    super::ApplicationRuntimeSecrets::from_vm_bundle(bundle)
+        .map_err(|_| "HOST_VM_INSTALL_V2_ACTIVE_PAYLOAD_INVALID")?;
+    let digest = ring::digest::digest(&ring::digest::SHA256, &bundle.encode_to_vec());
+    let mut exact_bundle_sha256 = [0u8; 32];
+    exact_bundle_sha256.copy_from_slice(digest.as_ref());
+    Ok(NativeVmCredentialPin {
+        delivery_generation: bundle.generation,
+        exact_bundle_sha256,
+    })
+}
+
 #[derive(Debug)]
 pub(crate) struct NativeVmInstallPlan {
     request: ApplyBundleRequest,
@@ -1525,6 +1556,7 @@ pub(crate) struct NativeVmInstallPlan {
     project: String,
     gateway_image: String,
     warp_image: String,
+    credential_pin: NativeVmCredentialPin,
 }
 
 /// A signed install is allowed only on an empty exact Docker namespace.
@@ -1685,8 +1717,7 @@ pub(crate) async fn preflight_native_vm_install(
     let credential = super::active_vm_credential_bundle(stack_dir)
         .map_err(|_| "HOST_VM_INSTALL_CREDENTIAL_UNPROVEN")?
         .ok_or("HOST_VM_INSTALL_ACTIVE_V2_REQUIRED")?;
-    super::ApplicationRuntimeSecrets::from_vm_bundle(&credential)
-        .map_err(|_| "HOST_VM_INSTALL_CREDENTIAL_INVALID")?;
+    let credential_pin = pin_active_native_vm_credential(&credential)?;
     let pins = request
         .stack_files
         .iter()
@@ -1699,6 +1730,7 @@ pub(crate) async fn preflight_native_vm_install(
         project,
         gateway_image: images["EDGE_GATEWAY_IMAGE"].clone(),
         warp_image: images["EDGE_WARP_EGRESS_IMAGE"].clone(),
+        credential_pin,
     })
 }
 
@@ -1892,6 +1924,17 @@ pub(crate) async fn apply_native_vm_install_once(
             status_code: 404, ..
         }) => {}
         _ => return Err("HOST_VM_INSTALL_NETWORK_CHANGED_NO_REPLAY".into()),
+    }
+    // Re-read the same root-local A/B cursor after signed BEGIN, before
+    // creating a file, network or container. A changed/removed active bundle
+    // cannot be silently projected into the originally authorized plan.
+    let current = super::active_vm_credential_bundle(stack_dir)
+        .map_err(|_| "HOST_VM_INSTALL_CREDENTIAL_CURSOR_UNPROVEN_NO_REPLAY")?
+        .ok_or("HOST_VM_INSTALL_ACTIVE_CREDENTIAL_DISAPPEARED_NO_REPLAY")?;
+    let pin = pin_active_native_vm_credential(&current)
+        .map_err(|_| "HOST_VM_INSTALL_CREDENTIAL_CHANGED_NO_REPLAY")?;
+    if pin != plan.credential_pin {
+        return Err("HOST_VM_INSTALL_CREDENTIAL_DRIFT_NO_REPLAY".into());
     }
     stage_native_first_vm_bundle(stack_dir, &plan.request)?;
     if compile_native_vm_desired_graph(stack_dir, host)? != plan.graph {
@@ -3950,6 +3993,74 @@ fn set_vm_observed_reason(
         .to_owned();
 }
 
+/// One typed root-local credential dependency, observed from the SAME
+/// credential store as native INSTALL. No generation is treated as a remote
+/// attestation. Partial/legacy stores are explicit blockers.
+fn observe_native_vm_credential_readback(
+    stack_dir: &Path,
+) -> edge_shared_types::FleetVmCredentialReadback {
+    use edge_shared_types::{
+        FleetVmCredentialReadback as Readback, FleetVmCredentialState as State,
+    };
+    let make = |state: State, active_generation: u64, candidate_generation: u64| Readback {
+        state: state as i32,
+        active_generation,
+        candidate_generation,
+    };
+    if super::legacy_vm_runtime_secret_path(stack_dir).is_ok_and(|path| path.exists()) {
+        return make(State::LegacyPresent, 0, 0);
+    }
+    let state = match super::observe_vm_credential_state(stack_dir) {
+        Ok(Some(state))
+            if state.projection == edge_shared_types::CredentialProjectionKind::Vm as i32 =>
+        {
+            state
+        }
+        Ok(None) if super::vm_credential_store_root(stack_dir).is_ok_and(|path| !path.exists()) => {
+            return make(State::StoreAbsent, 0, 0);
+        }
+        _ => return make(State::Unproven, 0, 0),
+    };
+    let candidate_generation = state
+        .candidate
+        .as_ref()
+        .map(|reference| reference.generation)
+        .unwrap_or(0);
+    if let Some(active) = state.active.as_ref() {
+        let valid = super::active_vm_credential_bundle(stack_dir)
+            .ok()
+            .flatten()
+            .is_some_and(|bundle| {
+                bundle.generation == active.generation
+                    && pin_active_native_vm_credential(&bundle).is_ok()
+            });
+        return if valid {
+            make(
+                State::ActiveLocalValid,
+                active.generation,
+                candidate_generation,
+            )
+        } else {
+            make(State::Unproven, 0, 0)
+        };
+    }
+    if let Some(candidate) = state.candidate.as_ref() {
+        let valid = super::open_vm_credential_store(stack_dir)
+            .ok()
+            .and_then(|store| store.read_bundle(candidate).ok())
+            .is_some_and(|bundle| {
+                bundle.generation == candidate.generation
+                    && pin_active_native_vm_credential(&bundle).is_ok()
+            });
+        return if valid && state.previous.is_none() {
+            make(State::CandidateOnly, 0, candidate.generation)
+        } else {
+            make(State::Unproven, 0, 0)
+        };
+    }
+    make(State::Unproven, 0, 0)
+}
+
 /// Read-only, per-resource Docker evidence. Each entry is inspected once:
 /// labels, immutable ID and state come from the SAME inspect response.
 /// Never read or emit environment, credentials, mount contents or Docker logs.
@@ -4090,7 +4201,7 @@ pub(crate) async fn observe_vm_resource_report(
             Err(error) => (None, error.status as i32, error.code),
         };
     let report = FleetVmResourceReport {
-        schema_version: 1,
+        schema_version: 2,
         machine_id: host.machine_id.clone(),
         observed_at_unix: now,
         resources,
@@ -4101,6 +4212,7 @@ pub(crate) async fn observe_vm_resource_report(
         installed_policy_graph,
         installed_policy_status,
         installed_policy_error_code,
+        credential: Some(observe_native_vm_credential_readback(stack_dir)),
     };
     edge_shared_types::host_resources::validate_vm_resource_report(&report, host)
         .map_err(str::to_owned)?;
