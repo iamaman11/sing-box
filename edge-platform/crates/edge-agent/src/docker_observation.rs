@@ -683,7 +683,6 @@ fn native_gateway_create_body(
     })
 }
 
-
 /// Recreate exactly one already-owned gateway using Docker Engine API.
 /// All image, network, mount and port policy is prepared before BEGIN.
 /// A failed STOP/DELETE/CREATE/START ACK is UNKNOWN_NO_REPLAY; the shared
@@ -712,7 +711,10 @@ async fn recreate_native_gateway_once(
         .map_err(|_| "HOST_VM_NATIVE_RECREATE_OLD_ID_UNAVAILABLE_NO_REPLAY")?;
     if inspected.id.as_deref() != Some(previous_id)
         || inspected.name.as_deref() != Some(format!("/{}", selector.container_name).as_str())
-        || !inspected.state.as_ref().is_some_and(|state| state.running == Some(true))
+        || !inspected
+            .state
+            .as_ref()
+            .is_some_and(|state| state.running == Some(true))
     {
         return Err("HOST_VM_NATIVE_RECREATE_PRESTATE_CHANGED_NO_REPLAY".into());
     }
@@ -1483,13 +1485,6 @@ impl ScopedVmService {
         match self {
             Self::Line1 => "rendered/line1-gateway.json",
             Self::Line2 => "rendered/line2-proxy.json",
-        }
-    }
-
-    fn recreate(self, stack_dir: &Path, images: &BTreeMap<String, String>) -> Result<(), String> {
-        match self {
-            Self::Line1 => super::start_line1_gateway(stack_dir, images),
-            Self::Line2 => super::start_line2_proxy(stack_dir, images),
         }
     }
 

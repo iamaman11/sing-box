@@ -2491,6 +2491,15 @@ def main() -> None:
         and "super::apply_bundle" not in native_host,
         "Signed native install must not fall through to legacy compose bootstrap",
     )
+    signed_vm_effectors = Path(
+        "edge-platform/crates/edge-agent/src/docker_observation.rs"
+    ).read_text(encoding="utf-8")
+    require(
+        "recreate_native_gateway_once(" in signed_vm_effectors
+        and "super::start_line1_gateway(" not in signed_vm_effectors
+        and "super::start_line2_proxy(" not in signed_vm_effectors,
+        "Signed VM gateway replacement must use native Docker Engine, not Compose",
+    )
     # Current normative docs replace dated paragraphs with one authority.
     plan = Path("edge-platform/FINALIZATION-PLAN.md").read_text(encoding="utf-8")
     handoff = Path("edge-platform/NEXT-CHAT.md").read_text(encoding="utf-8")
