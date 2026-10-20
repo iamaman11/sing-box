@@ -2290,7 +2290,8 @@ fn native_vm_compose_digest(stack_dir: &Path) -> Result<Vec<u8>, String> {
         return Err("HOST_VM_COMPOSE_BYTES_UNSTABLE".into());
     }
     Ok(ring::digest::digest(&ring::digest::SHA256, &raw)
-        .as_ref().to_vec())
+        .as_ref()
+        .to_vec())
 }
 
 fn read_native_vm_compose(stack_dir: &Path) -> Result<serde_yaml::Value, String> {
