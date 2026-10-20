@@ -1613,6 +1613,49 @@ fn verify_native_vm_first_use_identity(
         .map_err(|_| "HOST_VM_INSTALL_WORKER_FIRST_USE_PAYLOAD_INVALID")
 }
 
+/// Called ONLY after the shared signed native journal persisted BEGIN.
+/// A crash or failed local pointer write cannot authorize a replay.
+fn activate_native_vm_first_use_cursor_once(
+    stack_dir: &Path,
+    host: &FleetHost,
+    first: &edge_shared_types::CredentialDeliveryBundle,
+) -> Result<(), String> {
+    super::require_empty_vm_initial_credential_host(stack_dir)
+        .map_err(|_| "HOST_VM_INSTALL_FIRST_USE_PRESTATE_CHANGED_NO_REPLAY")?;
+    verify_native_vm_first_use_identity(host, first)
+        .map_err(|_| "HOST_VM_INSTALL_FIRST_USE_IDENTITY_DRIFT_NO_REPLAY")?;
+    let root = super::vm_credential_store_root(stack_dir)
+        .map_err(|_| "HOST_VM_INSTALL_FIRST_USE_STORE_UNPROVEN_NO_REPLAY")?;
+    let store = edge_secrets::CredentialStore::new(
+        root,
+        edge_shared_types::CredentialProjectionKind::Vm,
+    )
+    .map_err(|_| "HOST_VM_INSTALL_FIRST_USE_STORE_UNPROVEN_NO_REPLAY")?;
+    let staged = store
+        .stage_delivery_candidate(first)
+        .map_err(|_| "HOST_VM_INSTALL_FIRST_USE_STAGE_UNCERTAIN_NO_REPLAY")?;
+    if staged.active.is_some()
+        || staged.previous.is_some()
+        || staged
+            .candidate
+            .as_ref()
+            .map(|candidate| candidate.generation)
+            != Some(first.generation)
+    {
+        return Err("HOST_VM_INSTALL_FIRST_USE_CANDIDATE_UNPROVEN_NO_REPLAY".into());
+    }
+    let committed = store
+        .promote_candidate()
+        .map_err(|_| "HOST_VM_INSTALL_FIRST_USE_ACTIVE_UNCERTAIN_NO_REPLAY")?;
+    if committed.candidate.is_some()
+        || committed.previous.is_some()
+        || committed.active.as_ref().map(|active| active.generation) != Some(first.generation)
+    {
+        return Err("HOST_VM_INSTALL_FIRST_USE_ACTIVE_UNPROVEN_NO_REPLAY".into());
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod native_vm_first_use_tests {
     use super::*;
