@@ -179,24 +179,6 @@ fn verify_receipt_registration(registered: &[u8], local_public_key: &[u8]) -> Re
     Ok(true)
 }
 
-/// Native trust may adopt only the exact Worker public key already accepted
-/// by protected Git. The out-of-band CLI value cannot select a signer.
-fn verify_git_worker_signer_pin(
-    host: &edge_shared_types::FleetHost,
-    supplied: &[u8],
-) -> Result<(), &'static str> {
-    if host.kind != FleetHostKind::Vm as i32
-        || host.worker_authority_public_key.len() != 32
-        || host.worker_authority_public_key.iter().all(|b| *b == 0)
-    {
-        return Err("HOST_ENROLL_GIT_WORKER_SIGNER_KEY_REQUIRED");
-    }
-    if supplied != host.worker_authority_public_key {
-        return Err("HOST_ENROLL_WORKER_KEY_DIFFERS_FROM_PROTECTED_GIT");
-    }
-    Ok(())
-}
-
 fn receipt_public_key_hex(public_key: &[u8]) -> String {
     public_key
         .iter()
@@ -335,7 +317,8 @@ pub(crate) async fn enroll(
     ) {
         return Err("HOST_ENROLL_ROOT_OWNER_MISMATCH".into());
     }
-    verify_git_worker_signer_pin(host, &public_key).map_err(str::to_owned)?;
+    edge_shared_types::host_lifecycle::verify_git_worker_signer_pin(host, &public_key)
+        .map_err(str::to_owned)?;
     let source_revision = &release_set.source_revision;
     let spec_path = &host.desired_spec_path;
     if source_revision.len() != 40
@@ -488,20 +471,20 @@ mod tests {
         let signer_a = [7u8; 32];
         let signer_b = [9u8; 32];
         assert_eq!(
-            verify_git_worker_signer_pin(&host, &signer_a),
-            Err("HOST_ENROLL_GIT_WORKER_SIGNER_KEY_REQUIRED")
+            edge_shared_types::host_lifecycle::verify_git_worker_signer_pin(&host, &signer_a),
+            Err("HOST_GIT_WORKER_SIGNER_KEY_REQUIRED")
         );
         host.worker_authority_public_key = signer_a.to_vec();
-        assert_eq!(verify_git_worker_signer_pin(&host, &signer_a), Ok(()));
+        assert_eq!(edge_shared_types::host_lifecycle::verify_git_worker_signer_pin(&host, &signer_a), Ok(()));
         assert_eq!(
-            verify_git_worker_signer_pin(&host, &signer_b),
-            Err("HOST_ENROLL_WORKER_KEY_DIFFERS_FROM_PROTECTED_GIT")
+            edge_shared_types::host_lifecycle::verify_git_worker_signer_pin(&host, &signer_b),
+            Err("HOST_WORKER_SIGNER_DIFFERS_FROM_PROTECTED_GIT")
         );
         host.kind = FleetHostKind::Windows as i32;
-        assert!(verify_git_worker_signer_pin(&host, &signer_a).is_err());
+        assert!(edge_shared_types::host_lifecycle::verify_git_worker_signer_pin(&host, &signer_a).is_err());
         host.kind = FleetHostKind::Vm as i32;
         host.worker_authority_public_key = vec![0; 32];
-        assert!(verify_git_worker_signer_pin(&host, &signer_a).is_err());
+        assert!(edge_shared_types::host_lifecycle::verify_git_worker_signer_pin(&host, &signer_a).is_err());
     }
 
     #[test]

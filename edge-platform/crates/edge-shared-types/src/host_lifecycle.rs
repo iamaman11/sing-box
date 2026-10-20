@@ -220,6 +220,25 @@ pub fn native_vm_bundle_runtime_digest(
     Ok(decoded)
 }
 
+/// The single Worker public signer contract shared by root enrollment,
+/// native execution and read-only first-use diagnosis. No caller-provided
+/// public key may override protected Git desired.
+pub fn verify_git_worker_signer_pin(
+    host: &FleetHost,
+    supplied: &[u8],
+) -> Result<(), &'static str> {
+    if host.kind != FleetHostKind::Vm as i32
+        || host.worker_authority_public_key.len() != 32
+        || host.worker_authority_public_key.iter().all(|b| *b == 0)
+    {
+        return Err("HOST_GIT_WORKER_SIGNER_KEY_REQUIRED");
+    }
+    if supplied != host.worker_authority_public_key {
+        return Err("HOST_WORKER_SIGNER_DIFFERS_FROM_PROTECTED_GIT");
+    }
+    Ok(())
+}
+
 /// Exact artifact digests computed from the supplied Git registry, host
 /// desired bytes, and immutable ReleaseSet. This is structural integrity,
 /// NOT Git provenance: only an existing privileged owner may supply these

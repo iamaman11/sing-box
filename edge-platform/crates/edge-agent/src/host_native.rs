@@ -190,6 +190,21 @@ pub(super) fn local_vm_bootstrap_phase(
         "PROTECTED_LOCAL_ONLY" => {}
         _ => return Phase::TrustUnproven,
     }
+    // Local trust may be structurally valid but pinned to a different
+    // signer than Git. Return typed UNPROVEN, never claim first-use READY.
+    let exact_worker_signer = root_file(&Path::new(TRUSTED_ROOT).join("trust.pb"), 9 * 1024 * 1024)
+        .ok()
+        .and_then(|bytes| decode_native_trust_snapshot(&bytes).ok())
+        .is_some_and(|trust| {
+            edge_shared_types::host_lifecycle::verify_git_worker_signer_pin(
+                host,
+                &trust.pinned_worker_public_key,
+            )
+            .is_ok()
+        });
+    if !exact_worker_signer {
+        return Phase::TrustUnproven;
+    }
     if host.native_receipt_public_key.is_empty() {
         return Phase::ReceiptKeyGitRegistrationRequired;
     }
@@ -579,11 +594,8 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
     // The trusted Worker verification key must match the canonical Git host.
     // Without this equality an enrollment argument could create an alternate
     // signing authority despite valid native journal/receipt machinery.
-    if host.worker_authority_public_key.len() != 32
-        || host.worker_authority_public_key != signer_key
-    {
-        return Err("HOST_NATIVE_GIT_WORKER_SIGNER_MISMATCH".into());
-    }
+    edge_shared_types::host_lifecycle::verify_git_worker_signer_pin(host, &signer_key)
+        .map_err(str::to_owned)?;
     // The native owner has a separately pinned Git public identity. Without
     // a root-only signing key, no mutation may begin: runner-copied results
     // must never be upgraded to authenticated physical evidence.
