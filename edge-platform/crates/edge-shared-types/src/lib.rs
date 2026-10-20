@@ -26,6 +26,7 @@ pub mod host_journal;
 pub mod host_lifecycle;
 pub mod host_planner;
 pub mod host_resources;
+pub mod host_receipt;
 
 pub mod initial_credential_attestation;
 pub use initial_credential_attestation::first_use_host_attestation_sha256;
@@ -128,6 +129,12 @@ pub fn validate_host_registry(desired: &HostRegistry) -> Result<(), String> {
             };
         if !allowed || spec.contains("..") {
             return Err("host desired spec reference invalid for this kind".to_owned());
+        }
+        if !host.native_receipt_public_key.is_empty()
+            && (host.native_receipt_public_key.len() != 32
+                || host.native_receipt_public_key.iter().all(|b| *b == 0))
+        {
+            return Err("HOST_NATIVE_RECEIPT_PUBLIC_KEY_INVALID".to_owned());
         }
         // Resource identity only: no credentials, ports or mutable Docker
         // configuration are duplicated into fleet inventory.

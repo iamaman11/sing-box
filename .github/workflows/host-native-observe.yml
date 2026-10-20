@@ -357,12 +357,12 @@ jobs:
               > "${RUNNER_TEMP}/host-native-result-correlation.txt"
             audit="${RUNNER_TEMP}/host-native-result-correlation.txt"
             grep -Fxq 'host_native_result_correlation=EXACT' "${audit}"
-            grep -Fxq 'host_native_result_authenticated=false' "${audit}"
-            grep -Fxq 'host_native_result_remote_acceptance=UNPROVEN' "${audit}"
+            grep -Fxq 'host_native_result_authenticated=true' "${audit}"
+            grep -Eq '^host_native_result_remote_acceptance=(VERIFIED_PHYSICAL|OBSERVED_ONLY)$' "${audit}"
             grep -Fxq 'host_mutations=0' "${audit}"
-            echo 'native_result_audit=EXACT_UNAUTHENTICATED' >> "${GITHUB_OUTPUT}"
+            echo 'native_result_audit=EXACT_SIGNED_NATIVE_OWNER' >> "${GITHUB_OUTPUT}"
             {
-              echo '### Native result correlation (NOT a remote receipt)'
+              echo '### Native owner cryptographically verified receipt'
               echo '~~~text'
               cat "${audit}"
               echo '~~~'

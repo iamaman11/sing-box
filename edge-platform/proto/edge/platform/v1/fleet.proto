@@ -41,6 +41,9 @@ message FleetHost {
   FleetHostTarget target = 7;
   // Git-owned Docker identity scope, NOT duplicate service configuration.
   repeated FleetVmContainer vm_containers = 8;
+  // Immutable Git-pinned native owner identity, NOT a secret. Missing means
+  // remote authenticated result remains UNPROVEN and native apply is blocked.
+  bytes native_receipt_public_key = 9;
 }
 
 message FleetVmContainer {
@@ -329,6 +332,15 @@ message FleetHostResult {
  // exchange/requests or from a valid FleetHostIntent protobuf. This detached
  // signature is minted by the existing Worker secret authority and verified
  // against a pinned public key by the native SYSTEM/root owner.
+// Signed exclusively by the existing SYSTEM/root native owner, not the
+// GitHub runner. Exact signed bytes bind intent, resource, ReleaseSet and
+// terminal physical result to the immutable Git host public key.
+message FleetHostReceipt {
+  uint32 schema_version = 1;
+  FleetHostResult result = 2;
+  bytes ed25519_signature = 3;
+}
+
 message FleetHostAuthorization {
   uint32 schema_version = 1;
   string key_id = 2;

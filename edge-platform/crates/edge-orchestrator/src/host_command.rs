@@ -6,9 +6,10 @@ use edge_shared_types::{
     host_lifecycle::{
         MAX_NATIVE_OBSERVATION_BYTES, decode_host_intent, decode_host_result,
         decode_native_observation, prepared_host_result, validate_host_intent,
-        validate_host_result, validate_intent_against_target, validate_unattested_native_result,
+        validate_host_result, validate_intent_against_target,
     },
     managed_host,
+    host_receipt::{decode_native_receipt, verify_native_receipt},
 };
 use prost::Message;
 use ring::digest::{SHA256, digest};
@@ -654,8 +655,9 @@ pub(crate) fn run(
             };
             let intent =
                 decode_host_intent(&read_bounded(&intent_path, 4096)?).map_err(str::to_owned)?;
-            let result =
-                decode_host_result(&read_bounded(&result_path, 4096)?).map_err(str::to_owned)?;
+            let native_receipt =
+                decode_native_receipt(&read_bounded(&result_path, 8192)?)
+                    .map_err(str::to_owned)?;
             let selected = desired
                 .hosts
                 .iter()
@@ -679,7 +681,8 @@ pub(crate) fn run(
             )
             .map_err(str::to_owned)?;
             validate_intent_against_target(&intent, &desired).map_err(str::to_owned)?;
-            validate_unattested_native_result(&result, &intent).map_err(str::to_owned)?;
+            let result = verify_native_receipt(&intent, &native_receipt, selected)
+                .map_err(str::to_owned)?;
             println!("host_machine_id={machine_id}");
             println!("host_operation_id={}", intent.operation_id);
             println!("host_native_result_correlation=EXACT");
@@ -688,9 +691,12 @@ pub(crate) fn run(
                 edge_shared_types::FleetHostResultState::try_from(result.state)
                     .map_err(|_| "HOST_NATIVE_RESULT_STATE_INVALID")?
             );
-            println!("host_native_result_origin=RUNNER_COPIED_UNAUTHENTICATED");
-            println!("host_native_result_authenticated=false");
-            println!("host_native_result_remote_acceptance=UNPROVEN");
+            println!("host_native_result_origin=GIT_PINNED_ED25519_NATIVE_OWNER");
+            println!("host_native_result_authenticated=true");
+            println!(
+                "host_native_result_remote_acceptance={}",
+                if result.physical_readback { "VERIFIED_PHYSICAL" } else { "OBSERVED_ONLY" }
+            );
             println!("host_mutations=0");
             Ok(())
         }
@@ -1292,6 +1298,7 @@ mod tests {
             vm_containers: Vec::new(),
             desired_spec_path: "infra/production/production.textproto".into(),
             target: None,
+            native_receipt_public_key: Vec::new(),
         };
         let mut o = FleetNativeObservation {
             schema_version: 1,

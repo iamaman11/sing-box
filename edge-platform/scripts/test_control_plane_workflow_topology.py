@@ -813,9 +813,9 @@ def test_native_host_readonly_control_boundary(router: str) -> None:
         owner.count("if-no-files-found: ignore") == 1
         and "native-result \"${TARGET_MACHINE}\" --intent-path \"${intent}\"" in peer_report
         and "host_native_result_correlation=EXACT" in peer_report
-        and "host_native_result_authenticated=false" in peer_report
-        and "host_native_result_remote_acceptance=UNPROVEN" in peer_report
-        and "native_result_audit=EXACT_UNAUTHENTICATED" in peer_report,
+        and "host_native_result_authenticated=true" in peer_report
+        and "VERIFIED_PHYSICAL|OBSERVED_ONLY" in peer_report
+        and "native_result_audit=EXACT_SIGNED_NATIVE_OWNER" in peer_report,
         "Runner native transaction correlation must be typed, exact and explicitly unauthenticated",
     )
     require(

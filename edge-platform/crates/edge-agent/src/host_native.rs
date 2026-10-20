@@ -486,6 +486,12 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
     if !git_owned_host_spec_path(&host.desired_spec_path) {
         return Err("HOST_NATIVE_SPEC_PATH_INVALID".into());
     }
+    // The native owner has a separately pinned Git public identity. Without
+    // a root-only signing key, no mutation may begin: runner-copied results
+    // must never be upgraded to authenticated physical evidence.
+    let receipt_pkcs8 = root_file(&trust_root.join("receipt-key.pk8"), 4096)?;
+    edge_shared_types::host_receipt::check_native_receipt_key(host, &receipt_pkcs8)
+        .map_err(str::to_owned)?;
     // A missing or invalid run target is not executable. The native
     // STOP effector only touches verified application-owned Docker IDs.
     // All unsupported transitions are rejected BEFORE signed BEGIN.
@@ -644,8 +650,11 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
         )
     })
     .map_err(str::to_owned)?;
+    let receipt = edge_shared_types::host_receipt::sign_native_receipt(
+        &intent, &result, host, &receipt_pkcs8,
+    ).map_err(str::to_owned)?;
     io::stdout()
-        .write_all(&result.encode_to_vec())
+        .write_all(&receipt.encode_to_vec())
         .map_err(|_| "HOST_NATIVE_RESULT_STDOUT_UNCERTAIN_NO_REPLAY".into())
 }
 
