@@ -754,7 +754,7 @@ def test_canonical_host_mutation_ingress() -> None:
         "Credentials", "Production", "VultrLifecycle", "VultrVpc",
     ):
         require(
-            ("    #[command(hide = true)]\\n    " + name) in cli,
+            ("    #[command(hide = true)]\n    " + name) in cli,
             f"legacy {name} must remain hidden from public host CLI help",
         )
 
