@@ -868,8 +868,8 @@ def test_signed_first_use_credentials_share_native_journal() -> None:
         and "first_use_bundle" in docker
         and "stage_delivery_candidate(first)" in docker
         and "promote_candidate()" in docker
-        and docker.index("pub(crate) async fn apply_native_vm_install_once")
-            < docker.index("stage_delivery_candidate(first)")
+        and "activate_native_vm_first_use_cursor_once(stack_dir, host, first)?" in docker
+        and "fn activate_native_vm_first_use_cursor_once(" in docker
         and "attest_native_vm_install_worker_origin(" in owner
         and "execute_native_host_once(" in owner
         and "HOST_VM_INSTALL_FIRST_USE_ACTIVE_UNCERTAIN_NO_REPLAY" in docker,
