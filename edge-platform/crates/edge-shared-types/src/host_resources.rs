@@ -1277,9 +1277,10 @@ pub fn propose_vm_resource_transitions(
         let (step, reason) = match desired {
             // An explicit STOP is always allowed to address an already-owned
             // container; credential outages may NOT force continued running.
-            Some(FleetHostRunState::Running) if first_use_install_proposal => {
-                (Step::Install, Reason::FirstUseWorkerVerifiedInstallProposalOnly)
-            }
+            Some(FleetHostRunState::Running) if first_use_install_proposal => (
+                Step::Install,
+                Reason::FirstUseWorkerVerifiedInstallProposalOnly,
+            ),
             Some(FleetHostRunState::Running) if !credential_ready => {
                 (Step::Blocked, Reason::CredentialDependencyUnproven)
             }
@@ -1923,7 +1924,6 @@ mod resource_planning_tests {
         );
     }
 
-
     #[test]
     fn first_use_resource_plan_matches_host_install_without_granting_authority() {
         use crate::{
@@ -1947,7 +1947,10 @@ mod resource_planning_tests {
             ..Default::default()
         };
         let proposal = propose_vm_resource_transitions(&host, &report).unwrap();
-        assert_eq!(proposal.resources[0].step, FleetHostPlannedStep::Install as i32);
+        assert_eq!(
+            proposal.resources[0].step,
+            FleetHostPlannedStep::Install as i32
+        );
         assert_eq!(
             proposal.resources[0].reason,
             Reason::FirstUseWorkerVerifiedInstallProposalOnly as i32
@@ -1974,7 +1977,10 @@ mod resource_planning_tests {
         ] {
             report.bootstrap_phase = phase as i32;
             let blocked = propose_vm_resource_transitions(&host, &report).unwrap();
-            assert_eq!(blocked.resources[0].step, FleetHostPlannedStep::Blocked as i32);
+            assert_eq!(
+                blocked.resources[0].step,
+                FleetHostPlannedStep::Blocked as i32
+            );
             assert_eq!(
                 blocked.resources[0].reason,
                 Reason::CredentialDependencyUnproven as i32
@@ -1997,13 +2003,18 @@ mod resource_planning_tests {
         host.vm_containers.push(sibling);
         report.resources.push(existing);
         let partial = propose_vm_resource_transitions(&host, &report).unwrap();
-        assert!(partial
-            .resources
-            .iter()
-            .all(|item| item.step == FleetHostPlannedStep::Blocked as i32));
-        assert!(partial.resources.iter().all(|item| {
-            item.reason == Reason::CredentialDependencyUnproven as i32
-        }));
+        assert!(
+            partial
+                .resources
+                .iter()
+                .all(|item| item.step == FleetHostPlannedStep::Blocked as i32)
+        );
+        assert!(
+            partial
+                .resources
+                .iter()
+                .all(|item| { item.reason == Reason::CredentialDependencyUnproven as i32 })
+        );
     }
 
     #[test]
