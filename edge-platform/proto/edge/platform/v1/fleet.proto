@@ -48,6 +48,10 @@ message FleetHost {
   // reference in protected Git, not a new credential store or A/B authority.
   // Without it a clean VM cannot mint/guess credentials on INSTALL.
   FleetVmFirstUseCredential vm_first_use_credential = 10;
+  // Public-only Worker Ed25519 signing identity; source of truth is protected
+  // Git, not host-enroll arguments, a runner, or a provider GET response.
+  // Missing pin means VM enrollment and mutations are not authorized.
+  bytes worker_authority_public_key = 11;
 }
 
 // Source bytes are published by the existing Worker-v2 plane first; Git

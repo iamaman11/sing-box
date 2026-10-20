@@ -136,6 +136,13 @@ pub fn validate_host_registry(desired: &HostRegistry) -> Result<(), String> {
         {
             return Err("HOST_NATIVE_RECEIPT_PUBLIC_KEY_INVALID".to_owned());
         }
+        if !host.worker_authority_public_key.is_empty()
+            && (kind != ManagedHostKind::Vm
+                || host.worker_authority_public_key.len() != 32
+                || host.worker_authority_public_key.iter().all(|b| *b == 0))
+        {
+            return Err("HOST_VM_GIT_WORKER_SIGNER_KEY_INVALID".to_owned());
+        }
         // A fresh VM may adopt exactly one pre-published Worker-v2 bundle,
         // but only when its exact identity is pinned by immutable Git. Zero
         // generation, malformed digests and Windows use are forbidden.
@@ -152,6 +159,9 @@ pub fn validate_host_registry(desired: &HostRegistry) -> Result<(), String> {
                 return Err("HOST_VM_FIRST_USE_CREDENTIAL_IDENTITY_INVALID".to_owned());
             }
         }
+        // Worker signer is a Git-pinned public identity, never a second
+        // credential store. Wrong kind and malformed pins fail before any
+        // remote bootstrap or native signed mutation.
         // Resource identity only: no credentials, ports or mutable Docker
         // configuration are duplicated into fleet inventory.
         if kind != ManagedHostKind::Vm && !host.vm_containers.is_empty() {
@@ -3063,6 +3073,7 @@ mod release_set_tests {
                     target: None,
                     native_receipt_public_key: Vec::new(),
                     vm_first_use_credential: None,
+                    worker_authority_public_key: Vec::new(),
                 },
                 ManagedHost {
                     machine_id: "production-1".to_owned(),
@@ -3074,6 +3085,7 @@ mod release_set_tests {
                     target: None,
                     native_receipt_public_key: Vec::new(),
                     vm_first_use_credential: None,
+                    worker_authority_public_key: Vec::new(),
                 },
                 ManagedHost {
                     machine_id: "sing-box-windows-lab".to_owned(),
@@ -3087,6 +3099,7 @@ mod release_set_tests {
                     target: None,
                     native_receipt_public_key: Vec::new(),
                     vm_first_use_credential: None,
+                    worker_authority_public_key: Vec::new(),
                 },
             ],
         };
@@ -3124,6 +3137,16 @@ mod release_set_tests {
         // First-use selectors are non-secret signed Git data, valid only on
         // VMs and only with a positive generation and canonical exact digest.
         let mut first = expected.clone();
+        let mut wrong_signer = expected.clone();
+        wrong_signer.hosts[0].worker_authority_public_key = vec![3; 32];
+        assert!(validate_host_registry(&wrong_signer).is_ok());
+        wrong_signer.hosts[0].worker_authority_public_key = vec![0; 32];
+        assert!(validate_host_registry(&wrong_signer).is_err());
+        wrong_signer.hosts[0].worker_authority_public_key = vec![1; 12];
+        assert!(validate_host_registry(&wrong_signer).is_err());
+        wrong_signer.hosts[0].worker_authority_public_key = Vec::new();
+        wrong_signer.hosts[2].worker_authority_public_key = vec![3; 32];
+        assert!(validate_host_registry(&wrong_signer).is_err());
         first.hosts[0].vm_first_use_credential = Some(FleetVmFirstUseCredential {
             generation: 42,
             bundle_sha256: "a".repeat(64),

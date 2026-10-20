@@ -111,6 +111,7 @@ mod tests {
             kind: FleetHostKind::Vm as i32,
             native_receipt_public_key: pair.public_key().as_ref().to_vec(),
             vm_first_use_credential: None,
+            worker_authority_public_key: Vec::new(),
             ..Default::default()
         };
         let intent = FleetHostIntent {

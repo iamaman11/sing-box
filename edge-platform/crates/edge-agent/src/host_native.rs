@@ -576,6 +576,14 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
     if !git_owned_host_spec_path(&host.desired_spec_path) {
         return Err("HOST_NATIVE_SPEC_PATH_INVALID".into());
     }
+    // The trusted Worker verification key must match the canonical Git host.
+    // Without this equality an enrollment argument could create an alternate
+    // signing authority despite valid native journal/receipt machinery.
+    if host.worker_authority_public_key.len() != 32
+        || host.worker_authority_public_key != signer_key
+    {
+        return Err("HOST_NATIVE_GIT_WORKER_SIGNER_MISMATCH".into());
+    }
     // The native owner has a separately pinned Git public identity. Without
     // a root-only signing key, no mutation may begin: runner-copied results
     // must never be upgraded to authenticated physical evidence.
