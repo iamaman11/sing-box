@@ -105,12 +105,10 @@ entrypoint связывает owner readback → signed admission → durable re
 lock → однократную mutation callback → физический poststate. Тесты
 покрывают долговечный однократный NOOP, успешный переход и UNKNOWN_NO_REPLAY.
 
-**Сейчас (исходный код):** VM START/STOP/INSTALL и ограниченная адресная замена Line1/Line2 через подписанный root Agent и Bollard. Подписанный owner receipt поддерживается в Rust, но установленный root, Git-прикреплённый receipt key, Worker signer и физический результат остаются недоказанными.
+**Сейчас:** VM START/STOP/INSTALL и scoped REPLACE через signed root Agent/Bollard (только исходный код).
 `ResourceReport/v2` выявляет credential dependency: без ACTIVE запуск
 BLOCKED, STOP разрешён. Snapshot generation/digest привязан к BEGIN.
-**Остаётся:** штатный first-use trust enrollment и Worker ACTIVE issuance, Windows SYSTEM signed apply,
-DNS/firewall/routes, полный reinstall/recover, установленный receipt/TLS/auth/WARP.
-**Инвариант транспорта:** подписанный native owner receipt ограничен 8192 байтами одновременно в Rust decoder, VM transport и CI; PREPARED/runner-copied readback не повышает уровень доверия.
+**Остаётся:** first-use Worker ACTIVE, Windows SYSTEM signed apply, DNS/firewall/routes, reinstall/recover, установленный receipt/TLS/auth/WARP.
 CI ≠ runtime.
 
 ## Обязательный протокол сомнения (без гаданий и кругов)
