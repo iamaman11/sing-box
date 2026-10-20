@@ -4304,7 +4304,7 @@ mod tests {
         let machine = "application-acceptance-1";
         let release = "a".repeat(64);
         let report = format!(
-            "host_enroll=PROTECTED_TRUST_STAGED\\nhost_machine_id={machine}\\nhost_release_set_sha256={release}\\nhost_native_receipt_public_key_hex={}\\nhost_native_receipt_registration=AWAITING_PROTECTED_GIT\\nhost_worker_public_key_sha256={}\\nhost_mutations=0",
+            "host_enroll=PROTECTED_TRUST_STAGED\nhost_machine_id={machine}\nhost_release_set_sha256={release}\nhost_native_receipt_public_key_hex={}\nhost_native_receipt_registration=AWAITING_PROTECTED_GIT\nhost_worker_public_key_sha256={}\nhost_mutations=0",
             "b".repeat(64),
             "c".repeat(64),
         );
