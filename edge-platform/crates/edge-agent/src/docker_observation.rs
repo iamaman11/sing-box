@@ -2206,10 +2206,7 @@ fn native_vm_warp_state_parent(stack_dir: &Path) -> Result<&Path, &'static str> 
 
 /// Read-only admission: no symlink resolution, no adoption of foreign state,
 /// and no writable parent that another owner could swap before BEGIN.
-fn inspect_native_warp_state(
-    parent: &Path,
-    expected_uid: u32,
-) -> Result<bool, &'static str> {
+fn inspect_native_warp_state(parent: &Path, expected_uid: u32) -> Result<bool, &'static str> {
     let parent_meta =
         fs::symlink_metadata(parent).map_err(|_| "HOST_VM_INSTALL_WARP_PARENT_UNPROVEN")?;
     if !parent.is_absolute()
@@ -2236,10 +2233,7 @@ fn inspect_native_warp_state(
 /// Called only inside the already signed root owner operation, after durable
 /// BEGIN. One native mkdir in the exact application namespace, not a second
 /// installer, daemon, shell, or mutation authority.
-fn ensure_native_warp_state_once(
-    parent: &Path,
-    expected_uid: u32,
-) -> Result<(), &'static str> {
+fn ensure_native_warp_state_once(parent: &Path, expected_uid: u32) -> Result<(), &'static str> {
     if inspect_native_warp_state(parent, expected_uid)? {
         return Ok(());
     }

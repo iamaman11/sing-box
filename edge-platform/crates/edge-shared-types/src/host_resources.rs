@@ -542,7 +542,7 @@ pub fn vm_bootstrap_next_action(phase: crate::FleetVmBootstrapPhase) -> &'static
         }
         Phase::FirstUseGitSourceRequired => {
             "PUBLISH_WORKER_BUNDLE_AND_PIN_FIRST_USE_IDENTITY_IN_GIT"
-        },
+        }
     }
 }
 
@@ -575,7 +575,7 @@ fn validate_vm_bootstrap_phase(
             git_pinned
                 && credential.state == State::StoreAbsent as i32
                 && host.vm_first_use_credential.is_none()
-        },
+        }
     };
     if !consistent {
         return Err("VM_BOOTSTRAP_PHASE_DEPENDENCY_CONFLICT");
