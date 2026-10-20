@@ -278,6 +278,7 @@ pub(crate) struct NativeVmRunPlan {
     // Exactly one missing gateway can be re-created without touching the
     // existing WARP, sibling gateway, shared network, or release marker.
     create_missing: Option<String>,
+    prepared_create: Option<bollard::models::ContainerCreateBody>,
     edge_network_id: Option<String>,
 }
 
@@ -485,9 +486,140 @@ async fn read_owned_edge_network_id(docker: &Docker, host: &FleetHost) -> Result
     Ok(id)
 }
 
+
+/// Compile exactly one owned gateway into native Docker Engine API fields.
+/// All policy/mount parsing happens before the signed durable BEGIN; no shell.
+fn native_gateway_create_body(
+    stack_dir: &Path,
+    host: &FleetHost,
+    service: &str,
+    image_ref: &str,
+    network_id: &str,
+) -> Result<bollard::models::ContainerCreateBody, String> {
+    use bollard::models::{
+        ContainerCreateBody, EndpointSettings, HostConfig, NetworkingConfig,
+        PortBinding, RestartPolicy, RestartPolicyNameEnum,
+    };
+    if !matches!(service, "line1-gateway" | "line2-proxy")
+        || image_ref.is_empty() || network_id.len() != 64
+        || !network_id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("HOST_VM_CREATE_NATIVE_SCOPE_INVALID".into());
+    }
+    let selector = host.vm_containers.iter()
+        .find(|v| v.compose_service == service)
+        .ok_or("HOST_VM_CREATE_NATIVE_SELECTOR_UNREGISTERED")?;
+    let compose = read_native_vm_compose(stack_dir)?;
+    let row = compose.get("services").and_then(|v| v.get(service))
+        .ok_or("HOST_VM_CREATE_NATIVE_COMPOSE_SERVICE_MISSING")?;
+    let map = row.as_mapping().ok_or("HOST_VM_CREATE_NATIVE_SERVICE_INVALID")?;
+    for key in map.keys() {
+        if !matches!(key.as_str(), Some("image" | "container_name" | "restart"
+            | "depends_on" | "command" | "ports" | "volumes" | "networks" | "profiles")) {
+            return Err("HOST_VM_CREATE_NATIVE_UNSUPPORTED_SERVICE_FIELD".into());
+        }
+    }
+    let sequence = |name: &str| -> Result<Vec<String>, String> {
+        row.get(name).and_then(serde_yaml::Value::as_sequence)
+            .ok_or_else(|| "HOST_VM_CREATE_NATIVE_SEQUENCE_MISSING".to_owned())?
+            .iter().map(|value| value.as_str().map(str::to_owned)
+                .ok_or_else(|| "HOST_VM_CREATE_NATIVE_SEQUENCE_VALUE_INVALID".to_owned()))
+            .collect()
+    };
+    if row.get("container_name").and_then(serde_yaml::Value::as_str)
+            != Some(selector.container_name.as_str())
+        || row.get("restart").and_then(serde_yaml::Value::as_str) != Some("unless-stopped")
+        || row.get("image").and_then(serde_yaml::Value::as_str)
+            != Some("$"+"{EDGE_GATEWAY_IMAGE:?EDGE_GATEWAY_IMAGE is required}")
+        || sequence("command")? != ["run", "-c", "/etc/sing-box/config.json"]
+        || sequence("depends_on")? != ["warp-egress"]
+        || sequence("networks")? != ["edge_net"] {
+        return Err("HOST_VM_CREATE_NATIVE_POLICY_MISMATCH".into());
+    }
+    match row.get("profiles") {
+        None if service == "line2-proxy" => {}
+        Some(_) if service == "line1-gateway" && sequence("profiles")? == ["tunnel"] => {}
+        _ => return Err("HOST_VM_CREATE_NATIVE_PROFILE_UNSUPPORTED".into()),
+    }
+    let ports = sequence("ports")?;
+    let volumes = sequence("volumes")?;
+    if ports.is_empty() || ports.len() > 16 || volumes.is_empty() || volumes.len() > 8 {
+        return Err("HOST_VM_CREATE_NATIVE_BINDINGS_INVALID".into());
+    }
+    let mut exposed = Vec::new();
+    let mut bindings = HashMap::new();
+    for raw in ports {
+        let (host_port, endpoint) = raw.split_once(':')
+            .ok_or("HOST_VM_CREATE_NATIVE_PORT_FORMAT_INVALID")?;
+        let (guest_port, protocol) = endpoint.split_once('/')
+            .ok_or("HOST_VM_CREATE_NATIVE_PORT_PROTOCOL_MISSING")?;
+        if !matches!(protocol, "tcp" | "udp")
+            || host_port.parse::<u16>().ok().filter(|p| *p > 0).is_none()
+            || guest_port.parse::<u16>().ok().filter(|p| *p > 0).is_none() {
+            return Err("HOST_VM_CREATE_NATIVE_PORT_OUT_OF_SCOPE".into());
+        }
+        let key = format!("{guest_port}/{protocol}");
+        if bindings.insert(key.clone(), Some(vec![PortBinding {
+            host_ip: Some("0.0.0.0".to_owned()),
+            host_port: Some(host_port.to_owned()),
+        }])).is_some() {
+            return Err("HOST_VM_CREATE_NATIVE_PORT_DUPLICATE".into());
+        }
+        exposed.push(key);
+    }
+    let root = stack_dir.parent().ok_or("HOST_VM_CREATE_NATIVE_ROOT_UNAVAILABLE")?
+        .canonicalize().map_err(|_| "HOST_VM_CREATE_NATIVE_ROOT_UNAVAILABLE")?;
+    let mut binds = Vec::new();
+    let mut targets = BTreeSet::new();
+    for raw in volumes {
+        let items = raw.split(':').collect::<Vec<_>>();
+        if !(items.len() == 2 || items.len() == 3)
+            || !(items[0].starts_with("./") || items[0].starts_with("../"))
+            || !items[1].starts_with('/') || items[1].contains("..")
+            || !matches!(items.get(2), None | Some(&"ro")) {
+            return Err("HOST_VM_CREATE_NATIVE_MOUNT_UNSUPPORTED".into());
+        }
+        let absolute = stack_dir.join(items[0]).canonicalize()
+            .map_err(|_| "HOST_VM_CREATE_NATIVE_MOUNT_MISSING")?;
+        if !absolute.starts_with(&root) || !targets.insert(items[1].to_owned()) {
+            return Err("HOST_VM_CREATE_NATIVE_MOUNT_OUTSIDE_OWNER".into());
+        }
+        binds.push(format!("{}:{}:{}", absolute.display(), items[1],
+            items.get(2).copied().unwrap_or("rw")));
+    }
+    let mut labels = HashMap::new();
+    labels.insert("com.docker.compose.project".into(), selector.compose_project.clone());
+    labels.insert("com.docker.compose.service".into(), selector.compose_service.clone());
+    labels.insert("com.docker.compose.depends_on".into(),
+        "warp-egress:service_started:false".into());
+    let mut endpoints = HashMap::new();
+    endpoints.insert(format!("{}_edge_net", selector.compose_project), EndpointSettings {
+        network_id: Some(network_id.to_owned()),
+        ..Default::default()
+    });
+    Ok(ContainerCreateBody {
+        image: Some(image_ref.to_owned()),
+        cmd: Some(vec!["run".into(), "-c".into(), "/etc/sing-box/config.json".into()]),
+        exposed_ports: Some(exposed),
+        labels: Some(labels),
+        host_config: Some(HostConfig {
+            binds: Some(binds),
+            port_bindings: Some(bindings),
+            restart_policy: Some(RestartPolicy {
+                name: Some(RestartPolicyNameEnum::UNLESS_STOPPED),
+                ..Default::default()
+            }),
+            ..Default::default()
+        }),
+        networking_config: Some(NetworkingConfig {
+            endpoints_config: Some(endpoints),
+        }),
+        ..Default::default()
+    })
+}
+
 /// Resolve the common typed resource planner against root-local Docker
 /// evidence BEFORE the journal BEGIN. A single absent owned gateway may
-/// use scoped Compose CREATE; other resources must be unchanged and ready.
+/// use native Docker CREATE; other resources must be unchanged and ready.
 pub(crate) async fn preflight_native_vm_run(
     stack_dir: &Path,
     host: &FleetHost,
@@ -553,6 +685,7 @@ pub(crate) async fn preflight_native_vm_run(
     bind_owned_vm_compose_dependencies(stack_dir, &host.vm_containers, &mut owned)?;
     check_owned_vm_snapshot(host, &owned, &identities)?;
     let mut edge_network_id = None;
+    let mut prepared_create = None;
     if let Some(service) = create_missing.as_deref() {
         if owned.len() + 1 != host.vm_containers.len() || owned.iter().any(|item| !item.running) {
             return Err("HOST_VM_CREATE_NEIGHBOUR_INCOMPLETE".into());
@@ -579,6 +712,9 @@ pub(crate) async fn preflight_native_vm_run(
             .map_err(|_| "HOST_VM_CREATE_LOCAL_IMAGE_UNAVAILABLE")?;
         let id = read_owned_edge_network_id(&docker, host).await?;
         verify_vm_network_attachments(&docker, host, &owned, &id).await?;
+        prepared_create = Some(native_gateway_create_body(
+            stack_dir, host, service, missing_image, &id,
+        )?);
         edge_network_id = Some(id);
     }
     if step == FleetHostPlannedStep::Stop {
@@ -591,6 +727,7 @@ pub(crate) async fn preflight_native_vm_run(
         identities,
         desired_graph,
         create_missing,
+        prepared_create,
         edge_network_id,
     })
 }
@@ -650,43 +787,24 @@ pub(crate) async fn apply_native_vm_run_once(
                 .ok_or("HOST_VM_CREATE_NETWORK_PRESTATE_UNPROVEN_NO_REPLAY")?,
         )
         .await?;
-        let image_vars = super::read_exact_image_environment(stack_dir)?;
-        // The image must already exist. No unbounded pull, no dependent
-        // recreation and no fallback bootstrap for a single missing service.
-        match service {
-            "line1-gateway" => super::run_compose(
-                stack_dir,
-                &image_vars,
-                &[
-                    "--profile",
-                    "tunnel",
-                    "up",
-                    "-d",
-                    "--no-deps",
-                    "--no-build",
-                    "--pull",
-                    "never",
-                    "--no-recreate",
-                    "line1-gateway",
-                ],
-            ),
-            "line2-proxy" => super::run_compose(
-                stack_dir,
-                &image_vars,
-                &[
-                    "up",
-                    "-d",
-                    "--no-deps",
-                    "--no-build",
-                    "--pull",
-                    "never",
-                    "--no-recreate",
-                    "line2-proxy",
-                ],
-            ),
-            _ => Err("HOST_VM_CREATE_SCOPE_INVALID".into()),
+        // One native Docker Engine CREATE + START, compiled pre-BEGIN.
+        // Uncertain Docker ACK leaves the signed journal pending, no replay.
+        let config = plan.prepared_create.as_ref()
+            .ok_or("HOST_VM_CREATE_PREPARED_BODY_MISSING_NO_REPLAY")?.clone();
+        let selector = host.vm_containers.iter()
+            .find(|item| item.compose_service == service)
+            .ok_or("HOST_VM_CREATE_SELECTOR_MISSING_NO_REPLAY")?;
+        let options = bollard::query_parameters::CreateContainerOptionsBuilder::default()
+            .name(&selector.container_name).build();
+        let created = docker.create_container(Some(options), config).await
+            .map_err(|_| "HOST_VM_CREATE_ACK_UNCERTAIN_NO_REPLAY")?;
+        if created.id.len() != 64 || !created.id.bytes().all(|b| b.is_ascii_hexdigit()) {
+            return Err("HOST_VM_CREATE_ID_UNPROVEN_NO_REPLAY".into());
         }
-        .map_err(|_| "HOST_VM_CREATE_UNCERTAIN_NO_REPLAY")?;
+        docker.start_container(
+            &created.id,
+            None::<bollard::query_parameters::StartContainerOptions>,
+        ).await.map_err(|_| "HOST_VM_CREATE_START_UNCERTAIN_NO_REPLAY")?;
     }
     for index in order {
         let container = &owned[index];
@@ -2153,6 +2271,19 @@ async fn prepare_owned_vm_start(
 #[cfg(test)]
 mod release_desired_graph_tests {
     use super::*;
+
+    #[test]
+    fn native_gateway_create_rejects_unregistered_and_mesh_resources() {
+        let host = edge_shared_types::FleetHost::default();
+        assert_eq!(native_gateway_create_body(
+            Path::new("/unavailable"), &host, "cloudflare-mesh",
+            "image@sha256:deadbeef", &"a".repeat(64)).unwrap_err(),
+            "HOST_VM_CREATE_NATIVE_SCOPE_INVALID");
+        assert_eq!(native_gateway_create_body(
+            Path::new("/unavailable"), &host, "line2-proxy",
+            "image@sha256:deadbeef", &"a".repeat(64)).unwrap_err(),
+            "HOST_VM_CREATE_NATIVE_SELECTOR_UNREGISTERED");
+    }
 
     #[test]
     fn installed_policy_stage_not_inferred_from_error_words() {
