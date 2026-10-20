@@ -1636,7 +1636,7 @@ mod native_vm_first_use_tests {
         host.vm_first_use_credential.as_mut().unwrap().generation = 31;
         assert_eq!(
             verify_native_vm_first_use_identity(&host, &bundle),
-            Err("HOST_VM_INSTALL_GIT_FIRST_USE_DIGEST_MISMATCH")
+            Err("HOST_VM_INSTALL_WORKER_FIRST_USE_BUNDLE_INVALID")
         );
     }
 }
@@ -1888,8 +1888,7 @@ pub(crate) async fn preflight_native_vm_install(
             )
             .await
             .map_err(|_| "HOST_VM_INSTALL_WORKER_ORIGIN_UNPROVEN")?;
-            let pin = verify_native_vm_first_use_identity(host, &worker)
-                .map_err(str::to_owned)?;
+            let pin = verify_native_vm_first_use_identity(host, &worker).map_err(str::to_owned)?;
             (pin, Some(worker))
         }
     };
@@ -2145,7 +2144,10 @@ pub(crate) async fn apply_native_vm_install_once(
             .map_err(|_| "HOST_VM_INSTALL_FIRST_USE_STAGE_UNCERTAIN_NO_REPLAY")?;
         if staged.active.is_some()
             || staged.previous.is_some()
-            || staged.candidate.as_ref().map(|candidate| candidate.generation)
+            || staged
+                .candidate
+                .as_ref()
+                .map(|candidate| candidate.generation)
                 != Some(first.generation)
         {
             return Err("HOST_VM_INSTALL_FIRST_USE_CANDIDATE_UNPROVEN_NO_REPLAY".into());
@@ -2155,8 +2157,7 @@ pub(crate) async fn apply_native_vm_install_once(
             .map_err(|_| "HOST_VM_INSTALL_FIRST_USE_ACTIVE_UNCERTAIN_NO_REPLAY")?;
         if committed.candidate.is_some()
             || committed.previous.is_some()
-            || committed.active.as_ref().map(|active| active.generation)
-                != Some(first.generation)
+            || committed.active.as_ref().map(|active| active.generation) != Some(first.generation)
         {
             return Err("HOST_VM_INSTALL_FIRST_USE_ACTIVE_UNPROVEN_NO_REPLAY".into());
         }

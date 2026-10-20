@@ -479,10 +479,11 @@ enum NativeVmInstallFailurePhase {
 fn native_vm_install_error_class(source: &str, phase: NativeVmInstallFailurePhase) -> &'static str {
     use NativeVmInstallFailurePhase::{PostBegin, Preadmission};
     match (phase, source) {
-        (Preadmission, "HOST_VM_INSTALL_ACTIVE_V2_REQUIRED"
-            | "HOST_VM_INSTALL_GIT_FIRST_USE_IDENTITY_REQUIRED") => {
-            "HOST_VM_INSTALL_GIT_FIRST_USE_CREDENTIAL_REQUIRED"
-        }
+        (
+            Preadmission,
+            "HOST_VM_INSTALL_ACTIVE_V2_REQUIRED"
+            | "HOST_VM_INSTALL_GIT_FIRST_USE_IDENTITY_REQUIRED",
+        ) => "HOST_VM_INSTALL_GIT_FIRST_USE_CREDENTIAL_REQUIRED",
         (
             Preadmission,
             "HOST_VM_INSTALL_WORKER_STORE_UNPROVEN"
