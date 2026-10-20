@@ -4721,9 +4721,7 @@ pub(crate) async fn observe_vm_resource_report(
     // Run only for a trust-verified, Git-pinned first use with no local ACTIVE.
     // A failed GET becomes an exact read-only dependency reason, never a
     // failed deep report, a credential write or permission to start Docker.
-    if bootstrap_phase
-        == edge_shared_types::FleetVmBootstrapPhase::FirstUseWorkerSourceUnverified
-    {
+    if bootstrap_phase == edge_shared_types::FleetVmBootstrapPhase::FirstUseWorkerSourceUnverified {
         bootstrap_phase = observe_native_vm_first_use_source(host, stack_dir).await;
     }
     let report = FleetVmResourceReport {

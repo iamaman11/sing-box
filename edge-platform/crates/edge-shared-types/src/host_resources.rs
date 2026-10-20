@@ -549,9 +549,7 @@ pub fn vm_bootstrap_next_action(phase: crate::FleetVmBootstrapPhase) -> &'static
         Phase::FirstUseWorkerSourceMismatch => {
             "RECONCILE_WORKER_BUNDLE_AND_GIT_IDENTITY_WITHOUT_LOCAL_MUTATION"
         }
-        Phase::FirstUseWorkerSourceUnavailable => {
-            "VERIFY_WORKER_ACCESS_OR_GENERATION_READ_ONLY"
-        }
+        Phase::FirstUseWorkerSourceUnavailable => "VERIFY_WORKER_ACCESS_OR_GENERATION_READ_ONLY",
     }
 }
 
