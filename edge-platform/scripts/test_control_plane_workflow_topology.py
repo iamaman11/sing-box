@@ -897,6 +897,42 @@ def test_vm_first_use_warp_safety_and_bootstrap_source() -> None:
     )
 
 
+def test_release_acceptance_gates_do_not_mutate_hosts_on_merge() -> None:
+    """PR candidates prove code; main promotion never silently deploys hosts."""
+    ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
+    router = ROUTER.read_text(encoding="utf-8")
+    enroll = Path("edge-platform/crates/edge-agent/src/host_enroll.rs").read_text(encoding="utf-8")
+    native = Path("edge-platform/crates/edge-agent/src/host_native.rs").read_text(encoding="utf-8")
+    require(
+        "  candidate_complete:\n" in ci
+        and "  promote:\n" in ci
+        and "  push:\n    branches: [main]" in ci
+        and "if: github.event_name == 'push' && github.ref == 'refs/heads/main'" in ci
+        and 'test "${accepted_tree}" = "${candidate_tree}"' in ci
+        and "Only a genuine two-parent main merge may promote a candidate." in ci,
+        "Candidate proof and published protected main ReleaseSet must have distinct gates",
+    )
+    promotion = ci.split("  promote:\n", 1)[1]
+    require(
+        "uses: ./.github/workflows/host-native-observe.yml" not in promotion
+        and "sudo -n" not in promotion
+        and "local host-apply" not in promotion
+        and "/host apply" not in promotion,
+        "Publishing accepted artifacts must never automatically mutate installed hosts",
+    )
+    require(
+        "on:\n  issue_comment:" in router
+        and "github.actor_id == '44100369'" in router
+        and "uses: ./.github/workflows/host-native-observe.yml" in router
+        and 'release["draft"].as_bool() != Some(false)' in enroll
+        and 'release["prerelease"].as_bool() != Some(false)' in enroll
+        and "verify_receipt_registration(" in enroll
+        and "host_receipt::check_native_receipt_key(host, &receipt_pkcs8)" in native
+        and "execute_native_host_once(" in native,
+        "A published release and signed root owner must be required for operations",
+    )
+
+
 def test_native_host_readonly_control_boundary(router: str) -> None:
     """One typed Rust inventory dispatches independent, read-only native owners."""
     child_path = Path(".github/workflows/host-native-observe.yml")
@@ -1078,6 +1114,7 @@ def main() -> None:
     test_host_native_signed_result_reporting()
     test_canonical_host_mutation_ingress()
     test_host_native_receipt_boundary_and_legacy_workflow_admission(router)
+    test_release_acceptance_gates_do_not_mutate_hosts_on_merge()
     test_typed_vm_bootstrap_evidence_is_non_authorizing()
     test_native_vm_install_requires_canonical_worker_active_origin()
     test_signed_first_use_credentials_share_native_journal()

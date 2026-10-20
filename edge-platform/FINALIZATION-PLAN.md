@@ -112,14 +112,15 @@ BLOCKED, STOP разрешён. Snapshot generation/digest привязан к B
 **Остаётся:** Worker issuance, Windows SYSTEM handler, DNS/firewall/routes, reinstall/recover, физический receipt/TLS/auth/WARP.
 CI ≠ runtime.
 
+## Два допуска — один ReleaseSet
+
+**Code gate:** точный HEAD PR → тесты → Windows/Linux candidates → ReleaseSet candidate → code review. Merge только exact tested tree. После merge отдельный push-main publisher проверяет merge tree и публикует те же артефакты **без rebuild**. Публикация никогда не вызывает host apply и не доказывает эксплуатационный PASS.
+
+**Operational gate:** root enrollment требует опубликованный недрафтовый main ReleaseSet и pinned Worker key. Native receipt key создаётся VM локально; public key регистрируется в Git и включается в следующий опубликованный ReleaseSet. Далее Worker issuance → typed host target → signed one-shot apply → native receipt → внешний TLS/auth/DIRECT/WARP readback. Приёмка: disposable VM, existing VM, затем Windows STOPPED/PROXY_ONLY. Merge не запускает production/TUN.
+
 ## Обязательный протокол сомнения (без гаданий и кругов)
 
-1. Получить доступный native read-only typed status и проверить его актуальность, источник и область наблюдения. Не переносить факты VM-localhost на публичный endpoint, старый SHA на установленный owner или завершение GitHub job на runtime health.
-2. **При любой, даже минимальной неопределённости обязательно запросить у существующего локального агента один конкретный недостающий read-only факт**, в безопасной ограниченной команде, с указанием ожидаемого поля и запрещённых мутаций. Не повторять бессодержательный probe и не догадываться.
-3. Пока факт отсутствует, выдавать `UNPROVEN`/`BLOCKED`; никакого удаления, переключения secrets, запуска Windows/TUN или изменения сети. После ответа сверить все противоречащие источники.
-4. Каждый такой ручной пробел считать дефектом встроенной диагностики: в этом же новом Rust owner/typed protobuf contract добавить автоматический сбор, точную причину отказа (`error_class`), версию установленного ReleaseSet, physical proof и `next_action`. Конечная приёмка: **ChatGPT сам быстро видит все необходимые данные**, локальный агент больше не нужен для штатного цикла.
-
-PASS CI не отменяет обязательный запрос локальной помощи при сомнении; replay запрещён.
+Свежий typed read-only status должен показать owner/source/ReleaseSet. Не хватает факта — запросить **один точный read-only факт** у существующего native owner; до подтверждения `UNPROVEN/BLOCKED`, никакого replay. Повторяющийся пробел исправлять в том же Rust handler и `host status --deep` (resource, error_class, next_action, proof). Никаких вторых агентов и ручных обходов.
 
 ## Правило выполнения
 
