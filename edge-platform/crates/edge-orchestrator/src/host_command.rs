@@ -1378,6 +1378,7 @@ mod tests {
                     run_state: edge_shared_types::FleetHostRunState::Stopped as i32,
                     windows_mode: FleetHostMode::ProxyOnly as i32,
                 }),
+                native_receipt_public_key: Vec::new(),
             }],
         };
         let release = "a".repeat(64);
@@ -1511,6 +1512,7 @@ mod tests {
                     vm_containers: Vec::new(),
                     desired_spec_path: "infra/application/disposable-acceptance.json".to_owned(),
                     target: None,
+                    native_receipt_public_key: Vec::new(),
                 },
                 ManagedHost {
                     machine_id: "sing-box-windows-lab".to_owned(),
@@ -1522,6 +1524,7 @@ mod tests {
                     vm_containers: Vec::new(),
                     desired_spec_path: "infra/production/production.textproto".to_owned(),
                     target: None,
+                    native_receipt_public_key: Vec::new(),
                 },
             ],
         };
@@ -1552,6 +1555,7 @@ mod tests {
             vm_containers: Vec::new(),
             desired_spec_path: "infra/production/production.textproto".to_owned(),
             target: None,
+            native_receipt_public_key: Vec::new(),
         });
         assert_eq!(
             resolve_credential_peer(&two_windows, "application-acceptance-1", "auto").unwrap_err(),
