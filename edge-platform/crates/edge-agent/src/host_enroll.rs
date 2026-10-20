@@ -141,9 +141,7 @@ fn write_protected_file(directory: &Path, name: &str, bytes: &[u8]) -> Result<()
 /// under local root. Only the public key is returned for subsequent protected
 /// Git registry registration. A pre-registered key cannot be matched by
 /// generating a fresh private key: refusing is safer than substituting trust.
-fn generate_receipt_identity(
-    git_public_key: &[u8],
-) -> Result<(Vec<u8>, Vec<u8>), String> {
+fn generate_receipt_identity(git_public_key: &[u8]) -> Result<(Vec<u8>, Vec<u8>), String> {
     if !git_public_key.is_empty() {
         return Err("HOST_ENROLL_RECEIPT_KEY_ALREADY_REGISTERED_WITHOUT_LOCAL_IDENTITY".into());
     }
@@ -151,7 +149,10 @@ fn generate_receipt_identity(
         .map_err(|_| "HOST_ENROLL_RECEIPT_KEY_GENERATION_FAILED")?;
     let identity = Ed25519KeyPair::from_pkcs8(key.as_ref())
         .map_err(|_| "HOST_ENROLL_RECEIPT_KEY_INVALID")?;
-    Ok((key.as_ref().to_vec(), identity.public_key().as_ref().to_vec()))
+    Ok((
+        key.as_ref().to_vec(),
+        identity.public_key().as_ref().to_vec(),
+    ))
 }
 
 /// Existing local signing key is never overwritten, even on release refresh.
@@ -380,8 +381,18 @@ pub(crate) async fn enroll(
         println!("host_enroll=PROTECTED_TRUST_REFRESHED");
         println!("host_machine_id={machine_id}");
         println!("host_release_set_sha256={release_digest}");
-        println!("host_native_receipt_public_key_hex={}", receipt_public_key_hex(&receipt_public_key));
-        println!("host_native_receipt_registration={}", if receipt_registered { "PINNED_GIT_MATCH" } else { "AWAITING_PROTECTED_GIT" });
+        println!(
+            "host_native_receipt_public_key_hex={}",
+            receipt_public_key_hex(&receipt_public_key)
+        );
+        println!(
+            "host_native_receipt_registration={}",
+            if receipt_registered {
+                "PINNED_GIT_MATCH"
+            } else {
+                "AWAITING_PROTECTED_GIT"
+            }
+        );
         println!("host_mutations=0");
         return Ok(());
     }
@@ -421,8 +432,18 @@ pub(crate) async fn enroll(
     println!("host_enroll=PROTECTED_TRUST_STAGED");
     println!("host_machine_id={machine_id}");
     println!("host_release_set_sha256={release_digest}");
-    println!("host_native_receipt_public_key_hex={}", receipt_public_key_hex(&receipt_public_key));
-    println!("host_native_receipt_registration={}", if receipt_registered { "PINNED_GIT_MATCH" } else { "AWAITING_PROTECTED_GIT" });
+    println!(
+        "host_native_receipt_public_key_hex={}",
+        receipt_public_key_hex(&receipt_public_key)
+    );
+    println!(
+        "host_native_receipt_registration={}",
+        if receipt_registered {
+            "PINNED_GIT_MATCH"
+        } else {
+            "AWAITING_PROTECTED_GIT"
+        }
+    );
     println!(
         "host_worker_public_key_sha256={}",
         super::host_native::sha256_hex(

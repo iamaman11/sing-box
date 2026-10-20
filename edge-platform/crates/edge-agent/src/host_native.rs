@@ -571,17 +571,12 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
                     *prepared.borrow_mut() = Some(proposal);
                     Ok(())
                 }
+                // A signed fresh-install must use the same resource-scoped
+                // Bollard planner as updates. The historical BootstrapFull
+                // implementation still invokes docker compose, so it must
+                // never be dispatched after signed BEGIN.
                 FleetHostPlannedStep::Install => {
-                    if intent.resource_id != "sing-box" {
-                        return Err("HOST_NATIVE_SCOPED_INSTALL_NOT_ALLOWED");
-                    }
-                    let request = ApplyBundleRequest::decode(bundle_pb.as_slice())
-                        .map_err(|_| "HOST_NATIVE_VM_INSTALL_BUNDLE_INVALID")?;
-                    super::docker_observation::compile_vm_desired_graph_from_release(
-                        host, &request,
-                    )
-                    .map_err(|_| "HOST_NATIVE_VM_INSTALL_DESIRED_GRAPH_INVALID")?;
-                    Ok(())
+                    Err("HOST_NATIVE_VM_INSTALL_REQUIRES_NATIVE_HANDLER")
                 }
                 FleetHostPlannedStep::ReplaceRelease => {
                     let request = ApplyBundleRequest::decode(bundle_pb.as_slice())
@@ -628,22 +623,7 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
                         .map_err(|_| "HOST_NATIVE_VM_REPLACE_UNCERTAIN_NO_REPLAY")
                 }
                 FleetHostPlannedStep::Install => {
-                    if intent.resource_id != "sing-box" {
-                        return Err("HOST_NATIVE_SCOPED_INSTALL_NOT_ALLOWED");
-                    }
-                    let request = ApplyBundleRequest::decode(bundle_pb.as_slice())
-                        .map_err(|_| "HOST_NATIVE_BUNDLE_INVALID")?;
-                    super::apply_bundle(stack_dir, request)
-                        .map_err(|_| "HOST_NATIVE_BUNDLE_APPLY_UNCERTAIN_NO_REPLAY")?;
-                    let completion = handle.block_on(super::run_bootstrap(
-                        stack_dir,
-                        BootstrapMode::BootstrapFull,
-                    ));
-                    if completion.success {
-                        Ok(())
-                    } else {
-                        Err("HOST_NATIVE_BOOTSTRAP_UNCERTAIN_NO_REPLAY")
-                    }
+                    Err("HOST_NATIVE_VM_INSTALL_REQUIRES_NATIVE_HANDLER")
                 }
                 _ => Err("HOST_NATIVE_STEP_UNSUPPORTED_NO_REPLAY"),
             },

@@ -2484,6 +2484,13 @@ def main() -> None:
         for path in WORKFLOWS.glob("*.yml")
         if "issue_comment:" in path.read_text(encoding="utf-8")
     )
+    native_host = Path("edge-platform/crates/edge-agent/src/host_native.rs").read_text(encoding="utf-8")
+    require(
+        "HOST_NATIVE_VM_INSTALL_REQUIRES_NATIVE_HANDLER" in native_host
+        and "run_bootstrap" not in native_host
+        and "super::apply_bundle" not in native_host,
+        "Signed native install must not fall through to legacy compose bootstrap",
+    )
     # Current normative docs replace dated paragraphs with one authority.
     plan = Path("edge-platform/FINALIZATION-PLAN.md").read_text(encoding="utf-8")
     handoff = Path("edge-platform/NEXT-CHAT.md").read_text(encoding="utf-8")
