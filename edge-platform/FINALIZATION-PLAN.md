@@ -114,13 +114,13 @@ CI ≠ runtime.
 
 ## Два допуска — один ReleaseSet
 
-**Code gate:** точный HEAD PR → тесты → Windows/Linux candidates → ReleaseSet candidate → code review. Merge только exact tested tree. После merge отдельный push-main publisher проверяет merge tree и публикует те же артефакты **без rebuild**. Публикация никогда не вызывает host apply и не доказывает эксплуатационный PASS.
+**Code gate:** exact PR HEAD → tests → Windows/Linux/ReleaseSet candidates. Merge только exact tested tree; push-main publisher использует те же артефакты **без rebuild** и не вызывает `host apply`. CI ≠ physical PASS.
 
-**Operational gate:** root enrollment требует опубликованный недрафтовый main ReleaseSet и pinned Worker key. Native receipt key создаётся VM локально; public key регистрируется в Git и включается в следующий опубликованный ReleaseSet. Далее Worker issuance → typed host target → signed one-shot apply → native receipt → внешний TLS/auth/DIRECT/WARP readback. Приёмка: disposable VM, existing VM, затем Windows STOPPED/PROXY_ONLY. Merge не запускает production/TUN.
+**Operational gate:** root enrollment принимает только опубликованный main ReleaseSet и pinned Worker key. VM создаёт receipt key; public key попадает в Git и следующий ReleaseSet. Worker issuance → typed target → signed apply → receipt → внешний TLS/auth/DIRECT/WARP. Испытания: новая VM, существующая VM, Windows STOPPED/PROXY_ONLY. Merge не запускает production/TUN.
 
 ## Обязательный протокол сомнения (без гаданий и кругов)
 
-Свежий typed read-only status должен показать owner/source/ReleaseSet. Не хватает факта — запросить **один точный read-only факт** у существующего native owner; до подтверждения `UNPROVEN/BLOCKED`, никакого replay. Повторяющийся пробел исправлять в том же Rust handler и `host status --deep` (resource, error_class, next_action, proof). Никаких вторых агентов и ручных обходов.
+При **любой, даже минимальной неопределённости** — **обязательный запрос локальной помощи**: один точный read-only факт от native owner (source, ReleaseSet, resource). До доказательства — `UNPROVEN/BLOCKED`, без replay. **Конечная приёмка:** `host status --deep` сам даёт missing `error_class`, `next_action` и proof, без ручных обходов.
 
 ## Правило выполнения
 

@@ -1,6 +1,6 @@
 # sing-box — нормативная архитектура
 
-Это **единственный нормативный архитектурный контракт**. Единственный [план завершения](FINALIZATION-PLAN.md); [Issue #26](https://github.com/iamaman11/sing-box/issues/26) — живой курсор и архив, НЕ источник допуска к операциям. Истина — защищённый удалённый GitHub `main`, не локальные файлы или устные статусы.
+Единый архитектурный контракт. [План](FINALIZATION-PLAN.md); [Issue #26](https://github.com/iamaman11/sing-box/issues/26) — только архив/курсор. Канон — защищённый GitHub `main`.
 
 **Запрещены:** историческая A/B, старые credential workflows, дубли команд, reserve secrets, migration fallback, replay и новые агенты/службы/реестры.
 
