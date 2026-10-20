@@ -1054,6 +1054,7 @@ mod tests {
                     windows_mode: FleetHostMode::Unspecified as i32,
                 }),
                 native_receipt_public_key: Vec::new(),
+                vm_first_use_credential: None,
             }],
         };
         let i = FleetHostIntent {
@@ -1264,6 +1265,7 @@ mod tests {
                     windows_mode: FleetHostMode::Unspecified as i32,
                 }),
                 native_receipt_public_key: Vec::new(),
+                vm_first_use_credential: None,
             }],
         };
         let intent = FleetHostIntent {
@@ -1377,6 +1379,7 @@ mod tests {
                 windows_mode: FleetHostMode::Unspecified as i32,
             }),
             native_receipt_public_key: Vec::new(),
+            vm_first_use_credential: None,
         };
         let registry = HostRegistry {
             schema_version: 1,

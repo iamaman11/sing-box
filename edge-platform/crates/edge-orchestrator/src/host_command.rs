@@ -1326,6 +1326,7 @@ mod tests {
             desired_spec_path: "infra/production/production.textproto".into(),
             target: None,
             native_receipt_public_key: Vec::new(),
+            vm_first_use_credential: None,
         };
         let mut o = FleetNativeObservation {
             schema_version: 1,
@@ -1403,6 +1404,7 @@ mod tests {
                     windows_mode: FleetHostMode::ProxyOnly as i32,
                 }),
                 native_receipt_public_key: Vec::new(),
+                vm_first_use_credential: None,
             }],
         };
         let release = "a".repeat(64);
@@ -1537,6 +1539,7 @@ mod tests {
                     desired_spec_path: "infra/application/disposable-acceptance.json".to_owned(),
                     target: None,
                     native_receipt_public_key: Vec::new(),
+                    vm_first_use_credential: None,
                 },
                 ManagedHost {
                     machine_id: "sing-box-windows-lab".to_owned(),
@@ -1549,6 +1552,7 @@ mod tests {
                     desired_spec_path: "infra/production/production.textproto".to_owned(),
                     target: None,
                     native_receipt_public_key: Vec::new(),
+                    vm_first_use_credential: None,
                 },
             ],
         };
@@ -1580,6 +1584,7 @@ mod tests {
             desired_spec_path: "infra/production/production.textproto".to_owned(),
             target: None,
             native_receipt_public_key: Vec::new(),
+            vm_first_use_credential: None,
         });
         assert_eq!(
             resolve_credential_peer(&two_windows, "application-acceptance-1", "auto").unwrap_err(),

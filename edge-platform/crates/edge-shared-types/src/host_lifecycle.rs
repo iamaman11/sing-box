@@ -741,6 +741,7 @@ mod tests {
                 desired_spec_path: "infra/hosts/specs/vm-one.textproto".to_owned(),
                 target: None,
                 native_receipt_public_key: Vec::new(),
+                vm_first_use_credential: None,
             }],
         };
         let registry_pb = crate::encode_host_registry(&registry).unwrap();
@@ -867,6 +868,7 @@ mod tests {
                 desired_spec_path: "infra/production/production.textproto".to_owned(),
                 target: None,
                 native_receipt_public_key: Vec::new(),
+                vm_first_use_credential: None,
             }],
         };
         let bytes = encode_host_registry(&registry).unwrap();
