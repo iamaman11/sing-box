@@ -833,7 +833,7 @@ def test_vm_runner_enrollment_is_never_an_executable_sudo_capability() -> None:
     assert installer.count('"' + current + '"') == 1
     for source in (workflow, installer):
         assert source.index('"' + current + '"') < source.index('"' + old + '"')
-    sudoers = installer.split('cat > "${SUDOERS_FILE}" <<EOF', 1)[1].split("\\nEOF", 1)[0]
+    sudoers = installer.split('cat > "${SUDOERS_FILE}" <<EOF', 1)[1].split("EOF", 1)[0]
     # Root enrollment is never granted to GitHub transport, even with old
     # sudoers installed on a machine that predates the latest CLI change.
     require(
