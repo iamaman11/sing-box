@@ -790,6 +790,14 @@ def test_host_native_receipt_boundary_and_legacy_workflow_admission(router: str)
         "The one native owner may emit the complete 8192-byte authenticated receipt without truncation",
     )
     require(
+        '[[ "${EDGE_FLEET_REGISTRY_SHA256}" =~ ^[0-9a-f]{64}$ ]]' in router
+        and 'test "${EDGE_FLEET_REGISTRY_SHA256}" = "${HOSTS_SHA256}"' in router
+        and 'cmp -s "${RUNNER_TEMP}/host-release/fleet-registry.pb" "${RUNNER_TEMP}/hosts.binpb"' in router
+        and 'if [[ "${command[0]}" != "status" ]]; then' in router
+        and 'test "${EDGE_RELEASE_SCHEMA_VERSION}" = "7"' in router,
+        "Signed HostIntent must be bound to exact Git fleet bytes, not a legacy or alternate release registry",
+    )
+    require(
         "host_native_source_capability={source_capability}" in orchestrator
         and "VM_SIGNED_APPLY_SOURCE_PRESENT" in orchestrator
         and "WINDOWS_SIGNED_SYSTEM_HANDLER_MISSING" in orchestrator

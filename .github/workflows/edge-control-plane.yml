@@ -129,6 +129,18 @@ jobs:
             echo 'HOST_COMMAND_INVALID' >&2
             exit 1
           fi
+          # The old accepted main may still support diagnostic STATUS, but
+          # must never mint a signed mutation from a release missing its Git
+          # registry. Compare the published asset to our independent exact
+          # checked-out textproto compilation, before preparing HostIntent.
+          if [[ "${command[0]}" != "status" ]]; then
+            source "${RUNNER_TEMP}/host-release/resolved.env"
+            test "${EDGE_RELEASE_SCHEMA_VERSION}" = "7"
+            [[ "${EDGE_FLEET_REGISTRY_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+            test "${EDGE_FLEET_REGISTRY_SHA256}" = "${HOSTS_SHA256}"
+            cmp -s "${RUNNER_TEMP}/host-release/fleet-registry.pb" "${RUNNER_TEMP}/hosts.binpb"
+            test -s "${RUNNER_TEMP}/host-release/application-bundle.pb"
+          fi
           runner_args=()
           if [[ -f "${RUNNER_TEMP}/host-runners.json" ]]; then
             runner_args=(--runner-inventory-json "${RUNNER_TEMP}/host-runners.json")

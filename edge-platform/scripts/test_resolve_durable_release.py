@@ -56,7 +56,7 @@ def exe(path, content):
 
 def make_state(accepted_override=None, ambiguous=False, schema=3, unrelated_count=0):
     accepted="a"*40; candidate="b"*40; tree="c"*40
-    assert schema in (3, 4, 5, 6)
+    assert schema in (3, 4, 5, 6, 7)
     runtime_input="d"*64
     runtime_source="e"*40
     runtime_lines=(
@@ -71,7 +71,7 @@ def make_state(accepted_override=None, ambiguous=False, schema=3, unrelated_coun
     windows_sing_box="b"*64
     windows_diagnostic="c"*64
     windows_lines=""
-    if schema in (5, 6):
+    if schema in (5, 6, 7):
       windows_lines=(
         f'print("windows_input_sha256={windows_input}")\n'
         f'print("windows_source_revision={windows_source}")\n'
@@ -80,9 +80,13 @@ def make_state(accepted_override=None, ambiguous=False, schema=3, unrelated_coun
         f'print("windows_console_sha256={windows_console}")\n'
         f'print("windows_sing_box_sha256={windows_sing_box}")'
       )
-      if schema == 6:
+      if schema in (6, 7):
         windows_lines += f'\nprint("windows_diagnostic_sha256={windows_diagnostic}")'
     pb=b"release-set-v2"; pbsha=sha(pb); tag="edge-release-"+pbsha
+    application_bundle=b"canonical-v7-application-bundle"
+    fleet_registry=b"canonical-v7-fleet-registry"
+    bundle_sha=sha(application_bundle)
+    fleet_sha=sha(fleet_registry)
     agent=b"agent"; controller=b"controller"; orchestrator=b"orchestrator"
     asha=sha(agent); csha=sha(controller); osha=sha(orchestrator)
     verifier=f"""#!/usr/bin/env python3
@@ -94,6 +98,8 @@ assert h(d["edge-agent"])=="{asha}"
 assert h(d["edge-controller"])=="{csha}"
 assert h(d["edge-orchestrator"])=="{osha}"
 assert h(d["input"])=="{pbsha}"
+if {schema}==7:
+    assert h(d["application-bundle"])=="{bundle_sha}"
 print("release_set_sha256={pbsha}")
 print("schema_version={schema}")
 print("source_revision={candidate}")
@@ -108,6 +114,7 @@ print("containerd_version=2.3.5-1~debian.13~trixie")
 print("compose_version=5.5.1-1~debian.13~trixie")
 {runtime_lines}
 {windows_lines}
+{f'print("application_bundle_sha256={bundle_sha}")' if schema == 7 else ''}
 """.encode()
     acceptance=(json.dumps({"schema":1,"accepted_revision":accepted_override or accepted,
       "candidate_revision":candidate,"source_tree":tree,"candidate_run_id":123})+"\n").encode()
@@ -126,6 +133,13 @@ print("compose_version=5.5.1-1~debian.13~trixie")
       "release-set.pb":pb,
       "release-set.pb.sha256":f"{pbsha}  release-set.pb\n".encode(),
     }
+    if schema == 7:
+      files.update({
+        "application-bundle.pb":application_bundle,
+        "application-bundle.pb.sha256":f"{bundle_sha}  application-bundle.pb\n".encode(),
+        "fleet-registry.pb":fleet_registry,
+        "fleet-registry.pb.sha256":f"{fleet_sha}  fleet-registry.pb\n".encode(),
+      })
     assets=[]; blobs={}
     for i,(name,data) in enumerate(files.items(),700000001):
       assets.append({"id":i,"name":name,"size":len(data),"digest":"sha256:"+sha(data)})
@@ -146,13 +160,15 @@ print("compose_version=5.5.1-1~debian.13~trixie")
     meta={"accepted":accepted,"candidate":candidate,"tree":tree,"tag":tag,"pbsha":pbsha,"asha":asha,"csha":csha,"osha":osha,
       "schema":schema,"runtime_input":runtime_input if schema >= 4 else "",
       "runtime_source":runtime_source if schema >= 4 else candidate,
-      "windows_input":windows_input if schema in (5, 6) else "",
-      "windows_source":windows_source if schema in (5, 6) else candidate,
-      "windows_artifact":windows_artifact if schema in (5, 6) else "",
-      "windows_controller":windows_controller if schema in (5, 6) else "",
-      "windows_console":windows_console if schema in (5, 6) else "",
-      "windows_sing_box":windows_sing_box if schema in (5, 6) else "",
-      "windows_diagnostic":windows_diagnostic if schema == 6 else "",
+      "windows_input":windows_input if schema in (5, 6, 7) else "",
+      "windows_source":windows_source if schema in (5, 6, 7) else candidate,
+      "windows_artifact":windows_artifact if schema in (5, 6, 7) else "",
+      "windows_controller":windows_controller if schema in (5, 6, 7) else "",
+      "windows_console":windows_console if schema in (5, 6, 7) else "",
+      "windows_sing_box":windows_sing_box if schema in (5, 6, 7) else "",
+      "windows_diagnostic":windows_diagnostic if schema in (6, 7) else "",
+      "bundle_sha":bundle_sha if schema == 7 else "",
+      "fleet_sha":fleet_sha if schema == 7 else "",
       "controller_id":next(x["id"] for x in assets if x["name"]=="edge-controller-linux-amd64")}
     return state,meta
 
@@ -181,6 +197,8 @@ def run(state,meta,expected=None,ok=False,expected_tag_ref_calls=None):
         assert vals["EDGE_ORCHESTRATOR_SHA256"]==meta["osha"]
         assert vals["EDGE_AGENT_SHA256"]==meta["asha"]
         assert vals["EDGE_RELEASE_SCHEMA_VERSION"]==str(meta["schema"])
+        assert vals["EDGE_APPLICATION_BUNDLE_SHA256"]==meta["bundle_sha"]
+        assert vals["EDGE_FLEET_REGISTRY_SHA256"]==meta["fleet_sha"]
         assert vals["EDGE_RUNTIME_SOURCE_REVISION"]==meta["runtime_source"]
         assert vals["EDGE_RUNTIME_INPUT_SHA256"]==meta["runtime_input"]
         assert vals["EDGE_WINDOWS_SOURCE_REVISION"]==meta["windows_source"]
@@ -210,6 +228,17 @@ def main():
     s,m=make_state(schema=5); run(s,m,expected=m["tag"],ok=True,expected_tag_ref_calls=1)
     s,m=make_state(schema=6,unrelated_count=25)
     run(s,m,expected=m["tag"],ok=True,expected_tag_ref_calls=1)
+    s,m=make_state(schema=7); run(s,m,expected=m["tag"],ok=True,expected_tag_ref_calls=1)
+    # Published fleet must be complete and content-addressed before HostIntent.
+    s,m=make_state(schema=7)
+    s["releases"][-1]["assets"]=[a for a in s["releases"][-1]["assets"] if not a["name"].startswith("fleet-registry.")]
+    run(s,m)
+    s,m=make_state(schema=7)
+    s["releases"][-1]["assets"]=[a for a in s["releases"][-1]["assets"] if a["name"]!="fleet-registry.pb.sha256"]
+    run(s,m)
+    s,m=make_state(schema=7)
+    s["corrupt_asset_id"]=next(a["id"] for a in s["releases"][-1]["assets"] if a["name"]=="fleet-registry.pb")
+    run(s,m)
     s,m=make_state(ambiguous=True); run(s,m)
     s,m=make_state(accepted_override="e"*40); run(s,m)
     s,m=make_state(); run(s,m,expected="edge-release-"+"f"*64)
