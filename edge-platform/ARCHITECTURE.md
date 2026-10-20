@@ -47,7 +47,9 @@
 
 **Docker CREATE:** Line1/Line2 создаются native Bollard из checked Compose и DAG. Порты, mounts, owner, соседи и Compose SHA-256 проверяются до/после BEGIN; ACK loss → `UNKNOWN_NO_REPLAY`. Произвольные контейнеры запрещены.
 
-**Не принято:** физическая установка scoped signer/root Agent, остальные resource kinds DNS/firewall/routes/TLS/CredentialRef, Windows SYSTEM apply, authenticated remote receipt и полное deep-acceptance. Обычный `resource_id=sing-box` остаётся host-wide; `host recover` read-only. Код PR и CI не означают эксплуатационный допуск. Старые команды не возвращать; `UNPROVEN` не считать PASS.
+**Native receipt (PR #403):** код Git-pinned Ed25519 `FleetHostReceipt` проверяет точный signed intent и native result; workflow повышает статус только после Rust-проверки подписи. В текущем Git registry ключи `native_receipt_public_key` ещё отсутствуют, а root `receipt-key.pk8` не provisioned: никакая VM mutation не допущена физически. Кодовая верификация не заменяет ключевое enrollment и proof TLS/auth/egress.
+
+**Не принято:** физическая установка scoped signer/root Agent и ключей receipt, остальные resource kinds DNS/firewall/routes/TLS/CredentialRef, Windows SYSTEM apply и полное deep-acceptance. Обычный `resource_id=sing-box` остаётся host-wide; `host recover` read-only. Код PR и CI не означают эксплуатационный допуск. Старые команды не возвращать; `UNPROVEN` не считать PASS.
 
 ## Неопределённость и восстановление
 

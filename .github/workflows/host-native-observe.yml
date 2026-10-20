@@ -360,6 +360,9 @@ jobs:
             grep -Fxq 'host_native_result_authenticated=true' "${audit}"
             grep -Eq '^host_native_result_remote_acceptance=(VERIFIED_PHYSICAL|OBSERVED_ONLY)$' "${audit}"
             grep -Fxq 'host_mutations=0' "${audit}"
+            receipt_proof="$(sed -n 's/^host_native_result_remote_acceptance=//p' "${audit}")"
+            [[ "${receipt_proof}" = VERIFIED_PHYSICAL || "${receipt_proof}" = OBSERVED_ONLY ]]
+            printf 'native_receipt_proof=%s\n' "${receipt_proof}" >> "${GITHUB_OUTPUT}"
             echo 'native_result_audit=EXACT_SIGNED_NATIVE_OWNER' >> "${GITHUB_OUTPUT}"
             {
               echo '### Native owner cryptographically verified receipt'
@@ -383,6 +386,7 @@ jobs:
         env:
           TYPED_OUTCOME: ${{ steps.typed.outcome }}
           TYPED_VERDICT: ${{ steps.typed.outputs.typed_verdict }}
+          NATIVE_RECEIPT_PROOF: ${{ steps.typed.outputs.native_receipt_proof }}
         shell: bash
         run: |
           set -euo pipefail
@@ -401,9 +405,17 @@ jobs:
              [[ "${COMMAND_BODY}" = "/host apply ${TARGET_MACHINE}" ||
                 "${COMMAND_BODY}" = "/host recover ${TARGET_MACHINE}" ||
                 "${COMMAND_BODY}" =~ ^/host[[:space:]]apply[[:space:]]${TARGET_MACHINE}[[:space:]]config/[A-Za-z0-9][A-Za-z0-9._-]{0,63}/(line1-gateway|line2-proxy)$ ]]; then
-            native_note='Native VM transaction: only the signed HostIntent may reach root owner. Remote authenticated receipt: UNPROVEN.'
-            if [[ "${OBSERVED_RESULT}" = success ]]; then
-              result=NATIVE_EXECUTION_COMPLETED_REMOTE_ATTESTATION_UNPROVEN
+            # Only the exact Rust Ed25519 verifier can upgrade this result.
+            # A successful runner step or unsigned readback never can.
+            native_note='Native VM transaction: remote authenticated receipt UNPROVEN.'
+            if [[ "${TYPED_OUTCOME}" = success &&
+                  "${NATIVE_RECEIPT_PROOF}" = VERIFIED_PHYSICAL ]]; then
+              result=NATIVE_RECEIPT_VERIFIED_PHYSICAL
+              native_note='Git-pinned Ed25519 native-owner receipt verified against exact intent and native physical readback; external TLS/auth/egress acceptance remains separate.'
+            elif [[ "${TYPED_OUTCOME}" = success &&
+                    "${NATIVE_RECEIPT_PROOF}" = OBSERVED_ONLY ]]; then
+              result=NATIVE_RECEIPT_OBSERVED_ONLY
+              native_note='Git-pinned Ed25519 native-owner receipt verified; no physical mutation poststate accepted.'
             else
               result=NATIVE_EXECUTION_NOT_VERIFIED_NO_REPLAY
             fi

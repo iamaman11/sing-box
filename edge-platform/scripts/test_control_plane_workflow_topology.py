@@ -734,6 +734,23 @@ def test_git_windows_host_host_contract(credentials: str) -> None:
     )
 
 
+def test_host_native_signed_result_reporting() -> None:
+    """The workflow must not downgrade or fabricate a Git-pinned receipt."""
+    source = Path(".github/workflows/host-native-observe.yml").read_text(
+        encoding="utf-8"
+    )
+    require(
+        "native_receipt_proof=%s" in source
+        and "steps.typed.outputs.native_receipt_proof" in source
+        and 'result=NATIVE_RECEIPT_VERIFIED_PHYSICAL' in source
+        and 'result=NATIVE_RECEIPT_OBSERVED_ONLY' in source
+        and '"${NATIVE_RECEIPT_PROOF}" = VERIFIED_PHYSICAL' in source
+        and '"${TYPED_OUTCOME}" = success' in source
+        and "remote authenticated receipt UNPROVEN" in source,
+        "Only the exact Rust signature verifier may promote a native receipt",
+    )
+
+
 def test_canonical_host_mutation_ingress() -> None:
     """Only the host chain may mutate; old domain namespaces are sealed."""
     source = Path("edge-platform/crates/edge-orchestrator/src/main.rs").read_text(
@@ -937,6 +954,7 @@ def test_existing_worker_host_signer_is_syntactically_closed() -> None:
 def main() -> None:
     test_existing_worker_host_signer_is_syntactically_closed()
     router = ROUTER.read_text(encoding="utf-8")
+    test_host_native_signed_result_reporting()
     test_canonical_host_mutation_ingress()
     test_native_host_readonly_control_boundary(router)
     application = APPLICATION.read_text(encoding="utf-8")
