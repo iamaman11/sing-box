@@ -14,21 +14,16 @@
 
 ## VM root trust (внутренняя операция, не четвёртая публичная команда)
 
-Существующий `edge-agent local host-enroll <machine-id> <release-set-sha256>`
-от root проверяет опубликованный ReleaseSet, точный Git tree/spec и
-Worker signer public key, закреплённый в том же Git registry. Никакого
-аргумента с ключом, резервного ключа или второго реестра. Повторный вызов с тем же
-`machine_id` и ключом атомарно заменяет **один** `trust.pb`,
-сохраняя прежний журнал; `*.pending.pb` блокирует обновление.
-Один kernel lock исключает пересечение с `local host-apply`. Диагностика
-отличает `UNENROLLED`, `PROTECTED_LOCAL_ONLY`,
-`UNKNOWN_NO_REPLAY` и `UNPROVEN`. Это source code PR #403, не
-физическая приёмка и не разрешение runner запускать root enrollment.
-Runner со старыми прямыми `sudo`-правами **не допускается** к VM
-apply/recover. Внутренний Rust `host native-result` сверяет
-intent/result по registry/desired/release, но его transport-копия
-остаётся `UNAUTHENTICATED`, не физическим receipt.
-Windows/VM lifecycle физически UNPROVEN.
+Root-only `edge-agent local host-enroll <machine-id> <release-set-sha256>`
+проверяет опубликованный ReleaseSet, Git tree/spec и публичный ключ Worker
+из **того же** защищённого Git registry. Аргумента с ключом и fallback нет.
+Refresh меняет только `trust.pb`, сохраняя journal; `*.pending.pb` и
+общий kernel lock блокируют небезопасное обновление.
+Диагностика: `UNENROLLED` / `PROTECTED_LOCAL_ONLY` /
+`UNKNOWN_NO_REPLAY` / `UNPROVEN`. Runner не получает sudo enrollment
+и произвольные VM mutations. Rust `host native-result` аутентифицирует
+подписанный receipt, но transport-копия без проверки — `UNAUTHENTICATED`.
+Физическая приёмка ещё UNPROVEN.
 
 ## VM deep diagnostics — per-resource protobuf (source-only)
 
