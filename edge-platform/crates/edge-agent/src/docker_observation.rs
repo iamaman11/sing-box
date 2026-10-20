@@ -1659,6 +1659,9 @@ mod native_vm_first_use_tests {
     use super::*;
 
     fn valid_vm_bundle() -> edge_shared_types::CredentialDeliveryBundle {
+        // Real X25519 private material is required by runtime projection.
+        // Keep it test-local and never serialize/log the generated secret.
+        let private = edge_secrets::ApplicationRuntimeSecrets::generate();
         use edge_shared_types::{
             CredentialDeliverySlot, CredentialProjectionKind, ProxyCredentialGeneration,
             RealityPrivateIdentity, RealityPrivateIdentityGeneration, TunnelAuthentication,
@@ -1685,10 +1688,10 @@ mod native_vm_first_use_tests {
                     reality_identity: Some(RealityPrivateIdentityGeneration {
                         generation: 31,
                         direct: Some(RealityPrivateIdentity {
-                            private_key: "A".repeat(43),
+                            private_key: private.reality_private_key,
                         }),
                         warp: Some(RealityPrivateIdentity {
-                            private_key: "B".repeat(43),
+                            private_key: private.reality_warp_private_key,
                         }),
                     }),
                     line2_proxy: Some(ProxyCredentialGeneration {
