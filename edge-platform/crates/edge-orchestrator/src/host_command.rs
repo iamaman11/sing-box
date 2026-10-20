@@ -559,6 +559,17 @@ pub(crate) fn run(
                 } else {
                     println!("host_vm_hierarchy_nodes=UNPROVEN");
                 }
+                let bootstrap = edge_shared_types::FleetVmBootstrapPhase::try_from(
+                    report.bootstrap_phase
+                )
+                .map_err(|_| "HOST_VM_BOOTSTRAP_PHASE_INVALID")?;
+                println!("host_vm_bootstrap_phase={}", bootstrap.as_str_name());
+                println!(
+                    "host_vm_bootstrap_next_action={}",
+                    edge_shared_types::host_resources::vm_bootstrap_next_action(bootstrap)
+                );
+                println!("host_vm_bootstrap_source=RUNNER_COPIED_UNAUTHENTICATED");
+                println!("host_vm_bootstrap_authorizes_mutation=false");
                 println!("host_vm_resources_count={}", report.resources.len());
                 println!("host_vm_resources_problem_count={problems}");
                 println!("host_vm_resources_config_unproven_count={config_unproven}");

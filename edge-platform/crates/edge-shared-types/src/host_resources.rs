@@ -521,6 +521,52 @@ pub fn validate_vm_credential_readback(
     }
 }
 
+/// A single typed explanation for first-use prerequisites. This never
+/// authorizes provisioning, install or a new journal BEGIN.
+pub fn vm_bootstrap_next_action(
+    phase: crate::FleetVmBootstrapPhase,
+) -> &'static str {
+    use crate::FleetVmBootstrapPhase as Phase;
+    match phase {
+        Phase::Unspecified => "UPDATE_INSTALLED_NATIVE_OWNER_FOR_TYPED_BOOTSTRAP_EVIDENCE",
+        Phase::TrustUnproven => "ENROLL_TRUST_THROUGH_EXISTING_ROOT_OWNER",
+        Phase::JournalUnknownNoReplay => "RECONCILE_UNRESOLVED_NATIVE_JOURNAL_READ_ONLY",
+        Phase::ReceiptKeyGitRegistrationRequired => {
+            "REGISTER_NATIVE_RECEIPT_PUBLIC_KEY_IN_PROTECTED_GIT"
+        }
+        Phase::ReceiptKeyMismatchOrUnproven => "VERIFY_NATIVE_RECEIPT_IDENTITY_WITH_ROOT_OWNER",
+        Phase::WorkerActiveCredentialRequired => {
+            "COMPLETE_WORKER_V2_FIRST_USE_ACTIVE_CREDENTIAL_DELIVERY"
+        }
+        Phase::LocalPrerequisitesOnly => "VERIFY_WORKER_SIGNER_NATIVE_RECEIPT_AND_PHYSICAL_STATE",
+    }
+}
+
+fn validate_vm_bootstrap_phase(
+    phase: i32,
+    host: &FleetHost,
+    credential: &crate::FleetVmCredentialReadback,
+) -> Result<(), &'static str> {
+    use crate::{FleetVmBootstrapPhase as Phase, FleetVmCredentialState as State};
+    let phase = Phase::try_from(phase).map_err(|_| "VM_BOOTSTRAP_PHASE_UNKNOWN")?;
+    let git_key = host.native_receipt_public_key.as_slice();
+    let git_pinned = git_key.len() == 32 && git_key.iter().any(|byte| *byte != 0);
+    let active = credential.state == State::ActiveLocalValid as i32
+        && credential.active_generation > 0;
+    let consistent = match phase {
+        // Old installed owners only express unavailable bootstrap evidence.
+        Phase::Unspecified | Phase::TrustUnproven | Phase::JournalUnknownNoReplay => true,
+        Phase::ReceiptKeyGitRegistrationRequired => git_key.is_empty(),
+        Phase::ReceiptKeyMismatchOrUnproven => git_pinned,
+        Phase::WorkerActiveCredentialRequired => git_pinned && !active,
+        Phase::LocalPrerequisitesOnly => git_pinned && active,
+    };
+    if !consistent {
+        return Err("VM_BOOTSTRAP_PHASE_DEPENDENCY_CONFLICT");
+    }
+    Ok(())
+}
+
 pub fn validate_vm_resource_report(
     report: &FleetVmResourceReport,
     host: &FleetHost,
@@ -539,12 +585,12 @@ pub fn validate_vm_resource_report(
     if let Some(network) = report.network.as_ref() {
         validate_vm_network_readback(network)?;
     }
-    validate_vm_credential_readback(
-        report
-            .credential
-            .as_ref()
-            .ok_or("VM_CREDENTIAL_READBACK_REQUIRED")?,
-    )?;
+    let credential = report
+        .credential
+        .as_ref()
+        .ok_or("VM_CREDENTIAL_READBACK_REQUIRED")?;
+    validate_vm_credential_readback(credential)?;
+    validate_vm_bootstrap_phase(report.bootstrap_phase, host, credential)?;
     use crate::FleetVmInstalledPolicyStatus as Policy;
     let policy_status = Policy::try_from(report.installed_policy_status)
         .map_err(|_| "VM_INSTALLED_POLICY_STATUS_INVALID")?;
@@ -836,6 +882,46 @@ mod tests {
         };
         (host, report)
     }
+    #[test]
+    fn bootstrap_gate_is_typed_read_only_and_consistent_with_git_and_worker() {
+        use crate::FleetVmBootstrapPhase as Phase;
+        let (mut host, mut report) = fixture();
+        assert!(validate_vm_resource_report(&report, &host).is_ok());
+        assert_eq!(
+            vm_bootstrap_next_action(Phase::Unspecified),
+            "UPDATE_INSTALLED_NATIVE_OWNER_FOR_TYPED_BOOTSTRAP_EVIDENCE"
+        );
+        report.bootstrap_phase = Phase::ReceiptKeyGitRegistrationRequired as i32;
+        assert!(validate_vm_resource_report(&report, &host).is_ok());
+        report.bootstrap_phase = Phase::LocalPrerequisitesOnly as i32;
+        assert_eq!(
+            validate_vm_resource_report(&report, &host),
+            Err("VM_BOOTSTRAP_PHASE_DEPENDENCY_CONFLICT")
+        );
+        host.native_receipt_public_key = vec![9; 32];
+        assert!(validate_vm_resource_report(&report, &host).is_ok());
+        assert_eq!(
+            vm_bootstrap_next_action(Phase::LocalPrerequisitesOnly),
+            "VERIFY_WORKER_SIGNER_NATIVE_RECEIPT_AND_PHYSICAL_STATE"
+        );
+        report.credential.as_mut().unwrap().state =
+            crate::FleetVmCredentialState::StoreAbsent as i32;
+        report.credential.as_mut().unwrap().active_generation = 0;
+        assert_eq!(
+            validate_vm_resource_report(&report, &host),
+            Err("VM_BOOTSTRAP_PHASE_DEPENDENCY_CONFLICT")
+        );
+        report.bootstrap_phase = Phase::WorkerActiveCredentialRequired as i32;
+        assert!(validate_vm_resource_report(&report, &host).is_ok());
+        report.bootstrap_phase = Phase::JournalUnknownNoReplay as i32;
+        assert!(validate_vm_resource_report(&report, &host).is_ok());
+        report.bootstrap_phase = 7777;
+        assert_eq!(
+            validate_vm_resource_report(&report, &host),
+            Err("VM_BOOTSTRAP_PHASE_UNKNOWN")
+        );
+    }
+
     #[test]
     fn credential_reference_cannot_claim_active_or_candidate_without_exact_generation() {
         use crate::{FleetVmCredentialReadback as Readback, FleetVmCredentialState as State};

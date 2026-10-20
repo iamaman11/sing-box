@@ -813,6 +813,27 @@ def test_host_native_receipt_boundary_and_legacy_workflow_admission(router: str)
         )
 
 
+def test_typed_vm_bootstrap_evidence_is_non_authorizing() -> None:
+    """Missing Git receipt identity/ACTIVE credentials must have ONE typed owner."""
+    proto = Path("edge-platform/proto/edge/platform/v1/fleet.proto").read_text(encoding="utf-8")
+    types = Path("edge-platform/crates/edge-shared-types/src/host_resources.rs").read_text(encoding="utf-8")
+    agent = Path("edge-platform/crates/edge-agent/src/host_native.rs").read_text(encoding="utf-8")
+    docker = Path("edge-platform/crates/edge-agent/src/docker_observation.rs").read_text(encoding="utf-8")
+    cmd = Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(encoding="utf-8")
+    require(
+        "enum FleetVmBootstrapPhase {" in proto
+        and "FleetVmBootstrapPhase bootstrap_phase = 11;" in proto
+        and "validate_vm_bootstrap_phase(report.bootstrap_phase, host, credential)" in types
+        and "fn local_vm_bootstrap_phase(" in agent
+        and "let credential = observe_native_vm_credential_readback(stack_dir);" in docker
+        and "bootstrap_phase: bootstrap_phase as i32" in docker
+        and "bootstrap_gate_is_typed_read_only_and_consistent_with_git_and_worker" in types
+        and "host_vm_bootstrap_source=RUNNER_COPIED_UNAUTHENTICATED" in cmd
+        and "host_vm_bootstrap_authorizes_mutation=false" in cmd,
+        "First-use must use one typed, bounded, explicitly unauthenticated native evidence path",
+    )
+
+
 def test_native_host_readonly_control_boundary(router: str) -> None:
     """One typed Rust inventory dispatches independent, read-only native owners."""
     child_path = Path(".github/workflows/host-native-observe.yml")
@@ -994,6 +1015,7 @@ def main() -> None:
     test_host_native_signed_result_reporting()
     test_canonical_host_mutation_ingress()
     test_host_native_receipt_boundary_and_legacy_workflow_admission(router)
+    test_typed_vm_bootstrap_evidence_is_non_authorizing()
     test_native_host_readonly_control_boundary(router)
     application = APPLICATION.read_text(encoding="utf-8")
     vultr = VULTR.read_text(encoding="utf-8")

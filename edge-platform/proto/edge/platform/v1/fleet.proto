@@ -233,6 +233,18 @@ message FleetVmCredentialReadback {
   uint64 active_generation = 2;
   uint64 candidate_generation = 3;
 }
+// A read-only, root-local first-use prerequisite. This is NEVER signed
+// remote attestation or mutation authority. A missing field from an old owner
+// means UNSPECIFIED/UNPROVEN, not READY.
+enum FleetVmBootstrapPhase {
+  FLEET_VM_BOOTSTRAP_PHASE_UNSPECIFIED = 0;
+  FLEET_VM_BOOTSTRAP_PHASE_TRUST_UNPROVEN = 1;
+  FLEET_VM_BOOTSTRAP_PHASE_JOURNAL_UNKNOWN_NO_REPLAY = 2;
+  FLEET_VM_BOOTSTRAP_PHASE_RECEIPT_KEY_GIT_REGISTRATION_REQUIRED = 3;
+  FLEET_VM_BOOTSTRAP_PHASE_RECEIPT_KEY_MISMATCH_OR_UNPROVEN = 4;
+  FLEET_VM_BOOTSTRAP_PHASE_WORKER_ACTIVE_CREDENTIAL_REQUIRED = 5;
+  FLEET_VM_BOOTSTRAP_PHASE_LOCAL_PREREQUISITES_ONLY = 6;
+}
 message FleetVmResourceReport {
   uint32 schema_version = 1;
   string machine_id = 2;
@@ -252,6 +264,10 @@ message FleetVmResourceReport {
   // Required for schema v2; one root-local credential reference readback.
   // This is not a Worker receipt and cannot authorize native INSTALL.
   FleetVmCredentialReadback credential = 10;
+  // Derived by the existing root Agent from protected trust, Git receipt
+  // identity, permanent no-replay journal and the SAME local ACTIVE store as
+  // INSTALL. A runner copy stays UNAUTHENTICATED even when locally ready.
+  FleetVmBootstrapPhase bootstrap_phase = 11;
 }
 
 enum FleetHostRunState {

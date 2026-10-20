@@ -177,6 +177,39 @@ pub(super) fn local_trust_preflight() -> &'static str {
     }
 }
 
+/// One root-local first-use prerequisite readback, never a remote authority
+/// or a signed physical receipt. It uses the SAME protected root and the SAME
+/// Worker ACTIVE readback as INSTALL, without changing either.
+pub(super) fn local_vm_bootstrap_phase(
+    host: &edge_shared_types::FleetHost,
+    credential: &edge_shared_types::FleetVmCredentialReadback,
+) -> edge_shared_types::FleetVmBootstrapPhase {
+    use edge_shared_types::{
+        FleetVmBootstrapPhase as Phase, FleetVmCredentialState as Credential,
+    };
+    match local_trust_preflight() {
+        "UNKNOWN_NO_REPLAY" => return Phase::JournalUnknownNoReplay,
+        "PROTECTED_LOCAL_ONLY" => {}
+        _ => return Phase::TrustUnproven,
+    }
+    if host.native_receipt_public_key.is_empty() {
+        return Phase::ReceiptKeyGitRegistrationRequired;
+    }
+    let receipt_key = root_file(&Path::new(TRUSTED_ROOT).join("receipt-key.pk8"), 4096);
+    if !receipt_key.is_ok_and(|key| {
+        edge_shared_types::host_receipt::check_native_receipt_key(host, &key).is_ok()
+    }) {
+        return Phase::ReceiptKeyMismatchOrUnproven;
+    }
+    if credential.state == Credential::ActiveLocalValid as i32
+        && credential.active_generation > 0
+    {
+        Phase::LocalPrerequisitesOnly
+    } else {
+        Phase::WorkerActiveCredentialRequired
+    }
+}
+
 /// Exactly one accepted path policy for enrollment and subsequent apply.
 pub(super) fn git_owned_host_spec_path(path: &str) -> bool {
     path.len() > "infra/".len()

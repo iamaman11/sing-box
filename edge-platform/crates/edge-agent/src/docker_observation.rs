@@ -4220,6 +4220,8 @@ pub(crate) async fn observe_vm_resource_report(
             ),
             Err(error) => (None, error.status as i32, error.code),
         };
+    let credential = observe_native_vm_credential_readback(stack_dir);
+    let bootstrap_phase = super::host_native::local_vm_bootstrap_phase(host, &credential);
     let report = FleetVmResourceReport {
         schema_version: 2,
         machine_id: host.machine_id.clone(),
@@ -4232,7 +4234,8 @@ pub(crate) async fn observe_vm_resource_report(
         installed_policy_graph,
         installed_policy_status,
         installed_policy_error_code,
-        credential: Some(observe_native_vm_credential_readback(stack_dir)),
+        credential: Some(credential),
+        bootstrap_phase: bootstrap_phase as i32,
     };
     edge_shared_types::host_resources::validate_vm_resource_report(&report, host)
         .map_err(str::to_owned)?;
