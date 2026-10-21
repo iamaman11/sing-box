@@ -374,7 +374,10 @@ pub async fn get_worker_active_module_bytes(
         .await
         .map_err(|_| "WORKER_MODULE_READ_FAILED".to_owned())?;
     if !response.status().is_success() {
-        return Err(format!("WORKER_MODULE_READ_HTTP_{}", response.status().as_u16()));
+        return Err(format!(
+            "WORKER_MODULE_READ_HTTP_{}",
+            response.status().as_u16()
+        ));
     }
     let media_type = response
         .headers()
@@ -395,10 +398,7 @@ pub async fn get_worker_active_module_bytes(
 /// Strictly parse one multipart part named index.mjs. Reject extra parts,
 /// malformed boundaries, foreign modules and oversized bodies. The result
 /// excludes transport framing but preserves every source byte unchanged.
-fn parse_one_worker_module_multipart(
-    content_type: &str,
-    body: &[u8],
-) -> Result<Vec<u8>, String> {
+fn parse_one_worker_module_multipart(content_type: &str, body: &[u8]) -> Result<Vec<u8>, String> {
     if body.len() > 2_097_152 {
         return Err("WORKER_MODULE_MULTIPART_TOO_LARGE".to_owned());
     }
@@ -433,8 +433,8 @@ fn parse_one_worker_module_multipart(
     if headers_end > 4096 {
         return Err("WORKER_MODULE_HEADERS_TOO_LARGE".to_owned());
     }
-    let headers = std::str::from_utf8(&rest[..headers_end])
-        .map_err(|_| "WORKER_MODULE_HEADERS_NOT_UTF8")?;
+    let headers =
+        std::str::from_utf8(&rest[..headers_end]).map_err(|_| "WORKER_MODULE_HEADERS_NOT_UTF8")?;
     let mut disposition_found = false;
     for header in headers.split("\r\n") {
         if let Some((key, value)) = header.split_once(':') {
@@ -445,8 +445,7 @@ fn parse_one_worker_module_multipart(
                 disposition_found = true;
                 let mut tokens = value.trim().split(';').map(str::trim);
                 if tokens.next() != Some("form-data")
-                    || !tokens
-                        .any(|v| v == "name=\"index.mjs\"" || v == "filename=\"index.mjs\"")
+                    || !tokens.any(|v| v == "name=\"index.mjs\"" || v == "filename=\"index.mjs\"")
                 {
                     return Err("WORKER_MODULE_NAME_NOT_INDEX_MJS".to_owned());
                 }
@@ -2569,28 +2568,55 @@ mod tests {
         ]
         .concat();
         assert_eq!(
-            parse_one_worker_module_multipart("multipart/form-data; boundary=test-boundary", &response)
-                .unwrap(),
+            parse_one_worker_module_multipart(
+                "multipart/form-data; boundary=test-boundary",
+                &response
+            )
+            .unwrap(),
             bytes
         );
         assert_eq!(
-            parse_one_worker_module_multipart("multipart/form-data; boundary=\"test-boundary\"", &response)
-                .unwrap(),
+            parse_one_worker_module_multipart(
+                "multipart/form-data; boundary=\"test-boundary\"",
+                &response
+            )
+            .unwrap(),
             bytes
         );
         let mut second_part = response.clone();
         second_part.extend_from_slice(b"--test-boundary\r\n");
-        assert!(parse_one_worker_module_multipart("multipart/form-data; boundary=test-boundary", &second_part).is_err());
+        assert!(
+            parse_one_worker_module_multipart(
+                "multipart/form-data; boundary=test-boundary",
+                &second_part
+            )
+            .is_err()
+        );
         assert!(parse_one_worker_module_multipart("text/javascript", &response).is_err());
-        assert!(parse_one_worker_module_multipart("multipart/form-data; boundary=wrong", &response).is_err());
+        assert!(
+            parse_one_worker_module_multipart("multipart/form-data; boundary=wrong", &response)
+                .is_err()
+        );
         let foreign = response
             .windows(b"index.mjs".len())
             .position(|s| s == b"index.mjs")
             .unwrap();
         let mut foreign_response = response.clone();
         foreign_response[foreign..foreign + 9].copy_from_slice(b"other.mjs");
-        assert!(parse_one_worker_module_multipart("multipart/form-data; boundary=test-boundary", &foreign_response).is_err());
-        assert!(parse_one_worker_module_multipart("multipart/form-data; boundary=test-boundary", &vec![b'x'; 2_097_153]).is_err());
+        assert!(
+            parse_one_worker_module_multipart(
+                "multipart/form-data; boundary=test-boundary",
+                &foreign_response
+            )
+            .is_err()
+        );
+        assert!(
+            parse_one_worker_module_multipart(
+                "multipart/form-data; boundary=test-boundary",
+                &vec![b'x'; 2_097_153]
+            )
+            .is_err()
+        );
     }
 
     #[test]
