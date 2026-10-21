@@ -4,36 +4,22 @@ on:
   pull_request:
     branches: [main]
     types: [opened, synchronize, reopened]
+    # Canonical ReleaseSet input and executable workflow changes, including
+    # receipt-key registration in infra/hosts/hosts.textproto.
     paths:
       - "edge-platform/**"
-      - "infra/vultr/**"
-      - "infra/application/**"
-      - "infra/cloudflare/**"
-      - "infra/LOCAL_AGENT_EXECUTION_CONTRACT.md"
+      - "infra/**"
       - "win/**"
-      - ".github/workflows/edge-platform-ci.yml"
-      - ".github/workflows/edge-control-plane.yml"
-      - ".github/workflows/credential-lifecycle.yml"
-      - ".github/workflows/windows-physical.yml"
-      - ".github/workflows/vultr-lifecycle.yml"
-      - ".github/workflows/vultr-acceptance-resume.yml"
-      - ".github/workflows/vm-application-lifecycle.yml"
+      - ".github/workflows/**"
   push:
     branches: [main]
+    # Canonical ReleaseSet input and executable workflow changes, including
+    # receipt-key registration in infra/hosts/hosts.textproto.
     paths:
       - "edge-platform/**"
-      - "infra/vultr/**"
-      - "infra/application/**"
-      - "infra/cloudflare/**"
-      - "infra/LOCAL_AGENT_EXECUTION_CONTRACT.md"
+      - "infra/**"
       - "win/**"
-      - ".github/workflows/edge-platform-ci.yml"
-      - ".github/workflows/edge-control-plane.yml"
-      - ".github/workflows/credential-lifecycle.yml"
-      - ".github/workflows/windows-physical.yml"
-      - ".github/workflows/vultr-lifecycle.yml"
-      - ".github/workflows/vultr-acceptance-resume.yml"
-      - ".github/workflows/vm-application-lifecycle.yml"
+      - ".github/workflows/**"
 
 permissions:
   contents: read
@@ -104,6 +90,10 @@ jobs:
             echo "lifecycle workflows must consume canonical ReleaseSet authority, not transitional manifests" >&2
             exit 1
           fi
+
+      - name: Verify protected CI covers registry-only and workflow-only changes
+        shell: bash
+        run: python3 edge-platform/scripts/test_ci_trigger_scope.py
 
       - name: Validate control-plane workflow topology
         shell: bash

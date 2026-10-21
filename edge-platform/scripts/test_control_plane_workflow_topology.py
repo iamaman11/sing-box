@@ -2342,7 +2342,7 @@ def main() -> None:
         and "if ($env:EDGE_OPERATION -in @('converge','repair') -and" in windows_physical
         and "line1_quality_source=INSTALLED_VERIFIED_RELEASE" in windows_physical
         and "Line1 quality requires the exact accepted installed ReleaseSet" not in windows_physical
-        and '".github/workflows/vultr-acceptance-resume.yml"' in edge_platform_ci,
+        and '".github/workflows/**"' in edge_platform_ci,
         "read-only diagnostics must use installed verified binaries without a new release",
     )
 
