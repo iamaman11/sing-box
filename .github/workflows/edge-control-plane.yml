@@ -697,6 +697,10 @@ jobs:
       needs.host_resume_receipt.result == 'success' &&
       needs.host_resume_receipt.outputs.operation == 'APPLY_PREFLIGHT' &&
       needs.host_resume_receipt.outputs.kind == 'VM'
+    permissions:
+      contents: read
+      actions: read
+      issues: write
     uses: ./.github/workflows/host-native-observe.yml
     with:
       machine_id: ${{ needs.host_resume_receipt.outputs.machine_id }}
