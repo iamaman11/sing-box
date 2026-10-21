@@ -29,7 +29,7 @@ class DenyRedirect(HTTPRedirectHandler):
         return None
 
 
-def observe_json(url, token, host, auth_prefix="Bearer"):
+def observe_json(url, token, host, auth_prefix="Bearer", failure=None):
     """Only GET, exact HTTPS authority, no redirects or response body logging."""
     parsed = urlparse(url)
     if parsed.scheme != "https" or parsed.netloc != host:
@@ -46,7 +46,14 @@ def observe_json(url, token, host, auth_prefix="Bearer"):
             if len(raw) > 512 * 1024:
                 return None
             return json.loads(raw)
-    except (HTTPError, URLError, TimeoutError, ValueError, OSError):
+    except HTTPError as error:
+        if failure is not None:
+            failure.append("HTTP_" + str(error.code) if error.code in (401, 403, 404)
+                           else "HTTP_OTHER")
+        return None
+    except (URLError, TimeoutError, ValueError, OSError):
+        if failure is not None:
+            failure.append("TRANSPORT_OR_SCHEMA_UNPROVEN")
         return None
 
 
@@ -92,12 +99,14 @@ def provider_inventory(doc, machine_id):
 
 def worker_bindings(doc):
     if not isinstance(doc, dict) or doc.get("success") is not True:
-        return "UNPROVEN_WORKER_SETTINGS"
-    result = doc.get("result")
-    bindings = result.get("bindings") if isinstance(result, dict) else None
+        return "UNPROVEN_WORKER_SECRETS_API"
+    bindings = doc.get("result")
     if not isinstance(bindings, list):
-        return "UNPROVEN_WORKER_SETTINGS"
-    names = {b.get("name") for b in bindings if isinstance(b, dict)}
+        return "UNPROVEN_WORKER_SECRETS_SCHEMA"
+    if not all(isinstance(b, dict) and b.get("type") == "secret_text"
+               and isinstance(b.get("name"), str) for b in bindings):
+        return "UNPROVEN_WORKER_SECRETS_SCHEMA"
+    names = {b["name"] for b in bindings}
     return ("PRESENT_NAMES_ONLY_NOT_SIGNING_PROOF" if WORKER_BINDINGS <= names
             else "INCOMPLETE_HOST_SIGNER_BINDINGS")
 
@@ -158,10 +167,13 @@ def observe(machine_id):
         if isinstance(verification, dict) and verification.get("success") is True:
             result["cloudflare_api"] = "TOKEN_VALID_API_READABLE"
             account, worker = identity
-            settings = observe_json(
-                f"https://api.cloudflare.com/client/v4/accounts/{account}/workers/scripts/{worker}/settings",
-                api, "api.cloudflare.com")
-            result["worker_host_signing_bindings"] = worker_bindings(settings)
+            failure = []
+            secrets = observe_json(
+                f"https://api.cloudflare.com/client/v4/accounts/{account}/workers/scripts/{worker}/secrets",
+                api, "api.cloudflare.com", failure=failure)
+            result["worker_host_signing_bindings"] = (
+                worker_bindings(secrets) if secrets is not None else
+                "UNPROVEN_WORKER_SECRETS_" + (failure[0] if failure else "UNKNOWN"))
 
     if (os.environ.get("CLOUDFLARE_VM_ACCESS_CLIENT_ID")
             and os.environ.get("CLOUDFLARE_VM_ACCESS_CLIENT_SECRET")):
