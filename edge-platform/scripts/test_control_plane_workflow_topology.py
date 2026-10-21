@@ -3638,8 +3638,10 @@ def main() -> None:
         "retired standalone DNS/Mesh operator CLI namespaces must stay absent; acceptance/production call typed internal functions directly",
     )
     require(
-        "vultr-control-plane-production" not in router,
-        "router and skipped comments must never occupy production concurrency",
+        "vultr-control-plane-production" not in router.split("  host_first_use:\n", 1)[0]
+        and router.count("group: vultr-control-plane-production") == 1
+        and "    if: >-\n      needs.host.result == 'success'" in router.split("  host_first_use:\n", 1)[1],
+        "Only the admitted first-use job may occupy production concurrency; skipped comments may not",
     )
 
     require(
