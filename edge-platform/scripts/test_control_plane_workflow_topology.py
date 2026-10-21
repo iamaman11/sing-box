@@ -1268,14 +1268,18 @@ def test_protected_host_capability_lane(router: str) -> None:
         "\n  host_first_use:\n", 1
     )[0]
     require(
-        "github.event.comment.body == '/host status application-acceptance-1 --deep'" in scope
+        "github.event.comment.body == format('/host status {0} --deep', needs.host.outputs.machine_id)" in scope
         and "needs.host.result == 'success'" in scope
-        and "needs.host.outputs.machine_id == 'application-acceptance-1'" in scope
+        and "needs.host.outputs.kind == 'VM'" in scope
+        and "startsWith(needs.host.outputs.desired_spec_path, 'infra/application/')" in scope
         and "name: production-vultr" in scope
         and "deployment: false" in scope
         and "contents: read" in scope
         and "issues: write" not in scope
-        and "python3 edge-platform/scripts/host_capability_preflight.py application-acceptance-1" in scope
+        and 'python3 edge-platform/scripts/host_capability_preflight.py "${TARGET_MACHINE}" "${TARGET_DESIRED_SPEC}"' in scope
+        and 'TARGET_MACHINE: ${{ needs.host.outputs.machine_id }}' in scope
+        and 'TARGET_DESIRED_SPEC: ${{ needs.host.outputs.desired_spec_path }}' in scope
+        and "application-acceptance-1" not in scope
         and "host_mutations=0" in scope
         and "first-use \"${TARGET_MACHINE}\"" not in scope
         and "sudo " not in scope,
@@ -1299,6 +1303,15 @@ def test_protected_host_capability_lane(router: str) -> None:
         "capability probe must not gain a mutation primitive or secret transport",
     )
     namespace = runpy.run_path(str(path))
+    target = namespace["target_machine"]
+    require(
+        target("infra/application/disposable-acceptance.json", "application-acceptance-1")
+        and not target("infra/application/disposable-acceptance.json", "another-vm")
+        and not target("infra/vultr/application-acceptance.json", "application-acceptance-1")
+        and not target("infra/application/../../production.json", "application-acceptance-1")
+        and not target("infra/application/disposable-acceptance.json", "../../unsafe"),
+        "provider target must be derived from the Rust-selected Git-owned application spec",
+    )
     inventory = namespace["provider_inventory"]
     require(
         inventory({"instances": [], "meta": {"links": {"next": None}}}, "vm-1")
