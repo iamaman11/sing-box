@@ -173,8 +173,8 @@ impl DesiredApplicationState {
         let legacy_vultr_json = self.vultr_spec_path.starts_with("infra/vultr/")
             && self.vultr_spec_path.ends_with(".json");
         let production_textproto = self.vultr_spec_path == "infra/production/production.textproto";
-        let per_host_textproto = self.vultr_spec_path
-            == format!("infra/hosts/specs/{}.textproto", self.machine_id);
+        let per_host_textproto =
+            self.vultr_spec_path == format!("infra/hosts/specs/{}.textproto", self.machine_id);
         if !legacy_vultr_json && !production_textproto && !per_host_textproto {
             return Err(ApplicationSpecError::Validation(
                 "vultr_spec_path must be a registered per-host textproto, legacy Vultr JSON, or canonical production authority"

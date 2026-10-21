@@ -146,8 +146,8 @@ pub fn validate_host_registry(desired: &HostRegistry) -> Result<(), String> {
         // Git selects an existing Vultr spec, never stores or generates
         // another provider desired. Reject paths outside the owned catalog.
         let provider_spec = host.vm_provider_spec_path.as_str();
-        let per_host_provider = provider_spec
-            == format!("infra/hosts/specs/{}.textproto", host.machine_id);
+        let per_host_provider =
+            provider_spec == format!("infra/hosts/specs/{}.textproto", host.machine_id);
         let legacy_provider = provider_spec.starts_with("infra/vultr/")
             && provider_spec.ends_with(".json")
             && provider_spec.len() > "infra/vultr/".len() + ".json".len()

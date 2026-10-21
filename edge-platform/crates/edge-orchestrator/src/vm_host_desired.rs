@@ -6,9 +6,7 @@ use edge_controller_core::application_lifecycle::{
     Line1RuntimePolicy, Line2RuntimePolicy, SUPPORTED_APPLICATION_SCHEMA,
 };
 use edge_controller_core::vultr_lifecycle::{DesiredState, MachineSpec, ProviderSpec};
-use edge_shared_types::{
-    FleetVmHostDesired, ProductionBootstrapMode, production_machine,
-};
+use edge_shared_types::{FleetVmHostDesired, ProductionBootstrapMode, production_machine};
 use prost::Message;
 use std::fs;
 use std::path::Path;
@@ -21,7 +19,9 @@ pub(crate) fn load(path: &Path) -> Result<(DesiredState, DesiredApplicationState
     if path != Path::new(&format!("infra/hosts/specs/{name}.textproto"))
         || name.is_empty()
         || name.len() > 64
-        || !name.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'_' | b'-'))
     {
         return Err("HOST_VM_TYPED_SPEC_OUTSIDE_OWNED_PATH".to_owned());
     }
@@ -49,15 +49,23 @@ fn convert(
     if input.schema_version != 1 || input.machine_id != name {
         return Err("HOST_VM_TYPED_IDENTITY_MISMATCH".to_owned());
     }
-    let machine = input.machine.as_ref().ok_or("HOST_VM_TYPED_MACHINE_MISSING")?;
-    let application = input.application.as_ref().ok_or("HOST_VM_TYPED_APPLICATION_MISSING")?;
+    let machine = input
+        .machine
+        .as_ref()
+        .ok_or("HOST_VM_TYPED_MACHINE_MISSING")?;
+    let application = input
+        .application
+        .as_ref()
+        .ok_or("HOST_VM_TYPED_APPLICATION_MISSING")?;
     let (os_id, snapshot_id) = match machine.image.as_ref() {
         Some(production_machine::Image::OsId(n)) if *n > 0 => (Some(*n), None),
         Some(production_machine::Image::SnapshotId(s)) if !s.is_empty() => (None, Some(s.clone())),
         _ => return Err("HOST_VM_TYPED_PROVIDER_IMAGE_REQUIRED".to_owned()),
     };
     if input.firewall_profile.is_empty()
-        || !machine.application_profiles.contains(&application.application_profile)
+        || !machine
+            .application_profiles
+            .contains(&application.application_profile)
     {
         return Err("HOST_VM_TYPED_APPLICATION_PROFILE_MISMATCH".to_owned());
     }
@@ -80,7 +88,8 @@ fn convert(
             tags: machine.tags.clone(),
         }],
     };
-    vm.validate().map_err(|err| format!("HOST_VM_TYPED_PROVIDER_INVALID: {err}"))?;
+    vm.validate()
+        .map_err(|err| format!("HOST_VM_TYPED_PROVIDER_INVALID: {err}"))?;
     let bootstrap_mode = match ProductionBootstrapMode::try_from(application.bootstrap_mode) {
         Ok(ProductionBootstrapMode::Base) => ApplicationBootstrapMode::Base,
         Ok(ProductionBootstrapMode::Tunnel) => ApplicationBootstrapMode::Tunnel,
@@ -109,14 +118,18 @@ fn convert(
         },
         bootstrap_mode,
     };
-    app.validate().map_err(|err| format!("HOST_VM_TYPED_APPLICATION_INVALID: {err}"))?;
+    app.validate()
+        .map_err(|err| format!("HOST_VM_TYPED_APPLICATION_INVALID: {err}"))?;
     Ok((vm, app))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use edge_shared_types::{ProductionApplication, ProductionLine1Policy, ProductionLine2Policy, ProductionMachine, production_machine::Image};
+    use edge_shared_types::{
+        ProductionApplication, ProductionLine1Policy, ProductionLine2Policy, ProductionMachine,
+        production_machine::Image,
+    };
 
     fn fixture() -> FleetVmHostDesired {
         FleetVmHostDesired {
@@ -155,9 +168,17 @@ mod tests {
 
     #[test]
     fn one_typed_spec_drives_provider_and_application() {
-        let (vm, app) = convert(&fixture(), Path::new("infra/hosts/specs/acceptance-test.textproto"), "acceptance-test").unwrap();
+        let (vm, app) = convert(
+            &fixture(),
+            Path::new("infra/hosts/specs/acceptance-test.textproto"),
+            "acceptance-test",
+        )
+        .unwrap();
         assert_eq!(vm.machines[0].id, app.machine_id);
-        assert_eq!(app.vultr_spec_path, "infra/hosts/specs/acceptance-test.textproto");
+        assert_eq!(
+            app.vultr_spec_path,
+            "infra/hosts/specs/acceptance-test.textproto"
+        );
     }
 
     #[test]
