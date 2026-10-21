@@ -764,11 +764,8 @@ pub(crate) fn run(
             output_path,
         } => {
             // A Git registry candidate is generated ONLY from validated desired.
-            let candidate = receipt_registration_candidate(
-                &desired,
-                &machine_id,
-                &receipt_public_key_hex,
-            )?;
+            let candidate =
+                receipt_registration_candidate(&desired, &machine_id, &receipt_public_key_hex)?;
             let candidate_bytes = candidate.encode_to_vec();
             let mut file = OpenOptions::new()
                 .write(true)
@@ -790,11 +787,8 @@ pub(crate) fn run(
             receipt_public_key_hex,
             candidate_path,
         } => {
-            let expected = receipt_registration_candidate(
-                &desired,
-                &machine_id,
-                &receipt_public_key_hex,
-            )?;
+            let expected =
+                receipt_registration_candidate(&desired, &machine_id, &receipt_public_key_hex)?;
             let metadata = std::fs::symlink_metadata(&candidate_path)
                 .map_err(|_| "HOST_RECEIPT_CANDIDATE_MISSING")?;
             if !metadata.file_type().is_file()
@@ -1468,8 +1462,8 @@ mod tests {
                 ..Default::default()
             }],
         };
-        let candidate = receipt_registration_candidate(&original, machine_id, &"9a".repeat(32))
-            .unwrap();
+        let candidate =
+            receipt_registration_candidate(&original, machine_id, &"9a".repeat(32)).unwrap();
         assert!(original.hosts[0].native_receipt_public_key.is_empty());
         assert_eq!(candidate.hosts[0].native_receipt_public_key, vec![0x9a; 32]);
         let wire = candidate.encode_to_vec();
