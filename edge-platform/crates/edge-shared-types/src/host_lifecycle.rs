@@ -846,6 +846,41 @@ mod tests {
     use crate::{FleetHost, HostRegistry, encode_host_registry};
 
     #[test]
+    fn one_git_vm_first_use_gate_preserves_receipt_registration_boundary() {
+        let mut host = FleetHost {
+            kind: crate::FleetHostKind::Vm as i32,
+            ..Default::default()
+        };
+        assert_eq!(
+            verify_vm_first_use_git_prerequisites(&host),
+            Err("HOST_GIT_WORKER_SIGNER_KEY_REQUIRED")
+        );
+        host.worker_authority_public_key = vec![8; 32];
+        assert_eq!(
+            verify_vm_first_use_git_prerequisites(&host),
+            Err("HOST_VM_GIT_RESOURCE_SCOPE_REQUIRED")
+        );
+        host.vm_containers.push(crate::FleetVmContainer {
+            container_name: "vultr-line1-gateway".into(),
+            compose_project: "vultr-edge".into(),
+            compose_service: "line1-gateway".into(),
+        });
+        assert_eq!(verify_vm_first_use_git_prerequisites(&host), Ok(()));
+        assert_eq!(
+            verify_vm_signed_git_prerequisites(&host),
+            Err("HOST_VM_GIT_RECEIPT_REGISTRATION_REQUIRED")
+        );
+        host.native_receipt_public_key = vec![9; 32];
+        assert_eq!(verify_vm_signed_git_prerequisites(&host), Ok(()));
+        host.kind = crate::FleetHostKind::Windows as i32;
+        assert_eq!(
+            verify_vm_first_use_git_prerequisites(&host),
+            Err("HOST_VM_FIRST_USE_KIND_REQUIRED")
+        );
+        assert_eq!(verify_vm_signed_git_prerequisites(&host), Ok(()));
+    }
+
+    #[test]
     fn exact_native_artifacts_bind_all_digests_or_fail_closed() {
         use crate::release::v1::{ReleaseSet, VmRuntime};
         use crate::{FleetHostKind, HostRegistry, ManagedHost, ManagedHostKind, managed_host};

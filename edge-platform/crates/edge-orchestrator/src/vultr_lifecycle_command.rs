@@ -1442,9 +1442,7 @@ pub(crate) async fn bootstrap_production_runner(
     // the fixed first-use native owner installation and root enrollment.
     let canonical_host = context.verified_vm_first_use_host(machine_id)?;
     if !canonical_host.desired_spec_path.starts_with("infra/")
-        || !canonical_host
-            .desired_spec_path
-            .ends_with(".json")
+        || !canonical_host.desired_spec_path.ends_with(".json")
             && !canonical_host.desired_spec_path.ends_with(".textproto")
     {
         return Err("HOST_BOOTSTRAP_GIT_DESIRED_SPEC_PATH_INVALID".to_owned());

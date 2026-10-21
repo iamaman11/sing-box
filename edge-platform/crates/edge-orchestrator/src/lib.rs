@@ -5,7 +5,9 @@ use edge_controller_core::orchestration::{
     DerivedDnsTarget, DerivedMeshRoute, MachineObservation, ReleaseContext,
     SupportAccessLeaseState, VpcObservation, derive_dns_target, derive_mesh_route,
 };
-use edge_shared_types::{FleetHost, FleetHostKind, HostRegistry, RELEASE_SET_SCHEMA_VERSION, managed_host};
+use edge_shared_types::{
+    FleetHost, FleetHostKind, HostRegistry, RELEASE_SET_SCHEMA_VERSION, managed_host,
+};
 use ring::digest::{Context as DigestContext, SHA256};
 use std::collections::BTreeMap;
 use std::env;
@@ -150,9 +152,7 @@ impl OrchestrationContext {
             .map(PathBuf::from)
             .ok_or("HOST_BOOTSTRAP_RELEASE_CONTEXT_UNAVAILABLE")?;
         let variables = parse_resolved_env(&context_path)?;
-        if required(&variables, "EDGE_RELEASE_SET_SHA256")?
-            != self.release.release_set_sha256
-        {
+        if required(&variables, "EDGE_RELEASE_SET_SHA256")? != self.release.release_set_sha256 {
             return Err("HOST_BOOTSTRAP_RELEASE_CONTEXT_MISMATCH".to_owned());
         }
         let registry_sha = required(&variables, "EDGE_FLEET_REGISTRY_SHA256")?;
