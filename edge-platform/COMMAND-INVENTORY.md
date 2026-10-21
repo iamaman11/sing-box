@@ -59,4 +59,4 @@ Signed INSTALL: Worker proof → durable BEGIN → ACTIVE и native Docker.
 До физической приёмки **система не 10/10**. VM root execution требует явный Git RUNNING/STOPPED target, защищённый trust и подпись Worker; старые mutation-команды запрещены. [Нормативная архитектура](ARCHITECTURE.md), [единственный план](FINALIZATION-PLAN.md), [живой курсор](https://github.com/iamaman11/sing-box/issues/26).
 
 
-First-use receipt: root public key stages a protected Git PR (typed Rust + pinned Buf). Until merge and published ReleaseSet: signed INSTALL BLOCKED.
+First-use: draft PR до CREATE → enrollment → protected merge/ReleaseSet → root trust refresh → signed INSTALL. UNKNOWN без replay; физически UNPROVEN.
