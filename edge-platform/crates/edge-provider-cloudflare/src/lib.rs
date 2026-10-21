@@ -542,8 +542,7 @@ pub async fn upload_worker_slot_proof_version(
     if source.is_empty() || !source.contains("/v1/proof-slot") {
         return Err("Worker code-only version must implement the fixed slot proof".to_owned());
     }
-    let metadata =
-        exact_binding_inherit_metadata(version_tag, binding_scope, observed_bindings)?;
+    let metadata = exact_binding_inherit_metadata(version_tag, binding_scope, observed_bindings)?;
     let module = reqwest::multipart::Part::text(source.to_owned())
         .file_name("index.mjs")
         .mime_str("application/javascript+module")
@@ -2553,11 +2552,9 @@ mod tests {
             ])
         );
         assert!(!metadata.to_string().contains("secret_text"));
-        assert!(exact_binding_inherit_metadata(
-            "",
-            WorkerCodeBindingScope::FixedAb,
-            &fixed
-        ).is_err());
+        assert!(
+            exact_binding_inherit_metadata("", WorkerCodeBindingScope::FixedAb, &fixed).is_err()
+        );
 
         let mut vm = fixed.to_vec();
         for name in [
@@ -2579,45 +2576,59 @@ mod tests {
         )
         .unwrap();
         assert_eq!(vm_metadata["bindings"].as_array().unwrap().len(), 7);
-        assert!(vm_metadata["bindings"].as_array().unwrap().iter().any(|binding|
-            binding["name"] == "EDGE_HOST_SIGNING_PKCS8_BASE64" && binding["type"] == "inherit"
-        ));
+        assert!(
+            vm_metadata["bindings"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(
+                    |binding| binding["name"] == "EDGE_HOST_SIGNING_PKCS8_BASE64"
+                        && binding["type"] == "inherit"
+                )
+        );
         assert!(!vm_metadata.to_string().contains("secret_text"));
         // No code release may silently delete or synthesize a Host secret.
-        assert!(exact_binding_inherit_metadata(
-            "vm-host",
-            WorkerCodeBindingScope::FixedAb,
-            &vm
-        ).is_err());
-        assert!(exact_binding_inherit_metadata(
-            "vm-host",
-            WorkerCodeBindingScope::VmHostSigner,
-            &fixed
-        ).is_err());
+        assert!(
+            exact_binding_inherit_metadata("vm-host", WorkerCodeBindingScope::FixedAb, &vm)
+                .is_err()
+        );
+        assert!(
+            exact_binding_inherit_metadata("vm-host", WorkerCodeBindingScope::VmHostSigner, &fixed)
+                .is_err()
+        );
         let mut partial = vm.clone();
         partial.pop();
-        assert!(exact_binding_inherit_metadata(
-            "vm-host",
-            WorkerCodeBindingScope::VmHostSigner,
-            &partial
-        ).is_err());
+        assert!(
+            exact_binding_inherit_metadata(
+                "vm-host",
+                WorkerCodeBindingScope::VmHostSigner,
+                &partial
+            )
+            .is_err()
+        );
         let mut injected = vm.clone();
         injected.push(CloudflareWorkerSecretBinding {
             name: "UNREGISTERED_SECRET".to_owned(),
             binding_type: "secret_text".to_owned(),
         });
-        assert!(exact_binding_inherit_metadata(
-            "vm-host",
-            WorkerCodeBindingScope::VmHostSigner,
-            &injected
-        ).is_err());
+        assert!(
+            exact_binding_inherit_metadata(
+                "vm-host",
+                WorkerCodeBindingScope::VmHostSigner,
+                &injected
+            )
+            .is_err()
+        );
         let mut wrong_type = vm.clone();
         wrong_type[2].binding_type = "plain_text".to_owned();
-        assert!(exact_binding_inherit_metadata(
-            "vm-host",
-            WorkerCodeBindingScope::VmHostSigner,
-            &wrong_type
-        ).is_err());
+        assert!(
+            exact_binding_inherit_metadata(
+                "vm-host",
+                WorkerCodeBindingScope::VmHostSigner,
+                &wrong_type
+            )
+            .is_err()
+        );
     }
 
     #[test]
