@@ -218,7 +218,8 @@ jobs:
        startsWith(github.event.comment.body, '/host status ') ||
        needs.host.outputs.operation == 'APPLY_PREFLIGHT' ||
        needs.host.outputs.operation == 'RECOVER_PREFLIGHT' ||
-       needs.host.outputs.operation == 'FIRST_USE_PREFLIGHT')
+       needs.host.outputs.operation == 'FIRST_USE_PREFLIGHT' ||
+       needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT')
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     permissions:
