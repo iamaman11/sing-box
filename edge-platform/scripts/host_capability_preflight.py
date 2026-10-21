@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlparse
-from urllib.request import Request, urlopen
+from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 TIMEOUT = 12
 WORKER_BINDINGS = frozenset({
@@ -24,17 +24,22 @@ WORKER_BINDINGS = frozenset({
 })
 
 
+class DenyRedirect(HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        return None
+
+
 def observe_json(url, token, host, auth_prefix="Bearer"):
     """Only GET, exact HTTPS authority, no redirects or response body logging."""
     parsed = urlparse(url)
-    if parsed.scheme != "https" or parsed.hostname != host or parsed.port is not None:
+    if parsed.scheme != "https" or parsed.netloc != host:
         return None
     request = Request(url, headers={
         "Authorization": f"{auth_prefix} {token}",
         "Accept": "application/json",
     }, method="GET")
     try:
-        with urlopen(request, timeout=TIMEOUT) as response:
+        with build_opener(DenyRedirect()).open(request, timeout=TIMEOUT) as response:
             if response.geturl() != url or response.status != 200:
                 return None
             raw = response.read(512 * 1024 + 1)
