@@ -252,7 +252,17 @@ pub fn verify_vm_first_use_git_prerequisites(host: &FleetHost) -> Result<(), &'s
         return Err("HOST_VM_FIRST_USE_KIND_REQUIRED");
     }
     verify_git_worker_signer_pin(host, &host.worker_authority_public_key)?;
-    verify_vm_git_resource_scope(host)
+    verify_vm_git_resource_scope(host)?;
+    if host.vm_provider_spec_path.is_empty() {
+        return Err("HOST_VM_GIT_PROVIDER_SPEC_REQUIRED");
+    }
+    if !matches!(
+        host.target.as_ref(),
+        Some(t) if t.run_state == crate::FleetHostRunState::Running as i32
+    ) {
+        return Err("HOST_VM_GIT_RUNNING_TARGET_REQUIRED");
+    }
+    Ok(())
 }
 
 /// Preserve the established signed-admission reason order: Git signer, then
@@ -870,6 +880,19 @@ mod tests {
             compose_project: "vultr-edge".into(),
             compose_service: "line1-gateway".into(),
         });
+        assert_eq!(
+            verify_vm_first_use_git_prerequisites(&host),
+            Err("HOST_VM_GIT_PROVIDER_SPEC_REQUIRED")
+        );
+        host.vm_provider_spec_path = "infra/vultr/acceptance.json".into();
+        assert_eq!(
+            verify_vm_first_use_git_prerequisites(&host),
+            Err("HOST_VM_GIT_RUNNING_TARGET_REQUIRED")
+        );
+        host.target = Some(crate::FleetHostTarget {
+            run_state: crate::FleetHostRunState::Running as i32,
+            windows_mode: crate::FleetHostMode::Unspecified as i32,
+        });
         assert_eq!(verify_vm_first_use_git_prerequisites(&host), Ok(()));
         assert_eq!(
             verify_vm_signed_git_prerequisites(&host),
@@ -902,6 +925,7 @@ mod tests {
                 native_receipt_public_key: Vec::new(),
                 vm_first_use_credential: None,
                 worker_authority_public_key: Vec::new(),
+            vm_provider_spec_path: String::new(),
             }],
         };
         let registry_pb = crate::encode_host_registry(&registry).unwrap();
@@ -1030,6 +1054,7 @@ mod tests {
                 native_receipt_public_key: Vec::new(),
                 vm_first_use_credential: None,
                 worker_authority_public_key: Vec::new(),
+            vm_provider_spec_path: String::new(),
             }],
         };
         let bytes = encode_host_registry(&registry).unwrap();

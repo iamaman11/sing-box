@@ -143,6 +143,23 @@ pub fn validate_host_registry(desired: &HostRegistry) -> Result<(), String> {
         {
             return Err("HOST_VM_GIT_WORKER_SIGNER_KEY_INVALID".to_owned());
         }
+        // Git selects an existing Vultr spec, never stores or generates
+        // another provider desired. Reject paths outside the owned catalog.
+        let provider_spec = host.vm_provider_spec_path.as_str();
+        if !provider_spec.is_empty()
+            && (kind != ManagedHostKind::Vm
+                || !provider_spec.starts_with("infra/vultr/")
+                || !provider_spec.ends_with(".json")
+                || provider_spec.len() > 128
+                || provider_spec.contains("..")
+                || !provider_spec["infra/vultr/".len()..
+                    provider_spec.len() - ".json".len()]
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            )
+        {
+            return Err("HOST_VM_PROVIDER_SPEC_REFERENCE_INVALID".to_owned());
+        }
         // A fresh VM may adopt exactly one pre-published Worker-v2 bundle,
         // but only when its exact identity is pinned by immutable Git. Zero
         // generation, malformed digests and Windows use are forbidden.
@@ -3074,6 +3091,7 @@ mod release_set_tests {
                     native_receipt_public_key: Vec::new(),
                     vm_first_use_credential: None,
                     worker_authority_public_key: Vec::new(),
+                    vm_provider_spec_path: String::new(),
                 },
                 ManagedHost {
                     machine_id: "production-1".to_owned(),
@@ -3086,6 +3104,7 @@ mod release_set_tests {
                     native_receipt_public_key: Vec::new(),
                     vm_first_use_credential: None,
                     worker_authority_public_key: Vec::new(),
+                    vm_provider_spec_path: String::new(),
                 },
                 ManagedHost {
                     machine_id: "sing-box-windows-lab".to_owned(),
@@ -3100,6 +3119,7 @@ mod release_set_tests {
                     native_receipt_public_key: Vec::new(),
                     vm_first_use_credential: None,
                     worker_authority_public_key: Vec::new(),
+                    vm_provider_spec_path: String::new(),
                 },
             ],
         };

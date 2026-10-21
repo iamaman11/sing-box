@@ -52,6 +52,10 @@ message FleetHost {
   // Git, not host-enroll arguments, a runner, or a provider GET response.
   // Missing pin means VM enrollment and mutations are not authorized.
   bytes worker_authority_public_key = 11;
+  // Existing Vultr substrate desired reference; Git owns this selector,
+  // never duplicate VM spec or accept a caller-provided provider target.
+  // Observe-only and already-enrolled hosts may leave it empty.
+  string vm_provider_spec_path = 12;
 }
 
 // Source bytes are published by the existing Worker-v2 plane first; Git

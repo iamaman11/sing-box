@@ -1069,6 +1069,7 @@ mod tests {
                 native_receipt_public_key: Vec::new(),
                 vm_first_use_credential: None,
                 worker_authority_public_key: Vec::new(),
+            vm_provider_spec_path: String::new(),
             }],
         };
         let i = FleetHostIntent {
@@ -1281,6 +1282,7 @@ mod tests {
                 native_receipt_public_key: Vec::new(),
                 vm_first_use_credential: None,
                 worker_authority_public_key: Vec::new(),
+            vm_provider_spec_path: String::new(),
             }],
         };
         let intent = FleetHostIntent {
@@ -1396,6 +1398,7 @@ mod tests {
             native_receipt_public_key: Vec::new(),
             vm_first_use_credential: None,
             worker_authority_public_key: Vec::new(),
+            vm_provider_spec_path: String::new(),
         };
         let registry = HostRegistry {
             schema_version: 1,

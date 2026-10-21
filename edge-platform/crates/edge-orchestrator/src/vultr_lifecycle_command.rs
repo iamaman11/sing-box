@@ -1413,6 +1413,7 @@ async fn run_runner_bootstrap(
     let desired = load_desired_state(Path::new(&args[0]))?;
     bootstrap_production_runner(
         &desired,
+        Path::new(&args[0]),
         &args[1],
         Path::new(&args[2]),
         Path::new(&args[3]),
@@ -1423,6 +1424,7 @@ async fn run_runner_bootstrap(
 
 pub(crate) async fn bootstrap_production_runner(
     desired: &DesiredState,
+    provider_spec_path: &Path,
     machine_id: &str,
     installer_path: &Path,
     local_owner_artifact: &Path,
@@ -1441,6 +1443,9 @@ pub(crate) async fn bootstrap_production_runner(
     // host registry. Only this exact accepted Git FleetHost can authorize
     // the fixed first-use native owner installation and root enrollment.
     let canonical_host = context.verified_vm_first_use_host(machine_id)?;
+    if provider_spec_path.to_str() != Some(canonical_host.vm_provider_spec_path.as_str()) {
+        return Err("HOST_BOOTSTRAP_GIT_PROVIDER_SPEC_MISMATCH".to_owned());
+    }
     if !canonical_host.desired_spec_path.starts_with("infra/")
         || !canonical_host.desired_spec_path.ends_with(".json")
             && !canonical_host.desired_spec_path.ends_with(".textproto")

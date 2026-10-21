@@ -418,6 +418,7 @@ mod tests {
             native_receipt_public_key: Vec::new(),
             vm_first_use_credential: None,
             worker_authority_public_key: Vec::new(),
+            vm_provider_spec_path: String::new(),
         }
     }
     fn observed(kind: FleetHostKind, state: FleetNativeOwnerState) -> FleetNativeObservation {
