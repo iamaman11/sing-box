@@ -348,6 +348,53 @@ jobs:
           echo "::add-mask::${token}"
           echo "EDGE_RUNNER_REGISTRATION_TOKEN=${token}" >> "${GITHUB_ENV}"
 
+      - name: Reserve protected receipt registration before VM CREATE
+        shell: bash
+        env:
+          REGISTRATION_TOKEN: ${{ secrets.IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = 1
+          [[ "${TARGET_MACHINE}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]
+          [[ "${SOURCE_COMMENT_ID}" =~ ^[1-9][0-9]*$ ]]
+          test -n "${REGISTRATION_TOKEN}"
+          export GH_TOKEN="${REGISTRATION_TOKEN}"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.permissions.push')" = true
+          base="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          test "${base}" = "${GITHUB_SHA}"
+          branch="host-receipt-${TARGET_MACHINE}-${SOURCE_COMMENT_ID}"
+          # A branch already present means possible earlier/uncertain first-use.
+          # Never repeat VM CREATE based on GitHub workflow retries.
+          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}" >/dev/null 2>&1; then
+            echo 'HOST_RECEIPT_RESERVATION_EXISTS_NO_REPLAY' >&2
+            exit 1
+          fi
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f "ref=refs/heads/${branch}" -f "sha=${base}" >/dev/null
+          original_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto?ref=${base}" --jq '.sha')"
+          python3 - "${TARGET_MACHINE}" "${SOURCE_COMMENT_ID}" <<'PY'
+          from pathlib import Path
+          import sys
+          source = Path("infra/hosts/hosts.textproto").read_bytes()
+          assert source.endswith(b"\n")
+          reservation = ("# native-receipt-registration-pending "
+                         + sys.argv[1] + " issue1-comment-" + sys.argv[2] + "\n").encode()
+          Path("receipt-registration-reserved.textproto").write_bytes(source + reservation)
+          PY
+          encoded="$(base64 -w0 < receipt-registration-reserved.textproto)"
+          gh api -X PUT "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto" \
+            -f "branch=${branch}" -f "sha=${original_sha}" \
+            -f "message=host: reserve native receipt registration for ${TARGET_MACHINE}" \
+            -f "content=${encoded}" >/dev/null
+          gh pr create -R "${GITHUB_REPOSITORY}" -B main -H "${branch}" --draft \
+            -t "host: register native receipt for ${TARGET_MACHINE}" \
+            -b "DRAFT RESERVATION ONLY. First-use /host apply from issue #1 comment ${SOURCE_COMMENT_ID} at protected revision ${GITHUB_SHA}. Root key is not enrolled or registered yet. Must remain draft until the exact root public identity is proven. No signed INSTALL is authorized."
+          test "$(gh pr view "${branch}" -R "${GITHUB_REPOSITORY}" --json isDraft --jq '.isDraft')" = true
+          reservation_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}" --jq '.object.sha')"
+          [[ "${reservation_sha}" =~ ^[0-9a-f]{40}$ ]]
+          echo "HOST_RECEIPT_RESERVATION_SHA=${reservation_sha}" >> "${GITHUB_ENV}"
+          echo 'host_receipt_registration=PROTECTED_DRAFT_RESERVED_BEFORE_CREATE'
+
       - name: Run one typed provider CREATE and native root enrollment
         shell: bash
         env:
@@ -415,23 +462,25 @@ jobs:
             | tee "${RUNNER_TEMP}/host-receipt-verification.txt"
           grep -Fxq 'host_receipt_candidate=EXACT_ONE_PUBLIC_KEY_CHANGE' "${RUNNER_TEMP}/host-receipt-verification.txt"
           grep -Fxq 'host_mutations=0' "${RUNNER_TEMP}/host-receipt-verification.txt"
-          # PAT needs contents:write and pull_requests:write. No protected
-          # main write and no CI bypass: normal PR + required checks only.
+          # The draft PR was created and proven writable BEFORE provider
+          # CREATE. Complete only that reserved ref; never create another.
           test -n "${REGISTRATION_TOKEN}"
           export GH_TOKEN="${REGISTRATION_TOKEN}"
-          base="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
-          test "${base}" = "${GITHUB_SHA}"
           branch="host-receipt-${TARGET_MACHINE}-${SOURCE_COMMENT_ID}"
-          gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-            -f "ref=refs/heads/${branch}" -f "sha=${GITHUB_SHA}" >/dev/null
-          original_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto?ref=${GITHUB_SHA}" --jq '.sha')"
+          test "$(gh pr view "${branch}" -R "${GITHUB_REPOSITORY}" --json isDraft --jq '.isDraft')" = true
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')" = "${GITHUB_SHA}"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}" --jq '.object.sha')" = "${HOST_RECEIPT_RESERVATION_SHA}"
+          original_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto?ref=${branch}" --jq '.sha')"
           encoded="$(base64 -w0 < "${target}")"
           gh api -X PUT "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto" \
             -f "branch=${branch}" -f "sha=${original_sha}" \
             -f "message=host: register native receipt for ${TARGET_MACHINE}" \
             -f "content=${encoded}" >/dev/null
-          gh pr create -R "${GITHUB_REPOSITORY}" -B main -H "${branch}" \
-            -t "host: register native receipt for ${TARGET_MACHINE}" \
-            -b "Protected Git native receipt registration. Original request: issue #1 comment ${SOURCE_COMMENT_ID}. Source ReleaseSet revision: ${GITHUB_SHA}. Host: ${TARGET_MACHINE}. Public key SHA256: $(printf '%s' "${public_key}" | sha256sum | cut -d' ' -f1). Root private key remains on VM. Merge only after required Source checks and Candidate complete; no signed INSTALL has run."
+          # Verify EXACT committed public bytes before asking for merge.
+          gh api "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto?ref=${branch}" \
+            --jq '.content' | base64 --decode | cmp -s - "${target}"
+          gh pr edit "${branch}" -R "${GITHUB_REPOSITORY}" \
+            -b "Native root enrollment completed for ${TARGET_MACHINE}. Original request: issue #1 comment ${SOURCE_COMMENT_ID}. Protected source ReleaseSet revision: ${GITHUB_SHA}. Registered public key SHA256: $(printf '%s' "${public_key}" | sha256sum | cut -d' ' -f1). Root private key remains on VM. Required CI and protected merge still gate signed INSTALL."
+          gh pr ready "${branch}" -R "${GITHUB_REPOSITORY}"
           echo 'host_first_use=AWAITING_PROTECTED_GIT_PR_MERGE'
           echo 'host_signed_install=NOT_YET_AUTHORIZED'
