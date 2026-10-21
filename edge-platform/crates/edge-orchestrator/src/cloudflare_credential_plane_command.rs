@@ -4090,7 +4090,9 @@ mod tests {
                 .is_err()
         );
         assert!(verify_vm_only_windows_neighbour(&d, &obs).is_ok());
-        let baseline = super::projection_observation(&obs, "windows").unwrap().clone();
+        let baseline = super::projection_observation(&obs, "windows")
+            .unwrap()
+            .clone();
 
         let mut conflicting = obs.clone();
         conflicting.projections[0].worker_latest_version_tag = Some("conflicting-tag".to_owned());
