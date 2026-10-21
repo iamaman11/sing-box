@@ -3817,14 +3817,17 @@ def main() -> None:
         "retired standalone DNS/Mesh operator CLI namespaces must stay absent; acceptance/production call typed internal functions directly",
     )
     require(
-        "vultr-control-plane-production" not in router.split("  host_first_use:\n", 1)[0]
-        and router.count("group: vultr-control-plane-production") == 2
+        "vultr-control-plane-production" not in router.split("  host_worker_authorizer:\n", 1)[0]
+        and router.count("group: vultr-control-plane-production") == 3
+        and "needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'" in router.split(
+            "  host_worker_authorizer:\n", 1
+        )[1].split("\n  host_capabilities:\n", 1)[0]
         and "  host_resume_receipt:\n" in router
         and "github.event.workflow_run.conclusion == 'success'" in router.split("  host_resume_receipt:\n", 1)[1]
         and "github.event.workflow_run.run_attempt == 1" in router.split("  host_resume_receipt:\n", 1)[1]
         and "    concurrency:\n      group: vultr-control-plane-production" in router.split("  host_resume_receipt:\n", 1)[1]
         and "    if: >-\n      needs.host.result == 'success'" in router.split("  host_first_use:\n", 1)[1],
-        "Only the admitted first-use job may occupy production concurrency; skipped comments may not",
+        "Only exact typed VM Worker, first-use and receipt-resume jobs may occupy production concurrency",
     )
 
     require(
