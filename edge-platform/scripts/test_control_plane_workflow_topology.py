@@ -753,6 +753,40 @@ def test_host_first_use_is_internal_to_one_host_ingress() -> None:
     )
 
 
+
+def test_host_first_use_registration_is_reserved_before_provider_create() -> None:
+    """A Git capability failure must never strand a newly created VM."""
+    router = ROUTER.read_text(encoding="utf-8")
+    first_use = router.split("  host_first_use:\n", 1)[1]
+    reservation = "Reserve protected receipt registration before VM CREATE"
+    create = "Run one typed provider CREATE and native root enrollment"
+    registration = "Stage root receipt identity through a protected Git pull request"
+    require(
+        first_use.count(reservation) == 1
+        and first_use.count(create) == 1
+        and first_use.count(registration) == 1
+        and first_use.index(reservation) < first_use.index(create) < first_use.index(registration)
+        and "gh pr create" in first_use.split(create, 1)[0]
+        and "--draft" in first_use.split(create, 1)[0]
+        and "gh pr create" not in first_use.split(registration, 1)[1]
+        and "HOST_RECEIPT_RESERVATION_EXISTS_NO_REPLAY" in first_use
+        and 'test "${GITHUB_RUN_ATTEMPT}" = 1' in first_use
+        and "HOST_RECEIPT_RESERVATION_SHA" in first_use.split(registration, 1)[1]
+        and "gh pr ready" in first_use.split(registration, 1)[1]
+        and "host_receipt_candidate=EXACT_ONE_PUBLIC_KEY_CHANGE" in first_use,
+        "First-use must reserve a draft Git PR before CREATE and finalize only the exact reserved identity",
+    )
+    unsafe = router.replace(
+        "Reserve protected receipt registration before VM CREATE",
+        "Reserve protected receipt registration after VM CREATE",
+        1,
+    )
+    require(
+        reservation not in unsafe.split("  host_first_use:\n", 1)[1],
+        "Receipt reservation topology invariant must detect missing early reservation",
+    )
+
+
 def test_host_native_signed_result_reporting() -> None:
     """The workflow must not downgrade or fabricate a Git-pinned receipt."""
     source = Path(".github/workflows/host-native-observe.yml").read_text(
@@ -1222,6 +1256,7 @@ def main() -> None:
     test_existing_worker_host_signer_is_syntactically_closed()
     router = ROUTER.read_text(encoding="utf-8")
     test_host_first_use_is_internal_to_one_host_ingress()
+    test_host_first_use_registration_is_reserved_before_provider_create()
     test_host_native_signed_result_reporting()
     test_canonical_host_mutation_ingress()
     test_host_native_receipt_boundary_and_legacy_workflow_admission(router)
