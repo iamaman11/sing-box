@@ -1278,7 +1278,7 @@ def test_protected_host_capability_lane(router: str) -> None:
         and "issues: write" not in scope
         and "python3 edge-platform/scripts/host_capability_preflight.py application-acceptance-1" in scope
         and "host_mutations=0" in scope
-        and "first-use " not in scope
+        and "first-use \"${TARGET_MACHINE}\"" not in scope
         and "sudo " not in scope,
         "read-only protected capability observation must remain strictly scoped",
     )
