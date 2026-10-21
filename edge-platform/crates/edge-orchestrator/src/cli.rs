@@ -181,6 +181,10 @@ pub(crate) enum HostCommand {
     /// protected Git ReleaseSet. Never creates, adopts or installs a VM.
     #[command(hide = true)]
     RefreshReceipt { machine_id: String },
+    /// Internal read-only Vultr provider plan before any Git receipt reservation.
+    /// No VM/provider mutation and no alternate accepted desired.
+    #[command(hide = true)]
+    FirstUsePreflight { machine_id: String },
     /// Internal GitHub-hosted first-use of a new, absent VM. This shares
     /// the host ingress and existing Rust Vultr owner, never a legacy workflow.
     #[command(hide = true)]

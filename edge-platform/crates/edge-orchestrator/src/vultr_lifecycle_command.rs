@@ -1468,6 +1468,91 @@ pub(crate) async fn host_receipt_refresh(
     }
 }
 
+/// Fail-closed VM create admission: no ambiguous plan or existing owner
+/// can be downgraded to a fresh CREATE by the first-use workflow.
+fn admit_vm_first_use_provider_plan(
+    selected: Option<&PlanClass>,
+    plan_count: usize,
+    prior_owned: bool,
+) -> Result<(), &'static str> {
+    if plan_count != 1 || !matches!(selected, Some(PlanClass::Create)) {
+        return Err("HOST_FIRST_USE_PROVIDER_NOT_EXACT_CREATE_NO_REPLAY");
+    }
+    if prior_owned {
+        return Err("HOST_FIRST_USE_PROVIDER_OWNED_VM_ALREADY_PRESENT");
+    }
+    Ok(())
+}
+
+/// Read-only admission before the Git receipt reservation. A previously
+/// created/uncertain VM is not a fresh first-use candidate and must not
+/// acquire a misleading new registration PR. Uses the existing Vultr
+/// lifecycle planner and exact canonical protected Git provider spec.
+pub(crate) async fn host_first_use_provider_preflight(
+    machine_id: &str,
+    context: &OrchestrationContext,
+) -> Result<(), String> {
+    let host = context.verified_vm_first_use_host(machine_id)?;
+    edge_shared_types::host_lifecycle::verify_vm_first_use_git_prerequisites(&host)
+        .map_err(str::to_owned)?;
+    if !host.native_receipt_public_key.is_empty() {
+        return Err("HOST_FIRST_USE_RECEIPT_ALREADY_REGISTERED".to_owned());
+    }
+    if host.vm_first_use_credential.is_none() {
+        return Err("HOST_VM_FIRST_USE_CREDENTIAL_GIT_REQUIRED".to_owned());
+    }
+    // Preflight the same Cloudflare Access credentials used by root
+    // enrollment. Missing environment secrets must not strand a draft PR
+    // after the registry branch is already reserved.
+    for (label, name) in [
+        (
+            "credential Access client id",
+            "EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID",
+        ),
+        (
+            "credential Access client secret",
+            "EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET",
+        ),
+    ] {
+        let value = env::var(name).map_err(|_| "HOST_FIRST_USE_ACCESS_IDENTITY_REQUIRED")?;
+        validate_bootstrap_secret(label, &value)?;
+    }
+    let provider_spec = Path::new(&host.vm_provider_spec_path);
+    let desired = load_desired_state(provider_spec)?;
+    if desired.machines.len() != 1 || desired.machines[0].id != machine_id {
+        return Err("HOST_FIRST_USE_PROVIDER_SCOPE_NOT_SINGLE_VM".to_owned());
+    }
+    let profiles = load_firewall_profiles(&desired)?;
+    let mut lifecycle_provider = lifecycle_provider_from_env()?;
+    let mut support_provider = support_provider_from_env()?;
+    validate_machine_catalog(&mut support_provider, &desired.machines[0]).await?;
+    let bindings =
+        verified_firewall_bindings(&mut support_provider, &desired, profiles.as_ref()).await?;
+    let report = plan_desired_state_with_firewall_profiles(
+        &mut lifecycle_provider,
+        &desired,
+        Some(machine_id),
+        &bindings,
+    )
+    .await?;
+    let prior_owned = report
+        .inventory
+        .resources
+        .iter()
+        .any(|resource| resource.ownership.logical_id.as_deref() == Some(machine_id));
+    admit_vm_first_use_provider_plan(
+        report.plans.as_slice().first().map(|plan| &plan.class),
+        report.plans.len(),
+        prior_owned,
+    )
+    .map_err(str::to_owned)?;
+    println!("host_machine_id={machine_id}");
+    println!("host_first_use_provider_plan=EXACT_CREATE_ONLY");
+    println!("host_receipt_registration=NOT_YET_RESERVED");
+    println!("host_mutations=0");
+    Ok(())
+}
+
 /// One protected /host apply first-use operation using the pre-existing
 /// Vultr provider, strict host substrate and Git-attested root enrollment.
 /// On unknown CREATE/SSH outcome nothing is retried or adopted.
@@ -4452,6 +4537,38 @@ fn usage() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn first_use_provider_plan_does_not_reserve_for_existing_or_ambiguous_vm() {
+        use super::*;
+        assert_eq!(
+            admit_vm_first_use_provider_plan(Some(&PlanClass::Create), 1, false),
+            Ok(())
+        );
+        for state in [
+            PlanClass::Noop,
+            PlanClass::UpdateInPlace,
+            PlanClass::BlockedAmbiguous,
+            PlanClass::BlockedDrift,
+        ] {
+            assert_eq!(
+                admit_vm_first_use_provider_plan(Some(&state), 1, false),
+                Err("HOST_FIRST_USE_PROVIDER_NOT_EXACT_CREATE_NO_REPLAY")
+            );
+        }
+        assert_eq!(
+            admit_vm_first_use_provider_plan(Some(&PlanClass::Create), 2, false),
+            Err("HOST_FIRST_USE_PROVIDER_NOT_EXACT_CREATE_NO_REPLAY")
+        );
+        assert_eq!(
+            admit_vm_first_use_provider_plan(None, 0, false),
+            Err("HOST_FIRST_USE_PROVIDER_NOT_EXACT_CREATE_NO_REPLAY")
+        );
+        assert_eq!(
+            admit_vm_first_use_provider_plan(Some(&PlanClass::Create), 1, true),
+            Err("HOST_FIRST_USE_PROVIDER_OWNED_VM_ALREADY_PRESENT")
+        );
+    }
+
     #[test]
     fn native_first_use_owner_install_refuses_implicit_binary_replacement() {
         let exact = "a".repeat(64);
