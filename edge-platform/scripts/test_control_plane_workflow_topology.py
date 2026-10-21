@@ -1264,6 +1264,13 @@ def test_vm_worker_authorizer_is_one_host_continuation(router: str) -> None:
     scope = router.split("  host_worker_authorizer:\n", 1)[1].split(
         "\n  host_capabilities:\n", 1
     )[0]
+    report = router.split("  host_report:\n", 1)[1].split(
+        "\n  host_worker_authorizer:\n", 1
+    )[0]
+    require(
+        "needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'" in report,
+        "The same host apply must dispatch a report before VM Worker continuation",
+    )
     require(
         "needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'" in scope
         and "needs.host.outputs.kind == 'VM'" in scope
