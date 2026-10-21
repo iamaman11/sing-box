@@ -1322,6 +1322,7 @@ async fn initial_worker_proof_plan(
 pub(crate) async fn host_vm_worker_authorizer_upgrade(
     machine_id: &str,
     release: &edge_orchestrator::OrchestrationContext,
+    plan_only: bool,
 ) -> Result<(), String> {
     for (key, expected) in [
         ("GITHUB_REPOSITORY", "iamaman11/sing-box"),
@@ -1385,6 +1386,12 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
     }
     if state != ProjectionDeliveryState::FixedAbProofUpgradeRequired {
         return Err("HOST_VM_WORKER_BASELINE_NOT_PROVEN_FOR_CODE_UPGRADE".to_owned());
+    }
+    if plan_only {
+        println!("host_vm_worker_authorizer=EXACT_VM_CODE_ONLY_PLAN");
+        println!("worker_mutations=0");
+        println!("host_signed_install=NOT_AUTHORIZED");
+        return Ok(());
     }
     // This fixed scope comes from live GET names, after the credential
     // projection's exact name/type guard has succeeded; never a free-form
