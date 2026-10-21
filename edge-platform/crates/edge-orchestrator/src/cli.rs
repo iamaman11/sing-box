@@ -149,6 +149,16 @@ pub(crate) enum HostCommand {
     },
     /// One bounded fresh typed recovery preflight; never resumes historical operations.
     Recover { machine_id: String },
+    /// Internal GitHub-hosted first-use of a new, absent VM. This shares
+    /// the host ingress and existing Rust Vultr owner, never a legacy workflow.
+    #[command(hide = true)]
+    FirstUse {
+        machine_id: String,
+        #[arg(long)]
+        installer_path: PathBuf,
+        #[arg(long)]
+        agent_path: PathBuf,
+    },
 }
 
 #[derive(Debug, Args, Clone)]

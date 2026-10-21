@@ -758,6 +758,9 @@ pub(crate) fn run(
             intent_output,
             None,
         ),
+        HostCommand::FirstUse { .. } => {
+            Err("HOST_FIRST_USE_MUST_USE_EXISTING_NATIVE_VULTR_OWNER".to_owned())
+        }
     }
 }
 
@@ -927,6 +930,37 @@ fn host_lifecycle_admission(
     let comment_id = source_comment_id
         .filter(|id| *id != 0)
         .ok_or("HOST_SOURCE_COMMENT_REQUIRED")?;
+    // Before a native receipt key exists, /host apply routes to the fixed
+    // provider->root enrollment within the SAME host control-plane. It does
+    // not create a signed INSTALL intent until the public key is protected
+    // by a subsequent Git ReleaseSet. No runner may enroll itself.
+    if operation == HostLifecycleOperation::Apply
+        && kind == ManagedHostKind::Vm
+        && selected.native_receipt_public_key.is_empty()
+    {
+        if resource_id.is_some() {
+            return Err("HOST_VM_FIRST_USE_WHOLE_HOST_REQUIRED".to_owned());
+        }
+        edge_shared_types::host_lifecycle::verify_vm_first_use_git_prerequisites(selected)
+            .map_err(str::to_owned)?;
+        if selected.vm_first_use_credential.is_none() {
+            return Err("HOST_VM_FIRST_USE_CREDENTIAL_GIT_REQUIRED".to_owned());
+        }
+        let output = output.ok_or("HOST_PREFLIGHT_OUTPUT_REQUIRED")?;
+        let labels = runner_labels(kind, owner, &selected.windows_runner_label)?;
+        append_control_outputs(
+            output, machine_id, kind, owner, &labels,
+            &selected.windows_runner_label, &selected.desired_spec_path,
+        )?;
+        append_action_output(output, "FIRST_USE_PREFLIGHT")?;
+        append_observation_matrix(output, &[])?;
+        println!("host_operation_id=issue1-comment-{comment_id}");
+        println!("host_machine_id={machine_id}");
+        println!("host_first_use_next_action=CREATE_NATIVE_ROOT_ENROLL_AWAIT_GIT_RECEIPT");
+        println!("host_signed_intent=NOT_CREATED");
+        println!("host_mutations=0");
+        return Ok(());
+    }
     let intent_path = intent_output.ok_or("HOST_INTENT_OUTPUT_REQUIRED")?;
     // Read *the checked-out protected Git spec*, not an operator-supplied file.
     // This binds the intent to the exact desired bytes; JSON remains an

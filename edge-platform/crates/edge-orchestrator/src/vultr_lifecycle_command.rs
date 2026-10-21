@@ -1399,6 +1399,80 @@ async fn run_transport_proof(
     }))
 }
 
+/// One protected /host apply first-use operation using the pre-existing
+/// Vultr provider, strict host substrate and Git-attested root enrollment.
+/// On unknown CREATE/SSH outcome nothing is retried or adopted.
+pub(crate) async fn host_first_use(
+    machine_id: &str,
+    installer: &Path,
+    agent: &Path,
+    context: &OrchestrationContext,
+) -> Result<(), String> {
+    if env::var("GITHUB_RUN_ATTEMPT").as_deref() != Ok("1") {
+        return Err("HOST_FIRST_USE_NO_AUTOMATIC_REPLAY".to_owned());
+    }
+    let git_host = context.verified_vm_first_use_host(machine_id)?;
+    edge_shared_types::host_lifecycle::verify_vm_first_use_git_prerequisites(&git_host)
+        .map_err(str::to_owned)?;
+    if !git_host.native_receipt_public_key.is_empty() {
+        return Err("HOST_FIRST_USE_ALREADY_ENROLLED_USE_SIGNED_APPLY".to_owned());
+    }
+    if git_host.vm_first_use_credential.is_none() {
+        return Err("HOST_VM_FIRST_USE_CREDENTIAL_GIT_REQUIRED".to_owned());
+    }
+    let provider_spec = Path::new(&git_host.vm_provider_spec_path);
+    if !installer.is_file() {
+        return Err("HOST_FIRST_USE_INSTALLER_MISSING".to_owned());
+    }
+    context.validate_application_artifact(&context.expected_application_artifact()?, agent)?;
+    validate_runner_registration_token(
+        &env::var("EDGE_RUNNER_REGISTRATION_TOKEN")
+            .map_err(|_| "HOST_FIRST_USE_RUNNER_TOKEN_REQUIRED".to_owned())?,
+    )?;
+    validate_bootstrap_secret(
+        "credential Access client id",
+        &env::var("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID")
+            .map_err(|_| "HOST_FIRST_USE_ACCESS_CLIENT_ID_REQUIRED".to_owned())?,
+    )?;
+    validate_bootstrap_secret(
+        "credential Access client secret",
+        &env::var("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET")
+            .map_err(|_| "HOST_FIRST_USE_ACCESS_CLIENT_SECRET_REQUIRED".to_owned())?,
+    )?;
+    // Provider CREATE must be the exact first transition. NOOP means an
+    // existing VM or an uncertain earlier response: never automatic adoption.
+    acceptance_create_machine(provider_spec, machine_id).await?;
+    acceptance_lease_acquire(provider_spec, machine_id).await?;
+    let outcome = async {
+        acceptance_converge_substrate(provider_spec, machine_id).await?;
+        bootstrap_production_runner(
+            &load_desired_state(provider_spec)?,
+            provider_spec,
+            machine_id,
+            installer,
+            agent,
+            context,
+        )
+        .await
+    }
+    .await;
+    let access_release = acceptance_lease_release(provider_spec, machine_id).await;
+    match (outcome, access_release) {
+        (Ok(()), Ok(())) => {
+            println!("host_first_use_state=AWAITING_PROTECTED_GIT_RECEIPT_REGISTRATION");
+            println!("host_signed_install=NOT_YET_AUTHORIZED");
+            Ok(())
+        }
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(format!(
+            "HOST_FIRST_USE_ACCESS_CLEANUP_UNPROVEN: {error}"
+        )),
+        (Err(error), Err(release_error)) => Err(format!(
+            "{error}; HOST_FIRST_USE_ACCESS_CLEANUP_UNPROVEN: {release_error}"
+        )),
+    }
+}
+
 async fn run_runner_bootstrap(
     args: &[String],
     context: &OrchestrationContext,

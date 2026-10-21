@@ -734,6 +734,25 @@ def test_git_windows_host_host_contract(credentials: str) -> None:
     )
 
 
+def test_host_first_use_is_internal_to_one_host_ingress() -> None:
+    router = ROUTER.read_text(encoding="utf-8")
+    vultr = VULTR.read_text(encoding="utf-8")
+    native = Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_command.rs").read_text(encoding="utf-8")
+    require(
+        "  host_first_use:\n" in router
+        and "uses: ./.github/workflows/vultr-lifecycle.yml" not in router
+        and "environment:\n      name: production-vultr" in router
+        and "first-use \"${TARGET_MACHINE}\"" in router
+        and "github.run_attempt == 1" in router
+        and "HOST_VM_FIRST_USE_CREDENTIAL_GIT_REQUIRED" in native
+        and "acceptance_create_machine(" in native
+        and "bootstrap_production_runner(" in native
+        and "pub(crate) async fn host_first_use(" in native
+        and "  workflow_call:" in vultr,
+        "First-use must stay inside one host ingress and one existing native Vultr engine",
+    )
+
+
 def test_host_native_signed_result_reporting() -> None:
     """The workflow must not downgrade or fabricate a Git-pinned receipt."""
     source = Path(".github/workflows/host-native-observe.yml").read_text(
@@ -1202,6 +1221,7 @@ def test_existing_worker_host_signer_is_syntactically_closed() -> None:
 def main() -> None:
     test_existing_worker_host_signer_is_syntactically_closed()
     router = ROUTER.read_text(encoding="utf-8")
+    test_host_first_use_is_internal_to_one_host_ingress()
     test_host_native_signed_result_reporting()
     test_canonical_host_mutation_ingress()
     test_host_native_receipt_boundary_and_legacy_workflow_admission(router)

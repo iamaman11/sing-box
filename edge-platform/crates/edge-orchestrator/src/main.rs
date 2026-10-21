@@ -221,16 +221,31 @@ async fn run(
             runner_inventory_json,
             source_comment_id,
             intent_output,
-        } => host_command::run(
-            command,
-            release_context,
-            &hosts_pb,
-            &hosts_sha256,
-            github_output.as_deref(),
-            runner_inventory_json.as_deref(),
-            source_comment_id,
-            intent_output.as_deref(),
-        ),
+        } => match command {
+            cli::HostCommand::FirstUse {
+                machine_id,
+                installer_path,
+                agent_path,
+            } => {
+                vultr_lifecycle_command::host_first_use(
+                    &machine_id,
+                    &installer_path,
+                    &agent_path,
+                    release_context,
+                )
+                .await
+            }
+            other => host_command::run(
+                other,
+                release_context,
+                &hosts_pb,
+                &hosts_sha256,
+                github_output.as_deref(),
+                runner_inventory_json.as_deref(),
+                source_comment_id,
+                intent_output.as_deref(),
+            ),
+        },
         Command::Production { command } => match command {
             cli::ProductionCommand::Validate => production_command::validate(release_context),
             cli::ProductionCommand::Diagnose => cloudflare_production_inventory::run().await,
