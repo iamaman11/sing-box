@@ -257,6 +257,60 @@ jobs:
           echo "comment_id=${comment_id}" >> "${GITHUB_OUTPUT}"
 
 
+  host_capabilities:
+    # Not another public command or native mutation path. The same exact
+    # authorized /host status --deep may observe existing protected secrets
+    # and provider GET endpoints without reading or printing their values.
+    needs: host
+    if: >-
+      needs.host.result == 'success' &&
+      github.event_name == 'issue_comment' &&
+      github.run_attempt == 1 &&
+      github.event.comment.body == '/host status application-acceptance-1 --deep' &&
+      needs.host.outputs.machine_id == 'application-acceptance-1'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 8
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact protected main for bounded capability observation
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          test -f infra/hosts/hosts.textproto
+          test -f infra/vultr/application-acceptance.json
+      - name: Observe protected credentials and provider access with GET only
+        shell: bash
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+          VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_VM_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID }}
+          CLOUDFLARE_VM_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET }}
+          IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN: ${{ secrets.IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN }}
+        run: |
+          set -euo pipefail
+          result="$(python3 edge-platform/scripts/host_capability_preflight.py application-acceptance-1)"
+          # The probe returns closed enums, not provider payloads.
+          python3 -c 'import json,sys; a=json.loads(sys.argv[1]); assert a["provider_mutations"] == a["worker_mutations"] == a["github_mutations"] == 0; assert a["scope"] == "READ_ONLY_PROTECTED_ENVIRONMENT"' "${result}"
+          {
+            echo '### Protected first-use capabilities (read-only; not signed admission)'
+            echo '~~~json'
+            printf '%s\n' "${result}"
+            echo '~~~'
+          } >> "${GITHUB_STEP_SUMMARY}"
+          printf '%s\n' "${result}"
+          echo 'host_mutations=0'
+
+
   host_first_use:
     # A continuation of ONE issue /host apply, not another public ingress.
     # First-use is a bounded GitHub-hosted provider/root bootstrap, never
