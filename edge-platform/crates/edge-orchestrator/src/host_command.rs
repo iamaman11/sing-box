@@ -852,6 +852,9 @@ pub(crate) fn run(
             println!("host_mutations=0");
             Ok(())
         }
+        HostCommand::VmWorkerAuthorizerUpgrade { .. } => {
+            Err("HOST_VM_WORKER_UPGRADE_MUST_USE_PROTECTED_CREDENTIAL_OWNER".to_owned())
+        }
         HostCommand::RefreshReceipt { .. } => {
             Err("HOST_RECEIPT_REFRESH_MUST_USE_EXISTING_NATIVE_VULTR_OWNER".to_owned())
         }
@@ -1061,6 +1064,43 @@ fn host_lifecycle_admission(
     let comment_id = source_comment_id
         .filter(|id| *id != 0)
         .ok_or("HOST_SOURCE_COMMENT_REQUIRED")?;
+    // Before any Worker signer exists, APPLY may update only the code of
+    // the existing Git-owned VM Credential Worker. This is NOT an INSTALL:
+    // there is no signer, receipt or permission to create/adopt a VM.
+    // All physical Worker writes remain in the protected one-owner workflow.
+    if operation == HostLifecycleOperation::Apply
+        && kind == ManagedHostKind::Vm
+        && selected.worker_authority_public_key.is_empty()
+    {
+        if resource_id.is_some() {
+            return Err("HOST_VM_WORKER_BOOTSTRAP_WHOLE_HOST_REQUIRED".to_owned());
+        }
+        if !selected.native_receipt_public_key.is_empty()
+            || selected.vm_provider_spec_path.is_empty()
+            || selected.vm_containers.is_empty()
+        {
+            return Err("HOST_VM_WORKER_BOOTSTRAP_GIT_SCOPE_INVALID".to_owned());
+        }
+        let output = output.ok_or("HOST_PREFLIGHT_OUTPUT_REQUIRED")?;
+        let labels = runner_labels(kind, owner, &selected.windows_runner_label)?;
+        append_control_outputs(
+            output,
+            machine_id,
+            kind,
+            owner,
+            &labels,
+            &selected.windows_runner_label,
+            &selected.desired_spec_path,
+        )?;
+        append_action_output(output, "WORKER_AUTHORIZER_PREFLIGHT")?;
+        append_observation_matrix(output, &[])?;
+        println!("host_operation_id=issue1-comment-{comment_id}");
+        println!("host_machine_id={machine_id}");
+        println!("host_worker_authorizer_source=CANONICAL_VM_ONLY");
+        println!("host_signed_intent=NOT_CREATED");
+        println!("host_mutations=0");
+        return Ok(());
+    }
     // Before a native receipt key exists, /host apply routes to the fixed
     // provider->root enrollment within the SAME host control-plane. It does
     // not create a signed INSTALL intent until the public key is protected

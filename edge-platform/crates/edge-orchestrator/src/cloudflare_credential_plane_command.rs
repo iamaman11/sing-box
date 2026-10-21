@@ -1314,6 +1314,147 @@ async fn initial_worker_proof_plan(
     Ok(())
 }
 
+/// VM-only Host authorizer code promotion. The one public /host apply
+/// selects the Git-owned VM; the protected workflow reserves a durable BEGIN
+/// before dispatch and supplies the existing distinct Cloudflare read/write
+/// identities. No secret values are transported by this Rust operation.
+/// Missing signer/receipt pins remain an absolute first-use CREATE gate.
+pub(crate) async fn host_vm_worker_authorizer_upgrade(
+    machine_id: &str,
+    release: &edge_orchestrator::OrchestrationContext,
+    plan_only: bool,
+) -> Result<(), String> {
+    for (key, expected) in [
+        ("GITHUB_REPOSITORY", "iamaman11/sing-box"),
+        ("GITHUB_REPOSITORY_ID", "1221750822"),
+        ("GITHUB_EVENT_NAME", "issue_comment"),
+        ("GITHUB_ACTOR_ID", "44100369"),
+        ("GITHUB_RUN_ATTEMPT", "1"),
+        ("GITHUB_JOB", "host_worker_authorizer"),
+    ] {
+        if env::var(key).ok().as_deref() != Some(expected) {
+            return Err(format!("HOST_VM_WORKER_MUTATION_UNTRUSTED_{key}"));
+        }
+    }
+    if env::var("GITHUB_SHA").ok().as_deref() != Some(release.release().accepted_revision.as_str())
+    {
+        return Err("HOST_VM_WORKER_RELEASE_GIT_REVISION_MISMATCH".to_owned());
+    }
+    if env::var("HOST_ORIGINAL_COMMAND").ok().as_deref()
+        != Some(format!("/host apply {machine_id}").as_str())
+    {
+        return Err("HOST_VM_WORKER_EXACT_APPLY_REQUIRED".to_owned());
+    }
+    let host = release.verified_vm_worker_authorizer_host(machine_id)?;
+    if host.machine_id != machine_id {
+        return Err("HOST_VM_WORKER_GIT_SELECTION_MISMATCH".to_owned());
+    }
+    let production = ProductionComposition::canonical().map_err(|err| err.to_string())?;
+    let desired = &production.cloudflare.credential_plane;
+    if production.cloudflare.active_account_id != desired.target_account_id
+        || production.cloudflare.migration_target_account_id.is_some()
+    {
+        return Err("HOST_VM_WORKER_PRODUCTION_AUTHORITY_MISMATCH".to_owned());
+    }
+    let read_token = required_env("CLOUDFLARE_CONTROL_TOKEN")?;
+    let write_token = required_env("CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN")?;
+    let before = observe(&read_token, desired).await?;
+    validate_access_boundary(desired, &before)?;
+    let write_identity = cloudflare::verify_api_token(&write_token).await?;
+    if write_identity.status != "active" || write_identity.id == before.control_token_identity.id {
+        return Err("HOST_VM_WORKER_DISTINCT_ACTIVE_WRITE_IDENTITY_REQUIRED".to_owned());
+    }
+    let windows = projection_desired(desired, "windows")?;
+    if !matches!(
+        projection_delivery_state(desired, &windows, &before)?,
+        ProjectionDeliveryState::FixedAb | ProjectionDeliveryState::FixedAbProofUpgradeRequired
+    ) {
+        return Err("HOST_VM_WORKER_WINDOWS_BASELINE_NOT_TERMINAL".to_owned());
+    }
+    let vm = projection_desired(desired, "vm")?;
+    let state = projection_delivery_state(desired, &vm, &before)?;
+    let original = projection_observation(&before, "vm")?;
+    if original.worker_latest_version_id.is_none()
+        || original.worker_active_version_ids.as_slice()
+            != [original.worker_latest_version_id.as_deref().unwrap_or("")]
+    {
+        return Err("HOST_VM_WORKER_PENDING_OR_SPLIT_DEPLOYMENT_FORBIDDEN".to_owned());
+    }
+    if state == ProjectionDeliveryState::FixedAb {
+        println!("host_vm_worker_authorizer=SOURCE_ALREADY_ACCEPTED");
+        println!("worker_mutations=0");
+        println!("host_signed_install=NOT_AUTHORIZED");
+        return Ok(());
+    }
+    if state != ProjectionDeliveryState::FixedAbProofUpgradeRequired {
+        return Err("HOST_VM_WORKER_BASELINE_NOT_PROVEN_FOR_CODE_UPGRADE".to_owned());
+    }
+    if plan_only {
+        println!("host_vm_worker_authorizer=EXACT_VM_CODE_ONLY_PLAN");
+        println!("worker_mutations=0");
+        println!("host_signed_install=NOT_AUTHORIZED");
+        return Ok(());
+    }
+    // This fixed scope comes from live GET names, after the credential
+    // projection's exact name/type guard has succeeded; never a free-form
+    // caller list or a guess about an opaque secret's value.
+    let bindings = match original.worker_secret_bindings.len() {
+        2 => cloudflare::WorkerCodeBindingScope::FixedAb,
+        7 => cloudflare::WorkerCodeBindingScope::VmHostSigner,
+        _ => return Err("HOST_VM_WORKER_BINDINGS_INCOMPLETE".to_owned()),
+    };
+    let source = delivery_worker_material("vm")?;
+    let version_id = cloudflare::upload_worker_slot_proof_version(
+        &write_token,
+        &desired.target_account_id,
+        &vm.worker_name,
+        &source.version_tag,
+        &source.source,
+        bindings,
+        &original.worker_secret_bindings,
+    )
+    .await
+    .map_err(|_| "HOST_VM_WORKER_UPLOAD_UNCERTAIN_STOP_NO_REPLAY".to_owned())?;
+    let pending_observation = observe(&read_token, desired).await?;
+    validate_access_boundary(desired, &pending_observation)?;
+    if projection_observation(&before, "windows")?
+        != projection_observation(&pending_observation, "windows")?
+    {
+        return Err("HOST_VM_WORKER_WINDOWS_CHANGED_AFTER_UPLOAD_STOP".to_owned());
+    }
+    let pending = projection_observation(&pending_observation, "vm")?;
+    verify_exact_pending_worker_version(original, pending, &version_id)?;
+    if pending.worker_latest_version_tag.as_deref() != Some(source.version_tag.as_str()) {
+        return Err("HOST_VM_WORKER_PENDING_VERSION_TAG_MISMATCH".to_owned());
+    }
+    let ack = cloudflare::deploy_worker_version(
+        &write_token,
+        &desired.target_account_id,
+        &vm.worker_name,
+        &version_id,
+    )
+    .await;
+    let after = observe(&read_token, desired).await?;
+    validate_access_boundary(desired, &after)?;
+    if projection_observation(&before, "windows")? != projection_observation(&after, "windows")?
+        || verify_exact_active_worker_version(projection_observation(&after, "vm")?, &version_id)
+            .is_err()
+        || projection_delivery_state(desired, &vm, &after)? != ProjectionDeliveryState::FixedAb
+    {
+        return Err("HOST_VM_WORKER_DEPLOYMENT_NOT_PROVEN_STOP_NO_REPLAY".to_owned());
+    }
+    if ack.is_err() {
+        return Err("HOST_VM_WORKER_DEPLOY_ACK_UNCERTAIN_STOP_FOR_RECONCILIATION".to_owned());
+    }
+    println!("host_vm_worker_authorizer=CANONICAL_VM_CODE_ACTIVE");
+    println!("host_vm_worker_active_version_id={version_id}");
+    println!("worker_mutations=2");
+    println!("worker_secret_mutations=0");
+    println!("windows_worker_mutations=0");
+    println!("host_signed_install=NOT_AUTHORIZED");
+    Ok(())
+}
+
 /// A code-only compatibility update *within the same* canonical initial VM
 /// operation, before the first-use credential BEGIN. Neither secret values nor
 /// new credential material are generated by this operation. Unknown Cloudflare
@@ -1438,12 +1579,25 @@ async fn initial_worker_proof_upgrade(
         }
         let old = projection_observation(&current, &projection.projection)?;
         let material = delivery_worker_material(&projection.projection)?;
+        // Match the full live secret set before code upload. VM is the ONLY
+        // projection allowed to inherit Host signing bindings. A stale caller
+        // must not silently replace a seven-binding Worker with just A/B.
+        let binding_scope = match (
+            projection.projection.as_str(),
+            old.worker_secret_bindings.len(),
+        ) {
+            ("vm", 7) => cloudflare::WorkerCodeBindingScope::VmHostSigner,
+            ("vm" | "windows", 2) => cloudflare::WorkerCodeBindingScope::FixedAb,
+            _ => return Err("WORKER_CODE_BINDINGS_NOT_EXACT_PROJECTION_SCOPE".to_owned()),
+        };
         let version_id = cloudflare::upload_worker_slot_proof_version(
             &rotation_token,
             &desired.target_account_id,
             &projection.worker_name,
             &material.version_tag,
             &material.source,
+            binding_scope,
+            &old.worker_secret_bindings,
         )
         .await
         .map_err(|_| format!(

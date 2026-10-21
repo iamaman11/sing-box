@@ -222,6 +222,17 @@ async fn run(
             source_comment_id,
             intent_output,
         } => match command {
+            cli::HostCommand::VmWorkerAuthorizerUpgrade {
+                machine_id,
+                plan_only,
+            } => {
+                cloudflare_credential_plane_command::host_vm_worker_authorizer_upgrade(
+                    &machine_id,
+                    release_context,
+                    plan_only,
+                )
+                .await
+            }
             cli::HostCommand::RefreshReceipt { machine_id } => {
                 vultr_lifecycle_command::host_receipt_refresh(&machine_id, release_context).await
             }

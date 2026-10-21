@@ -147,7 +147,7 @@ impl OrchestrationContext {
     /// validated immutable ReleaseSet. A legacy release without this asset,
     /// a second host inventory, or a caller-provided worker key cannot
     /// authorize native root bootstrap. No provider operation occurs here.
-    pub fn verified_vm_first_use_host(&self, machine_id: &str) -> Result<FleetHost, String> {
+    fn verified_vm_host_from_release(&self, machine_id: &str) -> Result<FleetHost, String> {
         let context_path = env::var_os("EDGE_RELEASE_CONTEXT_PATH")
             .map(PathBuf::from)
             .ok_or("HOST_BOOTSTRAP_RELEASE_CONTEXT_UNAVAILABLE")?;
@@ -186,6 +186,29 @@ impl OrchestrationContext {
         {
             return Err("HOST_BOOTSTRAP_GIT_VM_OWNER_MISMATCH".to_owned());
         }
+        Ok(host)
+    }
+
+    /// One already registered Git-owned VM may receive the canonical Worker
+    /// source BEFORE a signer has been pinned. This does not authorize
+    /// enrollment or change any host target, secret or receipt identity.
+    pub fn verified_vm_worker_authorizer_host(
+        &self,
+        machine_id: &str,
+    ) -> Result<FleetHost, String> {
+        let host = self.verified_vm_host_from_release(machine_id)?;
+        if host.vm_provider_spec_path.is_empty()
+            || host.vm_containers.is_empty()
+            || !host.worker_authority_public_key.is_empty()
+            || !host.native_receipt_public_key.is_empty()
+        {
+            return Err("HOST_VM_WORKER_BOOTSTRAP_SCOPE_INVALID".to_owned());
+        }
+        Ok(host)
+    }
+
+    pub fn verified_vm_first_use_host(&self, machine_id: &str) -> Result<FleetHost, String> {
+        let host = self.verified_vm_host_from_release(machine_id)?;
         edge_shared_types::host_lifecycle::verify_vm_first_use_git_prerequisites(&host)
             .map_err(str::to_owned)?;
         Ok(host)

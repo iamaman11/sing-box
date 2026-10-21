@@ -218,7 +218,8 @@ jobs:
        startsWith(github.event.comment.body, '/host status ') ||
        needs.host.outputs.operation == 'APPLY_PREFLIGHT' ||
        needs.host.outputs.operation == 'RECOVER_PREFLIGHT' ||
-       needs.host.outputs.operation == 'FIRST_USE_PREFLIGHT')
+       needs.host.outputs.operation == 'FIRST_USE_PREFLIGHT' ||
+       needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT')
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     permissions:
@@ -231,6 +232,7 @@ jobs:
       SOURCE_COMMENT_ID: ${{ github.event.comment.id }}
       COMMAND_BODY: ${{ github.event.comment.body }}
       TARGETS_PRESENT: ${{ needs.host.outputs.host_targets_present }}
+      HOST_OPERATION: ${{ needs.host.outputs.operation }}
     steps:
       - name: Publish one read-only observation pointer immediately
         id: publish
@@ -241,7 +243,9 @@ jobs:
           case "${TARGETS_PRESENT}" in
             true) result=PER_HOST_NATIVE_REPORTS_INDEPENDENT ;;
             false)
-              if [[ "${COMMAND_BODY}" == "/host apply "* ]]; then
+              if [[ "${HOST_OPERATION}" == "WORKER_AUTHORIZER_PREFLIGHT" ]]; then
+                result=CANONICAL_VM_WORKER_AUTHORIZER_STAGE
+              elif [[ "${COMMAND_BODY}" == "/host apply "* ]]; then
                 result=FIRST_USE_GIT_RECEIPT_REGISTRATION_REQUIRED
               else
                 result=NO_NATIVE_TARGET_AVAILABLE
@@ -256,6 +260,137 @@ jobs:
           [[ "${comment_id}" =~ ^[0-9]+$ ]]
           echo "comment_id=${comment_id}" >> "${GITHUB_OUTPUT}"
 
+
+  host_worker_authorizer:
+    # A fixed typed continuation of the same /host apply, not a second
+    # public command. Before Git signer enrollment ONLY the existing VM
+    # Worker may get the canonical Host authorization code. This cannot
+    # create a VM, rotate A/B or touch the Windows Worker.
+    needs: [host, host_report]
+    if: >-
+      needs.host.result == 'success' &&
+      needs.host_report.result == 'success' &&
+      needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT' &&
+      needs.host.outputs.kind == 'VM' &&
+      github.event_name == 'issue_comment' &&
+      github.event.comment.body == format('/host apply {0}', needs.host.outputs.machine_id) &&
+      github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    concurrency:
+      group: vultr-control-plane-production
+      cancel-in-progress: false
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      issues: write
+    env:
+      TARGET_MACHINE: ${{ needs.host.outputs.machine_id }}
+      SOURCE_COMMENT_ID: ${{ github.event.comment.id }}
+      HOST_ORIGINAL_COMMAND: ${{ github.event.comment.body }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Resolve exact protected VM release and published owner
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          export ACCEPTED_REVISION="${GITHUB_SHA}"
+          export OUTPUT_DIR="${RUNNER_TEMP}/host-worker-release"
+          export REPOSITORY="${GITHUB_REPOSITORY}"
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          [[ "${EDGE_FLEET_REGISTRY_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+          test "$(sha256sum "${OUTPUT_DIR}/fleet-registry.pb" | cut -d' ' -f1)" = "${EDGE_FLEET_REGISTRY_SHA256}"
+          bin="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          test "$(sha256sum "${bin}" | cut -d' ' -f1)" = "${EDGE_ORCHESTRATOR_SHA256}"
+          chmod 0755 "${bin}"
+          echo "HOST_VM_WORKER_OWNER=${bin}" >> "${GITHUB_ENV}"
+          echo "EDGE_RELEASE_CONTEXT_PATH=${OUTPUT_DIR}/resolved.env" >> "${GITHUB_ENV}"
+          echo "HOST_FLEET_REGISTRY=${OUTPUT_DIR}/fleet-registry.pb" >> "${GITHUB_ENV}"
+          echo "HOST_FLEET_SHA256=${EDGE_FLEET_REGISTRY_SHA256}" >> "${GITHUB_ENV}"
+
+      - name: Plan exact VM Worker release with GET only
+        id: plan
+        shell: bash
+        env:
+          CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
+          CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN: ${{ secrets.CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_CONTROL_TOKEN}" && test -n "${CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN}"
+          "${HOST_VM_WORKER_OWNER}" host \
+            --hosts-pb "${HOST_FLEET_REGISTRY}" \
+            --hosts-sha256 "${HOST_FLEET_SHA256}" \
+            vm-worker-authorizer-upgrade "${TARGET_MACHINE}" --plan-only |
+            tee "${RUNNER_TEMP}/host-vm-worker-plan.txt"
+          grep -Fxq 'worker_mutations=0' "${RUNNER_TEMP}/host-vm-worker-plan.txt"
+          grep -Fxq 'host_signed_install=NOT_AUTHORIZED' "${RUNNER_TEMP}/host-vm-worker-plan.txt"
+          if grep -Fxq 'host_vm_worker_authorizer=EXACT_VM_CODE_ONLY_PLAN' "${RUNNER_TEMP}/host-vm-worker-plan.txt"; then
+            echo 'required=true' >> "${GITHUB_OUTPUT}"
+          else
+            grep -Fxq 'host_vm_worker_authorizer=SOURCE_ALREADY_ACCEPTED' "${RUNNER_TEMP}/host-vm-worker-plan.txt"
+            echo 'required=false' >> "${GITHUB_OUTPUT}"
+          fi
+
+      - name: Reserve one durable VM Worker version transaction before mutation
+        if: steps.plan.outputs.required == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = 1
+          [[ "${TARGET_MACHINE}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]
+          [[ "${SOURCE_COMMENT_ID}" =~ ^[1-9][0-9]*$ ]]
+          test "${HOST_ORIGINAL_COMMAND}" = "/host apply ${TARGET_MACHINE}"
+          # An earlier BEGIN for the same VM means a prior/uncertain Worker
+          # operation. NEVER issue another upload with a fresh comment ID.
+          history="${RUNNER_TEMP}/vm-worker-begins.json"
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/26/comments?per_page=100" | jq -s 'add' > "${history}"
+          python3 - "${history}" "${TARGET_MACHINE}" <<'PY'
+          import json, sys
+          comments = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert isinstance(comments, list)
+          prefix = "<!-- sing-box-vm-worker-authorizer-begin/v1 machine=" + sys.argv[2] + " "
+          if any(isinstance(c, dict) and isinstance(c.get("body"), str)
+                 and c["body"].startswith(prefix) for c in comments):
+              raise SystemExit("HOST_VM_WORKER_PRIOR_BEGIN_NO_REPLAY")
+          PY
+          record="<!-- sing-box-vm-worker-authorizer-begin/v1 machine=${TARGET_MACHINE} comment=${SOURCE_COMMENT_ID} revision=${GITHUB_SHA} run=${GITHUB_RUN_ID} -->"
+          reservation_id="$(gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/26/comments" -f "body=${record}" --jq '.id')"
+          [[ "${reservation_id}" =~ ^[1-9][0-9]*$ ]]
+          stored="$(gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${reservation_id}" --jq '.body')"
+          test "${stored}" = "${record}"
+          echo "host_vm_worker_durable_begin=EXACT_GITHUB_ISSUE26"
+
+      - name: Apply exact VM Worker code once and verify immutable active version
+        if: steps.plan.outputs.required == 'true'
+        shell: bash
+        env:
+          CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
+          CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN: ${{ secrets.CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_CONTROL_TOKEN}" && test -n "${CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN}"
+          "${HOST_VM_WORKER_OWNER}" host \
+            --hosts-pb "${HOST_FLEET_REGISTRY}" \
+            --hosts-sha256 "${HOST_FLEET_SHA256}" \
+            vm-worker-authorizer-upgrade "${TARGET_MACHINE}" |
+            tee "${RUNNER_TEMP}/host-vm-worker-result.txt"
+          grep -Eq '^host_vm_worker_authorizer=(CANONICAL_VM_CODE_ACTIVE|SOURCE_ALREADY_ACCEPTED)$' "${RUNNER_TEMP}/host-vm-worker-result.txt"
+          grep -Fxq 'host_signed_install=NOT_AUTHORIZED' "${RUNNER_TEMP}/host-vm-worker-result.txt"
+          {
+            echo '### Canonical VM Worker authorizer code'
+            echo '~~~text'
+            cat "${RUNNER_TEMP}/host-vm-worker-result.txt"
+            echo '~~~'
+          } >> "${GITHUB_STEP_SUMMARY}"
 
   host_capabilities:
     # Not another public command or native mutation path. The same exact

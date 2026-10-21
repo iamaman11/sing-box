@@ -1259,6 +1259,63 @@ def test_existing_worker_host_signer_is_syntactically_closed() -> None:
         )
 
 
+def test_vm_worker_authorizer_is_one_host_continuation(router: str) -> None:
+    """VM Worker code can be updated once, without another public command."""
+    scope = router.split("  host_worker_authorizer:\n", 1)[1].split(
+        "\n  host_capabilities:\n", 1
+    )[0]
+    report = router.split("  host_report:\n", 1)[1].split(
+        "\n  host_worker_authorizer:\n", 1
+    )[0]
+    require(
+        "needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'" in report,
+        "The same host apply must dispatch a report before VM Worker continuation",
+    )
+    require(
+        "needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'" in scope
+        and "needs.host.outputs.kind == 'VM'" in scope
+        and "github.event.comment.body == format('/host apply {0}', needs.host.outputs.machine_id)" in scope
+        and "name: production-vultr" in scope
+        and "group: vultr-control-plane-production" in scope
+        and "github.run_attempt == 1" in scope
+        and "sing-box-vm-worker-authorizer-begin/v1" in scope
+        and scope.index("Plan exact VM Worker release with GET only")
+        < scope.index("Reserve one durable VM Worker version transaction before mutation")
+        < scope.index("Apply exact VM Worker code once")
+        and 'vm-worker-authorizer-upgrade "${TARGET_MACHINE}" --plan-only' in scope
+        and scope.count("if: steps.plan.outputs.required == 'true'") == 2
+        and "HOST_VM_WORKER_PRIOR_BEGIN_NO_REPLAY" in scope
+        and 'vm-worker-authorizer-upgrade "${TARGET_MACHINE}"' in scope
+        and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}" in scope
+        and "CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN: ${{ secrets.CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN }}" in scope
+        and "VULTR_API_KEY" not in scope
+        and "VULTR_SSH_PRIVATE_KEY" not in scope
+        and "sudo " not in scope
+        and "first-use " not in scope,
+        "Host signer bootstrap must be VM-only, journalled, one-shot, no provider/SSH",
+    )
+    orchestrator = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs").read_text(
+        encoding="utf-8"
+    )
+    provider = Path("edge-platform/crates/edge-provider-cloudflare/src/lib.rs").read_text(
+        encoding="utf-8"
+    )
+    host = Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(
+        encoding="utf-8"
+    )
+    require(
+        "host_vm_worker_authorizer_upgrade(" in orchestrator
+        and 'projection_desired(desired, "vm")?' in orchestrator
+        and "HOST_VM_WORKER_WINDOWS_CHANGED_AFTER_UPLOAD_STOP" in orchestrator
+        and "HOST_VM_WORKER_UPLOAD_UNCERTAIN_STOP_NO_REPLAY" in orchestrator
+        and "WorkerCodeBindingScope::VmHostSigner" in orchestrator
+        and "WorkerCodeBindingScope::VmHostSigner" in provider
+        and "WORKER_CODE_BINDINGS_NOT_EXACT_PROJECTION_SCOPE" in provider
+        and 'append_action_output(output, "WORKER_AUTHORIZER_PREFLIGHT")?' in host,
+        "Code-only Worker release must preserve exact VM signer bindings and Windows isolation",
+    )
+
+
 def test_protected_host_capability_lane(router: str) -> None:
     """An ordinary authenticated deep STATUS may inspect only protected GETs."""
     import runpy
@@ -1342,6 +1399,7 @@ def main() -> None:
     router = ROUTER.read_text(encoding="utf-8")
     test_host_first_use_is_internal_to_one_host_ingress()
     test_host_first_use_registration_is_reserved_before_provider_create()
+    test_vm_worker_authorizer_is_one_host_continuation(router)
     test_host_native_signed_result_reporting()
     test_canonical_host_mutation_ingress()
     test_host_native_receipt_boundary_and_legacy_workflow_admission(router)
@@ -3766,14 +3824,17 @@ def main() -> None:
         "retired standalone DNS/Mesh operator CLI namespaces must stay absent; acceptance/production call typed internal functions directly",
     )
     require(
-        "vultr-control-plane-production" not in router.split("  host_first_use:\n", 1)[0]
-        and router.count("group: vultr-control-plane-production") == 2
+        "vultr-control-plane-production" not in router.split("  host_worker_authorizer:\n", 1)[0]
+        and router.count("group: vultr-control-plane-production") == 3
+        and "needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'" in router.split(
+            "  host_worker_authorizer:\n", 1
+        )[1].split("\n  host_capabilities:\n", 1)[0]
         and "  host_resume_receipt:\n" in router
         and "github.event.workflow_run.conclusion == 'success'" in router.split("  host_resume_receipt:\n", 1)[1]
         and "github.event.workflow_run.run_attempt == 1" in router.split("  host_resume_receipt:\n", 1)[1]
         and "    concurrency:\n      group: vultr-control-plane-production" in router.split("  host_resume_receipt:\n", 1)[1]
         and "    if: >-\n      needs.host.result == 'success'" in router.split("  host_first_use:\n", 1)[1],
-        "Only the admitted first-use job may occupy production concurrency; skipped comments may not",
+        "Only exact typed VM Worker, first-use and receipt-resume jobs may occupy production concurrency",
     )
 
     require(
