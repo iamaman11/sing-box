@@ -378,8 +378,8 @@ jobs:
           [[ "${SOURCE_COMMENT_ID}" =~ ^[1-9][0-9]*$ ]]
           evidence="${RUNNER_TEMP}/host-first-use-evidence.txt"
           test -f "${evidence}" && test ! -L "${evidence}"
-          test "$(grep -Ec '^host_first_use_receipt_public_key_hex=[0-9a-f]{64}
- "${evidence}")" = 1
+          # Exactly one bounded receipt key line, with no trailing payload.
+          test "$(grep -Ec '^host_first_use_receipt_public_key_hex=[0-9a-f]{64}' "${evidence}")" = 1
           public_key="$(sed -n 's/^host_first_use_receipt_public_key_hex=//p' "${evidence}")"
           test "${#public_key}" = 64
           bin="${RUNNER_TEMP}/host-release/edge-orchestrator-linux-amd64"
