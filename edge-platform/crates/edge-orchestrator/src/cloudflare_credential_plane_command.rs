@@ -4145,14 +4145,12 @@ mod tests {
             .iter_mut()
             .find(|p| p.projection == "vm")
             .unwrap();
-        original.worker_latest_version_id =
-            Some("f2444bc0-ca75-4c36-81d7-3cf740058363".to_owned());
+        original.worker_latest_version_id = Some("f2444bc0-ca75-4c36-81d7-3cf740058363".to_owned());
         original.worker_active_version_ids =
             vec!["f2444bc0-ca75-4c36-81d7-3cf740058363".to_owned()];
         original.worker_active_deployment_id =
             Some("8379be2c-61dd-44d4-aa67-6794735c5724".to_owned());
-        original.worker_version_tag =
-            Some("sing-box-phase6-ab-vm-b4187fe98da3fe79".to_owned());
+        original.worker_version_tag = Some("sing-box-phase6-ab-vm-b4187fe98da3fe79".to_owned());
         original.worker_latest_version_tag = original.worker_version_tag.clone();
         let vm = projection_desired(&d, "vm").unwrap();
         let original = super::projection_observation(&obs, "vm").unwrap();
@@ -4168,10 +4166,12 @@ mod tests {
         changed.worker_latest_version_tag = Some("other".to_owned());
         assert!(verify_historical_vm_module_identity(&vm, &changed).is_err());
         changed = original.clone();
-        changed.worker_secret_bindings.push(cloudflare::CloudflareWorkerSecretBinding {
-            name: "UNAUTHORIZED".to_owned(),
-            binding_type: "secret_text".to_owned(),
-        });
+        changed
+            .worker_secret_bindings
+            .push(cloudflare::CloudflareWorkerSecretBinding {
+                name: "UNAUTHORIZED".to_owned(),
+                binding_type: "secret_text".to_owned(),
+            });
         assert!(verify_historical_vm_module_identity(&vm, &changed).is_err());
         let windows = projection_desired(&d, "windows").unwrap();
         assert!(verify_historical_vm_module_identity(&windows, original).is_err());
