@@ -2518,7 +2518,11 @@ fn verify_vm_only_windows_neighbour(
         .as_deref()
         .filter(|value| !value.is_empty())
         .ok_or("HOST_VM_WORKER_WINDOWS_LATEST_UNPROVEN")?;
-    if current.worker_active_deployment_id.as_deref().unwrap_or("").is_empty()
+    if current
+        .worker_active_deployment_id
+        .as_deref()
+        .unwrap_or("")
+        .is_empty()
         || current.worker_active_version_ids.as_slice() != [latest]
     {
         return Err("HOST_VM_WORKER_WINDOWS_DEPLOYMENT_AMBIGUOUS".to_owned());
@@ -4072,7 +4076,11 @@ mod tests {
         let d = desired();
         let mut obs = observation(&d);
         make_terminal(&mut obs, "windows");
-        let windows = obs.projections.iter_mut().find(|p| p.projection == "windows").unwrap();
+        let windows = obs
+            .projections
+            .iter_mut()
+            .find(|p| p.projection == "windows")
+            .unwrap();
         // This is an intentionally unrecognized code tag. It is NOT a
         // Worker-version allowlist and does not authorize a Windows write.
         windows.worker_version_tag = Some("independent-windows-release-abc".to_owned());
@@ -4085,8 +4093,7 @@ mod tests {
         let baseline = projection_observation(&obs, "windows").unwrap().clone();
 
         let mut conflicting = obs.clone();
-        conflicting.projections[0].worker_latest_version_tag =
-            Some("conflicting-tag".to_owned());
+        conflicting.projections[0].worker_latest_version_tag = Some("conflicting-tag".to_owned());
         assert_eq!(
             verify_vm_only_windows_neighbour(&d, &conflicting).unwrap_err(),
             "HOST_VM_WORKER_WINDOWS_TAG_READBACK_INCONSISTENT"
@@ -4099,8 +4106,7 @@ mod tests {
             "HOST_VM_WORKER_WINDOWS_DEPLOYMENT_AMBIGUOUS"
         );
         conflicting = obs.clone();
-        conflicting.projections[0].worker_secret_bindings[0].binding_type =
-            "plain_text".to_owned();
+        conflicting.projections[0].worker_secret_bindings[0].binding_type = "plain_text".to_owned();
         assert!(verify_vm_only_windows_neighbour(&d, &conflicting).is_err());
         conflicting = obs.clone();
         conflicting.projections[0].worker_secret_bindings.push(
