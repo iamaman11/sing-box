@@ -169,6 +169,14 @@ pub(crate) enum HostCommand {
         #[arg(long)]
         candidate_path: PathBuf,
     },
+    /// Confirm a protected Git merge registers only the root public identity
+    /// of a previously enrolled VM, without changing unrelated desired state.
+    #[command(hide = true)]
+    VerifyMergedReceipt {
+        machine_id: String,
+        #[arg(long)]
+        previous_path: PathBuf,
+    },
     /// Refresh an already-enrolled root trust snapshot from the accepted
     /// protected Git ReleaseSet. Never creates, adopts or installs a VM.
     #[command(hide = true)]

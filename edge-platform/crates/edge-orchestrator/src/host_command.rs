@@ -815,6 +815,37 @@ pub(crate) fn run(
             println!("host_mutations=0");
             Ok(())
         }
+        HostCommand::VerifyMergedReceipt { machine_id, previous_path } => {
+            let metadata = std::fs::symlink_metadata(&previous_path)
+                .map_err(|_| "HOST_RECEIPT_PRIOR_REGISTRY_MISSING")?;
+            if !metadata.file_type().is_file() || metadata.len() == 0
+                || metadata.len() > MAX_INVENTORY_BYTES
+            {
+                return Err("HOST_RECEIPT_PRIOR_REGISTRY_INVALID".to_owned());
+            }
+            let previous = std::fs::read(&previous_path)
+                .map_err(|_| "HOST_RECEIPT_PRIOR_REGISTRY_UNREADABLE")?;
+            let prior = decode_host_registry(&previous)?;
+            let registered = desired.hosts.iter()
+                .find(|h| h.machine_id == machine_id)
+                .ok_or("HOST_RECEIPT_REGISTRATION_MACHINE_UNREGISTERED")?;
+            if registered.native_receipt_public_key.len() != 32 {
+                return Err("HOST_RECEIPT_MERGE_PUBLIC_KEY_MISSING".to_owned());
+            }
+            let key = registered.native_receipt_public_key.iter()
+                .map(|b| format!("{b:02x}")).collect::<String>();
+            let candidate = receipt_registration_candidate(&prior, &machine_id, &key)?;
+            if candidate != desired {
+                return Err("HOST_RECEIPT_MERGE_UNEXPECTED_GIT_CHANGE".to_owned());
+            }
+            println!("host_machine_id={machine_id}");
+            println!("host_receipt_merge=EXACT_ONE_PUBLIC_KEY_CHANGE");
+            println!("host_mutations=0");
+            Ok(())
+        }
+        HostCommand::RefreshReceipt { .. } => {
+            Err("HOST_RECEIPT_REFRESH_MUST_USE_EXISTING_NATIVE_VULTR_OWNER".to_owned())
+        }
         HostCommand::FirstUse { .. } => {
             Err("HOST_FIRST_USE_MUST_USE_EXISTING_NATIVE_VULTR_OWNER".to_owned())
         }
