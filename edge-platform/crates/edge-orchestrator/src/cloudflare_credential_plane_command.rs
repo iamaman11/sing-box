@@ -3004,7 +3004,7 @@ function INFO(b){
     typeof id!=="string"||!/^issue1-comment-[1-9][0-9]{0,19}$/.test(id)||
     typeof m!=="string"||!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(m)||
     !Number.isSafeInteger(when)||when<=0)return null;
- return{id,m,action,when,release,resource};
+ return{id,m,kind,action,when,release,resource};
 }
 async function GITHUB(info,e,now){
  const actor=String(e.EDGE_HOST_GITHUB_ACTOR_ID||"");
@@ -3019,18 +3019,41 @@ async function GITHUB(info,e,now){
   const c=await comment.json(),stamp=Date.parse(c.created_at)/1000;
   if(!c||String(c.user?.id)!==actor||c.issue_url!==base+"/issues/1"||
      c.updated_at!==c.created_at||!Number.isFinite(stamp)||
-     stamp<now-300||stamp>now+30||info.when<stamp-30||
+     stamp>now+30||info.when<stamp-30||
      c.body!=="/host "+(info.action===2?"apply":"recover")+" "+info.m+
         (info.resource==="sing-box"?"":" "+info.resource))return false;
-  // GitHub's published immutable ReleaseSet is distinct from a PR candidate.
-  // This is a second check of release existence, NOT native desired admission.
+  // Exact immutable published ReleaseSet is required for every issuance.
   const tag="edge-release-"+info.release;
   const release=await fetch(base+"/releases/tags/"+tag,{redirect:"error",headers});
   if(!release.ok)return false;
   const value=await release.json();
-  return value.tag_name===tag&&value.draft===false&&
-    value.prerelease===false&&/^[0-9a-f]{40}$/.test(value.target_commitish);
- }catch{return false}
+  if(value.tag_name!==tag||value.draft!==false||value.prerelease!==false||
+     !/^[0-9a-f]{40}$/.test(value.target_commitish))return false;
+  if(stamp>=now-300)return true;
+  // Only the original VM first-use APPLY may survive the five-minute
+  // comment window, and ONLY after the matching protected receipt PR merge
+  // was accepted and the corresponding ReleaseSet published on main.
+  // Worker signs a fresh 120s intent; native root journal still blocks replay.
+  if(info.kind!==2||info.action!==2||info.resource!=="sing-box")return false;
+  const accepted=value.target_commitish;
+  const main=await fetch(base+"/git/ref/heads/main",{redirect:"error",headers});
+  if(!main.ok)return false;
+  const branch=await main.json();
+  if(branch.object?.type!=="commit"||branch.object?.sha!==accepted)return false;
+  const response=await fetch(base+"/commits/"+accepted+"/pulls?per_page=20",
+      {redirect:"error",headers});
+  if(!response.ok)return false;
+  const prs=await response.json();
+  if(!Array.isArray(prs))return false;
+  const matched=prs.filter(pr=>pr.merged_at!=null&&pr.draft===false&&
+     pr.base?.ref==="main"&&pr.head?.repo?.full_name==="iamaman11/sing-box"&&
+     pr.merge_commit_sha===accepted&&
+     pr.head?.ref==="host-receipt-"+info.m+"-"+id&&
+     pr.title==="host: register native receipt for "+info.m);
+  if(matched.length!==1)return false;
+  const merged=Date.parse(matched[0].merged_at)/1000;
+  return Number.isFinite(merged)&&merged>=stamp&&merged<=now+30&&
+     now-merged<=86400; }catch{return false}
 }
 async function ACCESS(q,e){const iss=e.EDGE_HOST_ACCESS_ISSUER,aud=e.EDGE_HOST_ACCESS_AUD,t=q.headers.get("Cf-Access-Jwt-Assertion");if(typeof iss!=="string"||!/^https:\/\/[a-z0-9-]+\.cloudflareaccess\.com$/.test(iss)||typeof aud!=="string"||aud.length<8||aud.length>256||!t||t.length>8192)return false;
 const parts=t.split(".");if(parts.length!==3)return false;let h,c;try{h=JSON.parse(TD.decode(B64(parts[0])));c=JSON.parse(TD.decode(B64(parts[1])))}catch{return false}
