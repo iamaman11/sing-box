@@ -102,6 +102,8 @@ jobs:
                   operation, spec_path, machine_id = "apply", tokens[2], tokens[3]
               elif verb == "runner-bootstrap" and len(tokens) == 4:
                   operation, spec_path, machine_id = "runner-bootstrap", tokens[2], tokens[3]
+              elif verb == "host-first-use" and len(tokens) == 4:
+                  operation, spec_path, machine_id = "host-first-use", tokens[2], tokens[3]
               elif verb == "owner-upgrade" and len(tokens) == 5:
                   operation, spec_path, machine_id, owner_previous_sha = (
                       "owner-upgrade", tokens[2], tokens[3], tokens[4]
@@ -128,7 +130,7 @@ jobs:
 
           if operation not in {
               "doctor", "inventory", "plan", "access-release", "action-plan", "apply",
-              "runner-bootstrap", "owner-upgrade", "owner-rollback", "action", "destroy-plan", "destroy-apply",
+              "runner-bootstrap", "host-first-use", "owner-upgrade", "owner-rollback", "action", "destroy-plan", "destroy-apply",
               "cleanup-plan", "cleanup", "acceptance", "initial-vm-install",
               "initial-acceptance-resume",
           }:
@@ -152,7 +154,7 @@ jobs:
               fail("invalid machine_id")
 
           if operation in {
-              "apply", "runner-bootstrap", "owner-upgrade", "owner-rollback", "access-release", "action-plan", "action",
+              "apply", "runner-bootstrap", "host-first-use", "owner-upgrade", "owner-rollback", "access-release", "action-plan", "action",
               "destroy-plan", "destroy-apply", "initial-vm-install",
               "initial-acceptance-resume"
           } and not machine_id:
@@ -176,7 +178,7 @@ jobs:
               fail("destroy_digest is only valid for destroy-apply")
 
           # This bounded mutation may never be replayed after an uncertain SSH ACK.
-          if operation in {"initial-vm-install", "initial-acceptance-resume"} and os.environ.get("GITHUB_RUN_ATTEMPT") != "1":
+          if operation in {"initial-vm-install", "initial-acceptance-resume", "host-first-use"} and os.environ.get("GITHUB_RUN_ATTEMPT") != "1":
               fail("initial VM provider/policy/Access installation replay forbidden; reconcile read-only before disposal")
 
           if operation == "acceptance":
@@ -321,7 +323,7 @@ jobs:
           printf 'EDGE_CONTROLLER_IPV4=%s\n' "${ip}" >> "${GITHUB_ENV}"
 
       - name: Mint short-lived runner registration token
-        if: env.REQUESTED_OPERATION == 'runner-bootstrap'
+        if: env.REQUESTED_OPERATION == 'runner-bootstrap' || env.REQUESTED_OPERATION == 'host-first-use'
         shell: bash
         env:
           IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN: ${{ secrets.IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN }}
@@ -352,8 +354,8 @@ jobs:
           # Only bounded first-use/bootstrap transport can deliver the
           # VM host Access identity directly to its root-owned local owner.
           # The low-privilege self-hosted runner never receives the plaintext.
-          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID: ${{ (needs.authorize.outputs.operation == 'initial-vm-install' || needs.authorize.outputs.operation == 'runner-bootstrap') && secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID || '' }}
-          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET: ${{ (needs.authorize.outputs.operation == 'initial-vm-install' || needs.authorize.outputs.operation == 'runner-bootstrap') && secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET || '' }}
+          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID: ${{ (needs.authorize.outputs.operation == 'initial-vm-install' || needs.authorize.outputs.operation == 'runner-bootstrap' || needs.authorize.outputs.operation == 'host-first-use') && secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID || '' }}
+          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET: ${{ (needs.authorize.outputs.operation == 'initial-vm-install' || needs.authorize.outputs.operation == 'runner-bootstrap' || needs.authorize.outputs.operation == 'host-first-use') && secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET || '' }}
           CLOUDFLARE_API_TOKEN: ${{ needs.authorize.outputs.operation == 'initial-vm-install' && secrets.CLOUDFLARE_API_TOKEN || '' }}
         run: |
           set -euo pipefail
@@ -613,6 +615,14 @@ jobs:
                 and .access.next_plan.action == "NOOP"
                 and (.access.next_plan.matching_rule_ids | length) == 0' "${RUNNER_TEMP}/result.json" >/dev/null
               cat "${RUNNER_TEMP}/result.json"
+              ;;
+            host-first-use)
+              test "${GITHUB_RUN_ATTEMPT}" = "1"
+              run_lifecycle host-first-use "${spec}" "${machine}" \
+                "edge-platform/scripts/install-vultr-production-runner.sh" \
+                "${RUNNER_TEMP}/edge-platform-release/edge-agent-linux-amd64" \
+                | tee "${RUNNER_TEMP}/result.json"
+              grep -Fxq 'host_first_use_state=AWAITING_PROTECTED_GIT_RECEIPT_REGISTRATION' "${RUNNER_TEMP}/result.json"
               ;;
             runner-bootstrap)
               acquire_host_access "${spec}" "${machine}" "runner-bootstrap"
