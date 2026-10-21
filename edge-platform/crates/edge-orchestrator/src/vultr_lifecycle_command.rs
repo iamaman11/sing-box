@@ -1416,7 +1416,9 @@ pub(crate) async fn host_receipt_refresh(
         .map_err(str::to_owned)?;
     edge_shared_types::host_lifecycle::verify_vm_signed_git_prerequisites(&git_host)
         .map_err(str::to_owned)?;
-    let expected_key = git_host.native_receipt_public_key.iter()
+    let expected_key = git_host
+        .native_receipt_public_key
+        .iter()
         .map(|byte| format!("{byte:02x}"))
         .collect::<String>();
     let spec = Path::new(&git_host.vm_provider_spec_path);
