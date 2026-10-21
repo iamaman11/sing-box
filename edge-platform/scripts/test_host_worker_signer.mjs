@@ -51,7 +51,7 @@ const env={
 const expectedCertUrl=issuer+"/cdn-cgi/access/certs";
 let publishedRelease=true;
 let approvedResource="sing-box";
-let commentCreated=now-2, receiptMerged=true, receiptBranchValid=true, mainMatched=true;
+let commentCreated=now-2, receiptMerged=true, receiptBranchValid=true, mainMatched=true, receiptMergedAgo=20;
 const testReleaseTag="edge-release-"+Buffer.alloc(32,3).toString("hex");
 globalThis.fetch=async u=>{
   if(String(u)===expectedCertUrl) return Response.json({keys:[jwk]});
@@ -68,7 +68,7 @@ globalThis.fetch=async u=>{
     return Response.json({object:{type:"commit",sha:mainMatched?"a".repeat(40):"b".repeat(40)}});
   if(String(u)==="https://api.github.com/repos/iamaman11/sing-box/commits/"+"a".repeat(40)+"/pulls?per_page=20")
     return Response.json(receiptMerged?[{
-      merged_at:new Date((now-20)*1000).toISOString(),draft:false,
+      merged_at:new Date((now-receiptMergedAgo)*1000).toISOString(),draft:false,
       base:{ref:"main"},
       head:{repo:{full_name:"iamaman11/sing-box"},
             ref:receiptBranchValid?"host-receipt-vm-test-1-123":"host-receipt-other-123"},
@@ -149,6 +149,9 @@ mainMatched=true;
 receiptMerged=false;
 requireTest((await call()).status===403,"old comment signed without receipt merge proof");
 receiptMerged=true;
+receiptMergedAgo=90000;
+requireTest((await call()).status===403,"expired receipt merge proof authorized old comment");
+receiptMergedAgo=20;
 commentCreated=now-2;
 // v1 signature domain binds the exact protobuf bytes, including the scope.
 const scopedId="config/vultr-edge/line2-proxy";
@@ -161,6 +164,10 @@ const scopedIntent=combine(
 requireTest((await call(scopedIntent)).status===403,
   "scoped request signed without exact GitHub comment");
 approvedResource=scopedId;
+commentCreated=now-3600;
+requireTest((await call(scopedIntent)).status===403,
+ "delayed receipt merge proof authorized an old scoped config comment");
+commentCreated=now-2;
 const scopedResponse=await call(scopedIntent);
 requireTest(scopedResponse.status===200,"approved config resource signature rejected");
 const scopedParsed=fields(Buffer.from(await scopedResponse.arrayBuffer()));
