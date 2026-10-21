@@ -1399,6 +1399,73 @@ async fn run_transport_proof(
     }))
 }
 
+/// The only authorized bridge after a receipt-key-only protected Git merge:
+/// the EXISTING Vultr lease opens bounded SSH to the EXISTING root Agent.
+/// NO provider CREATE, no root binary replacement, no Docker privileges for
+/// the runner, no journal replay. The native owner independently verifies the
+/// new immutable published ReleaseSet and matches its own private receipt key.
+pub(crate) async fn host_receipt_refresh(
+    machine_id: &str,
+    context: &OrchestrationContext,
+) -> Result<(), String> {
+    if env::var("GITHUB_RUN_ATTEMPT").as_deref() != Ok("1") {
+        return Err("HOST_RECEIPT_REFRESH_NO_AUTOMATIC_REPLAY".to_owned());
+    }
+    let git_host = context.verified_vm_first_use_host(machine_id)?;
+    edge_shared_types::host_lifecycle::verify_vm_first_use_git_prerequisites(&git_host)
+        .map_err(str::to_owned)?;
+    edge_shared_types::host_lifecycle::verify_vm_signed_git_prerequisites(&git_host)
+        .map_err(str::to_owned)?;
+    let expected_key = git_host.native_receipt_public_key.iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let spec = Path::new(&git_host.vm_provider_spec_path);
+    let desired = load_desired_state(spec)?;
+    // Existing means EXACT owned NOOP, not an unowned machine to adopt.
+    exact_existing_machine_observation(&desired, machine_id).await?;
+    acceptance_lease_acquire(spec, machine_id).await?;
+    let outcome = async {
+        let observed = exact_existing_machine_observation(&desired, machine_id).await?;
+        let ip = observed.main_ip.as_deref()
+            .ok_or("HOST_RECEIPT_REFRESH_MACHINE_IPV4_UNPROVEN")?;
+        let key_path = operator_private_key_path_from_env()?;
+        let expected_ssh_key = read_canonical_ssh_public_key()?;
+        verify_operator_key_matches(&key_path, &expected_ssh_key)?;
+        let release_sha = context.release().release_set_sha256.as_str();
+        if release_sha.len() != 64
+            || !release_sha.bytes().all(|ch| ch.is_ascii_digit() || (b'a'..=b'f').contains(&ch))
+        {
+            return Err("HOST_RECEIPT_REFRESH_RELEASE_SHA_INVALID".to_owned());
+        }
+        let command = format!(
+            "sudo -n /usr/local/libexec/sing-box/edge-agent local host-enroll {machine_id} {release_sha}"
+        );
+        let evidence = strict_ssh_capture(
+            ip, machine_id, &key_path, &expected_ssh_key, &command,
+        )?;
+        let (public_key, registration) =
+            verified_native_enrollment_result(&evidence, machine_id, release_sha)?;
+        if public_key != expected_key || registration != "PINNED_GIT_MATCH" {
+            return Err("HOST_RECEIPT_REFRESH_GIT_PRIVATE_IDENTITY_MISMATCH".to_owned());
+        }
+        println!("host_receipt_refresh=ROOT_PROTECTED_GIT_PINNED");
+        println!("host_machine_id={machine_id}");
+        println!("host_mutations=0");
+        Ok(())
+    }.await;
+    let cleanup = acceptance_lease_release(spec, machine_id).await;
+    match (outcome, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(format!(
+            "HOST_RECEIPT_REFRESH_ACCESS_CLEANUP_UNPROVEN: {error}"
+        )),
+        (Err(error), Err(cleanup)) => Err(format!(
+            "{error}; HOST_RECEIPT_REFRESH_ACCESS_CLEANUP_UNPROVEN: {cleanup}"
+        )),
+    }
+}
+
 /// One protected /host apply first-use operation using the pre-existing
 /// Vultr provider, strict host substrate and Git-attested root enrollment.
 /// On unknown CREATE/SSH outcome nothing is retried or adopted.

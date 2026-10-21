@@ -169,6 +169,10 @@ pub(crate) enum HostCommand {
         #[arg(long)]
         candidate_path: PathBuf,
     },
+    /// Refresh an already-enrolled root trust snapshot from the accepted
+    /// protected Git ReleaseSet. Never creates, adopts or installs a VM.
+    #[command(hide = true)]
+    RefreshReceipt { machine_id: String },
     /// Internal GitHub-hosted first-use of a new, absent VM. This shares
     /// the host ingress and existing Rust Vultr owner, never a legacy workflow.
     #[command(hide = true)]

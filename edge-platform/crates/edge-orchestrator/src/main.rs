@@ -222,6 +222,9 @@ async fn run(
             source_comment_id,
             intent_output,
         } => match command {
+            cli::HostCommand::RefreshReceipt { machine_id } => {
+                vultr_lifecycle_command::host_receipt_refresh(&machine_id, release_context).await
+            }
             cli::HostCommand::FirstUse {
                 machine_id,
                 installer_path,
