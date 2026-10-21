@@ -1443,9 +1443,13 @@ pub(crate) async fn bootstrap_production_runner(
     // host registry. Only this exact accepted Git FleetHost can authorize
     // the fixed first-use native owner installation and root enrollment.
     let canonical_host = context.verified_vm_first_use_host(machine_id)?;
-    if provider_spec_path.to_str() != Some(canonical_host.vm_provider_spec_path.as_str()) {
-        return Err("HOST_BOOTSTRAP_GIT_PROVIDER_SPEC_MISMATCH".to_owned());
-    }
+    edge_shared_types::host_lifecycle::verify_vm_first_use_provider_spec(
+        &canonical_host,
+        provider_spec_path
+            .to_str()
+            .ok_or("HOST_BOOTSTRAP_PROVIDER_SPEC_NOT_UTF8")?,
+    )
+    .map_err(str::to_owned)?;
     if !canonical_host.desired_spec_path.starts_with("infra/")
         || !canonical_host.desired_spec_path.ends_with(".json")
             && !canonical_host.desired_spec_path.ends_with(".textproto")

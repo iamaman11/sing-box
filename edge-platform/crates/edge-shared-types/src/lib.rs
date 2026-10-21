@@ -150,6 +150,7 @@ pub fn validate_host_registry(desired: &HostRegistry) -> Result<(), String> {
             && (kind != ManagedHostKind::Vm
                 || !provider_spec.starts_with("infra/vultr/")
                 || !provider_spec.ends_with(".json")
+                || provider_spec.len() <= "infra/vultr/".len() + ".json".len()
                 || provider_spec.len() > 128
                 || provider_spec.contains("..")
                 || !provider_spec["infra/vultr/".len()..provider_spec.len() - ".json".len()]
@@ -3165,6 +3166,24 @@ mod release_set_tests {
         wrong_signer.hosts[0].worker_authority_public_key = Vec::new();
         wrong_signer.hosts[2].worker_authority_public_key = vec![3; 32];
         assert!(validate_host_registry(&wrong_signer).is_err());
+        let mut provider_binding = expected.clone();
+        provider_binding.hosts[0].vm_provider_spec_path =
+            "infra/vultr/application-acceptance.json".into();
+        assert!(validate_host_registry(&provider_binding).is_ok());
+        for path in [
+            "infra/vultr/.json",
+            "infra/vultr/../production.json",
+            "/tmp/foreign.json",
+            "infra/vultr/MixedCase.json",
+            "infra/production/production.textproto",
+        ] {
+            provider_binding.hosts[0].vm_provider_spec_path = path.into();
+            assert!(validate_host_registry(&provider_binding).is_err());
+        }
+        provider_binding.hosts[0].vm_provider_spec_path = String::new();
+        provider_binding.hosts[2].vm_provider_spec_path =
+            "infra/vultr/application-acceptance.json".into();
+        assert!(validate_host_registry(&provider_binding).is_err());
         first.hosts[0].vm_first_use_credential = Some(FleetVmFirstUseCredential {
             generation: 42,
             bundle_sha256: "a".repeat(64),

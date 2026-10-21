@@ -265,6 +265,19 @@ pub fn verify_vm_first_use_git_prerequisites(host: &FleetHost) -> Result<(), &'s
     Ok(())
 }
 
+/// The existing Vultr substrate engine can bootstrap only the provider
+/// spec already selected in the exact protected Git FleetHost.
+pub fn verify_vm_first_use_provider_spec(
+    host: &FleetHost,
+    provider_spec_path: &str,
+) -> Result<(), &'static str> {
+    verify_vm_first_use_git_prerequisites(host)?;
+    if provider_spec_path != host.vm_provider_spec_path {
+        return Err("HOST_BOOTSTRAP_GIT_PROVIDER_SPEC_MISMATCH");
+    }
+    Ok(())
+}
+
 /// Preserve the established signed-admission reason order: Git signer, then
 /// receipt registration, then application resource scope. The same primitive
 /// checks also govern first-use, with no independent bootstrap policy.
@@ -894,6 +907,14 @@ mod tests {
             windows_mode: crate::FleetHostMode::Unspecified as i32,
         });
         assert_eq!(verify_vm_first_use_git_prerequisites(&host), Ok(()));
+        assert_eq!(
+            verify_vm_first_use_provider_spec(&host, "infra/vultr/foreign.json"),
+            Err("HOST_BOOTSTRAP_GIT_PROVIDER_SPEC_MISMATCH")
+        );
+        assert_eq!(
+            verify_vm_first_use_provider_spec(&host, "infra/vultr/acceptance.json"),
+            Ok(())
+        );
         assert_eq!(
             verify_vm_signed_git_prerequisites(&host),
             Err("HOST_VM_GIT_RECEIPT_REGISTRATION_REQUIRED")
