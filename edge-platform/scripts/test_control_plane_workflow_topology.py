@@ -762,7 +762,12 @@ def test_host_first_use_registration_is_reserved_before_provider_create() -> Non
     create = "Run one typed provider CREATE and native root enrollment"
     registration = "Stage root receipt identity through a protected Git pull request"
     require(
-        first_use.count(reservation) == 1
+        first_use.count("Require exact absent VM before reserving protected Git receipt") == 1
+        and first_use.index("Require exact absent VM before reserving protected Git receipt") < first_use.index(reservation)
+        and "first-use-preflight" in first_use.split(reservation, 1)[0]
+        and "host_first_use_provider_plan=EXACT_CREATE_ONLY" in first_use.split(reservation, 1)[0]
+        and "host_receipt_registration=NOT_YET_RESERVED" in first_use.split(reservation, 1)[0]
+        and first_use.count(reservation) == 1
         and first_use.count(create) == 1
         and first_use.count(registration) == 1
         and first_use.index(reservation) < first_use.index(create) < first_use.index(registration)

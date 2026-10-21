@@ -1468,6 +1468,59 @@ pub(crate) async fn host_receipt_refresh(
     }
 }
 
+/// Read-only admission before the Git receipt reservation. A previously
+/// created/uncertain VM is not a fresh first-use candidate and must not
+/// acquire a misleading new registration PR. Uses the existing Vultr
+/// lifecycle planner and exact canonical protected Git provider spec.
+pub(crate) async fn host_first_use_provider_preflight(
+    machine_id: &str,
+    context: &OrchestrationContext,
+) -> Result<(), String> {
+    let host = context.verified_vm_first_use_host(machine_id)?;
+    edge_shared_types::host_lifecycle::verify_vm_first_use_git_prerequisites(&host)
+        .map_err(str::to_owned)?;
+    if !host.native_receipt_public_key.is_empty() {
+        return Err("HOST_FIRST_USE_RECEIPT_ALREADY_REGISTERED".to_owned());
+    }
+    if host.vm_first_use_credential.is_none() {
+        return Err("HOST_VM_FIRST_USE_CREDENTIAL_GIT_REQUIRED".to_owned());
+    }
+    let provider_spec = Path::new(&host.vm_provider_spec_path);
+    let desired = load_desired_state(provider_spec)?;
+    if desired.machines.len() != 1 || desired.machines[0].id != machine_id {
+        return Err("HOST_FIRST_USE_PROVIDER_SCOPE_NOT_SINGLE_VM".to_owned());
+    }
+    let profiles = load_firewall_profiles(&desired)?;
+    let mut lifecycle_provider = lifecycle_provider_from_env()?;
+    let mut support_provider = support_provider_from_env()?;
+    let bindings =
+        verified_firewall_bindings(&mut support_provider, &desired, profiles.as_ref()).await?;
+    let report = plan_desired_state_with_firewall_profiles(
+        &mut lifecycle_provider,
+        &desired,
+        Some(machine_id),
+        &bindings,
+    )
+    .await?;
+    let plan = report.plans.as_slice();
+    if plan.len() != 1 || plan[0].class != PlanClass::Create {
+        return Err("HOST_FIRST_USE_PROVIDER_NOT_EXACT_CREATE_NO_REPLAY".to_owned());
+    }
+    if report
+        .inventory
+        .resources
+        .iter()
+        .any(|resource| resource.ownership.logical_id.as_deref() == Some(machine_id))
+    {
+        return Err("HOST_FIRST_USE_PROVIDER_OWNED_VM_ALREADY_PRESENT".to_owned());
+    }
+    println!("host_machine_id={machine_id}");
+    println!("host_first_use_provider_plan=EXACT_CREATE_ONLY");
+    println!("host_receipt_registration=NOT_YET_RESERVED");
+    println!("host_mutations=0");
+    Ok(())
+}
+
 /// One protected /host apply first-use operation using the pre-existing
 /// Vultr provider, strict host substrate and Git-attested root enrollment.
 /// On unknown CREATE/SSH outcome nothing is retried or adopted.

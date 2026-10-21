@@ -337,6 +337,24 @@ jobs:
           PY
           echo "EDGE_CONTROLLER_IPV4=${ip}" >> "${GITHUB_ENV}"
 
+      - name: Require exact absent VM before reserving protected Git receipt
+        shell: bash
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = 1
+          bin="${RUNNER_TEMP}/host-release/edge-orchestrator-linux-amd64"
+          registry="${RUNNER_TEMP}/host-release/fleet-registry.pb"
+          "${bin}" host \
+            --hosts-pb "${registry}" \
+            --hosts-sha256 "$(sha256sum "${registry}" | cut -d' ' -f1)" \
+            first-use-preflight "${TARGET_MACHINE}" \
+            | tee "${RUNNER_TEMP}/host-first-use-provider-preflight.txt"
+          grep -Fxq 'host_first_use_provider_plan=EXACT_CREATE_ONLY' "${RUNNER_TEMP}/host-first-use-provider-preflight.txt"
+          grep -Fxq 'host_receipt_registration=NOT_YET_RESERVED' "${RUNNER_TEMP}/host-first-use-provider-preflight.txt"
+          grep -Fxq 'host_mutations=0' "${RUNNER_TEMP}/host-first-use-provider-preflight.txt"
+
       - name: Obtain single ephemeral VM runner enrollment credential
         shell: bash
         env:
