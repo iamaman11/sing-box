@@ -152,11 +152,9 @@ pub fn validate_host_registry(desired: &HostRegistry) -> Result<(), String> {
                 || !provider_spec.ends_with(".json")
                 || provider_spec.len() > 128
                 || provider_spec.contains("..")
-                || !provider_spec["infra/vultr/".len()..
-                    provider_spec.len() - ".json".len()]
+                || !provider_spec["infra/vultr/".len()..provider_spec.len() - ".json".len()]
                     .bytes()
-                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
-            )
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'))
         {
             return Err("HOST_VM_PROVIDER_SPEC_REFERENCE_INVALID".to_owned());
         }

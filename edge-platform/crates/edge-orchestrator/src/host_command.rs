@@ -1380,7 +1380,7 @@ mod tests {
             native_receipt_public_key: Vec::new(),
             vm_first_use_credential: None,
             worker_authority_public_key: Vec::new(),
-                vm_provider_spec_path: String::new(),
+            vm_provider_spec_path: String::new(),
         };
         let mut o = FleetNativeObservation {
             schema_version: 1,
@@ -1597,7 +1597,7 @@ mod tests {
                     native_receipt_public_key: Vec::new(),
                     vm_first_use_credential: None,
                     worker_authority_public_key: Vec::new(),
-                vm_provider_spec_path: String::new(),
+                    vm_provider_spec_path: String::new(),
                 },
                 ManagedHost {
                     machine_id: "sing-box-windows-lab".to_owned(),
@@ -1612,7 +1612,7 @@ mod tests {
                     native_receipt_public_key: Vec::new(),
                     vm_first_use_credential: None,
                     worker_authority_public_key: Vec::new(),
-                vm_provider_spec_path: String::new(),
+                    vm_provider_spec_path: String::new(),
                 },
             ],
         };
@@ -1646,7 +1646,7 @@ mod tests {
             native_receipt_public_key: Vec::new(),
             vm_first_use_credential: None,
             worker_authority_public_key: Vec::new(),
-                vm_provider_spec_path: String::new(),
+            vm_provider_spec_path: String::new(),
         });
         assert_eq!(
             resolve_credential_peer(&two_windows, "application-acceptance-1", "auto").unwrap_err(),
