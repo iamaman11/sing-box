@@ -3682,7 +3682,11 @@ def main() -> None:
     )
     require(
         "vultr-control-plane-production" not in router.split("  host_first_use:\n", 1)[0]
-        and router.count("group: vultr-control-plane-production") == 1
+        and router.count("group: vultr-control-plane-production") == 2
+        and "  host_resume_receipt:\n" in router
+        and "github.event.workflow_run.conclusion == 'success'" in router.split("  host_resume_receipt:\n", 1)[1]
+        and "github.event.workflow_run.run_attempt == 1" in router.split("  host_resume_receipt:\n", 1)[1]
+        and "    concurrency:\n      group: vultr-control-plane-production" in router.split("  host_resume_receipt:\n", 1)[1]
         and "    if: >-\n      needs.host.result == 'success'" in router.split("  host_first_use:\n", 1)[1],
         "Only the admitted first-use job may occupy production concurrency; skipped comments may not",
     )
