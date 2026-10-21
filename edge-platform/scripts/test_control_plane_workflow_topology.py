@@ -1259,6 +1259,69 @@ def test_existing_worker_host_signer_is_syntactically_closed() -> None:
         )
 
 
+def test_protected_host_capability_lane(router: str) -> None:
+    """An ordinary authenticated deep STATUS may inspect only protected GETs."""
+    import runpy
+
+    assert "  host_capabilities:\n" in router
+    scope = router.split("  host_capabilities:\n", 1)[1].split(
+        "\n  host_first_use:\n", 1
+    )[0]
+    require(
+        "github.event.comment.body == '/host status application-acceptance-1 --deep'" in scope
+        and "needs.host.result == 'success'" in scope
+        and "needs.host.outputs.machine_id == 'application-acceptance-1'" in scope
+        and "name: production-vultr" in scope
+        and "deployment: false" in scope
+        and "contents: read" in scope
+        and "issues: write" not in scope
+        and "python3 edge-platform/scripts/host_capability_preflight.py application-acceptance-1" in scope
+        and "host_mutations=0" in scope
+        and "first-use \"${TARGET_MACHINE}\"" not in scope
+        and "sudo " not in scope,
+        "read-only protected capability observation must remain strictly scoped",
+    )
+    path = Path("edge-platform/scripts/host_capability_preflight.py")
+    source = path.read_text(encoding="utf-8")
+    require(
+        source.count('method="GET"') == 1
+        and "build_opener(DenyRedirect()).open(request, timeout=TIMEOUT)" in source
+        and "class DenyRedirect(HTTPRedirectHandler):" in source
+        and "response.geturl() != url" in source
+        and 'if parsed.scheme != "https" or parsed.netloc != host' in source
+        and "provider_mutations" in source
+        and "worker_mutations" in source
+        and "github_mutations" in source
+        and "POST" not in source.upper().replace("NO SECRET VALUES, KEYS, IDS, RAW API", "")
+        and "subprocess" not in source,
+        "capability probe must not gain a mutation primitive or secret transport",
+    )
+    namespace = runpy.run_path(str(path))
+    inventory = namespace["provider_inventory"]
+    require(
+        inventory({"instances": [], "meta": {"links": {"next": None}}}, "vm-1")
+        == "LABEL_ABSENT_SINGLE_PAGE_NOT_CREATE_AUTHORITY"
+        and inventory({"instances": [], "meta": {"links": {"next": "later"}}}, "vm-1")
+        == "UNPROVEN_PAGINATED_OR_MISSING_META"
+        and inventory({"instances": [{"label": "vm-1"}]}, "vm-1")
+        == "EXACT_LABEL_PRESENT_NO_CREATE"
+        and inventory({"instances": [{"label": "vm-1"}, {"label": "vm-1"}]}, "vm-1")
+        == "BLOCKED_DUPLICATE_MACHINE_LABEL",
+        "provider inventory must not confuse absent, paginated or duplicated VM",
+    )
+    bindings = namespace["worker_bindings"]
+    require(
+        bindings({"success": True, "result": {"bindings": []}})
+        == "INCOMPLETE_HOST_SIGNER_BINDINGS"
+        and bindings({"success": False, "result": {}})
+        == "UNPROVEN_WORKER_SETTINGS"
+        and bindings({"success": True, "result": {
+            "bindings": [{"name": b} for b in namespace["WORKER_BINDINGS"]]
+        }}) == "PRESENT_NAMES_ONLY_NOT_SIGNING_PROOF",
+        "Worker binding names must never be treated as an authenticated public signer key",
+    )
+
+
 def main() -> None:
     test_existing_worker_host_signer_is_syntactically_closed()
     router = ROUTER.read_text(encoding="utf-8")
