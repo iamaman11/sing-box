@@ -766,7 +766,9 @@ pub(crate) fn run(
             // This is a PUBLIC-IDENTITY-ONLY Git candidate, never a new
             // mutation admission or permission to bypass main protection.
             let mut candidate = desired.clone();
-            let selected = candidate.hosts.iter_mut()
+            let selected = candidate
+                .hosts
+                .iter_mut()
                 .find(|host| host.machine_id == machine_id)
                 .ok_or("HOST_RECEIPT_REGISTRATION_MACHINE_UNREGISTERED")?;
             edge_shared_types::host_lifecycle::verify_vm_first_use_git_prerequisites(selected)
@@ -785,7 +787,9 @@ pub(crate) fn run(
             let candidate_bytes = candidate.encode_to_vec();
             decode_host_registry(&candidate_bytes)?;
             let mut file = OpenOptions::new()
-                .write(true).create_new(true).open(&output_path)
+                .write(true)
+                .create_new(true)
+                .open(&output_path)
                 .map_err(|_| "HOST_RECEIPT_REGISTRATION_CANDIDATE_EXISTS_OR_UNWRITABLE")?;
             file.write_all(&candidate_bytes)
                 .map_err(|_| "HOST_RECEIPT_REGISTRATION_CANDIDATE_WRITE_FAILED")?;
