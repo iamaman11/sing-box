@@ -1365,7 +1365,10 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
         return Err("HOST_VM_WORKER_DISTINCT_ACTIVE_WRITE_IDENTITY_REQUIRED".to_owned());
     }
     let windows = projection_desired(desired, "windows")?;
-    if projection_delivery_state(desired, &windows, &before)? != ProjectionDeliveryState::FixedAb {
+    if !matches!(
+        projection_delivery_state(desired, &windows, &before)?,
+        ProjectionDeliveryState::FixedAb | ProjectionDeliveryState::FixedAbProofUpgradeRequired
+    ) {
         return Err("HOST_VM_WORKER_WINDOWS_BASELINE_NOT_TERMINAL".to_owned());
     }
     let vm = projection_desired(desired, "vm")?;
