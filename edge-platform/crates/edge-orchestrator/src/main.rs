@@ -26,6 +26,7 @@ mod vultr_lifecycle_service;
 mod vultr_support_resources;
 mod vultr_vpc_lifecycle_command;
 mod vultr_vpc_lifecycle_service;
+mod vm_host_desired;
 
 use clap::Parser;
 use edge_observability::init as init_observability;

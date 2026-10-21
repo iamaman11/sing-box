@@ -13,8 +13,8 @@ hosts {
   machine_id: "application-acceptance-2"
   kind: FLEET_HOST_KIND_VM
   vm_machine_id: "application-acceptance-2"
-  desired_spec_path: "infra/application/disposable-acceptance-2.json"
-  vm_provider_spec_path: "infra/vultr/application-acceptance-2.json"
+  desired_spec_path: "infra/hosts/specs/application-acceptance-2.textproto"
+  vm_provider_spec_path: "infra/hosts/specs/application-acceptance-2.textproto"
   target {
     run_state: FLEET_HOST_RUN_STATE_RUNNING
   }

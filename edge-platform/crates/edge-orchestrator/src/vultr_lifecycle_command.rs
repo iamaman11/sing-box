@@ -4267,6 +4267,9 @@ pub(crate) fn load_desired_state(path: &Path) -> Result<DesiredState, String> {
             .map_err(|err| err.to_string());
     }
 
+    if path.starts_with("infra/hosts/specs") {
+        return crate::vm_host_desired::load(path).map(|(machine, _)| machine);
+    }
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("failed to read lifecycle spec {}: {err}", path.display()))?;
     DesiredState::parse_json(&raw)
