@@ -80,7 +80,6 @@ pub async fn run(args: Vec<String>, context: &OrchestrationContext) -> Result<()
         "initial-runtime-apply" => run_initial_vm_runtime(&args[1..], context, true).await,
         "initial-runtime-verify" => run_initial_vm_runtime(&args[1..], context, false).await,
         "runner-bootstrap" => run_runner_bootstrap(&args[1..], context).await,
-        "host-first-use" => run_host_first_use(&args[1..], context).await,
         "owner-upgrade" => vm_owner_upgrade::run(&args[1..], context).await,
         "owner-rollback" => vm_owner_upgrade::rollback(&args[1..], context).await,
         "acquire-access-plan" => run_acquire_access_plan(&args[1..]).await,
@@ -1398,69 +1397,6 @@ async fn run_transport_proof(
         "exclusive_transport_key_capability_proven": false,
         "note": "T0a proves the edge-control account path only; privileged bootstrap deletion and no-/32 proof belong to T0b",
     }))
-}
-
-/// One provider CREATE -> substrate -> root Agent enrollment. The
-/// provider and native owner remain separately scoped; runner never holds
-/// root enrollment rights and no uncertain result is replayed.
-async fn run_host_first_use(args: &[String], context: &OrchestrationContext) -> Result<(), String> {
-    if args.len() != 4 {
-        return Err("HOST_FIRST_USE_EXACT_ARGUMENTS_REQUIRED".to_owned());
-    }
-    let spec = Path::new(&args[0]);
-    let machine = &args[1];
-    let installer = Path::new(&args[2]);
-    let agent = Path::new(&args[3]);
-    let host = context.verified_vm_first_use_host(machine)?;
-    edge_shared_types::host_lifecycle::verify_vm_first_use_provider_spec(&host, &args[0])
-        .map_err(str::to_owned)?;
-    if !host.native_receipt_public_key.is_empty() {
-        return Err("HOST_FIRST_USE_ALREADY_ENROLLED_USE_SIGNED_APPLY".to_owned());
-    }
-    if host.vm_first_use_credential.is_none() {
-        return Err("HOST_VM_FIRST_USE_CREDENTIAL_GIT_REQUIRED".to_owned());
-    }
-    if !installer.is_file() {
-        return Err("HOST_FIRST_USE_RUNNER_INSTALLER_MISSING".to_owned());
-    }
-    context.validate_application_artifact(&context.expected_application_artifact()?, agent)?;
-    let token = env::var("EDGE_RUNNER_REGISTRATION_TOKEN")
-        .map_err(|_| "HOST_FIRST_USE_RUNNER_REGISTRATION_REQUIRED".to_owned())?;
-    validate_runner_registration_token(&token)?;
-    let client_id = env::var("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID")
-        .map_err(|_| "HOST_FIRST_USE_ACCESS_CLIENT_ID_REQUIRED".to_owned())?;
-    let client_secret = env::var("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET")
-        .map_err(|_| "HOST_FIRST_USE_ACCESS_CLIENT_SECRET_REQUIRED".to_owned())?;
-    validate_bootstrap_secret("credential Access client id", &client_id)?;
-    validate_bootstrap_secret("credential Access client secret", &client_secret)?;
-
-    // Only CREATE is accepted: NOOP after an uncertain create is not
-    // automatically adopted, nor is an SSH/root enrollment replay allowed.
-    acceptance_create_machine(spec, machine).await?;
-    acceptance_lease_acquire(spec, machine).await?;
-    let operation = async {
-        acceptance_converge_substrate(spec, machine).await?;
-        bootstrap_production_runner(
-            &load_desired_state(spec)?, spec, machine, installer, agent, context,
-        )
-        .await
-    }
-    .await;
-    let release = acceptance_lease_release(spec, machine).await;
-    match (operation, release) {
-        (Ok(()), Ok(())) => {
-            println!("host_first_use_state=AWAITING_PROTECTED_GIT_RECEIPT_REGISTRATION");
-            println!("host_signed_install=NOT_YET_AUTHORIZED");
-            Ok(())
-        }
-        (Err(error), Ok(())) => Err(error),
-        (Ok(()), Err(error)) => Err(format!(
-            "HOST_FIRST_USE_ENROLLED_ACCESS_LEASE_RELEASE_UNPROVEN: {error}"
-        )),
-        (Err(error), Err(release_error)) => Err(format!(
-            "{error}; HOST_FIRST_USE_ACCESS_LEASE_UNPROVEN: {release_error}"
-        )),
-    }
 }
 
 async fn run_runner_bootstrap(

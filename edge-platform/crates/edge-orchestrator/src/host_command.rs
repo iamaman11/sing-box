@@ -927,43 +927,6 @@ fn host_lifecycle_admission(
     let comment_id = source_comment_id
         .filter(|id| *id != 0)
         .ok_or("HOST_SOURCE_COMMENT_REQUIRED")?;
-    // Same /host apply auto-selects fresh provider first-use until root has
-    // created and Git has registered its native receipt public identity.
-    if operation == HostLifecycleOperation::Apply
-        && kind == ManagedHostKind::Vm
-        && selected.native_receipt_public_key.is_empty()
-    {
-        if resource_id.is_some() {
-            return Err("HOST_VM_FIRST_USE_WHOLE_HOST_REQUIRED".to_owned());
-        }
-        edge_shared_types::host_lifecycle::verify_vm_first_use_git_prerequisites(selected)
-            .map_err(str::to_owned)?;
-        if selected.vm_first_use_credential.is_none() {
-            return Err("HOST_VM_FIRST_USE_CREDENTIAL_GIT_REQUIRED".to_owned());
-        }
-        let output = output.ok_or("HOST_PREFLIGHT_OUTPUT_REQUIRED")?;
-        let labels = runner_labels(kind, owner, &selected.windows_runner_label)?;
-        append_control_outputs(
-            output, machine_id, kind, owner, &labels,
-            &selected.windows_runner_label, &selected.desired_spec_path,
-        )?;
-        append_action_output(output, "FIRST_USE_PREFLIGHT")?;
-        append_observation_matrix(output, &[])?;
-        OpenOptions::new()
-            .append(true)
-            .open(output)
-            .and_then(|mut f| {
-                writeln!(f, "vm_provider_spec_path={}", selected.vm_provider_spec_path)
-            })
-            .map_err(|_| "HOST_FIRST_USE_ROUTE_OUTPUT_WRITE_FAILED")?;
-        println!("host_operation_id=issue1-comment-{comment_id}");
-        println!("host_machine_id={machine_id}");
-        println!("host_first_use_state=GIT_PINNED_PROVIDER_DISPATCH");
-        println!("host_first_use_next_action=CREATE_ENROLL_AWAIT_PROTECTED_GIT_RECEIPT");
-        println!("host_signed_intent=NOT_CREATED");
-        println!("host_mutations=0");
-        return Ok(());
-    }
     let intent_path = intent_output.ok_or("HOST_INTENT_OUTPUT_REQUIRED")?;
     // Read *the checked-out protected Git spec*, not an operator-supplied file.
     // This binds the intent to the exact desired bytes; JSON remains an
