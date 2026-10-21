@@ -74,7 +74,7 @@ def target_machine(application_spec_path, machine_id):
     hard-coded acceptance instance.
     """
     if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", machine_id)
-            or not re.fullmatch(r"infra/application/[A-Za-z0-9][A-Za-z0-9._-]{0,63}\\.json",
+            or not re.fullmatch(r"infra/application/[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.json",
                                 application_spec_path)):
         return False
     try:
@@ -83,7 +83,7 @@ def target_machine(application_spec_path, machine_id):
             return False
         provider = app.get("vultr_spec_path")
         if (not isinstance(provider, str)
-                or not re.fullmatch(r"infra/vultr/[A-Za-z0-9][A-Za-z0-9._-]{0,63}\\.json", provider)):
+                or not re.fullmatch(r"infra/vultr/[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.json", provider)):
             return False
         desired = json.loads(Path(provider).read_text(encoding="utf-8"))
         machines = desired.get("machines")
