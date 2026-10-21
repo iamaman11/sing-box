@@ -58,15 +58,5 @@ Signed INSTALL: Worker proof → durable BEGIN → ACTIVE и native Docker.
 
 До физической приёмки **система не 10/10**. VM root execution требует явный Git RUNNING/STOPPED target, защищённый trust и подпись Worker; старые mutation-команды запрещены. [Нормативная архитектура](ARCHITECTURE.md), [единственный план](FINALIZATION-PLAN.md), [живой курсор](https://github.com/iamaman11/sing-box/issues/26).
 
-## Защищённая регистрация native receipt (PR #403)
 
-После успешного root enrollment тот же `host_first_use` job теперь составляет
-**только публичный** Git candidate через внутренний Rust `host register-receipt`
-и pinned Buf round-trip, затем открывает обычный PR в защищённый `main`.
-Токен контроллера должен иметь `contents:write` и `pull_requests:write`;
-при отсутствии полномочий процесс останавливается, не обходит ruleset и не
-повторяет provider CREATE/SSH. Состояние до merge и публикации нового
-ReleaseSet — `AWAITING_PROTECTED_GIT_PR_MERGE`, signed INSTALL запрещён.
-Нельзя автоматически повторять first-use после неясного результата записи PR;
-для восстановления требуется отдельное read-only подтверждение root identity.
-Реальное создание PR и продолжение signed INSTALL пока физически не приняты.
+First-use receipt: root public key stages a protected Git PR (typed Rust + pinned Buf). Until merge and published ReleaseSet: signed INSTALL BLOCKED.
