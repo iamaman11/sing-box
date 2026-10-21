@@ -316,7 +316,31 @@ jobs:
           echo "HOST_FLEET_REGISTRY=${OUTPUT_DIR}/fleet-registry.pb" >> "${GITHUB_ENV}"
           echo "HOST_FLEET_SHA256=${EDGE_FLEET_REGISTRY_SHA256}" >> "${GITHUB_ENV}"
 
+      - name: Plan exact VM Worker release with GET only
+        id: plan
+        shell: bash
+        env:
+          CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
+          CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN: ${{ secrets.CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN }}
+        run: |
+          set -euo pipefail
+          test -n "${CLOUDFLARE_CONTROL_TOKEN}" && test -n "${CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN}"
+          "${HOST_VM_WORKER_OWNER}" host \
+            --hosts-pb "${HOST_FLEET_REGISTRY}" \
+            --hosts-sha256 "${HOST_FLEET_SHA256}" \
+            vm-worker-authorizer-upgrade "${TARGET_MACHINE}" --plan-only |
+            tee "${RUNNER_TEMP}/host-vm-worker-plan.txt"
+          grep -Fxq 'worker_mutations=0' "${RUNNER_TEMP}/host-vm-worker-plan.txt"
+          grep -Fxq 'host_signed_install=NOT_AUTHORIZED' "${RUNNER_TEMP}/host-vm-worker-plan.txt"
+          if grep -Fxq 'host_vm_worker_authorizer=EXACT_VM_CODE_ONLY_PLAN' "${RUNNER_TEMP}/host-vm-worker-plan.txt"; then
+            echo 'required=true' >> "${GITHUB_OUTPUT}"
+          else
+            grep -Fxq 'host_vm_worker_authorizer=SOURCE_ALREADY_ACCEPTED' "${RUNNER_TEMP}/host-vm-worker-plan.txt"
+            echo 'required=false' >> "${GITHUB_OUTPUT}"
+          fi
+
       - name: Reserve one durable VM Worker version transaction before mutation
+        if: steps.plan.outputs.required == 'true'
         shell: bash
         run: |
           set -euo pipefail
@@ -345,6 +369,7 @@ jobs:
           echo "host_vm_worker_durable_begin=EXACT_GITHUB_ISSUE26"
 
       - name: Apply exact VM Worker code once and verify immutable active version
+        if: steps.plan.outputs.required == 'true'
         shell: bash
         env:
           CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
