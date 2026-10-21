@@ -159,6 +159,16 @@ pub(crate) enum HostCommand {
         #[arg(long)]
         output_path: PathBuf,
     },
+    /// Verify the Git textproto -> Buf protobuf candidate changes ONLY the
+    /// expected receipt public identity. Encoding byte order is irrelevant.
+    #[command(hide = true)]
+    VerifyReceipt {
+        machine_id: String,
+        #[arg(long)]
+        receipt_public_key_hex: String,
+        #[arg(long)]
+        candidate_path: PathBuf,
+    },
     /// Internal GitHub-hosted first-use of a new, absent VM. This shares
     /// the host ingress and existing Rust Vultr owner, never a legacy workflow.
     #[command(hide = true)]

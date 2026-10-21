@@ -763,29 +763,13 @@ pub(crate) fn run(
             receipt_public_key_hex,
             output_path,
         } => {
-            // This is a PUBLIC-IDENTITY-ONLY Git candidate, never a new
-            // mutation admission or permission to bypass main protection.
-            let mut candidate = desired.clone();
-            let selected = candidate
-                .hosts
-                .iter_mut()
-                .find(|host| host.machine_id == machine_id)
-                .ok_or("HOST_RECEIPT_REGISTRATION_MACHINE_UNREGISTERED")?;
-            edge_shared_types::host_lifecycle::verify_vm_first_use_git_prerequisites(selected)
-                .map_err(str::to_owned)?;
-            if selected.vm_first_use_credential.is_none() {
-                return Err("HOST_VM_FIRST_USE_CREDENTIAL_GIT_REQUIRED".to_owned());
-            }
-            if !selected.native_receipt_public_key.is_empty() {
-                return Err("HOST_RECEIPT_ALREADY_REGISTERED".to_owned());
-            }
-            let key = exact_hex_sha256(&receipt_public_key_hex)?;
-            if key.iter().all(|b| *b == 0) {
-                return Err("HOST_RECEIPT_REGISTRATION_ZERO_KEY_FORBIDDEN".to_owned());
-            }
-            selected.native_receipt_public_key = key;
+            // A Git registry candidate is generated ONLY from validated desired.
+            let candidate = receipt_registration_candidate(
+                &desired,
+                &machine_id,
+                &receipt_public_key_hex,
+            )?;
             let candidate_bytes = candidate.encode_to_vec();
-            decode_host_registry(&candidate_bytes)?;
             let mut file = OpenOptions::new()
                 .write(true)
                 .create_new(true)
@@ -801,10 +785,77 @@ pub(crate) fn run(
             println!("host_mutations=0");
             Ok(())
         }
+        HostCommand::VerifyReceipt {
+            machine_id,
+            receipt_public_key_hex,
+            candidate_path,
+        } => {
+            let expected = receipt_registration_candidate(
+                &desired,
+                &machine_id,
+                &receipt_public_key_hex,
+            )?;
+            let metadata = std::fs::symlink_metadata(&candidate_path)
+                .map_err(|_| "HOST_RECEIPT_CANDIDATE_MISSING")?;
+            if !metadata.file_type().is_file()
+                || metadata.len() == 0
+                || metadata.len() > MAX_INVENTORY_BYTES
+            {
+                return Err("HOST_RECEIPT_CANDIDATE_INVALID_FILE".to_owned());
+            }
+            let mut bytes = Vec::new();
+            File::open(&candidate_path)
+                .map_err(|_| "HOST_RECEIPT_CANDIDATE_UNREADABLE")?
+                .take(MAX_INVENTORY_BYTES + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|_| "HOST_RECEIPT_CANDIDATE_UNREADABLE")?;
+            if bytes.is_empty() || bytes.len() as u64 > MAX_INVENTORY_BYTES {
+                return Err("HOST_RECEIPT_CANDIDATE_INVALID_SIZE".to_owned());
+            }
+            let actual = decode_host_registry(&bytes)?;
+            if actual != expected {
+                return Err("HOST_RECEIPT_CANDIDATE_UNEXPECTED_GIT_CHANGE".to_owned());
+            }
+            println!("host_receipt_candidate=EXACT_ONE_PUBLIC_KEY_CHANGE");
+            println!("host_signed_install=NOT_AUTHORIZED");
+            println!("host_mutations=0");
+            Ok(())
+        }
         HostCommand::FirstUse { .. } => {
             Err("HOST_FIRST_USE_MUST_USE_EXISTING_NATIVE_VULTR_OWNER".to_owned())
         }
     }
+}
+
+/// Single typed Git candidate for public native receipt registration.
+/// No VM operation, no protected Git mutation, and no alternate inventory.
+fn receipt_registration_candidate(
+    desired: &HostRegistry,
+    machine_id: &str,
+    receipt_public_key_hex: &str,
+) -> Result<HostRegistry, String> {
+    let mut candidate = desired.clone();
+    let selected = candidate
+        .hosts
+        .iter_mut()
+        .find(|host| host.machine_id == machine_id)
+        .ok_or("HOST_RECEIPT_REGISTRATION_MACHINE_UNREGISTERED")?;
+    edge_shared_types::host_lifecycle::verify_vm_first_use_git_prerequisites(selected)
+        .map_err(str::to_owned)?;
+    if selected.vm_first_use_credential.is_none() {
+        return Err("HOST_VM_FIRST_USE_CREDENTIAL_GIT_REQUIRED".to_owned());
+    }
+    if !selected.native_receipt_public_key.is_empty() {
+        return Err("HOST_RECEIPT_ALREADY_REGISTERED".to_owned());
+    }
+    let key = exact_hex_sha256(receipt_public_key_hex)
+        .map_err(|_| "HOST_RECEIPT_REGISTRATION_PUBLIC_KEY_INVALID")?;
+    if key.iter().all(|b| *b == 0) {
+        return Err("HOST_RECEIPT_REGISTRATION_ZERO_KEY_FORBIDDEN".to_owned());
+    }
+    selected.native_receipt_public_key = key;
+    edge_shared_types::validate_host_registry(&candidate)?;
+    Ok(candidate)
 }
 
 /// Re-read the exact immutable ReleaseSet downloaded by the existing resolver.
@@ -1384,6 +1435,64 @@ fn append_credential_peer_outputs(
 mod tests {
     use super::*;
     use edge_shared_types::ManagedHost;
+
+    #[test]
+    fn receipt_registration_changes_only_one_git_pinned_public_key() {
+        use edge_shared_types::{
+            FleetHostKind, FleetHostRunState, FleetHostTarget, FleetVmContainer,
+            FleetVmFirstUseCredential,
+        };
+        let machine_id = "application-acceptance-1";
+        let original = HostRegistry {
+            schema_version: 1,
+            hosts: vec![ManagedHost {
+                machine_id: machine_id.to_owned(),
+                kind: FleetHostKind::Vm as i32,
+                owner: Some(managed_host::Owner::VmMachineId(machine_id.to_owned())),
+                desired_spec_path: "infra/application/disposable-acceptance.json".into(),
+                vm_provider_spec_path: "infra/vultr/application-acceptance.json".into(),
+                target: Some(FleetHostTarget {
+                    run_state: FleetHostRunState::Running as i32,
+                    ..Default::default()
+                }),
+                worker_authority_public_key: vec![7; 32],
+                vm_first_use_credential: Some(FleetVmFirstUseCredential {
+                    generation: 1,
+                    bundle_sha256: "a".repeat(64),
+                }),
+                vm_containers: vec![FleetVmContainer {
+                    container_name: "vultr-line1-gateway".into(),
+                    compose_project: "vultr-edge".into(),
+                    compose_service: "line1-gateway".into(),
+                }],
+                ..Default::default()
+            }],
+        };
+        let candidate = receipt_registration_candidate(&original, machine_id, &"9a".repeat(32))
+            .unwrap();
+        assert!(original.hosts[0].native_receipt_public_key.is_empty());
+        assert_eq!(candidate.hosts[0].native_receipt_public_key, vec![0x9a; 32]);
+        let wire = candidate.encode_to_vec();
+        assert_eq!(decode_host_registry(&wire).unwrap(), candidate);
+        assert_eq!(
+            receipt_registration_candidate(&original, "foreign", &"9a".repeat(32)).unwrap_err(),
+            "HOST_RECEIPT_REGISTRATION_MACHINE_UNREGISTERED"
+        );
+        assert_eq!(
+            receipt_registration_candidate(&original, machine_id, &"00".repeat(32)).unwrap_err(),
+            "HOST_RECEIPT_REGISTRATION_ZERO_KEY_FORBIDDEN"
+        );
+        assert_eq!(
+            receipt_registration_candidate(&candidate, machine_id, &"9a".repeat(32)).unwrap_err(),
+            "HOST_RECEIPT_ALREADY_REGISTERED"
+        );
+        let mut incomplete = original.clone();
+        incomplete.hosts[0].worker_authority_public_key.clear();
+        assert_eq!(
+            receipt_registration_candidate(&incomplete, machine_id, &"9a".repeat(32)).unwrap_err(),
+            "HOST_GIT_WORKER_SIGNER_KEY_REQUIRED"
+        );
+    }
 
     #[test]
     fn vm_signed_preflight_requires_git_trust_without_blocking_observation() {

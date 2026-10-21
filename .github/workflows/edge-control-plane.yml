@@ -405,7 +405,16 @@ jobs:
             --type edge.platform.v1.FleetDesiredState \
             --from "${target}#format=txtpb" \
             --to "${RUNNER_TEMP}/receipt-roundtrip.pb#format=binpb")
-          cmp -s "${new_fleet}" "${RUNNER_TEMP}/receipt-roundtrip.pb"
+          # Compare typed meaning, not Protobuf wire order: Buf and prost
+          # are conforming independent encoders.
+          "${bin}" host --hosts-pb "${fleet}" \
+            --hosts-sha256 "$(sha256sum "${fleet}" | cut -d' ' -f1)" \
+            verify-receipt "${TARGET_MACHINE}" \
+            --receipt-public-key-hex "${public_key}" \
+            --candidate-path "${RUNNER_TEMP}/receipt-roundtrip.pb" \
+            | tee "${RUNNER_TEMP}/host-receipt-verification.txt"
+          grep -Fxq 'host_receipt_candidate=EXACT_ONE_PUBLIC_KEY_CHANGE' "${RUNNER_TEMP}/host-receipt-verification.txt"
+          grep -Fxq 'host_mutations=0' "${RUNNER_TEMP}/host-receipt-verification.txt"
           # PAT needs contents:write and pull_requests:write. No protected
           # main write and no CI bypass: normal PR + required checks only.
           test -n "${REGISTRATION_TOKEN}"
