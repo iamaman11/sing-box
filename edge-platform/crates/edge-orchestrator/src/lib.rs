@@ -5,7 +5,7 @@ use edge_controller_core::orchestration::{
     DerivedDnsTarget, DerivedMeshRoute, MachineObservation, ReleaseContext,
     SupportAccessLeaseState, VpcObservation, derive_dns_target, derive_mesh_route,
 };
-use edge_shared_types::RELEASE_SET_SCHEMA_VERSION;
+use edge_shared_types::{FleetHost, FleetHostKind, HostRegistry, RELEASE_SET_SCHEMA_VERSION, managed_host};
 use ring::digest::{Context as DigestContext, SHA256};
 use std::collections::BTreeMap;
 use std::env;
@@ -139,6 +139,56 @@ impl OrchestrationContext {
             "application release authority is unavailable; use a verified durable release context"
                 .to_owned()
         })
+    }
+
+    /// Read the ONE published fleet registry adjacent to the already
+    /// validated immutable ReleaseSet. A legacy release without this asset,
+    /// a second host inventory, or a caller-provided worker key cannot
+    /// authorize native root bootstrap. No provider operation occurs here.
+    pub fn verified_vm_first_use_host(&self, machine_id: &str) -> Result<FleetHost, String> {
+        let context_path = env::var_os("EDGE_RELEASE_CONTEXT_PATH")
+            .map(PathBuf::from)
+            .ok_or("HOST_BOOTSTRAP_RELEASE_CONTEXT_UNAVAILABLE")?;
+        let variables = parse_resolved_env(&context_path)?;
+        if required(&variables, "EDGE_RELEASE_SET_SHA256")?
+            != self.release.release_set_sha256
+        {
+            return Err("HOST_BOOTSTRAP_RELEASE_CONTEXT_MISMATCH".to_owned());
+        }
+        let registry_sha = required(&variables, "EDGE_FLEET_REGISTRY_SHA256")?;
+        validate_lower_hex("EDGE_FLEET_REGISTRY_SHA256", registry_sha, 64)?;
+        let release_dir = context_path
+            .parent()
+            .ok_or("HOST_BOOTSTRAP_RELEASE_DIRECTORY_MISSING")?;
+        let registry_path = release_dir.join("fleet-registry.pb");
+        let meta = std::fs::symlink_metadata(&registry_path)
+            .map_err(|_| "HOST_BOOTSTRAP_PUBLISHED_REGISTRY_MISSING")?;
+        if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 65536 {
+            return Err("HOST_BOOTSTRAP_PUBLISHED_REGISTRY_INVALID".to_owned());
+        }
+        if sha256_file(&registry_path)? != registry_sha {
+            return Err("HOST_BOOTSTRAP_PUBLISHED_REGISTRY_DIGEST_MISMATCH".to_owned());
+        }
+        let bytes = std::fs::read(&registry_path)
+            .map_err(|_| "HOST_BOOTSTRAP_PUBLISHED_REGISTRY_UNREADABLE")?;
+        let registry: HostRegistry = edge_shared_types::decode_host_registry(&bytes)
+            .map_err(|_| "HOST_BOOTSTRAP_PUBLISHED_REGISTRY_PROTO_INVALID")?;
+        let host = registry
+            .hosts
+            .into_iter()
+            .find(|host| host.machine_id == machine_id)
+            .ok_or("HOST_BOOTSTRAP_GIT_HOST_UNREGISTERED")?;
+        if host.kind != FleetHostKind::Vm as i32
+            || !matches!(
+                host.owner.as_ref(),
+                Some(managed_host::Owner::VmMachineId(owner)) if owner == machine_id
+            )
+        {
+            return Err("HOST_BOOTSTRAP_GIT_VM_OWNER_MISMATCH".to_owned());
+        }
+        edge_shared_types::host_lifecycle::verify_vm_first_use_git_prerequisites(&host)
+            .map_err(str::to_owned)?;
+        Ok(host)
     }
 
     pub fn expected_application_artifact(&self) -> Result<AgentArtifactManifest, String> {

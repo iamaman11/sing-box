@@ -1437,6 +1437,18 @@ pub(crate) async fn bootstrap_production_runner(
             "machine {machine_id} is not present in desired state"
         ));
     }
+    // Provider desired describes the VM substrate, not a second application
+    // host registry. Only this exact accepted Git FleetHost can authorize
+    // the fixed first-use native owner installation and root enrollment.
+    let canonical_host = context.verified_vm_first_use_host(machine_id)?;
+    if !canonical_host.desired_spec_path.starts_with("infra/")
+        || !canonical_host
+            .desired_spec_path
+            .ends_with(".json")
+            && !canonical_host.desired_spec_path.ends_with(".textproto")
+    {
+        return Err("HOST_BOOTSTRAP_GIT_DESIRED_SPEC_PATH_INVALID".to_owned());
+    }
     if !installer_path.is_file() {
         return Err(format!(
             "production runner installer was not found: {}",
@@ -1640,7 +1652,7 @@ pub(crate) async fn bootstrap_production_runner(
 
     print_json_value(serde_json::json!({
         "status": "PASS",
-        "machine_id": machine_id,
+        "machine_id": canonical_host.machine_id,
         "runner_name": format!("sing-box-production-{machine_id}"),
         "runner_user": "github-runner",
         "generic_root_authority": false,

@@ -236,22 +236,32 @@ pub fn verify_git_worker_signer_pin(host: &FleetHost, supplied: &[u8]) -> Result
     Ok(())
 }
 
-/// Non-authorizing Git admission prerequisite for an executable VM target.
-/// First-use enrollment intentionally starts WITHOUT a receipt public key;
-/// only the subsequent signed host apply/recover requires Git registration.
-/// This never claims Worker availability or native runtime health.
-pub fn verify_vm_signed_git_prerequisites(host: &crate::FleetHost) -> Result<(), &'static str> {
+/// This shared non-authorizing source gate is used by the Git-bound first-use
+/// bootstrap and the later signed native apply. First-use deliberately does
+/// NOT require the VM-generated receipt key yet, since that key is created
+/// inside the installed root owner and registered through a later ReleaseSet.
+pub fn verify_vm_first_use_git_prerequisites(host: &FleetHost) -> Result<(), &'static str> {
+    if host.kind != FleetHostKind::Vm as i32 {
+        return Err("HOST_VM_FIRST_USE_KIND_REQUIRED");
+    }
+    verify_git_worker_signer_pin(host, &host.worker_authority_public_key)?;
+    if host.vm_containers.is_empty() {
+        return Err("HOST_VM_GIT_RESOURCE_SCOPE_REQUIRED");
+    }
+    Ok(())
+}
+
+/// Signed operations on an enrolled VM additionally require the exact Git
+/// registration of the private native owner's public receipt identity.
+pub fn verify_vm_signed_git_prerequisites(host: &FleetHost) -> Result<(), &'static str> {
     if host.kind != FleetHostKind::Vm as i32 {
         return Ok(());
     }
-    verify_git_worker_signer_pin(host, &host.worker_authority_public_key)?;
+    verify_vm_first_use_git_prerequisites(host)?;
     if host.native_receipt_public_key.len() != 32
         || host.native_receipt_public_key.iter().all(|b| *b == 0)
     {
         return Err("HOST_VM_GIT_RECEIPT_REGISTRATION_REQUIRED");
-    }
-    if host.vm_containers.is_empty() {
-        return Err("HOST_VM_GIT_RESOURCE_SCOPE_REQUIRED");
     }
     Ok(())
 }
