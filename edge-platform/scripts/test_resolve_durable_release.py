@@ -198,7 +198,9 @@ def run(state,meta,expected=None,ok=False,expected_tag_ref_calls=None):
         assert vals["EDGE_AGENT_SHA256"]==meta["asha"]
         assert vals["EDGE_RELEASE_SCHEMA_VERSION"]==str(meta["schema"])
         assert vals["EDGE_APPLICATION_BUNDLE_SHA256"]==meta["bundle_sha"]
-        assert vals["EDGE_FLEET_REGISTRY_SHA256"]==meta["fleet_sha"]
+        assert vals["EDGE_FLEET_REGISTRY_SHA256"]==(meta["fleet_sha"] or "ABSENT")
+        if meta["schema"] == 7:
+          assert all(value for value in vals.values()), "schema-7 context cannot have empty fields"
         assert vals["EDGE_RUNTIME_SOURCE_REVISION"]==meta["runtime_source"]
         assert vals["EDGE_RUNTIME_INPUT_SHA256"]==meta["runtime_input"]
         assert vals["EDGE_WINDOWS_SOURCE_REVISION"]==meta["windows_source"]

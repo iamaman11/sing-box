@@ -352,7 +352,10 @@ test "$orchestrator_sha" = "$(sha256sum "${out}/edge-orchestrator-linux-amd64" |
 [[ "$warp_image" =~ ^ghcr\.io/iamaman11/vultr-warp-egress@sha256:[0-9a-f]{64}$ ]]
 [[ "$mesh_image" =~ ^docker\.io/cloudflare/mesh@sha256:[0-9a-f]{64}$ ]]
 
-fleet_registry_sha=""
+# A historic schema-7 main release may predate fleet registry publication.
+# A non-empty explicit sentinel preserves READ-ONLY context decoding; the
+# signed mutation and native first-use gates accept only a real SHA-256.
+fleet_registry_sha="ABSENT"
 if [[ "$has_fleet_registry" = true ]]; then
   fleet_registry_sha="$(sha256sum "${out}/fleet-registry.pb" | awk '{print $1}')"
   [[ "$fleet_registry_sha" =~ ^[0-9a-f]{64}$ ]]
