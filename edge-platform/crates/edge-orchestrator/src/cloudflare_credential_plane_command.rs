@@ -1336,8 +1336,7 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
             return Err(format!("HOST_VM_WORKER_MUTATION_UNTRUSTED_{key}"));
         }
     }
-    if env::var("GITHUB_SHA").ok().as_deref()
-        != Some(release.release().accepted_revision.as_str())
+    if env::var("GITHUB_SHA").ok().as_deref() != Some(release.release().accepted_revision.as_str())
     {
         return Err("HOST_VM_WORKER_RELEASE_GIT_REVISION_MISMATCH".to_owned());
     }
@@ -1434,8 +1433,7 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
     .await;
     let after = observe(&read_token, desired).await?;
     validate_access_boundary(desired, &after)?;
-    if projection_observation(&before, "windows")?
-        != projection_observation(&after, "windows")?
+    if projection_observation(&before, "windows")? != projection_observation(&after, "windows")?
         || verify_exact_active_worker_version(projection_observation(&after, "vm")?, &version_id)
             .is_err()
         || projection_delivery_state(desired, &vm, &after)? != ProjectionDeliveryState::FixedAb
