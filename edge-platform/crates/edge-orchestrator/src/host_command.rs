@@ -949,8 +949,13 @@ fn host_lifecycle_admission(
         let output = output.ok_or("HOST_PREFLIGHT_OUTPUT_REQUIRED")?;
         let labels = runner_labels(kind, owner, &selected.windows_runner_label)?;
         append_control_outputs(
-            output, machine_id, kind, owner, &labels,
-            &selected.windows_runner_label, &selected.desired_spec_path,
+            output,
+            machine_id,
+            kind,
+            owner,
+            &labels,
+            &selected.windows_runner_label,
+            &selected.desired_spec_path,
         )?;
         append_action_output(output, "FIRST_USE_PREFLIGHT")?;
         append_observation_matrix(output, &[])?;

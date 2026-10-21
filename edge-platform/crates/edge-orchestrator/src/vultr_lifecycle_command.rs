@@ -1464,9 +1464,7 @@ pub(crate) async fn host_first_use(
             Ok(())
         }
         (Err(error), Ok(())) => Err(error),
-        (Ok(()), Err(error)) => Err(format!(
-            "HOST_FIRST_USE_ACCESS_CLEANUP_UNPROVEN: {error}"
-        )),
+        (Ok(()), Err(error)) => Err(format!("HOST_FIRST_USE_ACCESS_CLEANUP_UNPROVEN: {error}")),
         (Err(error), Err(release_error)) => Err(format!(
             "{error}; HOST_FIRST_USE_ACCESS_CLEANUP_UNPROVEN: {release_error}"
         )),
