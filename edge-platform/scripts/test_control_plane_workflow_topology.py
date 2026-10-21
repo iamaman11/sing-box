@@ -1012,11 +1012,11 @@ def test_vm_first_use_warp_safety_and_bootstrap_source() -> None:
 def test_ci_triggers_for_canonical_registry_and_all_workflows() -> None:
     """A receipt-only protected Git PR must run CI and publish the new registry."""
     ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
-    event_section = ci.split("on:\\n", 1)[1].split("\\npermissions:", 1)[0]
+    event_section = ci.split("on:\n", 1)[1].split("\npermissions:", 1)[0]
     expected = ["edge-platform/**", "infra/**", "win/**", ".github/workflows/**"]
     for event in ("pull_request", "push"):
         match = re.search(
-            rf"(?ms)^  {event}:\\n(.*?)(?=^  (?:pull_request|push):|\\Z)",
+            rf"(?ms)^  {event}:\n(.*?)(?=^  (?:pull_request|push):|\Z)",
             event_section,
         )
         require(match is not None, f"{event} CI trigger is required")
@@ -1206,7 +1206,7 @@ def test_native_host_readonly_control_boundary(router: str) -> None:
         "Installed VM owner must retain read-only historical deep diagnostics",
     )
     require(
-        all(("  " + job + ":\\n") not in router for job in
+        all(("  " + job + ":\n") not in router for job in
             ("host_apply_windows", "host_apply_vm", "credentials", "windows",
              "application", "production", "vultr", "vpc"))
         and "--journal-history-json" not in router
@@ -5038,7 +5038,7 @@ if __name__ == "__main__":
             f"{event} must include infra/hosts and every executable workflow",
         )
     require(
-        "fleet-registry.pb" in ci and "  promote:\\n" in ci,
+        "fleet-registry.pb" in ci and "  promote:\n" in ci,
         "Registry-only PR must compile and publish its immutable fleet registry",
     )
 
