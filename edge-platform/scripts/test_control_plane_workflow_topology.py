@@ -736,7 +736,6 @@ def test_git_windows_host_host_contract(credentials: str) -> None:
 
 def test_host_first_use_is_internal_to_one_host_ingress() -> None:
     router = ROUTER.read_text(encoding="utf-8")
-    test_protected_host_capability_lane(router)
     vultr = VULTR.read_text(encoding="utf-8")
     native = Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_command.rs").read_text(encoding="utf-8")
     require(
@@ -1286,9 +1285,10 @@ def test_protected_host_capability_lane(router: str) -> None:
     source = path.read_text(encoding="utf-8")
     require(
         source.count('method="GET"') == 1
-        and "urlopen(request, timeout=TIMEOUT)" in source
+        and "build_opener(DenyRedirect()).open(request, timeout=TIMEOUT)" in source
+        and "class DenyRedirect(HTTPRedirectHandler):" in source
         and "response.geturl() != url" in source
-        and 'if parsed.scheme != "https" or parsed.hostname != host' in source
+        and 'if parsed.scheme != "https" or parsed.netloc != host' in source
         and "provider_mutations" in source
         and "worker_mutations" in source
         and "github_mutations" in source
