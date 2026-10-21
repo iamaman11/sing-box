@@ -1364,13 +1364,12 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
     if write_identity.status != "active" || write_identity.id == before.control_token_identity.id {
         return Err("HOST_VM_WORKER_DISTINCT_ACTIVE_WRITE_IDENTITY_REQUIRED".to_owned());
     }
-    let windows = projection_desired(desired, "windows")?;
-    if !matches!(
-        projection_delivery_state(desired, &windows, &before)?,
-        ProjectionDeliveryState::FixedAb | ProjectionDeliveryState::FixedAbProofUpgradeRequired
-    ) {
-        return Err("HOST_VM_WORKER_WINDOWS_BASELINE_NOT_TERMINAL".to_owned());
-    }
+    // The Windows Worker is a read-only neighbour here, NOT the target
+    // projection. Its tag identifies independently deployed Windows code,
+    // so VM-only publication must not require the Windows tag to equal a
+    // particular version of the VM credential delivery template.
+    // Preserve the entire Windows snapshot across both provider mutations.
+    verify_vm_only_windows_neighbour(desired, &before)?;
     let vm = projection_desired(desired, "vm")?;
     let state = projection_delivery_state(desired, &vm, &before)?;
     let original = projection_observation(&before, "vm")?;
@@ -2493,6 +2492,52 @@ fn previous_fixed_ab_version_tag(projection: &str) -> Result<&'static str, Strin
         "vm" => Ok("sing-box-phase6-ab-vm-371edd1d8616c67b"),
         _ => Err("unknown previous Worker projection".to_owned()),
     }
+}
+
+/// Validate the independent Windows Worker as a read-only neighbour of a
+/// VM-only code upgrade. This verifies resource ownership/Access separately
+/// via validate_access_boundary, then fences the exact A/B bindings and
+/// single active latest deployment without interpreting Windows code tags
+/// using the VM code-upgrade state machine.
+fn verify_vm_only_windows_neighbour(
+    desired: &ProductionCredentialPlaneOwnership,
+    observed: &CredentialPlaneObservation,
+) -> Result<(), String> {
+    let windows = projection_desired(desired, "windows")?;
+    let current = projection_observation(observed, "windows")?;
+    if current.worker_binding_count != Some(2) {
+        return Err("HOST_VM_WORKER_WINDOWS_AB_BINDING_COUNT_INVALID".to_owned());
+    }
+    require_exact_secret_bindings(
+        &windows.worker_name,
+        &windows.projection,
+        &current.worker_secret_bindings,
+    )?;
+    let latest = current
+        .worker_latest_version_id
+        .as_deref()
+        .filter(|value| !value.is_empty())
+        .ok_or("HOST_VM_WORKER_WINDOWS_LATEST_UNPROVEN")?;
+    if current
+        .worker_active_deployment_id
+        .as_deref()
+        .unwrap_or("")
+        .is_empty()
+        || current.worker_active_version_ids.as_slice() != [latest]
+    {
+        return Err("HOST_VM_WORKER_WINDOWS_DEPLOYMENT_AMBIGUOUS".to_owned());
+    }
+    if !matches!(
+        (
+            current.worker_version_tag.as_deref(),
+            current.worker_latest_version_tag.as_deref(),
+        ),
+        (Some(settings), Some(latest_tag))
+            if !settings.is_empty() && settings == latest_tag
+    ) {
+        return Err("HOST_VM_WORKER_WINDOWS_TAG_READBACK_INCONSISTENT".to_owned());
+    }
+    Ok(())
 }
 
 fn projection_delivery_state(
@@ -4024,6 +4069,68 @@ mod tests {
         );
         assert!(worker_proof_record("truncated-json", None).is_err());
         assert!(worker_proof_record("[{}]", None).is_err());
+    }
+
+    #[test]
+    fn vm_only_upgrade_keeps_unknown_but_consistent_windows_code_read_only() {
+        let d = desired();
+        let mut obs = observation(&d);
+        make_terminal(&mut obs, "windows");
+        let windows = obs
+            .projections
+            .iter_mut()
+            .find(|p| p.projection == "windows")
+            .unwrap();
+        // This is an intentionally unrecognized code tag. It is NOT a
+        // Worker-version allowlist and does not authorize a Windows write.
+        windows.worker_version_tag = Some("independent-windows-release-abc".to_owned());
+        windows.worker_latest_version_tag = windows.worker_version_tag.clone();
+        assert!(
+            projection_delivery_state(&d, &projection_desired(&d, "windows").unwrap(), &obs)
+                .is_err()
+        );
+        assert!(verify_vm_only_windows_neighbour(&d, &obs).is_ok());
+        let baseline = super::projection_observation(&obs, "windows")
+            .unwrap()
+            .clone();
+
+        let mut conflicting = obs.clone();
+        conflicting.projections[0].worker_latest_version_tag = Some("conflicting-tag".to_owned());
+        assert_eq!(
+            verify_vm_only_windows_neighbour(&d, &conflicting).unwrap_err(),
+            "HOST_VM_WORKER_WINDOWS_TAG_READBACK_INCONSISTENT"
+        );
+        conflicting = obs.clone();
+        conflicting.projections[0].worker_active_version_ids =
+            vec!["foreign-active-version".to_owned()];
+        assert_eq!(
+            verify_vm_only_windows_neighbour(&d, &conflicting).unwrap_err(),
+            "HOST_VM_WORKER_WINDOWS_DEPLOYMENT_AMBIGUOUS"
+        );
+        conflicting = obs.clone();
+        conflicting.projections[0].worker_secret_bindings[0].binding_type = "plain_text".to_owned();
+        assert!(verify_vm_only_windows_neighbour(&d, &conflicting).is_err());
+        conflicting = obs.clone();
+        conflicting.projections[0].worker_secret_bindings.push(
+            cloudflare::CloudflareWorkerSecretBinding {
+                name: "EDGE_HOST_SIGNING_PKCS8_BASE64".to_owned(),
+                binding_type: "secret_text".to_owned(),
+            },
+        );
+        conflicting.projections[0].worker_binding_count = Some(3);
+        assert_eq!(
+            verify_vm_only_windows_neighbour(&d, &conflicting).unwrap_err(),
+            "HOST_VM_WORKER_WINDOWS_AB_BINDING_COUNT_INVALID"
+        );
+        // A VM projection change must never implicitly mutate Windows.
+        let mut changed_vm = obs.clone();
+        changed_vm.projections[1].worker_latest_version_id =
+            Some("vm-code-only-pending-version".to_owned());
+        assert_eq!(
+            super::projection_observation(&changed_vm, "windows").unwrap(),
+            &baseline
+        );
+        assert!(verify_vm_only_windows_neighbour(&d, &changed_vm).is_ok());
     }
 
     #[test]
