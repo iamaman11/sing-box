@@ -1293,7 +1293,9 @@ def test_protected_host_capability_lane(router: str) -> None:
         and "worker_mutations" in source
         and "github_mutations" in source
         and "POST" not in source.upper().replace("NO SECRET VALUES, KEYS, IDS, RAW API", "")
-        and "subprocess" not in source,
+        and "subprocess" not in source
+        and "/workers/scripts/{worker}/secrets" in source
+        and "/workers/scripts/{worker}/settings" not in source,
         "capability probe must not gain a mutation primitive or secret transport",
     )
     namespace = runpy.run_path(str(path))
@@ -1311,13 +1313,13 @@ def test_protected_host_capability_lane(router: str) -> None:
     )
     bindings = namespace["worker_bindings"]
     require(
-        bindings({"success": True, "result": {"bindings": []}})
+        bindings({"success": True, "result": []})
         == "INCOMPLETE_HOST_SIGNER_BINDINGS"
         and bindings({"success": False, "result": {}})
-        == "UNPROVEN_WORKER_SETTINGS"
-        and bindings({"success": True, "result": {
-            "bindings": [{"name": b} for b in namespace["WORKER_BINDINGS"]]
-        }}) == "PRESENT_NAMES_ONLY_NOT_SIGNING_PROOF",
+        == "UNPROVEN_WORKER_SECRETS_API"
+        and bindings({"success": True, "result": [
+            {"name": b, "type": "secret_text"} for b in namespace["WORKER_BINDINGS"]
+        ]}) == "PRESENT_NAMES_ONLY_NOT_SIGNING_PROOF",
         "Worker binding names must never be treated as an authenticated public signer key",
     )
 
