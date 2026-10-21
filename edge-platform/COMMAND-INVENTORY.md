@@ -57,3 +57,16 @@ Signed INSTALL: Worker proof → durable BEGIN → ACTIVE и native Docker.
 Только строго типизированные `machine_id / resource_id / desired_digest / immutable_release / operation_id / native_owner` и однозначные `READY | DEGRADED | BLOCKED | UNKNOWN_NO_REPLAY`. Нет старого `Issue #26` как mutation authority: старые comments — неизменяемый архив, не исходное желаемое состояние. Для сбоя секретов — fresh Worker-provision с **новой** resource identity, без переноса старой A/B, только после проверки границ собственности старого ресурса. Удалять старые файлы и контейнеры можно при доказанном scope и сохранённом способе доступа; не трогать Cloudflare One, Mesh других проектов и общую инфраструктуру.
 
 До физической приёмки **система не 10/10**. VM root execution требует явный Git RUNNING/STOPPED target, защищённый trust и подпись Worker; старые mutation-команды запрещены. [Нормативная архитектура](ARCHITECTURE.md), [единственный план](FINALIZATION-PLAN.md), [живой курсор](https://github.com/iamaman11/sing-box/issues/26).
+
+## Защищённая регистрация native receipt (PR #403)
+
+После успешного root enrollment тот же `host_first_use` job теперь составляет
+**только публичный** Git candidate через внутренний Rust `host register-receipt`
+и pinned Buf round-trip, затем открывает обычный PR в защищённый `main`.
+Токен контроллера должен иметь `contents:write` и `pull_requests:write`;
+при отсутствии полномочий процесс останавливается, не обходит ruleset и не
+повторяет provider CREATE/SSH. Состояние до merge и публикации нового
+ReleaseSet — `AWAITING_PROTECTED_GIT_PR_MERGE`, signed INSTALL запрещён.
+Нельзя автоматически повторять first-use после неясного результата записи PR;
+для восстановления требуется отдельное read-only подтверждение root identity.
+Реальное создание PR и продолжение signed INSTALL пока физически не приняты.

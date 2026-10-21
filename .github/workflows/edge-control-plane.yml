@@ -276,6 +276,7 @@ jobs:
       actions: read
     env:
       TARGET_MACHINE: ${{ needs.host.outputs.machine_id }}
+      SOURCE_COMMENT_ID: ${{ github.event.comment.id }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Checkout exact accepted Git source
@@ -362,4 +363,66 @@ jobs:
             --hosts-sha256 "$(sha256sum "${RUNNER_TEMP}/host-release/fleet-registry.pb" | cut -d' ' -f1)" \
             first-use "${TARGET_MACHINE}" \
             --installer-path edge-platform/scripts/install-vultr-production-runner.sh \
-            --agent-path "${RUNNER_TEMP}/host-release/edge-agent-linux-amd64"
+            --agent-path "${RUNNER_TEMP}/host-release/edge-agent-linux-amd64" \
+            | tee "${RUNNER_TEMP}/host-first-use-evidence.txt"
+
+      - name: Stage root receipt identity through a protected Git pull request
+        shell: bash
+        env:
+          REGISTRATION_TOKEN: ${{ secrets.IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN }}
+        run: |
+          set -euo pipefail
+          # One-shot: never rerun CREATE/enrollment after an uncertain result.
+          test "${GITHUB_RUN_ATTEMPT}" = 1
+          [[ "${TARGET_MACHINE}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]
+          [[ "${SOURCE_COMMENT_ID}" =~ ^[1-9][0-9]*$ ]]
+          evidence="${RUNNER_TEMP}/host-first-use-evidence.txt"
+          test -f "${evidence}" && test ! -L "${evidence}"
+          test "$(grep -Ec '^host_first_use_receipt_public_key_hex=[0-9a-f]{64}
+ "${evidence}")" = 1
+          public_key="$(sed -n 's/^host_first_use_receipt_public_key_hex=//p' "${evidence}")"
+          test "${#public_key}" = 64
+          bin="${RUNNER_TEMP}/host-release/edge-orchestrator-linux-amd64"
+          fleet="${RUNNER_TEMP}/host-release/fleet-registry.pb"
+          new_fleet="${RUNNER_TEMP}/host-receipt-candidate.pb"
+          "${bin}" host --hosts-pb "${fleet}" \
+            --hosts-sha256 "$(sha256sum "${fleet}" | cut -d' ' -f1)" \
+            register-receipt "${TARGET_MACHINE}" \
+            --receipt-public-key-hex "${public_key}" --output-path "${new_fleet}" \
+            | tee "${RUNNER_TEMP}/host-registration-proof.txt"
+          grep -Fxq 'host_receipt_registration=PROTECTED_GIT_CANDIDATE_ONLY' "${RUNNER_TEMP}/host-registration-proof.txt"
+          grep -Fxq 'host_mutations=0' "${RUNNER_TEMP}/host-registration-proof.txt"
+          buf="${RUNNER_TEMP}/host-buf"
+          curl --fail --silent --show-error --location \
+            "https://github.com/bufbuild/buf/releases/download/v1.73.0/buf-Linux-x86_64" -o "${buf}"
+          echo "8f2986298ad08f0cc1bf999b9797b7c383adf32d7edf0f73d6f1e1a701baeac1  ${buf}" | sha256sum --check -
+          chmod 0755 "${buf}"
+          target="${RUNNER_TEMP}/receipt-hosts.textproto"
+          (cd edge-platform && "${buf}" convert proto/edge/platform/v1/fleet.proto \
+            --type edge.platform.v1.FleetDesiredState \
+            --from "${new_fleet}#format=binpb" --to "${target}#format=txtpb")
+          (cd edge-platform && "${buf}" convert proto/edge/platform/v1/fleet.proto \
+            --type edge.platform.v1.FleetDesiredState \
+            --from "${target}#format=txtpb" \
+            --to "${RUNNER_TEMP}/receipt-roundtrip.pb#format=binpb")
+          cmp -s "${new_fleet}" "${RUNNER_TEMP}/receipt-roundtrip.pb"
+          # PAT needs contents:write and pull_requests:write. No protected
+          # main write and no CI bypass: normal PR + required checks only.
+          test -n "${REGISTRATION_TOKEN}"
+          export GH_TOKEN="${REGISTRATION_TOKEN}"
+          base="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          test "${base}" = "${GITHUB_SHA}"
+          branch="host-receipt-${TARGET_MACHINE}-${SOURCE_COMMENT_ID}"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f "ref=refs/heads/${branch}" -f "sha=${GITHUB_SHA}" >/dev/null
+          original_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto?ref=${GITHUB_SHA}" --jq '.sha')"
+          encoded="$(base64 -w0 < "${target}")"
+          gh api -X PUT "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto" \
+            -f "branch=${branch}" -f "sha=${original_sha}" \
+            -f "message=host: register native receipt for ${TARGET_MACHINE}" \
+            -f "content=${encoded}" >/dev/null
+          gh pr create -R "${GITHUB_REPOSITORY}" -B main -H "${branch}" \
+            -t "host: register native receipt for ${TARGET_MACHINE}" \
+            -b "Protected Git native receipt registration. Original request: issue #1 comment ${SOURCE_COMMENT_ID}. Source ReleaseSet revision: ${GITHUB_SHA}. Host: ${TARGET_MACHINE}. Public key SHA256: $(printf '%s' "${public_key}" | sha256sum | cut -d' ' -f1). Root private key remains on VM. Merge only after required Source checks and Candidate complete; no signed INSTALL has run."
+          echo 'host_first_use=AWAITING_PROTECTED_GIT_PR_MERGE'
+          echo 'host_signed_install=NOT_YET_AUTHORIZED'

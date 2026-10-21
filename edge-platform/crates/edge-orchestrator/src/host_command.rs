@@ -758,6 +758,45 @@ pub(crate) fn run(
             intent_output,
             None,
         ),
+        HostCommand::RegisterReceipt {
+            machine_id,
+            receipt_public_key_hex,
+            output_path,
+        } => {
+            // This is a PUBLIC-IDENTITY-ONLY Git candidate, never a new
+            // mutation admission or permission to bypass main protection.
+            let mut candidate = desired.clone();
+            let selected = candidate.hosts.iter_mut()
+                .find(|host| host.machine_id == machine_id)
+                .ok_or("HOST_RECEIPT_REGISTRATION_MACHINE_UNREGISTERED")?;
+            edge_shared_types::host_lifecycle::verify_vm_first_use_git_prerequisites(selected)
+                .map_err(str::to_owned)?;
+            if selected.vm_first_use_credential.is_none() {
+                return Err("HOST_VM_FIRST_USE_CREDENTIAL_GIT_REQUIRED".to_owned());
+            }
+            if !selected.native_receipt_public_key.is_empty() {
+                return Err("HOST_RECEIPT_ALREADY_REGISTERED".to_owned());
+            }
+            let key = exact_hex_sha256(&receipt_public_key_hex)?;
+            if key.iter().all(|b| *b == 0) {
+                return Err("HOST_RECEIPT_REGISTRATION_ZERO_KEY_FORBIDDEN".to_owned());
+            }
+            selected.native_receipt_public_key = key;
+            let candidate_bytes = candidate.encode_to_vec();
+            decode_host_registry(&candidate_bytes)?;
+            let mut file = OpenOptions::new()
+                .write(true).create_new(true).open(&output_path)
+                .map_err(|_| "HOST_RECEIPT_REGISTRATION_CANDIDATE_EXISTS_OR_UNWRITABLE")?;
+            file.write_all(&candidate_bytes)
+                .map_err(|_| "HOST_RECEIPT_REGISTRATION_CANDIDATE_WRITE_FAILED")?;
+            file.sync_all()
+                .map_err(|_| "HOST_RECEIPT_REGISTRATION_CANDIDATE_SYNC_FAILED")?;
+            println!("host_machine_id={machine_id}");
+            println!("host_receipt_registration=PROTECTED_GIT_CANDIDATE_ONLY");
+            println!("host_signed_install=NOT_AUTHORIZED");
+            println!("host_mutations=0");
+            Ok(())
+        }
         HostCommand::FirstUse { .. } => {
             Err("HOST_FIRST_USE_MUST_USE_EXISTING_NATIVE_VULTR_OWNER".to_owned())
         }

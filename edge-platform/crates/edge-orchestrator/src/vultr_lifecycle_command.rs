@@ -1729,6 +1729,9 @@ pub(crate) async fn bootstrap_production_runner(
         return Err("self-hosted production runner listener is not active".to_owned());
     }
 
+    // Export only the public key after ALL root enrollment, runner ACL and
+    // owner-boundary checks succeeded. This is never a signed INSTALL receipt.
+    println!("host_first_use_receipt_public_key_hex={receipt_public_key}");
     print_json_value(serde_json::json!({
         "status": "PASS",
         "machine_id": canonical_host.machine_id,

@@ -149,6 +149,16 @@ pub(crate) enum HostCommand {
     },
     /// One bounded fresh typed recovery preflight; never resumes historical operations.
     Recover { machine_id: String },
+    /// Internal, bounded public-key-only Git registration proposal. Never
+    /// writes protected Git and never authorizes a native mutation.
+    #[command(hide = true)]
+    RegisterReceipt {
+        machine_id: String,
+        #[arg(long)]
+        receipt_public_key_hex: String,
+        #[arg(long)]
+        output_path: PathBuf,
+    },
     /// Internal GitHub-hosted first-use of a new, absent VM. This shares
     /// the host ingress and existing Rust Vultr owner, never a legacy workflow.
     #[command(hide = true)]
