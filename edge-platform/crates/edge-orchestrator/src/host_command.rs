@@ -855,6 +855,9 @@ pub(crate) fn run(
         HostCommand::RefreshReceipt { .. } => {
             Err("HOST_RECEIPT_REFRESH_MUST_USE_EXISTING_NATIVE_VULTR_OWNER".to_owned())
         }
+        HostCommand::FirstUsePreflight { .. } => {
+            Err("HOST_FIRST_USE_PREFLIGHT_MUST_USE_EXISTING_NATIVE_VULTR_OWNER".to_owned())
+        }
         HostCommand::FirstUse { .. } => {
             Err("HOST_FIRST_USE_MUST_USE_EXISTING_NATIVE_VULTR_OWNER".to_owned())
         }
