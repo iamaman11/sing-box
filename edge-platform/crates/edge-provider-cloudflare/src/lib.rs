@@ -354,6 +354,125 @@ pub async fn list_worker_script_secrets(
     Ok(bindings)
 }
 
+/// Read only the currently deployed single Worker module. The owning
+/// orchestrator must separately prove active==latest and a single deployment
+/// before using this as an exact historical-version source attestation.
+/// Return raw module bytes: never normalize line endings or hash MIME headers.
+pub async fn get_worker_active_module_bytes(
+    api_token: &str,
+    account_id: &str,
+    script_name: &str,
+) -> Result<Vec<u8>, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Worker script name", script_name)?;
+    let client = authorized_client(api_token)?;
+    let response = client
+        .get(format!(
+            "{API_ROOT}/accounts/{account_id}/workers/scripts/{script_name}/content/v2"
+        ))
+        .send()
+        .await
+        .map_err(|_| "WORKER_MODULE_READ_FAILED".to_owned())?;
+    if !response.status().is_success() {
+        return Err(format!(
+            "WORKER_MODULE_READ_HTTP_{}",
+            response.status().as_u16()
+        ));
+    }
+    let media_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .ok_or("WORKER_MODULE_CONTENT_TYPE_MISSING")?
+        .to_owned();
+    if response.content_length().is_some_and(|len| len > 2_097_152) {
+        return Err("WORKER_MODULE_MULTIPART_TOO_LARGE".to_owned());
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|_| "WORKER_MODULE_BODY_READ_FAILED".to_owned())?;
+    parse_one_worker_module_multipart(&media_type, &bytes)
+}
+
+/// Strictly parse one multipart part named index.mjs. Reject extra parts,
+/// malformed boundaries, foreign modules and oversized bodies. The result
+/// excludes transport framing but preserves every source byte unchanged.
+fn parse_one_worker_module_multipart(content_type: &str, body: &[u8]) -> Result<Vec<u8>, String> {
+    if body.len() > 2_097_152 {
+        return Err("WORKER_MODULE_MULTIPART_TOO_LARGE".to_owned());
+    }
+    let mut media = content_type.split(';').map(str::trim);
+    if media.next() != Some("multipart/form-data") {
+        return Err("WORKER_MODULE_MULTIPART_REQUIRED".to_owned());
+    }
+    let parts = media.collect::<Vec<_>>();
+    if parts.len() != 1 {
+        return Err("WORKER_MODULE_BOUNDARY_AMBIGUOUS".to_owned());
+    }
+    let boundary = parts[0]
+        .strip_prefix("boundary=")
+        .ok_or("WORKER_MODULE_BOUNDARY_MISSING")?
+        .trim_matches('"');
+    if boundary.is_empty()
+        || boundary.len() > 100
+        || !boundary
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"'-_+.".contains(&b))
+    {
+        return Err("WORKER_MODULE_BOUNDARY_INVALID".to_owned());
+    }
+    let start = format!("--{boundary}\r\n");
+    let rest = body
+        .strip_prefix(start.as_bytes())
+        .ok_or("WORKER_MODULE_START_BOUNDARY_INVALID")?;
+    let headers_end = rest
+        .windows(4)
+        .position(|w| w == b"\r\n\r\n")
+        .ok_or("WORKER_MODULE_HEADERS_MISSING")?;
+    if headers_end > 4096 {
+        return Err("WORKER_MODULE_HEADERS_TOO_LARGE".to_owned());
+    }
+    let headers =
+        std::str::from_utf8(&rest[..headers_end]).map_err(|_| "WORKER_MODULE_HEADERS_NOT_UTF8")?;
+    let mut disposition_found = false;
+    for header in headers.split("\r\n") {
+        if let Some((key, value)) = header.split_once(':') {
+            if key.eq_ignore_ascii_case("content-disposition") {
+                if disposition_found {
+                    return Err("WORKER_MODULE_DISPOSITION_DUPLICATED".to_owned());
+                }
+                disposition_found = true;
+                let mut tokens = value.trim().split(';').map(str::trim);
+                if tokens.next() != Some("form-data")
+                    || !tokens.any(|v| v == "name=\"index.mjs\"" || v == "filename=\"index.mjs\"")
+                {
+                    return Err("WORKER_MODULE_NAME_NOT_INDEX_MJS".to_owned());
+                }
+            }
+        } else {
+            return Err("WORKER_MODULE_HEADER_INVALID".to_owned());
+        }
+    }
+    if !disposition_found {
+        return Err("WORKER_MODULE_DISPOSITION_MISSING".to_owned());
+    }
+    let payload = &rest[headers_end + 4..];
+    let closing = format!("\r\n--{boundary}--");
+    let close_at = payload
+        .windows(closing.len())
+        .position(|w| w == closing.as_bytes())
+        .ok_or("WORKER_MODULE_CLOSING_BOUNDARY_MISSING")?;
+    let footer = &payload[close_at + closing.len()..];
+    if footer != b"\r\n" && !footer.is_empty() {
+        return Err("WORKER_MODULE_EXTRA_MULTIPART_PARTS".to_owned());
+    }
+    if close_at == 0 || close_at > 1_048_576 {
+        return Err("WORKER_MODULE_SIZE_INVALID".to_owned());
+    }
+    Ok(payload[..close_at].to_vec())
+}
+
 pub async fn get_worker_script_version_head(
     api_token: &str,
     account_id: &str,
@@ -2437,6 +2556,67 @@ mod tests {
         assert_eq!(head.latest_version_id.as_deref(), Some("version-new"));
         assert!(head.active_deployment_id.is_none());
         assert!(head.active_version_ids.is_empty());
+    }
+
+    #[test]
+    fn worker_code_provenance_extracts_exact_module_without_mime_framing() {
+        let bytes = b"const P=2;\r\n// exactly preserved\n";
+        let response = [
+            b"--test-boundary\r\nContent-Disposition: form-data; name=\"index.mjs\"\r\nContent-Type: application/javascript\r\n\r\n".as_slice(),
+            bytes.as_slice(),
+            b"\r\n--test-boundary--\r\n".as_slice(),
+        ]
+        .concat();
+        assert_eq!(
+            parse_one_worker_module_multipart(
+                "multipart/form-data; boundary=test-boundary",
+                &response
+            )
+            .unwrap(),
+            bytes
+        );
+        assert_eq!(
+            parse_one_worker_module_multipart(
+                "multipart/form-data; boundary=\"test-boundary\"",
+                &response
+            )
+            .unwrap(),
+            bytes
+        );
+        let mut second_part = response.clone();
+        second_part.extend_from_slice(b"--test-boundary\r\n");
+        assert!(
+            parse_one_worker_module_multipart(
+                "multipart/form-data; boundary=test-boundary",
+                &second_part
+            )
+            .is_err()
+        );
+        assert!(parse_one_worker_module_multipart("text/javascript", &response).is_err());
+        assert!(
+            parse_one_worker_module_multipart("multipart/form-data; boundary=wrong", &response)
+                .is_err()
+        );
+        let foreign = response
+            .windows(b"index.mjs".len())
+            .position(|s| s == b"index.mjs")
+            .unwrap();
+        let mut foreign_response = response.clone();
+        foreign_response[foreign..foreign + 9].copy_from_slice(b"other.mjs");
+        assert!(
+            parse_one_worker_module_multipart(
+                "multipart/form-data; boundary=test-boundary",
+                &foreign_response
+            )
+            .is_err()
+        );
+        assert!(
+            parse_one_worker_module_multipart(
+                "multipart/form-data; boundary=test-boundary",
+                &vec![b'x'; 2_097_153]
+            )
+            .is_err()
+        );
     }
 
     #[test]
