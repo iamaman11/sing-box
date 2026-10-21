@@ -66,16 +66,31 @@ def exact_production_worker():
     return ids[0], workers[0]
 
 
-def target_machine(spec_path, machine_id):
-    # The provider spec is canonical Git-owned, and the workflow binds the
-    # exact single acceptance VM. This function cannot provision or select.
-    if spec_path != "infra/vultr/application-acceptance.json":
+def target_machine(application_spec_path, machine_id):
+    """Derive the ONE provider target from Rust-selected protected Git desired.
+
+    The provider's input is never a caller-supplied URL or VM identity.
+    Other Git host kinds remain unavailable rather than defaulting to a
+    hard-coded acceptance instance.
+    """
+    if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", machine_id)
+            or not re.fullmatch(r"infra/application/[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.json",
+                                application_spec_path)):
         return False
     try:
-        desired = json.loads(Path(spec_path).read_text(encoding="utf-8"))
-        machines = desired["machines"]
-        return (len(machines) == 1 and machines[0]["id"] == machine_id
-                and machine_id == "application-acceptance-1")
+        app = json.loads(Path(application_spec_path).read_text(encoding="utf-8"))
+        if app.get("schema") != 2 or app.get("machine_id") != machine_id:
+            return False
+        provider = app.get("vultr_spec_path")
+        if (not isinstance(provider, str)
+                or not re.fullmatch(r"infra/vultr/[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.json", provider)):
+            return False
+        desired = json.loads(Path(provider).read_text(encoding="utf-8"))
+        machines = desired.get("machines")
+        return (desired.get("schema") == 1
+                and isinstance(machines, list) and len(machines) == 1
+                and isinstance(machines[0], dict)
+                and machines[0].get("id") == machine_id)
     except (ValueError, KeyError, TypeError, OSError):
         return False
 
@@ -111,7 +126,7 @@ def worker_bindings(doc):
             else "INCOMPLETE_HOST_SIGNER_BINDINGS")
 
 
-def observe(machine_id):
+def observe(machine_id, desired_spec_path):
     result = {
         "schema": "sing-box.host-capability-observation/v1",
         "machine_id": machine_id,
@@ -131,10 +146,10 @@ def observe(machine_id):
         "github_mutations": 0,
         "next_action": "GIT_PINNED_TRUST_AND_TYPED_FIRST_USE_REQUIRED",
     }
-    if not target_machine("infra/vultr/application-acceptance.json", machine_id):
+    if not target_machine(desired_spec_path, machine_id):
         result["git_spec"] = "BLOCKED_MACHINE_SPEC_MISMATCH"
         return result
-    result["git_spec"] = "EXACT_CANONICAL_ACCEPTANCE_MACHINE"
+    result["git_spec"] = "EXACT_GIT_SELECTED_APPLICATION_MACHINE"
 
     key = os.environ.get("VULTR_API_KEY", "")
     if key:
@@ -185,8 +200,8 @@ def observe(machine_id):
 
 
 if __name__ == "__main__":
-    if len(sys.argv) != 2 or sys.argv[1] != "application-acceptance-1":
+    if len(sys.argv) != 3:
         raise SystemExit("HOST_CAPABILITY_MACHINE_SCOPE_INVALID")
     # Output contains only fixed enums, no tokens, credentials, network
     # addresses, private keys, account identifiers or provider payloads.
-    print(json.dumps(observe(sys.argv[1]), sort_keys=True))
+    print(json.dumps(observe(sys.argv[1], sys.argv[2]), sort_keys=True))
