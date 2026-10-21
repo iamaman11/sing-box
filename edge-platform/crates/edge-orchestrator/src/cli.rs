@@ -5,7 +5,7 @@ use std::path::PathBuf;
 #[command(
     name = "edge-orchestrator",
     version,
-    about = "GitHub-only typed provider and VM lifecycle orchestrator"
+    about = "Git-owned host lifecycle; legacy domain mutations disabled"
 )]
 pub(crate) struct Cli {
     #[command(subcommand)]
@@ -20,21 +20,28 @@ impl Cli {
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
+    #[command(hide = true)]
     ApplicationLifecycle {
         #[command(subcommand)]
         command: ApplicationLifecycleCommand,
     },
+    #[command(hide = true)]
     ApplicationAcceptance(ApplicationAcceptanceArgs),
+    #[command(hide = true)]
     ApplicationBundleBuild(ApplicationBundleBuildArgs),
+    #[command(hide = true)]
     ApplicationCleanup(ApplicationCleanupArgs),
+    #[command(hide = true)]
     CloudflareTargetPlane {
         #[command(subcommand)]
         command: CloudflareTargetPlaneCommand,
     },
+    #[command(hide = true)]
     CloudflareZeroTrust {
         #[command(subcommand)]
         command: CloudflareZeroTrustCommand,
     },
+    #[command(hide = true)]
     Credentials {
         #[command(subcommand)]
         command: CredentialDeliveryCommand,
@@ -55,17 +62,28 @@ pub(crate) enum Command {
         /// Exact paginated GitHub runner registration for physical dispatch.
         #[arg(long)]
         runner_inventory_json: Option<PathBuf>,
+        /// Immutable GitHub issue-comment ID is only an operation identity,
+        /// never independent SYSTEM/root mutation authorization.
+        #[arg(long)]
+        source_comment_id: Option<u64>,
+        /// Bounded typed protobuf preflight to be consumed by a future
+        /// authenticated native owner, never passed to a legacy dispatcher.
+        #[arg(long)]
+        intent_output: Option<PathBuf>,
         #[command(subcommand)]
         command: HostCommand,
     },
+    #[command(hide = true)]
     Production {
         #[command(subcommand)]
         command: ProductionCommand,
     },
+    #[command(hide = true)]
     VultrLifecycle {
         #[command(subcommand)]
         command: VultrLifecycleCommand,
     },
+    #[command(hide = true)]
     VultrVpc {
         #[command(subcommand)]
         command: VultrVpcCommand,
@@ -102,10 +120,77 @@ pub(crate) enum HostCommand {
         #[arg(long, hide = true)]
         credential_pair_windows: Option<String>,
     },
-    /// One bounded fresh typed install preflight; mutation is disabled until new owner acceptance.
-    Apply { machine_id: String },
+    /// Internal read-only ingestion of a native protobuf observation.
+    /// GitHub runner output is NOT independent proof of native owner identity.
+    #[command(hide = true)]
+    Readback {
+        machine_id: String,
+        #[arg(long)]
+        observation_path: PathBuf,
+        /// Internal, runner-copied VM diagnostic; never a native receipt.
+        #[arg(long)]
+        resources_path: Option<PathBuf>,
+    },
+    /// Internal-only correlation of two runner-copied protobufs. Neither
+    /// artifact authenticates SYSTEM/root or promotes a physical receipt.
+    #[command(hide = true)]
+    NativeResult {
+        machine_id: String,
+        #[arg(long)]
+        intent_path: PathBuf,
+        #[arg(long)]
+        result_path: PathBuf,
+    },
+    /// The same host apply operation may specify one exact signed config node.
+    Apply {
+        machine_id: String,
+        #[arg(long)]
+        resource_id: Option<String>,
+    },
     /// One bounded fresh typed recovery preflight; never resumes historical operations.
     Recover { machine_id: String },
+    /// Internal, bounded public-key-only Git registration proposal. Never
+    /// writes protected Git and never authorizes a native mutation.
+    #[command(hide = true)]
+    RegisterReceipt {
+        machine_id: String,
+        #[arg(long)]
+        receipt_public_key_hex: String,
+        #[arg(long)]
+        output_path: PathBuf,
+    },
+    /// Verify the Git textproto -> Buf protobuf candidate changes ONLY the
+    /// expected receipt public identity. Encoding byte order is irrelevant.
+    #[command(hide = true)]
+    VerifyReceipt {
+        machine_id: String,
+        #[arg(long)]
+        receipt_public_key_hex: String,
+        #[arg(long)]
+        candidate_path: PathBuf,
+    },
+    /// Confirm a protected Git merge registers only the root public identity
+    /// of a previously enrolled VM, without changing unrelated desired state.
+    #[command(hide = true)]
+    VerifyMergedReceipt {
+        machine_id: String,
+        #[arg(long)]
+        previous_path: PathBuf,
+    },
+    /// Refresh an already-enrolled root trust snapshot from the accepted
+    /// protected Git ReleaseSet. Never creates, adopts or installs a VM.
+    #[command(hide = true)]
+    RefreshReceipt { machine_id: String },
+    /// Internal GitHub-hosted first-use of a new, absent VM. This shares
+    /// the host ingress and existing Rust Vultr owner, never a legacy workflow.
+    #[command(hide = true)]
+    FirstUse {
+        machine_id: String,
+        #[arg(long)]
+        installer_path: PathBuf,
+        #[arg(long)]
+        agent_path: PathBuf,
+    },
 }
 
 #[derive(Debug, Args, Clone)]

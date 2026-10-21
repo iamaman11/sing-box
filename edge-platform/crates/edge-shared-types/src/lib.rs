@@ -21,6 +21,13 @@ pub use FleetHost as ManagedHost;
 pub use FleetHostKind as ManagedHostKind;
 pub use fleet_host as managed_host;
 
+// Native fleet lifecycle is a single typed wire/policy contract for both host kinds.
+pub mod host_journal;
+pub mod host_lifecycle;
+pub mod host_planner;
+pub mod host_receipt;
+pub mod host_resources;
+
 pub mod initial_credential_attestation;
 pub use initial_credential_attestation::first_use_host_attestation_sha256;
 use prost::Message;
@@ -95,28 +102,122 @@ pub fn validate_host_registry(desired: &HostRegistry) -> Result<(), String> {
         // Reference to existing Git-owned desired state; never duplicate configuration.
         // Keep this narrow: no absolute paths, traversal, or runner-supplied specs.
         let spec = host.desired_spec_path.as_str();
-        let allowed = match kind {
-            ManagedHostKind::Windows => spec == "infra/production/production.textproto",
-            ManagedHostKind::Vm => {
-                spec == "infra/production/production.textproto"
-                    || (spec.starts_with("infra/application/")
-                        && spec.ends_with(".json")
-                        && spec.len() <= 160
-                        && spec
-                            .trim_start_matches("infra/application/")
-                            .trim_end_matches(".json")
-                            .bytes()
-                            .all(|ch| {
-                                ch.is_ascii_lowercase()
-                                    || ch.is_ascii_digit()
-                                    || matches!(ch, b'-' | b'_')
-                            })
-                        && spec != "infra/application/.json")
-            }
-            ManagedHostKind::Unspecified => false,
-        };
+        // Exact per-host typed desired may be enrolled without rebuilding
+        // the Rust binaries. Its path is a pure function of the Git-owned
+        // machine identity, never runner input or a second inventory.
+        let per_host_typed = spec == format!("infra/hosts/specs/{}.textproto", host.machine_id);
+        let allowed = per_host_typed
+            || match kind {
+                ManagedHostKind::Windows => spec == "infra/production/production.textproto",
+                ManagedHostKind::Vm => {
+                    spec == "infra/production/production.textproto"
+                        || (spec.starts_with("infra/application/")
+                            && spec.ends_with(".json")
+                            && spec.len() <= 160
+                            && spec
+                                .trim_start_matches("infra/application/")
+                                .trim_end_matches(".json")
+                                .bytes()
+                                .all(|ch| {
+                                    ch.is_ascii_lowercase()
+                                        || ch.is_ascii_digit()
+                                        || matches!(ch, b'-' | b'_')
+                                })
+                            && spec != "infra/application/.json")
+                }
+                ManagedHostKind::Unspecified => false,
+            };
         if !allowed || spec.contains("..") {
             return Err("host desired spec reference invalid for this kind".to_owned());
+        }
+        if !host.native_receipt_public_key.is_empty()
+            && (host.native_receipt_public_key.len() != 32
+                || host.native_receipt_public_key.iter().all(|b| *b == 0))
+        {
+            return Err("HOST_NATIVE_RECEIPT_PUBLIC_KEY_INVALID".to_owned());
+        }
+        if !host.worker_authority_public_key.is_empty()
+            && (kind != ManagedHostKind::Vm
+                || host.worker_authority_public_key.len() != 32
+                || host.worker_authority_public_key.iter().all(|b| *b == 0))
+        {
+            return Err("HOST_VM_GIT_WORKER_SIGNER_KEY_INVALID".to_owned());
+        }
+        // Git selects an existing Vultr spec, never stores or generates
+        // another provider desired. Reject paths outside the owned catalog.
+        let provider_spec = host.vm_provider_spec_path.as_str();
+        if !provider_spec.is_empty()
+            && (kind != ManagedHostKind::Vm
+                || !provider_spec.starts_with("infra/vultr/")
+                || !provider_spec.ends_with(".json")
+                || provider_spec.len() <= "infra/vultr/".len() + ".json".len()
+                || provider_spec.len() > 128
+                || provider_spec.contains("..")
+                || !provider_spec["infra/vultr/".len()..provider_spec.len() - ".json".len()]
+                    .bytes()
+                    .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'))
+        {
+            return Err("HOST_VM_PROVIDER_SPEC_REFERENCE_INVALID".to_owned());
+        }
+        // A fresh VM may adopt exactly one pre-published Worker-v2 bundle,
+        // but only when its exact identity is pinned by immutable Git. Zero
+        // generation, malformed digests and Windows use are forbidden.
+        if let Some(first) = host.vm_first_use_credential.as_ref() {
+            if kind != ManagedHostKind::Vm
+                || first.generation == 0
+                || first.bundle_sha256.len() != 64
+                || !first
+                    .bundle_sha256
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                || first.bundle_sha256.bytes().all(|b| b == b'0')
+            {
+                return Err("HOST_VM_FIRST_USE_CREDENTIAL_IDENTITY_INVALID".to_owned());
+            }
+        }
+        // Worker signer is a Git-pinned public identity, never a second
+        // credential store. Wrong kind and malformed pins fail before any
+        // remote bootstrap or native signed mutation.
+        // Resource identity only: no credentials, ports or mutable Docker
+        // configuration are duplicated into fleet inventory.
+        if kind != ManagedHostKind::Vm && !host.vm_containers.is_empty() {
+            return Err("HOST_VM_RESOURCES_ON_NON_VM".to_owned());
+        }
+        if host.vm_containers.len() > 64 {
+            return Err("HOST_VM_RESOURCE_LIMIT_EXCEEDED".to_owned());
+        }
+        let mut previous: Option<&str> = None;
+        let mut services = BTreeSet::new();
+        for resource in &host.vm_containers {
+            if !host_token(&resource.container_name, 128)
+                || !host_token(&resource.compose_project, 128)
+                || !host_token(&resource.compose_service, 128)
+                || previous.is_some_and(|name| name >= resource.container_name.as_str())
+                || !services.insert((
+                    resource.compose_project.as_str(),
+                    resource.compose_service.as_str(),
+                ))
+            {
+                return Err("HOST_VM_RESOURCE_IDENTITY_INVALID_OR_DUPLICATED".to_owned());
+            }
+            previous = Some(&resource.container_name);
+        }
+        // The protected Git registry has ONE run-state authority per machine.
+        // Missing target is observe-only, not permission to infer RUNNING from
+        // a shared production spec, installed service, or a GitHub issue.
+        if let Some(target) = &host.target {
+            let run_state = FleetHostRunState::try_from(target.run_state)
+                .map_err(|_| "HOST_TARGET_RUN_STATE_INVALID")?;
+            let mode = FleetHostMode::try_from(target.windows_mode)
+                .map_err(|_| "HOST_TARGET_MODE_INVALID")?;
+            if run_state == FleetHostRunState::Unspecified {
+                return Err("HOST_TARGET_RUN_STATE_REQUIRED".to_owned());
+            }
+            if (kind == ManagedHostKind::Windows && mode == FleetHostMode::Unspecified)
+                || (kind == ManagedHostKind::Vm && mode != FleetHostMode::Unspecified)
+            {
+                return Err("HOST_TARGET_MODE_KIND_MISMATCH".to_owned());
+            }
         }
         match kind {
             ManagedHostKind::Windows => {
@@ -2983,14 +3084,26 @@ mod release_set_tests {
                         "application-acceptance-1".to_owned(),
                     )),
                     windows_runner_label: String::new(),
+                    vm_containers: Vec::new(),
                     desired_spec_path: "infra/application/disposable-acceptance.json".to_owned(),
+                    target: None,
+                    native_receipt_public_key: Vec::new(),
+                    vm_first_use_credential: None,
+                    worker_authority_public_key: Vec::new(),
+                    vm_provider_spec_path: String::new(),
                 },
                 ManagedHost {
                     machine_id: "production-1".to_owned(),
                     kind: ManagedHostKind::Vm as i32,
                     owner: Some(managed_host::Owner::VmMachineId("production-1".to_owned())),
                     windows_runner_label: String::new(),
+                    vm_containers: Vec::new(),
                     desired_spec_path: "infra/production/production.textproto".to_owned(),
+                    target: None,
+                    native_receipt_public_key: Vec::new(),
+                    vm_first_use_credential: None,
+                    worker_authority_public_key: Vec::new(),
+                    vm_provider_spec_path: String::new(),
                 },
                 ManagedHost {
                     machine_id: "sing-box-windows-lab".to_owned(),
@@ -2999,10 +3112,103 @@ mod release_set_tests {
                         "DESKTOP-0E1F6UQ".to_owned(),
                     )),
                     windows_runner_label: "sing-box-windows-lab".to_owned(),
+                    vm_containers: Vec::new(),
                     desired_spec_path: "infra/production/production.textproto".to_owned(),
+                    target: None,
+                    native_receipt_public_key: Vec::new(),
+                    vm_first_use_credential: None,
+                    worker_authority_public_key: Vec::new(),
+                    vm_provider_spec_path: String::new(),
                 },
             ],
         };
+        // Generic Git-owned resource scope: new Docker Compose services
+        // require an inventory change, not a Rust binary or a runner sudoer.
+        let mut scoped = expected.clone();
+        scoped.hosts[0].vm_containers = vec![
+            FleetVmContainer {
+                container_name: "a-gateway".to_owned(),
+                compose_project: "edge-app".to_owned(),
+                compose_service: "gateway".to_owned(),
+            },
+            FleetVmContainer {
+                container_name: "b-proxy".to_owned(),
+                compose_project: "edge-app".to_owned(),
+                compose_service: "proxy".to_owned(),
+            },
+        ];
+        assert!(validate_host_registry(&scoped).is_ok());
+        let mut invalid_scope = scoped.clone();
+        invalid_scope.hosts[0].vm_containers.reverse();
+        assert!(validate_host_registry(&invalid_scope).is_err());
+        invalid_scope = scoped.clone();
+        invalid_scope.hosts[0].vm_containers[1].container_name = "a-gateway".to_owned();
+        assert!(validate_host_registry(&invalid_scope).is_err());
+        invalid_scope = scoped.clone();
+        invalid_scope.hosts[0].vm_containers[1].compose_service = "gateway".to_owned();
+        assert!(validate_host_registry(&invalid_scope).is_err());
+        invalid_scope = scoped.clone();
+        invalid_scope.hosts[0].vm_containers[1].compose_project = "../foreign-project".to_owned();
+        assert!(validate_host_registry(&invalid_scope).is_err());
+        invalid_scope = scoped.clone();
+        invalid_scope.hosts[2].vm_containers = invalid_scope.hosts[0].vm_containers.clone();
+        assert!(validate_host_registry(&invalid_scope).is_err());
+        // First-use selectors are non-secret signed Git data, valid only on
+        // VMs and only with a positive generation and canonical exact digest.
+        let mut first = expected.clone();
+        let mut wrong_signer = expected.clone();
+        wrong_signer.hosts[0].worker_authority_public_key = vec![3; 32];
+        assert!(validate_host_registry(&wrong_signer).is_ok());
+        wrong_signer.hosts[0].worker_authority_public_key = vec![0; 32];
+        assert!(validate_host_registry(&wrong_signer).is_err());
+        wrong_signer.hosts[0].worker_authority_public_key = vec![1; 12];
+        assert!(validate_host_registry(&wrong_signer).is_err());
+        wrong_signer.hosts[0].worker_authority_public_key = Vec::new();
+        wrong_signer.hosts[2].worker_authority_public_key = vec![3; 32];
+        assert!(validate_host_registry(&wrong_signer).is_err());
+        let mut provider_binding = expected.clone();
+        provider_binding.hosts[0].vm_provider_spec_path =
+            "infra/vultr/application-acceptance.json".into();
+        assert!(validate_host_registry(&provider_binding).is_ok());
+        for path in [
+            "infra/vultr/.json",
+            "infra/vultr/../production.json",
+            "/tmp/foreign.json",
+            "infra/vultr/MixedCase.json",
+            "infra/production/production.textproto",
+        ] {
+            provider_binding.hosts[0].vm_provider_spec_path = path.into();
+            assert!(validate_host_registry(&provider_binding).is_err());
+        }
+        provider_binding.hosts[0].vm_provider_spec_path = String::new();
+        provider_binding.hosts[2].vm_provider_spec_path =
+            "infra/vultr/application-acceptance.json".into();
+        assert!(validate_host_registry(&provider_binding).is_err());
+        first.hosts[0].vm_first_use_credential = Some(FleetVmFirstUseCredential {
+            generation: 42,
+            bundle_sha256: "a".repeat(64),
+        });
+        assert!(validate_host_registry(&first).is_ok());
+        first.hosts[2].vm_first_use_credential = first.hosts[0].vm_first_use_credential.clone();
+        assert!(validate_host_registry(&first).is_err());
+        first.hosts[2].vm_first_use_credential = None;
+        first.hosts[0]
+            .vm_first_use_credential
+            .as_mut()
+            .unwrap()
+            .generation = 0;
+        assert!(validate_host_registry(&first).is_err());
+        first.hosts[0]
+            .vm_first_use_credential
+            .as_mut()
+            .unwrap()
+            .generation = 42;
+        first.hosts[0]
+            .vm_first_use_credential
+            .as_mut()
+            .unwrap()
+            .bundle_sha256 = "X".repeat(64);
+        assert!(validate_host_registry(&first).is_err());
         let bytes = encode_host_registry(&expected).unwrap();
         assert_eq!(decode_host_registry(&bytes).unwrap(), expected);
         let mut invalid = expected.clone();
@@ -3041,6 +3247,48 @@ mod release_set_tests {
         assert!(validate_host_registry(&invalid).is_err());
         invalid = expected.clone();
         invalid.hosts[1].desired_spec_path.clear();
+        assert!(validate_host_registry(&invalid).is_err());
+        // A new Windows or VM uses the SAME registry, with an exact typed
+        // machine-scoped spec path and no new workflow or compiled selector.
+        let mut typed = expected.clone();
+        typed.hosts[2].machine_id = "zz-windows-2".to_owned();
+        typed.hosts[2].desired_spec_path = "infra/hosts/specs/zz-windows-2.textproto".to_owned();
+        assert!(validate_host_registry(&typed).is_ok());
+        typed.hosts[2].desired_spec_path = "infra/hosts/specs/production-1.textproto".to_owned();
+        assert!(validate_host_registry(&typed).is_err());
+        typed.hosts[2].desired_spec_path = "infra/hosts/specs/zz-windows-2.json".to_owned();
+        assert!(validate_host_registry(&typed).is_err());
+        typed.hosts[2].desired_spec_path = "infra/hosts/specs/../zz-windows-2.textproto".to_owned();
+        assert!(validate_host_registry(&typed).is_err());
+        typed.hosts[2].desired_spec_path =
+            "infra/hosts/specs/zz-windows-2.textproto/extra".to_owned();
+        assert!(validate_host_registry(&typed).is_err());
+        let mut typed_vm = expected.clone();
+        typed_vm.hosts[1].desired_spec_path = "infra/hosts/specs/production-1.textproto".to_owned();
+        assert!(validate_host_registry(&typed_vm).is_ok());
+        typed_vm.hosts[1].desired_spec_path =
+            "infra/hosts/specs/application-acceptance-1.textproto".to_owned();
+        assert!(validate_host_registry(&typed_vm).is_err());
+
+        // Operator must explicitly set the single desired run state and,
+        // only on Windows, the desired ProxyOnly/TUN mode.
+        invalid = expected.clone();
+        invalid.hosts[2].target = Some(FleetHostTarget {
+            run_state: FleetHostRunState::Stopped as i32,
+            windows_mode: FleetHostMode::ProxyOnly as i32,
+        });
+        assert!(validate_host_registry(&invalid).is_ok());
+        invalid.hosts[2].target.as_mut().unwrap().run_state = FleetHostRunState::Unspecified as i32;
+        assert!(validate_host_registry(&invalid).is_err());
+        invalid = expected.clone();
+        invalid.hosts[1].target = Some(FleetHostTarget {
+            run_state: FleetHostRunState::Running as i32,
+            windows_mode: FleetHostMode::ManagedTun as i32,
+        });
+        assert!(validate_host_registry(&invalid).is_err());
+        invalid.hosts[1].target.as_mut().unwrap().windows_mode = FleetHostMode::Unspecified as i32;
+        assert!(validate_host_registry(&invalid).is_ok());
+        invalid.hosts[1].target.as_mut().unwrap().run_state = 999;
         assert!(validate_host_registry(&invalid).is_err());
         let mut conflicting = bytes.clone();
         conflicting.extend_from_slice(&[0x08, 0x02]); // conflicting schema_version

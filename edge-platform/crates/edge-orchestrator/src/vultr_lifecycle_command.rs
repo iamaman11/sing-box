@@ -1399,6 +1399,147 @@ async fn run_transport_proof(
     }))
 }
 
+/// The only authorized bridge after a receipt-key-only protected Git merge:
+/// the EXISTING Vultr lease opens bounded SSH to the EXISTING root Agent.
+/// NO provider CREATE, no root binary replacement, no Docker privileges for
+/// the runner, no journal replay. The native owner independently verifies the
+/// new immutable published ReleaseSet and matches its own private receipt key.
+pub(crate) async fn host_receipt_refresh(
+    machine_id: &str,
+    context: &OrchestrationContext,
+) -> Result<(), String> {
+    if env::var("GITHUB_RUN_ATTEMPT").as_deref() != Ok("1") {
+        return Err("HOST_RECEIPT_REFRESH_NO_AUTOMATIC_REPLAY".to_owned());
+    }
+    let git_host = context.verified_vm_first_use_host(machine_id)?;
+    edge_shared_types::host_lifecycle::verify_vm_first_use_git_prerequisites(&git_host)
+        .map_err(str::to_owned)?;
+    edge_shared_types::host_lifecycle::verify_vm_signed_git_prerequisites(&git_host)
+        .map_err(str::to_owned)?;
+    let expected_key = git_host
+        .native_receipt_public_key
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let spec = Path::new(&git_host.vm_provider_spec_path);
+    let desired = load_desired_state(spec)?;
+    // Existing means EXACT owned NOOP, not an unowned machine to adopt.
+    exact_existing_machine_observation(&desired, machine_id).await?;
+    acceptance_lease_acquire(spec, machine_id).await?;
+    let outcome = async {
+        let observed = exact_existing_machine_observation(&desired, machine_id).await?;
+        let ip = observed.main_ip.as_deref()
+            .ok_or("HOST_RECEIPT_REFRESH_MACHINE_IPV4_UNPROVEN")?;
+        let key_path = operator_private_key_path_from_env()?;
+        let expected_ssh_key = read_canonical_ssh_public_key()?;
+        verify_operator_key_matches(&key_path, &expected_ssh_key)?;
+        let release_sha = context.release().release_set_sha256.as_str();
+        if release_sha.len() != 64
+            || !release_sha.bytes().all(|ch| ch.is_ascii_digit() || (b'a'..=b'f').contains(&ch))
+        {
+            return Err("HOST_RECEIPT_REFRESH_RELEASE_SHA_INVALID".to_owned());
+        }
+        let command = format!(
+            "sudo -n /usr/local/libexec/sing-box/edge-agent local host-enroll {machine_id} {release_sha}"
+        );
+        let evidence = strict_ssh_capture(
+            ip, machine_id, &key_path, &expected_ssh_key, &command,
+        )?;
+        let (public_key, registration) =
+            verified_native_enrollment_result(&evidence, machine_id, release_sha)?;
+        if public_key != expected_key || registration != "PINNED_GIT_MATCH" {
+            return Err("HOST_RECEIPT_REFRESH_GIT_PRIVATE_IDENTITY_MISMATCH".to_owned());
+        }
+        println!("host_receipt_refresh=ROOT_PROTECTED_GIT_PINNED");
+        println!("host_machine_id={machine_id}");
+        println!("host_mutations=0");
+        Ok(())
+    }.await;
+    let cleanup = acceptance_lease_release(spec, machine_id).await;
+    match (outcome, cleanup) {
+        (Ok(()), Ok(())) => Ok(()),
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(format!(
+            "HOST_RECEIPT_REFRESH_ACCESS_CLEANUP_UNPROVEN: {error}"
+        )),
+        (Err(error), Err(cleanup)) => Err(format!(
+            "{error}; HOST_RECEIPT_REFRESH_ACCESS_CLEANUP_UNPROVEN: {cleanup}"
+        )),
+    }
+}
+
+/// One protected /host apply first-use operation using the pre-existing
+/// Vultr provider, strict host substrate and Git-attested root enrollment.
+/// On unknown CREATE/SSH outcome nothing is retried or adopted.
+pub(crate) async fn host_first_use(
+    machine_id: &str,
+    installer: &Path,
+    agent: &Path,
+    context: &OrchestrationContext,
+) -> Result<(), String> {
+    if env::var("GITHUB_RUN_ATTEMPT").as_deref() != Ok("1") {
+        return Err("HOST_FIRST_USE_NO_AUTOMATIC_REPLAY".to_owned());
+    }
+    let git_host = context.verified_vm_first_use_host(machine_id)?;
+    edge_shared_types::host_lifecycle::verify_vm_first_use_git_prerequisites(&git_host)
+        .map_err(str::to_owned)?;
+    if !git_host.native_receipt_public_key.is_empty() {
+        return Err("HOST_FIRST_USE_ALREADY_ENROLLED_USE_SIGNED_APPLY".to_owned());
+    }
+    if git_host.vm_first_use_credential.is_none() {
+        return Err("HOST_VM_FIRST_USE_CREDENTIAL_GIT_REQUIRED".to_owned());
+    }
+    let provider_spec = Path::new(&git_host.vm_provider_spec_path);
+    if !installer.is_file() {
+        return Err("HOST_FIRST_USE_INSTALLER_MISSING".to_owned());
+    }
+    context.validate_application_artifact(&context.expected_application_artifact()?, agent)?;
+    validate_runner_registration_token(
+        &env::var("EDGE_RUNNER_REGISTRATION_TOKEN")
+            .map_err(|_| "HOST_FIRST_USE_RUNNER_TOKEN_REQUIRED".to_owned())?,
+    )?;
+    validate_bootstrap_secret(
+        "credential Access client id",
+        &env::var("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID")
+            .map_err(|_| "HOST_FIRST_USE_ACCESS_CLIENT_ID_REQUIRED".to_owned())?,
+    )?;
+    validate_bootstrap_secret(
+        "credential Access client secret",
+        &env::var("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET")
+            .map_err(|_| "HOST_FIRST_USE_ACCESS_CLIENT_SECRET_REQUIRED".to_owned())?,
+    )?;
+    // Provider CREATE must be the exact first transition. NOOP means an
+    // existing VM or an uncertain earlier response: never automatic adoption.
+    acceptance_create_machine(provider_spec, machine_id).await?;
+    acceptance_lease_acquire(provider_spec, machine_id).await?;
+    let outcome = async {
+        acceptance_converge_substrate(provider_spec, machine_id).await?;
+        bootstrap_production_runner(
+            &load_desired_state(provider_spec)?,
+            provider_spec,
+            machine_id,
+            installer,
+            agent,
+            context,
+        )
+        .await
+    }
+    .await;
+    let access_release = acceptance_lease_release(provider_spec, machine_id).await;
+    match (outcome, access_release) {
+        (Ok(()), Ok(())) => {
+            println!("host_first_use_state=AWAITING_PROTECTED_GIT_RECEIPT_REGISTRATION");
+            println!("host_signed_install=NOT_YET_AUTHORIZED");
+            Ok(())
+        }
+        (Err(error), Ok(())) => Err(error),
+        (Ok(()), Err(error)) => Err(format!("HOST_FIRST_USE_ACCESS_CLEANUP_UNPROVEN: {error}")),
+        (Err(error), Err(release_error)) => Err(format!(
+            "{error}; HOST_FIRST_USE_ACCESS_CLEANUP_UNPROVEN: {release_error}"
+        )),
+    }
+}
+
 async fn run_runner_bootstrap(
     args: &[String],
     context: &OrchestrationContext,
@@ -1413,6 +1554,7 @@ async fn run_runner_bootstrap(
     let desired = load_desired_state(Path::new(&args[0]))?;
     bootstrap_production_runner(
         &desired,
+        Path::new(&args[0]),
         &args[1],
         Path::new(&args[2]),
         Path::new(&args[3]),
@@ -1423,6 +1565,7 @@ async fn run_runner_bootstrap(
 
 pub(crate) async fn bootstrap_production_runner(
     desired: &DesiredState,
+    provider_spec_path: &Path,
     machine_id: &str,
     installer_path: &Path,
     local_owner_artifact: &Path,
@@ -1436,6 +1579,23 @@ pub(crate) async fn bootstrap_production_runner(
         return Err(format!(
             "machine {machine_id} is not present in desired state"
         ));
+    }
+    // Provider desired describes the VM substrate, not a second application
+    // host registry. Only this exact accepted Git FleetHost can authorize
+    // the fixed first-use native owner installation and root enrollment.
+    let canonical_host = context.verified_vm_first_use_host(machine_id)?;
+    edge_shared_types::host_lifecycle::verify_vm_first_use_provider_spec(
+        &canonical_host,
+        provider_spec_path
+            .to_str()
+            .ok_or("HOST_BOOTSTRAP_PROVIDER_SPEC_NOT_UTF8")?,
+    )
+    .map_err(str::to_owned)?;
+    if !canonical_host.desired_spec_path.starts_with("infra/")
+        || !canonical_host.desired_spec_path.ends_with(".json")
+            && !canonical_host.desired_spec_path.ends_with(".textproto")
+    {
+        return Err("HOST_BOOTSTRAP_GIT_DESIRED_SPEC_PATH_INVALID".to_owned());
     }
     if !installer_path.is_file() {
         return Err(format!(
@@ -1488,8 +1648,80 @@ pub(crate) async fn bootstrap_production_runner(
         REMOTE_OWNER_STAGED,
     )?;
 
+    // Trusted bootstrap operator installs the one exact native owner first.
+    // The GitHub runner is NOT enrolled or allowed to run host-enroll.
+    // No untrusted command body, hostname or arbitrary shell is accepted here.
+    // First-use bootstrap is not a backdoor upgrade path. Never replace an
+    // already-installed root Agent if its digest differs: use the signed
+    // lifecycle instead. A symlink, foreign owner or untrusted parent blocks.
+    let observed_owner = strict_ssh_capture(
+        target_ip,
+        machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        "if test -L /usr/local/libexec/sing-box || test -L /usr/local/libexec/sing-box/edge-agent; then echo UNPROVEN; elif test ! -e /usr/local/libexec/sing-box/edge-agent; then echo ABSENT; elif test -f /usr/local/libexec/sing-box/edge-agent && test \"$(stat -c '%u:%g:%a' /usr/local/libexec/sing-box/edge-agent)\" = 0:0:755; then sha256sum /usr/local/libexec/sing-box/edge-agent | awk '{print $1}'; else echo UNPROVEN; fi",
+    )?;
+    let install_required =
+        admit_native_first_use_owner(&observed_owner, &expected_artifact.sha256)?;
+    if install_required {
+        let install_owner = format!(
+            "sudo install -d -o root -g root -m 0755 /usr/local/libexec/sing-box && sudo install -o root -g root -m 0755 {REMOTE_OWNER_STAGED} {LOCAL_OWNER}"
+        );
+        strict_ssh_run(
+            target_ip,
+            machine_id,
+            &operator_private_key_path,
+            &canonical_public_key,
+            &install_owner,
+        )?;
+    }
+    let installed_sha = strict_ssh_capture(
+        target_ip,
+        machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        "sha256sum /usr/local/libexec/sing-box/edge-agent | awk '{print $1}'",
+    )?;
+    if installed_sha != expected_artifact.sha256 {
+        return Err(
+            "installed local runtime owner digest does not match exact ReleaseSet".to_owned(),
+        );
+    }
+
+    // Root-only first-use: the native agent independently fetches the
+    // accepted immutable main ReleaseSet and its Git-pinned Worker signer,
+    // generates one private receipt identity under root, then reports ONLY
+    // the public key. No runner credential, sudo elevation or second owner.
+    // An uncertain SSH/ACK result must not cause an automatic replay.
+    let release_sha = context.release().release_set_sha256.as_str();
+    if !release_sha.bytes().all(|byte| byte.is_ascii_hexdigit()) || release_sha.len() != 64 {
+        return Err("HOST_BOOTSTRAP_RELEASE_DIGEST_INVALID".to_owned());
+    }
+    if machine_id.is_empty()
+        || machine_id.len() > 64
+        || !machine_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+    {
+        return Err("HOST_BOOTSTRAP_MACHINE_ID_INVALID".to_owned());
+    }
+    let enrollment_command =
+        format!("sudo -n {LOCAL_OWNER} local host-enroll {machine_id} {release_sha}");
+    let enrollment_output = strict_ssh_capture(
+        target_ip,
+        machine_id,
+        &operator_private_key_path,
+        &canonical_public_key,
+        &enrollment_command,
+    )?;
+    let (receipt_public_key, receipt_registration) =
+        verified_native_enrollment_result(&enrollment_output, machine_id, release_sha)?;
+
+    // Only after a root receipt identity exists may the low-privilege
+    // transport runner be installed. It never receives the receipt private
+    // key, Worker signer, root enrollment verb or Docker socket.
     let remote_command = format!(
-        "sudo install -d -o root -g root -m 0755 /usr/local/libexec/sing-box &&          sudo install -o root -g root -m 0755 {REMOTE_OWNER_STAGED} {LOCAL_OWNER} &&          sudo bash {REMOTE_INSTALLER} {machine_id}; rc=$?;          rm -f {REMOTE_INSTALLER} {REMOTE_OWNER_STAGED}; exit $rc"
+        "sudo bash {REMOTE_INSTALLER} {machine_id}; rc=$?; rm -f {REMOTE_INSTALLER} {REMOTE_OWNER_STAGED}; exit $rc"
     );
     let token_stdin = format!(
         "{registration_token}\n{credential_access_client_id}\n{credential_access_client_secret}\n"
@@ -1503,18 +1735,6 @@ pub(crate) async fn bootstrap_production_runner(
         token_stdin.as_bytes(),
     )?;
 
-    let installed_sha = strict_ssh_capture(
-        target_ip,
-        machine_id,
-        &operator_private_key_path,
-        &canonical_public_key,
-        "sha256sum /usr/local/libexec/sing-box/edge-agent | awk '{print $1}'",
-    )?;
-    if installed_sha != expected_artifact.sha256 {
-        return Err(
-            "installed local runtime owner digest does not match exact ReleaseSet".to_owned(),
-        );
-    }
     let generic_root_denied = strict_ssh_capture(
         target_ip,
         machine_id,
@@ -1578,9 +1798,12 @@ pub(crate) async fn bootstrap_production_runner(
         return Err("self-hosted production runner listener is not active".to_owned());
     }
 
+    // Export only the public key after ALL root enrollment, runner ACL and
+    // owner-boundary checks succeeded. This is never a signed INSTALL receipt.
+    println!("host_first_use_receipt_public_key_hex={receipt_public_key}");
     print_json_value(serde_json::json!({
         "status": "PASS",
-        "machine_id": machine_id,
+        "machine_id": canonical_host.machine_id,
         "runner_name": format!("sing-box-production-{machine_id}"),
         "runner_user": "github-runner",
         "generic_root_authority": false,
@@ -1589,11 +1812,97 @@ pub(crate) async fn bootstrap_production_runner(
         "acceptance_rpc_service_enabled": false,
         "tcp_50061_listener": false,
         "local_owner_sha256": installed_sha,
+        "native_receipt_public_key_hex": receipt_public_key,
+        "native_receipt_registration": receipt_registration,
+        "root_enrollment": "GIT_RELEASE_ATTESTED",
+        "native_application_mutations": 0,
         "listener": "PASS",
         "registration_token_persisted": false,
         "credential_access_identity_installed": true,
         "runner_credential_access": false,
     }))
+}
+
+/// Read-only admission for first-use owner installation. An installed
+/// mismatching binary is never replaced over strict SSH; only the signed
+/// native lifecycle may change it. Uncertain readback is a hard stop.
+fn admit_native_first_use_owner(observed: &str, expected_sha: &str) -> Result<bool, String> {
+    if expected_sha.len() != 64
+        || !expected_sha
+            .bytes()
+            .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
+    {
+        return Err("HOST_BOOTSTRAP_NATIVE_OWNER_EXPECTED_DIGEST_INVALID".to_owned());
+    }
+    if observed == "ABSENT" {
+        return Ok(true);
+    }
+    if observed == expected_sha {
+        return Ok(false);
+    }
+    Err("HOST_BOOTSTRAP_NATIVE_OWNER_DRIFT_NO_SSH_REPLACE".to_owned())
+}
+
+/// Validate ONLY the bounded public result from our already-installed root
+/// Agent. Transport text never becomes enrollment authority, and uncertainty
+/// never triggers another first-use mutation.
+fn verified_native_enrollment_result(
+    output: &str,
+    machine_id: &str,
+    release_sha: &str,
+) -> Result<(String, String), String> {
+    if output.is_empty() || output.len() > 1024 || !output.is_ascii() {
+        return Err("HOST_BOOTSTRAP_ENROLLMENT_EVIDENCE_INVALID".to_owned());
+    }
+    let mut properties = BTreeMap::new();
+    for line in output.lines() {
+        let (name, value) = line
+            .split_once('=')
+            .ok_or("HOST_BOOTSTRAP_ENROLLMENT_EVIDENCE_INVALID")?;
+        if value.is_empty()
+            || !value.bytes().all(|byte| byte.is_ascii_graphic())
+            || !matches!(
+                name,
+                "host_enroll"
+                    | "host_machine_id"
+                    | "host_release_set_sha256"
+                    | "host_native_receipt_public_key_hex"
+                    | "host_native_receipt_registration"
+                    | "host_worker_public_key_sha256"
+                    | "host_mutations"
+            )
+            || properties.insert(name, value).is_some()
+        {
+            return Err("HOST_BOOTSTRAP_ENROLLMENT_EVIDENCE_INVALID".to_owned());
+        }
+    }
+    if !matches!(
+        properties.get("host_enroll"),
+        Some(&"PROTECTED_TRUST_STAGED" | &"PROTECTED_TRUST_REFRESHED")
+    ) || properties.get("host_machine_id") != Some(&machine_id)
+        || properties.get("host_release_set_sha256") != Some(&release_sha)
+        || properties.get("host_mutations") != Some(&"0")
+    {
+        return Err("HOST_BOOTSTRAP_ENROLLMENT_IDENTITY_MISMATCH".to_owned());
+    }
+    let key = properties
+        .get("host_native_receipt_public_key_hex")
+        .ok_or("HOST_BOOTSTRAP_RECEIPT_PUBLIC_KEY_MISSING")?;
+    if key.len() != 64
+        || key
+            .bytes()
+            .any(|byte| !byte.is_ascii_hexdigit() || byte.is_ascii_uppercase())
+        || key.bytes().all(|byte| byte == b'0')
+    {
+        return Err("HOST_BOOTSTRAP_RECEIPT_PUBLIC_KEY_INVALID".to_owned());
+    }
+    let registration = properties
+        .get("host_native_receipt_registration")
+        .ok_or("HOST_BOOTSTRAP_RECEIPT_REGISTRATION_MISSING")?;
+    if !matches!(*registration, "AWAITING_PROTECTED_GIT" | "PINNED_GIT_MATCH") {
+        return Err("HOST_BOOTSTRAP_RECEIPT_REGISTRATION_INVALID".to_owned());
+    }
+    Ok(((*key).to_owned(), (*registration).to_owned()))
 }
 
 fn validate_bootstrap_secret(label: &str, value: &str) -> Result<(), String> {
@@ -4143,6 +4452,72 @@ fn usage() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_first_use_owner_install_refuses_implicit_binary_replacement() {
+        let exact = "a".repeat(64);
+        assert_eq!(admit_native_first_use_owner("ABSENT", &exact), Ok(true));
+        assert_eq!(admit_native_first_use_owner(&exact, &exact), Ok(false));
+        assert_eq!(
+            admit_native_first_use_owner(&"b".repeat(64), &exact),
+            Err("HOST_BOOTSTRAP_NATIVE_OWNER_DRIFT_NO_SSH_REPLACE".to_owned())
+        );
+        assert!(admit_native_first_use_owner("UNPROVEN", &exact).is_err());
+        assert!(admit_native_first_use_owner("ABSENT", "invalid").is_err());
+    }
+
+    #[test]
+    fn first_use_vm_enrollment_accepts_only_exact_native_public_evidence() {
+        let machine = "application-acceptance-1";
+        let release = "a".repeat(64);
+        let report = format!(
+            "host_enroll=PROTECTED_TRUST_STAGED\nhost_machine_id={machine}\nhost_release_set_sha256={release}\nhost_native_receipt_public_key_hex={}\nhost_native_receipt_registration=AWAITING_PROTECTED_GIT\nhost_worker_public_key_sha256={}\nhost_mutations=0",
+            "b".repeat(64),
+            "c".repeat(64),
+        );
+        let parsed = verified_native_enrollment_result(&report, machine, &release).unwrap();
+        assert_eq!(parsed.0, "b".repeat(64));
+        assert_eq!(parsed.1, "AWAITING_PROTECTED_GIT");
+        assert!(
+            verified_native_enrollment_result(
+                &report.replace("host_mutations=0", "host_mutations=1"),
+                machine,
+                &release,
+            )
+            .is_err()
+        );
+        assert!(
+            verified_native_enrollment_result(
+                &report.replace("PROTECTED_TRUST_STAGED", "UNVERIFIED"),
+                machine,
+                &release,
+            )
+            .is_err()
+        );
+        assert!(
+            verified_native_enrollment_result(
+                &report.replace(machine, "foreign-vm"),
+                machine,
+                &release,
+            )
+            .is_err()
+        );
+        assert!(
+            verified_native_enrollment_result(
+                &report.replace(&"b".repeat(64), &"0".repeat(64)),
+                machine,
+                &release,
+            )
+            .is_err()
+        );
+        assert!(
+            verified_native_enrollment_result(
+                &format!("{report}\nhost_mutations=0"),
+                machine,
+                &release,
+            )
+            .is_err()
+        );
+    }
     #[test]
     fn initial_reboot_can_only_reobserve_not_reapply_credentials() {
         assert!(super::authorize_initial_runtime_job("initial_vm_runtime", true).is_ok());

@@ -1,12 +1,24 @@
 use crate::cli::HostCommand;
 use edge_orchestrator::OrchestrationContext;
-use edge_shared_types::{HostRegistry, ManagedHostKind, decode_host_registry, managed_host};
+use edge_shared_types::{
+    FleetHostAction, FleetHostIntent, FleetHostMode, HostRegistry, ManagedHostKind,
+    decode_host_registry,
+    host_lifecycle::{
+        MAX_NATIVE_OBSERVATION_BYTES, decode_host_intent, decode_host_result,
+        decode_native_observation, prepared_host_result, validate_host_intent,
+        validate_host_result, validate_intent_against_target,
+    },
+    host_receipt::{decode_native_receipt, verify_native_receipt},
+    managed_host,
+};
+use prost::Message;
 use ring::digest::{SHA256, digest};
 use serde::Deserialize;
 use std::collections::BTreeSet;
 use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 const MAX_INVENTORY_BYTES: u64 = 65_536;
 const MAX_RUNNER_BYTES: u64 = 1_048_576;
@@ -151,6 +163,8 @@ pub(crate) fn run(
     expected_sha256: &str,
     github_output: Option<&Path>,
     runner_inventory_json: Option<&Path>,
+    source_comment_id: Option<u64>,
+    intent_output: Option<&Path>,
 ) -> Result<(), String> {
     let mut bytes = Vec::new();
     File::open(inventory_path)
@@ -231,6 +245,23 @@ pub(crate) fn run(
                 };
                 println!("host_machine_id={}", host.machine_id);
                 println!("host_desired_spec_path={}", host.desired_spec_path);
+                print_host_target(host)?;
+                if kind == ManagedHostKind::Vm {
+                    // Proven only by the canonical Git registry; these flags
+                    // never claim Worker activation or installed root trust.
+                    println!(
+                        "host_vm_git_worker_signer_pinned={}",
+                        host.worker_authority_public_key.len() == 32
+                    );
+                    println!(
+                        "host_vm_git_receipt_registered={}",
+                        host.native_receipt_public_key.len() == 32
+                    );
+                    println!(
+                        "host_vm_git_first_use_identity_pinned={}",
+                        host.vm_first_use_credential.is_some()
+                    );
+                }
                 println!(
                     "host_kind={}",
                     match kind {
@@ -314,23 +345,675 @@ pub(crate) fn run(
             println!("host_mutations=0");
             Ok(())
         }
-        HostCommand::Apply { machine_id } => host_lifecycle_admission(
+        HostCommand::Readback {
+            machine_id,
+            observation_path,
+            resources_path,
+        } => {
+            let selected = desired
+                .hosts
+                .iter()
+                .find(|host| host.machine_id == machine_id)
+                .ok_or("HOST_NOT_REGISTERED")?;
+            let metadata = std::fs::symlink_metadata(&observation_path)
+                .map_err(|_| "HOST_NATIVE_READBACK_MISSING")?;
+            if !metadata.file_type().is_file()
+                || metadata.len() == 0
+                || metadata.len() > MAX_NATIVE_OBSERVATION_BYTES as u64
+            {
+                return Err("HOST_NATIVE_READBACK_FILE_INVALID".to_owned());
+            }
+            let mut bytes = Vec::new();
+            File::open(&observation_path)
+                .map_err(|_| "HOST_NATIVE_READBACK_UNREADABLE")?
+                .take(MAX_NATIVE_OBSERVATION_BYTES as u64 + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|_| "HOST_NATIVE_READBACK_UNREADABLE")?;
+            let observed = decode_native_observation(&bytes).map_err(str::to_owned)?;
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| "HOST_CLOCK_UNAVAILABLE")?
+                .as_secs();
+            let release_sha = exact_hex_sha256(&release.release().release_set_sha256)?;
+            let verified = verified_release_set_from_resolver(release)?;
+            // Resolve VM transport->logical identity once for both summary and
+            // planner so no status can contradict its typed proposal.
+            let native_bundle_sha = if selected.kind == ManagedHostKind::Vm as i32 {
+                verified_vm_runtime_digest_from_resolver(&verified)?
+            } else {
+                Vec::new()
+            };
+            let summary = validate_readback_scope(
+                selected,
+                &observed,
+                &release.release().release_set_sha256,
+                (selected.kind == ManagedHostKind::Vm as i32)
+                    .then_some(native_bundle_sha.as_slice()),
+                now,
+            )?;
+            println!("host_machine_id={machine_id}");
+            println!("host_native_readback_schema=1");
+            println!("host_native_observed_at_unix={}", observed.observed_at_unix);
+            println!(
+                "host_native_owner_state={:?}",
+                edge_shared_types::FleetNativeOwnerState::try_from(observed.owner_state)
+                    .map_err(|_| "HOST_NATIVE_OWNER_STATE_INVALID")?
+            );
+            println!(
+                "host_native_release_scope={:?}",
+                edge_shared_types::FleetNativeReleaseProof::try_from(observed.release_proof)
+                    .map_err(|_| "HOST_NATIVE_RELEASE_PROOF_INVALID")?
+            );
+            println!("host_native_readback_verdict={summary}");
+            // Pure typed reconcile: this is NEVER a privileged mutation
+            // decision until Worker + native owner independently attest.
+            // Reuse the same independently release-bound VM digest for the
+            // detailed reconciliation proposal printed below.
+            let proposed = edge_shared_types::host_planner::propose_host_transition(
+                selected,
+                Some(&observed),
+                &release_sha,
+                &native_bundle_sha,
+                now,
+            );
+            edge_shared_types::host_planner::validate_host_transition_plan(&proposed, selected)
+                .map_err(str::to_owned)?;
+            println!(
+                "host_reconcile_step={:?}",
+                edge_shared_types::FleetHostPlannedStep::try_from(proposed.step)
+                    .map_err(|_| "HOST_PLAN_STEP_INVALID")?
+            );
+            println!("host_reconcile_reason={}", proposed.reason_code);
+            println!("host_plan_owner_attested={}", proposed.owner_attested);
+            println!(
+                "host_plan_mutation_authorized={}",
+                proposed.mutation_authorized
+            );
+            if let Some(path) = resources_path {
+                if selected.kind != ManagedHostKind::Vm as i32 {
+                    return Err("HOST_VM_RESOURCES_ON_NON_VM".to_owned());
+                }
+                let meta = std::fs::symlink_metadata(&path)
+                    .map_err(|_| "HOST_VM_RESOURCES_TRANSPORT_MISSING")?;
+                if !meta.file_type().is_file()
+                    || meta.len() == 0
+                    || meta.len()
+                        > edge_shared_types::host_resources::MAX_VM_RESOURCE_REPORT_BYTES as u64
+                {
+                    return Err("HOST_VM_RESOURCES_TRANSPORT_INVALID".into());
+                }
+                let mut bytes = Vec::new();
+                File::open(&path)
+                    .map_err(|_| "HOST_VM_RESOURCES_TRANSPORT_UNREADABLE")?
+                    .take(
+                        edge_shared_types::host_resources::MAX_VM_RESOURCE_REPORT_BYTES as u64 + 1,
+                    )
+                    .read_to_end(&mut bytes)
+                    .map_err(|_| "HOST_VM_RESOURCES_TRANSPORT_UNREADABLE")?;
+                let report =
+                    edge_shared_types::host_resources::decode_vm_resource_report(&bytes, selected)
+                        .map_err(str::to_owned)?;
+                if report.observed_at_unix > now.saturating_add(60)
+                    || now.saturating_sub(report.observed_at_unix) > 300
+                {
+                    return Err("HOST_VM_RESOURCES_READBACK_STALE".into());
+                }
+                let resource_plan =
+                    edge_shared_types::host_resources::propose_vm_resource_transitions(
+                        selected, &report,
+                    )
+                    .map_err(str::to_owned)?;
+                let installed_hierarchy = report
+                    .installed_policy_graph
+                    .as_ref()
+                    .map(|policy| {
+                        edge_shared_types::host_resources::derive_vm_resource_hierarchy(
+                            selected, policy,
+                        )
+                    })
+                    .transpose()
+                    .map_err(str::to_owned)?;
+                let problems = resource_plan
+                    .resources
+                    .iter()
+                    .filter(|entry| {
+                        edge_shared_types::host_resources::vm_resource_requires_attention(entry)
+                    })
+                    .count();
+                let config_unproven = resource_plan
+                    .resources
+                    .iter()
+                    .filter(|entry| {
+                        entry.reason
+                            == edge_shared_types::FleetVmResourceReason::RunningRuntimeOnlyConfigUnproven
+                                as i32
+                    })
+                    .count();
+                if let Some(network) = report.network.as_ref() {
+                    println!("host_vm_network_kernel_observed={}", network.ipv4.is_some());
+                    if let Some(ipv4) = &network.ipv4 {
+                        println!("host_vm_network_ipv4_links={}", ipv4.links.len());
+                        println!("host_vm_network_ipv4_addresses={}", ipv4.addresses.len());
+                        println!("host_vm_network_ipv4_routes={}", ipv4.routes.len());
+                        let mut default_routes = ipv4.routes.iter().filter(|route| {
+                            route.destination == "0.0.0.0" && route.prefix_length == 0
+                        });
+                        let default = default_routes.next();
+                        let exact = default.is_some() && default_routes.next().is_none();
+                        println!("host_vm_network_unique_default_route={exact}");
+                        if let Some(route) = default {
+                            let owner = ipv4
+                                .links
+                                .iter()
+                                .find(|link| link.interface_index == route.output_interface_index)
+                                .map(|link| link.name.as_str())
+                                .unwrap_or("UNPROVEN");
+                            println!("host_vm_network_default_route_interface={owner}");
+                        }
+                    }
+                    println!(
+                        "host_vm_dns_configuration_observed={}",
+                        network.dns_configuration_observed
+                    );
+                    println!(
+                        "host_vm_dns_configured_nameservers={}",
+                        network.dns_nameservers.join(",")
+                    );
+                    println!("host_vm_dns_resolution_proven=false");
+                    println!(
+                        "host_vm_nft_ruleset_observed={}",
+                        network.nft_ruleset_observed
+                    );
+                    println!("host_vm_nft_rule_count={}", network.nft_rule_count);
+                    println!("host_vm_firewall_desired_converged=false");
+                    println!("host_vm_routes_desired_converged=false");
+                } else {
+                    println!("host_vm_network_observation=UNAVAILABLE");
+                }
+                println!("host_vm_resources_schema=1");
+                println!(
+                    "host_vm_installed_policy_hierarchy_origin={}",
+                    if installed_hierarchy.is_some() {
+                        "RUNNER_COPIED_UNAUTHENTICATED"
+                    } else {
+                        "UNPROVEN"
+                    }
+                );
+                println!("host_vm_desired_hierarchy_release_proven=false");
+                println!(
+                    "host_vm_installed_policy_status={:?}",
+                    edge_shared_types::FleetVmInstalledPolicyStatus::try_from(
+                        report.installed_policy_status
+                    )
+                    .map_err(|_| "HOST_VM_INSTALLED_POLICY_STATUS_INVALID")?
+                );
+                println!(
+                    "host_vm_installed_policy_error_code={}",
+                    if report.installed_policy_error_code.is_empty() {
+                        "NONE"
+                    } else {
+                        &report.installed_policy_error_code
+                    }
+                );
+                println!("host_vm_installed_policy_authorizes_mutation=false");
+                if let Some(graph) = installed_hierarchy.as_ref() {
+                    println!("host_vm_hierarchy_nodes={}", graph.nodes.len());
+                    for node in &graph.nodes {
+                        println!(
+                            "host_vm_hierarchy_node={} kind={:?} parent={} owner={:?} declared_dependencies={} policy_sha256={}",
+                            node.resource_id,
+                            edge_shared_types::FleetResourceKind::try_from(node.kind)
+                                .map_err(|_| "HOST_VM_HIERARCHY_KIND_INVALID")?,
+                            node.parent_resource_id,
+                            edge_shared_types::FleetResourceOwner::try_from(node.owner)
+                                .map_err(|_| "HOST_VM_HIERARCHY_OWNER_INVALID")?,
+                            node.dependency_ids.join(","),
+                            node.expected_policy_sha256
+                                .iter()
+                                .map(|byte| format!("{byte:02x}"))
+                                .collect::<String>(),
+                        );
+                    }
+                } else {
+                    println!("host_vm_hierarchy_nodes=UNPROVEN");
+                }
+                let bootstrap =
+                    edge_shared_types::FleetVmBootstrapPhase::try_from(report.bootstrap_phase)
+                        .map_err(|_| "HOST_VM_BOOTSTRAP_PHASE_INVALID")?;
+                println!("host_vm_bootstrap_phase={}", bootstrap.as_str_name());
+                println!(
+                    "host_vm_bootstrap_next_action={}",
+                    edge_shared_types::host_resources::vm_bootstrap_next_action(bootstrap)
+                );
+                println!("host_vm_bootstrap_source=RUNNER_COPIED_UNAUTHENTICATED");
+                println!("host_vm_bootstrap_authorizes_mutation=false");
+                println!("host_vm_resources_count={}", report.resources.len());
+                println!("host_vm_resources_problem_count={problems}");
+                println!("host_vm_resources_config_unproven_count={config_unproven}");
+                for (resource, proposal) in report.resources.iter().zip(&resource_plan.resources) {
+                    let identity = resource
+                        .resource
+                        .as_ref()
+                        .ok_or("HOST_VM_RESOURCES_IDENTITY_MISSING")?;
+                    let resource_id = proposal.resource_id.as_str();
+                    let dependencies = installed_hierarchy
+                        .as_ref()
+                        .and_then(|hierarchy| {
+                            hierarchy
+                                .nodes
+                                .iter()
+                                .find(|node| node.resource_id == resource_id)
+                        })
+                        .map(|node| node.dependency_ids.join(","))
+                        .unwrap_or_else(|| "UNPROVEN".to_owned());
+                    println!(
+                        "host_vm_resource={} resource_id={} resource_kind=DOCKER_CONTAINER resource_owner=VM_ROOT_AGENT resource_parent=host/{} installed_policy_dependencies={} installed_policy_proven=false reason={} step={:?} plan_reason={} present={} owned={} running={} running_proven={} image={} health={} config_proof={:?} config_sha256={} restarts={}",
+                        identity.container_name,
+                        resource_id,
+                        selected.machine_id,
+                        dependencies,
+                        edge_shared_types::FleetVmObservedReason::try_from(
+                            resource.observed_reason
+                        )
+                        .map_err(|_| "HOST_VM_OBSERVED_REASON_INVALID")?
+                        .as_str_name()
+                        .strip_prefix("FLEET_VM_OBSERVED_REASON_")
+                        .ok_or("HOST_VM_OBSERVED_REASON_INVALID")?,
+                        edge_shared_types::FleetHostPlannedStep::try_from(proposal.step)
+                            .map_err(|_| "HOST_VM_RESOURCE_PLAN_STEP_INVALID")?,
+                        proposal.reason_code,
+                        resource.present,
+                        resource.ownership_proven,
+                        resource.running,
+                        resource.running_proven,
+                        resource.image,
+                        resource.health,
+                        edge_shared_types::FleetVmConfigProof::try_from(resource.config_proof)
+                            .map_err(|_| "HOST_VM_CONFIG_PROOF_INVALID")?,
+                        if resource.config_sha256.is_empty() {
+                            "UNPROVEN".to_owned()
+                        } else {
+                            resource
+                                .config_sha256
+                                .iter()
+                                .map(|byte| format!("{byte:02x}"))
+                                .collect::<String>()
+                        },
+                        if resource.restart_count_proven {
+                            resource.restart_count.to_string()
+                        } else {
+                            "UNPROVEN".to_owned()
+                        }
+                    );
+                }
+                println!("host_vm_resources_plan_scope=RUNTIME_ONLY_CONFIG_UNPROVEN");
+                println!("host_vm_resources_plan_owner_attested=false");
+                println!("host_vm_resources_plan_mutation_authorized=false");
+                println!("host_vm_resources_origin=RUNNER_COPIED_UNAUTHENTICATED");
+                println!("host_vm_resources_authorize_mutation=false");
+            }
+            println!("host_native_readback_source=RUNNER_COPIED_UNAUTHENTICATED");
+            println!("host_native_readback_authorizes_mutation=false");
+            println!("host_mutations=0");
+            Ok(())
+        }
+        HostCommand::NativeResult {
+            machine_id,
+            intent_path,
+            result_path,
+        } => {
+            // Runner-copied bytes are untrusted even when both protobufs
+            // correlate with immutable Git. This is an audit, not a receipt.
+            let read_bounded = |path: &Path, max: u64| -> Result<Vec<u8>, String> {
+                let meta = std::fs::symlink_metadata(path)
+                    .map_err(|_| "HOST_NATIVE_TRANSPORT_FILE_MISSING")?;
+                if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > max {
+                    return Err("HOST_NATIVE_TRANSPORT_FILE_INVALID".to_owned());
+                }
+                let mut bytes = Vec::new();
+                File::open(path)
+                    .map_err(|_| "HOST_NATIVE_TRANSPORT_FILE_UNREADABLE")?
+                    .take(max + 1)
+                    .read_to_end(&mut bytes)
+                    .map_err(|_| "HOST_NATIVE_TRANSPORT_FILE_UNREADABLE")?;
+                if bytes.len() as u64 > max {
+                    return Err("HOST_NATIVE_TRANSPORT_FILE_TOO_LARGE".to_owned());
+                }
+                Ok(bytes)
+            };
+            let intent =
+                decode_host_intent(&read_bounded(&intent_path, 4096)?).map_err(str::to_owned)?;
+            let native_receipt =
+                decode_native_receipt(&read_bounded(&result_path, 8192)?).map_err(str::to_owned)?;
+            let selected = desired
+                .hosts
+                .iter()
+                .find(|host| host.machine_id == machine_id && host.kind == intent.kind)
+                .ok_or("HOST_NATIVE_TRANSPORT_MACHINE_UNREGISTERED")?;
+            if intent.machine_id != machine_id {
+                return Err("HOST_NATIVE_TRANSPORT_MACHINE_MISMATCH".to_owned());
+            }
+            let spec_path = Path::new(&selected.desired_spec_path);
+            let exact_spec = read_bounded(spec_path, 1_048_576)?;
+            let desired_sha =
+                edge_shared_types::host_lifecycle::digest_host_desired(selected, &exact_spec)
+                    .map_err(str::to_owned)?;
+            let release_sha = exact_hex_sha256(&release.release().release_set_sha256)?;
+            validate_host_intent(
+                &intent,
+                &desired,
+                digest.as_ref(),
+                &desired_sha,
+                &release_sha,
+            )
+            .map_err(str::to_owned)?;
+            validate_intent_against_target(&intent, &desired).map_err(str::to_owned)?;
+            let result =
+                verify_native_receipt(&intent, &native_receipt, selected).map_err(str::to_owned)?;
+            println!("host_machine_id={machine_id}");
+            println!("host_operation_id={}", intent.operation_id);
+            println!("host_native_result_correlation=EXACT");
+            println!(
+                "host_native_result_claimed_state={:?}",
+                edge_shared_types::FleetHostResultState::try_from(result.state)
+                    .map_err(|_| "HOST_NATIVE_RESULT_STATE_INVALID")?
+            );
+            println!("host_native_result_origin=GIT_PINNED_ED25519_NATIVE_OWNER");
+            println!("host_native_result_authenticated=true");
+            println!(
+                "host_native_result_remote_acceptance={}",
+                if result.physical_readback {
+                    "VERIFIED_PHYSICAL"
+                } else {
+                    "OBSERVED_ONLY"
+                }
+            );
+            println!("host_mutations=0");
+            Ok(())
+        }
+        HostCommand::Apply {
+            machine_id,
+            resource_id,
+        } => host_lifecycle_admission(
             &desired,
             &machine_id,
             HostLifecycleOperation::Apply,
             &release.release().release_set_sha256,
+            digest.as_ref(),
             runner_inventory_json,
             github_output,
+            source_comment_id,
+            intent_output,
+            resource_id.as_deref(),
         ),
         HostCommand::Recover { machine_id } => host_lifecycle_admission(
             &desired,
             &machine_id,
             HostLifecycleOperation::Recover,
             &release.release().release_set_sha256,
+            digest.as_ref(),
             runner_inventory_json,
             github_output,
+            source_comment_id,
+            intent_output,
+            None,
         ),
+        HostCommand::RegisterReceipt {
+            machine_id,
+            receipt_public_key_hex,
+            output_path,
+        } => {
+            // A Git registry candidate is generated ONLY from validated desired.
+            let candidate =
+                receipt_registration_candidate(&desired, &machine_id, &receipt_public_key_hex)?;
+            let candidate_bytes = candidate.encode_to_vec();
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&output_path)
+                .map_err(|_| "HOST_RECEIPT_REGISTRATION_CANDIDATE_EXISTS_OR_UNWRITABLE")?;
+            file.write_all(&candidate_bytes)
+                .map_err(|_| "HOST_RECEIPT_REGISTRATION_CANDIDATE_WRITE_FAILED")?;
+            file.sync_all()
+                .map_err(|_| "HOST_RECEIPT_REGISTRATION_CANDIDATE_SYNC_FAILED")?;
+            println!("host_machine_id={machine_id}");
+            println!("host_receipt_registration=PROTECTED_GIT_CANDIDATE_ONLY");
+            println!("host_signed_install=NOT_AUTHORIZED");
+            println!("host_mutations=0");
+            Ok(())
+        }
+        HostCommand::VerifyReceipt {
+            machine_id,
+            receipt_public_key_hex,
+            candidate_path,
+        } => {
+            let expected =
+                receipt_registration_candidate(&desired, &machine_id, &receipt_public_key_hex)?;
+            let metadata = std::fs::symlink_metadata(&candidate_path)
+                .map_err(|_| "HOST_RECEIPT_CANDIDATE_MISSING")?;
+            if !metadata.file_type().is_file()
+                || metadata.len() == 0
+                || metadata.len() > MAX_INVENTORY_BYTES
+            {
+                return Err("HOST_RECEIPT_CANDIDATE_INVALID_FILE".to_owned());
+            }
+            let mut bytes = Vec::new();
+            File::open(&candidate_path)
+                .map_err(|_| "HOST_RECEIPT_CANDIDATE_UNREADABLE")?
+                .take(MAX_INVENTORY_BYTES + 1)
+                .read_to_end(&mut bytes)
+                .map_err(|_| "HOST_RECEIPT_CANDIDATE_UNREADABLE")?;
+            if bytes.is_empty() || bytes.len() as u64 > MAX_INVENTORY_BYTES {
+                return Err("HOST_RECEIPT_CANDIDATE_INVALID_SIZE".to_owned());
+            }
+            let actual = decode_host_registry(&bytes)?;
+            if actual != expected {
+                return Err("HOST_RECEIPT_CANDIDATE_UNEXPECTED_GIT_CHANGE".to_owned());
+            }
+            println!("host_receipt_candidate=EXACT_ONE_PUBLIC_KEY_CHANGE");
+            println!("host_signed_install=NOT_AUTHORIZED");
+            println!("host_mutations=0");
+            Ok(())
+        }
+        HostCommand::VerifyMergedReceipt {
+            machine_id,
+            previous_path,
+        } => {
+            let metadata = std::fs::symlink_metadata(&previous_path)
+                .map_err(|_| "HOST_RECEIPT_PRIOR_REGISTRY_MISSING")?;
+            if !metadata.file_type().is_file()
+                || metadata.len() == 0
+                || metadata.len() > MAX_INVENTORY_BYTES
+            {
+                return Err("HOST_RECEIPT_PRIOR_REGISTRY_INVALID".to_owned());
+            }
+            let previous = std::fs::read(&previous_path)
+                .map_err(|_| "HOST_RECEIPT_PRIOR_REGISTRY_UNREADABLE")?;
+            let prior = decode_host_registry(&previous)?;
+            let registered = desired
+                .hosts
+                .iter()
+                .find(|h| h.machine_id == machine_id)
+                .ok_or("HOST_RECEIPT_REGISTRATION_MACHINE_UNREGISTERED")?;
+            if registered.native_receipt_public_key.len() != 32 {
+                return Err("HOST_RECEIPT_MERGE_PUBLIC_KEY_MISSING".to_owned());
+            }
+            let key = registered
+                .native_receipt_public_key
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect::<String>();
+            let candidate = receipt_registration_candidate(&prior, &machine_id, &key)?;
+            if candidate != desired {
+                return Err("HOST_RECEIPT_MERGE_UNEXPECTED_GIT_CHANGE".to_owned());
+            }
+            println!("host_machine_id={machine_id}");
+            println!("host_receipt_merge=EXACT_ONE_PUBLIC_KEY_CHANGE");
+            println!("host_mutations=0");
+            Ok(())
+        }
+        HostCommand::RefreshReceipt { .. } => {
+            Err("HOST_RECEIPT_REFRESH_MUST_USE_EXISTING_NATIVE_VULTR_OWNER".to_owned())
+        }
+        HostCommand::FirstUse { .. } => {
+            Err("HOST_FIRST_USE_MUST_USE_EXISTING_NATIVE_VULTR_OWNER".to_owned())
+        }
     }
+}
+
+/// Single typed Git candidate for public native receipt registration.
+/// No VM operation, no protected Git mutation, and no alternate inventory.
+fn receipt_registration_candidate(
+    desired: &HostRegistry,
+    machine_id: &str,
+    receipt_public_key_hex: &str,
+) -> Result<HostRegistry, String> {
+    let mut candidate = desired.clone();
+    let selected = candidate
+        .hosts
+        .iter_mut()
+        .find(|host| host.machine_id == machine_id)
+        .ok_or("HOST_RECEIPT_REGISTRATION_MACHINE_UNREGISTERED")?;
+    edge_shared_types::host_lifecycle::verify_vm_first_use_git_prerequisites(selected)
+        .map_err(str::to_owned)?;
+    if selected.vm_first_use_credential.is_none() {
+        return Err("HOST_VM_FIRST_USE_CREDENTIAL_GIT_REQUIRED".to_owned());
+    }
+    if !selected.native_receipt_public_key.is_empty() {
+        return Err("HOST_RECEIPT_ALREADY_REGISTERED".to_owned());
+    }
+    let key = exact_hex_sha256(receipt_public_key_hex)
+        .map_err(|_| "HOST_RECEIPT_REGISTRATION_PUBLIC_KEY_INVALID")?;
+    if key.iter().all(|b| *b == 0) {
+        return Err("HOST_RECEIPT_REGISTRATION_ZERO_KEY_FORBIDDEN".to_owned());
+    }
+    selected.native_receipt_public_key = key;
+    edge_shared_types::validate_host_registry(&candidate)?;
+    Ok(candidate)
+}
+
+/// Re-read the exact immutable ReleaseSet downloaded by the existing resolver.
+/// VM compares its application bundle digest only to vm_runtime's bundle
+/// digest, NEVER to the ReleaseSet hash (the hashes represent different bytes).
+fn verified_release_set_bytes(
+    path: &Path,
+    expected_sha256: &str,
+) -> Result<edge_shared_types::ReleaseSet, String> {
+    let metadata = std::fs::symlink_metadata(path).map_err(|_| "HOST_RELEASESET_BYTES_MISSING")?;
+    if !metadata.file_type().is_file() || metadata.len() == 0 || metadata.len() > 131_072 {
+        return Err("HOST_RELEASESET_BYTES_NOT_REGULAR_OR_TOO_LARGE".to_owned());
+    }
+    let mut bytes = Vec::new();
+    File::open(path)
+        .map_err(|_| "HOST_RELEASESET_BYTES_UNREADABLE")?
+        .take(131_073)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "HOST_RELEASESET_BYTES_UNREADABLE")?;
+    if bytes.is_empty() || bytes.len() > 131_072 {
+        return Err("HOST_RELEASESET_BYTES_INVALID".to_owned());
+    }
+    let actual_sha = digest(&SHA256, &bytes);
+    if actual_sha.as_ref() != exact_hex_sha256(expected_sha256)?.as_slice() {
+        return Err("HOST_RELEASESET_DIGEST_MISMATCH".to_owned());
+    }
+    edge_shared_types::ReleaseSet::decode(bytes.as_slice())
+        .map_err(|_| "HOST_RELEASESET_PROTO_INVALID".to_owned())
+}
+
+fn verified_release_set_from_resolver(
+    context: &OrchestrationContext,
+) -> Result<edge_shared_types::ReleaseSet, String> {
+    let context_file =
+        std::env::var_os("EDGE_RELEASE_CONTEXT_PATH").ok_or("HOST_RELEASE_CONTEXT_PATH_MISSING")?;
+    let directory = Path::new(&context_file)
+        .parent()
+        .ok_or("HOST_RELEASE_CONTEXT_PARENT_MISSING")?;
+    verified_release_set_bytes(
+        &directory.join("release-set.pb"),
+        &context.release().release_set_sha256,
+    )
+}
+
+/// Only read the exact published ReleaseSet's adjacent bundle artifact.
+/// Its transport hash is verified before extracting the logical VM marker.
+/// This stays read-only and never authenticates a runner-provided observation.
+fn verified_vm_runtime_digest_from_resolver(
+    release: &edge_shared_types::ReleaseSet,
+) -> Result<Vec<u8>, String> {
+    let context_file =
+        std::env::var_os("EDGE_RELEASE_CONTEXT_PATH").ok_or("HOST_RELEASE_CONTEXT_PATH_MISSING")?;
+    let directory = Path::new(&context_file)
+        .parent()
+        .ok_or("HOST_RELEASE_CONTEXT_PARENT_MISSING")?;
+    let path = directory.join("application-bundle.pb");
+    let meta = std::fs::symlink_metadata(&path).map_err(|_| "HOST_APPLICATION_BUNDLE_MISSING")?;
+    if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 8 * 1024 * 1024 {
+        return Err("HOST_APPLICATION_BUNDLE_INVALID_FILE".to_owned());
+    }
+    let mut bytes = Vec::new();
+    File::open(&path)
+        .map_err(|_| "HOST_APPLICATION_BUNDLE_UNREADABLE")?
+        .take(8 * 1024 * 1024 + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "HOST_APPLICATION_BUNDLE_UNREADABLE")?;
+    edge_shared_types::host_lifecycle::native_vm_bundle_runtime_digest(release, &bytes)
+        .map_err(str::to_owned)
+}
+
+/// Read-only scope validation. This intentionally never authenticates the
+/// runner copy: native attestation is a separate, still-unimplemented gate.
+fn validate_readback_scope(
+    host: &edge_shared_types::FleetHost,
+    observed: &edge_shared_types::FleetNativeObservation,
+    expected_release_set_sha256: &str,
+    expected_vm_logical_sha256: Option<&[u8]>,
+    now: u64,
+) -> Result<&'static str, String> {
+    use edge_shared_types::{FleetNativeOwnerState, FleetNativeReleaseProof};
+    if host.kind != observed.host_kind {
+        return Err("HOST_READBACK_KIND_MISMATCH".to_owned());
+    }
+    if observed.observed_at_unix > now.saturating_add(60)
+        || now.saturating_sub(observed.observed_at_unix) > 300
+    {
+        return Err("HOST_READBACK_STALE_OR_FUTURE".to_owned());
+    }
+    let kind = ManagedHostKind::try_from(host.kind).map_err(|_| "HOST_READBACK_KIND_INVALID")?;
+    let proof = FleetNativeReleaseProof::try_from(observed.release_proof)
+        .map_err(|_| "HOST_READBACK_PROOF_INVALID")?;
+    let owner = FleetNativeOwnerState::try_from(observed.owner_state)
+        .map_err(|_| "HOST_READBACK_OWNER_INVALID")?;
+    if owner == FleetNativeOwnerState::Unproven
+        || proof == FleetNativeReleaseProof::Unproven
+        || !observed.reason_codes.is_empty()
+    {
+        return Ok("UNPROVEN_NATIVE_OWNER_OR_RUNTIME");
+    }
+    if kind == ManagedHostKind::Windows {
+        if proof != FleetNativeReleaseProof::ActivationRecord {
+            return Ok("WINDOWS_ACTIVATION_UNPROVEN");
+        }
+        let expected = exact_hex_sha256(expected_release_set_sha256)?;
+        if observed.observed_release_sha256 != expected {
+            return Ok("WINDOWS_RELEASESET_MISMATCH");
+        }
+    } else if proof == FleetNativeReleaseProof::VerifiedAbsent {
+        return Ok("VM_RELEASE_ABSENT_LOCAL_ONLY");
+    } else if proof == FleetNativeReleaseProof::ApplicationBundle {
+        let expected = match expected_vm_logical_sha256 {
+            Some(digest) if digest.len() == 32 => digest,
+            _ => return Ok("VM_EXPECTED_BUNDLE_UNPROVEN"),
+        };
+        if observed.observed_release_sha256 != expected {
+            return Ok("VM_BUNDLE_LOGICAL_DIGEST_MISMATCH");
+        }
+    } else {
+        return Ok("VM_RELEASE_PROOF_UNPROVEN");
+    }
+    if !observed.runtime_ready_proven || !observed.runtime_ready {
+        return Ok("UNPROVEN_RUNTIME_READINESS");
+    }
+    Ok("LOCAL_OBSERVATION_ONLY_NOT_PHYSICAL_ACCEPTANCE")
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -348,8 +1031,12 @@ fn host_lifecycle_admission(
     machine_id: &str,
     operation: HostLifecycleOperation,
     expected_release_set_sha256: &str,
+    exact_registry_sha256: &[u8],
     runner_json: Option<&Path>,
     output: Option<&Path>,
+    source_comment_id: Option<u64>,
+    intent_output: Option<&Path>,
+    resource_id: Option<&str>,
 ) -> Result<(), String> {
     let selected = desired
         .hosts
@@ -368,12 +1055,139 @@ fn host_lifecycle_admission(
     } else {
         "UNPROVEN_NATIVE_OWNER_MUST_VERIFY".to_owned()
     };
+    let comment_id = source_comment_id
+        .filter(|id| *id != 0)
+        .ok_or("HOST_SOURCE_COMMENT_REQUIRED")?;
+    // Before a native receipt key exists, /host apply routes to the fixed
+    // provider->root enrollment within the SAME host control-plane. It does
+    // not create a signed INSTALL intent until the public key is protected
+    // by a subsequent Git ReleaseSet. No runner may enroll itself.
+    if operation == HostLifecycleOperation::Apply
+        && kind == ManagedHostKind::Vm
+        && selected.native_receipt_public_key.is_empty()
+    {
+        if resource_id.is_some() {
+            return Err("HOST_VM_FIRST_USE_WHOLE_HOST_REQUIRED".to_owned());
+        }
+        edge_shared_types::host_lifecycle::verify_vm_first_use_git_prerequisites(selected)
+            .map_err(str::to_owned)?;
+        if selected.vm_first_use_credential.is_none() {
+            return Err("HOST_VM_FIRST_USE_CREDENTIAL_GIT_REQUIRED".to_owned());
+        }
+        let output = output.ok_or("HOST_PREFLIGHT_OUTPUT_REQUIRED")?;
+        let labels = runner_labels(kind, owner, &selected.windows_runner_label)?;
+        append_control_outputs(
+            output,
+            machine_id,
+            kind,
+            owner,
+            &labels,
+            &selected.windows_runner_label,
+            &selected.desired_spec_path,
+        )?;
+        append_action_output(output, "FIRST_USE_PREFLIGHT")?;
+        append_observation_matrix(output, &[])?;
+        println!("host_operation_id=issue1-comment-{comment_id}");
+        println!("host_machine_id={machine_id}");
+        println!("host_first_use_next_action=CREATE_NATIVE_ROOT_ENROLL_AWAIT_GIT_RECEIPT");
+        println!("host_signed_intent=NOT_CREATED");
+        println!("host_mutations=0");
+        return Ok(());
+    }
+    let intent_path = intent_output.ok_or("HOST_INTENT_OUTPUT_REQUIRED")?;
+    // Read *the checked-out protected Git spec*, not an operator-supplied file.
+    // This binds the intent to the exact desired bytes; JSON remains an
+    // explicit conversion debt for acceptance hosts, not an alternative source.
+    let spec_path = Path::new(&selected.desired_spec_path);
+    let meta = std::fs::symlink_metadata(spec_path).map_err(|_| "HOST_DESIRED_SPEC_MISSING")?;
+    if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 1_048_576 {
+        return Err("HOST_DESIRED_SPEC_INVALID_FILE".to_owned());
+    }
+    let spec_bytes = std::fs::read(spec_path).map_err(|_| "HOST_DESIRED_SPEC_UNREADABLE")?;
+    let desired_sha = edge_shared_types::host_lifecycle::digest_host_desired(selected, &spec_bytes)
+        .map_err(str::to_owned)?;
+    let release_sha = exact_hex_sha256(expected_release_set_sha256)?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "HOST_CLOCK_UNAVAILABLE")?
+        .as_secs();
+    let intent = FleetHostIntent {
+        schema_version: 1,
+        machine_id: machine_id.to_owned(),
+        kind: kind as i32,
+        resource_id: resource_id.unwrap_or("sing-box").to_owned(),
+        operation_id: format!("issue1-comment-{comment_id}"),
+        action: match operation {
+            HostLifecycleOperation::Apply => FleetHostAction::Apply as i32,
+            HostLifecycleOperation::Recover => FleetHostAction::Recover as i32,
+        },
+        registry_sha256: exact_registry_sha256.to_vec(),
+        desired_sha256: desired_sha.clone(),
+        release_set_sha256: release_sha.clone(),
+        requested_mode: FleetHostMode::Unspecified as i32,
+        requested_at_unix: now,
+    };
+    validate_host_intent(
+        &intent,
+        desired,
+        exact_registry_sha256,
+        &desired_sha,
+        &release_sha,
+    )
+    .map_err(str::to_owned)?;
+    // The same durable Git target is checked at PREPARE and again by
+    // the native root/SYSTEM owner before any action. An observe-only VM
+    // must never issue a misleading APPLY_PREPARED intent.
+    validate_intent_against_target(&intent, desired).map_err(str::to_owned)?;
+    // Never prepare or schedule an executable VM intent while protected Git
+    // lacks signer/receipt identity. Owner enrollment is a distinct root-only
+    // first-use operation, not something the runner may improvise.
+    edge_shared_types::host_lifecycle::verify_vm_signed_git_prerequisites(selected)
+        .map_err(str::to_owned)?;
+    let prepared = prepared_host_result(&intent);
+    validate_host_result(&prepared, &intent).map_err(str::to_owned)?;
+    let bytes = intent.encode_to_vec();
+    // Exclusive create: an uncertain or duplicate request cannot clobber
+    // an existing typed intent/receipt. No SYSTEM/root action is invoked.
+    let mut writer = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(intent_path)
+        .map_err(|_| "HOST_INTENT_ALREADY_EXISTS_OR_UNWRITABLE")?;
+    writer
+        .write_all(&bytes)
+        .map_err(|_| "HOST_INTENT_WRITE_FAILED")?;
+    writer.sync_all().map_err(|_| "HOST_INTENT_SYNC_FAILED")?;
+    let receipt_path = intent_path.with_extension("receipt.pb");
+    let mut receipt = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&receipt_path)
+        .map_err(|_| "HOST_PREPARED_RECEIPT_EXISTS_OR_UNWRITABLE")?;
+    receipt
+        .write_all(&prepared.encode_to_vec())
+        .map_err(|_| "HOST_PREPARED_RECEIPT_WRITE_FAILED")?;
+    receipt
+        .sync_all()
+        .map_err(|_| "HOST_PREPARED_RECEIPT_SYNC_FAILED")?;
+    println!("host_intent_schema=1");
+    println!("host_operation_id={}", intent.operation_id);
+    println!(
+        "host_intent_sha256={}",
+        digest(&SHA256, &bytes)
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    );
+    println!("host_intent_state=PREPARED_NOT_AUTHORIZED");
     println!("host_machine_id={machine_id}");
     println!("host_kind={kind:?}");
     println!("host_runner_registration={registration}");
     println!("host_lifecycle_contract=FRESH_TYPED_ONLY");
     println!("host_expected_release_set_sha256={expected_release_set_sha256}");
     println!("host_desired_spec_path={}", selected.desired_spec_path);
+    print_host_target(selected)?;
     println!(
         "host_requested_operation={}",
         match operation {
@@ -382,8 +1196,22 @@ fn host_lifecycle_admission(
         }
     );
     println!("host_historical_journal_authority=FORBIDDEN");
-    println!("host_native_install_authority=NOT_YET_ACCEPTED");
-    println!("host_next_action=NEED_NATIVE_TYPED_INSTALLER_AND_RELEASE_BOUND_RECEIPTS");
+    // Source capability must never be presented as installed owner authority.
+    // Only the native signed receipt may establish a physical result.
+    let (source_capability, next_action) = match kind {
+        ManagedHostKind::Vm => (
+            "VM_SIGNED_APPLY_SOURCE_PRESENT",
+            "VERIFY_INSTALLED_ROOT_TRUST_ACTIVE_CREDENTIALS_AND_NATIVE_RECEIPT",
+        ),
+        ManagedHostKind::Windows => (
+            "WINDOWS_SIGNED_SYSTEM_HANDLER_MISSING",
+            "IMPLEMENT_WINDOWS_SYSTEM_SIGNED_HANDLER_AND_PHYSICAL_RECEIPT",
+        ),
+        ManagedHostKind::Unspecified => return Err("HOST_KIND_INVALID".to_owned()),
+    };
+    println!("host_native_source_capability={source_capability}");
+    println!("host_native_install_authority=INSTALLED_OWNER_UNPROVEN");
+    println!("host_next_action={next_action}");
     println!("host_mutations=0");
     let output = output.ok_or("HOST_PREFLIGHT_OUTPUT_REQUIRED")?;
     let labels = runner_labels(kind, owner, &selected.windows_runner_label)?;
@@ -414,6 +1242,44 @@ fn host_lifecycle_admission(
     append_observation_matrix(output, &targets)?;
     println!("host_observation_targets={}", targets.len());
     Ok(())
+}
+
+fn print_host_target(host: &edge_shared_types::FleetHost) -> Result<(), String> {
+    match &host.target {
+        None => {
+            println!("host_desired_run_state=UNSET_OBSERVE_ONLY");
+            println!("host_desired_windows_mode=UNSET");
+        }
+        Some(target) => {
+            use edge_shared_types::{FleetHostMode, FleetHostRunState};
+            let state = FleetHostRunState::try_from(target.run_state)
+                .map_err(|_| "HOST_TARGET_RUN_STATE_INVALID")?;
+            let mode = FleetHostMode::try_from(target.windows_mode)
+                .map_err(|_| "HOST_TARGET_MODE_INVALID")?;
+            if state == FleetHostRunState::Unspecified {
+                return Err("HOST_TARGET_RUN_STATE_REQUIRED".to_owned());
+            }
+            println!("host_desired_run_state={state:?}");
+            println!("host_desired_windows_mode={mode:?}");
+        }
+    }
+    Ok(())
+}
+
+fn exact_hex_sha256(value: &str) -> Result<Vec<u8>, String> {
+    if value.len() != 64
+        || !value
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Err("HOST_RELEASE_SHA256_INVALID".to_owned());
+    }
+    (0..32)
+        .map(|idx| {
+            u8::from_str_radix(&value[idx * 2..idx * 2 + 2], 16)
+                .map_err(|_| "HOST_RELEASE_SHA256_INVALID".to_owned())
+        })
+        .collect()
 }
 
 fn append_action_output(path: &Path, action: &str) -> Result<(), String> {
@@ -605,7 +1471,202 @@ mod tests {
     use edge_shared_types::ManagedHost;
 
     #[test]
+    fn receipt_registration_changes_only_one_git_pinned_public_key() {
+        use edge_shared_types::{
+            FleetHostKind, FleetHostRunState, FleetHostTarget, FleetVmContainer,
+            FleetVmFirstUseCredential,
+        };
+        let machine_id = "application-acceptance-1";
+        let original = HostRegistry {
+            schema_version: 1,
+            hosts: vec![ManagedHost {
+                machine_id: machine_id.to_owned(),
+                kind: FleetHostKind::Vm as i32,
+                owner: Some(managed_host::Owner::VmMachineId(machine_id.to_owned())),
+                desired_spec_path: "infra/application/disposable-acceptance.json".into(),
+                vm_provider_spec_path: "infra/vultr/application-acceptance.json".into(),
+                target: Some(FleetHostTarget {
+                    run_state: FleetHostRunState::Running as i32,
+                    ..Default::default()
+                }),
+                worker_authority_public_key: vec![7; 32],
+                vm_first_use_credential: Some(FleetVmFirstUseCredential {
+                    generation: 1,
+                    bundle_sha256: "a".repeat(64),
+                }),
+                vm_containers: vec![FleetVmContainer {
+                    container_name: "vultr-line1-gateway".into(),
+                    compose_project: "vultr-edge".into(),
+                    compose_service: "line1-gateway".into(),
+                }],
+                ..Default::default()
+            }],
+        };
+        let candidate =
+            receipt_registration_candidate(&original, machine_id, &"9a".repeat(32)).unwrap();
+        assert!(original.hosts[0].native_receipt_public_key.is_empty());
+        assert_eq!(candidate.hosts[0].native_receipt_public_key, vec![0x9a; 32]);
+        let wire = candidate.encode_to_vec();
+        assert_eq!(decode_host_registry(&wire).unwrap(), candidate);
+        assert_eq!(
+            receipt_registration_candidate(&original, "foreign", &"9a".repeat(32)).unwrap_err(),
+            "HOST_RECEIPT_REGISTRATION_MACHINE_UNREGISTERED"
+        );
+        assert_eq!(
+            receipt_registration_candidate(&original, machine_id, &"00".repeat(32)).unwrap_err(),
+            "HOST_RECEIPT_REGISTRATION_ZERO_KEY_FORBIDDEN"
+        );
+        assert_eq!(
+            receipt_registration_candidate(&candidate, machine_id, &"9a".repeat(32)).unwrap_err(),
+            "HOST_RECEIPT_ALREADY_REGISTERED"
+        );
+        let mut incomplete = original.clone();
+        incomplete.hosts[0].worker_authority_public_key.clear();
+        assert_eq!(
+            receipt_registration_candidate(&incomplete, machine_id, &"9a".repeat(32)).unwrap_err(),
+            "HOST_GIT_WORKER_SIGNER_KEY_REQUIRED"
+        );
+    }
+
+    #[test]
+    fn vm_signed_preflight_requires_git_trust_without_blocking_observation() {
+        use edge_shared_types::{FleetHost, FleetHostKind, FleetVmContainer};
+        let mut host = FleetHost {
+            machine_id: "vm-signing-preflight".into(),
+            kind: FleetHostKind::Vm as i32,
+            ..Default::default()
+        };
+        let check = edge_shared_types::host_lifecycle::verify_vm_signed_git_prerequisites;
+        assert_eq!(check(&host), Err("HOST_GIT_WORKER_SIGNER_KEY_REQUIRED"));
+        host.worker_authority_public_key = vec![7; 32];
+        assert_eq!(
+            check(&host),
+            Err("HOST_VM_GIT_RECEIPT_REGISTRATION_REQUIRED")
+        );
+        host.native_receipt_public_key = vec![9; 32];
+        assert_eq!(check(&host), Err("HOST_VM_GIT_RESOURCE_SCOPE_REQUIRED"));
+        host.vm_containers.push(FleetVmContainer {
+            container_name: "vultr-line1-gateway".into(),
+            compose_project: "vultr-edge".into(),
+            compose_service: "line1-gateway".into(),
+        });
+        assert_eq!(check(&host), Ok(()));
+        host.worker_authority_public_key = vec![0; 32];
+        assert_eq!(check(&host), Err("HOST_GIT_WORKER_SIGNER_KEY_REQUIRED"));
+        host.kind = FleetHostKind::Windows as i32;
+        assert_eq!(check(&host), Ok(()));
+    }
+
+    #[test]
+    fn release_set_bundle_digest_is_verified_by_exact_immutable_bytes() {
+        let mut release = edge_shared_types::ReleaseSet::default();
+        release.schema_version = 7;
+        release.vm_runtime = Some(edge_shared_types::VmRuntime {
+            application_bundle_sha256: vec![4; 32],
+            ..Default::default()
+        });
+        let bytes = release.encode_to_vec();
+        let sha = digest(&SHA256, &bytes)
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>();
+        let path = std::env::temp_dir().join(format!(
+            "sing-box-vm-release-set-test-{}.pb",
+            std::process::id()
+        ));
+        std::fs::write(&path, &bytes).unwrap();
+        let parsed = verified_release_set_bytes(&path, &sha).unwrap();
+        assert_eq!(
+            parsed.vm_runtime.unwrap().application_bundle_sha256,
+            vec![4; 32]
+        );
+        assert_eq!(
+            verified_release_set_bytes(&path, &"a".repeat(64)).unwrap_err(),
+            "HOST_RELEASESET_DIGEST_MISMATCH"
+        );
+        std::fs::remove_file(&path).unwrap();
+    }
+
+    #[test]
+    fn native_readback_never_authorizes_mutation_or_conflates_vm_digest() {
+        use edge_shared_types::{
+            FleetHost, FleetHostKind, FleetNativeObservation, FleetNativeOwnerState,
+            FleetNativeReleaseProof,
+        };
+        let host = FleetHost {
+            machine_id: "windows-1".into(),
+            kind: FleetHostKind::Windows as i32,
+            owner: Some(managed_host::Owner::WindowsRunnerName("WIN-1".into())),
+            windows_runner_label: "windows-1".into(),
+            vm_containers: Vec::new(),
+            desired_spec_path: "infra/production/production.textproto".into(),
+            target: None,
+            native_receipt_public_key: Vec::new(),
+            vm_first_use_credential: None,
+            worker_authority_public_key: Vec::new(),
+            vm_provider_spec_path: String::new(),
+        };
+        let mut o = FleetNativeObservation {
+            schema_version: 1,
+            host_kind: FleetHostKind::Windows as i32,
+            observed_at_unix: 1000,
+            owner_state: FleetNativeOwnerState::Running as i32,
+            release_proof: FleetNativeReleaseProof::ActivationRecord as i32,
+            observed_release_sha256: vec![0xaa; 32],
+            runtime_ready: true,
+            runtime_ready_proven: true,
+            reason_codes: vec![],
+        };
+        assert_eq!(
+            validate_readback_scope(&host, &o, &"a".repeat(64), None, 1000).unwrap(),
+            "LOCAL_OBSERVATION_ONLY_NOT_PHYSICAL_ACCEPTANCE"
+        );
+        o.observed_release_sha256 = vec![0xbb; 32];
+        assert_eq!(
+            validate_readback_scope(&host, &o, &"a".repeat(64), None, 1000).unwrap(),
+            "WINDOWS_RELEASESET_MISMATCH"
+        );
+        o.host_kind = FleetHostKind::Vm as i32;
+        assert_eq!(
+            validate_readback_scope(&host, &o, &"a".repeat(64), None, 1000).unwrap_err(),
+            "HOST_READBACK_KIND_MISMATCH"
+        );
+        o.host_kind = FleetHostKind::Windows as i32;
+        assert_eq!(
+            validate_readback_scope(&host, &o, &"a".repeat(64), None, 1400).unwrap_err(),
+            "HOST_READBACK_STALE_OR_FUTURE"
+        );
+        let vm_host = FleetHost {
+            kind: FleetHostKind::Vm as i32,
+            owner: Some(managed_host::Owner::VmMachineId("vm-1".into())),
+            machine_id: "vm-1".into(),
+            windows_runner_label: String::new(),
+            ..host
+        };
+        o.host_kind = FleetHostKind::Vm as i32;
+        o.release_proof = FleetNativeReleaseProof::ApplicationBundle as i32;
+        o.observed_at_unix = 1400;
+        assert_eq!(
+            validate_readback_scope(&vm_host, &o, &"a".repeat(64), Some(&[0xbb; 32]), 1400)
+                .unwrap(),
+            "LOCAL_OBSERVATION_ONLY_NOT_PHYSICAL_ACCEPTANCE"
+        );
+        assert_eq!(
+            validate_readback_scope(&vm_host, &o, &"a".repeat(64), Some(&[0xaa; 32]), 1400)
+                .unwrap(),
+            "VM_BUNDLE_LOGICAL_DIGEST_MISMATCH"
+        );
+        assert_eq!(
+            validate_readback_scope(&vm_host, &o, &"a".repeat(64), None, 1400).unwrap(),
+            "VM_EXPECTED_BUNDLE_UNPROVEN"
+        );
+    }
+
+    #[test]
     fn fresh_host_apply_and_recover_never_admit_historical_mutation() {
+        let spec = std::env::temp_dir().join(format!("sing-box-host-spec-{}", std::process::id()));
+        std::fs::write(&spec, b"schema_version: 1\\n").unwrap();
         let desired = HostRegistry {
             schema_version: 1,
             hosts: vec![ManagedHost {
@@ -615,22 +1676,81 @@ mod tests {
                     "DESKTOP-TEST".to_owned(),
                 )),
                 windows_runner_label: "windows-test".to_owned(),
-                desired_spec_path: "infra/production/production.textproto".to_owned(),
+                vm_containers: Vec::new(),
+                desired_spec_path: spec.to_string_lossy().into_owned(),
+                target: Some(edge_shared_types::FleetHostTarget {
+                    run_state: edge_shared_types::FleetHostRunState::Stopped as i32,
+                    windows_mode: FleetHostMode::ProxyOnly as i32,
+                }),
+                native_receipt_public_key: Vec::new(),
+                vm_first_use_credential: None,
+                worker_authority_public_key: Vec::new(),
+                vm_provider_spec_path: String::new(),
             }],
         };
         let release = "a".repeat(64);
+        let registry_sha = vec![3u8; 32];
+        let intent_path =
+            std::env::temp_dir().join(format!("sing-box-host-intent-{}.pb", std::process::id()));
         let file = std::env::temp_dir().join(format!(
             "sing-box-host-fresh-preflight-{}",
             std::process::id()
         ));
         std::fs::write(&file, "").unwrap();
+        // Absence of Git target is OBSERVE_ONLY, even if a healthy runner
+        // has registered itself or an older VM deployment exists.
+        let mut blocked = desired.clone();
+        blocked.hosts[0].target = None;
+        assert_eq!(
+            host_lifecycle_admission(
+                &blocked,
+                "windows-test",
+                HostLifecycleOperation::Apply,
+                &release,
+                &registry_sha,
+                None,
+                Some(&file),
+                Some(122),
+                Some(&intent_path),
+                None,
+            )
+            .unwrap_err(),
+            "HOST_TARGET_UNSET_OBSERVE_ONLY"
+        );
+        assert!(!intent_path.exists());
+        // An invalid mode/kind must not emit any proposal either.
+        blocked.hosts[0].target = Some(edge_shared_types::FleetHostTarget {
+            run_state: edge_shared_types::FleetHostRunState::Stopped as i32,
+            windows_mode: FleetHostMode::Unspecified as i32,
+        });
+        assert_eq!(
+            host_lifecycle_admission(
+                &blocked,
+                "windows-test",
+                HostLifecycleOperation::Apply,
+                &release,
+                &registry_sha,
+                None,
+                Some(&file),
+                Some(122),
+                Some(&intent_path),
+                None,
+            )
+            .unwrap_err(),
+            "HOST_TARGET_MODE_KIND_MISMATCH"
+        );
+        assert!(!intent_path.exists());
         host_lifecycle_admission(
             &desired,
             "windows-test",
             HostLifecycleOperation::Apply,
             &release,
+            &registry_sha,
             None,
             Some(&file),
+            Some(123),
+            Some(&intent_path),
+            None,
         )
         .unwrap();
         let apply = std::fs::read_to_string(&file).unwrap();
@@ -638,14 +1758,26 @@ mod tests {
         assert!(apply.contains("host_targets_present=true"));
         assert!(!apply.contains("admitted_at_unix="));
         assert!(!apply.contains("operation=APPLY\\n"));
+        let parsed = edge_shared_types::host_lifecycle::decode_host_intent(
+            &std::fs::read(&intent_path).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(parsed.operation_id, "issue1-comment-123");
+        assert_eq!(parsed.action, FleetHostAction::Apply as i32);
+        std::fs::remove_file(&intent_path).unwrap();
+        std::fs::remove_file(intent_path.with_extension("receipt.pb")).unwrap();
         std::fs::write(&file, "").unwrap();
         host_lifecycle_admission(
             &desired,
             "windows-test",
             HostLifecycleOperation::Recover,
             &release,
+            &registry_sha,
             None,
             Some(&file),
+            Some(124),
+            Some(&intent_path),
+            None,
         )
         .unwrap();
         let recover = std::fs::read_to_string(&file).unwrap();
@@ -657,12 +1789,19 @@ mod tests {
                 "not-enrolled",
                 HostLifecycleOperation::Apply,
                 &release,
+                &registry_sha,
                 None,
-                Some(&file)
+                Some(&file),
+                Some(125),
+                Some(&intent_path),
+                None,
             )
             .is_err()
         );
         std::fs::remove_file(file).unwrap();
+        std::fs::remove_file(spec).unwrap();
+        std::fs::remove_file(&intent_path).unwrap();
+        std::fs::remove_file(intent_path.with_extension("receipt.pb")).unwrap();
     }
 
     #[test]
@@ -677,7 +1816,13 @@ mod tests {
                         "application-acceptance-1".to_owned(),
                     )),
                     windows_runner_label: String::new(),
+                    vm_containers: Vec::new(),
                     desired_spec_path: "infra/application/disposable-acceptance.json".to_owned(),
+                    target: None,
+                    native_receipt_public_key: Vec::new(),
+                    vm_first_use_credential: None,
+                    worker_authority_public_key: Vec::new(),
+                    vm_provider_spec_path: String::new(),
                 },
                 ManagedHost {
                     machine_id: "sing-box-windows-lab".to_owned(),
@@ -686,7 +1831,13 @@ mod tests {
                         "DESKTOP-0E1F6UQ".to_owned(),
                     )),
                     windows_runner_label: "sing-box-windows-lab".to_owned(),
+                    vm_containers: Vec::new(),
                     desired_spec_path: "infra/production/production.textproto".to_owned(),
+                    target: None,
+                    native_receipt_public_key: Vec::new(),
+                    vm_first_use_credential: None,
+                    worker_authority_public_key: Vec::new(),
+                    vm_provider_spec_path: String::new(),
                 },
             ],
         };
@@ -714,7 +1865,13 @@ mod tests {
                 "OTHER-PC".to_owned(),
             )),
             windows_runner_label: "other-label".to_owned(),
+            vm_containers: Vec::new(),
             desired_spec_path: "infra/production/production.textproto".to_owned(),
+            target: None,
+            native_receipt_public_key: Vec::new(),
+            vm_first_use_credential: None,
+            worker_authority_public_key: Vec::new(),
+            vm_provider_spec_path: String::new(),
         });
         assert_eq!(
             resolve_credential_peer(&two_windows, "application-acceptance-1", "auto").unwrap_err(),

@@ -54,6 +54,7 @@ pub(crate) async fn enroll_runtime(
         vpc_converge(spec).await?;
         bootstrap_production_runner(
             &composition.machines,
+            spec,
             &composition.machine_id,
             runner_installer_path,
             edge_agent_artifact_path,

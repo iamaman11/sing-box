@@ -32,6 +32,7 @@ jobs:
     timeout-minutes: 15
     permissions:
       contents: read
+      actions: read
     env:
       TARGET_MACHINE: ${{ inputs.machine_id }}
       TARGET_OWNER: ${{ inputs.owner }}
@@ -90,6 +91,33 @@ jobs:
             exit 1
           fi
           test ! -r /var/run/docker.sock
+          # Read-only sudo -l checks the INSTALLED runner capability, not
+          # just the updated source installer. This cannot perform a mutation.
+          vm_runner_mutate=ABSENT
+          # Same forbidden capability list as the canonical VM installer.
+          # Old installed sudoers are not silently accepted by the new flow.
+          for unsafe_command in \
+            "local bundle-converge" \
+            "local host-enroll machine release" \
+            "local host-enroll machine release key" \
+            "local bundle-rollback" \
+            "local bootstrap-full" \
+            "local mesh-cleanup" \
+            "local credential-stage 1" \
+            "local credential-transition promote" \
+            "local credential-existing-join 1 2 3"; do
+            read -r -a argv <<< "${unsafe_command}"
+            if sudo -n -l "${owner}" "${argv[@]}" >/dev/null 2>&1; then
+              vm_runner_mutate=LEGACY_DIRECT_MUTATION_PRESENT
+              break
+            fi
+          done
+          echo "host_runner_direct_mutation_authority=${vm_runner_mutate}"
+          if [[ "${COMMAND_BODY}" == "/host apply "* || "${COMMAND_BODY}" == "/host recover "* ]] &&
+             [[ "${vm_runner_mutate}" != ABSENT ]]; then
+            echo 'HOST_VM_LEGACY_DIRECT_MUTATION_AUTHORITY_FORBIDDEN' >&2
+            exit 1
+          fi
           if [[ "${COMMAND_BODY}" == *" --deep" || "${COMMAND_BODY}" == "/host recover "* ||
                 "${COMMAND_BODY}" == "/host apply "* ]]; then
             sudo -n "${owner}" local diagnose
@@ -106,6 +134,121 @@ jobs:
           fi
 
 
+      - name: Dispatch one signed native VM host transaction
+        if: env.TARGET_KIND == 'VM' && (startsWith(env.COMMAND_BODY, '/host apply ') || startsWith(env.COMMAND_BODY, '/host recover '))
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SOURCE_COMMENT_ID: ${{ inputs.source_comment_id }}
+        run: |
+          set -euo pipefail
+          # The runner is a transport ONLY. All authority comes from the
+          # installed root Agent + Worker + exact published Git/ReleaseSet.
+          [[ "${TARGET_MACHINE}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]
+          [[ "${SOURCE_COMMENT_ID}" =~ ^[1-9][0-9]*$ ]]
+          test "${RUNNER_NAME}" = "sing-box-production-${TARGET_OWNER}"
+          case "${COMMAND_BODY}" in
+            "/host apply ${TARGET_MACHINE}"|"/host recover ${TARGET_MACHINE}") ;;
+            *)
+              if ! [[ "${COMMAND_BODY}" =~ ^/host[[:space:]]apply[[:space:]]${TARGET_MACHINE}[[:space:]]config/[A-Za-z0-9][A-Za-z0-9._-]{0,63}/(line1-gateway|line2-proxy)$ ]]; then
+                echo 'HOST_NATIVE_VM_COMMAND_SCOPE_MISMATCH' >&2
+                exit 1
+              fi
+              ;;
+          esac
+          owner=/usr/local/libexec/sing-box/edge-agent
+          test -x "${owner}" && test ! -L "${owner}"
+          # No generic sudo, no bundle-converge/rollback/credentials paths.
+          # Older installed sudoers intentionally fails closed here.
+          sudo -n -l "${owner}" local host-apply >/dev/null
+          path="${RUNNER_TEMP}/host-operation"
+          install -d -m 0700 "${path}"
+          gh run download "${GITHUB_RUN_ID}" -R "${GITHUB_REPOSITORY}" \
+            -n "host-intent-${SOURCE_COMMENT_ID}" -D "${path}"
+          intent="${path}/host-intent.pb"
+          test -f "${intent}" && test ! -L "${intent}"
+          test "$(stat -c '%s' "${intent}")" -gt 0
+          test "$(stat -c '%s' "${intent}")" -le 4096
+          # Never retry after an uncertain result, even if stdout is lost.
+          result="${path}/host-result.pb"
+          sudo -n "${owner}" local host-apply < "${intent}" > "${result}"
+          test -s "${result}"
+          test "$(stat -c '%s' "${result}")" -le 8192
+          echo 'host_native_execution=ROOT_OWNER_ONE_SHOT'
+          echo 'host_native_result=LOCAL_PROTOBUF_NOT_YET_REMOTE_ATTESTED'
+
+      - name: Capture exact installed Windows typed readback when supported
+        if: env.TARGET_KIND == 'WINDOWS'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $doctor = 'C:\sing-box\bin\edge-diagnostic.exe'
+          $current = 'C:\sing-box\current.pb'
+          $output = Join-Path $env:RUNNER_TEMP 'host-native-observation.pb'
+          Remove-Item -LiteralPath $output -Force -ErrorAction SilentlyContinue
+          # An older installed ReleaseSet may not expose this read-only verb.
+          # Do not upgrade here, invoke a privileged dispatcher or claim PASS.
+          & $doctor host-observe $current > $output
+          if ($LASTEXITCODE -ne 0 -or
+              -not (Test-Path -LiteralPath $output -PathType Leaf) -or
+              (Get-Item -LiteralPath $output).Length -gt 4096 -or
+              (Get-Item -LiteralPath $output).Length -eq 0) {
+            Remove-Item -LiteralPath $output -Force -ErrorAction SilentlyContinue
+            Write-Output 'host_typed_readback=UNAVAILABLE_INSTALLED_VERSION_OR_EVIDENCE'
+          } else {
+            Write-Output 'host_typed_readback=BOUNDED_PROTOBUF_CAPTURED_UNAUTHENTICATED'
+          }
+
+      - name: Capture exact installed VM typed readback when permitted
+        if: env.TARGET_KIND == 'VM'
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner=/usr/local/libexec/sing-box/edge-agent
+          output="${RUNNER_TEMP}/host-native-observation.pb"
+          rm -f "${output}"
+          if sudo -n -l "${owner}" local host-observe >/dev/null 2>&1 &&
+             sudo -n "${owner}" local host-observe > "${output}" &&
+             test -s "${output}" && test "$(stat -c '%s' "${output}")" -le 4096; then
+            echo 'host_typed_readback=BOUNDED_PROTOBUF_CAPTURED_UNAUTHENTICATED'
+          else
+            rm -f "${output}"
+            echo 'host_typed_readback=UNAVAILABLE_INSTALLED_VERSION_OR_SUDOERS'
+          fi
+
+      - name: Capture bounded VM per-container resource evidence
+        if: env.TARGET_KIND == 'VM' && (endsWith(env.COMMAND_BODY, ' --deep') || startsWith(env.COMMAND_BODY, '/host apply ') || startsWith(env.COMMAND_BODY, '/host recover '))
+        shell: bash
+        run: |
+          set -euo pipefail
+          owner=/usr/local/libexec/sing-box/edge-agent
+          output="${RUNNER_TEMP}/host-native-resources.pb"
+          rm -f "${output}"
+          # Older installations may not yet offer the exact read-only verb.
+          # Missing support is UNPROVEN, not an excuse for a direct Docker call.
+          if sudo -n -l "${owner}" local host-resources >/dev/null 2>&1 &&
+             sudo -n "${owner}" local host-resources > "${output}" &&
+             test -f "${output}" && test ! -L "${output}" &&
+             test -s "${output}" &&
+             test "$(stat -c '%s' "${output}")" -le 32768; then
+            echo 'host_vm_resources_capture=BOUNDED_UNAUTHENTICATED'
+          else
+            rm -f "${output}"
+            echo 'host_vm_resources_capture=UNPROVEN_INSTALLED_OWNER'
+          fi
+
+      - name: Retain native bounded protobuf as transport evidence
+        if: success()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-readback-${{ inputs.machine_id }}-${{ inputs.source_comment_id }}
+          path: |
+            ${{ runner.temp }}/host-native-observation.pb
+            ${{ runner.temp }}/host-native-resources.pb
+            ${{ runner.temp }}/host-operation/host-result.pb
+          if-no-files-found: ignore
+          retention-days: 7
+
   report:
     # An unavailable third runner must not hold the reports for healthy peers.
     # A runner queued forever cannot produce a PASS; no claim is inferred.
@@ -115,6 +258,7 @@ jobs:
     timeout-minutes: 3
     permissions:
       contents: read
+      actions: read
       issues: write
     env:
       GH_TOKEN: ${{ github.token }}
@@ -122,8 +266,128 @@ jobs:
       TARGET_KIND: ${{ inputs.kind }}
       SOURCE_COMMENT_ID: ${{ inputs.source_comment_id }}
       OBSERVED_RESULT: ${{ needs.observe.result }}
+      COMMAND_BODY: ${{ inputs.command_body }}
     steps:
+      - name: Validate optional native protobuf with the exact Rust Fleet Orchestrator
+        id: typed
+        if: env.OBSERVED_RESULT == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${TARGET_MACHINE}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]
+          name="native-readback-${TARGET_MACHINE}-${SOURCE_COMMENT_ID}"
+          out="${RUNNER_TEMP}/host-native-readback"
+          mkdir -p "${out}"
+          # One native owner produces this artifact. A missing installed verb
+          # is UNAVAILABLE, never PASS or a request to install a new binary.
+          if ! gh run download "${GITHUB_RUN_ID}" -R "${GITHUB_REPOSITORY}" -n "${name}" -D "${out}" >/dev/null 2>&1; then
+            echo 'typed_verdict=UNAVAILABLE_INSTALLED_OWNER_VERSION' >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          observation="${out}/host-native-observation.pb"
+          test -f "${observation}" && test ! -L "${observation}"
+          test "$(stat -c '%s' "${observation}")" -gt 0
+          test "$(stat -c '%s' "${observation}")" -le 4096
+          # Resolve the ONE accepted Git commit and exact immutable runtime,
+          # matching the primary control-plane path. Never execute a
+          # checkout-built or runner-supplied orchestrator.
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --no-tags --depth=1 origin "${GITHUB_SHA}"
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          export ACCEPTED_REVISION="${GITHUB_SHA}"
+          export REPOSITORY="${GITHUB_REPOSITORY}"
+          export OUTPUT_DIR="${RUNNER_TEMP}/host-readback-release"
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          owner="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          echo "${EDGE_ORCHESTRATOR_SHA256}  ${owner}" | sha256sum --check --status
+          chmod 0755 "${owner}"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
+          # Reparse protected Git desired with the already-pinned compiler;
+          # never consume inventory supplied by the native runner.
+          buf="${RUNNER_TEMP}/host-readback-buf"
+          curl --fail --silent --show-error --location \
+            "https://github.com/bufbuild/buf/releases/download/v1.73.0/buf-Linux-x86_64" -o "${buf}"
+          echo "8f2986298ad08f0cc1bf999b9797b7c383adf32d7edf0f73d6f1e1a701baeac1  ${buf}" | sha256sum --check --status
+          chmod 0755 "${buf}"
+          (cd edge-platform && "${buf}" convert proto/edge/platform/v1/fleet.proto \
+            --type edge.platform.v1.FleetDesiredState \
+            --from "../infra/hosts/hosts.textproto#format=txtpb" \
+            --to "${RUNNER_TEMP}/host-readback-registry.pb#format=binpb")
+          registry="${RUNNER_TEMP}/host-readback-registry.pb"
+          test -s "${registry}"
+          extra=()
+          if [[ "${TARGET_KIND}" = VM && -s "${out}/host-native-resources.pb" ]]; then
+            resource_report="${out}/host-native-resources.pb"
+            test -f "${resource_report}" && test ! -L "${resource_report}"
+            test "$(stat -c '%s' "${resource_report}")" -le 32768
+            extra=(--resources-path "${resource_report}")
+          fi
+          "${owner}" host --hosts-pb "${registry}" \
+            --hosts-sha256 "$(sha256sum "${registry}" | cut -d' ' -f1)" \
+            readback "${TARGET_MACHINE}" --observation-path "${observation}" "${extra[@]}" \
+            > "${RUNNER_TEMP}/host-readback-result.txt"
+          result="${RUNNER_TEMP}/host-readback-result.txt"
+          grep -Fxq 'host_mutations=0' "${result}"
+          grep -Fxq 'host_native_readback_authorizes_mutation=false' "${result}"
+          grep -Fxq 'host_plan_mutation_authorized=false' "${result}"
+          grep -Fxq 'host_plan_owner_attested=false' "${result}"
+          grep -Fxq 'host_native_readback_source=RUNNER_COPIED_UNAUTHENTICATED' "${result}"
+          # One exact Rust parser also audits the native transaction result.
+          # This is correlation, never authenticated SYSTEM/root attestation.
+          if [[ "${TARGET_KIND}" = VM &&
+                ( "${COMMAND_BODY}" = "/host apply ${TARGET_MACHINE}" ||
+                  "${COMMAND_BODY}" = "/host recover ${TARGET_MACHINE}" ||
+                  "${COMMAND_BODY}" =~ ^/host[[:space:]]apply[[:space:]]${TARGET_MACHINE}[[:space:]]config/[A-Za-z0-9][A-Za-z0-9._-]{0,63}/(line1-gateway|line2-proxy)$ ) &&
+                -s "${out}/host-operation/host-result.pb" ]]; then
+            intent_dir="${RUNNER_TEMP}/host-readback-intent"
+            install -d -m 0700 "${intent_dir}"
+            gh run download "${GITHUB_RUN_ID}" -R "${GITHUB_REPOSITORY}" \
+              -n "host-intent-${SOURCE_COMMENT_ID}" -D "${intent_dir}"
+            intent="${intent_dir}/host-intent.pb"
+            test -f "${intent}" && test ! -L "${intent}"
+            test "$(stat -c '%s' "${intent}")" -gt 0
+            test "$(stat -c '%s' "${intent}")" -le 4096
+            "${owner}" host --hosts-pb "${registry}" \
+              --hosts-sha256 "$(sha256sum "${registry}" | cut -d' ' -f1)" \
+              native-result "${TARGET_MACHINE}" --intent-path "${intent}" \
+              --result-path "${out}/host-operation/host-result.pb" \
+              > "${RUNNER_TEMP}/host-native-result-correlation.txt"
+            audit="${RUNNER_TEMP}/host-native-result-correlation.txt"
+            grep -Fxq 'host_native_result_correlation=EXACT' "${audit}"
+            grep -Fxq 'host_native_result_authenticated=true' "${audit}"
+            grep -Eq '^host_native_result_remote_acceptance=(VERIFIED_PHYSICAL|OBSERVED_ONLY)$' "${audit}"
+            grep -Fxq 'host_mutations=0' "${audit}"
+            receipt_proof="$(sed -n 's/^host_native_result_remote_acceptance=//p' "${audit}")"
+            [[ "${receipt_proof}" = VERIFIED_PHYSICAL || "${receipt_proof}" = OBSERVED_ONLY ]]
+            printf 'native_receipt_proof=%s\n' "${receipt_proof}" >> "${GITHUB_OUTPUT}"
+            echo 'native_result_audit=EXACT_SIGNED_NATIVE_OWNER' >> "${GITHUB_OUTPUT}"
+            {
+              echo '### Native owner cryptographically verified receipt'
+              echo '~~~text'
+              cat "${audit}"
+              echo '~~~'
+            } >> "${GITHUB_STEP_SUMMARY}"
+          fi
+          verdict="$(sed -n 's/^host_native_readback_verdict=//p' "${result}")"
+          [[ "${verdict}" =~ ^[A-Z0-9_]{1,96}$ ]]
+          printf 'typed_verdict=%s\n' "${verdict}" >> "${GITHUB_OUTPUT}"
+          {
+            echo '### Exact typed Host readback (UNAUTHENTICATED runner copy)'
+            echo '~~~text'
+            cat "${result}"
+            echo '~~~'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
       - name: Return bounded result for this ONE native owner
+        if: always()
+        env:
+          TYPED_OUTCOME: ${{ steps.typed.outcome }}
+          TYPED_VERDICT: ${{ steps.typed.outputs.typed_verdict }}
+          NATIVE_RECEIPT_PROOF: ${{ steps.typed.outputs.native_receipt_proof }}
         shell: bash
         run: |
           set -euo pipefail
@@ -137,7 +401,52 @@ jobs:
             skipped) result=OWNER_NOT_OBSERVED ;;
             *) result=UNKNOWN_NOT_ACCEPTED ;;
           esac
+          native_note='Native mutation authority: NONE. A read-only observation is not an authenticated owner receipt.'
+          if [[ "${TARGET_KIND}" = VM ]] && \
+             [[ "${COMMAND_BODY}" = "/host apply ${TARGET_MACHINE}" ||
+                "${COMMAND_BODY}" = "/host recover ${TARGET_MACHINE}" ||
+                "${COMMAND_BODY}" =~ ^/host[[:space:]]apply[[:space:]]${TARGET_MACHINE}[[:space:]]config/[A-Za-z0-9][A-Za-z0-9._-]{0,63}/(line1-gateway|line2-proxy)$ ]]; then
+            # Only the exact Rust Ed25519 verifier can upgrade this result.
+            # A successful runner step or unsigned readback never can.
+            native_note='Native VM transaction: remote authenticated receipt UNPROVEN.'
+            if [[ "${TYPED_OUTCOME}" = success &&
+                  "${NATIVE_RECEIPT_PROOF}" = VERIFIED_PHYSICAL ]]; then
+              result=NATIVE_RECEIPT_VERIFIED_PHYSICAL
+              native_note='Git-pinned Ed25519 native-owner receipt verified against exact intent and native physical readback; external TLS/auth/egress acceptance remains separate.'
+            elif [[ "${TYPED_OUTCOME}" = success &&
+                    "${NATIVE_RECEIPT_PROOF}" = OBSERVED_ONLY ]]; then
+              result=NATIVE_RECEIPT_OBSERVED_ONLY
+              native_note='Git-pinned Ed25519 native-owner receipt verified; no physical mutation poststate accepted.'
+            else
+              result=NATIVE_EXECUTION_NOT_VERIFIED_NO_REPLAY
+            fi
+          fi
           run_url="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          body="$(printf 'Host native result for operator command #%s\n\nHost: `%s`\nKind: `%s`\nResult: `%s`\nEvidence: %s\n\nA completed diagnostic is NOT acceptance of credentials, live network authentication, or fleet health. No host mutations.\n' \
-            "${SOURCE_COMMENT_ID}" "${TARGET_MACHINE}" "${TARGET_KIND}" "${result}" "${run_url}")"
+          if [[ "${TYPED_OUTCOME}" = failure ]]; then
+            typed=REJECTED_EXACT_RUST_VALIDATION
+          else
+            typed="${TYPED_VERDICT:-UNPROVEN_NO_TYPED_READBACK}"
+          fi
+          [[ "${typed}" =~ ^[A-Z0-9_]{1,96}$ ]]
+          body="$(printf 'Host native result for operator command #%s\n\nHost: `%s`\nKind: `%s`\nResult: `%s`\nTyped readback: `%s`\nEvidence: %s\n\n%s\n' \
+            "${SOURCE_COMMENT_ID}" "${TARGET_MACHINE}" "${TARGET_KIND}" "${result}" "${typed}" "${run_url}" "${native_note}")"
+          # Summarize only Rust-validated, bounded, structurally correlated
+          # per-container evidence. Never parse arbitrary runner protobuf.
+          if [[ "${TYPED_OUTCOME}" = success && "${TARGET_KIND}" = VM &&
+                "${COMMAND_BODY}" = "/host status ${TARGET_MACHINE} --deep" ]]; then
+            report="${RUNNER_TEMP}/host-readback-result.txt"
+            if [[ -f "${report}" && ! -L "${report}" ]] &&
+               grep -q '^host_vm_resources_count=' "${report}" &&
+               grep -Fxq 'host_vm_resources_origin=RUNNER_COPIED_UNAUTHENTICATED' "${report}"; then
+              per_resource="$(awk '/^host_vm_resource=/{print; if (++n == 24) exit}' "${report}")"
+              counts="$(grep -E '^host_vm_resources_(count|problem_count)=' "${report}")"
+              body="${body}$(printf '\nVM containers (Rust-validated; runner copy UNAUTHENTICATED; no mutation authority):\n~~~text\n%s\n%s\n~~~\n' "${counts}" "${per_resource}")"
+            else
+              body="${body}$(printf '\nVM containers: UNPROVEN — no accepted installed-owner resource report.\n')"
+            fi
+          fi
           gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/1/comments" -f "body=${body}" >/dev/null
+          if [[ "${TYPED_OUTCOME}" = failure ]]; then
+            echo 'HOST_TYPED_READBACK_REJECTED' >&2
+            exit 1
+          fi

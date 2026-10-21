@@ -315,6 +315,8 @@ dependencies = [
  "edge-trust",
  "futures-util",
  "prost",
+ "ring",
+ "reqwest",
  "rtnetlink",
  "serde",
  "serde_json",
@@ -505,6 +507,7 @@ dependencies = [
  "tonic",
  "tonic-prost",
  "tonic-prost-build",
+ "windows-sys 0.61.2",
 ]
 
 [[package]]

@@ -46,6 +46,17 @@ pub(crate) enum LocalCommand {
     },
     Verify,
     Diagnose,
+    /// Native read-only protobuf observation; not a mutation receipt.
+    HostObserve,
+    /// Read-only typed per-container Docker evidence from protected Git trust.
+    HostResources,
+    /// One native VM host transaction, with an exact protobuf intent on stdin.
+    HostApply,
+    /// First-use root-only trust enrollment. Never exposed by the runner sudoers.
+    HostEnroll {
+        machine_id: String,
+        release_set_sha256: String,
+    },
     QualityLine2,
     // Read-only unique public IPv4 observed on VM's live kernel interfaces.
     CredentialPublicEndpoint,
@@ -111,6 +122,10 @@ impl LocalCommand {
             Self::Status { .. } => "local-status",
             Self::Verify => "local-verify",
             Self::Diagnose => "local-diagnose",
+            Self::HostObserve => "local-host-observe",
+            Self::HostResources => "local-host-resources",
+            Self::HostApply => "local-host-apply",
+            Self::HostEnroll { .. } => "local-host-enroll",
             Self::QualityLine2 => "local-quality-line2",
             Self::CredentialPublicEndpoint => "local-credential-public-endpoint",
             Self::CredentialRuntimeSource => "local-credential-runtime-source",
@@ -173,6 +188,12 @@ mod tests {
         assert!(Cli::try_parse_from(["edge-agent", "local", "status"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "verify"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "diagnose"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "host-observe"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "host-resources"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "host-resources", "stop"]).is_err());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "host-apply"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "host-apply", "unsafe"]).is_err());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "host-observe", "write"]).is_err());
         assert!(Cli::try_parse_from(["edge-agent", "local", "quality-line2"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "credential-runtime-source"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "bootstrap-base"]).is_ok());

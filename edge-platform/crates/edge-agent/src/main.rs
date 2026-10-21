@@ -2,6 +2,8 @@ mod cli;
 mod docker_observation;
 mod error;
 mod host_diagnostics;
+mod host_enroll;
+mod host_native;
 mod line2_quality;
 mod mesh_network_diagnostics;
 mod network_observation;
@@ -19,7 +21,7 @@ use clap::Parser;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
-use std::io::{self, Read};
+use std::io::{self, Read, Write};
 use std::net::SocketAddr;
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
@@ -132,17 +134,175 @@ async fn main() -> ExitCode {
     }
 }
 
+/// Production ingress permits only read-only diagnostics, one signed
+/// HostIntent, and protected local-root enrollment. Deprecated commands
+/// stay parseable for old clients but cannot reach any mutation effector.
+fn native_local_entrypoint_allowed(command: &cli::LocalCommand) -> bool {
+    matches!(
+        command,
+        cli::LocalCommand::Status { .. }
+            | cli::LocalCommand::Verify
+            | cli::LocalCommand::Diagnose
+            | cli::LocalCommand::HostObserve
+            | cli::LocalCommand::HostResources
+            | cli::LocalCommand::HostApply
+            | cli::LocalCommand::HostEnroll { .. }
+            | cli::LocalCommand::QualityLine2
+            | cli::LocalCommand::CredentialPublicEndpoint
+            | cli::LocalCommand::CredentialRuntimeSource
+            | cli::LocalCommand::MeshVerify
+            | cli::LocalCommand::CredentialState
+            | cli::LocalCommand::CredentialInitialProbe
+    )
+}
+
+/// No legacy gRPC mutator may bypass the signed native host journal.
+/// Enforcement lives in each method, independently of listener/sudoers.
+fn deny_legacy_vm_rpc_mutation() -> Result<(), Status> {
+    Err(Status::permission_denied(
+        "HOST_VM_LEGACY_RPC_MUTATION_DISABLED_USE_SIGNED_HOST_INTENT",
+    ))
+}
+
 async fn run(parsed: cli::Cli) -> Result<(), AgentError> {
     use cli::Command;
 
     match parsed.command {
-        Command::AcceptanceServe(args) => {
-            let (addr, stack_dir) = args.resolve().map_err(AgentError::Command)?;
-            serve_acceptance_rpc(addr, stack_dir).await?;
-            Ok(())
+        Command::AcceptanceServe(_) => Err(AgentError::Command(
+            "HOST_VM_LEGACY_RPC_LISTENER_DISABLED_USE_HOST".to_owned(),
+        )),
+        Command::Local { command } => {
+            if !native_local_entrypoint_allowed(&command) {
+                return Err(AgentError::Command(
+                    "HOST_VM_LEGACY_LOCAL_MUTATION_DISABLED_USE_SIGNED_HOST_INTENT".to_owned(),
+                ));
+            }
+            run_local(command).await
         }
-        Command::Local { command } => run_local(command).await,
     }
+}
+
+/// One compact native VM evidence protobuf. There is no GitHub runner or
+/// credential authority here, and this cannot issue a mutation VERIFIED receipt.
+async fn run_local_host_observe(stack_dir: &Path) -> Result<(), String> {
+    let observed = capture_local_host_observation(stack_dir).await?;
+    io::stdout()
+        .write_all(&observed.encode_to_vec())
+        .map_err(|_| "HOST_OBSERVATION_STDOUT_UNAVAILABLE".to_owned())
+}
+
+/// No compiled Docker name list: native readback uses accepted Git selectors.
+fn owned_application_container_running(
+    names: &[String],
+    resources: &[edge_shared_types::FleetVmContainer],
+) -> bool {
+    resources
+        .iter()
+        .any(|resource| names.contains(&resource.container_name))
+}
+
+fn native_vm_owner_state(
+    docker_reachable: bool,
+    ownership_proven: bool,
+    running_containers: &[String],
+    resources: &[edge_shared_types::FleetVmContainer],
+) -> edge_shared_types::FleetNativeOwnerState {
+    use edge_shared_types::FleetNativeOwnerState;
+    if !docker_reachable || !ownership_proven || resources.is_empty() {
+        FleetNativeOwnerState::Unproven
+    } else if owned_application_container_running(running_containers, resources) {
+        FleetNativeOwnerState::Running
+    } else {
+        FleetNativeOwnerState::Stopped
+    }
+}
+
+/// One local source of native VM readback, shared with authenticated execution.
+async fn capture_local_host_observation(
+    stack_dir: &Path,
+) -> Result<edge_shared_types::FleetNativeObservation, String> {
+    use edge_shared_types::host_lifecycle::build_native_observation;
+    use edge_shared_types::{FleetHostKind, FleetNativeOwnerState, FleetNativeReleaseProof};
+    let state = inspect_runtime(stack_dir, AgentMode::Runtime).await;
+    let release_path = stack_dir.join(APPLICATION_RELEASE_MARKER);
+    let mut digest = None;
+    match fs::File::open(&release_path) {
+        Ok(file) => {
+            let mut bytes = Vec::new();
+            file.take(4097)
+                .read_to_end(&mut bytes)
+                .map_err(|_| "VM_HOST_RELEASE_UNREADABLE".to_owned())?;
+            if bytes.is_empty() || bytes.len() > 4096 {
+                return Err("VM_HOST_RELEASE_INVALID_SIZE".to_owned());
+            }
+            let release = ApplicationBundleRelease::decode(bytes.as_slice())
+                .map_err(|_| "VM_HOST_RELEASE_PROTO_INVALID".to_owned())?;
+            if release.encode_to_vec() != bytes || release.schema_version != 1 {
+                return Err("VM_HOST_RELEASE_NONCANONICAL".to_owned());
+            }
+            digest = Some(release.bundle_digest);
+        }
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => return Err("VM_HOST_RELEASE_UNREADABLE".to_owned()),
+    }
+    // Docker names are untrusted without project/service/ID readback.
+    // A running container is also NOT evidence of public TLS/auth/egress.
+    let resources = host_native::registered_vm_containers().ok();
+    let ownership_proven = state.docker_reachable
+        && match resources.as_deref() {
+            Some(scope) => docker_observation::verify_owned_application_containers(scope)
+                .await
+                .is_ok(),
+            None => false,
+        };
+    let owner_state = native_vm_owner_state(
+        state.docker_reachable,
+        ownership_proven,
+        &state.running_containers,
+        resources.as_deref().unwrap_or(&[]),
+    );
+    // Absence must be observed independently: Docker was inspected and no
+    // owned application containers or release marker exist. A running
+    // container with no marker is an UNKNOWN state, not a fresh installation.
+    let proof = if digest.is_some() {
+        FleetNativeReleaseProof::ApplicationBundle
+    } else if owner_state == FleetNativeOwnerState::Stopped
+        && !state.compose_file_present
+        && state.missing_containers.is_empty()
+        && state.containers.is_empty()
+    {
+        FleetNativeReleaseProof::VerifiedAbsent
+    } else {
+        FleetNativeReleaseProof::Unproven
+    };
+    let mut reasons = Vec::new();
+    if digest.is_none() && proof != FleetNativeReleaseProof::VerifiedAbsent {
+        reasons.push("VM_BUNDLE_NOT_OBSERVED");
+    }
+    if !state.docker_reachable {
+        reasons.push("VM_DOCKER_UNAVAILABLE");
+    } else if !ownership_proven {
+        reasons.push("VM_APPLICATION_OWNER_UNPROVEN");
+    }
+    // Runtime readiness is already explicitly encoded as
+    // runtime_ready_proven / runtime_ready. Stopped VM resources are not
+    // a broken observation; do not flag them as an evidence error merely
+    // because the application is intentionally stopped.
+    let observed_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "HOST_CLOCK_UNAVAILABLE".to_owned())?
+        .as_secs();
+    let observed = build_native_observation(
+        FleetHostKind::Vm,
+        owner_state,
+        proof,
+        digest.as_deref(),
+        ownership_proven.then_some(state.ready),
+        observed_at,
+        &reasons,
+    )
+    .map_err(str::to_owned)?;
+    Ok(observed)
 }
 
 /// Lightweight read-only VM observation. It deliberately does not claim
@@ -184,6 +344,10 @@ fn run_local_fast(stack_dir: &Path) -> Result<(), String> {
     println!("fast_schema=sing-box.fleet-fast/v1");
     println!("fast_observed_unix_seconds={observed_unix_seconds}");
     println!("fast_host_kind=VM");
+    println!(
+        "fast_native_host_trust={}",
+        host_native::local_trust_preflight()
+    );
     println!("fast_bundle_digest={digest}");
     println!("fast_runtime=UNPROVEN");
     println!("fast_reason=CONTAINERS_AND_ENDPOINTS_NOT_PROBED");
@@ -196,6 +360,11 @@ fn run_local_fast(stack_dir: &Path) -> Result<(), String> {
 }
 
 async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
+    if !native_local_entrypoint_allowed(&command) {
+        return Err(AgentError::Command(
+            "HOST_VM_LEGACY_LOCAL_MUTATION_DISABLED_USE_SIGNED_HOST_INTENT".to_owned(),
+        ));
+    }
     let stack_dir = PathBuf::from(DEFAULT_STACK_DIR);
     match command {
         cli::LocalCommand::Status { fast } => {
@@ -204,8 +373,30 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
             }
             let state = inspect_runtime(&stack_dir, AgentMode::Runtime).await;
             print_agent_state_evidence("STATUS", &state);
+            println!("host_native_trust={}", host_native::local_trust_preflight());
             Ok(())
         }
+        cli::LocalCommand::HostObserve => run_local_host_observe(&stack_dir)
+            .await
+            .map_err(AgentError::Command),
+        cli::LocalCommand::HostResources => {
+            let host = host_native::registered_vm_host().map_err(AgentError::Command)?;
+            let report = docker_observation::observe_vm_resource_report(&host, &stack_dir)
+                .await
+                .map_err(AgentError::Command)?;
+            io::stdout()
+                .write_all(&report.encode_to_vec())
+                .map_err(|_| AgentError::Command("HOST_RESOURCE_REPORT_STDOUT_FAILED".into()))
+        }
+        cli::LocalCommand::HostApply => host_native::apply(&stack_dir)
+            .await
+            .map_err(AgentError::Command),
+        cli::LocalCommand::HostEnroll {
+            machine_id,
+            release_set_sha256,
+        } => host_enroll::enroll(&machine_id, &release_set_sha256)
+            .await
+            .map_err(AgentError::Command),
         cli::LocalCommand::Verify => {
             let state = inspect_runtime(&stack_dir, AgentMode::Readiness).await;
             print_agent_state_evidence("VERIFY", &state);
@@ -241,6 +432,7 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
         cli::LocalCommand::Diagnose => {
             let state = inspect_runtime(&stack_dir, AgentMode::Runtime).await;
             print_agent_state_evidence("DIAGNOSE", &state);
+            println!("host_native_trust={}", host_native::local_trust_preflight());
             let network = network_observation::observe_ipv4_network()
                 .await
                 .map_err(AgentError::Command)?;
@@ -1193,6 +1385,7 @@ impl AgentService for AgentServerImpl {
         &self,
         request: Request<InitialVmCredentialRuntimeRequest>,
     ) -> Result<Response<InitialVmCredentialRuntimeResponse>, Status> {
+        deny_legacy_vm_rpc_mutation()?;
         let request = request.into_inner();
         validate_initial_vm_runtime_request(&request).map_err(Status::failed_precondition)?;
         initial_apply_vm_credential(&self.stack_dir, request.generation)
@@ -1226,6 +1419,7 @@ impl AgentService for AgentServerImpl {
         &self,
         request: Request<BootstrapRuntimeRequest>,
     ) -> Result<Response<BootstrapRuntimeResponse>, Status> {
+        deny_legacy_vm_rpc_mutation()?;
         let mode = BootstrapMode::try_from(request.into_inner().mode)
             .map_err(|_| Status::invalid_argument("unknown bootstrap mode"))?;
         if mode == BootstrapMode::Unspecified {
@@ -1239,6 +1433,7 @@ impl AgentService for AgentServerImpl {
         &self,
         request: Request<ApplyBundleRequest>,
     ) -> Result<Response<ApplyBundleResponse>, Status> {
+        deny_legacy_vm_rpc_mutation()?;
         let applied = stage_initial_vm_policy_bundle(&self.stack_dir, request.into_inner())
             .await
             .map_err(Status::failed_precondition)?;
@@ -1249,6 +1444,7 @@ impl AgentService for AgentServerImpl {
         &self,
         request: Request<ApplyBundleRequest>,
     ) -> Result<Response<ApplyBundleResponse>, Status> {
+        deny_legacy_vm_rpc_mutation()?;
         let response = apply_bundle(&self.stack_dir, request.into_inner())
             .map_err(|err| Status::internal(format!("failed to apply bundle: {err}")))?;
         Ok(Response::new(response))
@@ -1258,6 +1454,7 @@ impl AgentService for AgentServerImpl {
         &self,
         request: Request<RollbackBundleRequest>,
     ) -> Result<Response<RollbackBundleResponse>, Status> {
+        deny_legacy_vm_rpc_mutation()?;
         let response = rollback_bundle(&self.stack_dir, request.into_inner()).map_err(|err| {
             Status::failed_precondition(format!("bundle rollback refused: {err}"))
         })?;
@@ -1342,6 +1539,7 @@ impl AgentService for AgentServerImpl {
         &self,
         request: Request<MeshRuntimeConvergeRequest>,
     ) -> Result<Response<MeshRuntimeState>, Status> {
+        deny_legacy_vm_rpc_mutation()?;
         let request = request.into_inner();
         let state = converge_mesh_runtime(
             &self.stack_dir,
@@ -1368,6 +1566,7 @@ impl AgentService for AgentServerImpl {
         &self,
         _request: Request<Empty>,
     ) -> Result<Response<MeshRuntimeState>, Status> {
+        deny_legacy_vm_rpc_mutation()?;
         let state = cleanup_mesh_runtime(&self.stack_dir).await.map_err(|err| {
             Status::failed_precondition(format!("Mesh runtime cleanup failed: {err}"))
         })?;
@@ -1378,6 +1577,7 @@ impl AgentService for AgentServerImpl {
         &self,
         request: Request<StageCredentialCandidateRequest>,
     ) -> Result<Response<CredentialStateObservation>, Status> {
+        deny_legacy_vm_rpc_mutation()?;
         let bundle = request
             .into_inner()
             .bundle
@@ -5213,7 +5413,116 @@ struct BundleSummary {
 }
 
 #[cfg(test)]
+mod native_mutation_ingress_tests {
+    use super::*;
+
+    #[test]
+    fn vm_legacy_mutators_cannot_reach_dispatch() {
+        for command in [
+            cli::LocalCommand::BootstrapBase,
+            cli::LocalCommand::BootstrapTunnel,
+            cli::LocalCommand::BootstrapFull,
+            cli::LocalCommand::BundleConverge,
+            cli::LocalCommand::BundleStageInitial,
+            cli::LocalCommand::BundleRollback,
+            cli::LocalCommand::MeshCleanup,
+            cli::LocalCommand::CredentialStage { generation: 1 },
+            cli::LocalCommand::CredentialTransition {
+                action: "promote".to_owned(),
+            },
+            cli::LocalCommand::CredentialInitialApply { generation: 1 },
+        ] {
+            assert!(!native_local_entrypoint_allowed(&command));
+        }
+        assert!(native_local_entrypoint_allowed(
+            &cli::LocalCommand::HostApply
+        ));
+        assert!(native_local_entrypoint_allowed(
+            &cli::LocalCommand::HostObserve
+        ));
+        assert!(native_local_entrypoint_allowed(
+            &cli::LocalCommand::HostResources
+        ));
+        assert!(deny_legacy_vm_rpc_mutation().is_err());
+    }
+}
+
+#[cfg(test)]
 mod tests {
+    fn vm_scope_test() -> Vec<edge_shared_types::FleetVmContainer> {
+        [
+            ("vultr-line1-gateway", "line1-gateway"),
+            ("vultr-line2-proxy", "line2-proxy"),
+            ("vultr-warp-egress", "warp-egress"),
+        ]
+        .into_iter()
+        .map(|(name, service)| edge_shared_types::FleetVmContainer {
+            container_name: name.to_owned(),
+            compose_project: "vultr-edge".to_owned(),
+            compose_service: service.to_owned(),
+        })
+        .collect()
+    }
+
+    #[test]
+    fn foreign_same_named_container_never_proves_native_owner() {
+        use edge_shared_types::FleetNativeOwnerState;
+        let names = vec!["vultr-line2-proxy".to_owned()];
+        assert_eq!(
+            native_vm_owner_state(true, false, &names, &vm_scope_test()),
+            FleetNativeOwnerState::Unproven
+        );
+        assert_eq!(
+            native_vm_owner_state(true, true, &names, &vm_scope_test()),
+            FleetNativeOwnerState::Running
+        );
+        assert_eq!(
+            native_vm_owner_state(false, true, &names, &vm_scope_test()),
+            FleetNativeOwnerState::Unproven
+        );
+        assert_eq!(
+            native_vm_owner_state(
+                true,
+                true,
+                &["vultr-cloudflare-mesh".to_owned()],
+                &vm_scope_test()
+            ),
+            FleetNativeOwnerState::Stopped
+        );
+    }
+    #[test]
+    fn vm_owned_runtime_scope_excludes_unrelated_docker_workloads() {
+        let foreign = vec![
+            "vultr-cloudflare-mesh".to_owned(),
+            "unrelated-project-db".to_owned(),
+            "some-other-sing-box".to_owned(),
+        ];
+        assert!(!owned_application_container_running(
+            &foreign,
+            &vm_scope_test()
+        ));
+        for own in [
+            "vultr-warp-egress",
+            "vultr-line1-gateway",
+            "vultr-line2-proxy",
+        ] {
+            let mut names = foreign.clone();
+            names.push(own.to_owned());
+            assert!(owned_application_container_running(
+                &names,
+                &vm_scope_test()
+            ));
+        }
+        // Names must match exactly, not by substring or prefix.
+        assert!(!owned_application_container_running(
+            &[
+                "vultr-line1-gateway-other".into(),
+                "prefix-vultr-warp-egress".into(),
+            ],
+            &vm_scope_test()
+        ));
+    }
+
     use super::*;
     use edge_shared_types::agent_service_server::AgentService;
     use edge_shared_types::{
@@ -5401,7 +5710,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn stages_vm_credential_candidate_without_changing_active_and_survives_reopen() {
+    async fn legacy_rpc_stage_refuses_mutation_and_preserves_active_credential() {
         let root = unique_test_dir();
         let stack = root.join("stack");
         fs::create_dir_all(&stack).unwrap();
@@ -5419,22 +5728,13 @@ mod tests {
         let server = AgentServerImpl {
             stack_dir: stack.clone(),
         };
-        let staged = server
+        let denied = server
             .stage_credential_candidate(Request::new(StageCredentialCandidateRequest {
                 bundle: Some(vm_test_credential_bundle(101, CredentialDeliverySlot::B)),
             }))
             .await
-            .unwrap()
-            .into_inner()
-            .state
-            .unwrap();
-
-        assert_eq!(staged.active.as_ref().unwrap(), &active);
-        assert_eq!(staged.candidate.as_ref().unwrap().generation, 101);
-        assert_eq!(
-            staged.candidate.as_ref().unwrap().slot,
-            CredentialDeliverySlot::B as i32
-        );
+            .unwrap_err();
+        assert_eq!(denied.code(), tonic::Code::PermissionDenied);
 
         let reopened = AgentServerImpl { stack_dir: stack };
         let observed = reopened
@@ -5444,7 +5744,9 @@ mod tests {
             .into_inner()
             .state
             .unwrap();
-        assert_eq!(observed, staged);
+        assert_eq!(observed.active.as_ref(), Some(&active));
+        assert!(observed.candidate.is_none());
+        assert!(observed.previous.is_none());
 
         fs::remove_dir_all(root).unwrap();
     }

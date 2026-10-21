@@ -242,6 +242,9 @@ def prepare_inputs(root: Path, accepted: str, candidate: str, run_id: str) -> di
     (authority / "application-bundle.pb.sha256").write_text(
         f"{application_bundle_sha}  application-bundle.pb\n"
     )
+    fleet_registry = b"git-derived-fleet-protobuf"
+    (authority / "fleet-registry.pb").write_bytes(fleet_registry)
+    (authority / "fleet-registry.pb.sha256").write_text(f"{hashlib.sha256(fleet_registry).hexdigest()}  fleet-registry.pb\n")
     (authority / "acceptance.json").write_text(json.dumps({
         "schema": 1,
         "accepted_revision": accepted,
@@ -327,18 +330,18 @@ def scenario(existing_draft: bool, mismatched_target: bool = False) -> None:
         assert state["release"]["draft"] is False
         assert state["release"]["prerelease"] is False
         assert state["release"]["target_commitish"] == accepted
-        assert len(state["release"]["assets"]) == 15
+        assert len(state["release"]["assets"]) == 17
         assert f"release_id={state['release']['id']}" in first.stdout
-        assert "durable_assets=15" in first.stdout
+        assert "durable_assets=17" in first.stdout
 
         asset_ids = {asset["name"]: asset["id"] for asset in state["release"]["assets"]}
         second = run_publisher(env)
         state_again = json.loads(state_path.read_text())
         assert state_again["release"]["draft"] is False
         assert state_again["release"]["target_commitish"] == accepted
-        assert len(state_again["release"]["assets"]) == 15
+        assert len(state_again["release"]["assets"]) == 17
         assert {asset["name"]: asset["id"] for asset in state_again["release"]["assets"]} == asset_ids
-        assert "durable_assets=15" in second.stdout
+        assert "durable_assets=17" in second.stdout
 
 
 def main() -> None:

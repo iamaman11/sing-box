@@ -4,7 +4,8 @@ use edge_shared_types::{
     canonical_production_desired_state, decode_windows_activation_state,
     verify_windows_activation_files,
 };
-use std::io::Read;
+use prost::Message;
+use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use sysinfo::{Pid, ProcessRefreshKind, ProcessesToUpdate, System, UpdateKind};
@@ -56,10 +57,20 @@ fn main() {
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let command = args.next().ok_or_else(usage)?;
-    if command != "doctor" {
+    if command != "doctor" && command != "host-observe" {
         return Err(usage());
     }
     let state_path = PathBuf::from(args.next().ok_or_else(usage)?);
+    if command == "host-observe" {
+        if args.next().is_some() {
+            return Err(usage());
+        }
+        let bytes = build_host_observation(&state_path)?;
+        std::io::stdout()
+            .write_all(&bytes)
+            .map_err(|_| "HOST_OBSERVATION_STDOUT_UNAVAILABLE".to_owned())?;
+        return Ok(());
+    }
     let fast = match args.next().as_deref() {
         None => false,
         Some("--fast") => true,
@@ -276,6 +287,112 @@ fn observe_pending_privileged_request_metadata(install_root: &Path) -> String {
 
 /// Bounded read-only Fleet snapshot. It never starts a service, accesses private
 /// credential material, walks processes, probes DNS/routes or hashes release files.
+/// Read-only native Windows SCM + local activation record. This is not
+/// a privileged service operation and can never issue a VERIFIED receipt.
+fn build_host_observation(state_path: &Path) -> Result<Vec<u8>, String> {
+    use edge_shared_types::host_lifecycle::build_native_observation;
+    use edge_shared_types::{FleetHostKind, FleetNativeOwnerState, FleetNativeReleaseProof};
+    let mut digest = None;
+    let mut reason_codes: Vec<&str> = Vec::new();
+    #[cfg(windows)]
+    let mut exact_controller_path: Option<PathBuf> = None;
+    match std::fs::File::open(state_path) {
+        Ok(file) => {
+            let mut bytes = Vec::new();
+            file.take(4097)
+                .read_to_end(&mut bytes)
+                .map_err(|_| "WINDOWS_HOST_ACTIVATION_UNREADABLE".to_owned())?;
+            if bytes.is_empty() || bytes.len() > 4096 {
+                return Err("WINDOWS_HOST_ACTIVATION_SIZE_INVALID".to_owned());
+            }
+            let active = decode_windows_activation_state(&bytes)
+                .map_err(|_| "WINDOWS_HOST_ACTIVATION_PROTO_INVALID".to_owned())?;
+            #[cfg(windows)]
+            {
+                if verify_windows_activation_files(&active).is_ok() {
+                    exact_controller_path = Some(PathBuf::from(&active.controller_path));
+                } else {
+                    reason_codes.push("WINDOWS_RELEASE_FILES_UNVERIFIED");
+                }
+            }
+            digest = Some(active.release_set_sha256);
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            reason_codes.push("WINDOWS_ACTIVATION_UNAVAILABLE");
+        }
+        Err(_) => return Err("WINDOWS_HOST_ACTIVATION_UNREADABLE".to_owned()),
+    }
+    #[cfg(windows)]
+    let owner_state = {
+        (|| -> Result<FleetNativeOwnerState, &'static str> {
+            let manager =
+                ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+                    .map_err(|_| "WINDOWS_SCM_UNAVAILABLE")?;
+            let service = manager
+                .open_service(
+                    WINDOWS_CONTROLLER_SERVICE_NAME,
+                    ServiceAccess::QUERY_STATUS | ServiceAccess::QUERY_CONFIG,
+                )
+                .map_err(|_| "WINDOWS_SCM_UNAVAILABLE")?;
+            let status = service
+                .query_status()
+                .map_err(|_| "WINDOWS_SCM_UNAVAILABLE")?;
+            // The installed SCM entry must point to the EXACT verified release
+            // binary. A same-named foreign service cannot masquerade as the
+            // managed SYSTEM owner, even when Windows reports RUNNING.
+            let expected = exact_controller_path
+                .as_ref()
+                .ok_or("WINDOWS_OWNER_RELEASE_UNPROVEN")?;
+            let config = service
+                .query_config()
+                .map_err(|_| "WINDOWS_SCM_CONFIG_UNAVAILABLE")?;
+            let actual = service_binary_path(&config.executable_path);
+            if !same_path(&actual, expected) {
+                return Err("WINDOWS_SCM_BINARY_MISMATCH");
+            }
+            match status.current_state {
+                ServiceState::Stopped => Ok(FleetNativeOwnerState::Stopped),
+                ServiceState::Running => Ok(FleetNativeOwnerState::Running),
+                _ => Ok(FleetNativeOwnerState::Transitioning),
+            }
+        })()
+        .unwrap_or_else(|error| {
+            reason_codes.push(error);
+            FleetNativeOwnerState::Unproven
+        })
+    };
+    #[cfg(not(windows))]
+    let owner_state = {
+        reason_codes.push("WINDOWS_SCM_UNSUPPORTED_HOST");
+        FleetNativeOwnerState::Unproven
+    };
+    // SCM state is not sing-box runtime readiness or proof of external DNS,
+    // network, TLS or authentication. The typed runtime_ready_proven=false
+    // already expresses this missing proof. Do NOT put an expected proof gap
+    // into failure reason_codes: STOPPED/STOPPED must be a legitimate NOOP.
+    // Actual SCM, release or identity failures still carry reason_codes.
+    let observed_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "WINDOWS_HOST_CLOCK_UNAVAILABLE".to_owned())?
+        .as_secs();
+    let proof = if digest.is_some() {
+        FleetNativeReleaseProof::ActivationRecord
+    } else {
+        FleetNativeReleaseProof::Unproven
+    };
+    let observed = build_native_observation(
+        FleetHostKind::Windows,
+        owner_state,
+        proof,
+        digest.as_deref(),
+        None,
+        observed_at,
+        &reason_codes,
+    )
+    .map_err(str::to_owned)?;
+    Ok(observed.encode_to_vec())
+}
+
 fn run_fast(state_path: &Path) -> Result<(), String> {
     let started = Instant::now();
     let mut bytes = Vec::new();
@@ -1213,12 +1330,38 @@ fn observe_udp6_listeners(projects: &BTreeMap<u32, String>) -> Result<usize, Str
 }
 
 fn usage() -> String {
-    "usage: edge-diagnostic doctor <current.pb> [--fast]".to_owned()
+    "usage: edge-diagnostic doctor <current.pb> [--fast] | host-observe <current.pb>".to_owned()
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_observation_never_claims_runtime_readiness_or_verified() {
+        let path = std::env::temp_dir().join(format!(
+            "sing-box-missing-activation-{}.pb",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let bytes = build_host_observation(&path).unwrap();
+        let observed =
+            edge_shared_types::host_lifecycle::decode_native_observation(&bytes).unwrap();
+        assert_eq!(observed.schema_version, 1);
+        assert_eq!(
+            observed.host_kind,
+            edge_shared_types::FleetHostKind::Windows as i32
+        );
+        assert!(!observed.runtime_ready_proven);
+        assert!(!observed.runtime_ready);
+        assert!(observed.observed_release_sha256.is_empty());
+        assert!(
+            observed
+                .reason_codes
+                .iter()
+                .any(|x| x == "WINDOWS_ACTIVATION_UNAVAILABLE")
+        );
+    }
 
     #[test]
     fn observes_current_process_by_exact_executable_path() {

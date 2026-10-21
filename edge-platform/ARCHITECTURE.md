@@ -1,55 +1,64 @@
 # sing-box — нормативная архитектура
 
-Этот документ — единственная нормативная архитектура. Исторические реализации и последовательности операций не являются инструкциями. Единственный [план завершения](FINALIZATION-PLAN.md); [Issue #26](https://github.com/iamaman11/sing-box/issues/26) — текущий курсор и архив доказательств, а не разрешение воспроизводить старые транзакции.
+Единый архитектурный контракт. [План](FINALIZATION-PLAN.md); [Issue #26](https://github.com/iamaman11/sing-box/issues/26) — только архив/курсор. Канон — защищённый GitHub `main`.
 
-**ОБЯЗАТЕЛЬНОЕ РЕШЕНИЕ ВЛАДЕЛЬЦА, 18.10.2026: полный запрет восстановления, повторного запуска, миграции и совместимости со старыми операционными путями.** Это касается всех команд, VM/Windows, сетевого стека, секретов, контейнеров, установки, обновления и восстановления. Неисправные *sing-box-owned* ресурсы приводятся в новое типизированное состояние штатной заменой/переразвёртыванием. Доставать старые A/B-операции из истории ради исправления новой системы запрещено.
+**Запрещены:** историческая A/B, старые credential workflows, дубли команд, reserve secrets, migration fallback, replay и новые агенты/службы/реестры.
 
-## Ответственность: одна цепочка, один владелец
+## Единственная цепочка ответственности
 
-| Область | Единственный авторитет |
+| Уровень | Единственный authority |
 | --- | --- |
-| Исходный код, реестр хостов, desired state | Защищённый удалённый GitHub `main`; protobuf |
-| Решение о переходах | Rust `edge-orchestrator` |
-| Windows, SCM и sing-box | Установленный SYSTEM `EdgePlatformController` |
-| VM, Docker/Bollard, WARP, контейнеры | Установленный root `edge-agent` |
-| Секреты, новое provision/rotation | Cloudflare Worker |
-| Артефакты и доставка запросов | GitHub immutable ReleaseSet и Actions, **не** второй runtime owner |
-| Необратимые записи | Целевой новый типизированный per-host/per-resource intent и native receipts; исторический Issue #26 — архив только для аудита, НЕ authority запуска |
+| Canonical desired, machine/owner selectors, code | GitHub `main`: `infra/hosts/hosts.textproto`, typed protobuf, immutable ReleaseSet |
+| Resource graph и решение о переходе | Rust `edge-orchestrator` / `edge-shared-types` |
+| Секреты и разрешение операции | Cloudflare Worker, CredentialRef и подписанный HostIntent |
+| Физические Windows/SCM/sing-box операции | Установленный SYSTEM `EdgePlatformController` |
+| Физические VM/Docker/sing-box операции | Установленный root `edge-agent` |
+| Передача запроса/кандидата | GitHub Actions runner: **только транспорт**, не mutation authority |
+| Итог | Durable journal + native physical readback + authenticated receipt (целевой контракт) |
 
-GitHub runner — транспорт без привилегий runtime; текущий native owner проверяет идентичность, версию, область и одноразовое разрешение сам. **Не создавать** вторые службы/демоны, cron, агенты, секретные хранилища, реестры, отдельные инсталляторы, прямой PowerShell/JSON decision authority или обходной proxy transport.
+## Неизменяемый контракт иерархии ресурсов
 
-## Типизированная модель
+Одна сквозная цепь: `MachineId → ResourceKind/ResourceId → Parent/Dependencies → Owner → ImmutableDesired → NativeObserved → TypedReason → PlannedStep → SignedHostIntent → NativeEffect → PhysicalReadback → Receipt`.
 
-Один Git-owned `infra/hosts/hosts.textproto`: уникальный `machine_id`, вид хоста, точный native owner и ссылка на desired spec. Для конфигурации, desired/observed state, команд, результатов, причин отказа и журналируемых операций — типизированный protobuf. Старые provider JSON и локальные конфиги — миграционный долг или **выход рендеринга**, не параллельное desired state. Добавление Windows/VM/контейнера меняет типизированные данные и, при необходимости, реализацию существующего native owner, а не архитектуру управления. Config-only изменение не должно требовать несвязанной пересборки Rust.
+1. **Ресурс.** `ResourceKind`, `ResourceId` и `MachineId` определяют единственную идентичность и единственного владельца. Отсутствующий/неподтверждённый owner, чужой Docker Compose project, Mesh или Windows Cloudflare One дают `BLOCKED`, никогда автоматическое присвоение.
+2. **Иерархия.** Каждый узел принадлежит ровно одному зарегистрированному host; зависимости указывают на допустимые идентичности. Циклы, дубли, неявные Docker networks, подмена родителя и изменение соседнего ресурса не допускаются. Ошибка ребёнка поднимается к родителю в диагностике, но **не** разрешает менять родителя.
+3. **Состояние.** Desired исходит только из Git и immutable ReleaseSet; Compose, sing-box JSON, systemd/SCM, DNS, firewall — выход рендера или фактический readback, не второй desired. Образ — pinned digest. Secret value остаётся только у Worker/целевого native owner, наружу — CredentialRef.
+4. **Диагностика.** `host status <machine-id> --deep` обязан указывать путь ресурса, owner, dependencies, exact desired/observed digest, timestamp, scope источника, typed reason, proposed action, `UNPROVEN/BLOCKED`. Нельзя заменять ошибки TLS, DNS, маршрута, образа или конфигурации общим `container unhealthy`. Текст — отображение enum, не самостоятельное правило.
+5. **Операция.** `host apply/recover` вызывает только один Rust planner и известный native handler. При отсутствии обработчика — `UNSUPPORTED` с `ResourceId`, не `docker exec`, SSH, shell, ручная правка конфигурации, новый workflow или универсальный reinstall. Прежде чем менять Line2, доказать scope и неизменность Line1, WARP и network; общие зависимости изменять только атомарно и явно.
+6. **Неповторяемость.** Перед BEGIN: Git digest, ownership, dependency graph, exact signed intent, Worker auth и native lock. После BEGIN неизвестный ACK, crash, недоказанный poststate → `UNKNOWN_NO_REPLAY`; никакой повторной попытки или скрытого rollback. Новая транзакция возможна лишь после доказанной изоляции старого ресурса и нового разрешения.
+7. **Расширение.** Новая функциональность добавляется по одному маршруту: protobuf → Rust validator/planner → существующий native owner handler → typed readback/errors → негативные тесты → физическая приёмка. Ни одного второго owner chain. `NOOP` Docker не доказывает готовность DNS/TLS/auth/DIRECT/WARP.
+8. **Доказательство.** Runner-copied protobuf, CI PASS и release artifact не являются authenticated owner receipt. Обязательны typed source/time/identity, bounded readback, exact installed digest и отдельная внешняя проверка для сетевого результата.
 
-Line1 — четыре endpoint, Line2 — шесть, WARP egress и Mesh — типизированные ресурсы текущего VM owner; Mesh может быть не принят отдельно.
+**Line2 как стандарт диагностики:** `machine_id → VM root owner → edge_net → line2-proxy → image/config → TLS/auth → DIRECT/WARP`. При ошибке config может измениться только Line2 config при доказанной принадлежности и готовом handler; неизвестная сеть, секрет, сосед или маршрут → адресный `BLOCKED`, а не ручная команда. Сбой дочернего ресурса виден в статусе всего host без расширения mutation scope.
 
-## Три операции
+## Модель, команды и граница реализации
 
-- `host status [machine-id] [--deep]`: только чтение. Типизированный, ограниченный размером ответ: `machine_id`, `observed_at`, `depth`, `installed`, `desired`, `owner`, `health`, `reason`, `next_action`. `UNPROVEN` не превращается в PASS.
-- `host apply <machine-id>`: одна установка, конфигурация, обновление либо переустановка через существующего локального владельца и точный ReleaseSet, со строгим admission, journal BEGIN и readback.
-- `host recover <machine-id>`: диагностирует отказ и штатно приводит *свои* ресурсы к **новому** typed desired/release: безопасный no-op, замена/переустановка либо отказ с кодом причины. Не запускает старые миграции или неизвестные мутации повторно; не меняет сторонние ресурсы.
+Единственный `FleetDesiredState` задаёт `FleetHostTarget`: `STOPPED|RUNNING`, для Windows `PROXY_ONLY|MANAGED_TUN`. Отсутствие target → только OBSERVE, не запуск. Сейчас Windows намеренно `STOPPED/ProxyOnly`: SYSTEM SCM не запускать, TUN не включать. Cloudflare One независимо владеет собственным туннелем/DNS; Mesh другого проекта не трогать.
 
-Это **целевой контракт**, не утверждение, что весь lifecycle уже написан. Текущий `host recover` только read-only; новый универсальный `apply/recover` и per-host ReleaseSet ещё не приняты. Старые команды присутствуют в коде, но **НЕ являются разрешённым путём нового управления**; их достижимость необходимо устранить в едином нативном заменяющем срезе. Никакой приёмки до физического доказательства.
+Только три внешние операции:
 
-## Доказательность диагностики и обязательное содействие локального агента
+- `host status <id> [--deep]` — bounded read-only status/причина/предлагаемый шаг;
+- `host apply <id>` — подписанный одноразовый переход к Git desired и ReleaseSet;
+- `host recover <id>` — диагностика/безопасная новая операция после установления фактов, никогда replay неизвестной мутации.
 
-**При малейшем сомнении** — отсутствии поля, противоречии GitHub и native owner, устаревшем наблюдении, неподтверждённой provenance, неизвестном exit code, неопределённой области владения или неясном физическом состоянии — **обязательно** обратиться за адресной read-only проверкой к существующему локальному агенту/оператору. Нельзя строить гипотезу как факт, повторять неполезные диагностические попытки, выводить PASS из CI, молчания, отсутствия ошибок или состояния другого хоста. До ответа — `UNPROVEN`/`BLOCKED` и никакой рискованной мутации.
+**CLI:** прежние mutation-команды заблокированы до Rust dispatch и скрыты; доступны host, immutable ReleaseSet build и read-only проверки. Архивные workflows ещё требуют закрытия.
 
-Помощь локального агента — **обязательная страховка при неопределённости сейчас**, а **не** требуемый пользовательский ритуал навсегда. Выявленный недостаток немедленно классифицировать как дефект observability: расширить существующий native Rust owner и компактный protobuf `host status --deep` так, чтобы аналогичный факт в дальнейшем получался автоматически из ChatGPT без ручного запроса. Один владелец наблюдения, точная machine/resource identity, observation timestamp, source/release hash, evidence scope (VM-localhost, Windows, external), typed `error_class`, `reason`, `next_action`. Запрещено создавать второй агент, новый секретный транспорт, наследуемый compatibility-path или polling ради диагностики. Локальная проверка — **строго только чтение**, без самовольного исправления.
+**Реализовано частично в PR #403:** Protobuf DAG для Compose-owned containers/networks/images/config; typed reason, Rust planner, VM root Agent, Worker authorization и одноразовый journal. Для одной конфигурации Line1/Line2 реализован подписанный `config/<project>/<service>` в существующем `host apply`: GitHub approval → Worker Ed25519 → точный DAG node/owner → native config-only handler. Чужой ресурс, image-pair, START/STOP и cross-scope UNKNOWN блокируются. Read-only планы неизменно `owner_attested=false`, `mutation_authorized=false`.
 
-## Инварианты безопасности переходов
+**VM INSTALL:** `ResourceHierarchy` содержит Worker-owned CredentialRef и ребро к Line1/Line2; `ResourceReport/v2` проверяет ACTIVE/CANDIDATE/ABSENT/UNPROVEN. Без ACTIVE и без Git-pinned first-use Worker bundle — BLOCKED, STOP допустим. First-use сверяется до BEGIN; ACTIVE создаёт root после BEGIN. Drift → UNKNOWN_NO_REPLAY. Bollard без Compose. Worker issuance/physical receipt — UNPROVEN.
 
-Каждая операция привязана к точным `machine_id + operation + desired/release digest + journal identity + single owner`. Один lock и максимум одна попытка. После потерянного ACK, crash, задержки runner или частичной записи — `UNKNOWN_NO_REPLAY` для *той* операции: запрет её повтора, короткая локальная диагностика существующего typed intent/owner, затем **новая независимая** строго ограниченная fresh-deployment транзакция только после подтверждённой изоляции/вывода старого ресурса. Новый Worker credential generation допустим только как часть нового явного provision с новой resource identity, без повторного использования или доигрывания старой A/B. Исторический успешный сетевой тест, наличие candidate-файла, коммит в Git, PASS CI или локальный pointer не являются доказательством текущей работы.
+**Native receipt и legacy boundary (PR #403):** root `host-enroll` создаёт защищённый Ed25519 receipt key, выдаёт public key для регистрации в Git; без exact key match apply BLOCKED. VM CLI допускает только host apply, enrollment и чтение; старый RPC listener отключён. VM/Windows legacy mutating RPC всегда PermissionDenied; новые RPC проверяются CI по умолчанию. Windows SYSTEM signed apply и физическая приёмка НЕ готовы.
 
-**Старые исполняемые пути — удалить, не поддерживать compatibility или исторические fallback.** Старый журнал оставить пассивным аудиторским артефактом (не читать его для допуска новых операций). При замене собственных ресурсов удалить старые конфиги, контейнеры, credentials, sudoers и бинарники **после** подтверждения принадлежности и обеспечения нового безопасного доступа; не смешивать новые credentials со старыми и не воспроизводить UNKNOWN. Не удалять чужие проекты, Cloudflare One, операторский доступ, общую инфраструктуру или данные вне явно подтверждённой области.
+**Не принято:** физическая установка scoped signer/root Agent и ключей receipt, остальные resource kinds DNS/firewall/routes/TLS/CredentialRef, Windows SYSTEM apply и полное deep-acceptance. Обычный `resource_id=sing-box` остаётся host-wide; `host recover` read-only. Код PR и CI не означают эксплуатационный допуск. Старые команды не возвращать; `UNPROVEN` не считать PASS.
 
-Windows остаётся `ProxyOnly`, служба намеренно Stopped/OnDemand, TUN выключен; самостоятельный Cloudflare One не трогать. Managed TUN допускается только по отдельному явному намерению и физической приёмке DNS, default routes, reboot, rollback и работы браузера. Запрещено затрагивать ресурсы других проектов или считать схожее имя доказательством принадлежности.
+## Неопределённость и восстановление
 
-## Единый путь нового развёртывания (нормативный)
+**При малейшем сомнении** в локальном owner, праве владения, release hash, журнале, сетевом результате или состоянии доступа **обратиться за адресной read-only проверкой** к существующему локальному агенту/оператору. Запросить конкретное недостающее поле, запретить мутации, сохранить `UNPROVEN/BLOCKED`. Затем устранить причину отсутствия факта в том же Rust owner и `host status --deep`, чтобы следующий раз не требовалась ручная проверка. Не придумывать дополнительный агент, polling или SSH-путь.
 
-`host status` → проверка точного owner/ownership и типизированных причин → новый per-resource desired в защищённом Git → новый immutable ReleaseSet → **новые** секреты через Worker (без экспорта значений в GitHub/чат) → единственный установленный native owner выполняет ограниченный apply/reinstall → отдельная физическая проверка DNS/routes/TLS/auth/контейнеров → вывод из эксплуатации только доказанно принадлежащих sing-box старых ресурсов. Не создавать другую службу, сценарий на машину, профиль, резервные credentials, не требовать ручной реконструкции старых действий. Если нет native owner/доступа/ownership — вернуть `BLOCKED` с точным отсутствующим фактом и краткую инструкцию локальной read-only проверки; не догадываться.
+При `UNKNOWN_NO_REPLAY` — нельзя воспроизводить старую A/B-операцию или `BEGIN`; нужна подтверждённая изоляция и *новая* типизированная транзакция с новым `operation_id`. **старый журнал оставить пассивным аудиторским артефактом**; не читать его как admission authority. Собственные устаревшие ресурсы выводить только после доказанного ownership и сохранения операторского доступа. Не менять DNS/default routes, чужой Mesh, Cloudflare One или Windows TUN без отдельного явного desired и физического acceptance.
 
-## Что означает «10/10»
+## Один путь развертывания и критерий 10/10
 
-**Семь обязательных физических ворот:** (1) только три команды и понятный результат; (2) быстрая/глубокая точная диагностика с reason/action; (3) A/B, crash, unknown ACK, rollback без replay; (4) новая и существующая Windows/VM устанавливаются, переустанавливаются и восстанавливаются штатно; (5) конфигурация sing-box/контейнеров рендерится из типизированного desired state без второго источника; (6) две Windows и две VM без фиксированных имён и межмашинных конфликтов; (7) ChatGPT получает короткий typed status, не огромные логи. Для каждого нужны точный tested SHA, CI, immutable promotion и независимые физические доказательства. Пока хоть одно не выполнено, итог — **NOT_ACCEPTED_10_10**.
+Git desired → Rust typed graph/planner → immutable ReleaseSet → Worker signer/credentials → единственный SYSTEM/root owner → journal BEGIN → native apply → физическая проверка config/DNS/routes/TLS/auth/egress → receipt. Без reserve paths, произвольных команд, дополнительного install workflow или второго control plane.
+
+**10/10 требует одновременно:** (1) три команды и ясный typed status; (2) полный parent/resource/dependency diagnosis; (3) signed scoped one-shot apply, crash/ACK `UNKNOWN_NO_REPLAY`; (4) fresh/reinstall/recover на новой и существующей Windows/VM; (5) Line1 4/4, Line2 6/6 DIRECT/WARP/TLS/auth; (6) независимость Mesh/Cloudflare One и безопасная Windows ProxyOnly/TUN приёмка; (7) exact tested SHA → CI → ReleaseSet без rebuild → native/remote физические доказательства. До этого `NOT_ACCEPTED_10_10`.

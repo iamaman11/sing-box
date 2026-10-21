@@ -30,6 +30,37 @@ mod vultr_vpc_lifecycle_service;
 use clap::Parser;
 use edge_observability::init as init_observability;
 
+// Only the host chain may mutate installed resources. Legacy domain modules
+// stay compiled for release-input tests/read-only diagnostics, but their
+// mutation commands have no CLI authority. Check before release-context load
+// AND within run(): hiding a clap command alone is not a security boundary.
+fn legacy_entrypoint_allowed(command: &cli::Command) -> bool {
+    use cli::Command;
+    match command {
+        Command::Host { .. } | Command::ApplicationBundleBuild(_) => true,
+        Command::CloudflareZeroTrust {
+            command: cli::CloudflareZeroTrustCommand::Doctor(_),
+        } => true,
+        Command::CloudflareTargetPlane { command } => matches!(
+            command,
+            cli::CloudflareTargetPlaneCommand::Inventory
+                | cli::CloudflareTargetPlaneCommand::Plan
+                | cli::CloudflareTargetPlaneCommand::Verify
+                | cli::CloudflareTargetPlaneCommand::VerifyActive
+        ),
+        Command::Production { command } => matches!(
+            command,
+            cli::ProductionCommand::Validate
+                | cli::ProductionCommand::Diagnose
+                | cli::ProductionCommand::DnsNoop
+        ),
+        Command::Credentials {
+            command: cli::CredentialDeliveryCommand::ContractVerify,
+        } => true,
+        _ => false,
+    }
+}
+
 #[tokio::main]
 async fn main() -> ExitCode {
     let telemetry = init_observability("edge-orchestrator");
@@ -42,6 +73,10 @@ async fn main() -> ExitCode {
         }
     };
     let command = parsed.command_name();
+    if !legacy_entrypoint_allowed(&parsed.command) {
+        eprintln!("HOST_LEGACY_MUTATION_INGRESS_DISABLED_USE_HOST");
+        return ExitCode::from(1);
+    }
     if let cli::Command::ApplicationBundleBuild(args) = &parsed.command {
         let result = application_lifecycle_command::build_candidate_application_bundle(
             &args.spec_path,
@@ -129,6 +164,10 @@ async fn run(
 ) -> Result<(), String> {
     use cli::Command;
 
+    // Defense in depth if run() is invoked without the top-level CLI gate.
+    if !legacy_entrypoint_allowed(&parsed.command) {
+        return Err("HOST_LEGACY_MUTATION_INGRESS_DISABLED_USE_HOST".to_owned());
+    }
     match parsed.command {
         Command::ApplicationAcceptance(args) => {
             application_acceptance_command::run(args, release_context).await
@@ -180,14 +219,36 @@ async fn run(
             hosts_sha256,
             github_output,
             runner_inventory_json,
-        } => host_command::run(
-            command,
-            release_context,
-            &hosts_pb,
-            &hosts_sha256,
-            github_output.as_deref(),
-            runner_inventory_json.as_deref(),
-        ),
+            source_comment_id,
+            intent_output,
+        } => match command {
+            cli::HostCommand::RefreshReceipt { machine_id } => {
+                vultr_lifecycle_command::host_receipt_refresh(&machine_id, release_context).await
+            }
+            cli::HostCommand::FirstUse {
+                machine_id,
+                installer_path,
+                agent_path,
+            } => {
+                vultr_lifecycle_command::host_first_use(
+                    &machine_id,
+                    &installer_path,
+                    &agent_path,
+                    release_context,
+                )
+                .await
+            }
+            other => host_command::run(
+                other,
+                release_context,
+                &hosts_pb,
+                &hosts_sha256,
+                github_output.as_deref(),
+                runner_inventory_json.as_deref(),
+                source_comment_id,
+                intent_output.as_deref(),
+            ),
+        },
         Command::Production { command } => match command {
             cli::ProductionCommand::Validate => production_command::validate(release_context),
             cli::ProductionCommand::Diagnose => cloudflare_production_inventory::run().await,
@@ -209,5 +270,64 @@ async fn run(
         Command::VultrVpc { command } => {
             vultr_vpc_lifecycle_command::run(command.into_legacy_args()).await
         }
+    }
+}
+
+#[cfg(test)]
+mod canonical_host_ingress_tests {
+    use super::*;
+    use cli::{CloudflareTargetPlaneCommand as Cloudflare, ProductionCommand as Production};
+
+    #[test]
+    fn legacy_mutations_blocked_before_release_context_and_dispatch() {
+        let blocked = [
+            cli::Command::CloudflareTargetPlane {
+                command: Cloudflare::Converge,
+            },
+            cli::Command::CloudflareTargetPlane {
+                command: Cloudflare::ActiveConverge,
+            },
+            cli::Command::Production {
+                command: Production::EnrollRuntime(cli::ProductionEnrollRuntimeArgs {
+                    edge_agent_artifact_path: "agent".into(),
+                    runner_installer_path: "runner".into(),
+                }),
+            },
+            cli::Command::Credentials {
+                command: cli::CredentialDeliveryCommand::HostBootstrapConverge,
+            },
+            cli::Command::VultrLifecycle {
+                command: cli::VultrLifecycleCommand::Inventory(cli::SpecArgs {
+                    spec_path: "spec".into(),
+                }),
+            },
+        ];
+        for cmd in &blocked {
+            assert!(!legacy_entrypoint_allowed(cmd));
+        }
+        assert!(legacy_entrypoint_allowed(
+            &cli::Command::CloudflareTargetPlane {
+                command: Cloudflare::Inventory
+            }
+        ));
+        assert!(legacy_entrypoint_allowed(&cli::Command::Production {
+            command: Production::Diagnose
+        }));
+        assert!(legacy_entrypoint_allowed(&cli::Command::Credentials {
+            command: cli::CredentialDeliveryCommand::ContractVerify
+        }));
+        assert!(legacy_entrypoint_allowed(&cli::Command::Host {
+            hosts_pb: "hosts.pb".into(),
+            hosts_sha256: "test".into(),
+            github_output: None,
+            runner_inventory_json: None,
+            source_comment_id: None,
+            intent_output: None,
+            command: cli::HostCommand::Status {
+                machine_id: None,
+                deep: false,
+                credential_pair_windows: None,
+            },
+        }));
     }
 }

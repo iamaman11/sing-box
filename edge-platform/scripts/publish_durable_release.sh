@@ -42,12 +42,15 @@ test -f "${authority}/release-set.pb"
 test -f "${authority}/release-set.pb.sha256"
 test -f "${authority}/application-bundle.pb"
 test -f "${authority}/application-bundle.pb.sha256"
+test -s "${authority}/fleet-registry.pb"
+test -f "${authority}/fleet-registry.pb.sha256"
 test -f "${authority}/acceptance.json"
 
 (
   cd "$authority"
   sha256sum -c release-set.pb.sha256
   sha256sum -c application-bundle.pb.sha256
+  sha256sum -c fleet-registry.pb.sha256
 )
 
 release_set_sha="$(awk 'NR == 1 { print $1 }' "${authority}/release-set.pb.sha256")"
@@ -65,6 +68,8 @@ install -m 0644 "${authority}/release-set.pb" "${stage}/release-set.pb"
 install -m 0644 "${authority}/release-set.pb.sha256" "${stage}/release-set.pb.sha256"
 install -m 0644 "${authority}/application-bundle.pb" "${stage}/application-bundle.pb"
 install -m 0644 "${authority}/application-bundle.pb.sha256" "${stage}/application-bundle.pb.sha256"
+install -m 0644 "${authority}/fleet-registry.pb" "${stage}/fleet-registry.pb"
+install -m 0644 "${authority}/fleet-registry.pb.sha256" "${stage}/fleet-registry.pb.sha256"
 install -m 0644 "${authority}/acceptance.json" "${stage}/acceptance.json"
 install -m 0644 "${windows}/edge-platform-windows.zip" "${stage}/edge-platform-windows.zip"
 install -m 0644 "${linux}/edge-agent" "${stage}/edge-agent-linux-amd64"
@@ -95,6 +100,8 @@ expected_assets=(
   edge-platform-windows.zip.sha256
   edge-release-set-linux-amd64
   edge-release-set-linux-amd64.sha256
+  fleet-registry.pb
+  fleet-registry.pb.sha256
   release-set.pb
   release-set.pb.sha256
 )

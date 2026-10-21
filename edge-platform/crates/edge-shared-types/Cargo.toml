@@ -23,3 +23,11 @@ prost-types = "0.14.3"
 tonic = "0.14.5"
 tonic-prost = "0.14.5"
 ring = "0.17.14"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_System_Threading"
+] }

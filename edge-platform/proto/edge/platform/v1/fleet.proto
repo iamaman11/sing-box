@@ -2,6 +2,8 @@ syntax = "proto3";
 
 package edge.platform.v1;
 
+import "edge/platform/v1/runtime.proto";
+
 // The only Git-owned selector registry for the fleet. Configuration lives in
 // existing desired state, immutable ReleaseSet and the Worker-v2 secret plane;
 // it is not duplicated into this inventory.
@@ -33,4 +35,535 @@ message FleetHost {
 
   // Canonical Git-owned desired-state reference, not duplicated configuration.
   string desired_spec_path = 6;
+
+  // One durable Git-owned request. Absence means OBSERVE ONLY, never RUNNING.
+  // Config renderers may not infer a host run state from a shared VM spec.
+  FleetHostTarget target = 7;
+  // Git-owned Docker identity scope, NOT duplicate service configuration.
+  repeated FleetVmContainer vm_containers = 8;
+  // Immutable Git-pinned native owner identity, NOT a secret. Missing means
+  // remote authenticated result remains UNPROVEN and native apply is blocked.
+  bytes native_receipt_public_key = 9;
+  // Optional immutable first-use Worker-v2 identity. This is a non-secret
+  // reference in protected Git, not a new credential store or A/B authority.
+  // Without it a clean VM cannot mint/guess credentials on INSTALL.
+  FleetVmFirstUseCredential vm_first_use_credential = 10;
+  // Public-only Worker Ed25519 signing identity; source of truth is protected
+  // Git, not host-enroll arguments, a runner, or a provider GET response.
+  // Missing pin means VM enrollment and mutations are not authorized.
+  bytes worker_authority_public_key = 11;
+  // Existing Vultr substrate desired reference; Git owns this selector,
+  // never duplicate VM spec or accept a caller-provided provider target.
+  // Observe-only and already-enrolled hosts may leave it empty.
+  string vm_provider_spec_path = 12;
+}
+
+// Source bytes are published by the existing Worker-v2 plane first; Git
+// binds their exact generation and digest into the signed HostIntent. This
+// MUST NOT contain any secret material or an arbitrary URL.
+message FleetVmFirstUseCredential {
+  uint64 generation = 1;
+  string bundle_sha256 = 2;
+}
+
+message FleetVmContainer {
+  string container_name = 1;
+  string compose_project = 2;
+  string compose_service = 3;
+}
+
+// A single typed in-memory projection of the existing installed Git bundle.
+// Never store it as a second desired registry, or accept it from a runner.
+message FleetVmDesiredResource {
+  FleetVmContainer resource = 1;
+  string image_ref = 2;
+  repeated string dependencies = 3;
+  bytes config_template_sha256 = 4;
+}
+// Only Compose-owned networks used by registered application containers.
+// Network name/driver and membership are derived from the SAME immutable
+// Compose bytes as container images. Mesh is independent and excluded.
+message FleetVmDesiredNetwork {
+  string compose_project = 1;
+  string network_name = 2;
+  string driver = 3;
+  repeated string attached_services = 4;
+}
+message FleetVmDesiredGraph {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  repeated FleetVmDesiredResource resources = 3;
+  repeated FleetVmDesiredNetwork networks = 4;
+}
+
+// Deterministic read-only resource hierarchy projected from the same
+// validated, immutable VM desired graph. NOT a second authoring registry,
+// authorization, or proof that a process/network is currently healthy.
+enum FleetResourceKind {
+  FLEET_RESOURCE_KIND_UNSPECIFIED = 0;
+  FLEET_RESOURCE_KIND_HOST = 1;
+  FLEET_RESOURCE_KIND_DOCKER_NETWORK = 2;
+  FLEET_RESOURCE_KIND_DOCKER_CONTAINER = 3;
+  FLEET_RESOURCE_KIND_SINGBOX_CONFIG = 4;
+  // Future resource kinds must acquire their own native observed evidence and
+  // scoped effectors before any changes are executable.
+  FLEET_RESOURCE_KIND_DNS = 5;
+  FLEET_RESOURCE_KIND_FIREWALL = 6;
+  FLEET_RESOURCE_KIND_ROUTE = 7;
+  FLEET_RESOURCE_KIND_CREDENTIAL_REF = 8;
+}
+enum FleetResourceOwner {
+  FLEET_RESOURCE_OWNER_UNSPECIFIED = 0;
+  FLEET_RESOURCE_OWNER_VM_ROOT_AGENT = 1;
+  FLEET_RESOURCE_OWNER_WINDOWS_SYSTEM_CONTROLLER = 2;
+  FLEET_RESOURCE_OWNER_WORKER_SECRETS = 3;
+}
+message FleetResourceNode {
+  string resource_id = 1;
+  FleetResourceKind kind = 2;
+  string parent_resource_id = 3;
+  repeated string dependency_ids = 4;
+  FleetResourceOwner owner = 5;
+  // From the immutable policy bytes only, never proof of installed runtime.
+  bytes expected_policy_sha256 = 6;
+}
+message FleetResourceHierarchy {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  repeated FleetResourceNode nodes = 3;
+  // This projection is structurally valid only. Worker/owner must authenticate.
+  bool owner_attested = 4;
+  bool mutation_authorized = 5;
+}
+
+// A PURE comparison of immutable Git target versus installed policy. This
+// remains a proposal, not authorization, physical Docker state, or a network
+// readiness receipt. A shared image must be replaced for all its consumers.
+enum FleetVmPolicyChange {
+  FLEET_VM_POLICY_CHANGE_UNSPECIFIED = 0;
+  FLEET_VM_POLICY_CHANGE_NO_CHANGE = 1;
+  FLEET_VM_POLICY_CHANGE_CONFIG_TEMPLATE_REPLACED = 2;
+  FLEET_VM_POLICY_CHANGE_IMAGE_REPLACED = 3;
+}
+message FleetVmGraphResourceChange {
+  FleetVmContainer resource = 1;
+  FleetVmPolicyChange change = 2;
+  string expected_image_ref = 3;
+  bytes expected_config_template_sha256 = 4;
+  // Exact node in FleetResourceHierarchy; config updates target the
+  // config child while OCI updates target its container parent.
+  string resource_id = 5;
+  FleetResourceKind resource_kind = 6;
+}
+message FleetVmGraphReconcile {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  repeated FleetVmGraphResourceChange resources = 3;
+  bool owner_attested = 4;
+  bool mutation_authorized = 5;
+}
+
+// One strictly read-only Docker report from the installed root owner. This
+// does not attest an end-to-end network connection or authenticate a runner.
+// What the installed root Agent proved about the file mounted into the
+// running process. This is NOT proof of live config reload or TLS/auth.
+enum FleetVmConfigProof {
+  FLEET_VM_CONFIG_PROOF_UNPROVEN = 0;
+  FLEET_VM_CONFIG_PROOF_NOT_APPLICABLE = 1;
+  FLEET_VM_CONFIG_PROOF_NOT_RUNNING = 2;
+  FLEET_VM_CONFIG_PROOF_BOUND_RUNNING_PROCESS = 3;
+}
+
+// Closed native Docker observation reasons. The human-readable reason_code
+// is generated from this enum, never used to plan or authorize a mutation.
+enum FleetVmObservedReason {
+  FLEET_VM_OBSERVED_REASON_UNSPECIFIED = 0;
+  FLEET_VM_OBSERVED_REASON_DOCKER_UNAVAILABLE = 1;
+  FLEET_VM_OBSERVED_REASON_CONTAINER_ABSENT = 2;
+  FLEET_VM_OBSERVED_REASON_INSPECT_UNAVAILABLE = 3;
+  FLEET_VM_OBSERVED_REASON_FOREIGN_OWNER = 4;
+  FLEET_VM_OBSERVED_REASON_STATE_UNPROVEN = 5;
+  FLEET_VM_OBSERVED_REASON_HEALTHY = 6;
+  FLEET_VM_OBSERVED_REASON_HEALTH_STARTING = 7;
+  FLEET_VM_OBSERVED_REASON_HEALTH_UNHEALTHY = 8;
+  FLEET_VM_OBSERVED_REASON_RUNNING_NO_HEALTHCHECK = 9;
+  FLEET_VM_OBSERVED_REASON_HEALTH_UNPROVEN = 10;
+  FLEET_VM_OBSERVED_REASON_STOPPED = 11;
+}
+
+message FleetVmResourceReadback {
+  FleetVmContainer resource = 1;
+  bool present = 2;
+  bool ownership_proven = 3;
+  bool running = 4;
+  bool running_proven = 5;
+  string container_id = 6;
+  string image = 7;
+  string health = 8;
+  uint64 restart_count = 9;
+  bool restart_count_proven = 10;
+  string reason_code = 11;
+  FleetVmConfigProof config_proof = 12;
+  // SHA256 of the exact root-local config file verified in the process mount
+  // namespace. Never emit the file contents or credential values.
+  bytes config_sha256 = 13;
+  FleetVmObservedReason observed_reason = 14;
+}
+
+// Native ROOT-namespace observation, not a DNS resolution test, working
+// firewall policy, public routing proof, or mutation authorization. These
+// values MUST NOT imply that the network matches Git desired.
+message FleetVmNetworkReadback {
+  // Direct kernel rtnetlink observation. Optional when netlink is unavailable.
+  Ipv4NetworkObservation ipv4 = 1;
+  // /etc/resolv.conf configuration, not an upstream DNS reply.
+  repeated string dns_nameservers = 2;
+  bool dns_configuration_observed = 3;
+  // Fixed native 'nft -j list ruleset' observation, not an access-policy PASS.
+  bytes nft_ruleset_sha256 = 4;
+  uint32 nft_rule_count = 5;
+  bool nft_ruleset_observed = 6;
+}
+
+// A closed diagnosis of the INSTALLED policy readback only. Neither this
+// diagnostic nor its error_code is evidence of Git desired convergence.
+enum FleetVmInstalledPolicyStatus {
+  FLEET_VM_INSTALLED_POLICY_STATUS_UNSPECIFIED = 0;
+  FLEET_VM_INSTALLED_POLICY_STATUS_VALID = 1;
+  FLEET_VM_INSTALLED_POLICY_STATUS_COMPOSE_INVALID = 2;
+  FLEET_VM_INSTALLED_POLICY_STATUS_IMAGE_INVALID = 3;
+  FLEET_VM_INSTALLED_POLICY_STATUS_NETWORK_INVALID = 4;
+  FLEET_VM_INSTALLED_POLICY_STATUS_DEPENDENCY_INVALID = 5;
+  FLEET_VM_INSTALLED_POLICY_STATUS_CONFIG_INVALID = 6;
+  FLEET_VM_INSTALLED_POLICY_STATUS_OTHER_INVALID = 7;
+}
+// Root-local Worker-v2 credential slot evidence. Neither candidate nor
+// ACTIVE_LOCAL_VALID proves remote Worker authorization or runtime traffic.
+// Never expose payload, digest, key material, or filesystem path in this report.
+enum FleetVmCredentialState {
+  FLEET_VM_CREDENTIAL_STATE_UNSPECIFIED = 0;
+  FLEET_VM_CREDENTIAL_STATE_STORE_ABSENT = 1;
+  FLEET_VM_CREDENTIAL_STATE_ACTIVE_LOCAL_VALID = 2;
+  FLEET_VM_CREDENTIAL_STATE_CANDIDATE_ONLY = 3;
+  FLEET_VM_CREDENTIAL_STATE_LEGACY_PRESENT = 4;
+  FLEET_VM_CREDENTIAL_STATE_UNPROVEN = 5;
+}
+message FleetVmCredentialReadback {
+  FleetVmCredentialState state = 1;
+  uint64 active_generation = 2;
+  uint64 candidate_generation = 3;
+}
+// A read-only, root-local first-use prerequisite. This is NEVER signed
+// remote attestation or mutation authority. A missing field from an old owner
+// means UNSPECIFIED/UNPROVEN, not READY.
+enum FleetVmBootstrapPhase {
+  FLEET_VM_BOOTSTRAP_PHASE_UNSPECIFIED = 0;
+  FLEET_VM_BOOTSTRAP_PHASE_TRUST_UNPROVEN = 1;
+  FLEET_VM_BOOTSTRAP_PHASE_JOURNAL_UNKNOWN_NO_REPLAY = 2;
+  FLEET_VM_BOOTSTRAP_PHASE_RECEIPT_KEY_GIT_REGISTRATION_REQUIRED = 3;
+  FLEET_VM_BOOTSTRAP_PHASE_RECEIPT_KEY_MISMATCH_OR_UNPROVEN = 4;
+  FLEET_VM_BOOTSTRAP_PHASE_WORKER_ACTIVE_CREDENTIAL_REQUIRED = 5;
+  FLEET_VM_BOOTSTRAP_PHASE_LOCAL_PREREQUISITES_ONLY = 6;
+  // The VM store is absent: Git pins a first-use Worker generation/digest.
+  // Root-local readback does not authenticate the Worker or permit INSTALL.
+  FLEET_VM_BOOTSTRAP_PHASE_FIRST_USE_WORKER_SOURCE_UNVERIFIED = 7;
+  // No local ACTIVE and no immutable first-use source selected in Git.
+  FLEET_VM_BOOTSTRAP_PHASE_FIRST_USE_GIT_SOURCE_REQUIRED = 8;
+  // A root-local, authenticated Worker GET matches Git generation/digest.
+  // This is a point-in-time prerequisite, NOT remote native attestation or
+  // authorization to mutate; signed INSTALL performs its own fresh check.
+  FLEET_VM_BOOTSTRAP_PHASE_FIRST_USE_WORKER_SOURCE_VERIFIED_LOCAL = 9;
+  FLEET_VM_BOOTSTRAP_PHASE_FIRST_USE_WORKER_SOURCE_MISMATCH = 10;
+  FLEET_VM_BOOTSTRAP_PHASE_FIRST_USE_WORKER_SOURCE_UNAVAILABLE = 11;
+}
+message FleetVmResourceReport {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  uint64 observed_at_unix = 3;
+  repeated FleetVmResourceReadback resources = 4;
+  // No runner-copied result may claim an authenticated native owner.
+  bool remote_attested = 5;
+  FleetVmNetworkReadback network = 6;
+  // Optional installed Compose/image/template policy observed from
+  // root-local files. Unreadable/malformed means UNKNOWN, not a guessed
+  // dependency graph. Runner transport does NOT attest its origin, bind
+  // it to the canonical Git desired, or authorize any mutation.
+  FleetVmDesiredGraph installed_policy_graph = 7;
+  FleetVmInstalledPolicyStatus installed_policy_status = 8;
+  // One bounded static native error token, not a raw exception/message.
+  string installed_policy_error_code = 9;
+  // Required for schema v2; one root-local credential reference readback.
+  // This is not a Worker receipt and cannot authorize native INSTALL.
+  FleetVmCredentialReadback credential = 10;
+  // Derived by the existing root Agent from protected trust, Git receipt
+  // identity, permanent no-replay journal and the SAME local ACTIVE store as
+  // INSTALL. A runner copy stays UNAUTHENTICATED even when locally ready.
+  FleetVmBootstrapPhase bootstrap_phase = 11;
+}
+
+enum FleetHostRunState {
+  FLEET_HOST_RUN_STATE_UNSPECIFIED = 0;
+  FLEET_HOST_RUN_STATE_STOPPED = 1;
+  FLEET_HOST_RUN_STATE_RUNNING = 2;
+}
+
+message FleetHostTarget {
+  FleetHostRunState run_state = 1;
+  // Windows only. VM uses UNSPECIFIED, never a Windows TUN mode.
+  FleetHostMode windows_mode = 2;
+}
+
+
+// One atomic root-owned trust snapshot. The permanent no-replay journal
+// is separate and never replaced on refresh.
+message FleetNativeTrustSnapshot {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  bytes registry_pb = 3;
+  bytes release_set_pb = 4;
+  bytes application_bundle_pb = 5;
+  bytes selected_spec_bytes = 6;
+  bytes pinned_worker_public_key = 7;
+}
+
+// A single native host lifecycle contract for Windows and VM.
+// These structures carry identities and evidence, NOT authorization by themselves.
+// A privileged owner must independently authenticate an approved intent before
+// it can perform a mutation. Merely writing a protobuf is never sufficient.
+enum FleetHostAction {
+  FLEET_HOST_ACTION_UNSPECIFIED = 0;
+  FLEET_HOST_ACTION_STATUS = 1;
+  FLEET_HOST_ACTION_APPLY = 2;
+  FLEET_HOST_ACTION_RECOVER = 3;
+  FLEET_HOST_ACTION_INSTALL = 4;
+  FLEET_HOST_ACTION_REINSTALL = 5;
+  FLEET_HOST_ACTION_CONFIGURE = 6;
+  FLEET_HOST_ACTION_START = 7;
+  FLEET_HOST_ACTION_STOP = 8;
+  FLEET_HOST_ACTION_SET_MODE = 9;
+}
+
+enum FleetHostMode {
+  FLEET_HOST_MODE_UNSPECIFIED = 0;
+  FLEET_HOST_MODE_PROXY_ONLY = 1;
+  FLEET_HOST_MODE_MANAGED_TUN = 2;
+}
+
+enum FleetHostResultState {
+  FLEET_HOST_RESULT_STATE_UNSPECIFIED = 0;
+  FLEET_HOST_RESULT_STATE_OBSERVED = 1;
+  FLEET_HOST_RESULT_STATE_PREPARED = 2;
+  FLEET_HOST_RESULT_STATE_AUTHORIZED = 3;
+  FLEET_HOST_RESULT_STATE_VERIFIED = 4;
+  FLEET_HOST_RESULT_STATE_BLOCKED = 5;
+  FLEET_HOST_RESULT_STATE_UNKNOWN_NO_REPLAY = 6;
+}
+
+message FleetHostIntent {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  FleetHostKind kind = 3;
+  string resource_id = 4;
+  string operation_id = 5;
+  FleetHostAction action = 6;
+  // SHA-256 of the exact checked-out Git fleet registry protobuf.
+  bytes registry_sha256 = 7;
+  // Domain-separated SHA-256 over typed FleetHost (including target)
+  // plus exact protected-Git spec bytes, not the shared spec alone.
+  bytes desired_sha256 = 8;
+  // SHA-256 of the exact immutable ReleaseSet accepted by the owner.
+  bytes release_set_sha256 = 9;
+  FleetHostMode requested_mode = 10;
+  // Advisory timestamp only; never used as a mutation authorization.
+  uint64 requested_at_unix = 11;
+}
+
+// A single closed reason determines BOTH printable error_class and
+// next_action. No independently selectable second outcome registry.
+enum FleetHostResultReason {
+  FLEET_HOST_RESULT_REASON_UNSPECIFIED = 0;
+  FLEET_HOST_RESULT_REASON_PREPARED_NEEDS_OWNER_TRUST = 1;
+  FLEET_HOST_RESULT_REASON_AUTHORIZED_AWAIT_NATIVE_READBACK = 2;
+  FLEET_HOST_RESULT_REASON_NO_FURTHER_ACTION = 3;
+  FLEET_HOST_RESULT_REASON_RECOVERED_NATIVE_RUNNING = 4;
+  FLEET_HOST_RESULT_REASON_RECOVERED_NATIVE_STOPPED = 5;
+  FLEET_HOST_RESULT_REASON_STOPPED_RELEASE_DRIFT_REQUIRES_INSTALL_TARGET = 6;
+}
+
+message FleetHostResult {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  string resource_id = 3;
+  string operation_id = 4;
+  FleetHostAction action = 5;
+  FleetHostResultState state = 6;
+  bytes release_set_sha256 = 7;
+  bytes desired_sha256 = 8;
+  uint64 observed_at_unix = 9;
+  string error_class = 10;
+  string next_action = 11;
+  // A final VERIFIED result requires a physical native-owner readback.
+  bool physical_readback = 12;
+  FleetHostResultReason reason = 13;
+}
+
+ // Independent admission evidence. Never infer authority from ownership of
+ // exchange/requests or from a valid FleetHostIntent protobuf. This detached
+ // signature is minted by the existing Worker secret authority and verified
+ // against a pinned public key by the native SYSTEM/root owner.
+// Signed exclusively by the existing SYSTEM/root native owner, not the
+// GitHub runner. Exact signed bytes bind intent, resource, ReleaseSet and
+// terminal physical result to the immutable Git host public key.
+message FleetHostReceipt {
+  uint32 schema_version = 1;
+  FleetHostResult result = 2;
+  bytes ed25519_signature = 3;
+}
+
+message FleetHostAuthorization {
+  uint32 schema_version = 1;
+  string key_id = 2;
+  string operation_id = 3;
+  uint64 issued_at_unix = 4;
+  uint64 expires_at_unix = 5;
+  bytes ed25519_signature = 6;
+}
+
+
+// A bounded, local, non-secret physical readback. The observer reports its
+// actual source and proof scope; this message NEVER authorizes mutations or
+// constitutes an authenticated VERIFIED execution receipt.
+enum FleetNativeOwnerState {
+  FLEET_NATIVE_OWNER_STATE_UNSPECIFIED = 0;
+  FLEET_NATIVE_OWNER_STATE_UNPROVEN = 1;
+  FLEET_NATIVE_OWNER_STATE_STOPPED = 2;
+  FLEET_NATIVE_OWNER_STATE_RUNNING = 3;
+  FLEET_NATIVE_OWNER_STATE_TRANSITIONING = 4;
+}
+
+enum FleetNativeReleaseProof {
+  FLEET_NATIVE_RELEASE_PROOF_UNSPECIFIED = 0;
+  FLEET_NATIVE_RELEASE_PROOF_UNPROVEN = 1;
+  FLEET_NATIVE_RELEASE_PROOF_ACTIVATION_RECORD = 2;
+  FLEET_NATIVE_RELEASE_PROOF_APPLICATION_BUNDLE = 3;
+  // Native owner verified that the application release marker is absent,
+  // not merely unreadable. Only a STOPPED owner can report this.
+  FLEET_NATIVE_RELEASE_PROOF_VERIFIED_ABSENT = 4;
+}
+
+message FleetNativeObservation {
+  uint32 schema_version = 1;
+  FleetHostKind host_kind = 2;
+  uint64 observed_at_unix = 3;
+  FleetNativeOwnerState owner_state = 4;
+  FleetNativeReleaseProof release_proof = 5;
+  // Exact bytes read locally: activation ReleaseSet hash on Windows,
+  // application-bundle digest on VM. The proof enum forbids conflating them.
+  bytes observed_release_sha256 = 6;
+  // Physical end-to-end network readiness is never inferred from SCM alone.
+  bool runtime_ready = 7;
+  bool runtime_ready_proven = 8;
+  repeated string reason_codes = 9;
+}
+
+
+// Pure Rust reconciliation proposal, never a second operation authority.
+// Native owner and Worker admission must independently verify identity,
+// expected release and signed one-shot intent before executing ANY step.
+enum FleetHostPlannedStep {
+  FLEET_HOST_PLANNED_STEP_UNSPECIFIED = 0;
+  FLEET_HOST_PLANNED_STEP_BLOCKED = 1;
+  FLEET_HOST_PLANNED_STEP_NOOP = 2;
+  FLEET_HOST_PLANNED_STEP_START = 3;
+  FLEET_HOST_PLANNED_STEP_STOP = 4;
+  FLEET_HOST_PLANNED_STEP_REPLACE_RELEASE = 5;
+  FLEET_HOST_PLANNED_STEP_INSTALL = 6;
+}
+
+// Closed host-level planner reasons. CLI reason_code is a derived projection,
+// not a separate untrusted decision or authorization source.
+enum FleetHostPlanReason {
+  FLEET_HOST_PLAN_REASON_UNSPECIFIED = 0;
+  FLEET_HOST_PLAN_REASON_HOST_KIND_INVALID = 1;
+  FLEET_HOST_PLAN_REASON_EXPECTED_RELEASE_UNPROVEN = 2;
+  FLEET_HOST_PLAN_REASON_TARGET_UNSET_OBSERVE_ONLY = 3;
+  FLEET_HOST_PLAN_REASON_TARGET_RUN_STATE_UNPROVEN = 4;
+  FLEET_HOST_PLAN_REASON_TARGET_MODE_UNPROVEN = 5;
+  FLEET_HOST_PLAN_REASON_TUN_SEPARATE_PHYSICAL_GATE_REQUIRED = 6;
+  FLEET_HOST_PLAN_REASON_TARGET_MODE_KIND_MISMATCH = 7;
+  FLEET_HOST_PLAN_REASON_NATIVE_READBACK_REQUIRED = 8;
+  FLEET_HOST_PLAN_REASON_NATIVE_READBACK_INVALID_OR_WRONG_KIND = 9;
+  FLEET_HOST_PLAN_REASON_NATIVE_READBACK_STALE = 10;
+  FLEET_HOST_PLAN_REASON_NATIVE_READBACK_DEGRADED = 11;
+  FLEET_HOST_PLAN_REASON_NATIVE_STATE_UNPROVEN = 12;
+  FLEET_HOST_PLAN_REASON_VERIFIED_ABSENT_INSTALL_PROPOSAL_ONLY = 13;
+  FLEET_HOST_PLAN_REASON_ABSENT_INSTALL_WITH_STOPPED_TARGET = 14;
+  FLEET_HOST_PLAN_REASON_ABSENCE_OWNER_STATE_CONFLICT = 15;
+  FLEET_HOST_PLAN_REASON_NATIVE_RELEASE_PROOF_UNPROVEN = 16;
+  FLEET_HOST_PLAN_REASON_STOP_TARGET_OVERRIDES_RELEASE_MISMATCH = 17;
+  FLEET_HOST_PLAN_REASON_STOPPED_RELEASE_MISMATCH_REQUIRES_INSTALL_TARGET = 18;
+  FLEET_HOST_PLAN_REASON_STOPPED_MATCHES_DESIRED_LOCAL_ONLY = 19;
+  FLEET_HOST_PLAN_REASON_RELEASE_MISMATCH_PROPOSAL_ONLY = 20;
+  FLEET_HOST_PLAN_REASON_START_PROPOSAL_ONLY = 21;
+  FLEET_HOST_PLAN_REASON_RUNNING_MATCHES_LOCAL_NOT_EXTERNAL = 22;
+  FLEET_HOST_PLAN_REASON_VM_DEGRADED_REQUIRES_SCOPED_CONTAINER_PREADMISSION = 23;
+  FLEET_HOST_PLAN_REASON_RUNTIME_READINESS_UNPROVEN = 24;
+}
+
+message FleetHostTransitionPlan {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  FleetHostPlannedStep step = 3;
+  string reason_code = 4;
+  bytes expected_release_digest = 5;
+  bytes observed_release_digest = 6;
+  // Never set by a runner-copied observation or CI-only source checks.
+  bool owner_attested = 7;
+  bool mutation_authorized = 8;
+  FleetHostPlanReason reason = 9;
+}
+
+// Each reason is a closed typed contract between Rust planner, diagnostics
+// and native owner. Legacy reason_code is a generated projection for CLI
+// readers, not a second user-editable decision input. New failures require a
+// new enum variant and a planner/diagnostic test, never an ad-hoc string.
+enum FleetVmResourceReason {
+  FLEET_VM_RESOURCE_REASON_UNSPECIFIED = 0;
+  FLEET_VM_RESOURCE_REASON_TARGET_UNSET_OBSERVE_ONLY = 1;
+  FLEET_VM_RESOURCE_REASON_ABSENT_AS_DESIRED = 2;
+  FLEET_VM_RESOURCE_REASON_CONTAINER_ABSENT_INSTALL_REQUIRED = 3;
+  FLEET_VM_RESOURCE_REASON_RESOURCE_IDENTITY_OR_STATE_UNPROVEN = 4;
+  FLEET_VM_RESOURCE_REASON_CONTAINER_RUNNING_BUT_TARGET_STOPPED = 5;
+  FLEET_VM_RESOURCE_REASON_STOPPED_AS_DESIRED = 6;
+  FLEET_VM_RESOURCE_REASON_CONTAINER_STOPPED_BUT_TARGET_RUNNING = 7;
+  FLEET_VM_RESOURCE_REASON_RUNNING_RUNTIME_ONLY_CONFIG_UNPROVEN = 8;
+  FLEET_VM_RESOURCE_REASON_RUNTIME_HEALTH_OR_CONFIG_UNPROVEN = 9;
+  // Explicit Worker-v2 prerequisite; never work around it with local files
+  // or assume that candidate-only credentials can start a production VM.
+  FLEET_VM_RESOURCE_REASON_CREDENTIAL_DEPENDENCY_UNPROVEN = 10;
+  // Only a proposal for an ENTIRELY ABSENT application with a verified
+  // first-use Worker source. No local ACTIVE, Docker ownership or native
+  // mutation authority is implied; signed INSTALL rechecks everything.
+  FLEET_VM_RESOURCE_REASON_FIRST_USE_WORKER_VERIFIED_INSTALL_PROPOSAL_ONLY = 11;
+}
+
+// A deterministic runtime-only proposal for each Git-owned VM container.
+// Container identity is resolved through FleetHost.vm_containers; its immutable
+// image/config and dependency graph are FleetVmDesiredGraph. This is never a
+// second desired registry, authority, physical network check or receipt.
+message FleetVmResourceTransition {
+  FleetVmContainer resource = 1;
+  FleetHostPlannedStep step = 2;
+  string reason_code = 3;
+  FleetVmResourceReason reason = 4;
+  // Canonical container node, never a caller-provided filename or selector.
+  string resource_id = 5;
+}
+
+message FleetVmResourceTransitionPlan {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  repeated FleetVmResourceTransition resources = 3;
+  bool owner_attested = 4;
+  bool mutation_authorized = 5;
 }

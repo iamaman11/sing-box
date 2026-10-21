@@ -2357,8 +2357,17 @@ fn projection_delivery_state(
         return Ok(ProjectionDeliveryState::LegacyLocked);
     }
 
-    if current.worker_binding_count == Some(2) {
-        require_exact_secret_bindings(&projection.worker_name, &current.worker_secret_bindings)?;
+    // Credential data plane remains exactly two A/B slots. The ONE VM Worker
+    // may additionally carry five independent Host signer guard secrets, with
+    // no second worker or duplicate issuer. Windows never permits signer keys.
+    let guarded_host_signer =
+        projection.projection == "vm" && current.worker_binding_count == Some(7);
+    if current.worker_binding_count == Some(2) || guarded_host_signer {
+        require_exact_secret_bindings(
+            &projection.worker_name,
+            &projection.projection,
+            &current.worker_secret_bindings,
+        )?;
         let latest_is_only_active = current.worker_active_deployment_id.is_some()
             && current
                 .worker_latest_version_id
@@ -2876,16 +2885,30 @@ fn workers_dev_hostname(
 
 fn require_exact_secret_bindings(
     worker_name: &str,
+    projection: &str,
     bindings: &[cloudflare::CloudflareWorkerSecretBinding],
 ) -> Result<(), String> {
-    let observed = bindings
+    let mut observed = bindings
         .iter()
         .map(|binding| (binding.name.as_str(), binding.binding_type.as_str()))
         .collect::<Vec<_>>();
-    let expected = vec![(SLOT_A, "secret_text"), (SLOT_B, "secret_text")];
+    observed.sort_unstable();
+    let mut expected = vec![(SLOT_A, "secret_text"), (SLOT_B, "secret_text")];
+    if projection == "vm" && observed.len() == 7 {
+        // Exactly one Worker may carry the host signing secret. No extra
+        // implicit credentials, fallback secrets or caller-provided key.
+        expected.extend_from_slice(&[
+            ("EDGE_HOST_SIGNING_PKCS8_BASE64", "secret_text"),
+            ("EDGE_HOST_SIGNING_KEY_ID", "secret_text"),
+            ("EDGE_HOST_GITHUB_ACTOR_ID", "secret_text"),
+            ("EDGE_HOST_ACCESS_ISSUER", "secret_text"),
+            ("EDGE_HOST_ACCESS_AUD", "secret_text"),
+        ]);
+    }
+    expected.sort_unstable();
     if observed != expected {
         return Err(format!(
-            "Worker {worker_name} secret bindings differ from exact fixed A/B contract: observed={observed:?}"
+            "Worker {worker_name} bindings differ from exact A/B and optional ONE VM Host signer: observed={observed:?}"
         ));
     }
     Ok(())
@@ -2924,10 +2947,142 @@ const Q=["__DUMMY_A_GENERATION__","__DUMMY_B_GENERATION__"];
 function H(v){if(typeof v!=="string"||v.length===0||v.length%2||!/^[0-9a-f]+$/.test(v))return null;const b=new Uint8Array(v.length/2);for(let i=0;i<b.length;i++)b[i]=parseInt(v.slice(i*2,i*2+2),16);return b}
 function V(b,p){let v=0n,s=0n;for(let i=0;i<10;i++){if(p>=b.length)return null;const x=BigInt(b[p++]);v|=(x&127n)<<s;if((x&128n)===0n)return[v,p];s+=7n}return null}
 function G(b){let p=0,z=null,g=null,r=null;while(p<b.length){const k=V(b,p);if(!k)return null;const f=Number(k[0]>>3n),w=Number(k[0]&7n);p=k[1];if(!f)return null;if(w===0){const x=V(b,p);if(!x)return null;p=x[1];if(f===1)z=Number(x[0]);else if(f===2)g=x[0];else if(f===3)r=Number(x[0]);continue}if(w===1){if(p+8>b.length)return null;p+=8;continue}if(w===2){const x=V(b,p);if(!x||x[0]>BigInt(b.length))return null;p=x[1];const n=Number(x[0]);if(p+n>b.length)return null;p+=n;continue}if(w===5){if(p+4>b.length)return null;p+=4;continue}return null}return z===1&&g!==null&&r===P?g:null}
-export default{async fetch(q,e){const u=new URL(q.url),x=u.searchParams.get("generation");
+
+// This endpoint shares the existing Cloudflare secret owner, NEVER a runner
+// private key. Inert until the Worker operator provisions all four guards:
+// PKCS8 Ed25519 secret, key ID, approved exact intent SHA, and Access issuer/aud.
+// Reuses Cloudflare Access JWT identity rather than trusting a caller header.
+const TE=new TextEncoder(),TD=new TextDecoder("utf-8",{fatal:true}),NO={"Cache-Control":"no-store"};
+function B64(v){if(typeof v!=="string"||v.length>16384||!/^[A-Za-z0-9_-]+={0,2}$/.test(v))return null;try{const s=v.replace(/-/g,"+").replace(/_/g,"/");return Uint8Array.from(atob(s+"=".repeat((4-s.length%4)%4)),c=>c.charCodeAt(0))}catch{return null}}
+function U32(x){const b=new Uint8Array(4);new DataView(b.buffer).setUint32(0,x);return b}
+function U64(x){const b=new Uint8Array(8);new DataView(b.buffer).setBigUint64(0,BigInt(x));return b}
+function CAT(...xs){const n=xs.reduce((a,b)=>a+b.length,0),b=new Uint8Array(n);let p=0;for(const x of xs){b.set(x,p);p+=x.length}return b}
+function VI(n){let x=BigInt(n),b=[];do{let v=Number(x&127n);x>>=7n;if(x)v|=128;b.push(v)}while(x);return Uint8Array.from(b)}
+function FLD(n,bytes){return CAT(VI((BigInt(n)<<3n)|2n),VI(bytes.length),bytes)}
+function FNUM(n,value){return CAT(VI(BigInt(n)<<3n),VI(value))}
+// Reject duplicate fields, unknown wire types and ambiguous field order.
+// The native prost decoder accepts only its canonical protobuf encoding;
+// the issuer must not sign a different representation of the same request.
+function INFO(b){
+ let p=0,last=0,id=null,m=null,action=null,kind=null,schema=null,when=null,resource=null,release=null;
+ const seen=new Set();
+ while(p<b.length){
+  const k=V(b,p);if(!k)return null;
+  const f=Number(k[0]>>3n),w=Number(k[0]&7n);p=k[1];
+  if(f<=last||f>11)return null;last=f;seen.add(f);
+  const numberField=f===1||f===3||f===6||f===10||f===11;
+  if(numberField){
+   if(w!==0)return null;
+   const z=V(b,p);if(!z)return null;p=z[1];
+   if(f===1)schema=Number(z[0]);
+   if(f===3)kind=Number(z[0]);
+   if(f===6)action=Number(z[0]);
+   if(f===10)return null; // zero-valued requested_mode is omitted by prost
+   if(f===11)when=Number(z[0]);
+  }else{
+   if(w!==2)return null;
+   const z=V(b,p);if(!z||z[0]>BigInt(b.length))return null;p=z[1];
+   const n=Number(z[0]);if(n>b.length-p)return null;
+   const value=b.slice(p,p+n);p+=n;
+   if(f===2||f===4||f===5){
+    if(n===0||n>128)return null;
+    let t;try{t=TD.decode(value)}catch{return null}
+    if(f===2)m=t;if(f===4)resource=t;if(f===5)id=t;
+   }else if(f>=7&&f<=9){
+    if(n!==32||!value.some(x=>x!==0))return null;
+    if(f===9)release=Array.from(value,x=>x.toString(16).padStart(2,"0")).join("");
+   }else return null;
+  }
+ }
+ if([1,2,3,4,5,6,7,8,9,11].some(f=>!seen.has(f)))return null;
+ // A resource-specific approval authorizes only one gateway config change.
+ const scoped=typeof resource==="string"&&
+    /^config\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/(line1-gateway|line2-proxy)$/.test(resource);
+ if(schema!==1||(kind!==1&&kind!==2)||
+    !(resource==="sing-box"||(kind===2&&action===2&&scoped))||
+    (action!==2&&action!==3)||
+    typeof id!=="string"||!/^issue1-comment-[1-9][0-9]{0,19}$/.test(id)||
+    typeof m!=="string"||!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(m)||
+    !Number.isSafeInteger(when)||when<=0)return null;
+ return{id,m,kind,action,when,release,resource};
+}
+async function GITHUB(info,e,now){
+ const actor=String(e.EDGE_HOST_GITHUB_ACTOR_ID||"");
+ if(!/^[1-9][0-9]{0,19}$/.test(actor)||Math.abs(now-info.when)>300||
+    !/^[0-9a-f]{64}$/.test(info.release))return false;
+ const id=info.id.slice("issue1-comment-".length);
+ const base="https://api.github.com/repos/iamaman11/sing-box";
+ const headers={"Accept":"application/vnd.github+json","User-Agent":"sing-box-host-authorizer"};
+ try{
+  const comment=await fetch(base+"/issues/comments/"+id,{redirect:"error",headers});
+  if(!comment.ok)return false;
+  const c=await comment.json(),stamp=Date.parse(c.created_at)/1000;
+  if(!c||String(c.user?.id)!==actor||c.issue_url!==base+"/issues/1"||
+     c.updated_at!==c.created_at||!Number.isFinite(stamp)||
+     stamp>now+30||info.when<stamp-30||
+     c.body!=="/host "+(info.action===2?"apply":"recover")+" "+info.m+
+        (info.resource==="sing-box"?"":" "+info.resource))return false;
+  // Exact immutable published ReleaseSet is required for every issuance.
+  const tag="edge-release-"+info.release;
+  const release=await fetch(base+"/releases/tags/"+tag,{redirect:"error",headers});
+  if(!release.ok)return false;
+  const value=await release.json();
+  if(value.tag_name!==tag||value.draft!==false||value.prerelease!==false||
+     !/^[0-9a-f]{40}$/.test(value.target_commitish))return false;
+  if(stamp>=now-300)return true;
+  // Only the original VM first-use APPLY may survive the five-minute
+  // comment window, and ONLY after the matching protected receipt PR merge
+  // was accepted and the corresponding ReleaseSet published on main.
+  // Worker signs a fresh 120s intent; native root journal still blocks replay.
+  if(info.kind!==2||info.action!==2||info.resource!=="sing-box")return false;
+  const accepted=value.target_commitish;
+  const main=await fetch(base+"/git/ref/heads/main",{redirect:"error",headers});
+  if(!main.ok)return false;
+  const branch=await main.json();
+  if(branch.object?.type!=="commit"||branch.object?.sha!==accepted)return false;
+  const response=await fetch(base+"/commits/"+accepted+"/pulls?per_page=20",
+      {redirect:"error",headers});
+  if(!response.ok)return false;
+  const prs=await response.json();
+  if(!Array.isArray(prs))return false;
+  const matched=prs.filter(pr=>pr.merged_at!=null&&pr.draft===false&&
+     pr.base?.ref==="main"&&pr.head?.repo?.full_name==="iamaman11/sing-box"&&
+     pr.merge_commit_sha===accepted&&
+     pr.head?.ref==="host-receipt-"+info.m+"-"+id&&
+     pr.title==="host: register native receipt for "+info.m);
+  if(matched.length!==1)return false;
+  const merged=Date.parse(matched[0].merged_at)/1000;
+  return Number.isFinite(merged)&&merged>=stamp&&merged<=now+30&&
+     now-merged<=86400; }catch{return false}
+}
+async function ACCESS(q,e){const iss=e.EDGE_HOST_ACCESS_ISSUER,aud=e.EDGE_HOST_ACCESS_AUD,t=q.headers.get("Cf-Access-Jwt-Assertion");if(typeof iss!=="string"||!/^https:\/\/[a-z0-9-]+\.cloudflareaccess\.com$/.test(iss)||typeof aud!=="string"||aud.length<8||aud.length>256||!t||t.length>8192)return false;
+const parts=t.split(".");if(parts.length!==3)return false;let h,c;try{h=JSON.parse(TD.decode(B64(parts[0])));c=JSON.parse(TD.decode(B64(parts[1])))}catch{return false}
+const now=Math.floor(Date.now()/1000);if(!h||h.alg!=="RS256"||typeof h.kid!=="string"||!c||c.iss!==iss||!Array.isArray(c.aud)||!c.aud.includes(aud)||!Number.isInteger(c.exp)||c.exp<=now||!Number.isInteger(c.nbf)||c.nbf>now+60)return false;
+try{const res=await fetch(iss+"/cdn-cgi/access/certs",{redirect:"error"});if(!res.ok)return false;const certs=await res.json();const keys=Array.isArray(certs.keys)?certs.keys:[];const jwk=keys.find(k=>k.kid===h.kid&&k.kty==="RSA");if(!jwk)return false;const key=await crypto.subtle.importKey("jwk",jwk,{name:"RSASSA-PKCS1-v1_5",hash:"SHA-256"},false,["verify"]);return await crypto.subtle.verify("RSASSA-PKCS1-v1_5",key,B64(parts[2]),TE.encode(parts[0]+"."+parts[1]))}catch{return false}}
+async function AUTHORIZE(q,e,u){if(P!==__HOST_SIGNER_PROJECTION__)return new Response(null,{status:404,headers:NO});if(q.method!=="POST"||u.search||q.headers.get("Content-Type")!=="application/x-protobuf")return new Response(null,{status:404,headers:NO});
+const k=e.EDGE_HOST_SIGNING_PKCS8_BASE64,id=e.EDGE_HOST_SIGNING_KEY_ID,actor=String(e.EDGE_HOST_GITHUB_ACTOR_ID||"");
+if(typeof k!=="string"||typeof id!=="string"||!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id)||!/^[1-9][0-9]{0,19}$/.test(actor))return new Response(null,{status:404,headers:NO});
+if(!await ACCESS(q,e))return new Response(null,{status:403,headers:NO});
+if(Number(q.headers.get("Content-Length"))>8192)return new Response(null,{status:413,headers:NO});
+let raw;try{raw=new Uint8Array(await q.arrayBuffer())}catch{return new Response(null,{status:400,headers:NO})}
+if(!raw.length||raw.length>8192)return new Response(null,{status:413,headers:NO});
+// GitHub issue #1 is the ONLY operator command source. A valid Cloudflare
+// service-token by itself cannot authorize a machine, action or an old comment.
+const info=INFO(raw);if(!info)return new Response(null,{status:400,headers:NO});
+if(!await GITHUB(info,e,Math.floor(Date.now()/1000)))return new Response(null,{status:403,headers:NO});
+const op=info.id;
+const issued=Math.floor(Date.now()/1000),expires=issued+120,kid=TE.encode(id),oid=TE.encode(op),pk=B64(k);
+if(pk===null||pk.length<40||pk.length>4096)return new Response(null,{status:503,headers:NO});
+const payload=CAT(TE.encode("sing-box/native-host-authorization/v1:"),U32(raw.length),raw,U32(kid.length),kid,U32(oid.length),oid,U64(issued),U64(expires));
+let signature;try{const key=await crypto.subtle.importKey("pkcs8",pk,{name:"Ed25519"},false,["sign"]);signature=new Uint8Array(await crypto.subtle.sign("Ed25519",key,payload))}catch{return new Response(null,{status:503,headers:NO})}
+if(signature.length!==64)return new Response(null,{status:503,headers:NO});
+const out=CAT(FNUM(1,1),FLD(2,kid),FLD(3,oid),FNUM(4,issued),FNUM(5,expires),FLD(6,signature));
+return new Response(out,{status:200,headers:{"Content-Type":"application/x-protobuf","Cache-Control":"no-store","X-Content-Type-Options":"nosniff"}})}
+export default{async fetch(q,e){const u=new URL(q.url);if(u.pathname==="/v1/host/authorize")return AUTHORIZE(q,e,u);const x=u.searchParams.get("generation");
 if(q.method==="GET"&&u.pathname==="/v1/proof-slot"){const k=u.searchParams.get("slot"),i=k==="a"?0:k==="b"?1:-1;if(u.searchParams.size!==2||i<0||x!==Q[i])return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}});const b=H(e[S[i]]);if(b===null)return new Response(null,{status:409,headers:{"Cache-Control":"no-store"}});const h=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",b))).map(x=>x.toString(16).padStart(2,"0")).join("");return new Response(null,{status:h===D[i]?204:409,headers:{"Cache-Control":"no-store"}})}
 if(q.method!=="GET"||u.pathname!=="/v1/credentials"||u.searchParams.size!==1||x===null||!/^(0|[1-9][0-9]*)$/.test(x))return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}});let n;try{n=BigInt(x)}catch{return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}})}const m=[];for(const s of S){const b=H(e[s]);if(b!==null&&G(b)===n)m.push(b)}if(m.length!==1)return new Response(null,{status:m.length?409:404,headers:{"Cache-Control":"no-store"}});return new Response(m[0],{status:200,headers:{"Content-Type":"application/x-protobuf","Cache-Control":"no-store"}})}};"#
         .replace("__PROJECTION__", &(projection_kind as i32).to_string())
+        .replace("__HOST_SIGNER_PROJECTION__", &(CredentialProjectionKind::Vm as i32).to_string())
         .replace("__DUMMY_A_DIGEST__", &sha256_hex(&slots[0].payload))
         .replace("__DUMMY_B_DIGEST__", &sha256_hex(&slots[1].payload))
         .replace(
@@ -3082,6 +3237,66 @@ fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn only_one_vm_worker_may_hold_host_signer_secrets() {
+        let names = [
+            SLOT_A,
+            SLOT_B,
+            "EDGE_HOST_ACCESS_AUD",
+            "EDGE_HOST_ACCESS_ISSUER",
+            "EDGE_HOST_GITHUB_ACTOR_ID",
+            "EDGE_HOST_SIGNING_KEY_ID",
+            "EDGE_HOST_SIGNING_PKCS8_BASE64",
+        ];
+        let extra = names
+            .iter()
+            .map(|name| cloudflare::CloudflareWorkerSecretBinding {
+                name: (*name).to_owned(),
+                binding_type: "secret_text".to_owned(),
+            })
+            .collect::<Vec<_>>();
+        assert!(require_exact_secret_bindings("sing-box-credentials-vm", "vm", &extra).is_ok());
+        assert!(
+            require_exact_secret_bindings("sing-box-credentials-windows", "windows", &extra)
+                .is_err()
+        );
+        let mut injected = extra;
+        injected[3].name = "ATTACKER_EXTRA_SECRET".to_owned();
+        assert!(require_exact_secret_bindings("sing-box-credentials-vm", "vm", &injected).is_err());
+    }
+
+    #[test]
+    fn host_authorization_is_closed_by_default_exact_and_access_bound() {
+        // Source for BOTH existing projection Workers; not a new Worker,
+        // key store, publisher or agent. No signer material is ever embedded
+        // in this public Git repository.
+        for projection in ["vm", "windows"] {
+            let source = delivery_worker_material(projection).unwrap().source;
+            assert!(source.contains("/v1/host/authorize"));
+            assert!(source.contains("if(P!=="));
+            assert!(!source.contains("__HOST_SIGNER_PROJECTION__"));
+            assert!(source.contains("if(q.method!==\"POST\""));
+            assert!(source.contains("EDGE_HOST_SIGNING_PKCS8_BASE64"));
+            assert!(source.contains("EDGE_HOST_SIGNING_KEY_ID"));
+            assert!(source.contains("EDGE_HOST_GITHUB_ACTOR_ID"));
+            assert!(source.contains("EDGE_HOST_ACCESS_ISSUER"));
+            assert!(source.contains("EDGE_HOST_ACCESS_AUD"));
+            assert!(source.contains("Cf-Access-Jwt-Assertion"));
+            assert!(source.contains("RSASSA-PKCS1-v1_5"));
+            assert!(source.contains("sing-box/native-host-authorization/v1:"));
+            assert!(source.contains("U32(raw.length),raw,U32(kid.length),kid"));
+            assert!(source.contains("U64(issued),U64(expires)"));
+            assert!(source.contains("crypto.subtle.sign(\"Ed25519\""));
+            assert!(source.contains("GITHUB(info,e"));
+            assert!(source.contains("issued+120"));
+            // Credential GET and dummy A/B proof route must remain in the
+            // original Worker, never copied to a second privileged service.
+            assert!(source.contains("/v1/proof-slot"));
+            assert!(source.contains("u.pathname!==\"/v1/credentials\""));
+            assert!(!source.contains("console.log"));
+        }
+    }
 
     #[test]
     fn first_use_begin_file_create_new_has_no_overwrite_path() {

@@ -1478,6 +1478,19 @@ jobs:
       actions: read
       packages: read
     steps:
+      - name: Checkout exact candidate Git desired
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.event.pull_request.head.sha }}
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+
       - name: Download exact platform candidates
         shell: bash
         env:
@@ -1566,6 +1579,19 @@ jobs:
             docker buildx imagetools inspect "${mesh_ref}" >/dev/null
           fi
 
+          # This is compiled from protected Git, not a second desired registry.
+          buf_bin="${RUNNER_TEMP}/host-registry-buf"
+          curl --fail --silent --show-error --location \
+            "https://github.com/bufbuild/buf/releases/download/v1.73.0/buf-Linux-x86_64" \
+            -o "${buf_bin}"
+          echo "8f2986298ad08f0cc1bf999b9797b7c383adf32d7edf0f73d6f1e1a701baeac1  ${buf_bin}" | sha256sum --check --status
+          chmod 0755 "${buf_bin}"
+          (cd edge-platform && "${buf_bin}" convert proto/edge/platform/v1/fleet.proto \
+            --type edge.platform.v1.FleetDesiredState \
+            --from "../infra/hosts/hosts.textproto#format=txtpb" \
+            --to "${authority}/fleet-registry.pb#format=binpb")
+          test -s "${authority}/fleet-registry.pb"
+          (cd "${authority}" && sha256sum fleet-registry.pb > fleet-registry.pb.sha256)
           cp "${linux}/application-bundle.pb" "${authority}/application-bundle.pb"
           cp "${linux}/application-bundle.pb.sha256" "${authority}/application-bundle.pb.sha256"
           (

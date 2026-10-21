@@ -734,6 +734,349 @@ def test_git_windows_host_host_contract(credentials: str) -> None:
     )
 
 
+def test_host_first_use_is_internal_to_one_host_ingress() -> None:
+    router = ROUTER.read_text(encoding="utf-8")
+    vultr = VULTR.read_text(encoding="utf-8")
+    native = Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_command.rs").read_text(encoding="utf-8")
+    require(
+        "  host_first_use:\n" in router
+        and "uses: ./.github/workflows/vultr-lifecycle.yml" not in router
+        and "environment:\n      name: production-vultr" in router
+        and "first-use \"${TARGET_MACHINE}\"" in router
+        and "github.run_attempt == 1" in router
+        and "HOST_VM_FIRST_USE_CREDENTIAL_GIT_REQUIRED" in native
+        and "acceptance_create_machine(" in native
+        and "bootstrap_production_runner(" in native
+        and "pub(crate) async fn host_first_use(" in native
+        and "  workflow_call:" in vultr,
+        "First-use must stay inside one host ingress and one existing native Vultr engine",
+    )
+
+
+
+def test_host_first_use_registration_is_reserved_before_provider_create() -> None:
+    """A Git capability failure must never strand a newly created VM."""
+    router = ROUTER.read_text(encoding="utf-8")
+    first_use = router.split("  host_first_use:\n", 1)[1]
+    reservation = "Reserve protected receipt registration before VM CREATE"
+    create = "Run one typed provider CREATE and native root enrollment"
+    registration = "Stage root receipt identity through a protected Git pull request"
+    require(
+        first_use.count(reservation) == 1
+        and first_use.count(create) == 1
+        and first_use.count(registration) == 1
+        and first_use.index(reservation) < first_use.index(create) < first_use.index(registration)
+        and "gh pr create" in first_use.split(create, 1)[0]
+        and "--draft" in first_use.split(create, 1)[0]
+        and "gh pr create" not in first_use.split(registration, 1)[1]
+        and "HOST_RECEIPT_RESERVATION_EXISTS_NO_REPLAY" in first_use
+        and 'test "${GITHUB_RUN_ATTEMPT}" = 1' in first_use
+        and "HOST_RECEIPT_RESERVATION_SHA" in first_use.split(registration, 1)[1]
+        and "gh pr ready" in first_use.split(registration, 1)[1]
+        and "host_receipt_candidate=EXACT_ONE_PUBLIC_KEY_CHANGE" in first_use,
+        "First-use must reserve a draft Git PR before CREATE and finalize only the exact reserved identity",
+    )
+    unsafe = router.replace(
+        "Reserve protected receipt registration before VM CREATE",
+        "Reserve protected receipt registration after VM CREATE",
+        1,
+    )
+    require(
+        reservation not in unsafe.split("  host_first_use:\n", 1)[1],
+        "Receipt reservation topology invariant must detect missing early reservation",
+    )
+
+
+def test_host_native_signed_result_reporting() -> None:
+    """The workflow must not downgrade or fabricate a Git-pinned receipt."""
+    source = Path(".github/workflows/host-native-observe.yml").read_text(
+        encoding="utf-8"
+    )
+    require(
+        "native_receipt_proof=%s" in source
+        and "steps.typed.outputs.native_receipt_proof" in source
+        and 'result=NATIVE_RECEIPT_VERIFIED_PHYSICAL' in source
+        and 'result=NATIVE_RECEIPT_OBSERVED_ONLY' in source
+        and '"${NATIVE_RECEIPT_PROOF}" = VERIFIED_PHYSICAL' in source
+        and '"${TYPED_OUTCOME}" = success' in source
+        and "remote authenticated receipt UNPROVEN" in source,
+        "Only the exact Rust signature verifier may promote a native receipt",
+    )
+
+
+def test_canonical_host_mutation_ingress() -> None:
+    """Only the host chain may mutate; old domain namespaces are sealed."""
+    source = Path("edge-platform/crates/edge-orchestrator/src/main.rs").read_text(
+        encoding="utf-8"
+    )
+    cli = CREDENTIAL_CLI.read_text(encoding="utf-8")
+    require(
+        "fn legacy_entrypoint_allowed(" in source
+        and source.count("if !legacy_entrypoint_allowed(&parsed.command)") == 2
+        and "HOST_LEGACY_MUTATION_INGRESS_DISABLED_USE_HOST" in source
+        and "Command::Host { .. } | Command::ApplicationBundleBuild(_) => true" in source
+        and "legacy_mutations_blocked_before_release_context_and_dispatch" in source,
+        "legacy domain mutations must fail closed before release/native dispatch",
+    )
+    for name in (
+        "ApplicationLifecycle", "ApplicationAcceptance", "ApplicationBundleBuild",
+        "ApplicationCleanup", "CloudflareTargetPlane", "CloudflareZeroTrust",
+        "Credentials", "Production", "VultrLifecycle", "VultrVpc",
+    ):
+        require(
+            ("    #[command(hide = true)]\n    " + name) in cli,
+            f"legacy {name} must remain hidden from public host CLI help",
+        )
+
+
+
+def test_host_native_receipt_boundary_and_legacy_workflow_admission(router: str) -> None:
+    """Keep a signed root receipt intact; old workflows must not regain public mutation ingress."""
+    child = Path(".github/workflows/host-native-observe.yml").read_text(encoding="utf-8")
+    receipt = Path("edge-platform/crates/edge-shared-types/src/host_receipt.rs").read_text(encoding="utf-8")
+    orchestrator = Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(encoding="utf-8")
+    require(
+        "pub const MAX_NATIVE_RECEIPT_BYTES: usize = 8192;" in receipt
+        and """test "$(stat -c '%s' "${result}")" -le 8192""" in child
+        and "decode_native_receipt(&read_bounded(&result_path, 8192)?)" in orchestrator
+        and """sudo -n "${owner}" local host-apply < "${intent}" > "${result}" """ .strip() in child,
+        "The one native owner may emit the complete 8192-byte authenticated receipt without truncation",
+    )
+    require(
+        '[[ "${EDGE_FLEET_REGISTRY_SHA256}" =~ ^[0-9a-f]{64}$ ]]' in router
+        and 'test "${EDGE_FLEET_REGISTRY_SHA256}" = "${HOSTS_SHA256}"' in router
+        and 'cmp -s "${RUNNER_TEMP}/host-release/fleet-registry.pb" "${RUNNER_TEMP}/hosts.binpb"' in router
+        and 'if [[ "${command[0]}" != "status" ]]; then' in router
+        and 'test "${EDGE_RELEASE_SCHEMA_VERSION}" = "7"' in router,
+        "Signed HostIntent must be bound to exact Git fleet bytes, not a legacy or alternate release registry",
+    )
+    require(
+        "host_native_source_capability={source_capability}" in orchestrator
+        and "VM_SIGNED_APPLY_SOURCE_PRESENT" in orchestrator
+        and "WINDOWS_SIGNED_SYSTEM_HANDLER_MISSING" in orchestrator
+        and "host_native_install_authority=INSTALLED_OWNER_UNPROVEN" in orchestrator
+        and "host_native_install_authority=NOT_YET_ACCEPTED" not in orchestrator,
+        "A Rust source handler cannot be confused with installed root/SYSTEM authority",
+    )
+    for filename in (
+        "credential-lifecycle.yml", "vm-application-lifecycle.yml",
+        "windows-physical.yml", "vultr-lifecycle.yml",
+        "vultr-acceptance-resume.yml",
+    ):
+        legacy = Path(".github/workflows", filename).read_text(encoding="utf-8")
+        event_header = legacy.split("permissions:", 1)[0]
+        require(
+            "workflow_call:" in event_header
+            and "workflow_dispatch:" not in event_header
+            and "issue_comment:" not in event_header
+            and f"uses: ./.github/workflows/{filename}" not in router,
+            f"Historical {filename} must remain unreachable from public control-plane mutation ingress",
+        )
+
+
+def test_vm_runner_enrollment_is_never_an_executable_sudo_capability() -> None:
+    """Reject both the current and legacy enrollment shapes on real VM runners."""
+    workflow = Path(".github/workflows/host-native-observe.yml").read_text(encoding="utf-8")
+    installer = Path("edge-platform/scripts/install-vultr-production-runner.sh").read_text(encoding="utf-8")
+    old = "local host-enroll machine release key"
+    current = "local host-enroll machine release"
+    assert workflow.count('"' + old + '"') == 1
+    assert workflow.count('"' + current + '"') == 1
+    assert installer.count('"' + old + '"') == 1
+    assert installer.count('"' + current + '"') == 1
+    for source in (workflow, installer):
+        assert source.index('"' + current + '"') < source.index('"' + old + '"')
+    sudoers = installer.split('cat > "${SUDOERS_FILE}" <<EOF', 1)[1].split("EOF", 1)[0]
+    # Root enrollment is never granted to GitHub transport, even with old
+    # sudoers installed on a machine that predates the latest CLI change.
+    require(
+        "host-enroll" not in sudoers
+        and "local host-apply" in sudoers
+        and "HOST_VM_LEGACY_DIRECT_MUTATION_AUTHORITY_FORBIDDEN" in workflow
+        and workflow.index('"' + old + '"') < workflow.index(
+            "Dispatch one signed native VM host transaction"
+        ),
+        "VM runner must deny current and legacy host-enroll without a second mutation authority",
+    )
+
+
+def test_root_enrollment_has_no_second_worker_signer_input() -> None:
+    """Only accepted protected Git supplies Worker signer identity."""
+    cli = Path("edge-platform/crates/edge-agent/src/cli.rs").read_text(encoding="utf-8")
+    owner = Path("edge-platform/crates/edge-agent/src/host_enroll.rs").read_text(encoding="utf-8")
+    runner = Path("edge-platform/scripts/install-vultr-production-runner.sh").read_text(encoding="utf-8")
+    require(
+        'HostEnroll {\n        machine_id: String,\n        release_set_sha256: String,\n    }' in cli
+        and 'worker_public_key_hex' not in cli
+        and 'pub(crate) async fn enroll(machine_id: &str, release_digest: &str)' in owner
+        and 'let public_key = host.worker_authority_public_key.clone();' in owner
+        and 'verify_git_worker_signer_pin(host, &public_key)' in owner
+        and 'attest_published_github_source(' in owner
+        and 'validate_existing_trust_for_refresh(trusted, machine_id, &public_key)' in owner
+        and '"local host-enroll machine release"' in runner,
+        "Root host-enroll must derive only its Git-pinned Worker identity from accepted release",
+    )
+
+
+def test_typed_vm_bootstrap_evidence_is_non_authorizing() -> None:
+    """Missing Git receipt identity/ACTIVE credentials must have ONE typed owner."""
+    proto = Path("edge-platform/proto/edge/platform/v1/fleet.proto").read_text(encoding="utf-8")
+    types = Path("edge-platform/crates/edge-shared-types/src/host_resources.rs").read_text(encoding="utf-8")
+    agent = Path("edge-platform/crates/edge-agent/src/host_native.rs").read_text(encoding="utf-8")
+    docker = Path("edge-platform/crates/edge-agent/src/docker_observation.rs").read_text(encoding="utf-8")
+    cmd = Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(encoding="utf-8")
+    require(
+        "enum FleetVmBootstrapPhase {" in proto
+        and "FleetVmBootstrapPhase bootstrap_phase = 11;" in proto
+        and "validate_vm_bootstrap_phase(report.bootstrap_phase, host, credential)" in types
+        and "fn local_vm_bootstrap_phase(" in agent
+        and "let credential = observe_native_vm_credential_readback(stack_dir);" in docker
+        and "bootstrap_phase: bootstrap_phase as i32" in docker
+        and "bootstrap_gate_is_typed_read_only_and_consistent_with_git_and_worker" in types
+        and "host_vm_bootstrap_source=RUNNER_COPIED_UNAUTHENTICATED" in cmd
+        and "host_vm_bootstrap_authorizes_mutation=false" in cmd,
+        "First-use must use one typed, bounded, explicitly unauthenticated native evidence path",
+    )
+
+
+def test_native_vm_install_requires_canonical_worker_active_origin() -> None:
+    """Signed INSTALL must prove ACTIVE from Worker before native journal BEGIN."""
+    native = Path("edge-platform/crates/edge-agent/src/host_native.rs").read_text(encoding="utf-8")
+    docker = Path("edge-platform/crates/edge-agent/src/docker_observation.rs").read_text(encoding="utf-8")
+    required = [
+        "attest_native_vm_install_worker_origin(",
+        "attest_worker_credential_origin(",
+        "CredentialOriginSelection::Active",
+        "verify_native_vm_install_worker_pin(",
+        "HOST_VM_INSTALL_WORKER_ACTIVE_ORIGIN_UNPROVEN",
+        "worker_active_origin_must_match_exact_pinned_generation_and_sha256",
+    ]
+    require(
+        all(item in native + docker for item in required)
+        and native.index("attest_native_vm_install_worker_origin(")
+            < native.index("*prepared_install.borrow_mut() = Some(plan)")
+        and "native_vm_install_error_class(" in native,
+        "Native INSTALL must authenticate Worker-v2 ACTIVE origin before reserving one-shot journal",
+    )
+
+
+def test_signed_first_use_credentials_share_native_journal() -> None:
+    """New Worker-v2 credentials must enter only a signed, one-shot native INSTALL."""
+    proto = Path("edge-platform/proto/edge/platform/v1/fleet.proto").read_text(encoding="utf-8")
+    model = Path("edge-platform/crates/edge-shared-types/src/lib.rs").read_text(encoding="utf-8")
+    docker = Path("edge-platform/crates/edge-agent/src/docker_observation.rs").read_text(encoding="utf-8")
+    owner = Path("edge-platform/crates/edge-agent/src/host_native.rs").read_text(encoding="utf-8")
+    require(
+        "FleetVmFirstUseCredential vm_first_use_credential = 10;" in proto
+        and "HOST_VM_FIRST_USE_CREDENTIAL_IDENTITY_INVALID" in model
+        and "verify_native_vm_first_use_identity(" in docker
+        and "first_use_bundle" in docker
+        and "stage_delivery_candidate(first)" in docker
+        and "promote_candidate()" in docker
+        and "activate_native_vm_first_use_cursor_once(stack_dir, host, first)?" in docker
+        and "fn activate_native_vm_first_use_cursor_once(" in docker
+        and "attest_native_vm_install_worker_origin(" in owner
+        and "execute_native_host_once(" in owner
+        and "HOST_VM_INSTALL_FIRST_USE_ACTIVE_UNCERTAIN_NO_REPLAY" in docker,
+        "Fresh credentials must be Git-pinned Worker-v2 source under the native signed BEGIN",
+    )
+
+
+def test_vm_first_use_warp_safety_and_bootstrap_source() -> None:
+    """First-use must handle a fresh root-owned WARP state before Docker writes."""
+    docker = Path("edge-platform/crates/edge-agent/src/docker_observation.rs").read_text(encoding="utf-8")
+    native = Path("edge-platform/crates/edge-agent/src/host_native.rs").read_text(encoding="utf-8")
+    proto = Path("edge-platform/proto/edge/platform/v1/fleet.proto").read_text(encoding="utf-8")
+    types = Path("edge-platform/crates/edge-shared-types/src/host_resources.rs").read_text(encoding="utf-8")
+    require(
+        "inspect_native_warp_state(" in docker
+        and "ensure_native_warp_state_once(" in docker
+        and "warp_state_rejects_symlinks_files_foreign_owners_and_writable_parent" in docker
+        and docker.index("ensure_native_warp_state_once(", docker.index("pub(crate) async fn apply_native_vm_install_once("))
+            < docker.index("pull_native_vm_image_once(", docker.index("pub(crate) async fn apply_native_vm_install_once("))
+        and "FIRST_USE_WORKER_SOURCE_UNVERIFIED = 7;" in proto
+        and "FIRST_USE_GIT_SOURCE_REQUIRED = 8;" in proto
+        and "Phase::FirstUseWorkerSourceUnverified" in native
+        and "Phase::FirstUseGitSourceRequired" in types,
+        "Signed VM first-use requires safe WARP root preflight and truthful Worker provenance status",
+    )
+
+
+def test_release_acceptance_gates_do_not_mutate_hosts_on_merge() -> None:
+    """PR candidates prove code; main promotion never silently deploys hosts."""
+    ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
+    router = ROUTER.read_text(encoding="utf-8")
+    enroll = Path("edge-platform/crates/edge-agent/src/host_enroll.rs").read_text(encoding="utf-8")
+    native = Path("edge-platform/crates/edge-agent/src/host_native.rs").read_text(encoding="utf-8")
+    require(
+        "  candidate_complete:\n" in ci
+        and "  promote:\n" in ci
+        and "  push:\n    branches: [main]" in ci
+        and "if: github.event_name == 'push' && github.ref == 'refs/heads/main'" in ci
+        and 'test "${accepted_tree}" = "${candidate_tree}"' in ci
+        and "Only a genuine two-parent main merge may promote a candidate." in ci,
+        "Candidate proof and published protected main ReleaseSet must have distinct gates",
+    )
+    promotion = ci.split("  promote:\n", 1)[1]
+    require(
+        "uses: ./.github/workflows/host-native-observe.yml" not in promotion
+        and "sudo -n" not in promotion
+        and "local host-apply" not in promotion
+        and "/host apply" not in promotion,
+        "Publishing accepted artifacts must never automatically mutate installed hosts",
+    )
+    require(
+        "on:\n  issue_comment:" in router
+        and "github.actor_id == '44100369'" in router
+        and "uses: ./.github/workflows/host-native-observe.yml" in router
+        and 'release["draft"].as_bool() != Some(false)' in enroll
+        and 'release["prerelease"].as_bool() != Some(false)' in enroll
+        and "verify_receipt_registration(" in enroll
+        and "host_receipt::check_native_receipt_key(host, &receipt_pkcs8)" in native
+        and "execute_native_host_once(" in native,
+        "A published release and signed root owner must be required for operations",
+    )
+
+
+def test_vm_first_use_deep_status_checks_worker_without_mutation() -> None:
+    """Deep diagnosis resolves Git-pinned Worker source without bypassing signed INSTALL."""
+    proto = Path("edge-platform/proto/edge/platform/v1/fleet.proto").read_text(encoding="utf-8")
+    types = Path("edge-platform/crates/edge-shared-types/src/host_resources.rs").read_text(encoding="utf-8")
+    docker = Path("edge-platform/crates/edge-agent/src/docker_observation.rs").read_text(encoding="utf-8")
+    owner = Path("edge-platform/crates/edge-agent/src/host_native.rs").read_text(encoding="utf-8")
+    require(
+        "FIRST_USE_WORKER_SOURCE_VERIFIED_LOCAL = 9;" in proto
+        and "FIRST_USE_WORKER_SOURCE_MISMATCH = 10;" in proto
+        and "FIRST_USE_WORKER_SOURCE_UNAVAILABLE = 11;" in proto
+        and "fn classify_native_vm_first_use_source(" in docker
+        and "async fn observe_native_vm_first_use_source(" in docker
+        and "classify_native_vm_first_use_source(host, remote)" in docker
+        and "first_use_deep_status_classifies_exact_worker_source_without_leaking_secrets" in docker
+        and "Phase::FirstUseWorkerSourceVerifiedLocal" in types
+        and "attest_native_vm_install_worker_origin(" in owner
+        and "host_vm_bootstrap_authorizes_mutation=false" in Path(
+            "edge-platform/crates/edge-orchestrator/src/host_command.rs"
+        ).read_text(encoding="utf-8"),
+        "Deep first-use Worker evidence must be classified but never authorize mutation",
+    )
+
+
+def test_vm_first_use_resource_and_host_proposals_are_safe() -> None:
+    """VM first-use proposes only fully absent resource install, never mutation."""
+    proto = Path("edge-platform/proto/edge/platform/v1/fleet.proto").read_text(encoding="utf-8")
+    types = Path("edge-platform/crates/edge-shared-types/src/host_resources.rs").read_text(encoding="utf-8")
+    require(
+        "FIRST_USE_WORKER_VERIFIED_INSTALL_PROPOSAL_ONLY = 11;" in proto
+        and "first_use_install_proposal" in types
+        and "FirstUseWorkerSourceVerifiedLocal as i32" in types
+        and "credential.state == crate::FleetVmCredentialState::StoreAbsent as i32" in types
+        and "FirstUseWorkerVerifiedInstallProposalOnly => Step::Install" in types
+        and "first_use_resource_plan_matches_host_install_without_granting_authority" in types
+        and "let partial = propose_vm_resource_transitions(&host, &report).unwrap();" in types,
+        "First-use per-resource status must agree with host INSTALL only for all-absent VM",
+    )
+
+
 def test_native_host_readonly_control_boundary(router: str) -> None:
     """One typed Rust inventory dispatches independent, read-only native owners."""
     child_path = Path(".github/workflows/host-native-observe.yml")
@@ -775,6 +1118,57 @@ def test_native_host_readonly_control_boundary(router: str) -> None:
         "Per-host reports must finish independently with native read-only owners",
     )
     require(
+        "HOST_VM_LEGACY_DIRECT_MUTATION_AUTHORITY_FORBIDDEN" in owner
+        and 'if [[ "${COMMAND_BODY}" == "/host apply "* || "${COMMAND_BODY}" == "/host recover "* ]] &&' in owner
+        and '[[ "${vm_runner_mutate}" != ABSENT ]]' in owner
+        and owner.index("HOST_VM_LEGACY_DIRECT_MUTATION_AUTHORITY_FORBIDDEN")
+            < owner.index("Dispatch one signed native VM host transaction")
+        and "${{ runner.temp }}/host-operation/host-result.pb" in owner
+        and "LOCAL_PROTOBUF_NOT_YET_REMOTE_ATTESTED" in owner,
+        "Legacy VM direct mutation authority must block new signed execution; retained native result is not remote attestation",
+    )
+    require(
+        owner.count("if-no-files-found: ignore") == 1
+        and "native-result \"${TARGET_MACHINE}\" --intent-path \"${intent}\"" in peer_report
+        and "host_native_result_correlation=EXACT" in peer_report
+        and "host_native_result_authenticated=true" in peer_report
+        and "VERIFIED_PHYSICAL|OBSERVED_ONLY" in peer_report
+        and "native_result_audit=EXACT_SIGNED_NATIVE_OWNER" in peer_report,
+        "Runner native transaction correlation must be typed, exact and explicitly unauthenticated",
+    )
+    require(
+        "local host-resources" in owner
+        and "host-native-resources.pb" in owner
+        and 'extra=(--resources-path "${resource_report}")' in peer_report
+        and "host_vm_resources_capture=UNPROVEN_INSTALLED_OWNER" in owner
+        and "local host-resources" in Path("edge-platform/scripts/install-vultr-production-runner.sh").read_text(),
+        "Deep VM diagnostics must use exact bounded root-owned resource protobuf and never raw Docker socket",
+    )
+    require(
+        "VM containers (Rust-validated; runner copy UNAUTHENTICATED; no mutation authority)" in peer_report
+        and "VM containers: UNPROVEN" in peer_report
+        and "host_vm_resources_origin=RUNNER_COPIED_UNAUTHENTICATED" in peer_report
+        and "host_vm_resources_count=" in peer_report
+        and "host_vm_resource=" in peer_report,
+        "Issue #1 must show bounded typed VM container status or explicit UNPROVEN",
+    )
+    require(
+        "host-observe $current" in owner
+        and 'local host-observe > "${output}"' in owner
+        and "actions/upload-artifact@v4" in owner
+        and "native-readback-${{ inputs.machine_id }}-${{ inputs.source_comment_id }}" in owner
+        and "actions: read" in peer_report
+        and 'gh run download "${GITHUB_RUN_ID}"' in peer_report
+        and "resolve_durable_release.sh" in peer_report
+        and "edge-orchestrator-linux-amd64" in peer_report
+        and 'readback "${TARGET_MACHINE}" --observation-path "${observation}"' in peer_report
+        and "host_plan_mutation_authorized=false" in peer_report
+        and "host_plan_owner_attested=false" in peer_report
+        and "RUNNER_COPIED_UNAUTHENTICATED" in peer_report
+        and "REJECTED_EXACT_RUST_VALIDATION" in peer_report,
+        "Native protobuf transport must be consumed by exact trusted Rust without granting mutation",
+    )
+    require(
         "needs: host" in report
         and "github.run_attempt == 1" in report
         and "needs.host.result == 'success'" in report
@@ -804,8 +1198,77 @@ def test_native_host_readonly_control_boundary(router: str) -> None:
         "Only Host read-only preflight may be routed; old mutations are forbidden",
     )
 
+def test_existing_worker_host_signer_is_syntactically_closed() -> None:
+    """Prove the one existing Cloudflare Worker cannot authorize unprovisioned host writes."""
+    rust = Path(
+        "edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs"
+    ).read_text(encoding="utf-8")
+    before = 'let source = r#"const S='
+    after = '"#\n        .replace("__PROJECTION__"'
+    require(rust.count(before) == 1, "Host signer must share ONE existing credential Worker")
+    body = 'const S=' + rust.split(before, 1)[1].split(after, 1)[0]
+    require('async function AUTHORIZE(' in body, "Host signer must exist in the Worker")
+    body = body.replace("__PROJECTION__", "2")
+    body = body.replace("__HOST_SIGNER_PROJECTION__", "2")
+    with tempfile.TemporaryDirectory(prefix="edge-host-worker-js-") as tmp:
+        target = Path(tmp) / "credential-worker.mjs"
+        target.write_text(body, encoding="utf-8")
+        syntax = subprocess.run(
+            ["node", "--check", str(target)], capture_output=True, text=True,
+            timeout=15, check=False,
+        )
+        require(syntax.returncode == 0, "Worker JS syntax invalid: " + syntax.stderr[-1000:])
+        check = (
+            "const m=await import(process.argv[1]);"
+            "const url='https://example.workers.dev/v1/host/authorize';"
+            "const req=new Request(url,{method:'POST',"
+            "headers:{'Content-Type':'application/x-protobuf'},body:new Uint8Array([8,1])});"
+            "const v=await m.default.fetch(req,{});"
+            "if(v.status!==404)throw Error('Unprovisioned Host signer must be 404');"
+            "const g=await m.default.fetch(new Request("
+            "'https://example.workers.dev/v1/credentials?generation=4'),{});"
+            "if(g.status!==404)throw Error('Credential route must remain fail-closed');"
+        )
+        no_secrets = subprocess.run(
+            ["node", "--input-type=module", "-e", check, str(target)],
+            capture_output=True, text=True, timeout=15, check=False,
+        )
+        require(
+            no_secrets.returncode == 0,
+            "Worker must fail closed without signer and credential secrets: "
+            + no_secrets.stderr[-1000:],
+        )
+        roundtrip = subprocess.run(
+            [
+                "node", "edge-platform/scripts/test_host_worker_signer.mjs",
+                str(target.resolve()),
+            ],
+            capture_output=True, text=True, timeout=25, check=False,
+        )
+        require(
+            roundtrip.returncode == 0,
+            "Worker Access/JWT/Ed25519 roundtrip failed: "
+            + roundtrip.stderr[-1800:],
+        )
+
+
 def main() -> None:
+    test_existing_worker_host_signer_is_syntactically_closed()
     router = ROUTER.read_text(encoding="utf-8")
+    test_host_first_use_is_internal_to_one_host_ingress()
+    test_host_first_use_registration_is_reserved_before_provider_create()
+    test_host_native_signed_result_reporting()
+    test_canonical_host_mutation_ingress()
+    test_host_native_receipt_boundary_and_legacy_workflow_admission(router)
+    test_release_acceptance_gates_do_not_mutate_hosts_on_merge()
+    test_vm_runner_enrollment_is_never_an_executable_sudo_capability()
+    test_root_enrollment_has_no_second_worker_signer_input()
+    test_typed_vm_bootstrap_evidence_is_non_authorizing()
+    test_native_vm_install_requires_canonical_worker_active_origin()
+    test_signed_first_use_credentials_share_native_journal()
+    test_vm_first_use_warp_safety_and_bootstrap_source()
+    test_vm_first_use_deep_status_checks_worker_without_mutation()
+    test_vm_first_use_resource_and_host_proposals_are_safe()
     test_native_host_readonly_control_boundary(router)
     application = APPLICATION.read_text(encoding="utf-8")
     vultr = VULTR.read_text(encoding="utf-8")
@@ -2334,6 +2797,157 @@ def main() -> None:
         for path in WORKFLOWS.glob("*.yml")
         if "issue_comment:" in path.read_text(encoding="utf-8")
     )
+    native_host = Path("edge-platform/crates/edge-agent/src/host_native.rs").read_text(encoding="utf-8")
+    require(
+        "run_bootstrap" not in native_host
+        and "super::apply_bundle" not in native_host
+        and "preflight_native_vm_install(" in native_host
+        and "apply_native_vm_install_once(" in native_host
+        and "HOST_NATIVE_VM_INSTALL_REQUIRES_NATIVE_HANDLER" not in native_host,
+        "Signed native install must not fall through to legacy compose bootstrap",
+    )
+    signed_vm_effectors = Path(
+        "edge-platform/crates/edge-agent/src/docker_observation.rs"
+    ).read_text(encoding="utf-8")
+    require(
+        "recreate_native_gateway_once(" in signed_vm_effectors
+        and "super::start_line1_gateway(" not in signed_vm_effectors
+        and "super::start_line2_proxy(" not in signed_vm_effectors,
+        "Signed VM gateway replacement must use native Docker Engine, not Compose",
+    )
+    require(
+        "pub(crate) async fn preflight_native_vm_install(" in signed_vm_effectors
+        and "pub(crate) async fn apply_native_vm_install_once(" in signed_vm_effectors
+        and "pull_native_vm_image_once(" in signed_vm_effectors
+        and "native_warp_create_body(" in signed_vm_effectors
+        and "super::run_bootstrap(" not in signed_vm_effectors
+        and "super::run_compose(" not in signed_vm_effectors,
+        "Signed VM INSTALL must use native Docker graph instead of Compose",
+    )
+    # Native INSTALL must project only the *pinned* Worker ACTIVE bundle
+    # through one root owner; no unguarded second credential read on staging.
+    installed_stage = signed_vm_effectors.split(
+        "fn stage_native_first_vm_bundle(", 1
+    )[1].split("async fn pull_native_vm_image_once(", 1)[0]
+    native_install_apply = signed_vm_effectors.split(
+        "pub(crate) async fn apply_native_vm_install_once(", 1
+    )[1].split("/// One application-owned service selector.", 1)[0]
+    require(
+        "pinned_secrets: &super::ApplicationRuntimeSecrets" in installed_stage
+        and "write_vm_runtime_environment(&stage, pinned_secrets)" in installed_stage
+        and "materialize_vm_owned_runtime_environment" not in installed_stage
+        and native_install_apply.count(
+            "verify_native_vm_install_credential_pin("
+        ) == 2
+        and "stage_native_first_vm_bundle(stack_dir, &plan.request, &pinned_secrets)"
+        in native_install_apply,
+        "Signed VM INSTALL must use one pinned Worker-v2 secret snapshot "
+        "before file writes and at terminal poststate",
+    )
+    # Default deny: future protobuf RPCs must be explicitly read-only or
+    # pass the native fail-closed guard inside their handler.
+    def rpc_is_guarded(code, name, guard):
+        token = "    async fn " + name + "("
+        if code.count(token) != 1:
+            return False
+        body = code.split(token, 1)[1].split(" {", 1)
+        return len(body) == 2 and body[1].lstrip().startswith(guard + "()?;")
+
+    def rpc_methods(code):
+        return {
+            line.strip().split("(", 1)[0].split()[-1]
+            for line in code.splitlines()
+            if line.startswith("    async fn ")
+        }
+
+    vm_read_only_rpc = {
+        "get_health", "get_readiness", "get_runtime_state", "get_version",
+        "observe_ipv4_network", "verify_initial_credential_host", "verify_initial_vm_credential",
+        "verify_runtime", "read_bundle_identity", "read_rendered_artifacts",
+        "verify_mesh_runtime", "get_credential_state",
+    }
+    windows_read_only_rpc = {
+        "get_status", "doctor", "list_secret_refs", "get_selector_state",
+        "get_trace", "get_operation", "list_operation_events",
+        "get_credential_state",
+    }
+    # Inspect only the generated protobuf service implementations, not
+    # unrelated private async helpers (e.g. read-only network observation).
+    vm_rpc_impl = vm_agent_runtime.split(
+        "impl AgentService for AgentServerImpl {", 1
+    )[1].split("\n}\n", 1)[0]
+    windows_rpc_impl = windows_controller_runtime.split(
+        "impl ControllerService for ControllerServerImpl {", 1
+    )[1].split("\n}\n", 1)[0]
+    vm_rpc_methods = rpc_methods(vm_rpc_impl)
+    windows_rpc_methods = rpc_methods(windows_rpc_impl)
+    require(
+        "fn native_local_entrypoint_allowed(" in vm_agent_runtime
+        and vm_agent_runtime.count("if !native_local_entrypoint_allowed(&command)") == 2
+        and "HOST_VM_LEGACY_RPC_LISTENER_DISABLED_USE_HOST" in vm_agent_runtime
+        and vm_read_only_rpc <= vm_rpc_methods
+        and windows_read_only_rpc <= windows_rpc_methods
+        and all(
+            rpc_is_guarded(vm_rpc_impl, name, "deny_legacy_vm_rpc_mutation")
+            for name in vm_rpc_methods - vm_read_only_rpc
+        )
+        and all(
+            rpc_is_guarded(windows_rpc_impl, name,
+                           "deny_legacy_windows_rpc_mutation")
+            for name in windows_rpc_methods - windows_read_only_rpc
+        ),
+        "New VM/Windows RPC mutation entrypoint must be fail-closed: "
+        + "vm=" + str(sorted(
+            name for name in vm_rpc_methods - vm_read_only_rpc
+            if not rpc_is_guarded(vm_rpc_impl, name, "deny_legacy_vm_rpc_mutation")
+        ))
+        + " windows=" + str(sorted(
+            name for name in windows_rpc_methods - windows_read_only_rpc
+            if not rpc_is_guarded(
+                windows_rpc_impl, name, "deny_legacy_windows_rpc_mutation"
+            )
+        ))
+        + " vm_read_only_missing=" + str(sorted(vm_read_only_rpc - vm_rpc_methods))
+        + " windows_read_only_missing=" + str(
+            sorted(windows_read_only_rpc - windows_rpc_methods)
+        ),
+    )
+    # Windows SCM start and child-exit events are observations, not a
+    # second HostIntent authority. A future refactor must never silently
+    # reenable these historical implicit runtime mutations.
+    windows_scm_start = windows_controller_runtime.split(
+        "fn converge_windows_runtime_on_service_start(", 1
+    )[1].split("fn windows_startup_decision(", 1)[0]
+    windows_child_exit = windows_controller_runtime.split(
+        "fn reconcile_windows_child_exit(", 1
+    )[1].split("fn run_windows_service(", 1)[0]
+    require(
+        'return Ok("HOST_WINDOWS_UNSIGNED_SCM_AUTOSTART_BLOCKED");'
+        in windows_scm_start
+        and "if is_installed_windows_root(repo_root)" in windows_child_exit
+        and windows_child_exit.index("return Ok(None);")
+        < windows_child_exit.index("start_runtime_process(&paths, false)"),
+        "Windows SCM auto-start/child-recovery must not bypass signed HostIntent",
+    )
+    # The SYSTEM scheduled privileged task is NOT a second HostIntent
+    # authority. Deny legacy release/credential/SCM writes at task dispatch,
+    # not merely in its caller, CLI, ACL or GitHub workflow.
+    windows_console_owner = Path(
+        "edge-platform/crates/edge-console/src/main.rs"
+    ).read_text(encoding="utf-8")
+    windows_privileged_dispatch = windows_console_owner.split(
+        "async fn process_privileged_request(", 1
+    )[1].split("let outcome = match WindowsPrivilegedOperation::try_from", 1)[0]
+    require(
+        "fn legacy_console_entrypoint_allowed(" in windows_console_owner
+        and "HOST_WINDOWS_LEGACY_CONSOLE_MUTATION_DISABLED_USE_HOST"
+        in windows_console_owner
+        and "legacy_privileged_read_only(request.operation)"
+        in windows_privileged_dispatch
+        and "HOST_WINDOWS_LEGACY_PRIVILEGED_MUTATION_DISABLED"
+        in windows_privileged_dispatch,
+        "Windows SYSTEM privileged dispatch must deny unsigned mutations",
+    )
     # Current normative docs replace dated paragraphs with one authority.
     plan = Path("edge-platform/FINALIZATION-PLAN.md").read_text(encoding="utf-8")
     handoff = Path("edge-platform/NEXT-CHAT.md").read_text(encoding="utf-8")
@@ -2349,6 +2963,10 @@ def main() -> None:
         and "infra/hosts/hosts.textproto" in architecture
         and "Cloudflare Worker" in architecture
         and "UNKNOWN_NO_REPLAY" in architecture
+        and "Неизменяемый контракт иерархии ресурсов" in architecture
+        and "TypedReason" in architecture
+        and "UNSUPPORTED" in architecture
+        and "resource_id=sing-box" in architecture
         and "10/10" in architecture
         and "ProxyOnly" in architecture
         and "Issue #26" in architecture
@@ -3009,7 +3627,15 @@ def main() -> None:
     )
 
     require(
-        router.count("uses: ./.github/workflows/host-native-observe.yml") == 1
+        router.count("uses: ./.github/workflows/host-native-observe.yml") == 2
+        and "  host_resume_native:\n" in router
+        and "needs.host_resume_receipt.outputs.operation == 'APPLY_PREFLIGHT'" in router
+        and "github.event_name == 'workflow_run'" in router
+        and "github.event.workflow_run.conclusion == 'success'" in router
+        and "github.event.workflow_run.head_branch == 'main'" in router
+        and "verify-merged-receipt" in router
+        and "refresh-receipt" in router
+        and router.index("verify-merged-receipt") < router.index("refresh-receipt")
         and all("uses: ./.github/workflows/" + name + ".yml" not in router
                 for name in ("windows-physical", "vm-application-lifecycle",
                              "credential-lifecycle", "vultr-lifecycle",
@@ -3055,8 +3681,14 @@ def main() -> None:
         "retired standalone DNS/Mesh operator CLI namespaces must stay absent; acceptance/production call typed internal functions directly",
     )
     require(
-        "vultr-control-plane-production" not in router,
-        "router and skipped comments must never occupy production concurrency",
+        "vultr-control-plane-production" not in router.split("  host_first_use:\n", 1)[0]
+        and router.count("group: vultr-control-plane-production") == 2
+        and "  host_resume_receipt:\n" in router
+        and "github.event.workflow_run.conclusion == 'success'" in router.split("  host_resume_receipt:\n", 1)[1]
+        and "github.event.workflow_run.run_attempt == 1" in router.split("  host_resume_receipt:\n", 1)[1]
+        and "    concurrency:\n      group: vultr-control-plane-production" in router.split("  host_resume_receipt:\n", 1)[1]
+        and "    if: >-\n      needs.host.result == 'success'" in router.split("  host_first_use:\n", 1)[1],
+        "Only the admitted first-use job may occupy production concurrency; skipped comments may not",
     )
 
     require(
@@ -3573,23 +4205,36 @@ def main() -> None:
         and 'run_lifecycle action "${spec}" "${machine}" "${INSTANCE_ACTION}" "${authority}" | tee "${RUNNER_TEMP}/result.json"' in vultr,
         "provider instance actions, including recovery reboot, must not depend on guest SSH",
     )
+    # The GitHub runner is a transport, never a native mutation owner.
+    # Old Stage-2 workflows remain passive historical code and MUST NOT
+    # dictate the new sudoers policy or resurrect wildcard mutation access.
+    vm_sudoers = production_vm_runner_installer.split(
+        'cat > "${SUDOERS_FILE}" <<EOF', 1
+    )[1].split("\nEOF", 1)[0]
     require(
         "NOPASSWD:ALL" not in production_vm_runner_installer
         and "usermod -aG docker" not in production_vm_runner_installer
         and "sing-box-production-vm" in production_vm_runner_installer
-        and "SING_BOX_RUNTIME_READ" in production_vm_runner_installer
-        and "SING_BOX_RUNTIME_MUTATE" in production_vm_runner_installer
-        and "${LOCAL_OWNER} local status" in production_vm_runner_installer
-        and "${LOCAL_OWNER} local credential-admit *" not in production_vm_runner_installer
-        and "${LOCAL_OWNER} local credential-stage *" in production_vm_runner_installer
-        and "${LOCAL_OWNER} local bundle-verify" in production_vm_runner_installer
-        and "${LOCAL_OWNER} local bundle-converge" in production_vm_runner_installer
-        and "${LOCAL_OWNER} local bundle-rollback" in production_vm_runner_installer
-        and "${LOCAL_OWNER} local bundle-verify" in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_READ =", 1)[1].split("\n", 1)[0]
-        and "${LOCAL_OWNER} local credential-stage *" in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_MUTATE =", 1)[1].split("\n", 1)[0]
-        and "${LOCAL_OWNER} local bundle-converge" in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_MUTATE =", 1)[1].split("\n", 1)[0]
-        and "${LOCAL_OWNER} local bundle-rollback" in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_MUTATE =", 1)[1].split("\n", 1)[0]
-        and "${LOCAL_OWNER} local bundle-rollback" not in production_vm_runner_installer.split("Cmnd_Alias SING_BOX_RUNTIME_READ =", 1)[1].split("\n", 1)[0]
+        and "SING_BOX_RUNTIME_READ" in vm_sudoers
+        and "SING_BOX_RUNTIME_MUTATE" not in vm_sudoers
+        and "Cmnd_Alias SING_BOX_NATIVE_HOST_TRANSACTION = ${LOCAL_OWNER} local host-apply" in vm_sudoers
+        and "NOPASSWD: SING_BOX_RUNTIME_READ, SING_BOX_NATIVE_HOST_TRANSACTION" in vm_sudoers
+        and "${LOCAL_OWNER} local status" in vm_sudoers
+        and "${LOCAL_OWNER} local diagnose" in vm_sudoers
+        and "${LOCAL_OWNER} local bundle-verify" in vm_sudoers
+        and all(
+            ("${LOCAL_OWNER} local " + command) not in vm_sudoers
+            for command in (
+                "bundle-converge", "bundle-rollback", "bootstrap-full",
+                "credential-stage", "credential-transition",
+                "credential-existing-join", "mesh-cleanup",
+            )
+        )
+        and "runner retains forbidden native mutation sudo authority" in production_vm_runner_installer
+        and "runner_native_mutation_authority=EXACT_HOST_INTENT_ONLY" in production_vm_runner_installer
+        and 'sudo -n "${owner}" local host-apply < "${intent}" > "${result}"' in Path(
+            ".github/workflows/host-native-observe.yml"
+        ).read_text(encoding="utf-8")
         and "runner must not have direct Docker socket authority" in production_vm_runner_installer
         and "production enrollment must leave no edge-agent RPC listener on :50061" in production_vm_runner_installer
         and "acceptance_rpc_service_enabled" in vultr
@@ -3599,20 +4244,7 @@ def main() -> None:
         and 'index("sing-box-production-vm")' in vultr
         and 'index("vultr-root")) == null' in vultr
         and 'index($machine)' in vultr,
-        "production VM runner bootstrap must be bounded, Docker-socket blind, and verified through the GitHub runner API",
-    )
-    vm_stage2_owner_commands = set(
-        re.findall(r'sudo -n "\$\{owner\}" local ([a-z0-9-]+)', credentials)
-    )
-    vm_sudoers_owner_commands = set(
-        re.findall(
-            r'\$\{LOCAL_OWNER\} local ([a-z0-9-]+)',
-            production_vm_runner_installer,
-        )
-    )
-    require(
-        vm_stage2_owner_commands <= vm_sudoers_owner_commands,
-        "every Stage 2 VM sudo local-owner command must be installed in the production runner sudoers allowlist",
+        "VM runner may dispatch ONLY exact Worker-signed native host transaction; no direct Docker or legacy mutation",
     )
     require(
         'verb == "access-release" and len(tokens) == 4' in vultr
