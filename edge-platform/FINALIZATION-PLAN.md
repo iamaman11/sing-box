@@ -108,7 +108,7 @@ lock → однократную mutation callback → физический posts
 **Сейчас:** VM START/STOP/INSTALL/scoped REPLACE через signed root Agent (код).
 `ResourceReport/v2` выявляет credential dependency: без ACTIVE запуск
 BLOCKED, STOP разрешён. Snapshot generation/digest привязан к BEGIN.
-**First-use VM (код):** Git-pinned Worker bundle → подписанный journal BEGIN → ACTIVE cursor и native INSTALL.
+**First-use VM (код):** draft receipt PR → root enrollment → protected receipt merge → refresh trust → signed journal INSTALL.
 **Остаётся:** Worker issuance, Windows SYSTEM handler, DNS/firewall/routes, reinstall/recover, физический receipt/TLS/auth/WARP.
 CI ≠ runtime.
 
@@ -118,7 +118,7 @@ CI ≠ runtime.
 
 **Code gate:** exact HEAD → CI + review → merge tested tree. Push-main публикует тот же ReleaseSet **без rebuild** и без `host apply`. Merge ≠ physical PASS.
 
-**Operational gate ПОСЛЕ merge:** root enrollment допускает только опубликованный main ReleaseSet и Git-pinned Worker key, не PR candidate. VM создаёт receipt key, его public key регистрируется следующим Git ReleaseSet. Worker issuance → typed target → signed apply → receipt → внешний TLS/auth/DIRECT/WARP. Испытания: новая и существующая VM, Windows STOPPED/PROXY_ONLY; без physical proof остаётся UNPROVEN. Merge не запускает production/TUN.
+**Operational gate:** `/host apply` резервирует draft PR до Vultr CREATE → root enrollment → protected merge только receipt key → main CI/ReleaseSet. Внутренний `workflow_run` проверяет исходный Issue #1, однополевое изменение Git, обновляет root trust через существующий Vultr lease и отправляет свежий signed INSTALL тому же Agent. UNKNOWN — без replay. Обычный merge не разворачивает VM; только receipt merge продолжает конкретный `/host apply`. Windows STOPPED/PROXY_ONLY. Пока нет физической приёмки — UNPROVEN.
 
 ## Обязательный протокол сомнения (без гаданий и кругов)
 
