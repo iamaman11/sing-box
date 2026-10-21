@@ -474,24 +474,57 @@ pub async fn patch_latest_worker_version_secrets(
     required_cloudflare_result_id("Worker version secret mutation", &payload.result)
 }
 
-/// Upload only Worker code while inheriting the two existing secret bindings
-/// from the latest provider version. No secret values enter this API request.
-/// This is a *single* irreversible provider write: its caller must durably
-/// fence the latest active version and never retry after uncertain ACK.
-/// Cloudflare's strict binding inheritance rejects missing/ambiguous bindings
-/// instead of silently dropping them.
-fn exact_binding_inherit_metadata(version_tag: &str) -> Result<serde_json::Value, String> {
+/// The two existing projection Workers have only these typed binding scopes.
+/// A VM signer is an extension of the ONE VM Worker, never a third Worker.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WorkerCodeBindingScope {
+    FixedAb,
+    VmHostSigner,
+}
+
+/// Strict code-only version metadata. The caller supplies live GET-only binding
+/// names, not secret values. Every name/type must match one complete trusted
+/// scope before we send the *single* provider mutation. In particular, the
+/// VM's five Host secrets must NEVER be dropped by an old A/B-only upload.
+fn exact_binding_inherit_metadata(
+    version_tag: &str,
+    scope: WorkerCodeBindingScope,
+    observed: &[CloudflareWorkerSecretBinding],
+) -> Result<serde_json::Value, String> {
     require_non_empty("Worker proof version tag", version_tag)?;
+    let mut expected = vec![
+        ("EDGE_CREDENTIAL_BUNDLE_A", "secret_text"),
+        ("EDGE_CREDENTIAL_BUNDLE_B", "secret_text"),
+    ];
+    if scope == WorkerCodeBindingScope::VmHostSigner {
+        expected.extend_from_slice(&[
+            ("EDGE_HOST_SIGNING_PKCS8_BASE64", "secret_text"),
+            ("EDGE_HOST_SIGNING_KEY_ID", "secret_text"),
+            ("EDGE_HOST_GITHUB_ACTOR_ID", "secret_text"),
+            ("EDGE_HOST_ACCESS_ISSUER", "secret_text"),
+            ("EDGE_HOST_ACCESS_AUD", "secret_text"),
+        ]);
+    }
+    let mut actual = observed
+        .iter()
+        .map(|binding| (binding.name.as_str(), binding.binding_type.as_str()))
+        .collect::<Vec<_>>();
+    actual.sort_unstable();
+    expected.sort_unstable();
+    if actual != expected {
+        return Err("WORKER_CODE_BINDINGS_NOT_EXACT_PROJECTION_SCOPE".to_owned());
+    }
+    let inheritance = expected
+        .into_iter()
+        .map(|(name, _)| serde_json::json!({"name": name, "type": "inherit"}))
+        .collect::<Vec<_>>();
     Ok(serde_json::json!({
         "main_module": "index.mjs",
         "annotations": {
             "workers/tag": version_tag,
             "workers/message": "sing-box fixed-binding read-only attestation"
         },
-        "bindings": [
-            { "name": "EDGE_CREDENTIAL_BUNDLE_A", "type": "inherit" },
-            { "name": "EDGE_CREDENTIAL_BUNDLE_B", "type": "inherit" }
-        ]
+        "bindings": inheritance
     }))
 }
 
@@ -501,13 +534,16 @@ pub async fn upload_worker_slot_proof_version(
     script_name: &str,
     version_tag: &str,
     source: &str,
+    binding_scope: WorkerCodeBindingScope,
+    observed_bindings: &[CloudflareWorkerSecretBinding],
 ) -> Result<String, String> {
     require_non_empty("Cloudflare account ID", account_id)?;
     require_non_empty("Cloudflare Worker script name", script_name)?;
     if source.is_empty() || !source.contains("/v1/proof-slot") {
         return Err("Worker code-only version must implement the fixed slot proof".to_owned());
     }
-    let metadata = exact_binding_inherit_metadata(version_tag)?;
+    let metadata =
+        exact_binding_inherit_metadata(version_tag, binding_scope, observed_bindings)?;
     let module = reqwest::multipart::Part::text(source.to_owned())
         .file_name("index.mjs")
         .mime_str("application/javascript+module")
@@ -2488,7 +2524,22 @@ mod tests {
 
     #[test]
     fn worker_code_only_upload_inherits_only_exact_fixed_bindings() {
-        let metadata = exact_binding_inherit_metadata("sing-box-phase6-ab-vm-exact-proof").unwrap();
+        let fixed = [
+            CloudflareWorkerSecretBinding {
+                name: "EDGE_CREDENTIAL_BUNDLE_A".to_owned(),
+                binding_type: "secret_text".to_owned(),
+            },
+            CloudflareWorkerSecretBinding {
+                name: "EDGE_CREDENTIAL_BUNDLE_B".to_owned(),
+                binding_type: "secret_text".to_owned(),
+            },
+        ];
+        let metadata = exact_binding_inherit_metadata(
+            "sing-box-phase6-ab-vm-exact-proof",
+            WorkerCodeBindingScope::FixedAb,
+            &fixed,
+        )
+        .unwrap();
         assert_eq!(metadata["main_module"], "index.mjs");
         assert_eq!(
             metadata["annotations"]["workers/tag"],
@@ -2502,7 +2553,71 @@ mod tests {
             ])
         );
         assert!(!metadata.to_string().contains("secret_text"));
-        assert!(exact_binding_inherit_metadata("").is_err());
+        assert!(exact_binding_inherit_metadata(
+            "",
+            WorkerCodeBindingScope::FixedAb,
+            &fixed
+        ).is_err());
+
+        let mut vm = fixed.to_vec();
+        for name in [
+            "EDGE_HOST_SIGNING_PKCS8_BASE64",
+            "EDGE_HOST_SIGNING_KEY_ID",
+            "EDGE_HOST_GITHUB_ACTOR_ID",
+            "EDGE_HOST_ACCESS_ISSUER",
+            "EDGE_HOST_ACCESS_AUD",
+        ] {
+            vm.push(CloudflareWorkerSecretBinding {
+                name: name.to_owned(),
+                binding_type: "secret_text".to_owned(),
+            });
+        }
+        let vm_metadata = exact_binding_inherit_metadata(
+            "vm-host-exact",
+            WorkerCodeBindingScope::VmHostSigner,
+            &vm,
+        )
+        .unwrap();
+        assert_eq!(vm_metadata["bindings"].as_array().unwrap().len(), 7);
+        assert!(vm_metadata["bindings"].as_array().unwrap().iter().any(|binding|
+            binding["name"] == "EDGE_HOST_SIGNING_PKCS8_BASE64" && binding["type"] == "inherit"
+        ));
+        assert!(!vm_metadata.to_string().contains("secret_text"));
+        // No code release may silently delete or synthesize a Host secret.
+        assert!(exact_binding_inherit_metadata(
+            "vm-host",
+            WorkerCodeBindingScope::FixedAb,
+            &vm
+        ).is_err());
+        assert!(exact_binding_inherit_metadata(
+            "vm-host",
+            WorkerCodeBindingScope::VmHostSigner,
+            &fixed
+        ).is_err());
+        let mut partial = vm.clone();
+        partial.pop();
+        assert!(exact_binding_inherit_metadata(
+            "vm-host",
+            WorkerCodeBindingScope::VmHostSigner,
+            &partial
+        ).is_err());
+        let mut injected = vm.clone();
+        injected.push(CloudflareWorkerSecretBinding {
+            name: "UNREGISTERED_SECRET".to_owned(),
+            binding_type: "secret_text".to_owned(),
+        });
+        assert!(exact_binding_inherit_metadata(
+            "vm-host",
+            WorkerCodeBindingScope::VmHostSigner,
+            &injected
+        ).is_err());
+        let mut wrong_type = vm.clone();
+        wrong_type[2].binding_type = "plain_text".to_owned();
+        assert!(exact_binding_inherit_metadata(
+            "vm-host",
+            WorkerCodeBindingScope::VmHostSigner,
+            &wrong_type
+        ).is_err());
     }
 
     #[test]
