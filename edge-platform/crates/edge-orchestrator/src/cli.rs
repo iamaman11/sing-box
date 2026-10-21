@@ -177,6 +177,11 @@ pub(crate) enum HostCommand {
         #[arg(long)]
         previous_path: PathBuf,
     },
+    /// Internal continuation of one authenticated /host apply: update only
+    /// the existing VM Worker code, inheriting all existing secret bindings.
+    /// It never writes credentials, authorizes VM CREATE, or touches Windows.
+    #[command(hide = true)]
+    VmWorkerAuthorizerUpgrade { machine_id: String },
     /// Refresh an already-enrolled root trust snapshot from the accepted
     /// protected Git ReleaseSet. Never creates, adopts or installs a VM.
     #[command(hide = true)]
