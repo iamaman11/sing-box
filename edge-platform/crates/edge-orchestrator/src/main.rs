@@ -227,8 +227,10 @@ async fn run(
             }
             cli::HostCommand::FirstUsePreflight { machine_id } => {
                 vultr_lifecycle_command::host_first_use_provider_preflight(
-                    &machine_id, release_context,
-                ).await
+                    &machine_id,
+                    release_context,
+                )
+                .await
             }
             cli::HostCommand::FirstUse {
                 machine_id,

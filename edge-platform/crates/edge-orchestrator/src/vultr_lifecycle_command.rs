@@ -1468,6 +1468,22 @@ pub(crate) async fn host_receipt_refresh(
     }
 }
 
+/// Fail-closed VM create admission: no ambiguous plan or existing owner
+/// can be downgraded to a fresh CREATE by the first-use workflow.
+fn admit_vm_first_use_provider_plan(
+    selected: Option<&PlanClass>,
+    plan_count: usize,
+    prior_owned: bool,
+) -> Result<(), &'static str> {
+    if plan_count != 1 || !matches!(selected, Some(PlanClass::Create)) {
+        return Err("HOST_FIRST_USE_PROVIDER_NOT_EXACT_CREATE_NO_REPLAY");
+    }
+    if prior_owned {
+        return Err("HOST_FIRST_USE_PROVIDER_OWNED_VM_ALREADY_PRESENT");
+    }
+    Ok(())
+}
+
 /// Read-only admission before the Git receipt reservation. A previously
 /// created/uncertain VM is not a fresh first-use candidate and must not
 /// acquire a misleading new registration PR. Uses the existing Vultr
@@ -1502,18 +1518,17 @@ pub(crate) async fn host_first_use_provider_preflight(
         &bindings,
     )
     .await?;
-    let plan = report.plans.as_slice();
-    if plan.len() != 1 || plan[0].class != PlanClass::Create {
-        return Err("HOST_FIRST_USE_PROVIDER_NOT_EXACT_CREATE_NO_REPLAY".to_owned());
-    }
-    if report
+    let prior_owned = report
         .inventory
         .resources
         .iter()
-        .any(|resource| resource.ownership.logical_id.as_deref() == Some(machine_id))
-    {
-        return Err("HOST_FIRST_USE_PROVIDER_OWNED_VM_ALREADY_PRESENT".to_owned());
-    }
+        .any(|resource| resource.ownership.logical_id.as_deref() == Some(machine_id));
+    admit_vm_first_use_provider_plan(
+        report.plans.as_slice().first().map(|plan| &plan.class),
+        report.plans.len(),
+        prior_owned,
+    )
+    .map_err(str::to_owned)?;
     println!("host_machine_id={machine_id}");
     println!("host_first_use_provider_plan=EXACT_CREATE_ONLY");
     println!("host_receipt_registration=NOT_YET_RESERVED");
@@ -4505,6 +4520,38 @@ fn usage() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn first_use_provider_plan_does_not_reserve_for_existing_or_ambiguous_vm() {
+        use super::*;
+        assert_eq!(
+            admit_vm_first_use_provider_plan(Some(&PlanClass::Create), 1, false),
+            Ok(())
+        );
+        for state in [
+            PlanClass::Noop,
+            PlanClass::UpdateInPlace,
+            PlanClass::BlockedAmbiguous,
+            PlanClass::BlockedDrift,
+        ] {
+            assert_eq!(
+                admit_vm_first_use_provider_plan(Some(&state), 1, false),
+                Err("HOST_FIRST_USE_PROVIDER_NOT_EXACT_CREATE_NO_REPLAY")
+            );
+        }
+        assert_eq!(
+            admit_vm_first_use_provider_plan(Some(&PlanClass::Create), 2, false),
+            Err("HOST_FIRST_USE_PROVIDER_NOT_EXACT_CREATE_NO_REPLAY")
+        );
+        assert_eq!(
+            admit_vm_first_use_provider_plan(None, 0, false),
+            Err("HOST_FIRST_USE_PROVIDER_NOT_EXACT_CREATE_NO_REPLAY")
+        );
+        assert_eq!(
+            admit_vm_first_use_provider_plan(Some(&PlanClass::Create), 1, true),
+            Err("HOST_FIRST_USE_PROVIDER_OWNED_VM_ALREADY_PRESENT")
+        );
+    }
+
     #[test]
     fn native_first_use_owner_install_refuses_implicit_binary_replacement() {
         let exact = "a".repeat(64);
