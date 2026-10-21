@@ -368,6 +368,10 @@ jobs:
           base="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
           test "${base}" = "${GITHUB_SHA}"
           branch="host-receipt-${TARGET_MACHINE}-${SOURCE_COMMENT_ID}"
+          # No second first-use reservation for the same VM, even when
+          # another operator comment races before the first PR is merged.
+          active="$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/heads/host-receipt-${TARGET_MACHINE}-" --jq 'length')"
+          test "${active}" = 0 || { echo 'HOST_FIRST_USE_ALREADY_RESERVED_NO_REPLAY' >&2; exit 1; }
           # A branch already present means possible earlier/uncertain first-use.
           # Never repeat VM CREATE based on GitHub workflow retries.
           if gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}" >/dev/null 2>&1; then
