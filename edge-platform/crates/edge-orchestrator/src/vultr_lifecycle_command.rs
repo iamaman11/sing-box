@@ -1505,7 +1505,10 @@ pub(crate) async fn host_first_use_provider_preflight(
     // enrollment. Missing environment secrets must not strand a draft PR
     // after the registry branch is already reserved.
     for (label, name) in [
-        ("credential Access client id", "EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID"),
+        (
+            "credential Access client id",
+            "EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID",
+        ),
         (
             "credential Access client secret",
             "EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET",
