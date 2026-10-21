@@ -51,6 +51,7 @@ const env={
 const expectedCertUrl=issuer+"/cdn-cgi/access/certs";
 let publishedRelease=true;
 let approvedResource="sing-box";
+let commentCreated=now-2, receiptMerged=true, receiptBranchValid=true, mainMatched=true;
 const testReleaseTag="edge-release-"+Buffer.alloc(32,3).toString("hex");
 globalThis.fetch=async u=>{
   if(String(u)===expectedCertUrl) return Response.json({keys:[jwk]});
@@ -58,11 +59,22 @@ globalThis.fetch=async u=>{
     return Response.json({
       user:{id:44100369},
       issue_url:"https://api.github.com/repos/iamaman11/sing-box/issues/1",
-      created_at:new Date((now-2)*1000).toISOString(),
-      updated_at:new Date((now-2)*1000).toISOString(),
+      created_at:new Date(commentCreated*1000).toISOString(),
+      updated_at:new Date(commentCreated*1000).toISOString(),
       body:"/host apply vm-test-1"+
         (approvedResource==="sing-box"?"":" "+approvedResource),
     });
+  if(String(u)==="https://api.github.com/repos/iamaman11/sing-box/git/ref/heads/main")
+    return Response.json({object:{type:"commit",sha:mainMatched?"a".repeat(40):"b".repeat(40)}});
+  if(String(u)==="https://api.github.com/repos/iamaman11/sing-box/commits/"+"a".repeat(40)+"/pulls?per_page=20")
+    return Response.json(receiptMerged?[{
+      merged_at:new Date((now-20)*1000).toISOString(),draft:false,
+      base:{ref:"main"},
+      head:{repo:{full_name:"iamaman11/sing-box"},
+            ref:receiptBranchValid?"host-receipt-vm-test-1-123":"host-receipt-other-123"},
+      merge_commit_sha:"a".repeat(40),
+      title:"host: register native receipt for vm-test-1"
+    }]:[]);
   if(String(u)==="https://api.github.com/repos/iamaman11/sing-box/releases/tags/"+testReleaseTag)
     return publishedRelease
       ? Response.json({tag_name:testReleaseTag,draft:false,prerelease:false,
@@ -124,6 +136,20 @@ const payload=combine(domain,u32(intent.length),intent,u32(keyId.length),keyId,
  u32(operation.length),operation,u64(issued),u64(expires));
 requireTest(await crypto.subtle.verify("Ed25519",key.publicKey,signature,payload),
  "Worker signature does not verify against the exact Rust domain-separated payload");
+// A five-minute comment is NOT a deployment deadline: the protected merge
+// is the separate immutable proof for precisely this pending first-use VM.
+commentCreated=now-3600;
+requireTest((await call()).status===200,"protected receipt merge did not admit delayed first-use");
+receiptBranchValid=false;
+requireTest((await call()).status===403,"foreign receipt PR authorized an old comment");
+receiptBranchValid=true;
+mainMatched=false;
+requireTest((await call()).status===403,"non-current protected main signed old comment");
+mainMatched=true;
+receiptMerged=false;
+requireTest((await call()).status===403,"old comment signed without receipt merge proof");
+receiptMerged=true;
+commentCreated=now-2;
 // v1 signature domain binds the exact protobuf bytes, including the scope.
 const scopedId="config/vultr-edge/line2-proxy";
 const scopedIntent=combine(
