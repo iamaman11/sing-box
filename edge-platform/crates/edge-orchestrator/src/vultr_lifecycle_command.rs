@@ -1501,6 +1501,19 @@ pub(crate) async fn host_first_use_provider_preflight(
     if host.vm_first_use_credential.is_none() {
         return Err("HOST_VM_FIRST_USE_CREDENTIAL_GIT_REQUIRED".to_owned());
     }
+    // Preflight the same Cloudflare Access credentials used by root
+    // enrollment. Missing environment secrets must not strand a draft PR
+    // after the registry branch is already reserved.
+    for (label, name) in [
+        ("credential Access client id", "EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID"),
+        (
+            "credential Access client secret",
+            "EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET",
+        ),
+    ] {
+        let value = env::var(name).map_err(|_| "HOST_FIRST_USE_ACCESS_IDENTITY_REQUIRED")?;
+        validate_bootstrap_secret(label, &value)?;
+    }
     let provider_spec = Path::new(&host.vm_provider_spec_path);
     let desired = load_desired_state(provider_spec)?;
     if desired.machines.len() != 1 || desired.machines[0].id != machine_id {
@@ -1509,6 +1522,7 @@ pub(crate) async fn host_first_use_provider_preflight(
     let profiles = load_firewall_profiles(&desired)?;
     let mut lifecycle_provider = lifecycle_provider_from_env()?;
     let mut support_provider = support_provider_from_env()?;
+    validate_machine_catalog(&mut support_provider, &desired.machines[0]).await?;
     let bindings =
         verified_firewall_bindings(&mut support_provider, &desired, profiles.as_ref()).await?;
     let report = plan_desired_state_with_firewall_profiles(

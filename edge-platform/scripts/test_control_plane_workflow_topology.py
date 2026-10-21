@@ -766,6 +766,8 @@ def test_host_first_use_registration_is_reserved_before_provider_create() -> Non
         and first_use.index("Require exact absent VM before reserving protected Git receipt") < first_use.index(reservation)
         and "first-use-preflight" in first_use.split(reservation, 1)[0]
         and "host_first_use_provider_plan=EXACT_CREATE_ONLY" in first_use.split(reservation, 1)[0]
+        and "EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID }}" in first_use.split(reservation, 1)[0]
+        and "EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET }}" in first_use.split(reservation, 1)[0]
         and "host_receipt_registration=NOT_YET_RESERVED" in first_use.split(reservation, 1)[0]
         and first_use.count(reservation) == 1
         and first_use.count(create) == 1
