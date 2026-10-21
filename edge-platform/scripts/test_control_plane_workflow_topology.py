@@ -1272,8 +1272,11 @@ def test_vm_worker_authorizer_is_one_host_continuation(router: str) -> None:
         and "group: vultr-control-plane-production" in scope
         and "github.run_attempt == 1" in scope
         and "sing-box-vm-worker-authorizer-begin/v1" in scope
-        and scope.index("Reserve one durable VM Worker version transaction before mutation")
+        and scope.index("Plan exact VM Worker release with GET only")
+        < scope.index("Reserve one durable VM Worker version transaction before mutation")
         < scope.index("Apply exact VM Worker code once")
+        and 'vm-worker-authorizer-upgrade "${TARGET_MACHINE}" --plan-only' in scope
+        and scope.count("if: steps.plan.outputs.required == 'true'") == 2
         and "HOST_VM_WORKER_PRIOR_BEGIN_NO_REPLAY" in scope
         and 'vm-worker-authorizer-upgrade "${TARGET_MACHINE}"' in scope
         and "CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}" in scope
