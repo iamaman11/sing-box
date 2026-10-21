@@ -1438,12 +1438,25 @@ async fn initial_worker_proof_upgrade(
         }
         let old = projection_observation(&current, &projection.projection)?;
         let material = delivery_worker_material(&projection.projection)?;
+        // Match the full live secret set before code upload. VM is the ONLY
+        // projection allowed to inherit Host signing bindings. A stale caller
+        // must not silently replace a seven-binding Worker with just A/B.
+        let binding_scope = match (
+            projection.projection.as_str(),
+            old.worker_secret_bindings.len(),
+        ) {
+            ("vm", 7) => cloudflare::WorkerCodeBindingScope::VmHostSigner,
+            ("vm" | "windows", 2) => cloudflare::WorkerCodeBindingScope::FixedAb,
+            _ => return Err("WORKER_CODE_BINDINGS_NOT_EXACT_PROJECTION_SCOPE".to_owned()),
+        };
         let version_id = cloudflare::upload_worker_slot_proof_version(
             &rotation_token,
             &desired.target_account_id,
             &projection.worker_name,
             &material.version_tag,
             &material.source,
+            binding_scope,
+            &old.worker_secret_bindings,
         )
         .await
         .map_err(|_| format!(
