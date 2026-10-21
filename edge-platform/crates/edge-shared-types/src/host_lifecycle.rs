@@ -236,34 +236,39 @@ pub fn verify_git_worker_signer_pin(host: &FleetHost, supplied: &[u8]) -> Result
     Ok(())
 }
 
-/// This shared non-authorizing source gate is used by the Git-bound first-use
-/// bootstrap and the later signed native apply. First-use deliberately does
-/// NOT require the VM-generated receipt key yet, since that key is created
-/// inside the installed root owner and registered through a later ReleaseSet.
-pub fn verify_vm_first_use_git_prerequisites(host: &FleetHost) -> Result<(), &'static str> {
-    if host.kind != FleetHostKind::Vm as i32 {
-        return Err("HOST_VM_FIRST_USE_KIND_REQUIRED");
-    }
-    verify_git_worker_signer_pin(host, &host.worker_authority_public_key)?;
+/// One typed resource-scope prerequisite shared across the first-use
+/// registration and the later signed native transaction.
+fn verify_vm_git_resource_scope(host: &FleetHost) -> Result<(), &'static str> {
     if host.vm_containers.is_empty() {
         return Err("HOST_VM_GIT_RESOURCE_SCOPE_REQUIRED");
     }
     Ok(())
 }
 
-/// Signed operations on an enrolled VM additionally require the exact Git
-/// registration of the private native owner's public receipt identity.
+/// First-use does not have a receipt key yet. It is generated once inside
+/// the protected native root and registered through the next Git ReleaseSet.
+pub fn verify_vm_first_use_git_prerequisites(host: &FleetHost) -> Result<(), &'static str> {
+    if host.kind != FleetHostKind::Vm as i32 {
+        return Err("HOST_VM_FIRST_USE_KIND_REQUIRED");
+    }
+    verify_git_worker_signer_pin(host, &host.worker_authority_public_key)?;
+    verify_vm_git_resource_scope(host)
+}
+
+/// Preserve the established signed-admission reason order: Git signer, then
+/// receipt registration, then application resource scope. The same primitive
+/// checks also govern first-use, with no independent bootstrap policy.
 pub fn verify_vm_signed_git_prerequisites(host: &FleetHost) -> Result<(), &'static str> {
     if host.kind != FleetHostKind::Vm as i32 {
         return Ok(());
     }
-    verify_vm_first_use_git_prerequisites(host)?;
+    verify_git_worker_signer_pin(host, &host.worker_authority_public_key)?;
     if host.native_receipt_public_key.len() != 32
         || host.native_receipt_public_key.iter().all(|b| *b == 0)
     {
         return Err("HOST_VM_GIT_RECEIPT_REGISTRATION_REQUIRED");
     }
-    Ok(())
+    verify_vm_git_resource_scope(host)
 }
 
 /// Exact artifact digests computed from the supplied Git registry, host
