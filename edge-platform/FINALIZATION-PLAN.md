@@ -68,8 +68,8 @@ Worker** (`POST /v1/host/authorize`), Windows Worker подписи не вып�
 Выпуск отключён при отсутствии Worker-owned Ed25519 PKCS8/ключа, Cloudflare
 Access issuer/audience и GitHub operator ID. Worker криптографически
 проверяет Access JWT (RS256), читает только канонический GitHub Issue #1,
-сверяет ID автора, неизменённую и свежую команду `/host apply|recover
-machine-id`, дату запроса и выдаёт detached protobuf разрешение на 120 с.
+сверяет Issue #1: обычно свежесть ≤5 мин, для delayed first-use —
+только protected receipt PR merge той же VM. Подпись действует 120 с.
 **Нет ручного утверждения SHA в Cloudflare при каждой операции** и нет
 секретов подписи в GitHub/Windows/VM. Runtime verifier сверяет весь
 подписанный байтовый HostIntent и его release/desired digests.
