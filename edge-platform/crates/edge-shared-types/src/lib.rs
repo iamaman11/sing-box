@@ -40,7 +40,7 @@ use std::io::Read;
 use std::path::Path;
 
 pub const MIN_RELEASE_SET_SCHEMA_VERSION: u32 = 1;
-pub const RELEASE_SET_SCHEMA_VERSION: u32 = 7;
+pub const RELEASE_SET_SCHEMA_VERSION: u32 = 8;
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 pub const DB_SCHEMA_VERSION: u32 = 1;
 pub const CREDENTIAL_DUMMY_PROBE_GENERATION_A: u64 = 9_000_001;
@@ -1306,6 +1306,24 @@ pub fn validate_release_set(release: &ReleaseSet) -> Result<(), String> {
             .as_ref()
             .ok_or_else(|| "cloudflare.mesh_image is required".to_owned())?,
     )?;
+
+    // v8 binds generated VM Worker bytes and their accepted predecessor to
+    // the same immutable release authority as VM and Windows artifacts.
+    if release.schema_version >= 8 {
+        validate_sha256_bytes(
+            "cloudflare.vm_worker_source_sha256",
+            &cloudflare.vm_worker_source_sha256,
+        )?;
+        validate_sha256_bytes(
+            "cloudflare.vm_worker_predecessor_source_sha256",
+            &cloudflare.vm_worker_predecessor_source_sha256,
+        )?;
+        validate_lower_hex(
+            "cloudflare.vm_worker_predecessor_revision",
+            &cloudflare.vm_worker_predecessor_revision,
+            40,
+        )?;
+    }
 
     let schemas = release
         .schemas
@@ -2850,6 +2868,9 @@ mod release_set_tests {
             cloudflare: Some(CloudflareRuntime {
                 warp_version: "2026.9.1".to_owned(),
                 mesh_image: Some(image("docker.io/cloudflare/mesh", 10)),
+                vm_worker_source_sha256: digest(17),
+                vm_worker_predecessor_source_sha256: digest(18),
+                vm_worker_predecessor_revision: "a".repeat(40),
             }),
             schemas: Some(SchemaVersions {
                 config_schema: 1,

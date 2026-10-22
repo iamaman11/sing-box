@@ -75,6 +75,13 @@ message VmRuntime {
 message CloudflareRuntime {
   string warp_version = 1;
   OciImage mesh_image = 2;
+  // Exact SHA-256 of generated VM Worker index.mjs for this ReleaseSet.
+  bytes vm_worker_source_sha256 = 3;
+  // One previous accepted source admissible for a bounded code-only upgrade.
+  // Both source and predecessor must be covered by immutable releases.
+  bytes vm_worker_predecessor_source_sha256 = 4;
+  // Accepted Git revision which generated the predecessor's exact source.
+  string vm_worker_predecessor_revision = 5;
 }
 
 message SchemaVersions {

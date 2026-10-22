@@ -79,6 +79,9 @@ const CREATE_FLAGS: &[&str] = &[
     "edge-controller",
     "edge-orchestrator",
     "application-bundle",
+    "vm-worker-source-sha256",
+    "vm-worker-predecessor-sha256",
+    "vm-worker-predecessor-revision",
 ];
 
 const VERIFY_CANDIDATE_FLAGS: &[&str] = &[
@@ -98,6 +101,9 @@ const VERIFY_CANDIDATE_FLAGS: &[&str] = &[
     "edge-controller",
     "edge-orchestrator",
     "application-bundle",
+    "vm-worker-source-sha256",
+    "vm-worker-predecessor-sha256",
+    "vm-worker-predecessor-revision",
 ];
 
 const WRITE_WINDOWS_MANIFEST_FLAGS: &[&str] = &[
@@ -304,6 +310,9 @@ fn create_release_set_from_build_manifests(flags: &BTreeMap<String, String>) -> 
         &windows,
         &linux,
         &application_bundle_sha256,
+        flag(flags, "vm-worker-source-sha256")?,
+        flag(flags, "vm-worker-predecessor-sha256")?,
+        flag(flags, "vm-worker-predecessor-revision")?,
     )?;
     let digest = write_release_set_files(
         &release,
@@ -336,6 +345,9 @@ fn verify_candidate_release_set(flags: &BTreeMap<String, String>) -> Result<(), 
         &windows,
         &linux,
         &application_bundle_sha256,
+        flag(flags, "vm-worker-source-sha256")?,
+        flag(flags, "vm-worker-predecessor-sha256")?,
+        flag(flags, "vm-worker-predecessor-revision")?,
     )?;
     if release != expected {
         return Err(
@@ -436,6 +448,9 @@ fn release_set_from_build_manifests(
     windows: &WindowsBuildManifest,
     linux: &LinuxBuildManifest,
     application_bundle_sha256: &[u8],
+    vm_worker_source_sha256: &str,
+    vm_worker_predecessor_sha256: &str,
+    vm_worker_predecessor_revision: &str,
 ) -> Result<ReleaseSet, String> {
     Ok(ReleaseSet {
         schema_version: RELEASE_SET_SCHEMA_VERSION,
@@ -515,6 +530,15 @@ fn release_set_from_build_manifests(
                 "LinuxBuildManifest.mesh_image",
                 &linux.mesh_image,
             )?),
+            vm_worker_source_sha256: digest_from_hex(
+                "vm_worker_source_sha256",
+                vm_worker_source_sha256,
+            )?,
+            vm_worker_predecessor_source_sha256: digest_from_hex(
+                "vm_worker_predecessor_source_sha256",
+                vm_worker_predecessor_sha256,
+            )?,
+            vm_worker_predecessor_revision: vm_worker_predecessor_revision.to_owned(),
         }),
         schemas: Some(SchemaVersions {
             config_schema: CONFIG_SCHEMA_VERSION,

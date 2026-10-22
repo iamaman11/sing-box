@@ -1536,6 +1536,19 @@ jobs:
           chmod 0755 "${tool}"
           unzip -q "${windows}/edge-platform-windows.zip" -d "${unpacked}"
 
+          # Resolve exact generated Worker source and its closest distinct
+          # first-parent predecessor using protected Git ancestry.
+          git fetch --no-tags --unshallow origin "${CANDIDATE_REVISION}"
+          worker_evidence="$(python3 edge-platform/scripts/vm_worker_source_digest.py \
+            --source edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs)"
+          vm_worker_source="$(sed -n 's/^vm_worker_source_sha256=//p' <<<"${worker_evidence}")"
+          vm_worker_predecessor="$(sed -n 's/^vm_worker_predecessor_sha256=//p' <<<"${worker_evidence}")"
+          vm_worker_predecessor_revision="$(sed -n 's/^vm_worker_predecessor_revision=//p' <<<"${worker_evidence}")"
+          [[ "${vm_worker_source}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${vm_worker_predecessor}" =~ ^[0-9a-f]{64}$ ]]
+          [[ "${vm_worker_predecessor_revision}" =~ ^[0-9a-f]{40}$ ]]
+          printf '%s\n' "${worker_evidence}"
+
           create_output="$("${tool}" create \
             --output "${authority}/release-set.pb" \
             --sha256-output "${authority}/release-set.pb.sha256" \
@@ -1552,7 +1565,10 @@ jobs:
             --edge-agent "${linux}/edge-agent" \
             --edge-controller "${linux}/edge-controller" \
             --edge-orchestrator "${linux}/edge-orchestrator" \
-            --application-bundle "${linux}/application-bundle.pb")"
+            --application-bundle "${linux}/application-bundle.pb" \
+            --vm-worker-source-sha256 "${vm_worker_source}" \
+            --vm-worker-predecessor-sha256 "${vm_worker_predecessor}" \
+            --vm-worker-predecessor-revision "${vm_worker_predecessor_revision}")"
           printf '%s\n' "${create_output}"
 
           release_set_sha="$(sed -n 's/^release_set_sha256=//p' <<<"${create_output}")"
@@ -1573,7 +1589,10 @@ jobs:
             --edge-agent "${linux}/edge-agent" \
             --edge-controller "${linux}/edge-controller" \
             --edge-orchestrator "${linux}/edge-orchestrator" \
-            --application-bundle "${linux}/application-bundle.pb")"
+            --application-bundle "${linux}/application-bundle.pb" \
+            --vm-worker-source-sha256 "${vm_worker_source}" \
+            --vm-worker-predecessor-sha256 "${vm_worker_predecessor}" \
+            --vm-worker-predecessor-revision "${vm_worker_predecessor_revision}")"
           printf '%s\n' "${verify_output}"
           gateway_ref="$(sed -n 's/^sing_box_image=//p' <<<"${verify_output}")"
           warp_ref="$(sed -n 's/^warp_egress_image=//p' <<<"${verify_output}")"
