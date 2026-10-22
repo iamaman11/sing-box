@@ -126,6 +126,21 @@ fn inspect_runner_registration(
     Ok(runner.id)
 }
 
+/// A RUNNING VM without a Git-registered native receipt has not completed
+/// first-use. It has no trusted native owner to schedule yet. Keep diagnostics
+/// on the GitHub-hosted coordinator; an unknown runner inventory is not license
+/// to queue forever. Legacy observe-only VM hosts stay independently diagnosable.
+fn native_dispatch_blocked_by_first_use(
+    host: &edge_shared_types::FleetHost,
+    kind: ManagedHostKind,
+) -> bool {
+    kind == ManagedHostKind::Vm
+        && host.native_receipt_public_key.is_empty()
+        && host.target.as_ref().is_some_and(|target| {
+            target.run_state == edge_shared_types::FleetHostRunState::Running as i32
+        })
+}
+
 /// Runner registration is an admission signal, not evidence of machine or app health.
 /// Unregistered, offline, and busy are legitimate observed states for status,
 /// whereas an invalid/incomplete API response cannot be reported as valid evidence.
@@ -272,6 +287,33 @@ pub(crate) fn run(
                     }
                 );
                 let labels = runner_labels(kind, owner, &host.windows_runner_label)?;
+                // A new RUNNING VM cannot have a trusted self-hosted runner
+                // before root enrollment and protected receipt registration.
+                // Do not enqueue a native observation merely because GitHub
+                // runner inventory is UNPROVEN/unauthorized to this token.
+                if native_dispatch_blocked_by_first_use(host, kind) {
+                    println!("host_runner_registration=NOT_APPLICABLE_FIRST_USE");
+                    println!("host_dispatch=NOT_SCHEDULED_NATIVE_RECEIPT_REQUIRED");
+                    if machine_id.is_some() {
+                        println!(
+                            "host_observation_depth={}",
+                            if deep { "DEEP" } else { "FAST" }
+                        );
+                        if let Some(path) = github_output {
+                            append_control_outputs(
+                                path,
+                                &host.machine_id,
+                                kind,
+                                owner,
+                                &labels,
+                                &host.windows_runner_label,
+                                &host.desired_spec_path,
+                            )?;
+                        }
+                    }
+                    println!("host_runtime=UNPROVEN");
+                    continue;
+                }
                 if machine_id.is_some() {
                     // Runner API is advisory for read-only observation. A
                     // missing Administration:read grant must not block
@@ -1512,6 +1554,50 @@ fn append_credential_peer_outputs(
 mod tests {
     use super::*;
     use edge_shared_types::ManagedHost;
+
+    #[test]
+    fn fresh_running_vm_does_not_queue_runner_before_git_receipt() {
+        use edge_shared_types::{FleetHostRunState, FleetHostTarget};
+        let mut vm = ManagedHost {
+            kind: ManagedHostKind::Vm as i32,
+            target: Some(FleetHostTarget {
+                run_state: FleetHostRunState::Running as i32,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        assert!(native_dispatch_blocked_by_first_use(
+            &vm,
+            ManagedHostKind::Vm
+        ));
+        // After protected receipt registration native diagnostics may use
+        // the exact registered runner, subject to normal runner admission.
+        vm.native_receipt_public_key = vec![9; 32];
+        assert!(!native_dispatch_blocked_by_first_use(
+            &vm,
+            ManagedHostKind::Vm
+        ));
+        // Historical VM read-only observation without explicit RUNNING target
+        // is not silently disabled by the new fresh-VM admission rule.
+        vm.native_receipt_public_key.clear();
+        vm.target = None;
+        assert!(!native_dispatch_blocked_by_first_use(
+            &vm,
+            ManagedHostKind::Vm
+        ));
+        vm.target = Some(FleetHostTarget {
+            run_state: FleetHostRunState::Stopped as i32,
+            ..Default::default()
+        });
+        assert!(!native_dispatch_blocked_by_first_use(
+            &vm,
+            ManagedHostKind::Vm
+        ));
+        assert!(!native_dispatch_blocked_by_first_use(
+            &vm,
+            ManagedHostKind::Windows
+        ));
+    }
 
     #[test]
     fn receipt_registration_changes_only_one_git_pinned_public_key() {
