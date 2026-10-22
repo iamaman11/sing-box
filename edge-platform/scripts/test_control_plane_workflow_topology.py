@@ -5174,6 +5174,32 @@ def verify_receipt_resume_inline_release_context(source: str) -> None:
             "missing negative fixture for same-step export")
 
 
+
+def test_native_vm_artifact_transport_is_same_run_and_not_gh_cli() -> None:
+    """The low-privilege VM runner has no gh CLI; use GitHub's fixed artifact action."""
+    workflow = (WORKFLOWS / "host-native-observe.yml").read_text(encoding="utf-8")
+    observe = workflow.split("  observe:", 1)[1].split("  report:", 1)[0]
+    marker = "      - name: Transfer exact same-run typed HostIntent with native Actions artifact"
+    dispatch = "      - name: Dispatch one signed native VM host transaction"
+    require(observe.count(marker) == 1 and observe.count(dispatch) == 1,
+            "VM intent must have exactly one fixed transfer and one native transaction")
+    transfer = observe.split(marker, 1)[1].split(dispatch, 1)[0]
+    require(
+        "uses: actions/download-artifact@v4" in transfer
+        and "name: host-intent-" in transfer
+        and "inputs.source_comment_id" in transfer
+        and "path: ${{ runner.temp }}/host-operation" in transfer
+        and "gh run download" not in observe,
+        "VM transport must use same-run typed artifact without gh CLI or SSH"
+    )
+    require(observe.index(marker) < observe.index(dispatch),
+            "typed artifact transfer must precede the native signed one-shot")
+    bad = observe.replace("uses: actions/download-artifact@v4", "run: gh run download", 1)
+    require(bad != observe and "gh run download" in bad,
+            "VM native artifact negative fixture must fail")
+
+
 if __name__ == "__main__":
     main()
+    test_native_vm_artifact_transport_is_same_run_and_not_gh_cli()
     verify_receipt_resume_inline_release_context(ROUTER.read_text(encoding="utf-8"))
