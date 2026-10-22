@@ -199,6 +199,23 @@ pub(crate) enum HostCommand {
         #[arg(long)]
         plan_only: bool,
     },
+    /// Public-only signer registration in a protected Git candidate.
+    #[command(hide = true)]
+    RegisterSigner {
+        machine_id: String,
+        #[arg(long)]
+        signer_public_key_hex: String,
+        #[arg(long)]
+        output_path: PathBuf,
+    },
+    #[command(hide = true)]
+    VerifySigner {
+        machine_id: String,
+        #[arg(long)]
+        signer_public_key_hex: String,
+        #[arg(long)]
+        candidate_path: PathBuf,
+    },
     /// Refresh an already-enrolled root trust snapshot from the accepted
     /// protected Git ReleaseSet. Never creates, adopts or installs a VM.
     #[command(hide = true)]

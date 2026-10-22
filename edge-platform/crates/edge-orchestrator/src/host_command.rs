@@ -894,6 +894,50 @@ pub(crate) fn run(
             println!("host_mutations=0");
             Ok(())
         }
+        HostCommand::RegisterSigner {
+            machine_id,
+            signer_public_key_hex,
+            output_path,
+        } => {
+            let candidate =
+                signer_registration_candidate(&desired, &machine_id, &signer_public_key_hex)?;
+            let bytes = candidate.encode_to_vec();
+            let mut file = OpenOptions::new()
+                .create_new(true)
+                .write(true)
+                .open(&output_path)
+                .map_err(|_| "HOST_SIGNER_GIT_CANDIDATE_EXISTS_OR_UNWRITABLE")?;
+            file.write_all(&bytes)
+                .map_err(|_| "HOST_SIGNER_GIT_CANDIDATE_WRITE_FAILED")?;
+            file.sync_all()
+                .map_err(|_| "HOST_SIGNER_GIT_CANDIDATE_SYNC_FAILED")?;
+            println!("host_vm_signer_git_candidate=EXACT_ONE_PUBLIC_KEY_CHANGE");
+            println!("host_signed_install=NOT_AUTHORIZED");
+            println!("host_mutations=0");
+            Ok(())
+        }
+        HostCommand::VerifySigner {
+            machine_id,
+            signer_public_key_hex,
+            candidate_path,
+        } => {
+            let expected =
+                signer_registration_candidate(&desired, &machine_id, &signer_public_key_hex)?;
+            let meta = std::fs::symlink_metadata(&candidate_path)
+                .map_err(|_| "HOST_SIGNER_GIT_CANDIDATE_MISSING")?;
+            if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > MAX_INVENTORY_BYTES {
+                return Err("HOST_SIGNER_GIT_CANDIDATE_INVALID_FILE".to_owned());
+            }
+            let bytes = std::fs::read(&candidate_path)
+                .map_err(|_| "HOST_SIGNER_GIT_CANDIDATE_UNREADABLE")?;
+            let actual = decode_host_registry(&bytes)?;
+            if actual != expected {
+                return Err("HOST_SIGNER_GIT_CANDIDATE_UNEXPECTED_CHANGE".to_owned());
+            }
+            println!("host_vm_signer_git_candidate=EXACT_ONE_PUBLIC_KEY_CHANGE");
+            println!("host_mutations=0");
+            Ok(())
+        }
         HostCommand::VmWorkerAuthorizerUpgrade { .. } => {
             Err("HOST_VM_WORKER_UPGRADE_MUST_USE_PROTECTED_CREDENTIAL_OWNER".to_owned())
         }
@@ -907,6 +951,44 @@ pub(crate) fn run(
             Err("HOST_FIRST_USE_MUST_USE_EXISTING_NATIVE_VULTR_OWNER".to_owned())
         }
     }
+}
+
+/// Only a public Ed25519 identity changes, after proven protected owner
+/// selection. The private signer key never enters a Git candidate.
+fn signer_registration_candidate(
+    desired: &HostRegistry,
+    machine_id: &str,
+    signer_public_key_hex: &str,
+) -> Result<HostRegistry, String> {
+    let mut candidate = desired.clone();
+    let host = candidate
+        .hosts
+        .iter_mut()
+        .find(|h| h.machine_id == machine_id)
+        .ok_or("HOST_SIGNER_GIT_VM_UNKNOWN")?;
+    if host.kind != edge_shared_types::FleetHostKind::Vm as i32
+        || !matches!(
+            host.owner.as_ref(),
+            Some(managed_host::Owner::VmMachineId(owner)) if owner == machine_id
+        )
+        || host.target.as_ref().is_none_or(|target| {
+            target.run_state != edge_shared_types::FleetHostRunState::Running as i32
+        })
+        || host.vm_provider_spec_path.is_empty()
+        || host.vm_containers.is_empty()
+        || !host.native_receipt_public_key.is_empty()
+        || !host.worker_authority_public_key.is_empty()
+    {
+        return Err("HOST_SIGNER_GIT_REGISTRATION_SCOPE_INVALID".to_owned());
+    }
+    let key = exact_hex_sha256(signer_public_key_hex)
+        .map_err(|_| "HOST_SIGNER_GIT_PUBLIC_KEY_INVALID")?;
+    if key.iter().all(|b| *b == 0) {
+        return Err("HOST_SIGNER_GIT_ZERO_PUBLIC_KEY_FORBIDDEN".to_owned());
+    }
+    host.worker_authority_public_key = key;
+    edge_shared_types::validate_host_registry(&candidate)?;
+    Ok(candidate)
 }
 
 /// Single typed Git candidate for public native receipt registration.
@@ -1597,6 +1679,42 @@ mod tests {
             &vm,
             ManagedHostKind::Windows
         ));
+    }
+
+
+    #[test]
+    fn signer_git_candidate_changes_one_public_identity_only() {
+        use edge_shared_types::{FleetHostKind, FleetHostRunState, FleetHostTarget, FleetVmContainer};
+        let machine_id = "vm-signer-test";
+        let original = HostRegistry {
+            schema_version: 1,
+            hosts: vec![ManagedHost {
+                machine_id: machine_id.into(),
+                kind: FleetHostKind::Vm as i32,
+                owner: Some(managed_host::Owner::VmMachineId(machine_id.into())),
+                desired_spec_path: "infra/hosts/specs/vm-signer-test.textproto".into(),
+                vm_provider_spec_path: "infra/hosts/specs/vm-signer-test.textproto".into(),
+                target: Some(FleetHostTarget {
+                    run_state: FleetHostRunState::Running as i32,
+                    ..Default::default()
+                }),
+                vm_containers: vec![FleetVmContainer {
+                    container_name: "vultr-line1-gateway".into(),
+                    compose_project: "vultr-edge".into(),
+                    compose_service: "line1-gateway".into(),
+                }],
+                ..Default::default()
+            }],
+        };
+        let candidate = signer_registration_candidate(&original, machine_id, &"7a".repeat(32))
+            .unwrap();
+        assert_eq!(candidate.hosts[0].worker_authority_public_key, vec![0x7a; 32]);
+        assert!(original.hosts[0].worker_authority_public_key.is_empty());
+        let decoded = decode_host_registry(&candidate.encode_to_vec()).unwrap();
+        assert_eq!(decoded, candidate);
+        assert!(signer_registration_candidate(&candidate, machine_id, &"7a".repeat(32)).is_err());
+        assert!(signer_registration_candidate(&original, machine_id, &"00".repeat(32)).is_err());
+        assert!(signer_registration_candidate(&original, "foreign", &"7a".repeat(32)).is_err());
     }
 
     #[test]
