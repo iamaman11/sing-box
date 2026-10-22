@@ -161,14 +161,14 @@ pub fn digest_host_desired(
         .to_vec())
 }
 
-/// ReleaseSet v7 hashes the transported ApplyBundleRequest protobuf; the
+/// ReleaseSet v7+ hashes the transported ApplyBundleRequest protobuf; the
 /// VM release marker stores a different, logical domain-separated digest.
 /// Derive the physical expected digest ONLY from the verified exact bundle.
 pub fn native_vm_bundle_runtime_digest(
     release: &crate::ReleaseSet,
     vm_bundle_pb: &[u8],
 ) -> Result<Vec<u8>, &'static str> {
-    if release.schema_version != 7
+    if !(7..=crate::RELEASE_SET_SCHEMA_VERSION).contains(&release.schema_version)
         || vm_bundle_pb.is_empty()
         || vm_bundle_pb.len() > 8 * 1024 * 1024
     {
@@ -335,7 +335,7 @@ pub fn bind_native_host_artifacts(
         .ok_or("HOST_NATIVE_MACHINE_UNREGISTERED")?;
     let release = crate::release::v1::ReleaseSet::decode(release_set_pb)
         .map_err(|_| "HOST_NATIVE_RELEASE_PROTO_INVALID")?;
-    if release.schema_version < 7
+    if !(7..=crate::RELEASE_SET_SCHEMA_VERSION).contains(&release.schema_version)
         || release.source_revision.len() != 40
         || !release
             .source_revision
@@ -995,6 +995,41 @@ mod tests {
         assert_eq!(
             bound.runtime_release_sha256,
             native_vm_bundle_runtime_digest(&release, &bundle_pb).unwrap()
+        );
+        // A v8 release changes Worker provenance metadata, NOT the VM bundle
+        // transport or logical digest contract. Enforce the same byte-level
+        // binding on both accepted schemas, and fail closed for unknown ones.
+        let mut v8 = release.clone();
+        v8.schema_version = crate::RELEASE_SET_SCHEMA_VERSION;
+        assert_eq!(
+            native_vm_bundle_runtime_digest(&v8, &bundle_pb).unwrap(),
+            bound.runtime_release_sha256
+        );
+        let mut v8_intent = intent.clone();
+        let v8_bytes = v8.encode_to_vec();
+        v8_intent.release_set_sha256 = ring::digest::digest(&ring::digest::SHA256, &v8_bytes)
+            .as_ref()
+            .to_vec();
+        let (_, v8_bound) =
+            bind_native_host_artifacts(&v8_intent, &registry_pb, spec, &v8_bytes, Some(&bundle_pb))
+                .unwrap();
+        assert_eq!(v8_bound.runtime_release_sha256, bound.runtime_release_sha256);
+        assert_eq!(
+            bind_native_host_artifacts(&v8_intent, &registry_pb, spec, &v8_bytes, Some(b"wrong"))
+                .unwrap_err(),
+            "HOST_NATIVE_VM_BUNDLE_TRANSPORT_MISMATCH"
+        );
+        let mut future = v8.clone();
+        future.schema_version = crate::RELEASE_SET_SCHEMA_VERSION + 1;
+        assert_eq!(
+            native_vm_bundle_runtime_digest(&future, &bundle_pb),
+            Err("HOST_NATIVE_VM_BUNDLE_ARTIFACT_INVALID")
+        );
+        assert_eq!(
+            bind_native_host_artifacts(
+                &v8_intent, &registry_pb, spec, &future.encode_to_vec(), Some(&bundle_pb),
+            ).unwrap_err(),
+            "HOST_NATIVE_RELEASE_SCHEMA_INVALID"
         );
         assert_ne!(
             bound.runtime_release_sha256,
