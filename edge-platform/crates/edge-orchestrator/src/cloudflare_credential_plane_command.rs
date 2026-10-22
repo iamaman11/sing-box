@@ -3787,9 +3787,11 @@ mod tests {
         let original = pkcs8.as_ref();
         let encoded = encode_worker_host_signer_pkcs8(original);
         assert!(!encoded.is_empty());
-        assert!(encoded
-            .bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'));
+        assert!(
+            encoded
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        );
         assert_eq!(
             base64::engine::general_purpose::URL_SAFE_NO_PAD
                 .decode(encoded)
