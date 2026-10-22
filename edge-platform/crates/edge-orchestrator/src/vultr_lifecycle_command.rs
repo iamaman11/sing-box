@@ -1423,9 +1423,15 @@ pub(crate) async fn host_receipt_refresh(
         .collect::<String>();
     let spec = Path::new(&git_host.vm_provider_spec_path);
     let desired = load_desired_state(spec)?;
+    // All immutable ReleaseSet prerequisites are checked BEFORE any provider
+    // support-access mutation. A later SSH failure is not an input error.
+    let substrate = pinned_host_substrate_versions(context)?;
+    let key_path = operator_private_key_path_from_env()?;
+    let expected_ssh_key = read_canonical_ssh_public_key()?;
+    verify_operator_key_matches(&key_path, &expected_ssh_key)?;
     // Existing means EXACT owned NOOP, not an unowned machine to adopt.
     exact_existing_machine_observation(&desired, machine_id).await?;
-    acceptance_lease_acquire(spec, machine_id).await?;
+    acceptance_lease_acquire_with_substrate(spec, machine_id, &substrate).await?;
     let outcome = async {
         let observed = exact_existing_machine_observation(&desired, machine_id).await?;
         let ip = observed.main_ip.as_deref()
@@ -1593,10 +1599,13 @@ pub(crate) async fn host_first_use(
         &env::var("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET")
             .map_err(|_| "HOST_FIRST_USE_ACCESS_CLIENT_SECRET_REQUIRED".to_owned())?,
     )?;
+    // CREATE and the support-access lease are both mutations: reject missing
+    // or malformed release-pinned substrate versions before either starts.
+    let substrate = pinned_host_substrate_versions(context)?;
     // Provider CREATE must be the exact first transition. NOOP means an
     // existing VM or an uncertain earlier response: never automatic adoption.
     acceptance_create_machine(provider_spec, machine_id).await?;
-    acceptance_lease_acquire(provider_spec, machine_id).await?;
+    acceptance_lease_acquire_with_substrate(provider_spec, machine_id, &substrate).await?;
     let outcome = async {
         acceptance_converge_substrate(provider_spec, machine_id).await?;
         bootstrap_production_runner(
@@ -2467,6 +2476,7 @@ async fn release_transient_access_exact(
 async fn acquire_transient_access_ready_exact(
     desired: &DesiredState,
     machine_id: &str,
+    substrate: &HostSubstrateVersions,
 ) -> Result<
     (
         SupportAccessLeaseState,
@@ -2505,7 +2515,6 @@ async fn acquire_transient_access_ready_exact(
         let operator_private_key_path = operator_private_key_path_from_env()?;
         let canonical_public_key = read_canonical_ssh_public_key()?;
         verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
-        let substrate = host_substrate_versions_from_env()?;
         let tcp_readiness =
             observe_tcp_readiness(&target_ip, TcpReadinessPolicy::support_access()).await?;
         if tcp_readiness.final_state == TcpReadinessState::Timeout {
@@ -2527,7 +2536,7 @@ async fn acquire_transient_access_ready_exact(
             machine_id,
             &operator_private_key_path,
             &canonical_public_key,
-            &substrate,
+            substrate,
             15,
             Duration::from_secs(2),
         )
@@ -2559,8 +2568,9 @@ async fn run_lease_acquire(args: &[String]) -> Result<(), String> {
         );
     }
     let desired = load_desired_state(Path::new(&args[0]))?;
+    let substrate = host_substrate_versions_from_env()?;
     let (lease, access, observed, tcp_readiness) =
-        acquire_transient_access_ready_exact(&desired, &args[1]).await?;
+        acquire_transient_access_ready_exact(&desired, &args[1], &substrate).await?;
 
     let mutations_performed = access
         .get("mutations_performed")
@@ -3919,9 +3929,20 @@ pub(crate) async fn acceptance_lease_acquire(
     spec_path: &Path,
     machine_id: &str,
 ) -> Result<(), String> {
+    let substrate = host_substrate_versions_from_env()?;
+    acceptance_lease_acquire_with_substrate(spec_path, machine_id, &substrate).await
+}
+
+/// No process-global re-read: this is one already-validated substrate version
+/// set passed through the whole support-access transaction.
+async fn acceptance_lease_acquire_with_substrate(
+    spec_path: &Path,
+    machine_id: &str,
+    substrate: &HostSubstrateVersions,
+) -> Result<(), String> {
     let desired = load_desired_state(spec_path)?;
     let (_lease, access, _observed, _tcp_readiness) =
-        acquire_transient_access_ready_exact(&desired, machine_id).await?;
+        acquire_transient_access_ready_exact(&desired, machine_id, substrate).await?;
 
     if access
         .get("next_plan")
@@ -4391,6 +4412,20 @@ fn vultr_api_key_from_env() -> Result<String, String> {
     env::var("VULTR_API_KEY").map_err(|_| "VULTR_API_KEY is required".to_owned())
 }
 
+/// Project the already-verified immutable ReleaseSet into the existing native
+/// substrate type. Never accept a second runner-owned desired or env override
+/// on signed Host first-use/trust paths.
+fn pinned_host_substrate_versions(
+    context: &OrchestrationContext,
+) -> Result<HostSubstrateVersions, String> {
+    let release = context.release();
+    HostSubstrateVersions::new(
+        release.docker_engine_version.clone(),
+        release.containerd_version.clone(),
+        release.compose_version.clone(),
+    )
+}
+
 pub(crate) fn host_substrate_versions_from_env() -> Result<HostSubstrateVersions, String> {
     HostSubstrateVersions::new(
         env::var("EDGE_DOCKER_ENGINE_VERSION").map_err(|_| {
@@ -4540,6 +4575,41 @@ fn usage() -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn host_substrate_is_projected_from_one_validated_release_not_process_env() {
+        use super::*;
+        use edge_controller_core::orchestration::ReleaseContext;
+        let release = ReleaseContext {
+            accepted_revision: "f".repeat(40),
+            source_revision: "a".repeat(40),
+            release_set_sha256: "b".repeat(64),
+            orchestrator_sha256: "1".repeat(64),
+            agent_sha256: "2".repeat(64),
+            docker_engine_version: "5:29.8.1-1~debian.13~trixie".to_owned(),
+            containerd_version: "2.3.5-1~debian.13~trixie".to_owned(),
+            compose_version: "5.5.1-1~debian.13~trixie".to_owned(),
+            gateway_image: format!("ghcr.io/example/gateway@sha256:{}", "c".repeat(64)),
+            warp_egress_image: format!("ghcr.io/example/warp@sha256:{}", "d".repeat(64)),
+            mesh_image: format!("docker.io/cloudflare/mesh@sha256:{}", "e".repeat(64)),
+        };
+        let context = OrchestrationContext::new(release).expect("validated ReleaseSet");
+        let substrate = pinned_host_substrate_versions(&context).expect("typed substrate");
+        assert_eq!(
+            substrate.docker_engine_version,
+            "5:29.8.1-1~debian.13~trixie"
+        );
+        assert_eq!(substrate.containerd_version, "2.3.5-1~debian.13~trixie");
+        assert_eq!(substrate.compose_version, "5.5.1-1~debian.13~trixie");
+        assert!(
+            HostSubstrateVersions::new(
+                "untrusted;command".to_owned(),
+                substrate.containerd_version,
+                substrate.compose_version,
+            )
+            .is_err()
+        );
+    }
+
     #[test]
     fn first_use_provider_plan_does_not_reserve_for_existing_or_ambiguous_vm() {
         use super::*;
