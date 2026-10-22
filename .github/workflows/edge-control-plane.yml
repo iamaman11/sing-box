@@ -392,6 +392,127 @@ jobs:
             echo '~~~'
           } >> "${GITHUB_STEP_SUMMARY}"
 
+
+      - name: Prepare one ephemeral VM signer with existing protected owner
+        if: steps.plan.outputs.required == 'false'
+        shell: bash
+        env:
+          CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
+        run: |
+          set -euo pipefail
+          key="${RUNNER_TEMP}/host-vm-signer-private"
+          pub="${RUNNER_TEMP}/host-vm-signer-public"
+          test ! -e "${key}" && test ! -e "${pub}"
+          "${HOST_VM_WORKER_OWNER}" host --hosts-pb "${HOST_FLEET_REGISTRY}" --hosts-sha256 "${HOST_FLEET_SHA256}" \
+            vm-worker-signer-prepare "${TARGET_MACHINE}" --key-path "${key}" --public-path "${pub}" \
+            | sed '/^host_vm_signer_public_key_hex=/d'
+          test -s "${key}" && test -s "${pub}"
+          chmod 0600 "${key}"
+          [[ "$(cat "${pub}")" =~ ^[0-9a-f]{64}$ ]]
+
+      - name: Reserve exact public-key Git draft before VM Worker mutation
+        if: steps.plan.outputs.required == 'false'
+        shell: bash
+        env:
+          REGISTRATION_TOKEN: ${{ secrets.IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = 1
+          test "${HOST_ORIGINAL_COMMAND}" = "/host apply ${TARGET_MACHINE}"
+          [[ "${TARGET_MACHINE}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]
+          [[ "${SOURCE_COMMENT_ID}" =~ ^[1-9][0-9]*$ ]]
+          test -n "${REGISTRATION_TOKEN}"
+          export GH_TOKEN="${REGISTRATION_TOKEN}"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')" = "${GITHUB_SHA}"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.permissions.push')" = true
+          branch="host-signer-${TARGET_MACHINE}-${SOURCE_COMMENT_ID}"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/heads/host-signer-${TARGET_MACHINE}-" --jq 'length')" = 0 ||
+            { echo 'HOST_SIGNER_PRIOR_RESERVATION_NO_REPLAY' >&2; exit 1; }
+          history="${RUNNER_TEMP}/host-signer-history.json"
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/26/comments?per_page=100" | jq -s 'add' > "${history}"
+          python3 - "${history}" "${TARGET_MACHINE}" <<'PY'
+          import json, sys
+          comments = json.load(open(sys.argv[1], encoding="utf-8"))
+          assert isinstance(comments, list)
+          prefix = "<!-- sing-box-vm-signer-begin/v1 machine=" + sys.argv[2] + " "
+          if any(isinstance(c, dict) and isinstance(c.get("body"), str)
+                 and c["body"].startswith(prefix) for c in comments):
+              raise SystemExit("HOST_SIGNER_PRIOR_BEGIN_NO_REPLAY")
+          PY
+          public="$(cat "${RUNNER_TEMP}/host-vm-signer-public")"
+          [[ "${public}" =~ ^[0-9a-f]{64}$ ]]
+          candidate="${RUNNER_TEMP}/host-signer-candidate.pb"
+          "${HOST_VM_WORKER_OWNER}" host --hosts-pb "${HOST_FLEET_REGISTRY}" --hosts-sha256 "${HOST_FLEET_SHA256}" \
+            register-signer "${TARGET_MACHINE}" --signer-public-key-hex "${public}" --output-path "${candidate}" |
+            grep -Fx 'host_signer_git_candidate=ONE_PUBLIC_KEY_ONLY'
+          buf="${RUNNER_TEMP}/host-signer-buf"
+          curl --fail --silent --show-error --location "https://github.com/bufbuild/buf/releases/download/v1.73.0/buf-Linux-x86_64" -o "${buf}"
+          echo "8f2986298ad08f0cc1bf999b9797b7c383adf32d7edf0f73d6f1e1a701baeac1  ${buf}" | sha256sum --check --status
+          chmod 0755 "${buf}"
+          spec="${RUNNER_TEMP}/host-signer-candidate.textproto"
+          (cd edge-platform && "${buf}" convert proto/edge/platform/v1/fleet.proto \
+            --type edge.platform.v1.FleetDesiredState --from "${candidate}#format=binpb" --to "${spec}#format=txtpb")
+          roundtrip="${RUNNER_TEMP}/host-signer-roundtrip.pb"
+          (cd edge-platform && "${buf}" convert proto/edge/platform/v1/fleet.proto \
+            --type edge.platform.v1.FleetDesiredState --from "${spec}#format=txtpb" --to "${roundtrip}#format=binpb")
+          "${HOST_VM_WORKER_OWNER}" host --hosts-pb "${HOST_FLEET_REGISTRY}" --hosts-sha256 "${HOST_FLEET_SHA256}" \
+            verify-signer "${TARGET_MACHINE}" --signer-public-key-hex "${public}" --candidate-path "${roundtrip}" |
+            grep -Fx 'host_signer_git_candidate=EXACT_ONE_PUBLIC_KEY_CHANGE'
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" -f "ref=refs/heads/${branch}" -f "sha=${GITHUB_SHA}" >/dev/null
+          original="$(gh api "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto?ref=${branch}" --jq '.sha')"
+          encoded="$(base64 -w0 < "${spec}")"
+          gh api -X PUT "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto" \
+            -f "branch=${branch}" -f "sha=${original}" \
+            -f "message=host: reserve first-use public VM signer" -f "content=${encoded}" >/dev/null
+          gh api "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto?ref=${branch}" --jq '.content' |
+            base64 --decode | cmp -s - "${spec}"
+          gh pr create -R "${GITHUB_REPOSITORY}" -B main -H "${branch}" --draft \
+            -t "host: pin public VM Worker signer for ${TARGET_MACHINE}" \
+            -b "DRAFT PUBLIC ONLY. Origin issue #1 comment ${SOURCE_COMMENT_ID}. Worker secrets must be attested before protected merge. No VM CREATE or signed INSTALL."
+          test "$(gh pr view "${branch}" -R "${GITHUB_REPOSITORY}" --json isDraft --jq '.isDraft')" = true
+          reservation="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}" --jq '.object.sha')"
+          [[ "${reservation}" =~ ^[0-9a-f]{40}$ ]]
+          record="<!-- sing-box-vm-signer-begin/v1 machine=${TARGET_MACHINE} comment=${SOURCE_COMMENT_ID} revision=${GITHUB_SHA} run=${GITHUB_RUN_ID} branch=${branch} sha=${reservation} -->"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/26/comments" -f "body=${record}" >/dev/null
+          echo "HOST_SIGNER_RESERVATION_SHA=${reservation}" >> "${GITHUB_ENV}"
+          echo 'host_vm_signer=PROTECTED_PUBLIC_DRAFT_RESERVED_BEFORE_WRITE'
+
+      - name: Install exactly five Host signer secret bindings once
+        if: steps.plan.outputs.required == 'false'
+        shell: bash
+        env:
+          CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
+          CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN: ${{ secrets.CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN }}
+        run: |
+          set -euo pipefail
+          key="${RUNNER_TEMP}/host-vm-signer-private"
+          pub="${RUNNER_TEMP}/host-vm-signer-public"
+          trap 'rm -f "${key}"' EXIT
+          test -n "${HOST_SIGNER_RESERVATION_SHA}"
+          "${HOST_VM_WORKER_OWNER}" host --hosts-pb "${HOST_FLEET_REGISTRY}" --hosts-sha256 "${HOST_FLEET_SHA256}" \
+            vm-worker-signer-commit "${TARGET_MACHINE}" --key-path "${key}" --public-path "${pub}" |
+            tee "${RUNNER_TEMP}/host-signer-evidence.txt"
+          grep -Fxq 'host_vm_signer=FIVE_BINDINGS_ACTIVE_PUBLIC_GIT_DRAFT' "${RUNNER_TEMP}/host-signer-evidence.txt"
+          grep -Fxq 'windows_worker_mutations=0' "${RUNNER_TEMP}/host-signer-evidence.txt"
+          grep -Fxq 'host_signed_install=NOT_AUTHORIZED' "${RUNNER_TEMP}/host-signer-evidence.txt"
+
+      - name: Open reserved VM signer PR for protected review
+        if: steps.plan.outputs.required == 'false'
+        shell: bash
+        env:
+          REGISTRATION_TOKEN: ${{ secrets.IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN }}
+        run: |
+          set -euo pipefail
+          export GH_TOKEN="${REGISTRATION_TOKEN}"
+          branch="host-signer-${TARGET_MACHINE}-${SOURCE_COMMENT_ID}"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')" = "${GITHUB_SHA}"
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}" --jq '.object.sha')" = "${HOST_SIGNER_RESERVATION_SHA}"
+          test "$(gh pr view "${branch}" -R "${GITHUB_REPOSITORY}" --json isDraft --jq '.isDraft')" = true
+          gh pr edit "${branch}" -R "${GITHUB_REPOSITORY}" \
+            -b "Five VM Host signer bindings active and read back, public key only in protected Git. Original /host apply issue #1 comment ${SOURCE_COMMENT_ID}, accepted revision ${GITHUB_SHA}. First-use Worker credentials and receipt still absent; signed INSTALL NOT authorized."
+          gh pr ready "${branch}" -R "${GITHUB_REPOSITORY}"
+          echo 'host_vm_signer=AWAITING_PROTECTED_PUBLIC_GIT_MERGE'
+
   host_capabilities:
     # Not another public command or native mutation path. The same exact
     # authorized /host status --deep may observe existing protected secrets
