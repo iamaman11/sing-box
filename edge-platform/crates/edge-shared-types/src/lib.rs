@@ -2905,6 +2905,24 @@ mod release_set_tests {
     }
 
     #[test]
+    fn release_set_v8_requires_both_worker_digests_and_predecessor_revision() {
+        let source = valid_release();
+        assert!(validate_release_set(&source).is_ok());
+        let mut bad = source.clone();
+        bad.cloudflare.as_mut().unwrap().vm_worker_source_sha256.clear();
+        assert!(validate_release_set(&bad).is_err());
+        bad = source.clone();
+        bad.cloudflare.as_mut().unwrap().vm_worker_predecessor_source_sha256.clear();
+        assert!(validate_release_set(&bad).is_err());
+        bad = source.clone();
+        bad.cloudflare.as_mut().unwrap().vm_worker_predecessor_revision.clear();
+        assert!(validate_release_set(&bad).is_err());
+        bad = source;
+        bad.schema_version = 7;
+        assert!(validate_release_set(&bad).is_err());
+    }
+
+    #[test]
     fn release_set_rejects_prerelease_sing_box_version() {
         let mut release = valid_release();
         release.sing_box.as_mut().unwrap().version = "1.14.0-rc.1".to_owned();
@@ -3465,6 +3483,7 @@ mod release_set_tests {
     #[test]
     fn release_set_rejects_v7_without_application_bundle_identity() {
         let mut release = valid_release();
+        release.schema_version = 7;
         clear_application_bundle_identity(&mut release);
         assert!(validate_release_set(&release).is_err());
     }
