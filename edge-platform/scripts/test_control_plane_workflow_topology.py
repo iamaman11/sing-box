@@ -5063,8 +5063,8 @@ def main() -> None:
     )[1].split("      - name: Publish durable immutable release without rebuild", 1)[0]
     require(
         all(
-            part.count(f"--{field}") == 1
-            for part in (release_candidate, release_promotion)
+            part.count(f"--{field}") == expected_count
+            for part, expected_count in ((release_candidate, 2), (release_promotion, 1))
             for field in (
                 "vm-worker-source-sha256",
                 "vm-worker-predecessor-sha256",
