@@ -1713,7 +1713,12 @@ pub(crate) async fn host_vm_signer_commit(
     let public_hash = sha256_hex(pair.public_key().as_ref());
     let key_id = format!("vm-host-{}", &public_hash[..16]);
     use base64::Engine as _;
-    let private_b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    // The existing Worker B64() intentionally accepts ONLY the URL-safe
+    // alphabet [A-Za-z0-9_-], not standard Base64 '+' or '/'. Encode PKCS8
+    // exactly once with that contract; otherwise most randomly generated
+    // signer keys are accepted by Cloudflare as secrets but rejected at
+    // signing time (HTTP 503).
+    let private_b64 = encode_worker_host_signer_pkcs8(&bytes);
     let actor = "44100369";
     // Five fixed secret names. Cloudflare merge-patches the currently
     // accepted version, preserving opaque A/B values; never POST credentials.
@@ -3755,6 +3760,11 @@ fn hex_encode(bytes: &[u8]) -> String {
     bytes.iter().map(|byte| format!("{byte:02x}")).collect()
 }
 
+fn encode_worker_host_signer_pkcs8(bytes: &[u8]) -> String {
+    use base64::Engine as _;
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes)
+}
+
 fn sha256_hex(bytes: &[u8]) -> String {
     digest(&SHA256, bytes)
         .as_ref()
@@ -3766,6 +3776,34 @@ fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn worker_host_signer_pkcs8_uses_exact_urlsafe_base64_contract() {
+        use base64::Engine as _;
+        use ring::signature::KeyPair;
+
+        let rng = ring::rand::SystemRandom::new();
+        let pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&rng).unwrap();
+        let original = pkcs8.as_ref();
+        let encoded = encode_worker_host_signer_pkcs8(original);
+        assert!(!encoded.is_empty());
+        assert!(encoded
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_'));
+        assert_eq!(
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(encoded)
+                .unwrap(),
+            original
+        );
+        let restored = ring::signature::Ed25519KeyPair::from_pkcs8(original).unwrap();
+        assert_eq!(restored.public_key().as_ref().len(), 32);
+
+        // Bytes that STANDARD would encode using '/' and '+' must still be
+        // decodable with the same alphabet as the deployed Worker B64().
+        let edge = encode_worker_host_signer_pkcs8(&[0xff, 0xef, 0xfb]);
+        assert_eq!(edge, "_- _7".replace(' ', ""));
+    }
 
     #[test]
     fn only_one_vm_worker_may_hold_host_signer_secrets() {
