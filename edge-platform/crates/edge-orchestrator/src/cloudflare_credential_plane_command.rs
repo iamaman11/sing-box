@@ -1324,14 +1324,13 @@ struct AcceptedVmWorkerSource {
 fn accepted_vm_worker_source(
     release: &edge_orchestrator::OrchestrationContext,
 ) -> Result<AcceptedVmWorkerSource, String> {
-    let context = env::var_os("EDGE_RELEASE_CONTEXT_PATH")
-        .ok_or("HOST_VM_WORKER_RELEASE_CONTEXT_ABSENT")?;
+    let context =
+        env::var_os("EDGE_RELEASE_CONTEXT_PATH").ok_or("HOST_VM_WORKER_RELEASE_CONTEXT_ABSENT")?;
     let parent = Path::new(&context)
         .parent()
         .ok_or("HOST_VM_WORKER_RELEASE_CONTEXT_PARENT_ABSENT")?;
     let path = parent.join("release-set.pb");
-    let meta = fs::symlink_metadata(&path)
-        .map_err(|_| "HOST_VM_WORKER_RELEASESET_ABSENT")?;
+    let meta = fs::symlink_metadata(&path).map_err(|_| "HOST_VM_WORKER_RELEASESET_ABSENT")?;
     if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 65536 {
         return Err("HOST_VM_WORKER_RELEASESET_UNSAFE".to_owned());
     }
@@ -1340,14 +1339,14 @@ fn accepted_vm_worker_source(
         return Err("HOST_VM_WORKER_RELEASESET_DIGEST_MISMATCH".to_owned());
     }
     let accepted = edge_shared_types::decode_release_set(&bytes)?;
-    if accepted.schema_version < 8
-        || accepted.source_revision != release.release().source_revision
+    if accepted.schema_version < 8 || accepted.source_revision != release.release().source_revision
     {
         return Err("HOST_VM_WORKER_RELEASESET_V8_REQUIRED".to_owned());
     }
-    let cf = accepted.cloudflare.ok_or("HOST_VM_WORKER_RELEASE_SOURCE_ABSENT")?;
-    if cf.vm_worker_source_sha256.len() != 32
-        || cf.vm_worker_predecessor_source_sha256.len() != 32
+    let cf = accepted
+        .cloudflare
+        .ok_or("HOST_VM_WORKER_RELEASE_SOURCE_ABSENT")?;
+    if cf.vm_worker_source_sha256.len() != 32 || cf.vm_worker_predecessor_source_sha256.len() != 32
     {
         return Err("HOST_VM_WORKER_RELEASE_SOURCE_INVALID".to_owned());
     }
@@ -1366,7 +1365,9 @@ fn verify_vm_worker_predecessor(
         || desired.worker_name != "sing-box-credentials-vm"
         || current.worker_name != desired.worker_name
         || digest.len() != 64
-        || !digest.bytes().all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        || !digest
+            .bytes()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
     {
         return Err("HOST_VM_WORKER_PREDECESSOR_INVALID".to_owned());
     }
@@ -1452,13 +1453,14 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
         return Err("HOST_VM_WORKER_DESIRED_RELEASE_SOURCE_MISMATCH".to_owned());
     }
     let raw = cloudflare::get_worker_active_module_bytes(
-        &read_token, &desired.target_account_id, &vm.worker_name,
-    ).await?;
+        &read_token,
+        &desired.target_account_id,
+        &vm.worker_name,
+    )
+    .await?;
     let actual_sha256 = sha256_hex(&raw);
     let state = if actual_sha256 == accepted_source.desired {
-        if projection_delivery_state(desired, &vm, &before)?
-            != ProjectionDeliveryState::FixedAb
-        {
+        if projection_delivery_state(desired, &vm, &before)? != ProjectionDeliveryState::FixedAb {
             return Err("HOST_VM_WORKER_DESIRED_SOURCE_METADATA_MISMATCH".to_owned());
         }
         ProjectionDeliveryState::FixedAb
@@ -1546,8 +1548,11 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
     }
     // The live bytes, not Cloudflare's version label, prove the deployment.
     let deployed = cloudflare::get_worker_active_module_bytes(
-        &read_token, &desired.target_account_id, &vm.worker_name,
-    ).await?;
+        &read_token,
+        &desired.target_account_id,
+        &vm.worker_name,
+    )
+    .await?;
     if sha256_hex(&deployed) != accepted_source.desired {
         return Err("HOST_VM_WORKER_ACTIVE_BYTES_MISMATCH_NO_REPLAY".to_owned());
     }
@@ -4698,17 +4703,29 @@ mod tests {
         make_terminal(&mut obs, "vm");
         let vm = projection_desired(&d, "vm").unwrap();
         let source = "73964c87f436adc5de8ab0c34513413e0328ede6a99727a844aa3af9e643b5e1";
-        let original = obs.projections.iter_mut().find(|p| p.projection == "vm").unwrap();
+        let original = obs
+            .projections
+            .iter_mut()
+            .find(|p| p.projection == "vm")
+            .unwrap();
         original.worker_version_tag = Some(format!("sing-box-phase6-ab-vm-{}", &source[..16]));
         original.worker_latest_version_tag = original.worker_version_tag.clone();
         original.worker_binding_count = Some(7);
         original.worker_secret_bindings = [
-            SLOT_A, SLOT_B, "EDGE_HOST_ACCESS_AUD", "EDGE_HOST_ACCESS_ISSUER",
-            "EDGE_HOST_GITHUB_ACTOR_ID", "EDGE_HOST_SIGNING_KEY_ID",
+            SLOT_A,
+            SLOT_B,
+            "EDGE_HOST_ACCESS_AUD",
+            "EDGE_HOST_ACCESS_ISSUER",
+            "EDGE_HOST_GITHUB_ACTOR_ID",
+            "EDGE_HOST_SIGNING_KEY_ID",
             "EDGE_HOST_SIGNING_PKCS8_BASE64",
-        ].iter().map(|name| cloudflare::CloudflareWorkerSecretBinding {
-            name: (*name).to_owned(), binding_type: "secret_text".to_owned(),
-        }).collect();
+        ]
+        .iter()
+        .map(|name| cloudflare::CloudflareWorkerSecretBinding {
+            name: (*name).to_owned(),
+            binding_type: "secret_text".to_owned(),
+        })
+        .collect();
         let current = super::projection_observation(&obs, "vm").unwrap();
         assert!(verify_vm_worker_predecessor(&vm, current, source).is_ok());
         assert!(verify_vm_worker_predecessor(&vm, current, &"0".repeat(64)).is_err());
