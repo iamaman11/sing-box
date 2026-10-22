@@ -368,8 +368,7 @@ pub(crate) async fn enroll(machine_id: &str, release_digest: &str) -> Result<(),
         // An exact trusted snapshot is already converged: do not rewrite it
         // on the next /host apply, even after an earlier lost refresh ACK.
         let already_current =
-            super::host_native::root_file(&trusted.join("trust.pb"), 9 * 1024 * 1024)?
-                == trust_pb;
+            super::host_native::root_file(&trusted.join("trust.pb"), 9 * 1024 * 1024)? == trust_pb;
         if !already_current {
             refresh_release_snapshots(trusted, &trust_pb)?;
         }
