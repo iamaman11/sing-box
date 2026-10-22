@@ -3802,7 +3802,7 @@ mod tests {
         // Bytes that STANDARD would encode using '/' and '+' must still be
         // decodable with the same alphabet as the deployed Worker B64().
         let edge = encode_worker_host_signer_pkcs8(&[0xff, 0xef, 0xfb]);
-        assert_eq!(edge, "_- _7".replace(' ', ""));
+        assert_eq!(edge, "_-_7");
     }
 
     #[test]
