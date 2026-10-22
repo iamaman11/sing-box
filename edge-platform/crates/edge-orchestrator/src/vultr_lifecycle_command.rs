@@ -4594,15 +4594,20 @@ mod tests {
         };
         let context = OrchestrationContext::new(release).expect("validated ReleaseSet");
         let substrate = pinned_host_substrate_versions(&context).expect("typed substrate");
-        assert_eq!(substrate.docker_engine_version, "5:29.8.1-1~debian.13~trixie");
+        assert_eq!(
+            substrate.docker_engine_version,
+            "5:29.8.1-1~debian.13~trixie"
+        );
         assert_eq!(substrate.containerd_version, "2.3.5-1~debian.13~trixie");
         assert_eq!(substrate.compose_version, "5.5.1-1~debian.13~trixie");
-        assert!(HostSubstrateVersions::new(
-            "untrusted;command".to_owned(),
-            substrate.containerd_version,
-            substrate.compose_version,
-        )
-        .is_err());
+        assert!(
+            HostSubstrateVersions::new(
+                "untrusted;command".to_owned(),
+                substrate.containerd_version,
+                substrate.compose_version,
+            )
+            .is_err()
+        );
     }
 
     #[test]
