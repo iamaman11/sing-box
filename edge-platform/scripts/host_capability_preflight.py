@@ -183,7 +183,10 @@ def observe(machine_id, desired_spec_path):
         if isinstance(runners, dict) and isinstance(runners.get("runners"), list):
             result["github_runner_visibility"] = "READABLE"
 
-    api = os.environ.get("CLOUDFLARE_API_TOKEN", "")
+    # The existing accepted VM Worker owner uses this scoped read principal.
+    # The historical generic CLOUDFLARE_API_TOKEN is scoped to another account
+    # and returned 403 on the canonical VM Worker; never fall back to it.
+    api = os.environ.get("CLOUDFLARE_CONTROL_TOKEN", "")
     identity = exact_production_worker()
     if api and identity:
         verification = observe_json("https://api.cloudflare.com/client/v4/user/tokens/verify",
