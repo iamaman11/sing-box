@@ -4576,6 +4576,36 @@ fn usage() -> String {
 #[cfg(test)]
 mod tests {
     #[test]
+    fn host_substrate_is_projected_from_one_validated_release_not_process_env() {
+        use super::*;
+        use edge_controller_core::orchestration::ReleaseContext;
+        let release = ReleaseContext {
+            accepted_revision: "f".repeat(40),
+            source_revision: "a".repeat(40),
+            release_set_sha256: "b".repeat(64),
+            orchestrator_sha256: "1".repeat(64),
+            agent_sha256: "2".repeat(64),
+            docker_engine_version: "5:29.8.1-1~debian.13~trixie".to_owned(),
+            containerd_version: "2.3.5-1~debian.13~trixie".to_owned(),
+            compose_version: "5.5.1-1~debian.13~trixie".to_owned(),
+            gateway_image: format!("ghcr.io/example/gateway@sha256:{}", "c".repeat(64)),
+            warp_egress_image: format!("ghcr.io/example/warp@sha256:{}", "d".repeat(64)),
+            mesh_image: format!("docker.io/cloudflare/mesh@sha256:{}", "e".repeat(64)),
+        };
+        let context = OrchestrationContext::new(release).expect("validated ReleaseSet");
+        let substrate = pinned_host_substrate_versions(&context).expect("typed substrate");
+        assert_eq!(substrate.docker_engine_version, "5:29.8.1-1~debian.13~trixie");
+        assert_eq!(substrate.containerd_version, "2.3.5-1~debian.13~trixie");
+        assert_eq!(substrate.compose_version, "5.5.1-1~debian.13~trixie");
+        assert!(HostSubstrateVersions::new(
+            "untrusted;command".to_owned(),
+            substrate.containerd_version,
+            substrate.compose_version,
+        )
+        .is_err());
+    }
+
+    #[test]
     fn first_use_provider_plan_does_not_reserve_for_existing_or_ambiguous_vm() {
         use super::*;
         assert_eq!(
