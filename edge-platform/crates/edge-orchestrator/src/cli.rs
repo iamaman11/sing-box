@@ -187,6 +187,46 @@ pub(crate) enum HostCommand {
         #[arg(long)]
         plan_only: bool,
     },
+    /// Internal protected-worker owner: prepare a single ephemeral Ed25519
+    /// key; no provider mutation, public bytes only in a Git draft.
+    #[command(hide = true)]
+    VmWorkerSignerPrepare {
+        machine_id: String,
+        #[arg(long)]
+        key_path: PathBuf,
+        #[arg(long)]
+        public_path: PathBuf,
+    },
+    /// Once the exact public-key Git draft is durably reserved, install the
+    /// five fixed Host guards into the existing VM Worker, never Windows.
+    #[command(hide = true)]
+    VmWorkerSignerCommit {
+        machine_id: String,
+        #[arg(long)]
+        key_path: PathBuf,
+        #[arg(long)]
+        public_path: PathBuf,
+    },
+    /// Re-decode a compiled Git textproto and verify EXACTLY one public
+    /// signer key changed; code generator ordering is not an identity.
+    #[command(hide = true)]
+    VerifySigner {
+        machine_id: String,
+        #[arg(long)]
+        signer_public_key_hex: String,
+        #[arg(long)]
+        candidate_path: PathBuf,
+    },
+    /// Internal Git candidate: change ONLY the selected VM public signer
+    /// pin, without touching receipt, credentials or another host.
+    #[command(hide = true)]
+    RegisterSigner {
+        machine_id: String,
+        #[arg(long)]
+        signer_public_key_hex: String,
+        #[arg(long)]
+        output_path: PathBuf,
+    },
     /// Refresh an already-enrolled root trust snapshot from the accepted
     /// protected Git ReleaseSet. Never creates, adopts or installs a VM.
     #[command(hide = true)]

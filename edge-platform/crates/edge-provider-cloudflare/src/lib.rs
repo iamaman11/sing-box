@@ -732,6 +732,50 @@ fn required_cloudflare_result_id(label: &str, value: &Value) -> Result<String, S
     Ok(id.to_owned())
 }
 
+/// GET-only audience of one Access app already selected from the native
+/// account's validated inventory. No URL or app ID comes from user ingress.
+pub async fn get_access_application_audience(
+    api_token: &str,
+    account_id: &str,
+    app_id: &str,
+) -> Result<String, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Access application ID", app_id)?;
+    if !app_id
+        .bytes()
+        .all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        || app_id.len() > 64
+    {
+        return Err("HOST_ACCESS_APP_ID_INVALID".to_owned());
+    }
+    let client = authorized_client(api_token)?;
+    let response = client
+        .get(format!(
+            "{API_ROOT}/accounts/{account_id}/access/apps/{app_id}"
+        ))
+        .send()
+        .await
+        .map_err(|_| "HOST_ACCESS_AUDIENCE_READ_FAILED".to_owned())?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    if payload.result.get("id").and_then(Value::as_str) != Some(app_id) {
+        return Err("HOST_ACCESS_APP_ID_DRIFT".to_owned());
+    }
+    let aud = payload
+        .result
+        .get("aud")
+        .and_then(Value::as_str)
+        .ok_or("HOST_ACCESS_APP_AUDIENCE_MISSING")?;
+    if aud.len() < 8
+        || aud.len() > 64
+        || !aud
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err("HOST_ACCESS_APP_AUDIENCE_INVALID".to_owned());
+    }
+    Ok(aud.to_owned())
+}
+
 pub async fn get_worker_script_subdomain(
     api_token: &str,
     account_id: &str,
