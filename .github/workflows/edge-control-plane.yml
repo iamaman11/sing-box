@@ -1097,6 +1097,7 @@ jobs:
           bin="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
           echo "${EDGE_ORCHESTRATOR_SHA256}  ${bin}" | sha256sum --check --status
           chmod 0755 "${bin}"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
           echo "EDGE_RELEASE_CONTEXT_PATH=${OUTPUT_DIR}/resolved.env" >> "${GITHUB_ENV}"
           buf="${RUNNER_TEMP}/host-resume-buf"
           curl --fail --silent --show-error --location \
