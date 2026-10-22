@@ -5053,6 +5053,32 @@ def main() -> None:
         and edge_platform_ci.count("verify-candidate") == 2,
         "candidate and promotion paths must converge through the typed platform build-manifest contract",
     )
+    # Both candidate assembly and main promotion must independently
+    # derive the same Worker v8 identity from the exact immutable Git tree.
+    release_candidate = edge_platform_ci.split(
+        "      - name: Create and verify canonical ReleaseSet", 1
+    )[1].split("      - name: Store canonical ReleaseSet candidate", 1)[0]
+    release_promotion = edge_platform_ci.split(
+        "      - name: Verify exact candidate provenance", 1
+    )[1].split("      - name: Publish durable immutable release without rebuild", 1)[0]
+    require(
+        all(
+            part.count(f"--{field}") == expected_count
+            for part, expected_count in ((release_candidate, 2), (release_promotion, 1))
+            for field in (
+                "vm-worker-source-sha256",
+                "vm-worker-predecessor-sha256",
+                "vm-worker-predecessor-revision",
+            )
+        )
+        and "vm_worker_source_digest.py" in release_candidate
+        and "vm_worker_source_digest.py" in release_promotion
+        and 'test "$(git -C "${source_dir}" rev-parse HEAD)" = "${CANDIDATE_REVISION}"'
+        in release_promotion
+        and "rev-parse 'HEAD^{tree}'" in release_promotion,
+        "both ReleaseSet v8 paths must derive exact canonical Worker source and predecessor Git provenance",
+    )
+
     require(
         "base_mesh_image: ${{ steps.resolve.outputs.base_mesh_image }}" in edge_platform_ci
         and "base_mesh_image=%s" in edge_platform_ci
