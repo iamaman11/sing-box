@@ -821,6 +821,35 @@ pub(crate) fn run(
             println!("host_mutations=0");
             Ok(())
         }
+        HostCommand::VerifySigner {
+            machine_id,
+            signer_public_key_hex,
+            candidate_path,
+        } => {
+            let expected = signer_registration_candidate(
+                &desired,
+                &machine_id,
+                &signer_public_key_hex,
+            )?;
+            let metadata = std::fs::symlink_metadata(&candidate_path)
+                .map_err(|_| "HOST_SIGNER_CANDIDATE_MISSING")?;
+            if !metadata.file_type().is_file()
+                || metadata.len() == 0
+                || metadata.len() > MAX_INVENTORY_BYTES
+            {
+                return Err("HOST_SIGNER_CANDIDATE_INVALID_FILE".to_owned());
+            }
+            let actual = decode_host_registry(
+                &std::fs::read(&candidate_path)
+                    .map_err(|_| "HOST_SIGNER_CANDIDATE_UNREADABLE")?,
+            )?;
+            if actual != expected {
+                return Err("HOST_SIGNER_CANDIDATE_UNEXPECTED_GIT_CHANGE".to_owned());
+            }
+            println!("host_signer_git_candidate=EXACT_ONE_PUBLIC_KEY_CHANGE");
+            println!("host_mutations=0");
+            Ok(())
+        }
         HostCommand::VmWorkerSignerPrepare { .. } | HostCommand::VmWorkerSignerCommit { .. } => {
             Err("HOST_VM_SIGNER_MUST_USE_PROTECTED_WORKER_OWNER".to_owned())
         }
