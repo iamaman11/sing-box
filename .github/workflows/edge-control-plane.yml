@@ -486,6 +486,26 @@ jobs:
           git checkout --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
 
+      - name: Compile exact per-host first-use desired (protobuf, no JSON)
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${TARGET_MACHINE}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]
+          spec="infra/hosts/specs/${TARGET_MACHINE}.textproto"
+          test -f "${spec}"
+          test ! -L "${spec}"
+          test ! -e "infra/hosts/specs/${TARGET_MACHINE}.binpb"
+          buf="${RUNNER_TEMP}/host-first-use-buf"
+          curl --fail --silent --show-error --location \
+            "https://github.com/bufbuild/buf/releases/download/v1.73.0/buf-Linux-x86_64" -o "${buf}"
+          echo "8f2986298ad08f0cc1bf999b9797b7c383adf32d7edf0f73d6f1e1a701baeac1  ${buf}" | sha256sum --check --status
+          chmod 0755 "${buf}"
+          (cd edge-platform && "${buf}" convert proto/edge/platform/v1/fleet.proto \
+            --type edge.platform.v1.FleetVmHostDesired \
+            --from "../${spec}#format=txtpb" \
+            --to "../infra/hosts/specs/${TARGET_MACHINE}.binpb#format=binpb")
+          test -s "infra/hosts/specs/${TARGET_MACHINE}.binpb"
+
       - name: Resolve immutable published native owner and fleet
         shell: bash
         env:

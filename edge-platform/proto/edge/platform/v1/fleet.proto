@@ -3,6 +3,7 @@ syntax = "proto3";
 package edge.platform.v1;
 
 import "edge/platform/v1/runtime.proto";
+import "edge/platform/v1/production.proto";
 
 // The only Git-owned selector registry for the fleet. Configuration lives in
 // existing desired state, immutable ReleaseSet and the Worker-v2 secret plane;
@@ -566,4 +567,16 @@ message FleetVmResourceTransitionPlan {
   repeated FleetVmResourceTransition resources = 3;
   bool owner_attested = 4;
   bool mutation_authorized = 5;
+}
+
+ // A single per-host Git desired for FRESH VM first-use. Both existing
+ // Vultr provider and application planners decode this SAME protobuf.
+ // Native VM runtime never executes a textproto parser or custom shell.
+message FleetVmHostDesired {
+  uint32 schema_version = 1;
+  string environment = 2;
+  string machine_id = 3;
+  ProductionMachine machine = 4;
+  ProductionApplication application = 5;
+  string firewall_profile = 6;
 }

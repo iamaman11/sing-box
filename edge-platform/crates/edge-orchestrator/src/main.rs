@@ -18,6 +18,7 @@ mod credential_initial_journal;
 mod host_command;
 mod line2_external_witness;
 mod production_command;
+mod vm_host_desired;
 mod vultr_host_bootstrap;
 mod vultr_host_substrate_service;
 mod vultr_lifecycle_adapter;

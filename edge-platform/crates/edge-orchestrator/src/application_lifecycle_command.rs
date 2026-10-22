@@ -254,6 +254,9 @@ pub(crate) fn load_application_desired(path: &Path) -> Result<DesiredApplication
             .map_err(|err| err.to_string());
     }
 
+    if path.starts_with("infra/hosts/specs") {
+        return crate::vm_host_desired::load(path).map(|(_, application)| application);
+    }
     let raw = fs::read_to_string(path)
         .map_err(|err| format!("failed to read application spec {}: {err}", path.display()))?;
     DesiredApplicationState::parse_json(&raw)

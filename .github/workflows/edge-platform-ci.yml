@@ -554,6 +554,15 @@ jobs:
             --from "../infra/hosts/hosts.textproto#format=txtpb" \
             --to "${RUNNER_TEMP}/hosts-canonical.binpb#format=binpb"
           test -s "${RUNNER_TEMP}/hosts-canonical.binpb"
+          for spec in ../infra/hosts/specs/*.textproto; do
+            test -f "${spec}" || continue
+            name="$(basename "${spec}" .textproto)"
+            "${buf_bin}" convert proto/edge/platform/v1/fleet.proto \
+              --type edge.platform.v1.FleetVmHostDesired \
+              --from "${spec}#format=txtpb" \
+              --to "${RUNNER_TEMP}/${name}.binpb#format=binpb"
+            test -s "${RUNNER_TEMP}/${name}.binpb"
+          done
           echo "hosts_registry_sha256=$(sha256sum "${RUNNER_TEMP}/hosts-canonical.binpb" | cut -d' ' -f1)" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Install pinned Rust toolchain
