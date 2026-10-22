@@ -5089,11 +5089,15 @@ def main() -> None:
         and "test \"$(jq -er '.parents | length'" in edge_platform_ci
         and "candidate_revision=\"$(jq -er '.parents[1].sha'" in edge_platform_ci
         and 'test "${accepted_tree}" = "${candidate_tree}"' in edge_platform_ci
-        and 'associated_prs="$(gh api "repos/${REPOSITORY}/commits/${ACCEPTED_REVISION}/pulls?per_page=10")"' in edge_platform_ci
-        and 'select(.merge_commit_sha == $accepted)' in edge_platform_ci
-        and 'select(.head.sha == $candidate)' in edge_platform_ci
-        and 'select(.base.ref == "main")' in edge_platform_ci
-        and 'if length == 1 then .[0] else error("accepted merge has no unique matching merged PR") end' in edge_platform_ci
+        and 'merge_subject="$(jq -er' in edge_platform_ci
+        and 'Merge pull request #([1-9][0-9]*) from iamaman11/' in edge_platform_ci
+        and 'trusted_pr="$(gh api "repos/${REPOSITORY}/pulls/${pr_number}")"' in edge_platform_ci
+        and '.merge_commit_sha == $accepted' in edge_platform_ci
+        and '.head.sha == $candidate' in edge_platform_ci
+        and '.base.ref == "main"' in edge_platform_ci
+        and '.head.repo.full_name == "iamaman11/sing-box"' in edge_platform_ci
+        and 'HOST_RELEASE_MERGE_SUBJECT_NOT_CANONICAL' in edge_platform_ci
+        and '/commits/${ACCEPTED_REVISION}/pulls?' not in edge_platform_ci
         and "pull-requests: read" in edge_platform_ci
         and 'select(.status == "completed")' in edge_platform_ci
         and 'select(.conclusion == "success")' in edge_platform_ci,
@@ -5298,6 +5302,47 @@ def test_vm_typed_desired_preparation_is_shared_and_fail_closed() -> None:
         rejected("acceptance-fixture", "HOST_VM_TYPED_SOURCE_UNREADABLE")
 
 
+def test_promotion_rejects_mismatched_merged_pr_without_reverse_lookup() -> None:
+    """The real promotion jq gate validates one exact immutable Git merge."""
+    ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
+    promotion = ci.split("  promote:\n", 1)[1]
+    marker = '--argjson pr_number "${pr_number}" \''
+    closing = '\' <<<"${trusted_pr}" >/dev/null'
+    require(promotion.count(marker) == 1 and closing in promotion,
+            "one canonical direct merged-PR verification is required")
+    predicate = promotion.split(marker, 1)[1].split(closing, 1)[0]
+    accepted = "a" * 40
+    candidate = "b" * 40
+    valid = {
+        "number": 428, "state": "closed", "merged_at": "2026-10-22T16:22:00Z",
+        "base": {"ref": "main", "repo": {"full_name": "iamaman11/sing-box"}},
+        "head": {"sha": candidate, "repo": {"full_name": "iamaman11/sing-box"}},
+        "merge_commit_sha": accepted,
+    }
+    import copy
+    invalid = []
+    for mutate in (
+        lambda p: p.update(number=429),
+        lambda p: p.update(state="open"),
+        lambda p: p.update(merged_at=None),
+        lambda p: p["base"].update(ref="other"),
+        lambda p: p["base"]["repo"].update(full_name="foreign/sing-box"),
+        lambda p: p["head"]["repo"].update(full_name="foreign/sing-box"),
+        lambda p: p.update(merge_commit_sha="c" * 40),
+        lambda p: p["head"].update(sha="c" * 40),
+    ):
+        item = copy.deepcopy(valid)
+        mutate(item)
+        invalid.append(item)
+    for item, good in [(valid, True)] + [(v, False) for v in invalid]:
+        proc = subprocess.run(
+            ["jq", "-e", "--arg", "accepted", accepted, "--arg", "candidate",
+             candidate, "--argjson", "pr_number", "428", predicate],
+            input=json.dumps(item), text=True, capture_output=True, check=False,
+        )
+        require((proc.returncode == 0) == good,
+                "promotion exact PR join must fail closed: " + proc.stderr)
+
 def test_promotion_finds_exact_pr_run_without_unreliable_sha_api_filter() -> None:
     """A broken server-side head_sha filter must not hide the accepted PR CI."""
     ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
@@ -5391,6 +5436,7 @@ if __name__ == "__main__":
     test_one_host_apply_reconciles_root_trust_before_native_dispatch()
     test_vm_typed_desired_preparation_is_shared_and_fail_closed()
     test_release_pinned_vm_substrate_versions_reach_native_trust_owners()
+    test_promotion_rejects_mismatched_merged_pr_without_reverse_lookup()
     test_promotion_finds_exact_pr_run_without_unreliable_sha_api_filter()
     test_native_vm_artifact_transport_is_same_run_and_not_gh_cli()
     verify_receipt_resume_inline_release_context(ROUTER.read_text(encoding="utf-8"))
