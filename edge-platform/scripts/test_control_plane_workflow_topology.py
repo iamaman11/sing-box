@@ -3825,7 +3825,7 @@ def main() -> None:
     )
     require(
         "vultr-control-plane-production" not in router.split("  host_worker_authorizer:\n", 1)[0]
-        and router.count("group: vultr-control-plane-production") == 3
+        and router.count("group: vultr-control-plane-production") == 4
         and "needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'" in router.split(
             "  host_worker_authorizer:\n", 1
         )[1].split("\n  host_capabilities:\n", 1)[0]
@@ -3834,7 +3834,7 @@ def main() -> None:
         and "github.event.workflow_run.run_attempt == 1" in router.split("  host_resume_receipt:\n", 1)[1]
         and "    concurrency:\n      group: vultr-control-plane-production" in router.split("  host_resume_receipt:\n", 1)[1]
         and "    if: >-\n      needs.host.result == 'success'" in router.split("  host_first_use:\n", 1)[1],
-        "Only exact typed VM Worker, first-use and receipt-resume jobs may occupy production concurrency",
+        "Only exact VM Worker, first-use, receipt-resume and apply-trust jobs may hold production concurrency",
     )
 
     require(
@@ -5199,7 +5199,45 @@ def test_native_vm_artifact_transport_is_same_run_and_not_gh_cli() -> None:
             "VM native artifact negative fixture must fail")
 
 
+
+def test_one_host_apply_reconciles_root_trust_before_native_dispatch() -> None:
+    """A registered Git key must reach the existing root Agent before INSTALL."""
+    workflow = ROUTER.read_text(encoding="utf-8")
+    step = "  host_refresh_trust:"
+    dispatch = "  host_observe:"
+    require(workflow.count(step) == 1, "single root trust reconciliation job")
+    refresh = workflow.split(step, 1)[1].split(dispatch, 1)[0]
+    observe = workflow.split(dispatch, 1)[1].split("  host_report:", 1)[0]
+    for guard in (
+        "needs.host.outputs.kind == 'VM'",
+        "needs.host.outputs.operation == 'APPLY_PREFLIGHT'",
+        "needs.host.outputs.host_targets_present == 'true'",
+        "github.event_name == 'issue_comment'",
+        "github.run_attempt == 1",
+        "group: vultr-control-plane-production",
+        "name: production-vultr",
+        "resolve_durable_release.sh",
+        "source ",
+        "refresh-receipt ",
+        "host_receipt_refresh=ROOT_PROTECTED_GIT_PINNED",
+        "host_mutations=0",
+    ):
+        require(guard in refresh, "root trust step missing required contract: " + guard)
+    require("needs: [host, host_report, host_refresh_trust]" in observe
+            and "!cancelled()" in observe
+            and "needs.host_refresh_trust.result == 'success'" in observe,
+            "native dispatch must wait for Git-pinned root trust")
+    require("gh run download" not in refresh
+            and "vultr-lifecycle apply" not in refresh
+            and "local host-apply" not in refresh,
+            "root trust must not be a second Docker/runtime mutator")
+    broken = observe.replace("needs.host_refresh_trust.result == 'success'",
+                             "needs.host_refresh_trust.result == 'skipped'", 1)
+    require(broken != observe and "needs.host_refresh_trust.result == 'skipped'" in broken,
+            "missing-trust admission negative fixture not generated")
+
 if __name__ == "__main__":
     main()
+    test_one_host_apply_reconciles_root_trust_before_native_dispatch()
     test_native_vm_artifact_transport_is_same_run_and_not_gh_cli()
     verify_receipt_resume_inline_release_context(ROUTER.read_text(encoding="utf-8"))
