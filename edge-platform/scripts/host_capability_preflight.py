@@ -73,9 +73,18 @@ def target_machine(application_spec_path, machine_id):
     Other Git host kinds remain unavailable rather than defaulting to a
     hard-coded acceptance instance.
     """
-    if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", machine_id)
-            or not re.fullmatch(r"infra/application/[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.json",
-                                application_spec_path)):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", machine_id):
+        return False
+    # New Git per-host authority is Rust-selected and independently compiled
+    # with pinned Buf before this read-only probe. Do NOT duplicate its schema
+    # with a custom Python textproto parser.
+    expected_typed = f"infra/hosts/specs/{machine_id}.textproto"
+    if application_spec_path == expected_typed:
+        path = Path(expected_typed)
+        return (path.is_file() and not path.is_symlink()
+                and 0 < path.stat().st_size <= 131_072)
+    if not re.fullmatch(r"infra/application/[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.json",
+                        application_spec_path):
         return False
     try:
         app = json.loads(Path(application_spec_path).read_text(encoding="utf-8"))

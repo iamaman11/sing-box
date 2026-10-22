@@ -403,7 +403,8 @@ jobs:
       github.run_attempt == 1 &&
       github.event.comment.body == format('/host status {0} --deep', needs.host.outputs.machine_id) &&
       needs.host.outputs.kind == 'VM' &&
-      startsWith(needs.host.outputs.desired_spec_path, 'infra/application/')
+      (startsWith(needs.host.outputs.desired_spec_path, 'infra/application/') ||
+       startsWith(needs.host.outputs.desired_spec_path, 'infra/hosts/specs/'))
     runs-on: ubuntu-24.04
     environment:
       name: production-vultr
@@ -423,6 +424,37 @@ jobs:
           test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
           test -f infra/hosts/hosts.textproto
           test -f infra/vultr/application-acceptance.json
+      - name: Verify exact new per-host Protobuf authority before provider GET
+        shell: bash
+        env:
+          TARGET_MACHINE: ${{ needs.host.outputs.machine_id }}
+          TARGET_DESIRED_SPEC: ${{ needs.host.outputs.desired_spec_path }}
+        run: |
+          set -euo pipefail
+          case "${TARGET_DESIRED_SPEC}" in
+            infra/application/*.json)
+              # Existing legacy hosts have their historical validated JSON.
+              test -f "${TARGET_DESIRED_SPEC}"
+              ;;
+            infra/hosts/specs/*.textproto)
+              [[ "${TARGET_MACHINE}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]
+              test "${TARGET_DESIRED_SPEC}" = "infra/hosts/specs/${TARGET_MACHINE}.textproto"
+              test -f "${TARGET_DESIRED_SPEC}" && test ! -L "${TARGET_DESIRED_SPEC}"
+              compiler="${RUNNER_TEMP}/host-capability-buf"
+              curl --fail --silent --show-error --location \
+                'https://github.com/bufbuild/buf/releases/download/v1.73.0/buf-Linux-x86_64' \
+                -o "${compiler}"
+              echo "8f2986298ad08f0cc1bf999b9797b7c383adf32d7edf0f73d6f1e1a701baeac1  ${compiler}" | sha256sum --check --status
+              chmod 0755 "${compiler}"
+              (cd edge-platform && "${compiler}" convert proto/edge/platform/v1/fleet.proto \
+                --type edge.platform.v1.FleetVmHostDesired \
+                --from "../${TARGET_DESIRED_SPEC}#format=txtpb" \
+                --to "${RUNNER_TEMP}/capability-vm.pb#format=binpb")
+              test -s "${RUNNER_TEMP}/capability-vm.pb"
+              ;;
+            *) echo 'HOST_CAPABILITY_TYPED_GIT_PATH_INVALID' >&2; exit 1 ;;
+          esac
+
       - name: Observe protected credentials and provider access with GET only
         shell: bash
         env:
