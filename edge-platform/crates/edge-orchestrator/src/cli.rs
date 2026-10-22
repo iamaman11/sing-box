@@ -177,6 +177,17 @@ pub(crate) enum HostCommand {
         #[arg(long)]
         previous_path: PathBuf,
     },
+    /// Protected GET-only proof of an existing, journal-bound VM credential
+    /// candidate. Never reads a secret from Cloudflare management APIs or
+    /// authorizes VM CREATE. Output contains only nonsecret identity.
+    #[command(hide = true)]
+    VmCredentialProof {
+        machine_id: String,
+        #[arg(long)]
+        generation: u64,
+        #[arg(long)]
+        bundle_sha256: String,
+    },
     /// Internal continuation of one authenticated /host apply: update only
     /// the existing VM Worker code, inheriting all existing secret bindings.
     /// It never writes credentials, authorizes VM CREATE, or touches Windows.
