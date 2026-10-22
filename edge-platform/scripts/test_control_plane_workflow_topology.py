@@ -1126,7 +1126,7 @@ def test_native_host_readonly_control_boundary(router: str) -> None:
         and "host_mutations=0" in hosted
         and '--github-output "${GITHUB_OUTPUT}"' in hosted
         and "matrix: ${{ fromJSON(needs.host.outputs.host_matrix) }}" in physical
-        and "needs: [host, host_report, host_refresh_trust]" in physical
+        and "needs: [host, host_report, host_refresh_trust, host_worker_authorizer]" in physical
         and "uses: ./.github/workflows/host-native-observe.yml" in physical
         and "runner_labels: ${{ toJSON(matrix.runner_labels) }}" in physical
         and "needs.host.outputs.host_targets_present == 'true'" in physical
@@ -5290,7 +5290,7 @@ def test_one_host_apply_reconciles_root_trust_before_native_dispatch() -> None:
         "host_mutations=0",
     ):
         require(guard in refresh, "root trust step missing required contract: " + guard)
-    require("needs: [host, host_report, host_refresh_trust]" in observe
+    require("needs: [host, host_report, host_refresh_trust, host_worker_authorizer]" in observe
             and "!cancelled()" in observe
             and "needs.host_refresh_trust.result == 'success'" in observe,
             "native dispatch must wait for Git-pinned root trust")
