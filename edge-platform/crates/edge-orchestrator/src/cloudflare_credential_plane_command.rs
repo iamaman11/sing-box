@@ -3666,67 +3666,67 @@ function INFO(b){
 async function GITHUB(info,e,now){
  const actor=String(e.EDGE_HOST_GITHUB_ACTOR_ID||"");
  if(!/^[1-9][0-9]{0,19}$/.test(actor)||Math.abs(now-info.when)>300||
-    !/^[0-9a-f]{64}$/.test(info.release))return false;
+    !/^[0-9a-f]{64}$/.test(info.release))return "DENIED";
  const id=info.id.slice("issue1-comment-".length);
  const base="https://api.github.com/repos/iamaman11/sing-box";
  const headers={"Accept":"application/vnd.github+json","User-Agent":"sing-box-host-authorizer"};
  try{
   const comment=await fetch(base+"/issues/comments/"+id,{redirect:"error",headers});
-  if(!comment.ok)return false;
+  if(!comment.ok)return [401,403,429].includes(comment.status)||comment.status>=500?"UNAVAILABLE":"DENIED";
   const c=await comment.json(),stamp=Date.parse(c.created_at)/1000;
   if(!c||String(c.user?.id)!==actor||c.issue_url!==base+"/issues/1"||
      c.updated_at!==c.created_at||!Number.isFinite(stamp)||
      stamp>now+30||info.when<stamp-30||
      c.body!=="/host "+(info.action===2?"apply":"recover")+" "+info.m+
-        (info.resource==="sing-box"?"":" "+info.resource))return false;
+        (info.resource==="sing-box"?"":" "+info.resource))return "DENIED";
   // Exact immutable published ReleaseSet is required for every issuance.
   const tag="edge-release-"+info.release;
   const release=await fetch(base+"/releases/tags/"+tag,{redirect:"error",headers});
-  if(!release.ok)return false;
+  if(!release.ok)return [401,403,429].includes(release.status)||release.status>=500?"UNAVAILABLE":"DENIED";
   const value=await release.json();
   if(value.tag_name!==tag||value.draft!==false||value.prerelease!==false||
-     !/^[0-9a-f]{40}$/.test(value.target_commitish))return false;
-  if(stamp>=now-300)return true;
+     !/^[0-9a-f]{40}$/.test(value.target_commitish))return "DENIED";
+  if(stamp>=now-300)return "APPROVED";
   // Only the original VM first-use APPLY may survive the five-minute
   // comment window, and ONLY after the matching protected receipt PR merge
   // was accepted and the corresponding ReleaseSet published on main.
   // Worker signs a fresh 120s intent; native root journal still blocks replay.
-  if(info.kind!==2||info.action!==2||info.resource!=="sing-box")return false;
+  if(info.kind!==2||info.action!==2||info.resource!=="sing-box")return "DENIED";
   const accepted=value.target_commitish;
   const main=await fetch(base+"/git/ref/heads/main",{redirect:"error",headers});
-  if(!main.ok)return false;
+  if(!main.ok)return [401,403,429].includes(main.status)||main.status>=500?"UNAVAILABLE":"DENIED";
   const branch=await main.json();
-  if(branch.object?.type!=="commit"||branch.object?.sha!==accepted)return false;
+  if(branch.object?.type!=="commit"||branch.object?.sha!==accepted)return "DENIED";
   const response=await fetch(base+"/commits/"+accepted+"/pulls?per_page=20",
       {redirect:"error",headers});
-  if(!response.ok)return false;
+  if(!response.ok)return [401,403,429].includes(response.status)||response.status>=500?"UNAVAILABLE":"DENIED";
   const prs=await response.json();
-  if(!Array.isArray(prs))return false;
+  if(!Array.isArray(prs))return "DENIED";
   const matched=prs.filter(pr=>pr.merged_at!=null&&pr.draft===false&&
      pr.base?.ref==="main"&&pr.head?.repo?.full_name==="iamaman11/sing-box"&&
      pr.merge_commit_sha===accepted&&
      pr.head?.ref==="host-receipt-"+info.m+"-"+id&&
      pr.title==="host: register native receipt for "+info.m);
-  if(matched.length!==1)return false;
+  if(matched.length!==1)return "DENIED";
   const merged=Date.parse(matched[0].merged_at)/1000;
   return Number.isFinite(merged)&&merged>=stamp&&merged<=now+30&&
-     now-merged<=86400; }catch{return false}
+     now-merged<=86400?"APPROVED":"DENIED"; }catch{return "UNAVAILABLE"}
 }
 async function ACCESS(q,e){const iss=e.EDGE_HOST_ACCESS_ISSUER,aud=e.EDGE_HOST_ACCESS_AUD,t=q.headers.get("Cf-Access-Jwt-Assertion");if(typeof iss!=="string"||!/^https:\/\/[a-z0-9-]+\.cloudflareaccess\.com$/.test(iss)||typeof aud!=="string"||aud.length<8||aud.length>256||!t||t.length>8192)return false;
 const parts=t.split(".");if(parts.length!==3)return false;let h,c;try{h=JSON.parse(TD.decode(B64(parts[0])));c=JSON.parse(TD.decode(B64(parts[1])))}catch{return false}
-const now=Math.floor(Date.now()/1000);if(!h||h.alg!=="RS256"||typeof h.kid!=="string"||!c||c.iss!==iss||!Array.isArray(c.aud)||!c.aud.includes(aud)||!Number.isInteger(c.exp)||c.exp<=now||!Number.isInteger(c.nbf)||c.nbf>now+60)return false;
+const now=Math.floor(Date.now()/1000);if(!h||h.alg!=="RS256"||typeof h.kid!=="string"||!c||c.iss!==iss||!Array.isArray(c.aud)||!c.aud.includes(aud)||!Number.isInteger(c.exp)||c.exp<=now||(c.nbf!==undefined&&(!Number.isInteger(c.nbf)||c.nbf>now+60)))return false;
 try{const res=await fetch(iss+"/cdn-cgi/access/certs",{redirect:"error"});if(!res.ok)return false;const certs=await res.json();const keys=Array.isArray(certs.keys)?certs.keys:[];const jwk=keys.find(k=>k.kid===h.kid&&k.kty==="RSA");if(!jwk)return false;const key=await crypto.subtle.importKey("jwk",jwk,{name:"RSASSA-PKCS1-v1_5",hash:"SHA-256"},false,["verify"]);return await crypto.subtle.verify("RSASSA-PKCS1-v1_5",key,B64(parts[2]),TE.encode(parts[0]+"."+parts[1]))}catch{return false}}
 async function AUTHORIZE(q,e,u){if(P!==__HOST_SIGNER_PROJECTION__)return new Response(null,{status:404,headers:NO});if(q.method!=="POST"||u.search||q.headers.get("Content-Type")!=="application/x-protobuf")return new Response(null,{status:404,headers:NO});
 const k=e.EDGE_HOST_SIGNING_PKCS8_BASE64,id=e.EDGE_HOST_SIGNING_KEY_ID,actor=String(e.EDGE_HOST_GITHUB_ACTOR_ID||"");
 if(typeof k!=="string"||typeof id!=="string"||!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id)||!/^[1-9][0-9]{0,19}$/.test(actor))return new Response(null,{status:404,headers:NO});
-if(!await ACCESS(q,e))return new Response(null,{status:403,headers:NO});
+if(!await ACCESS(q,e))return new Response(null,{status:403,headers:{...NO,"X-Host-Authorization-Reason":"ACCESS_JWT_REJECTED"}});
 if(Number(q.headers.get("Content-Length"))>8192)return new Response(null,{status:413,headers:NO});
 let raw;try{raw=new Uint8Array(await q.arrayBuffer())}catch{return new Response(null,{status:400,headers:NO})}
 if(!raw.length||raw.length>8192)return new Response(null,{status:413,headers:NO});
 // GitHub issue #1 is the ONLY operator command source. A valid Cloudflare
 // service-token by itself cannot authorize a machine, action or an old comment.
 const info=INFO(raw);if(!info)return new Response(null,{status:400,headers:NO});
-if(!await GITHUB(info,e,Math.floor(Date.now()/1000)))return new Response(null,{status:403,headers:NO});
+const approval=await GITHUB(info,e,Math.floor(Date.now()/1000));if(approval!=="APPROVED")return new Response(null,{status:approval==="UNAVAILABLE"?503:403,headers:{...NO,"X-Host-Authorization-Reason":approval==="UNAVAILABLE"?"GITHUB_DEPENDENCY_UNAVAILABLE":"GITHUB_APPROVAL_DENIED"}});
 const op=info.id;
 const issued=Math.floor(Date.now()/1000),expires=issued+120,kid=TE.encode(id),oid=TE.encode(op),pk=B64(k);
 if(pk===null||pk.length<40||pk.length>4096)return new Response(null,{status:503,headers:NO});
@@ -4050,6 +4050,13 @@ mod tests {
             assert!(source.contains("U64(issued),U64(expires)"));
             assert!(source.contains("crypto.subtle.sign(\"Ed25519\""));
             assert!(source.contains("GITHUB(info,e"));
+            assert!(source.contains("c.nbf!==undefined"));
+            assert!(!source.contains("||!Number.isInteger(c.nbf)"));
+            assert!(source.contains("X-Host-Authorization-Reason"));
+            assert!(source.contains("ACCESS_JWT_REJECTED"));
+            assert!(source.contains("GITHUB_APPROVAL_DENIED"));
+            assert!(source.contains("GITHUB_DEPENDENCY_UNAVAILABLE"));
+            assert!(source.contains("approval===\"UNAVAILABLE\"?503:403"));
             assert!(source.contains("issued+120"));
             // Credential GET and dummy A/B proof route must remain in the
             // original Worker, never copied to a second privileged service.

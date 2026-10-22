@@ -99,6 +99,10 @@ jobs:
         shell: bash
         run: python3 edge-platform/scripts/test_control_plane_workflow_topology.py
 
+      - name: Exercise exact generated Worker with signed Cloudflare JWT fixture
+        shell: bash
+        run: python3 edge-platform/scripts/test_host_worker_access_contract.py
+
       - name: Parse exact GitHub Actions YAML before protected main merge
         shell: bash
         run: |
