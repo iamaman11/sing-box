@@ -5431,12 +5431,37 @@ def test_release_pinned_vm_substrate_versions_reach_native_trust_owners() -> Non
 
 
 
+def test_vm_local_worker_access_proof_is_native_read_only() -> None:
+    """Deep status must distinguish local Access readiness from CI Worker GET."""
+    workflow = Path(".github/workflows/host-native-observe.yml").read_text(encoding="utf-8")
+    diagnostic = workflow.split("      - name: Verify installed VM native owner", 1)[1].split(
+        "      - name: Transfer exact same-run typed HostIntent", 1)[0]
+    )
+    require(diagnostic.count("local credential-initial-probe") == 2,
+            "one fixed sudo capability check and one native root read-only proof")
+    require('if [[ "${COMMAND_BODY}" == "/host status ${TARGET_MACHINE} --deep" ]]; then' in diagnostic,
+            "initial Access readback must require exact deep status request")
+    for contract in (
+        "credential_slot_A=EXACT_DUMMY", "credential_slot_B=EXACT_DUMMY",
+        "credential_provider_mutations=0", "credential_runtime_mutations=0",
+        "host_vm_local_worker_access=ACCESS_AUTHENTICATED_INITIAL_AB_PROVEN",
+        "host_vm_local_worker_access=UNPROVEN_OR_NOT_FIRST_USE",
+        "host_vm_local_worker_access=UNPROVEN_NATIVE_READ_CAPABILITY",
+    ):
+        require(contract in diagnostic, "deep VM proof missing fixed invariant " + contract)
+    probe = diagnostic.split("# Existing root Agent, existing read-only capability:", 1)[1]
+    for forbidden in ("curl ", "wget ", "gh api", "sudo -n sh", "sudo -n bash",
+                      "local host-apply", "local bundle-converge", "local credential-stage"):
+        require(forbidden not in probe, "VM Access diagnostic cannot introduce mutation or raw HTTP")
+
+
 if __name__ == "__main__":
     main()
     test_one_host_apply_reconciles_root_trust_before_native_dispatch()
     test_vm_typed_desired_preparation_is_shared_and_fail_closed()
     test_release_pinned_vm_substrate_versions_reach_native_trust_owners()
     test_promotion_rejects_mismatched_merged_pr_without_reverse_lookup()
+    test_vm_local_worker_access_proof_is_native_read_only()
     test_promotion_finds_exact_pr_run_without_unreliable_sha_api_filter()
     test_native_vm_artifact_transport_is_same_run_and_not_gh_cli()
     verify_receipt_resume_inline_release_context(ROUTER.read_text(encoding="utf-8"))
