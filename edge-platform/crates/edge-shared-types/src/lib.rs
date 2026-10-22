@@ -2841,6 +2841,11 @@ mod release_set_tests {
             .unwrap()
             .application_bundle_sha256
             .clear();
+        // The older test fixture also predates the v8 Worker source contract.
+        let cloudflare = release.cloudflare.as_mut().unwrap();
+        cloudflare.vm_worker_source_sha256.clear();
+        cloudflare.vm_worker_predecessor_source_sha256.clear();
+        cloudflare.vm_worker_predecessor_revision.clear();
     }
 
     fn valid_release() -> ReleaseSet {
