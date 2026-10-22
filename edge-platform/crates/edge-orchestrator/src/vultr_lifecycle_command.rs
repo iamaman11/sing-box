@@ -4603,12 +4603,14 @@ mod tests {
         let exact = verified_native_enrollment_result(&current, machine, &release).unwrap();
         assert_eq!(exact.0, "b".repeat(64));
         assert_eq!(exact.1, "PINNED_GIT_MATCH");
-        assert!(verified_native_enrollment_result(
-            &current.replace("PINNED_GIT_MATCH", "MISMATCH"),
-            machine,
-            &release,
-        )
-        .is_err());
+        assert!(
+            verified_native_enrollment_result(
+                &current.replace("PINNED_GIT_MATCH", "MISMATCH"),
+                machine,
+                &release,
+            )
+            .is_err()
+        );
         assert!(
             verified_native_enrollment_result(
                 &report.replace("host_mutations=0", "host_mutations=1"),
