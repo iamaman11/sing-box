@@ -1610,8 +1610,9 @@ pub(crate) async fn host_vm_credential_proof(
         return Err("HOST_VM_CREDENTIAL_PROOF_SOURCE_UNTRUSTED".to_owned());
     }
     let host = release.verified_vm_first_use_host(machine_id)?;
-    let git_pin = vm_worker_readonly_proof_git_state(&host, machine_id, generation, expected_sha256)
-        .map_err(str::to_owned)?;
+    let git_pin =
+        vm_worker_readonly_proof_git_state(&host, machine_id, generation, expected_sha256)
+            .map_err(str::to_owned)?;
     let production = ProductionComposition::canonical().map_err(|err| err.to_string())?;
     let plane = &production.cloudflare.credential_plane;
     if production.cloudflare.active_account_id != plane.target_account_id
