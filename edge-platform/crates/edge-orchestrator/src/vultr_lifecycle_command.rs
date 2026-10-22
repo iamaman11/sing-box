@@ -1963,7 +1963,7 @@ fn verified_native_enrollment_result(
     }
     if !matches!(
         properties.get("host_enroll"),
-        Some(&"PROTECTED_TRUST_STAGED" | &"PROTECTED_TRUST_REFRESHED")
+        Some(&"PROTECTED_TRUST_STAGED" | &"PROTECTED_TRUST_REFRESHED" | &"PROTECTED_TRUST_CURRENT")
     ) || properties.get("host_machine_id") != Some(&machine_id)
         || properties.get("host_release_set_sha256") != Some(&release_sha)
         || properties.get("host_mutations") != Some(&"0")
