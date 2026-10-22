@@ -734,6 +734,80 @@ fn required_cloudflare_result_id(label: &str, value: &Value) -> Result<String, S
 
 /// GET-only audience of one Access app already selected from the native
 /// account's validated inventory. No URL or app ID comes from user ingress.
+/// Exact GET-only VM Worker credential observation for first-use trust
+/// binding. The caller independently validates the canonical protobuf,
+/// non-dummy status and digest. No credentials are printed or persisted.
+pub async fn get_vm_credential_bundle_with_access(
+    worker: &str,
+    subdomain: &str,
+    generation: u64,
+    access_client_id: &str,
+    access_client_secret: &str,
+) -> Result<Vec<u8>, String> {
+    let dns_label = |s: &str| {
+        !s.is_empty()
+            && s.len() <= 63
+            && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            && !s.starts_with('-')
+            && !s.ends_with('-')
+    };
+    if !dns_label(worker) || !dns_label(subdomain) || generation == 0 {
+        return Err("HOST_VM_CREDENTIAL_WORKER_SCOPE_INVALID".to_owned());
+    }
+    for secret in [access_client_id, access_client_secret] {
+        if secret.is_empty()
+            || secret.len() > 1024
+            || secret.bytes().any(|b| b < 0x21 || b > 0x7e)
+        {
+            return Err("HOST_VM_CREDENTIAL_ACCESS_HEADER_INVALID".to_owned());
+        }
+    }
+    let client = Client::builder()
+        .user_agent("sing-box-protected-first-use-read/1")
+        .connect_timeout(Duration::from_secs(5))
+        .timeout(Duration::from_secs(15))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+        .map_err(|_| "HOST_VM_CREDENTIAL_HTTP_CLIENT_INVALID".to_owned())?;
+    let url = format!(
+        "https://{worker}.{subdomain}.workers.dev/v1/credentials?generation={generation}"
+    );
+    let mut response = client
+        .get(url)
+        .header("CF-Access-Client-Id", access_client_id)
+        .header("CF-Access-Client-Secret", access_client_secret)
+        .send()
+        .await
+        .map_err(|_| "HOST_VM_CREDENTIAL_WORKER_GET_UNPROVEN".to_owned())?;
+    if response.status() != reqwest::StatusCode::OK {
+        return Err("HOST_VM_CREDENTIAL_WORKER_NOT_AVAILABLE_OR_NOT_AUTHORIZED".to_owned());
+    }
+    if response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        != Some("application/x-protobuf")
+        || response.content_length().is_some_and(|n| n == 0 || n > 65_536)
+    {
+        return Err("HOST_VM_CREDENTIAL_WORKER_RESPONSE_TYPE_INVALID".to_owned());
+    }
+    let mut bytes = Vec::new();
+    while let Some(part) = response
+        .chunk()
+        .await
+        .map_err(|_| "HOST_VM_CREDENTIAL_WORKER_BODY_UNPROVEN".to_owned())?
+    {
+        if bytes.len() + part.len() > 65_536 {
+            return Err("HOST_VM_CREDENTIAL_WORKER_BODY_TOO_LARGE".to_owned());
+        }
+        bytes.extend_from_slice(&part);
+    }
+    if bytes.is_empty() {
+        return Err("HOST_VM_CREDENTIAL_WORKER_BODY_EMPTY".to_owned());
+    }
+    Ok(bytes)
+}
+
 pub async fn get_access_application_audience(
     api_token: &str,
     account_id: &str,
