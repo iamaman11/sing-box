@@ -1518,6 +1518,271 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
     Ok(())
 }
 
+/// One existing protected VM Worker authority, with no second signer service.
+/// The private Ed25519 key is generated once in the GitHub-hosted protected
+/// job and never enters Git, artifacts, stdout or a VM runner. Before COMMIT
+/// the workflow reserves a public-key-only draft PR; uncertain provider ACKs
+/// terminate the one-shot job and cannot be replayed as a new key.
+fn verify_host_signer_job(
+    machine_id: &str,
+    release: &edge_orchestrator::OrchestrationContext,
+) -> Result<(), String> {
+    for (key, expected) in [
+        ("GITHUB_REPOSITORY", "iamaman11/sing-box"),
+        ("GITHUB_REPOSITORY_ID", "1221750822"),
+        ("GITHUB_EVENT_NAME", "issue_comment"),
+        ("GITHUB_ACTOR_ID", "44100369"),
+        ("GITHUB_RUN_ATTEMPT", "1"),
+        ("GITHUB_JOB", "host_worker_authorizer"),
+    ] {
+        if env::var(key).ok().as_deref() != Some(expected) {
+            return Err(format!("HOST_VM_SIGNER_UNTRUSTED_{key}"));
+        }
+    }
+    if env::var("GITHUB_SHA").ok().as_deref() != Some(release.release().accepted_revision.as_str())
+        || env::var("HOST_ORIGINAL_COMMAND").ok().as_deref()
+            != Some(format!("/host apply {machine_id}").as_str())
+    {
+        return Err("HOST_VM_SIGNER_GIT_SOURCE_UNTRUSTED".to_owned());
+    }
+    let host = release.verified_vm_worker_authorizer_host(machine_id)?;
+    if host.machine_id != machine_id || !host.worker_authority_public_key.is_empty() {
+        return Err("HOST_VM_SIGNER_GIT_KEY_ALREADY_PINNED".to_owned());
+    }
+    Ok(())
+}
+
+fn protected_signer_path(path: &Path) -> Result<(), String> {
+    let temp = env::var("RUNNER_TEMP").map_err(|_| "HOST_SIGNER_RUNNER_TEMP_MISSING")?;
+    if !path.starts_with(&temp)
+        || path.parent() != Some(Path::new(&temp))
+        || path.file_name().and_then(|v| v.to_str()).is_none_or(|v| {
+            !v.starts_with("host-vm-signer-")
+                || !v.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        })
+    {
+        return Err("HOST_SIGNER_PRIVATE_PATH_UNTRUSTED".to_owned());
+    }
+    Ok(())
+}
+
+async fn checked_host_signer_vm(
+    machine_id: &str,
+    release: &edge_orchestrator::OrchestrationContext,
+) -> Result<
+    (
+        edge_controller_core::production::ProductionComposition,
+        CredentialPlaneObservation,
+    ),
+    String,
+> {
+    verify_host_signer_job(machine_id, release)?;
+    let production = ProductionComposition::canonical().map_err(|err| err.to_string())?;
+    let desired = &production.cloudflare.credential_plane;
+    if production.cloudflare.active_account_id != desired.target_account_id
+        || production.cloudflare.migration_target_account_id.is_some()
+    {
+        return Err("HOST_SIGNER_PRODUCTION_ACCOUNT_MISMATCH".to_owned());
+    }
+    let read = required_env("CLOUDFLARE_CONTROL_TOKEN")?;
+    let before = observe(&read, desired).await?;
+    validate_access_boundary(desired, &before)?;
+    let vm = projection_desired(desired, "vm")?;
+    let source = projection_observation(&before, "vm")?;
+    if projection_delivery_state(desired, &vm, &before)? != ProjectionDeliveryState::FixedAb
+        || source.worker_secret_bindings.len() != 2
+        || source.worker_binding_count != Some(2)
+        || source.worker_latest_version_id.as_deref()
+            != source.worker_active_version_ids.first().map(String::as_str)
+        || source.worker_active_version_ids.len() != 1
+    {
+        return Err("HOST_SIGNER_VM_WORKER_NOT_EXACT_AB_ACTIVE".to_owned());
+    }
+    Ok((production, before))
+}
+
+pub(crate) async fn host_vm_signer_prepare(
+    machine_id: &str,
+    release: &edge_orchestrator::OrchestrationContext,
+    key_path: &Path,
+    public_path: &Path,
+) -> Result<(), String> {
+    protected_signer_path(key_path)?;
+    protected_signer_path(public_path)?;
+    if key_path == public_path {
+        return Err("HOST_SIGNER_OUTPUT_COLLISION".to_owned());
+    }
+    // All live read-only preflight must pass before generating anything
+    // secret. The key is ephemeral until the exact protected Git draft exists.
+    let _ = checked_host_signer_vm(machine_id, release).await?;
+    let random = ring::rand::SystemRandom::new();
+    let pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&random)
+        .map_err(|_| "HOST_SIGNER_ED25519_GENERATE_FAILED")?;
+    let pair = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref())
+        .map_err(|_| "HOST_SIGNER_ED25519_SELF_VERIFY_FAILED")?;
+    use ring::signature::KeyPair;
+    let public = pair
+        .public_key()
+        .as_ref()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let mut options = fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut secret = options
+        .open(key_path)
+        .map_err(|_| "HOST_SIGNER_EPHEMERAL_KEY_EXISTS_OR_UNWRITABLE")?;
+    use std::io::Write;
+    secret
+        .write_all(pkcs8.as_ref())
+        .and_then(|_| secret.sync_all())
+        .map_err(|_| "HOST_SIGNER_EPHEMERAL_KEY_WRITE_FAILED")?;
+    fs::write(public_path, format!("{public}\n"))
+        .map_err(|_| "HOST_SIGNER_PUBLIC_KEY_WRITE_FAILED")?;
+    println!("host_vm_signer=EPHEMERAL_PRIVATE_PROTECTED_PUBLIC_DRAFT_REQUIRED");
+    println!("host_vm_signer_public_key_hex={public}");
+    println!("worker_mutations=0");
+    Ok(())
+}
+
+pub(crate) async fn host_vm_signer_commit(
+    machine_id: &str,
+    release: &edge_orchestrator::OrchestrationContext,
+    key_path: &Path,
+    public_path: &Path,
+) -> Result<(), String> {
+    protected_signer_path(key_path)?;
+    protected_signer_path(public_path)?;
+    let reservation =
+        env::var("HOST_SIGNER_RESERVATION_SHA").map_err(|_| "HOST_SIGNER_GIT_RESERVATION_REQUIRED")?;
+    if reservation.len() != 40
+        || !reservation.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    {
+        return Err("HOST_SIGNER_GIT_RESERVATION_INVALID".to_owned());
+    }
+    let (production, before) = checked_host_signer_vm(machine_id, release).await?;
+    let desired = &production.cloudflare.credential_plane;
+    let vm = projection_observation(&before, "vm")?;
+    let id = vm
+        .access_application_id
+        .as_deref()
+        .ok_or("HOST_SIGNER_ACCESS_APP_REQUIRED")?;
+    let read = required_env("CLOUDFLARE_CONTROL_TOKEN")?;
+    let write = required_env("CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN")?;
+    let authority = cloudflare::verify_api_token(&write).await?;
+    if authority.status != "active" || authority.id == before.control_token_identity.id {
+        return Err("HOST_SIGNER_DISTINCT_CLOUDFLARE_WRITE_OWNER_REQUIRED".to_owned());
+    }
+    let aud = cloudflare::get_access_application_audience(
+        &read,
+        &desired.target_account_id,
+        id,
+    )
+    .await?;
+    let auth = before
+        .access_organization
+        .as_ref()
+        .ok_or("HOST_SIGNER_ACCESS_ORGANIZATION_MISSING")?;
+    let issuer = format!("https://{}", auth.auth_domain);
+    if !issuer.ends_with(".cloudflareaccess.com")
+        || !issuer.starts_with("https://")
+    {
+        return Err("HOST_SIGNER_ACCESS_ISSUER_INVALID".to_owned());
+    }
+    let metadata = fs::symlink_metadata(key_path)
+        .map_err(|_| "HOST_SIGNER_EPHEMERAL_KEY_MISSING")?;
+    if !metadata.file_type().is_file() || metadata.len() > 256 || metadata.len() < 40 {
+        return Err("HOST_SIGNER_EPHEMERAL_KEY_INVALID".to_owned());
+    }
+    let bytes = fs::read(key_path).map_err(|_| "HOST_SIGNER_EPHEMERAL_KEY_UNREADABLE")?;
+    let pair = ring::signature::Ed25519KeyPair::from_pkcs8(&bytes)
+        .map_err(|_| "HOST_SIGNER_EPHEMERAL_KEY_NOT_ED25519")?;
+    use ring::signature::KeyPair;
+    let pub_hex = pair.public_key().as_ref().iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    let stored_public =
+        fs::read_to_string(public_path).map_err(|_| "HOST_SIGNER_PUBLIC_KEY_UNREADABLE")?;
+    if stored_public != format!("{pub_hex}\n") {
+        return Err("HOST_SIGNER_EPHEMERAL_PUBLIC_MISMATCH".to_owned());
+    }
+    let public_hash = sha256_hex(pair.public_key().as_ref());
+    let key_id = format!("vm-host-{}", &public_hash[..16]);
+    use base64::Engine as _;
+    let private_b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+    let actor = "44100369";
+    // Five fixed secret names. Cloudflare merge-patches the currently
+    // accepted version, preserving opaque A/B values; never POST credentials.
+    let bindings = [
+        ("EDGE_HOST_SIGNING_PKCS8_BASE64", private_b64.as_str()),
+        ("EDGE_HOST_SIGNING_KEY_ID", key_id.as_str()),
+        ("EDGE_HOST_GITHUB_ACTOR_ID", actor),
+        ("EDGE_HOST_ACCESS_ISSUER", issuer.as_str()),
+        ("EDGE_HOST_ACCESS_AUD", aud.as_str()),
+    ];
+    let material = delivery_worker_material("vm")?;
+    let version = cloudflare::patch_latest_worker_version_secrets(
+        &write,
+        &desired.target_account_id,
+        &desired.vm_worker_name,
+        &material.version_tag,
+        &bindings,
+    )
+    .await
+    .map_err(|_| "HOST_SIGNER_SECRET_WRITE_UNCERTAIN_NO_REPLAY".to_owned())?;
+    let after_patch = observe(&read, desired).await
+        .map_err(|_| "HOST_SIGNER_WRITE_ACK_READBACK_UNCERTAIN_NO_REPLAY".to_owned())?;
+    let vm_after = projection_observation(&after_patch, "vm")?;
+    if projection_observation(&before, "windows")?
+        != projection_observation(&after_patch, "windows")?
+        || vm_after.worker_latest_version_id.as_deref() != Some(version.as_str())
+        || vm_after.worker_secret_bindings.len() != 7
+        || vm_after.worker_binding_count != Some(7)
+    {
+        return Err("HOST_SIGNER_POST_WRITE_DRIFT_NO_REPLAY".to_owned());
+    }
+    require_exact_secret_bindings(
+        &desired.vm_worker_name,
+        "vm",
+        &vm_after.worker_secret_bindings,
+    )?;
+    if vm_after.worker_active_version_ids != vec![version.clone()] {
+        cloudflare::deploy_worker_version(
+            &write,
+            &desired.target_account_id,
+            &desired.vm_worker_name,
+            &version,
+        )
+        .await
+        .map_err(|_| "HOST_SIGNER_DEPLOY_ACK_UNCERTAIN_NO_REPLAY".to_owned())?;
+    }
+    let final_read = observe(&read, desired).await
+        .map_err(|_| "HOST_SIGNER_FINAL_READ_UNCERTAIN_NO_REPLAY".to_owned())?;
+    let final_vm = projection_observation(&final_read, "vm")?;
+    if projection_observation(&before, "windows")?
+        != projection_observation(&final_read, "windows")?
+        || final_vm.worker_latest_version_id.as_deref() != Some(version.as_str())
+        || final_vm.worker_active_version_ids != vec![version.clone()]
+        || final_vm.worker_binding_count != Some(7)
+        || projection_delivery_state(desired, &projection_desired(desired, "vm")?, &final_read)?
+            != ProjectionDeliveryState::FixedAb
+    {
+        return Err("HOST_SIGNER_ACTIVE_READBACK_UNCERTAIN_NO_REPLAY".to_owned());
+    }
+    println!("host_vm_signer=FIVE_BINDINGS_ACTIVE_PUBLIC_GIT_DRAFT");
+    println!("host_vm_signer_public_key_hex={pub_hex}");
+    println!("host_vm_signer_version_id={version}");
+    println!("host_signed_install=NOT_AUTHORIZED");
+    println!("windows_worker_mutations=0");
+    println!("host_vm_create=NOT_AUTHORIZED");
+    Ok(())
+}
+
 /// A code-only compatibility update *within the same* canonical initial VM
 /// operation, before the first-use credential BEGIN. Neither secret values nor
 /// new credential material are generated by this operation. Unknown Cloudflare
