@@ -516,7 +516,7 @@ jobs:
           [[ "${pr}" =~ ^[1-9][0-9]*$ ]]
           test "$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.draft')" = true
           gh api -X PATCH "repos/${GITHUB_REPOSITORY}/pulls/${pr}" \
-            -f "body="Five VM Host signer bindings active and read back, public key only in protected Git. Original /host apply issue #1 comment ${SOURCE_COMMENT_ID}, accepted revision ${GITHUB_SHA}. First-use Worker credentials and receipt still absent; signed INSTALL NOT authorized." >/dev/null
+            -f "body=Five VM Host signer bindings active and read back, public key only in protected Git. Original /host apply issue #1 comment ${SOURCE_COMMENT_ID}, accepted revision ${GITHUB_SHA}. First-use Worker credentials and receipt still absent; signed INSTALL NOT authorized." >/dev/null
           node="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.node_id')"
           test -n "${node}"
           # Minimal single-purpose mutation: gh pr ready/view may ask for
@@ -983,7 +983,7 @@ jobs:
           gh api "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto?ref=${branch}" \
             --jq '.content' | base64 --decode | cmp -s - "${target}"
           gh api -X PATCH "repos/${GITHUB_REPOSITORY}/pulls/${pr}" \
-            -f "body="Native root enrollment completed for ${TARGET_MACHINE}. Original request: issue #1 comment ${SOURCE_COMMENT_ID}. Protected source ReleaseSet revision: ${GITHUB_SHA}. Registered public key SHA256: $(printf '%s' "${public_key}" | sha256sum | cut -d' ' -f1). Root private key remains on VM. Required CI and protected merge still gate signed INSTALL." >/dev/null
+            -f "body=Native root enrollment completed for ${TARGET_MACHINE}. Original request: issue #1 comment ${SOURCE_COMMENT_ID}. Protected source ReleaseSet revision: ${GITHUB_SHA}. Registered public key SHA256: $(printf '%s' "${public_key}" | sha256sum | cut -d' ' -f1). Root private key remains on VM. Required CI and protected merge still gate signed INSTALL." >/dev/null
           node="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.node_id')"
           test -n "${node}"
           # Minimal single-purpose mutation: gh pr ready/view may ask for
