@@ -234,6 +234,32 @@ async fn run(
                 )
                 .await
             }
+            cli::HostCommand::VmWorkerSignerPrepare {
+                machine_id,
+                key_path,
+                public_path,
+            } => {
+                cloudflare_credential_plane_command::host_vm_signer_prepare(
+                    &machine_id,
+                    release_context,
+                    &key_path,
+                    &public_path,
+                )
+                .await
+            }
+            cli::HostCommand::VmWorkerSignerCommit {
+                machine_id,
+                key_path,
+                public_path,
+            } => {
+                cloudflare_credential_plane_command::host_vm_signer_commit(
+                    &machine_id,
+                    release_context,
+                    &key_path,
+                    &public_path,
+                )
+                .await
+            }
             cli::HostCommand::RefreshReceipt { machine_id } => {
                 vultr_lifecycle_command::host_receipt_refresh(&machine_id, release_context).await
             }

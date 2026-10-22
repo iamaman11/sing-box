@@ -800,6 +800,30 @@ pub(crate) fn run(
             intent_output,
             None,
         ),
+        HostCommand::RegisterSigner {
+            machine_id,
+            signer_public_key_hex,
+            output_path,
+        } => {
+            let candidate =
+                signer_registration_candidate(&desired, &machine_id, &signer_public_key_hex)?;
+            let bytes = candidate.encode_to_vec();
+            let mut file = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&output_path)
+                .map_err(|_| "HOST_SIGNER_CANDIDATE_EXISTS_OR_UNWRITABLE")?;
+            file.write_all(&bytes)
+                .map_err(|_| "HOST_SIGNER_CANDIDATE_WRITE_FAILED")?;
+            file.sync_all()
+                .map_err(|_| "HOST_SIGNER_CANDIDATE_SYNC_FAILED")?;
+            println!("host_signer_git_candidate=ONE_PUBLIC_KEY_ONLY");
+            println!("host_mutations=0");
+            Ok(())
+        }
+        HostCommand::VmWorkerSignerPrepare { .. } | HostCommand::VmWorkerSignerCommit { .. } => {
+            Err("HOST_VM_SIGNER_MUST_USE_PROTECTED_WORKER_OWNER".to_owned())
+        }
         HostCommand::RegisterReceipt {
             machine_id,
             receipt_public_key_hex,
@@ -907,6 +931,41 @@ pub(crate) fn run(
             Err("HOST_FIRST_USE_MUST_USE_EXISTING_NATIVE_VULTR_OWNER".to_owned())
         }
     }
+}
+
+/// One public-only protected Git candidate; never installs or reads a private
+/// signer. This primitive is also the regression boundary for other hosts.
+fn signer_registration_candidate(
+    desired: &HostRegistry,
+    machine_id: &str,
+    signer_public_key_hex: &str,
+) -> Result<HostRegistry, String> {
+    let mut candidate = desired.clone();
+    let selected = candidate
+        .hosts
+        .iter_mut()
+        .find(|host| host.machine_id == machine_id)
+        .ok_or("HOST_SIGNER_MACHINE_UNREGISTERED")?;
+    if selected.kind != edge_shared_types::FleetHostKind::Vm as i32
+        || selected.native_receipt_public_key.len() != 0
+        || selected.vm_provider_spec_path.is_empty()
+        || selected.vm_containers.is_empty()
+        || !selected.worker_authority_public_key.is_empty()
+        || !matches!(
+            selected.target.as_ref(),
+            Some(t) if t.run_state == edge_shared_types::FleetHostRunState::Running as i32
+        )
+    {
+        return Err("HOST_SIGNER_GIT_FIRST_USE_SCOPE_INVALID".to_owned());
+    }
+    let key = exact_hex_sha256(signer_public_key_hex)
+        .map_err(|_| "HOST_SIGNER_PUBLIC_KEY_NOT_HEX32")?;
+    if key.iter().all(|b| *b == 0) {
+        return Err("HOST_SIGNER_PUBLIC_KEY_ZERO_FORBIDDEN".to_owned());
+    }
+    selected.worker_authority_public_key = key;
+    edge_shared_types::validate_host_registry(&candidate)?;
+    Ok(candidate)
 }
 
 /// Single typed Git candidate for public native receipt registration.
@@ -1597,6 +1656,46 @@ mod tests {
             &vm,
             ManagedHostKind::Windows
         ));
+    }
+
+    #[test]
+    fn signer_registration_changes_only_public_key_of_exact_running_vm() {
+        use edge_shared_types::{FleetHostKind, FleetHostTarget, FleetVmContainer};
+        let machine = "signer-acceptance";
+        let source = HostRegistry {
+            schema_version: 1,
+            hosts: vec![ManagedHost {
+                machine_id: machine.into(),
+                kind: FleetHostKind::Vm as i32,
+                owner: Some(managed_host::Owner::VmMachineId(machine.into())),
+                vm_provider_spec_path: "infra/hosts/specs/signer-acceptance.textproto".into(),
+                desired_spec_path: "infra/hosts/specs/signer-acceptance.textproto".into(),
+                target: Some(FleetHostTarget {
+                    run_state: edge_shared_types::FleetHostRunState::Running as i32,
+                    ..Default::default()
+                }),
+                vm_containers: vec![FleetVmContainer {
+                    container_name: "vultr-line1-gateway".into(),
+                    compose_project: "vultr-edge".into(),
+                    compose_service: "line1-gateway".into(),
+                }],
+                ..Default::default()
+            }],
+        };
+        let candidate = signer_registration_candidate(&source, machine, &"ab".repeat(32)).unwrap();
+        assert!(source.hosts[0].worker_authority_public_key.is_empty());
+        assert_eq!(candidate.hosts[0].worker_authority_public_key, vec![0xab; 32]);
+        assert_eq!(candidate.hosts[0].native_receipt_public_key, Vec::<u8>::new());
+        assert_eq!(candidate.hosts[0].vm_first_use_credential, None);
+        assert_eq!(
+            signer_registration_candidate(&candidate, machine, &"ab".repeat(32)).unwrap_err(),
+            "HOST_SIGNER_GIT_FIRST_USE_SCOPE_INVALID"
+        );
+        assert!(signer_registration_candidate(&source, "foreign", &"ab".repeat(32)).is_err());
+        assert!(signer_registration_candidate(&source, machine, &"00".repeat(32)).is_err());
+        let mut other = source.clone();
+        other.hosts[0].native_receipt_public_key = vec![1; 32];
+        assert!(signer_registration_candidate(&other, machine, &"ab".repeat(32)).is_err());
     }
 
     #[test]
