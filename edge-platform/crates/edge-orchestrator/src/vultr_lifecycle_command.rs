@@ -1963,7 +1963,7 @@ fn verified_native_enrollment_result(
     }
     if !matches!(
         properties.get("host_enroll"),
-        Some(&"PROTECTED_TRUST_STAGED" | &"PROTECTED_TRUST_REFRESHED")
+        Some(&"PROTECTED_TRUST_STAGED" | &"PROTECTED_TRUST_REFRESHED" | &"PROTECTED_TRUST_CURRENT")
     ) || properties.get("host_machine_id") != Some(&machine_id)
         || properties.get("host_release_set_sha256") != Some(&release_sha)
         || properties.get("host_mutations") != Some(&"0")
@@ -4597,6 +4597,20 @@ mod tests {
         let parsed = verified_native_enrollment_result(&report, machine, &release).unwrap();
         assert_eq!(parsed.0, "b".repeat(64));
         assert_eq!(parsed.1, "AWAITING_PROTECTED_GIT");
+        let current = report
+            .replace("PROTECTED_TRUST_STAGED", "PROTECTED_TRUST_CURRENT")
+            .replace("AWAITING_PROTECTED_GIT", "PINNED_GIT_MATCH");
+        let exact = verified_native_enrollment_result(&current, machine, &release).unwrap();
+        assert_eq!(exact.0, "b".repeat(64));
+        assert_eq!(exact.1, "PINNED_GIT_MATCH");
+        assert!(
+            verified_native_enrollment_result(
+                &current.replace("PINNED_GIT_MATCH", "MISMATCH"),
+                machine,
+                &release,
+            )
+            .is_err()
+        );
         assert!(
             verified_native_enrollment_result(
                 &report.replace("host_mutations=0", "host_mutations=1"),

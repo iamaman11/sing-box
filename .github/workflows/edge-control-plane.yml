@@ -179,14 +179,18 @@ jobs:
           retention-days: 7
 
   host_observe:
-    # Every typed host is an INDEPENDENT reusable workflow invocation.
-    # An absent production runner cannot delay completion or reporting for
-    # a healthy Windows / acceptance VM owner.
-    needs: [host, host_report]
+    # The SAME current /host apply is allowed to dispatch only after its
+    # existing root Agent independently verifies the published Git receipt.
+    # Status/Windows/recover are read-only or separately signed native lanes.
+    needs: [host, host_report, host_refresh_trust]
     if: >-
+      always() && !cancelled() &&
       needs.host.result == 'success' &&
       needs.host_report.result == 'success' &&
       needs.host.outputs.host_targets_present == 'true' &&
+      (needs.host.outputs.kind != 'VM' ||
+       needs.host.outputs.operation != 'APPLY_PREFLIGHT' ||
+       needs.host_refresh_trust.result == 'success') &&
       (github.event.comment.body == '/host status' ||
        startsWith(github.event.comment.body, '/host status ') ||
        needs.host.outputs.operation == 'APPLY_PREFLIGHT' ||
@@ -995,6 +999,97 @@ jobs:
           fi
           echo 'host_first_use=AWAITING_PROTECTED_GIT_PR_MERGE'
           echo 'host_signed_install=NOT_YET_AUTHORIZED'
+
+  host_refresh_trust:
+    # Existing VM only: reconcile protected root trust to the currently
+    # published Git ReleaseSet before the same /host apply can reach root.
+    # Never CREATE, install a root binary, or access a Docker socket here.
+    needs: host
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.run_attempt == 1 &&
+      needs.host.result == 'success' &&
+      needs.host.outputs.kind == 'VM' &&
+      needs.host.outputs.operation == 'APPLY_PREFLIGHT' &&
+      needs.host.outputs.host_targets_present == 'true' &&
+      startsWith(github.event.comment.body, format('/host apply {0}', needs.host.outputs.machine_id))
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    concurrency:
+      group: vultr-control-plane-production
+      cancel-in-progress: false
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    env:
+      ACCEPTED_REVISION: ${{ github.sha }}
+      REPOSITORY: ${{ github.repository }}
+      TARGET_MACHINE: ${{ needs.host.outputs.machine_id }}
+    steps:
+      - name: Verify current protected release and exact VM owner
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = 1
+          export OUTPUT_DIR="${RUNNER_TEMP}/host-trust-release"
+          echo "OUTPUT_DIR=${OUTPUT_DIR}" >> "${GITHUB_ENV}"
+          [[ "${TARGET_MACHINE}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --no-tags --depth=1 origin "${GITHUB_SHA}"
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          [[ "${EDGE_FLEET_REGISTRY_SHA256}" =~ ^[0-9a-f]{64}$ ]]
+          echo "${EDGE_FLEET_REGISTRY_SHA256}  ${OUTPUT_DIR}/fleet-registry.pb" | sha256sum --check --status
+          bin="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          echo "${EDGE_ORCHESTRATOR_SHA256}  ${bin}" | sha256sum --check --status
+          chmod 0755 "${bin}"
+          echo "EDGE_RELEASE_CONTEXT_PATH=${OUTPUT_DIR}/resolved.env" >> "${GITHUB_ENV}"
+
+      - name: Materialize scoped operator credential for existing root only
+        shell: bash
+        env:
+          VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          umask 077
+          key="${RUNNER_TEMP}/host-trust-operator"
+          printf '%s\n' "${VULTR_SSH_PRIVATE_KEY}" > "${key}"
+          test -s "${key}"
+          chmod 0600 "${key}"
+          echo "EDGE_SSH_PRIVATE_KEY_PATH=${key}" >> "${GITHUB_ENV}"
+          ip="$(curl -4 --fail --silent --show-error --connect-timeout 10 --max-time 20 https://api.ipify.org)"
+          python3 - "${ip}" <<'PY'
+          import ipaddress
+          import sys
+          address = ipaddress.ip_address(sys.argv[1])
+          if address.version != 4 or not address.is_global:
+              raise SystemExit("HOST_TRUST_REFRESH_EGRESS_UNPROVEN")
+          PY
+          echo "EDGE_CONTROLLER_IPV4=${ip}" >> "${GITHUB_ENV}"
+
+      - name: Reconcile exact native root trust before signed HostIntent
+        shell: bash
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+        run: |
+          set -euo pipefail
+          test "${GITHUB_RUN_ATTEMPT}" = 1
+          source "${OUTPUT_DIR}/resolved.env"
+          bin="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          registry="${OUTPUT_DIR}/fleet-registry.pb"
+          "${bin}" host \
+            --hosts-pb "${registry}" \
+            --hosts-sha256 "${EDGE_FLEET_REGISTRY_SHA256}" \
+            refresh-receipt "${TARGET_MACHINE}" |
+            tee "${RUNNER_TEMP}/host-trust-refresh.txt"
+          grep -Fxq 'host_receipt_refresh=ROOT_PROTECTED_GIT_PINNED' "${RUNNER_TEMP}/host-trust-refresh.txt"
+          grep -Fxq 'host_mutations=0' "${RUNNER_TEMP}/host-trust-refresh.txt"
 
   host_resume_receipt:
     # The prior /host apply may continue only after its exact registration PR
