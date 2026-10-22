@@ -1674,27 +1674,45 @@ jobs:
         run: |
           set -euo pipefail
           [[ "${ACCEPTED_REVISION}" =~ ^[0-9a-f]{40}$ ]]
+          # All accesses below are bounded, read-only GitHub GETs. A partial
+          # API response is never accepted as proof or retried as a mutation.
+          immutable_github_get() {
+            local endpoint="$1"
+            curl --fail --silent --show-error --location \
+              --retry 3 --retry-all-errors --retry-delay 1 \
+              --connect-timeout 10 --max-time 30 \
+              -H "Accept: application/vnd.github+json" \
+              -H "Authorization: Bearer ${GH_TOKEN}" \
+              "https://api.github.com/repos/${REPOSITORY}/${endpoint}"
+          }
 
           # Only a genuine two-parent main merge may promote a candidate.
           # The accepted merge tree must exactly equal its CI-tested PR head.
-          accepted_commit="$(gh api "repos/${REPOSITORY}/git/commits/${ACCEPTED_REVISION}")"
+          accepted_commit="$(immutable_github_get "git/commits/${ACCEPTED_REVISION}")"
           test "$(jq -er '.parents | length' <<<"${accepted_commit}")" = "2"
           candidate_revision="$(jq -er '.parents[1].sha' <<<"${accepted_commit}")"
           [[ "${candidate_revision}" =~ ^[0-9a-f]{40}$ ]]
           accepted_tree="$(jq -er '.tree.sha' <<<"${accepted_commit}")"
-          candidate_tree="$(gh api "repos/${REPOSITORY}/git/commits/${candidate_revision}" --jq '.tree.sha')"
+          candidate_tree="$(immutable_github_get "git/commits/${candidate_revision}" | jq -er '.tree.sha')"
           test "${accepted_tree}" = "${candidate_tree}"
 
-          # Detect out-of-order pull_request.closed/merged events by validating
-          # the final merged PR against GitHub's actual committed merge SHA.
-          associated_prs="$(gh api "repos/${REPOSITORY}/commits/${ACCEPTED_REVISION}/pulls?per_page=10")"
+          # The standard protected merge subject selects ONE PR number; the
+          # exact GitHub PR record independently authenticates every identity.
+          # No eventual-consistency-dependent commit->pulls enumeration.
+          subject="$(jq -er '.message | split("\\n")[0]' <<<"${accepted_commit}")"
+          if [[ ! "${subject}" =~ ^Merge[[:space:]]pull[[:space:]]request[[:space:]]#([1-9][0-9]*)[[:space:]]from[[:space:]]iamaman11/ ]]; then
+            echo "HOST_RELEASE_PROTECTED_MERGE_SUBJECT_INVALID" >&2
+            exit 1
+          fi
+          merged_pr_number="${BASH_REMATCH[1]}"
+          pr_record="$(immutable_github_get "pulls/${merged_pr_number}")"
           trusted_pr="$(jq -cer --arg accepted "${ACCEPTED_REVISION}" --arg candidate "${candidate_revision}" '
-            [.[] | select(.merged_at != null)
-              | select(.base.ref == "main")
-              | select(.merge_commit_sha == $accepted)
-              | select(.head.sha == $candidate)]
-            | if length == 1 then .[0] else error("accepted merge has no unique matching merged PR") end
-          ' <<<"${associated_prs}")"
+            select(.merged_at != null)
+            | select(.base.ref == "main")
+            | select(.head.repo.full_name == "iamaman11/sing-box")
+            | select(.merge_commit_sha == $accepted)
+            | select(.head.sha == $candidate)
+          ' <<<"${pr_record}")"
           test "$(jq -er '.merged_at' <<<"${trusted_pr}")" != "null"
 
           # GitHub Actions can return an empty list when filtering PR runs by
@@ -1703,7 +1721,7 @@ jobs:
           # client-side. This is read-only and cannot choose another candidate.
           latest_run=""
           for page in {1..10}; do
-            runs="$(gh api "repos/${REPOSITORY}/actions/runs?event=pull_request&per_page=100&page=${page}")"
+            runs="$(immutable_github_get "actions/runs?event=pull_request&per_page=100&page=${page}")"
             page_count="$(jq -er '.workflow_runs | length' <<<"${runs}")"
             [[ "${page_count}" =~ ^[0-9]+$ ]]
             latest_run="$(jq -cr --arg head "${candidate_revision}" --argjson current_run_id "${CURRENT_RUN_ID}" '
