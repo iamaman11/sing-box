@@ -1026,7 +1026,6 @@ jobs:
     env:
       ACCEPTED_REVISION: ${{ github.sha }}
       REPOSITORY: ${{ github.repository }}
-      OUTPUT_DIR: ${{ runner.temp }}/host-trust-release
       TARGET_MACHINE: ${{ needs.host.outputs.machine_id }}
     steps:
       - name: Verify current protected release and exact VM owner
@@ -1034,6 +1033,8 @@ jobs:
         run: |
           set -euo pipefail
           test "${GITHUB_RUN_ATTEMPT}" = 1
+          export OUTPUT_DIR="${RUNNER_TEMP}/host-trust-release"
+          echo "OUTPUT_DIR=${OUTPUT_DIR}" >> "${GITHUB_ENV}"
           [[ "${TARGET_MACHINE}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]
           git init -q .
           git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
