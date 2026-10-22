@@ -140,7 +140,7 @@ jobs:
           # checked-out textproto compilation, before preparing HostIntent.
           if [[ "${command[0]}" != "status" ]]; then
             source "${RUNNER_TEMP}/host-release/resolved.env"
-            test "${EDGE_RELEASE_SCHEMA_VERSION}" = "7"
+            test "${EDGE_RELEASE_SCHEMA_VERSION}" = "8"
             [[ "${EDGE_FLEET_REGISTRY_SHA256}" =~ ^[0-9a-f]{64}$ ]]
             test "${EDGE_FLEET_REGISTRY_SHA256}" = "${HOSTS_SHA256}"
             cmp -s "${RUNNER_TEMP}/host-release/fleet-registry.pb" "${RUNNER_TEMP}/hosts.binpb"

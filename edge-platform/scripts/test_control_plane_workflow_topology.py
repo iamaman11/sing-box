@@ -854,7 +854,7 @@ def test_host_native_receipt_boundary_and_legacy_workflow_admission(router: str)
         and 'test "${EDGE_FLEET_REGISTRY_SHA256}" = "${HOSTS_SHA256}"' in router
         and 'cmp -s "${RUNNER_TEMP}/host-release/fleet-registry.pb" "${RUNNER_TEMP}/hosts.binpb"' in router
         and 'if [[ "${command[0]}" != "status" ]]; then' in router
-        and 'test "${EDGE_RELEASE_SCHEMA_VERSION}" = "7"' in router,
+        and 'test "${EDGE_RELEASE_SCHEMA_VERSION}" = "8"' in router,
         "Signed HostIntent must be bound to exact Git fleet bytes, not a legacy or alternate release registry",
     )
     require(
@@ -5009,6 +5009,20 @@ def main() -> None:
         and "schtasks.exe" in windows_console,
         "edge-console must delegate merge/candidate provenance to the protected installer, then retarget the immutable SYSTEM dispatcher after exact activation",
     )
+    # ReleaseSet v8 supports exact Git-bound signed mutation; older
+    # schemas remain readable, never mint a new signed HostIntent.
+    resolver = Path("edge-platform/scripts/resolve_durable_release.sh").read_text(
+        encoding="utf-8"
+    )
+    require(
+        '3|4|5|6|7|8)' in resolver
+        and 'if [[ "$schema_version" = "7" || "$schema_version" = "8" ]]; then'
+        in resolver
+        and resolver.count('|| "$schema_version" = "8"') >= 5
+        and 'test "${EDGE_RELEASE_SCHEMA_VERSION}" = "8"' in router,
+        "durable resolver and signed HostIntent must accept exact ReleaseSet v8 without legacy mutations",
+    )
+
     require(
         '"state/runtime-state.pb"' in windows_controller
         or "windows_runtime_state_path" in windows_controller,
