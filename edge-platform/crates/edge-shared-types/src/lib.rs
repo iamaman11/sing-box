@@ -1243,7 +1243,7 @@ pub fn validate_release_set(release: &ReleaseSet) -> Result<(), String> {
                 return Err("schema v3 must not contain VM runtime reuse identity".to_owned());
             }
         }
-        4 | 5 | 6 | 7 => {
+        4 | 5 | 6 | 7 | 8 => {
             validate_sha256_bytes(
                 "vm_runtime.edge_controller_sha256",
                 &vm.edge_controller_sha256,
@@ -1309,7 +1309,14 @@ pub fn validate_release_set(release: &ReleaseSet) -> Result<(), String> {
 
     // v8 binds generated VM Worker bytes and their accepted predecessor to
     // the same immutable release authority as VM and Windows artifacts.
-    if release.schema_version >= 8 {
+    if release.schema_version < 8 {
+        if !cloudflare.vm_worker_source_sha256.is_empty()
+            || !cloudflare.vm_worker_predecessor_source_sha256.is_empty()
+            || !cloudflare.vm_worker_predecessor_revision.is_empty()
+        {
+            return Err("pre-v8 release-set must not contain VM Worker source authority".to_owned());
+        }
+    } else {
         validate_sha256_bytes(
             "cloudflare.vm_worker_source_sha256",
             &cloudflare.vm_worker_source_sha256,
