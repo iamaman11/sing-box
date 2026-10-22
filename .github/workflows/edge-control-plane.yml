@@ -257,6 +257,7 @@ jobs:
         run: |
           set -euo pipefail
           test "${GITHUB_RUN_ATTEMPT}" = 1
+          source "${OUTPUT_DIR}/resolved.env"
           bin="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
           registry="${OUTPUT_DIR}/fleet-registry.pb"
           "${bin}" host \
