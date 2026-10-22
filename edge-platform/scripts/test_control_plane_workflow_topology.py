@@ -5157,5 +5157,23 @@ def main() -> None:
     )
 
 
+
+def verify_receipt_resume_inline_release_context(source: str) -> None:
+    """GITHUB_ENV updates later steps only; Rust needs an inline export."""
+    name = "      - name: Resolve published exact root owner and verify one-field Git merge"
+    next_step = "      - name: Materialize exact temporary SSH operator credential"
+    require(source.count(name) == 1, "receipt verification owner must be unique")
+    block = source.split(name, 1)[1].split(next_step, 1)[0]
+    inline = "export EDGE_RELEASE_CONTEXT_PATH="
+    require(block.count(inline) == 1,
+            "receipt verifier must export release context in the same step")
+    require(block.index(inline) < block.index("verify-merged-receipt"),
+            "release context must precede native Rust receipt verification")
+    broken = block.replace(inline, "echo EDGE_RELEASE_CONTEXT_PATH=", 1)
+    require(broken != block and inline not in broken,
+            "missing negative fixture for same-step export")
+
+
 if __name__ == "__main__":
     main()
+    verify_receipt_resume_inline_release_context(ROUTER.read_text(encoding="utf-8"))

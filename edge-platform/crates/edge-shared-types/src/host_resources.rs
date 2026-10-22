@@ -567,7 +567,11 @@ fn validate_vm_bootstrap_phase(
     let consistent = match phase {
         // Old installed owners only express unavailable bootstrap evidence.
         Phase::Unspecified | Phase::TrustUnproven | Phase::JournalUnknownNoReplay => true,
-        Phase::ReceiptKeyGitRegistrationRequired => git_key.is_empty(),
+        // The locally installed root may still hold the pre-merge trust snapshot.
+        // A read-only runner copy of that phase is valid after protected Git
+        // registration, but never authenticates the owner or authorizes INSTALL.
+        // An invalid nonempty Git key is still rejected.
+        Phase::ReceiptKeyGitRegistrationRequired => git_key.is_empty() || git_pinned,
         Phase::ReceiptKeyMismatchOrUnproven => git_pinned,
         Phase::WorkerActiveCredentialRequired => {
             git_pinned && !active && credential.state != State::StoreAbsent as i32
@@ -926,6 +930,18 @@ mod tests {
             Err("VM_BOOTSTRAP_PHASE_DEPENDENCY_CONFLICT")
         );
         host.native_receipt_public_key = vec![9; 32];
+        // A pre-refresh installed root still reports its own earlier local
+        // receipt phase. Protected Git already has the key; this only validates
+        // unauthenticated readback and does not grant any mutation authority.
+        report.bootstrap_phase = Phase::ReceiptKeyGitRegistrationRequired as i32;
+        assert!(validate_vm_resource_report(&report, &host).is_ok());
+        host.native_receipt_public_key = vec![9; 3];
+        assert_eq!(
+            validate_vm_resource_report(&report, &host),
+            Err("VM_BOOTSTRAP_PHASE_DEPENDENCY_CONFLICT")
+        );
+        host.native_receipt_public_key = vec![9; 32];
+        report.bootstrap_phase = Phase::LocalPrerequisitesOnly as i32;
         assert!(validate_vm_resource_report(&report, &host).is_ok());
         assert_eq!(
             vm_bootstrap_next_action(Phase::LocalPrerequisitesOnly),
