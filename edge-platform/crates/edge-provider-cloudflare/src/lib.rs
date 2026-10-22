@@ -747,7 +747,8 @@ pub async fn get_vm_credential_bundle_with_access(
     let dns_label = |s: &str| {
         !s.is_empty()
             && s.len() <= 63
-            && s.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+            && s.bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
             && !s.starts_with('-')
             && !s.ends_with('-')
     };
@@ -755,9 +756,7 @@ pub async fn get_vm_credential_bundle_with_access(
         return Err("HOST_VM_CREDENTIAL_WORKER_SCOPE_INVALID".to_owned());
     }
     for secret in [access_client_id, access_client_secret] {
-        if secret.is_empty()
-            || secret.len() > 1024
-            || secret.bytes().any(|b| b < 0x21 || b > 0x7e)
+        if secret.is_empty() || secret.len() > 1024 || secret.bytes().any(|b| b < 0x21 || b > 0x7e)
         {
             return Err("HOST_VM_CREDENTIAL_ACCESS_HEADER_INVALID".to_owned());
         }
@@ -769,9 +768,8 @@ pub async fn get_vm_credential_bundle_with_access(
         .redirect(reqwest::redirect::Policy::none())
         .build()
         .map_err(|_| "HOST_VM_CREDENTIAL_HTTP_CLIENT_INVALID".to_owned())?;
-    let url = format!(
-        "https://{worker}.{subdomain}.workers.dev/v1/credentials?generation={generation}"
-    );
+    let url =
+        format!("https://{worker}.{subdomain}.workers.dev/v1/credentials?generation={generation}");
     let mut response = client
         .get(url)
         .header("CF-Access-Client-Id", access_client_id)
@@ -787,7 +785,9 @@ pub async fn get_vm_credential_bundle_with_access(
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         != Some("application/x-protobuf")
-        || response.content_length().is_some_and(|n| n == 0 || n > 65_536)
+        || response
+            .content_length()
+            .is_some_and(|n| n == 0 || n > 65_536)
     {
         return Err("HOST_VM_CREDENTIAL_WORKER_RESPONSE_TYPE_INVALID".to_owned());
     }

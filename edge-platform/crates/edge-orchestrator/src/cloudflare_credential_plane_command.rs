@@ -1547,7 +1547,9 @@ fn attest_vm_first_use_credential_bytes(
         || bundle.dummy_non_secret
         || !matches!(
             bundle.payload,
-            Some(edge_shared_types::credential_delivery_bundle::Payload::Vm(_))
+            Some(edge_shared_types::credential_delivery_bundle::Payload::Vm(
+                _
+            ))
         )
         || !matches!(
             CredentialDeliverySlot::try_from(bundle.slot),
@@ -1580,8 +1582,7 @@ pub(crate) async fn host_vm_credential_proof(
             return Err(format!("HOST_VM_CREDENTIAL_PROOF_UNTRUSTED_{key}"));
         }
     }
-    if env::var("GITHUB_SHA").ok().as_deref()
-        != Some(release.release().accepted_revision.as_str())
+    if env::var("GITHUB_SHA").ok().as_deref() != Some(release.release().accepted_revision.as_str())
         || env::var("HOST_ORIGINAL_COMMAND").ok().as_deref()
             != Some(format!("/host status {machine_id} --deep").as_str())
     {
@@ -3897,17 +3898,14 @@ mod tests {
         .encode_to_vec();
         let sha = sha256_hex(&dummy);
         assert_eq!(
-            attest_vm_first_use_credential_bytes(&dummy, 321_654, &sha)
-                .unwrap_err(),
+            attest_vm_first_use_credential_bytes(&dummy, 321_654, &sha).unwrap_err(),
             "HOST_VM_FIRST_USE_CREDENTIAL_NOT_FULL_VM_PAYLOAD"
         );
         assert!(attest_vm_first_use_credential_bytes(&dummy, 321_655, &sha).is_err());
-        assert!(attest_vm_first_use_credential_bytes(
-            &dummy,
-            CREDENTIAL_DUMMY_PROBE_GENERATION_A,
-            &sha
-        )
-        .is_err());
+        assert!(
+            attest_vm_first_use_credential_bytes(&dummy, CREDENTIAL_DUMMY_PROBE_GENERATION_A, &sha)
+                .is_err()
+        );
     }
 
     #[test]
