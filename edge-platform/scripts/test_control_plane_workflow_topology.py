@@ -5206,7 +5206,7 @@ def test_one_host_apply_reconciles_root_trust_before_native_dispatch() -> None:
     step = "  host_refresh_trust:"
     dispatch = "  host_observe:"
     require(workflow.count(step) == 1, "single root trust reconciliation job")
-    refresh = workflow.split(step, 1)[1].split(dispatch, 1)[0]
+    refresh = workflow.split(step, 1)[1].split("  host_resume_receipt:", 1)[0]
     observe = workflow.split(dispatch, 1)[1].split("  host_report:", 1)[0]
     for guard in (
         "needs.host.outputs.kind == 'VM'",
