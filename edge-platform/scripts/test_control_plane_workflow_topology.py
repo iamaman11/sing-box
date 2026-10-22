@@ -1104,7 +1104,7 @@ def test_native_host_readonly_control_boundary(router: str) -> None:
         and "host_mutations=0" in hosted
         and '--github-output "${GITHUB_OUTPUT}"' in hosted
         and "matrix: ${{ fromJSON(needs.host.outputs.host_matrix) }}" in physical
-        and "needs: [host, host_report]" in physical
+        and "needs: [host, host_report, host_refresh_trust]" in physical
         and "uses: ./.github/workflows/host-native-observe.yml" in physical
         and "runner_labels: ${{ toJSON(matrix.runner_labels) }}" in physical
         and "needs.host.outputs.host_targets_present == 'true'" in physical
