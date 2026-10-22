@@ -1314,7 +1314,9 @@ pub fn validate_release_set(release: &ReleaseSet) -> Result<(), String> {
             || !cloudflare.vm_worker_predecessor_source_sha256.is_empty()
             || !cloudflare.vm_worker_predecessor_revision.is_empty()
         {
-            return Err("pre-v8 release-set must not contain VM Worker source authority".to_owned());
+            return Err(
+                "pre-v8 release-set must not contain VM Worker source authority".to_owned(),
+            );
         }
     } else {
         validate_sha256_bytes(
