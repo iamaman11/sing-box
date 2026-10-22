@@ -133,6 +133,27 @@ jobs:
             fi
           fi
 
+          # Existing root Agent, existing read-only capability: prove that the
+          # VM's local Access service identity can use the protected VM Worker,
+          # independently of GitHub's separate privileged credential proof.
+          # No secret material leaves the root owner; no signing POST.
+          if [[ "${COMMAND_BODY}" == "/host status ${TARGET_MACHINE} --deep" ]]; then
+            if ! sudo -n -l "${owner}" local credential-initial-probe >/dev/null 2>&1; then
+              echo 'host_vm_local_worker_access=UNPROVEN_NATIVE_READ_CAPABILITY'
+            elif evidence="$(sudo -n "${owner}" local credential-initial-probe 2>/dev/null)" &&
+                 grep -Fxq 'operation=CREDENTIAL_INITIAL_PROBE' <<<"${evidence}" &&
+                 grep -Fxq 'credential_slot_A=EXACT_DUMMY' <<<"${evidence}" &&
+                 grep -Fxq 'credential_slot_B=EXACT_DUMMY' <<<"${evidence}" &&
+                 grep -Fxq 'credential_provider_mutations=0' <<<"${evidence}" &&
+                 grep -Fxq 'credential_runtime_mutations=0' <<<"${evidence}"; then
+              echo 'host_vm_local_worker_access=ACCESS_AUTHENTICATED_INITIAL_AB_PROVEN'
+            else
+              # A nonempty VM is not eligible for the first-use-only probe.
+              echo 'host_vm_local_worker_access=UNPROVEN_OR_NOT_FIRST_USE'
+            fi
+          fi
+
+
 
       - name: Transfer exact same-run typed HostIntent with native Actions artifact
         if: env.TARGET_KIND == 'VM' && (startsWith(env.COMMAND_BODY, '/host apply ') || startsWith(env.COMMAND_BODY, '/host recover '))
