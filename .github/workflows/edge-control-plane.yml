@@ -463,7 +463,7 @@ jobs:
           encoded="$(base64 -w0 < "${spec}")"
           gh api -X PUT "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto" \
             -f "branch=${branch}" -f "sha=${original}" \
-            -f "message=host: reserve first-use public VM signer" -f "content=${encoded}" >/dev/null
+            -f "message=host: reserve public VM signer" -f "content=${encoded}" >/dev/null
           gh api "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto?ref=${branch}" --jq '.content' |
             base64 --decode | cmp -s - "${spec}"
           gh pr create -R "${GITHUB_REPOSITORY}" -B main -H "${branch}" --draft \
