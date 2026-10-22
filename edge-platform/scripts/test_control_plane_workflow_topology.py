@@ -5298,9 +5298,55 @@ def test_vm_typed_desired_preparation_is_shared_and_fail_closed() -> None:
         rejected("acceptance-fixture", "HOST_VM_TYPED_SOURCE_UNREADABLE")
 
 
+def test_promotion_finds_exact_pr_run_without_unreliable_sha_api_filter() -> None:
+    """A broken server-side head_sha filter must not hide the accepted PR CI."""
+    ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
+    block = ci.split("  promote:\n", 1)[1].split("      - name: Download exact candidate artifacts", 1)[0]
+    require("head_sha=${candidate_revision}&" not in block,
+            "promotion must not rely on the inconsistent Actions head_sha filter")
+    for required in (
+        "for page in {1..10}; do",
+        "/actions/runs?event=pull_request&per_page=100&page=${page}",
+        'select(.path == ".github/workflows/edge-platform-ci.yml")',
+        "select(.head_sha == $head)",
+        'select(.event == "pull_request")',
+        "select(.id != $current_run_id)",
+        'select(.status == "completed")',
+        'select(.conclusion == "success")',
+        "sort_by(.id)",
+        "last // empty",
+        "HOST_RELEASE_CANDIDATE_NOT_IN_BOUNDED_PR_HISTORY",
+    ):
+        require(required in block, "missing fail-closed candidate selection: " + required)
+    # Run the actual jq predicate against a conflicting set of PR/check runs.
+    start = 'latest_run="$(jq -cr --arg head "${candidate_revision}" --argjson current_run_id "${CURRENT_RUN_ID}" \''
+    require(block.count(start) == 1, "one tested candidate filter required")
+    predicate = block.split(start, 1)[1].split('\' <<<"${runs}")"', 1)[0]
+    head = "c" * 40
+    valid = {"id": 42, "path": ".github/workflows/edge-platform-ci.yml",
+             "head_sha": head, "event": "pull_request",
+             "status": "completed", "conclusion": "success"}
+    negatives = [dict(valid, id=41, head_sha="b" * 40),
+                 dict(valid, id=43, path=".github/workflows/foreign.yml"),
+                 dict(valid, id=44, conclusion="failure"),
+                 dict(valid, id=45, status="in_progress"),
+                 dict(valid, id=46, event="push"),
+                 dict(valid, id=99)]
+    for rows, expected in ((negatives + [valid], 42), (negatives, None)):
+        result = subprocess.run(["jq", "-cr", "--arg", "head", head,
+                                 "--argjson", "current_run_id", "99", predicate],
+                                input=json.dumps({"workflow_runs": rows}),
+                                capture_output=True, text=True, check=False)
+        require(result.returncode == 0, "jq selection must not fail: " + result.stderr)
+        selected = json.loads(result.stdout) if result.stdout.strip() else None
+        require((selected or {}).get("id") == expected,
+                "promotion must accept only exact successful PR candidate")
+
+
 if __name__ == "__main__":
     main()
     test_one_host_apply_reconciles_root_trust_before_native_dispatch()
     test_vm_typed_desired_preparation_is_shared_and_fail_closed()
+    test_promotion_finds_exact_pr_run_without_unreliable_sha_api_filter()
     test_native_vm_artifact_transport_is_same_run_and_not_gh_cli()
     verify_receipt_resume_inline_release_context(ROUTER.read_text(encoding="utf-8"))
