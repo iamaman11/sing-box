@@ -4597,6 +4597,18 @@ mod tests {
         let parsed = verified_native_enrollment_result(&report, machine, &release).unwrap();
         assert_eq!(parsed.0, "b".repeat(64));
         assert_eq!(parsed.1, "AWAITING_PROTECTED_GIT");
+        let current = report
+            .replace("PROTECTED_TRUST_STAGED", "PROTECTED_TRUST_CURRENT")
+            .replace("AWAITING_PROTECTED_GIT", "PINNED_GIT_MATCH");
+        let exact = verified_native_enrollment_result(&current, machine, &release).unwrap();
+        assert_eq!(exact.0, "b".repeat(64));
+        assert_eq!(exact.1, "PINNED_GIT_MATCH");
+        assert!(verified_native_enrollment_result(
+            &current.replace("PINNED_GIT_MATCH", "MISMATCH"),
+            machine,
+            &release,
+        )
+        .is_err());
         assert!(
             verified_native_enrollment_result(
                 &report.replace("host_mutations=0", "host_mutations=1"),
