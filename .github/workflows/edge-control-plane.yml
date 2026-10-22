@@ -182,7 +182,7 @@ jobs:
     # The SAME current /host apply is allowed to dispatch only after its
     # existing root Agent independently verifies the published Git receipt.
     # Status/Windows/recover are read-only or separately signed native lanes.
-    needs: [host, host_report, host_refresh_trust]
+    needs: [host, host_report, host_refresh_trust, host_worker_authorizer]
     if: >-
       always() && !cancelled() &&
       needs.host.result == 'success' &&
@@ -190,7 +190,8 @@ jobs:
       needs.host.outputs.host_targets_present == 'true' &&
       (needs.host.outputs.kind != 'VM' ||
        needs.host.outputs.operation != 'APPLY_PREFLIGHT' ||
-       needs.host_refresh_trust.result == 'success') &&
+       needs.host_refresh_trust.result == 'success' &&
+       needs.host_worker_authorizer.result == 'success') &&
       (github.event.comment.body == '/host status' ||
        startsWith(github.event.comment.body, '/host status ') ||
        needs.host.outputs.operation == 'APPLY_PREFLIGHT' ||
@@ -274,7 +275,8 @@ jobs:
     if: >-
       needs.host.result == 'success' &&
       needs.host_report.result == 'success' &&
-      needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT' &&
+      (needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT' ||
+       needs.host.outputs.operation == 'APPLY_PREFLIGHT') &&
       needs.host.outputs.kind == 'VM' &&
       github.event_name == 'issue_comment' &&
       github.event.comment.body == format('/host apply {0}', needs.host.outputs.machine_id) &&
@@ -398,7 +400,7 @@ jobs:
 
 
       - name: Prepare one ephemeral VM signer with existing protected owner
-        if: steps.plan.outputs.required == 'false'
+        if: steps.plan.outputs.required == 'false' && needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'
         shell: bash
         env:
           CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
@@ -415,7 +417,7 @@ jobs:
           [[ "$(cat "${pub}")" =~ ^[0-9a-f]{64}$ ]]
 
       - name: Reserve exact public-key Git draft before VM Worker mutation
-        if: steps.plan.outputs.required == 'false'
+        if: steps.plan.outputs.required == 'false' && needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'
         shell: bash
         env:
           REGISTRATION_TOKEN: ${{ secrets.IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN }}
@@ -486,7 +488,7 @@ jobs:
           echo 'host_vm_signer=PROTECTED_PUBLIC_DRAFT_RESERVED_BEFORE_WRITE'
 
       - name: Install exactly five Host signer secret bindings once
-        if: steps.plan.outputs.required == 'false'
+        if: steps.plan.outputs.required == 'false' && needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'
         shell: bash
         env:
           CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
@@ -505,7 +507,7 @@ jobs:
           grep -Fxq 'host_signed_install=NOT_AUTHORIZED' "${RUNNER_TEMP}/host-signer-evidence.txt"
 
       - name: Open reserved VM signer PR for protected review
-        if: steps.plan.outputs.required == 'false'
+        if: steps.plan.outputs.required == 'false' && needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'
         shell: bash
         env:
           REGISTRATION_TOKEN: ${{ secrets.IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN }}

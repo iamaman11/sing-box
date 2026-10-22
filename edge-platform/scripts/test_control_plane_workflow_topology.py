@@ -849,6 +849,28 @@ def test_host_native_receipt_boundary_and_legacy_workflow_admission(router: str)
         and """sudo -n "${owner}" local host-apply < "${intent}" > "${result}" """ .strip() in child,
         "The one native owner may emit the complete 8192-byte authenticated receipt without truncation",
     )
+    # On an enrolled VM the exact signed APPLY is prepared once, but
+    # native dispatch MUST wait until existing Worker source is proven current
+    # (or upgraded once) by the single protected Worker owner. This is the
+    # same /host apply, never a second route or replay.
+    observe_block = router.split("  host_observe:", 1)[1].split("  host_report:", 1)[0]
+    worker_block = router.split("  host_worker_authorizer:", 1)[1].split(
+        "  host_capabilities:", 1
+    )[0]
+    require(
+        "needs: [host, host_report, host_refresh_trust, host_worker_authorizer]"
+        in observe_block
+        and "needs.host_worker_authorizer.result == 'success'" in observe_block
+        and "needs.host.outputs.operation == 'APPLY_PREFLIGHT'" in worker_block
+        and worker_block.count(
+            "steps.plan.outputs.required == 'false' && "
+            "needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'"
+        ) == 4
+        and "vm-worker-authorizer-upgrade" in worker_block
+        and "HOST_VM_WORKER_PRIOR_BEGIN_NO_REPLAY" in worker_block,
+        "Signed VM root APPLY must depend on canonical Worker code provenance and no-replay, without signer re-enrollment",
+    )
+
     require(
         '[[ "${EDGE_FLEET_REGISTRY_SHA256}" =~ ^[0-9a-f]{64}$ ]]' in router
         and 'test "${EDGE_FLEET_REGISTRY_SHA256}" = "${HOSTS_SHA256}"' in router
