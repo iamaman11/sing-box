@@ -849,12 +849,51 @@ def test_host_native_receipt_boundary_and_legacy_workflow_admission(router: str)
         and """sudo -n "${owner}" local host-apply < "${intent}" > "${result}" """ .strip() in child,
         "The one native owner may emit the complete 8192-byte authenticated receipt without truncation",
     )
+    rust_context = Path(
+        "edge-platform/crates/edge-orchestrator/src/lib.rs"
+    ).read_text(encoding="utf-8")
+    worker_owner = Path(
+        "edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs"
+    ).read_text(encoding="utf-8")
+    vm_code_only = worker_owner.split(
+        "pub(crate) async fn host_vm_worker_authorizer_upgrade(", 1
+    )[1].split("fn attest_vm_first_use_credential_bytes(", 1)[0]
+    require(
+        "pub fn verified_vm_worker_code_upgrade_host(" in rust_context
+        and "pub fn verified_vm_worker_authorizer_host(" in rust_context
+        and "release.verified_vm_worker_code_upgrade_host(machine_id)?" in vm_code_only
+        and "HOST_VM_WORKER_BOOTSTRAP_SCOPE_INVALID" in rust_context,
+        "code-only Worker upgrades must permit enrolled VM keys without reopening signer enrollment",
+    )
+
+    # On an enrolled VM the exact signed APPLY is prepared once, but
+    # native dispatch MUST wait until existing Worker source is proven current
+    # (or upgraded once) by the single protected Worker owner. This is the
+    # same /host apply, never a second route or replay.
+    observe_block = router.split("  host_observe:", 1)[1].split("  host_report:", 1)[0]
+    worker_block = router.split("  host_worker_authorizer:", 1)[1].split(
+        "  host_capabilities:", 1
+    )[0]
+    require(
+        "needs: [host, host_report, host_refresh_trust, host_worker_authorizer]"
+        in observe_block
+        and "needs.host_worker_authorizer.result == 'success'" in observe_block
+        and "needs.host.outputs.operation == 'APPLY_PREFLIGHT'" in worker_block
+        and worker_block.count(
+            "steps.plan.outputs.required == 'false' && "
+            "needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'"
+        ) == 4
+        and "vm-worker-authorizer-upgrade" in worker_block
+        and "HOST_VM_WORKER_PRIOR_BEGIN_NO_REPLAY" in worker_block,
+        "Signed VM root APPLY must depend on canonical Worker code provenance and no-replay, without signer re-enrollment",
+    )
+
     require(
         '[[ "${EDGE_FLEET_REGISTRY_SHA256}" =~ ^[0-9a-f]{64}$ ]]' in router
         and 'test "${EDGE_FLEET_REGISTRY_SHA256}" = "${HOSTS_SHA256}"' in router
         and 'cmp -s "${RUNNER_TEMP}/host-release/fleet-registry.pb" "${RUNNER_TEMP}/hosts.binpb"' in router
         and 'if [[ "${command[0]}" != "status" ]]; then' in router
-        and 'test "${EDGE_RELEASE_SCHEMA_VERSION}" = "7"' in router,
+        and 'test "${EDGE_RELEASE_SCHEMA_VERSION}" = "8"' in router,
         "Signed HostIntent must be bound to exact Git fleet bytes, not a legacy or alternate release registry",
     )
     require(
@@ -1104,7 +1143,7 @@ def test_native_host_readonly_control_boundary(router: str) -> None:
         and "host_mutations=0" in hosted
         and '--github-output "${GITHUB_OUTPUT}"' in hosted
         and "matrix: ${{ fromJSON(needs.host.outputs.host_matrix) }}" in physical
-        and "needs: [host, host_report, host_refresh_trust]" in physical
+        and "needs: [host, host_report, host_refresh_trust, host_worker_authorizer]" in physical
         and "uses: ./.github/workflows/host-native-observe.yml" in physical
         and "runner_labels: ${{ toJSON(matrix.runner_labels) }}" in physical
         and "needs.host.outputs.host_targets_present == 'true'" in physical
@@ -5009,6 +5048,20 @@ def main() -> None:
         and "schtasks.exe" in windows_console,
         "edge-console must delegate merge/candidate provenance to the protected installer, then retarget the immutable SYSTEM dispatcher after exact activation",
     )
+    # ReleaseSet v8 supports exact Git-bound signed mutation; older
+    # schemas remain readable, never mint a new signed HostIntent.
+    resolver = Path("edge-platform/scripts/resolve_durable_release.sh").read_text(
+        encoding="utf-8"
+    )
+    require(
+        '3|4|5|6|7|8)' in resolver
+        and 'if [[ "$schema_version" = "7" || "$schema_version" = "8" ]]; then'
+        in resolver
+        and resolver.count('|| "$schema_version" = "8"') >= 5
+        and 'test "${EDGE_RELEASE_SCHEMA_VERSION}" = "8"' in router,
+        "durable resolver and signed HostIntent must accept exact ReleaseSet v8 without legacy mutations",
+    )
+
     require(
         '"state/runtime-state.pb"' in windows_controller
         or "windows_runtime_state_path" in windows_controller,
@@ -5254,7 +5307,7 @@ def test_one_host_apply_reconciles_root_trust_before_native_dispatch() -> None:
         "host_mutations=0",
     ):
         require(guard in refresh, "root trust step missing required contract: " + guard)
-    require("needs: [host, host_report, host_refresh_trust]" in observe
+    require("needs: [host, host_report, host_refresh_trust, host_worker_authorizer]" in observe
             and "!cancelled()" in observe
             and "needs.host_refresh_trust.result == 'success'" in observe,
             "native dispatch must wait for Git-pinned root trust")

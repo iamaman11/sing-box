@@ -1420,7 +1420,7 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
     {
         return Err("HOST_VM_WORKER_EXACT_APPLY_REQUIRED".to_owned());
     }
-    let host = release.verified_vm_worker_authorizer_host(machine_id)?;
+    let host = release.verified_vm_worker_code_upgrade_host(machine_id)?;
     if host.machine_id != machine_id {
         return Err("HOST_VM_WORKER_GIT_SELECTION_MISMATCH".to_owned());
     }

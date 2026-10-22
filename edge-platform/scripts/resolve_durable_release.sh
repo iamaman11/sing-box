@@ -258,7 +258,7 @@ containerd_version="$(extract_single containerd_version)"
 compose_version="$(extract_single compose_version)"
 runtime_source_revision="$verified_source_revision"
 runtime_input_sha=""
-if [[ "$schema_version" = "4" || "$schema_version" = "5" || "$schema_version" = "6" || "$schema_version" = "7" ]]; then
+if [[ "$schema_version" = "4" || "$schema_version" = "5" || "$schema_version" = "6" || "$schema_version" = "7" || "$schema_version" = "8" ]]; then
   runtime_source_revision="$(extract_single runtime_source_revision)"
   runtime_input_sha="$(extract_single runtime_input_sha256)"
   [[ "$runtime_source_revision" =~ ^[0-9a-f]{40}$ ]]
@@ -266,7 +266,7 @@ if [[ "$schema_version" = "4" || "$schema_version" = "5" || "$schema_version" = 
 fi
 
 application_bundle_sha=""
-if [[ "$schema_version" = "7" ]]; then
+if [[ "$schema_version" = "7" || "$schema_version" = "8" ]]; then
   # Old schema-7 ReleaseSets may be inspected solely as build-reuse inputs.
   # Only the public host apply/recover ingress requires the full registry and
   # exact Git byte equality. Do not break read-only base-release resolution.
@@ -285,14 +285,14 @@ windows_controller_sha=""
 windows_console_sha=""
 windows_sing_box_sha=""
 windows_diagnostic_sha=""
-if [[ "$schema_version" = "5" || "$schema_version" = "6" || "$schema_version" = "7" ]]; then
+if [[ "$schema_version" = "5" || "$schema_version" = "6" || "$schema_version" = "7" || "$schema_version" = "8" ]]; then
   windows_source_revision="$(extract_single windows_source_revision)"
   windows_input_sha="$(extract_single windows_input_sha256)"
   windows_artifact_sha="$(extract_single windows_artifact_sha256)"
   windows_controller_sha="$(extract_single windows_controller_sha256)"
   windows_console_sha="$(extract_single windows_console_sha256)"
   windows_sing_box_sha="$(extract_single windows_sing_box_sha256)"
-  if [[ "$schema_version" = "6" || "$schema_version" = "7" ]]; then
+  if [[ "$schema_version" = "6" || "$schema_version" = "7" || "$schema_version" = "8" ]]; then
     windows_diagnostic_sha="$(extract_single windows_diagnostic_sha256)"
   fi
   [[ "$windows_source_revision" =~ ^[0-9a-f]{40}$ ]]
@@ -301,7 +301,7 @@ if [[ "$schema_version" = "5" || "$schema_version" = "6" || "$schema_version" = 
   [[ "$windows_controller_sha" =~ ^[0-9a-f]{64}$ ]]
   [[ "$windows_console_sha" =~ ^[0-9a-f]{64}$ ]]
   [[ "$windows_sing_box_sha" =~ ^[0-9a-f]{64}$ ]]
-  if [[ "$schema_version" = "6" || "$schema_version" = "7" ]]; then
+  if [[ "$schema_version" = "6" || "$schema_version" = "7" || "$schema_version" = "8" ]]; then
     [[ "$windows_diagnostic_sha" =~ ^[0-9a-f]{64}$ ]]
   fi
 fi
@@ -312,7 +312,7 @@ done
 
 test "$verified_release_set_sha" = "$release_set_sha"
 case "$schema_version" in
-  3|4|5|6|7) ;;
+  3|4|5|6|7|8) ;;
   *) echo "unsupported durable ReleaseSet schema_version=$schema_version" >&2; exit 1 ;;
 esac
 test "$verified_source_revision" = "$candidate_revision"
