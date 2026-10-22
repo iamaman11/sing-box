@@ -73,9 +73,18 @@ def target_machine(application_spec_path, machine_id):
     Other Git host kinds remain unavailable rather than defaulting to a
     hard-coded acceptance instance.
     """
-    if (not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", machine_id)
-            or not re.fullmatch(r"infra/application/[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.json",
-                                application_spec_path)):
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}", machine_id):
+        return False
+    # New Git per-host authority is Rust-selected and independently compiled
+    # with pinned Buf before this read-only probe. Do NOT duplicate its schema
+    # with a custom Python textproto parser.
+    expected_typed = f"infra/hosts/specs/{machine_id}.textproto"
+    if application_spec_path == expected_typed:
+        path = Path(expected_typed)
+        return (path.is_file() and not path.is_symlink()
+                and 0 < path.stat().st_size <= 131_072)
+    if not re.fullmatch(r"infra/application/[A-Za-z0-9][A-Za-z0-9._-]{0,63}\.json",
+                        application_spec_path):
         return False
     try:
         app = json.loads(Path(application_spec_path).read_text(encoding="utf-8"))
@@ -174,7 +183,10 @@ def observe(machine_id, desired_spec_path):
         if isinstance(runners, dict) and isinstance(runners.get("runners"), list):
             result["github_runner_visibility"] = "READABLE"
 
-    api = os.environ.get("CLOUDFLARE_API_TOKEN", "")
+    # The existing accepted VM Worker owner uses this scoped read principal.
+    # The historical generic CLOUDFLARE_API_TOKEN is scoped to another account
+    # and returned 403 on the canonical VM Worker; never fall back to it.
+    api = os.environ.get("CLOUDFLARE_CONTROL_TOKEN", "")
     identity = exact_production_worker()
     if api and identity:
         verification = observe_json("https://api.cloudflare.com/client/v4/user/tokens/verify",

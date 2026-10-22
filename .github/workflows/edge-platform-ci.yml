@@ -528,6 +528,12 @@ jobs:
             exit 1
           fi
 
+      - name: Verify Git-selected typed VM capability preflight
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 edge-platform/scripts/test_host_capability_preflight.py
+
       - name: Validate protobuf contracts with pinned Buf
         shell: bash
         env:
