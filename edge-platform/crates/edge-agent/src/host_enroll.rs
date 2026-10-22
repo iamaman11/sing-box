@@ -365,8 +365,22 @@ pub(crate) async fn enroll(machine_id: &str, release_digest: &str) -> Result<(),
             machine_id,
             &snapshot.pinned_worker_public_key,
         )?;
-        refresh_release_snapshots(trusted, &trust_pb)?;
-        println!("host_enroll=PROTECTED_TRUST_REFRESHED");
+        // An exact trusted snapshot is already converged: do not rewrite it
+        // on the next /host apply, even after an earlier lost refresh ACK.
+        let already_current =
+            super::host_native::root_file(&trusted.join("trust.pb"), 9 * 1024 * 1024)?
+                == trust_pb;
+        if !already_current {
+            refresh_release_snapshots(trusted, &trust_pb)?;
+        }
+        println!(
+            "host_enroll={}",
+            if already_current {
+                "PROTECTED_TRUST_CURRENT"
+            } else {
+                "PROTECTED_TRUST_REFRESHED"
+            }
+        );
         println!("host_machine_id={machine_id}");
         println!("host_release_set_sha256={release_digest}");
         println!(
