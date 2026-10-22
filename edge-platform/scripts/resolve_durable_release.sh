@@ -47,51 +47,23 @@ fleet_expected_assets=(
   fleet-registry.pb.sha256
 )
 
-candidate_releases="${out}/.candidate-releases.jsonl"
-matching_releases="${out}/.matching-releases.jsonl"
-: > "$candidate_releases"
-: > "$matching_releases"
-
-page=1
-while :; do
-  page_json="$(gh api "repos/${REPOSITORY}/releases?per_page=100&page=${page}")"
-  jq -c --arg accepted "$ACCEPTED_REVISION" '
-    .[]
-    | select(.draft == false)
-    | select(.prerelease == false)
-    | select(.tag_name | test("^edge-release-[0-9a-f]{64}$"))
-    | select(.target_commitish == $accepted)
-  ' <<<"$page_json" >> "$candidate_releases"
-  page_count="$(jq 'length' <<<"$page_json")"
-  [[ "$page_count" =~ ^[0-9]+$ ]]
-  if (( page_count < 100 )); then
-    break
-  fi
-  ((page += 1))
-done
-
-while IFS= read -r candidate_release; do
-  [[ -n "$candidate_release" ]] || continue
-  candidate_tag="$(jq -er '.tag_name' <<<"$candidate_release")"
-  ref_json="$(gh api "repos/${REPOSITORY}/git/ref/tags/${candidate_tag}")"
-  test "$(jq -er '.object.type' <<<"$ref_json")" = "commit"
-  ref_sha="$(jq -er '.object.sha' <<<"$ref_json")"
-  [[ "$ref_sha" =~ ^[0-9a-f]{40}$ ]]
-  if [[ "$ref_sha" = "$ACCEPTED_REVISION" ]]; then
-    printf '%s\n' "$candidate_release" >> "$matching_releases"
-  fi
-done < "$candidate_releases"
-
-match_count="$(grep -c . "$matching_releases" || true)"
+# Git tags are the canonical immutable release index. Releases listing can
+# omit a published revision from an Actions token's server-side search.
+# Authenticate one exact Git ref first; only then accept a published Release
+# with that tag, matching target commit, asset manifest and verified hashes.
+tags_json="$(gh api "repos/${REPOSITORY}/git/matching-refs/tags/edge-release-")"
+matches="$(jq -c --arg accepted "$ACCEPTED_REVISION" '
+  [.[]
+    | select(.ref | test("^refs/tags/edge-release-[0-9a-f]{64}$"))
+    | select(.object.type == "commit")
+    | select(.object.sha == $accepted)]
+' <<<"$tags_json")"
+match_count="$(jq 'length' <<<"$matches")"
 test "$match_count" -eq 1 || {
-  echo "expected exactly one published canonical release for accepted revision $ACCEPTED_REVISION, found $match_count" >&2
+  echo "HOST_RELEASE_CANONICAL_GIT_TAG_IDENTITY_AMBIGUOUS_OR_ABSENT" >&2
   exit 1
 }
-
-release_stub="$(cat "$matching_releases")"
-release_id="$(jq -er '.id' <<<"$release_stub")"
-[[ "$release_id" =~ ^[0-9]+$ ]]
-release_tag="$(jq -er '.tag_name' <<<"$release_stub")"
+release_tag="$(jq -er '.[0].ref | sub("^refs/tags/"; "")' <<<"$matches")"
 [[ "$release_tag" =~ ^edge-release-[0-9a-f]{64}$ ]]
 release_set_sha="${release_tag#edge-release-}"
 [[ "$release_set_sha" =~ ^[0-9a-f]{64}$ ]]
@@ -103,9 +75,11 @@ if [[ -n "${EXPECTED_RELEASE_TAG:-}" ]]; then
   }
 fi
 
-release_json="$(gh api "repos/${REPOSITORY}/releases/${release_id}")"
-test "$(jq -er '.id' <<<"$release_json")" = "$release_id"
+release_json="$(gh api "repos/${REPOSITORY}/releases/tags/${release_tag}")"
+release_id="$(jq -er '.id' <<<"$release_json")"
+[[ "$release_id" =~ ^[0-9]+$ ]]
 test "$(jq -er '.tag_name' <<<"$release_json")" = "$release_tag"
+test "$(jq -er '.target_commitish' <<<"$release_json")" = "$ACCEPTED_REVISION"
 test "$(jq -r '.draft' <<<"$release_json")" = "false"
 test "$(jq -r '.prerelease' <<<"$release_json")" = "false"
 

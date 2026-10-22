@@ -22,14 +22,12 @@ call_log=os.environ.get("FAKE_GITHUB_CALL_LOG")
 if call_log:
     with open(call_log,"a",encoding="utf-8") as handle: handle.write(e+"\\n")
 repo="iamaman11/sing-box"
-if e.startswith(f"repos/{repo}/releases?"):
-    page=int(dict(x.split("=",1) for x in e.split("?",1)[1].split("&")).get("page","1"))
-    print(json.dumps(s["releases"] if page==1 else []))
-elif e.startswith(f"repos/{repo}/git/ref/tags/"):
-    tag=e.rsplit("/",1)[1]; sha=s["tag_refs"][tag]
-    print(json.dumps({"object":{"type":"commit","sha":sha}}))
-elif re.fullmatch(rf"repos/{repo}/releases/\\d+",e):
-    rid=int(e.rsplit("/",1)[1]); print(json.dumps(next(x for x in s["releases"] if x["id"]==rid)))
+if e==f"repos/{repo}/git/matching-refs/tags/edge-release-":
+    print(json.dumps([{"ref":"refs/tags/"+tag,"object":{"type":"commit","sha":sha}}
+                      for tag,sha in s["tag_refs"].items()]))
+elif e.startswith(f"repos/{repo}/releases/tags/"):
+    tag=e.rsplit("/",1)[1]
+    print(json.dumps(next(x for x in s["releases"] if x["tag_name"]==tag)))
 elif e.startswith(f"repos/{repo}/git/commits/"):
     sha=e.rsplit("/",1)[1]; print(json.dumps({"tree":{"sha":s["commit_trees"][sha]}}))
 else:
@@ -186,7 +184,7 @@ def run(state,meta,expected=None,ok=False,expected_tag_ref_calls=None):
       p=subprocess.run(["bash",str(RESOLVER)],env=env,text=True,capture_output=True)
       calls=call_log.read_text().splitlines() if call_log.exists() else []
       if expected_tag_ref_calls is not None:
-        tag_ref_calls=sum("/git/ref/tags/" in call for call in calls)
+        tag_ref_calls=sum("/git/matching-refs/tags/" in call for call in calls)
         assert tag_ref_calls==expected_tag_ref_calls,(tag_ref_calls,calls,p.stdout,p.stderr)
       if ok:
         assert p.returncode==0,(p.stdout,p.stderr)
@@ -224,6 +222,9 @@ def main():
     assert "--retry-delay 1" in resolver_text
     assert "--retry-max-time 300" in resolver_text
     assert "--retry-all-errors" not in resolver_text
+    assert "/git/matching-refs/tags/edge-release-" in resolver_text
+    assert "/releases/tags/${release_tag}" in resolver_text
+    assert "releases?per_page=100" not in resolver_text
 
     s,m=make_state(schema=3); run(s,m,expected=m["tag"],ok=True,expected_tag_ref_calls=1)
     s,m=make_state(schema=4); run(s,m,expected=m["tag"],ok=True,expected_tag_ref_calls=1)
@@ -250,6 +251,8 @@ def main():
     s,m=make_state(); s["corrupt_asset_id"]=m["controller_id"]; run(s,m)
     s,m=make_state(); s["tag_refs"][m["tag"]]="f"*40; run(s,m)
     s,m=make_state(); s["releases"][-1]["target_commitish"]="f"*40; run(s,m)
+    s,m=make_state(); s["releases"][-1]["draft"]=True; run(s,m)
+    s,m=make_state(); s["releases"][-1]["prerelease"]=True; run(s,m)
     print("durable release resolver tests: OK")
 
 if __name__=="__main__":
