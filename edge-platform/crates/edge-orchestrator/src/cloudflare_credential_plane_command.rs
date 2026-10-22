@@ -1314,38 +1314,79 @@ async fn initial_worker_proof_plan(
     Ok(())
 }
 
-/// One accepted historical VM code identity, NOT an extensible tag
-/// allowlist. Its source originated at source revision
-/// 7ba3731b424f0250ca013cd954111189630e61bb, merged as
-/// 71530fdcffc825bc7a294dd201a64064f0299e61 (PR #358),
-/// immutable ReleaseSet 2d672a9107f745ed4d0c577f80bc40e203550747552eb9f6da688c8364ebc926.
-/// The other half of this proof is a live GET of raw index.mjs and its
-/// full SHA256, verified before a mutation journal is reserved.
-fn verify_historical_vm_module_identity(
+/// Source identities are bound to the same immutable ReleaseSet as the agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AcceptedVmWorkerSource {
+    desired: String,
+    predecessor: String,
+}
+
+fn accepted_vm_worker_source(
+    release: &edge_orchestrator::OrchestrationContext,
+) -> Result<AcceptedVmWorkerSource, String> {
+    let context =
+        env::var_os("EDGE_RELEASE_CONTEXT_PATH").ok_or("HOST_VM_WORKER_RELEASE_CONTEXT_ABSENT")?;
+    let parent = Path::new(&context)
+        .parent()
+        .ok_or("HOST_VM_WORKER_RELEASE_CONTEXT_PARENT_ABSENT")?;
+    let path = parent.join("release-set.pb");
+    let meta = fs::symlink_metadata(&path).map_err(|_| "HOST_VM_WORKER_RELEASESET_ABSENT")?;
+    if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 65536 {
+        return Err("HOST_VM_WORKER_RELEASESET_UNSAFE".to_owned());
+    }
+    let bytes = fs::read(&path).map_err(|_| "HOST_VM_WORKER_RELEASESET_UNREADABLE")?;
+    if sha256_hex(&bytes) != release.release().release_set_sha256 {
+        return Err("HOST_VM_WORKER_RELEASESET_DIGEST_MISMATCH".to_owned());
+    }
+    let accepted = edge_shared_types::decode_release_set(&bytes)?;
+    if accepted.schema_version < 8 || accepted.source_revision != release.release().source_revision
+    {
+        return Err("HOST_VM_WORKER_RELEASESET_V8_REQUIRED".to_owned());
+    }
+    let cf = accepted
+        .cloudflare
+        .ok_or("HOST_VM_WORKER_RELEASE_SOURCE_ABSENT")?;
+    if cf.vm_worker_source_sha256.len() != 32 || cf.vm_worker_predecessor_source_sha256.len() != 32
+    {
+        return Err("HOST_VM_WORKER_RELEASE_SOURCE_INVALID".to_owned());
+    }
+    Ok(AcceptedVmWorkerSource {
+        desired: hex_encode(&cf.vm_worker_source_sha256),
+        predecessor: hex_encode(&cf.vm_worker_predecessor_source_sha256),
+    })
+}
+
+fn verify_vm_worker_predecessor(
     desired: &ProjectionDesired,
     current: &ProjectionObservation,
+    digest: &str,
 ) -> Result<(), String> {
-    let version = "f2444bc0-ca75-4c36-81d7-3cf740058363";
-    let deployment = "8379be2c-61dd-44d4-aa67-6794735c5724";
-    let tag = "sing-box-phase6-ab-vm-b4187fe98da3fe79";
     if desired.projection != "vm"
         || desired.worker_name != "sing-box-credentials-vm"
         || current.worker_name != desired.worker_name
-        || current.worker_latest_version_id.as_deref() != Some(version)
-        || current.worker_active_version_ids.as_slice() != [version]
-        || current.worker_active_deployment_id.as_deref() != Some(deployment)
-        || current.worker_version_tag.as_deref() != Some(tag)
-        || current.worker_latest_version_tag.as_deref() != Some(tag)
-        || current.worker_binding_count != Some(2)
+        || digest.len() != 64
+        || !digest
+            .bytes()
+            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
     {
-        return Err("HOST_VM_HISTORICAL_IDENTITY_OR_VERSION_UNPROVEN".to_owned());
+        return Err("HOST_VM_WORKER_PREDECESSOR_INVALID".to_owned());
+    }
+    let tag = format!("sing-box-phase6-ab-vm-{}", &digest[..16]);
+    if current.worker_version_tag.as_deref() != Some(tag.as_str())
+        || current.worker_latest_version_tag.as_deref() != Some(tag.as_str())
+        || current.worker_latest_version_id.is_none()
+        || current.worker_active_version_ids.as_slice()
+            != [current.worker_latest_version_id.as_deref().unwrap_or("")]
+        || current.worker_active_deployment_id.is_none()
+        || current.worker_binding_count != Some(7)
+    {
+        return Err("HOST_VM_WORKER_PREDECESSOR_STATE_MISMATCH".to_owned());
     }
     require_exact_secret_bindings(
         &desired.worker_name,
         &desired.projection,
         &current.worker_secret_bindings,
-    )?;
-    Ok(())
+    )
 }
 
 /// VM-only Host authorizer code promotion. The one public /host apply
@@ -1406,37 +1447,36 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
     verify_vm_only_windows_neighbour(desired, &before)?;
     let vm = projection_desired(desired, "vm")?;
     let original = projection_observation(&before, "vm")?;
-    let state = match projection_delivery_state(desired, &vm, &before) {
-        Ok(accepted) => accepted,
-        Err(_) => {
-            // Precisely ONE historical VM code migration. The historical
-            // provenance is publicly anchored in immutable Git/ReleaseSet.
-            // Cloudflare's active raw module must match the FULL digest,
-            // not merely the user-controlled 16-hex tag suffix.
-            verify_historical_vm_module_identity(&vm, original)?;
-            let source = cloudflare::get_worker_active_module_bytes(
-                &read_token,
-                &desired.target_account_id,
-                &vm.worker_name,
-            )
-            .await?;
-            if source.len() != 2449
-                || sha256_hex(&source)
-                    != "b4187fe98da3fe79d9a91885f3e7bbc70ef0bfbde56186f8ccbd716b75c070b6"
-            {
-                return Err("HOST_VM_HISTORICAL_CANONICAL_SOURCE_DIGEST_MISMATCH".to_owned());
-            }
-            // Fence any concurrent publisher: the source read applies only
-            // to the same active/latest version and owner as the first GET.
-            let after_source = observe(&read_token, desired).await?;
-            validate_access_boundary(desired, &after_source)?;
-            if after_source.projections != before.projections {
-                return Err("HOST_VM_HISTORICAL_PROVENANCE_READBACK_DRIFT".to_owned());
-            }
-            println!("host_vm_worker_historical_provenance=EXACT_GIT_ACCEPTED_SOURCE_SHA256");
-            ProjectionDeliveryState::FixedAbProofUpgradeRequired
+    let accepted_source = accepted_vm_worker_source(release)?;
+    let material = delivery_worker_material("vm")?;
+    if sha256_hex(material.source.as_bytes()) != accepted_source.desired {
+        return Err("HOST_VM_WORKER_DESIRED_RELEASE_SOURCE_MISMATCH".to_owned());
+    }
+    let raw = cloudflare::get_worker_active_module_bytes(
+        &read_token,
+        &desired.target_account_id,
+        &vm.worker_name,
+    )
+    .await?;
+    let actual_sha256 = sha256_hex(&raw);
+    let state = if actual_sha256 == accepted_source.desired {
+        if projection_delivery_state(desired, &vm, &before)? != ProjectionDeliveryState::FixedAb {
+            return Err("HOST_VM_WORKER_DESIRED_SOURCE_METADATA_MISMATCH".to_owned());
         }
+        ProjectionDeliveryState::FixedAb
+    } else {
+        verify_vm_worker_predecessor(&vm, original, &accepted_source.predecessor)?;
+        if actual_sha256 != accepted_source.predecessor {
+            return Err("HOST_VM_WORKER_PREDECESSOR_SOURCE_MISMATCH".to_owned());
+        }
+        ProjectionDeliveryState::FixedAbProofUpgradeRequired
     };
+    let after_source = observe(&read_token, desired).await?;
+    validate_access_boundary(desired, &after_source)?;
+    if after_source.projections != before.projections {
+        return Err("HOST_VM_WORKER_PREDECESSOR_READBACK_DRIFT".to_owned());
+    }
+    println!("host_vm_worker_source_provenance=ACCEPTED_RELEASESET_FULL_SHA256");
     if original.worker_latest_version_id.is_none()
         || original.worker_active_version_ids.as_slice()
             != [original.worker_latest_version_id.as_deref().unwrap_or("")]
@@ -1466,7 +1506,7 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
         7 => cloudflare::WorkerCodeBindingScope::VmHostSigner,
         _ => return Err("HOST_VM_WORKER_BINDINGS_INCOMPLETE".to_owned()),
     };
-    let source = delivery_worker_material("vm")?;
+    let source = material;
     let version_id = cloudflare::upload_worker_slot_proof_version(
         &write_token,
         &desired.target_account_id,
@@ -1506,9 +1546,25 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
     {
         return Err("HOST_VM_WORKER_DEPLOYMENT_NOT_PROVEN_STOP_NO_REPLAY".to_owned());
     }
+    // The live bytes, not Cloudflare's version label, prove the deployment.
+    let deployed = cloudflare::get_worker_active_module_bytes(
+        &read_token,
+        &desired.target_account_id,
+        &vm.worker_name,
+    )
+    .await?;
+    if sha256_hex(&deployed) != accepted_source.desired {
+        return Err("HOST_VM_WORKER_ACTIVE_BYTES_MISMATCH_NO_REPLAY".to_owned());
+    }
+    let after_bytes = observe(&read_token, desired).await?;
+    validate_access_boundary(desired, &after_bytes)?;
+    if after_bytes.projections != after.projections {
+        return Err("HOST_VM_WORKER_SOURCE_READBACK_DRIFT_NO_REPLAY".to_owned());
+    }
     if ack.is_err() {
         return Err("HOST_VM_WORKER_DEPLOY_ACK_UNCERTAIN_STOP_FOR_RECONCILIATION".to_owned());
     }
+    println!("host_vm_worker_source_readback=EXACT_ACCEPTED_BYTES");
     println!("host_vm_worker_authorizer=CANONICAL_VM_CODE_ACTIVE");
     println!("host_vm_worker_active_version_id={version_id}");
     println!("worker_mutations=2");
@@ -4641,45 +4697,46 @@ mod tests {
     }
 
     #[test]
-    fn one_historical_vm_source_transition_is_exactly_identity_bound() {
+    fn vm_worker_predecessor_requires_exact_version_binding_and_source() {
         let d = desired();
         let mut obs = observation(&d);
         make_terminal(&mut obs, "vm");
+        let vm = projection_desired(&d, "vm").unwrap();
+        let source = "73964c87f436adc5de8ab0c34513413e0328ede6a99727a844aa3af9e643b5e1";
         let original = obs
             .projections
             .iter_mut()
             .find(|p| p.projection == "vm")
             .unwrap();
-        original.worker_latest_version_id = Some("f2444bc0-ca75-4c36-81d7-3cf740058363".to_owned());
-        original.worker_active_version_ids =
-            vec!["f2444bc0-ca75-4c36-81d7-3cf740058363".to_owned()];
-        original.worker_active_deployment_id =
-            Some("8379be2c-61dd-44d4-aa67-6794735c5724".to_owned());
-        original.worker_version_tag = Some("sing-box-phase6-ab-vm-b4187fe98da3fe79".to_owned());
+        original.worker_version_tag = Some(format!("sing-box-phase6-ab-vm-{}", &source[..16]));
         original.worker_latest_version_tag = original.worker_version_tag.clone();
-        let vm = projection_desired(&d, "vm").unwrap();
-        let original = super::projection_observation(&obs, "vm").unwrap();
-        assert!(verify_historical_vm_module_identity(&vm, original).is_ok());
-        assert!(projection_delivery_state(&d, &vm, &obs).is_err());
-        let mut changed = original.clone();
-        changed.worker_active_deployment_id = Some("different".to_owned());
-        assert!(verify_historical_vm_module_identity(&vm, &changed).is_err());
-        changed = original.clone();
-        changed.worker_latest_version_id = Some("different".to_owned());
-        assert!(verify_historical_vm_module_identity(&vm, &changed).is_err());
-        changed = original.clone();
-        changed.worker_latest_version_tag = Some("other".to_owned());
-        assert!(verify_historical_vm_module_identity(&vm, &changed).is_err());
-        changed = original.clone();
-        changed
-            .worker_secret_bindings
-            .push(cloudflare::CloudflareWorkerSecretBinding {
-                name: "UNAUTHORIZED".to_owned(),
-                binding_type: "secret_text".to_owned(),
-            });
-        assert!(verify_historical_vm_module_identity(&vm, &changed).is_err());
+        original.worker_binding_count = Some(7);
+        original.worker_secret_bindings = [
+            SLOT_A,
+            SLOT_B,
+            "EDGE_HOST_ACCESS_AUD",
+            "EDGE_HOST_ACCESS_ISSUER",
+            "EDGE_HOST_GITHUB_ACTOR_ID",
+            "EDGE_HOST_SIGNING_KEY_ID",
+            "EDGE_HOST_SIGNING_PKCS8_BASE64",
+        ]
+        .iter()
+        .map(|name| cloudflare::CloudflareWorkerSecretBinding {
+            name: (*name).to_owned(),
+            binding_type: "secret_text".to_owned(),
+        })
+        .collect();
+        let current = super::projection_observation(&obs, "vm").unwrap();
+        assert!(verify_vm_worker_predecessor(&vm, current, source).is_ok());
+        assert!(verify_vm_worker_predecessor(&vm, current, &"0".repeat(64)).is_err());
+        let mut drift = current.clone();
+        drift.worker_active_version_ids = vec!["foreign".to_owned()];
+        assert!(verify_vm_worker_predecessor(&vm, &drift, source).is_err());
+        drift = current.clone();
+        drift.worker_secret_bindings.pop();
+        assert!(verify_vm_worker_predecessor(&vm, &drift, source).is_err());
         let windows = projection_desired(&d, "windows").unwrap();
-        assert!(verify_historical_vm_module_identity(&windows, original).is_err());
+        assert!(verify_vm_worker_predecessor(&windows, current, source).is_err());
     }
 
     #[test]

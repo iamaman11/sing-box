@@ -40,7 +40,7 @@ use std::io::Read;
 use std::path::Path;
 
 pub const MIN_RELEASE_SET_SCHEMA_VERSION: u32 = 1;
-pub const RELEASE_SET_SCHEMA_VERSION: u32 = 7;
+pub const RELEASE_SET_SCHEMA_VERSION: u32 = 8;
 pub const CONFIG_SCHEMA_VERSION: u32 = 1;
 pub const DB_SCHEMA_VERSION: u32 = 1;
 pub const CREDENTIAL_DUMMY_PROBE_GENERATION_A: u64 = 9_000_001;
@@ -1243,7 +1243,7 @@ pub fn validate_release_set(release: &ReleaseSet) -> Result<(), String> {
                 return Err("schema v3 must not contain VM runtime reuse identity".to_owned());
             }
         }
-        4 | 5 | 6 | 7 => {
+        4 | 5 | 6 | 7 | 8 => {
             validate_sha256_bytes(
                 "vm_runtime.edge_controller_sha256",
                 &vm.edge_controller_sha256,
@@ -1306,6 +1306,33 @@ pub fn validate_release_set(release: &ReleaseSet) -> Result<(), String> {
             .as_ref()
             .ok_or_else(|| "cloudflare.mesh_image is required".to_owned())?,
     )?;
+
+    // v8 binds generated VM Worker bytes and their accepted predecessor to
+    // the same immutable release authority as VM and Windows artifacts.
+    if release.schema_version < 8 {
+        if !cloudflare.vm_worker_source_sha256.is_empty()
+            || !cloudflare.vm_worker_predecessor_source_sha256.is_empty()
+            || !cloudflare.vm_worker_predecessor_revision.is_empty()
+        {
+            return Err(
+                "pre-v8 release-set must not contain VM Worker source authority".to_owned(),
+            );
+        }
+    } else {
+        validate_sha256_bytes(
+            "cloudflare.vm_worker_source_sha256",
+            &cloudflare.vm_worker_source_sha256,
+        )?;
+        validate_sha256_bytes(
+            "cloudflare.vm_worker_predecessor_source_sha256",
+            &cloudflare.vm_worker_predecessor_source_sha256,
+        )?;
+        validate_lower_hex(
+            "cloudflare.vm_worker_predecessor_revision",
+            &cloudflare.vm_worker_predecessor_revision,
+            40,
+        )?;
+    }
 
     let schemas = release
         .schemas
@@ -2814,6 +2841,11 @@ mod release_set_tests {
             .unwrap()
             .application_bundle_sha256
             .clear();
+        // The older test fixture also predates the v8 Worker source contract.
+        let cloudflare = release.cloudflare.as_mut().unwrap();
+        cloudflare.vm_worker_source_sha256.clear();
+        cloudflare.vm_worker_predecessor_source_sha256.clear();
+        cloudflare.vm_worker_predecessor_revision.clear();
     }
 
     fn valid_release() -> ReleaseSet {
@@ -2850,6 +2882,9 @@ mod release_set_tests {
             cloudflare: Some(CloudflareRuntime {
                 warp_version: "2026.9.1".to_owned(),
                 mesh_image: Some(image("docker.io/cloudflare/mesh", 10)),
+                vm_worker_source_sha256: digest(17),
+                vm_worker_predecessor_source_sha256: digest(18),
+                vm_worker_predecessor_revision: "a".repeat(40),
             }),
             schemas: Some(SchemaVersions {
                 config_schema: 1,
@@ -2867,6 +2902,27 @@ mod release_set_tests {
         let second = release_set_sha256(&bytes).unwrap();
         assert_eq!(first, second);
         assert_eq!(first.len(), 64);
+    }
+
+    #[test]
+    fn release_set_v8_requires_both_worker_digests_and_predecessor_revision() {
+        let source = valid_release();
+        assert!(validate_release_set(&source).is_ok());
+        let mut bad = source.clone();
+        let cloudflare = bad.cloudflare.as_mut().unwrap();
+        cloudflare.vm_worker_source_sha256.clear();
+        assert!(validate_release_set(&bad).is_err());
+        bad = source.clone();
+        let cloudflare = bad.cloudflare.as_mut().unwrap();
+        cloudflare.vm_worker_predecessor_source_sha256.clear();
+        assert!(validate_release_set(&bad).is_err());
+        bad = source.clone();
+        let cloudflare = bad.cloudflare.as_mut().unwrap();
+        cloudflare.vm_worker_predecessor_revision.clear();
+        assert!(validate_release_set(&bad).is_err());
+        bad = source;
+        bad.schema_version = 7;
+        assert!(validate_release_set(&bad).is_err());
     }
 
     #[test]
@@ -3430,6 +3486,7 @@ mod release_set_tests {
     #[test]
     fn release_set_rejects_v7_without_application_bundle_identity() {
         let mut release = valid_release();
+        release.schema_version = 7;
         clear_application_bundle_identity(&mut release);
         assert!(validate_release_set(&release).is_err());
     }

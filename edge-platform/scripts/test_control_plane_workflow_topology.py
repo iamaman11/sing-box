@@ -3342,7 +3342,7 @@ def main() -> None:
     require(
         "WindowsDatapathMode datapath_mode" not in runtime_proto
         and "WindowsDatapathMode datapath_mode" not in release_proto
-        and "RELEASE_SET_SCHEMA_VERSION: u32 = 7" in shared_types
+        and "RELEASE_SET_SCHEMA_VERSION: u32 = 8" in shared_types
         and "desired.windows_datapath_mode" in windows_singbox
         and "state.datapath_mode" not in windows_singbox,
         "Stage 4B datapath authority must remain Git-owned and embedded, never duplicated into runtime/ReleaseSet state",
