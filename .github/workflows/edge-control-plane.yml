@@ -1024,6 +1024,7 @@ jobs:
     permissions:
       contents: read
     env:
+      GH_TOKEN: ${{ github.token }}
       ACCEPTED_REVISION: ${{ github.sha }}
       REPOSITORY: ${{ github.repository }}
       TARGET_MACHINE: ${{ needs.host.outputs.machine_id }}
