@@ -207,6 +207,16 @@ pub(crate) enum HostCommand {
         #[arg(long)]
         public_path: PathBuf,
     },
+    /// Re-decode a compiled Git textproto and verify EXACTLY one public
+    /// signer key changed; code generator ordering is not an identity.
+    #[command(hide = true)]
+    VerifySigner {
+        machine_id: String,
+        #[arg(long)]
+        signer_public_key_hex: String,
+        #[arg(long)]
+        candidate_path: PathBuf,
+    },
     /// Internal Git candidate: change ONLY the selected VM public signer
     /// pin, without touching receipt, credentials or another host.
     #[command(hide = true)]
