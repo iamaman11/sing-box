@@ -580,17 +580,7 @@ jobs:
               [[ "${TARGET_MACHINE}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]
               test "${TARGET_DESIRED_SPEC}" = "infra/hosts/specs/${TARGET_MACHINE}.textproto"
               test -f "${TARGET_DESIRED_SPEC}" && test ! -L "${TARGET_DESIRED_SPEC}"
-              compiler="${RUNNER_TEMP}/host-capability-buf"
-              curl --fail --silent --show-error --location \
-                'https://github.com/bufbuild/buf/releases/download/v1.73.0/buf-Linux-x86_64' \
-                -o "${compiler}"
-              echo "8f2986298ad08f0cc1bf999b9797b7c383adf32d7edf0f73d6f1e1a701baeac1  ${compiler}" | sha256sum --check --status
-              chmod 0755 "${compiler}"
-              (cd edge-platform && "${compiler}" convert proto/edge/platform/v1/fleet.proto \
-                --type edge.platform.v1.FleetVmHostDesired \
-                --from "../${TARGET_DESIRED_SPEC}#format=txtpb" \
-                --to "${RUNNER_TEMP}/capability-vm.pb#format=binpb")
-              test -s "${RUNNER_TEMP}/capability-vm.pb"
+              bash edge-platform/scripts/compile_vm_host_desired.sh "${TARGET_MACHINE}"
               ;;
             *) echo 'HOST_CAPABILITY_TYPED_GIT_PATH_INVALID' >&2; exit 1 ;;
           esac
@@ -682,7 +672,7 @@ jobs:
           bin="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
           test "$(sha256sum "${bin}" | cut -d' ' -f1)" = "${EDGE_ORCHESTRATOR_SHA256}"
           chmod 0755 "${bin}"
-          buf="${RUNNER_TEMP}/host-capability-buf"
+          buf="${RUNNER_TEMP}/host-vm-buf"
           test -x "${buf}"
           (cd edge-platform && "${buf}" convert proto/edge/platform/v1/fleet.proto \
             --type edge.platform.v1.FleetDesiredState \
@@ -749,21 +739,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          [[ "${TARGET_MACHINE}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]
-          spec="infra/hosts/specs/${TARGET_MACHINE}.textproto"
-          test -f "${spec}"
-          test ! -L "${spec}"
-          test ! -e "infra/hosts/specs/${TARGET_MACHINE}.binpb"
-          buf="${RUNNER_TEMP}/host-first-use-buf"
-          curl --fail --silent --show-error --location \
-            "https://github.com/bufbuild/buf/releases/download/v1.73.0/buf-Linux-x86_64" -o "${buf}"
-          echo "8f2986298ad08f0cc1bf999b9797b7c383adf32d7edf0f73d6f1e1a701baeac1  ${buf}" | sha256sum --check --status
-          chmod 0755 "${buf}"
-          (cd edge-platform && "${buf}" convert proto/edge/platform/v1/fleet.proto \
-            --type edge.platform.v1.FleetVmHostDesired \
-            --from "../${spec}#format=txtpb" \
-            --to "../infra/hosts/specs/${TARGET_MACHINE}.binpb#format=binpb")
-          test -s "infra/hosts/specs/${TARGET_MACHINE}.binpb"
+          bash edge-platform/scripts/compile_vm_host_desired.sh "${TARGET_MACHINE}"
 
       - name: Resolve immutable published native owner and fleet
         shell: bash
@@ -1051,6 +1027,12 @@ jobs:
           echo "${EDGE_ORCHESTRATOR_SHA256}  ${bin}" | sha256sum --check --status
           chmod 0755 "${bin}"
           echo "EDGE_RELEASE_CONTEXT_PATH=${OUTPUT_DIR}/resolved.env" >> "${GITHUB_ENV}"
+
+      - name: Compile exact VM desired before native trust reconciliation
+        shell: bash
+        run: |
+          set -euo pipefail
+          bash edge-platform/scripts/compile_vm_host_desired.sh "${TARGET_MACHINE}"
 
       - name: Materialize scoped operator credential for existing root only
         shell: bash

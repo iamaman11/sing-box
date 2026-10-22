@@ -5237,8 +5237,70 @@ def test_one_host_apply_reconciles_root_trust_before_native_dispatch() -> None:
     require(broken != observe and "needs.host_refresh_trust.result == 'skipped'" in broken,
             "missing-trust admission negative fixture not generated")
 
+def test_vm_typed_desired_preparation_is_shared_and_fail_closed() -> None:
+    """Every VM entrypoint must prepare the same bounded derived protobuf before use."""
+    router = ROUTER.read_text(encoding="utf-8")
+    helper = Path("edge-platform/scripts/compile_vm_host_desired.sh")
+    script = helper.read_text(encoding="utf-8")
+    shared = 'bash edge-platform/scripts/compile_vm_host_desired.sh "${TARGET_MACHINE}"'
+    require(router.count(shared) == 3,
+            "first-use, VM status and root trust must use one VM protobuf compiler")
+    sections = (
+        router.split("  host_capabilities:\n", 1)[1].split("  host_first_use:\n", 1)[0],
+        router.split("  host_first_use:\n", 1)[1].split("  host_refresh_trust:\n", 1)[0],
+        router.split("  host_refresh_trust:\n", 1)[1].split("  host_resume_receipt:\n", 1)[0],
+    )
+    require(all(section.count(shared) == 1 for section in sections),
+            "missing or duplicate VM typed preparation in a lifecycle branch")
+    trust = sections[2]
+    require(trust.index(shared) < trust.index("Materialize scoped operator credential")
+            < trust.index("refresh-receipt "),
+            "VM desired must be prepared before privileged trust reconciliation")
+    require('buf="${RUNNER_TEMP}/host-vm-buf"' in sections[0]
+            and 'test -x "${buf}"' in sections[0],
+            "status proof must reuse the verified pinned compiler")
+    for required in (
+        "infra/hosts/specs/${machine}.textproto",
+        "infra/hosts/specs/${machine}.binpb",
+        "edge.platform.v1.FleetVmHostDesired",
+        "sha256sum --check --status",
+        "HOST_VM_TYPED_DERIVED_ALREADY_PRESENT",
+        "HOST_VM_TYPED_COMPILER_VERSION_MISMATCH",
+        "HOST_VM_TYPED_COMPILED_INVALID_SIZE",
+        "131072",
+    ):
+        require(required in script, "VM typed compilation contract missing: " + required)
+    # Test rejection without downloading tools or touching any real host.
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        spec = root / "infra/hosts/specs/acceptance-fixture.textproto"
+        spec.parent.mkdir(parents=True)
+        def rejected(machine: str, reason: str) -> None:
+            result = subprocess.run(
+                ["bash", str(helper.resolve()), machine], cwd=root,
+                capture_output=True, text=True, check=False,
+            )
+            require(result.returncode != 0 and reason in result.stderr,
+                    "VM typed preparation must reject " + reason)
+        rejected("../escape", "HOST_VM_TYPED_SPEC_NAME_INVALID")
+        rejected("acceptance-fixture", "HOST_VM_TYPED_SOURCE_UNREADABLE")
+        spec.write_text("schema_version: 1\n", encoding="ascii")
+        derived = spec.with_suffix(".binpb")
+        derived.write_bytes(b"must-not-be-overwritten")
+        rejected("acceptance-fixture", "HOST_VM_TYPED_DERIVED_ALREADY_PRESENT")
+        derived.unlink()
+        spec.write_bytes(b"x" * 131073)
+        rejected("acceptance-fixture", "HOST_VM_TYPED_SOURCE_INVALID_SIZE")
+        spec.unlink()
+        original = root / "outside.textproto"
+        original.write_text("schema_version: 1\n", encoding="ascii")
+        spec.symlink_to(original)
+        rejected("acceptance-fixture", "HOST_VM_TYPED_SOURCE_UNREADABLE")
+
+
 if __name__ == "__main__":
     main()
     test_one_host_apply_reconciles_root_trust_before_native_dispatch()
+    test_vm_typed_desired_preparation_is_shared_and_fail_closed()
     test_native_vm_artifact_transport_is_same_run_and_not_gh_cli()
     verify_receipt_resume_inline_release_context(ROUTER.read_text(encoding="utf-8"))
