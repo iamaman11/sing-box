@@ -108,6 +108,14 @@ impl Command {
     }
 }
 
+/// One internal phase of the SAME Git-authorized VM Worker owner.
+#[derive(Debug, Clone, Copy, Default, ValueEnum, PartialEq, Eq)]
+pub(crate) enum VmWorkerAuthorizerPhase {
+    #[default]
+    Code,
+    Signer,
+}
+
 #[derive(Debug, Clone, Subcommand)]
 pub(crate) enum HostCommand {
     /// All registered hosts, or the one machine selected by machine_id.
@@ -183,6 +191,10 @@ pub(crate) enum HostCommand {
     #[command(hide = true)]
     VmWorkerAuthorizerUpgrade {
         machine_id: String,
+        /// A closed, strongly typed internal VM Worker phase; never a new
+        /// public command or arbitrary Worker mutation target.
+        #[arg(long, value_enum, default_value = "code")]
+        phase: VmWorkerAuthorizerPhase,
         /// Internal GET-only admission before a durable provider BEGIN.
         #[arg(long)]
         plan_only: bool,

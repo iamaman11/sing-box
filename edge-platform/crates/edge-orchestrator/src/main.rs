@@ -225,11 +225,13 @@ async fn run(
         } => match command {
             cli::HostCommand::VmWorkerAuthorizerUpgrade {
                 machine_id,
+                phase,
                 plan_only,
             } => {
                 cloudflare_credential_plane_command::host_vm_worker_authorizer_upgrade(
                     &machine_id,
                     release_context,
+                    phase,
                     plan_only,
                 )
                 .await

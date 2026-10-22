@@ -1,5 +1,6 @@
 use crate::cli::{
     CredentialDeliveryCommand, CredentialDeliverySlotArg, CredentialRotationClassArg,
+    VmWorkerAuthorizerPhase,
 };
 use crate::credential_initial_journal::{
     InitialPairJournalPlan, PairedCommitPlan, PairedHostReadback, PairedRecoveryPlan,
@@ -1356,6 +1357,7 @@ fn verify_historical_vm_module_identity(
 pub(crate) async fn host_vm_worker_authorizer_upgrade(
     machine_id: &str,
     release: &edge_orchestrator::OrchestrationContext,
+    phase: VmWorkerAuthorizerPhase,
     plan_only: bool,
 ) -> Result<(), String> {
     for (key, expected) in [
@@ -1443,6 +1445,30 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
     {
         return Err("HOST_VM_WORKER_PENDING_OR_SPLIT_DEPLOYMENT_FORBIDDEN".to_owned());
     }
+    if phase == VmWorkerAuthorizerPhase::Signer {
+        if state != ProjectionDeliveryState::FixedAb
+            || original.worker_secret_bindings.len() != 2
+        {
+            return Err("HOST_SIGNER_INIT_EXACT_UNSIGNED_VM_WORKER_REQUIRED".to_owned());
+        }
+        let source = cloudflare::get_worker_active_module_bytes(
+            &read_token,
+            &desired.target_account_id,
+            &vm.worker_name,
+        )
+        .await?;
+        if source != delivery_worker_material("vm")?.source.as_bytes() {
+            return Err("HOST_SIGNER_INIT_WORKER_CODE_NOT_CANONICAL".to_owned());
+        }
+        if plan_only {
+            println!("host_vm_worker_authorizer=SIGNER_INITIALIZATION_PLAN");
+            println!("worker_mutations=0");
+            println!("host_signed_install=NOT_AUTHORIZED");
+            return Ok(());
+        }
+        return install_vm_host_signer(desired, &vm, &before, original, &read_token, &write_token)
+            .await;
+    }
     if state == ProjectionDeliveryState::FixedAb {
         println!("host_vm_worker_authorizer=SOURCE_ALREADY_ACCEPTED");
         println!("worker_mutations=0");
@@ -1513,6 +1539,112 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
     println!("host_vm_worker_active_version_id={version_id}");
     println!("worker_mutations=2");
     println!("worker_secret_mutations=0");
+    println!("windows_worker_mutations=0");
+    println!("host_signed_install=NOT_AUTHORIZED");
+    Ok(())
+}
+
+/// Once-only Host signer enrollment in the existing VM Worker. The private
+/// PKCS8 key is generated in this protected GitHub-hosted process and passed
+/// directly to the provider TLS API. It is never written to Git, an artifact
+/// or the runner filesystem. Public key is printed BEFORE the first mutation
+/// so unknown acknowledgements can be reconciled WITHOUT mutation replay.
+async fn install_vm_host_signer(
+    desired: &ProductionCredentialPlaneOwnership,
+    vm: &ProjectionDesired,
+    before: &CredentialPlaneObservation,
+    old: &ProjectionObservation,
+    read_token: &str,
+    write_token: &str,
+) -> Result<(), String> {
+    let begin = env::var("EDGE_HOST_SIGNER_BEGIN_ID")
+        .map_err(|_| "HOST_SIGNER_DURABLE_BEGIN_REQUIRED")?;
+    if begin.is_empty() || begin.starts_with('0') || !begin.bytes().all(|b| b.is_ascii_digit()) {
+        return Err("HOST_SIGNER_BEGIN_INVALID".to_owned());
+    }
+    if old.worker_binding_count != Some(2)
+        || old.worker_latest_version_id.as_deref() != old.worker_active_version_ids.first().map(String::as_str)
+        || old.worker_active_version_ids.len() != 1
+    {
+        return Err("HOST_SIGNER_EXISTING_WORKER_NOT_SINGLE_ACTIVE_VERSION".to_owned());
+    }
+    let access_id = old
+        .access_application_id
+        .as_deref()
+        .ok_or("HOST_SIGNER_VM_ACCESS_APPLICATION_REQUIRED")?;
+    let audience = cloudflare::get_access_application_audience(
+        read_token,
+        &desired.target_account_id,
+        access_id,
+    )
+    .await?;
+    let issuer = format!("https://{}", desired.access_auth_domain);
+    let rng = ring::rand::SystemRandom::new();
+    let pkcs8 = ring::signature::Ed25519KeyPair::generate_pkcs8(&rng)
+        .map_err(|_| "HOST_SIGNER_RANDOM_GENERATION_FAILED")?;
+    let key = ring::signature::Ed25519KeyPair::from_pkcs8(pkcs8.as_ref())
+        .map_err(|_| "HOST_SIGNER_LOCAL_KEY_INVALID")?;
+    use base64::Engine as _;
+    use ring::signature::KeyPair as _;
+    let pkcs8_text = base64::engine::general_purpose::STANDARD.encode(pkcs8.as_ref());
+    let public = key.public_key().as_ref().iter().map(|b| format!("{b:02x}")).collect::<String>();
+    let key_id = format!("singbox-host-vm-{}", &public[..16]);
+    // This public log line is an immutable recovery locator; no private key
+    // or A/B credential material is ever emitted. It precedes the one PATCH.
+    println!("host_vm_worker_signer_public_key_hex={public}");
+    println!("host_signer_mutation_scope=ONE_VM_WORKER_FIVE_BINDINGS_ONLY");
+    let actor = "44100369";
+    let secrets = [
+        ("EDGE_HOST_SIGNING_PKCS8_BASE64", pkcs8_text.as_str()),
+        ("EDGE_HOST_SIGNING_KEY_ID", key_id.as_str()),
+        ("EDGE_HOST_GITHUB_ACTOR_ID", actor),
+        ("EDGE_HOST_ACCESS_ISSUER", issuer.as_str()),
+        ("EDGE_HOST_ACCESS_AUD", audience.as_str()),
+    ];
+    // Provider merge patch preserves existing A/B values. Exactly one write
+    // creates the 5 Host secrets, followed only by one version deployment.
+    let material = delivery_worker_material("vm")?;
+    let version = cloudflare::patch_latest_worker_version_secrets(
+        write_token,
+        &desired.target_account_id,
+        &vm.worker_name,
+        &material.version_tag,
+        &secrets,
+    )
+    .await
+    .map_err(|_| "HOST_SIGNER_PATCH_UNCERTAIN_STOP_NO_REPLAY".to_owned())?;
+    let pending = observe(read_token, desired).await?;
+    validate_access_boundary(desired, &pending)?;
+    if projection_observation(before, "windows")? != projection_observation(&pending, "windows")?
+    {
+        return Err("HOST_SIGNER_PATCH_CHANGED_WINDOWS_FORBIDDEN".to_owned());
+    }
+    let pending_vm = projection_observation(&pending, "vm")?;
+    if pending_vm.worker_binding_count != Some(7)
+        || pending_vm.worker_latest_version_id.as_deref() != Some(version.as_str())
+        || pending_vm.worker_active_version_ids != old.worker_active_version_ids
+        || pending_vm.worker_latest_version_tag.as_deref() != Some(material.version_tag.as_str())
+    {
+        return Err("HOST_SIGNER_PATCH_READBACK_UNPROVEN_NO_REPLAY".to_owned());
+    }
+    let ack = cloudflare::deploy_worker_version(
+        write_token, &desired.target_account_id, &vm.worker_name, &version,
+    ).await;
+    let after = observe(read_token, desired).await?;
+    validate_access_boundary(desired, &after)?;
+    if projection_observation(before, "windows")? != projection_observation(&after, "windows")?
+        || verify_exact_active_worker_version(projection_observation(&after, "vm")?, &version).is_err()
+        || projection_delivery_state(desired, vm, &after)? != ProjectionDeliveryState::FixedAb
+    {
+        return Err("HOST_SIGNER_ACTIVE_READBACK_UNPROVEN_NO_REPLAY".to_owned());
+    }
+    if ack.is_err() {
+        return Err("HOST_SIGNER_DEPLOY_ACK_UNCERTAIN_NO_REPLAY".to_owned());
+    }
+    println!("host_vm_worker_authorizer=HOST_SIGNER_ACTIVE_GIT_PIN_REQUIRED");
+    println!("host_vm_worker_signer_version_id={version}");
+    println!("worker_mutations=2");
+    println!("worker_secret_mutations=5");
     println!("windows_worker_mutations=0");
     println!("host_signed_install=NOT_AUTHORIZED");
     Ok(())

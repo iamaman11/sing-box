@@ -1530,6 +1530,41 @@ pub async fn list_device_posture_rules(
     ))
 }
 
+/// GET-only audience for the one already-observed VM Access application.
+/// Never accept a caller-supplied audience or guess it from the application ID.
+pub async fn get_access_application_audience(
+    api_token: &str,
+    account_id: &str,
+    app_id: &str,
+) -> Result<String, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Cloudflare Access application ID", app_id)?;
+    let client = authorized_client(api_token)?;
+    let response = client
+        .get(format!(
+            "{API_ROOT}/accounts/{account_id}/access/apps/{app_id}"
+        ))
+        .send()
+        .await
+        .map_err(|_| "Cloudflare Access application audience GET failed".to_owned())?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response).await?;
+    let object = payload
+        .result
+        .as_object()
+        .ok_or("Cloudflare Access application GET result is not an object")?;
+    if object.get("id").and_then(Value::as_str) != Some(app_id) {
+        return Err("Cloudflare Access application identity drift".to_owned());
+    }
+    let aud = object
+        .get("aud")
+        .and_then(Value::as_str)
+        .ok_or("Cloudflare Access application AUD missing")?;
+    if aud.len() != 64 || !aud.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err("Cloudflare Access application AUD malformed".to_owned());
+    }
+    Ok(aud.to_owned())
+}
+
 pub async fn list_access_applications(
     api_token: &str,
     account_id: &str,
