@@ -466,10 +466,14 @@ jobs:
             -f "message=host: reserve public VM signer" -f "content=${encoded}" >/dev/null
           gh api "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto?ref=${branch}" --jq '.content' |
             base64 --decode | cmp -s - "${spec}"
-          gh pr create -R "${GITHUB_REPOSITORY}" -B main -H "${branch}" --draft \
-            -t "host: pin public VM Worker signer for ${TARGET_MACHINE}" \
-            -b "DRAFT PUBLIC ONLY. Origin issue #1 comment ${SOURCE_COMMENT_ID}. Worker secrets must be attested before protected merge. No VM CREATE or signed INSTALL."
-          test "$(gh pr view "${branch}" -R "${GITHUB_REPOSITORY}" --json isDraft --jq '.isDraft')" = true
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/pulls" \
+            -f "head=${branch}" -f "base=main" -F draft=true \
+            -f "title=host: pin public VM Worker signer for ${TARGET_MACHINE}" \
+            -f "body=DRAFT PUBLIC ONLY. Origin issue #1 comment ${SOURCE_COMMENT_ID}. Worker secrets must be attested before protected merge. No VM CREATE or signed INSTALL." >/dev/null
+          pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=open&head=iamaman11:${branch}" |
+            jq -er --arg branch "${branch}" '[.[] | select(.head.ref == $branch and .base.ref == "main" and .head.repo.full_name == "iamaman11/sing-box")] | if length == 1 then .[0].number else error("HOST_PUBLIC_PR_NOT_EXACT") end')"
+          [[ "${pr}" =~ ^[1-9][0-9]*$ ]]
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.draft')" = true
           reservation="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}" --jq '.object.sha')"
           [[ "${reservation}" =~ ^[0-9a-f]{40}$ ]]
           record="<!-- sing-box-vm-signer-begin/v1 machine=${TARGET_MACHINE} comment=${SOURCE_COMMENT_ID} revision=${GITHUB_SHA} run=${GITHUB_RUN_ID} branch=${branch} sha=${reservation} -->"
@@ -507,10 +511,21 @@ jobs:
           branch="host-signer-${TARGET_MACHINE}-${SOURCE_COMMENT_ID}"
           test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')" = "${GITHUB_SHA}"
           test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}" --jq '.object.sha')" = "${HOST_SIGNER_RESERVATION_SHA}"
-          test "$(gh pr view "${branch}" -R "${GITHUB_REPOSITORY}" --json isDraft --jq '.isDraft')" = true
-          gh pr edit "${branch}" -R "${GITHUB_REPOSITORY}" \
-            -b "Five VM Host signer bindings active and read back, public key only in protected Git. Original /host apply issue #1 comment ${SOURCE_COMMENT_ID}, accepted revision ${GITHUB_SHA}. First-use Worker credentials and receipt still absent; signed INSTALL NOT authorized."
-          gh pr ready "${branch}" -R "${GITHUB_REPOSITORY}"
+          pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=open&head=iamaman11:${branch}" |
+            jq -er --arg branch "${branch}" '[.[] | select(.head.ref == $branch and .base.ref == "main" and .head.repo.full_name == "iamaman11/sing-box")] | if length == 1 then .[0].number else error("HOST_PUBLIC_PR_NOT_EXACT") end')"
+          [[ "${pr}" =~ ^[1-9][0-9]*$ ]]
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.draft')" = true
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/pulls/${pr}" \
+            -f "body="Five VM Host signer bindings active and read back, public key only in protected Git. Original /host apply issue #1 comment ${SOURCE_COMMENT_ID}, accepted revision ${GITHUB_SHA}. First-use Worker credentials and receipt still absent; signed INSTALL NOT authorized." >/dev/null
+          node="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.node_id')"
+          test -n "${node}"
+          # Minimal single-purpose mutation: gh pr ready/view may ask for
+          # read:org even though the scoped repository token owns this PR.
+          # If readiness cannot be changed, leave the existing public-only
+          # reservation in Draft; NEVER replay a completed provider write.
+          if ! gh api graphql -f 'query=mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{isDraft}}}' -f "id=${node}" --jq '.data.markPullRequestReadyForReview.pullRequest.isDraft' | grep -Fxq false; then
+            echo 'HOST_PUBLIC_GIT_PR_REMAINS_DRAFT_REVIEW_REQUIRED'
+          fi
           echo 'host_vm_signer=AWAITING_PROTECTED_PUBLIC_GIT_MERGE'
 
   host_capabilities:
@@ -867,10 +882,14 @@ jobs:
             -f "branch=${branch}" -f "sha=${original_sha}" \
             -f "message=host: reserve native receipt registration for ${TARGET_MACHINE}" \
             -f "content=${encoded}" >/dev/null
-          gh pr create -R "${GITHUB_REPOSITORY}" -B main -H "${branch}" --draft \
-            -t "host: register native receipt for ${TARGET_MACHINE}" \
-            -b "DRAFT RESERVATION ONLY. First-use /host apply from issue #1 comment ${SOURCE_COMMENT_ID} at protected revision ${GITHUB_SHA}. Root key is not enrolled or registered yet. Must remain draft until the exact root public identity is proven. No signed INSTALL is authorized."
-          test "$(gh pr view "${branch}" -R "${GITHUB_REPOSITORY}" --json isDraft --jq '.isDraft')" = true
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/pulls" \
+            -f "head=${branch}" -f "base=main" -F draft=true \
+            -f "title=host: register native receipt for ${TARGET_MACHINE}" \
+            -f "body=DRAFT RESERVATION ONLY. First-use /host apply from issue #1 comment ${SOURCE_COMMENT_ID} at protected revision ${GITHUB_SHA}. Root key is not enrolled or registered yet. Must remain draft until the exact root public identity is proven. No signed INSTALL is authorized." >/dev/null
+          pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=open&head=iamaman11:${branch}" |
+            jq -er --arg branch "${branch}" '[.[] | select(.head.ref == $branch and .base.ref == "main" and .head.repo.full_name == "iamaman11/sing-box")] | if length == 1 then .[0].number else error("HOST_PUBLIC_PR_NOT_EXACT") end')"
+          [[ "${pr}" =~ ^[1-9][0-9]*$ ]]
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.draft')" = true
           reservation_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}" --jq '.object.sha')"
           [[ "${reservation_sha}" =~ ^[0-9a-f]{40}$ ]]
           echo "HOST_RECEIPT_RESERVATION_SHA=${reservation_sha}" >> "${GITHUB_ENV}"
@@ -948,7 +967,10 @@ jobs:
           test -n "${REGISTRATION_TOKEN}"
           export GH_TOKEN="${REGISTRATION_TOKEN}"
           branch="host-receipt-${TARGET_MACHINE}-${SOURCE_COMMENT_ID}"
-          test "$(gh pr view "${branch}" -R "${GITHUB_REPOSITORY}" --json isDraft --jq '.isDraft')" = true
+          pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=open&head=iamaman11:${branch}" |
+            jq -er --arg branch "${branch}" '[.[] | select(.head.ref == $branch and .base.ref == "main" and .head.repo.full_name == "iamaman11/sing-box")] | if length == 1 then .[0].number else error("HOST_PUBLIC_PR_NOT_EXACT") end')"
+          [[ "${pr}" =~ ^[1-9][0-9]*$ ]]
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.draft')" = true
           test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')" = "${GITHUB_SHA}"
           test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}" --jq '.object.sha')" = "${HOST_RECEIPT_RESERVATION_SHA}"
           original_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto?ref=${branch}" --jq '.sha')"
@@ -960,9 +982,17 @@ jobs:
           # Verify EXACT committed public bytes before asking for merge.
           gh api "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto?ref=${branch}" \
             --jq '.content' | base64 --decode | cmp -s - "${target}"
-          gh pr edit "${branch}" -R "${GITHUB_REPOSITORY}" \
-            -b "Native root enrollment completed for ${TARGET_MACHINE}. Original request: issue #1 comment ${SOURCE_COMMENT_ID}. Protected source ReleaseSet revision: ${GITHUB_SHA}. Registered public key SHA256: $(printf '%s' "${public_key}" | sha256sum | cut -d' ' -f1). Root private key remains on VM. Required CI and protected merge still gate signed INSTALL."
-          gh pr ready "${branch}" -R "${GITHUB_REPOSITORY}"
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/pulls/${pr}" \
+            -f "body="Native root enrollment completed for ${TARGET_MACHINE}. Original request: issue #1 comment ${SOURCE_COMMENT_ID}. Protected source ReleaseSet revision: ${GITHUB_SHA}. Registered public key SHA256: $(printf '%s' "${public_key}" | sha256sum | cut -d' ' -f1). Root private key remains on VM. Required CI and protected merge still gate signed INSTALL." >/dev/null
+          node="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.node_id')"
+          test -n "${node}"
+          # Minimal single-purpose mutation: gh pr ready/view may ask for
+          # read:org even though the scoped repository token owns this PR.
+          # If readiness cannot be changed, leave the existing public-only
+          # reservation in Draft; NEVER replay a completed provider write.
+          if ! gh api graphql -f 'query=mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{isDraft}}}' -f "id=${node}" --jq '.data.markPullRequestReadyForReview.pullRequest.isDraft' | grep -Fxq false; then
+            echo 'HOST_PUBLIC_GIT_PR_REMAINS_DRAFT_REVIEW_REQUIRED'
+          fi
           echo 'host_first_use=AWAITING_PROTECTED_GIT_PR_MERGE'
           echo 'host_signed_install=NOT_YET_AUTHORIZED'
 
