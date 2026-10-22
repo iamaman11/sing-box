@@ -1341,7 +1341,7 @@ fn accepted_vm_worker_source(
     }
     let accepted = edge_shared_types::decode_release_set(&bytes)?;
     if accepted.schema_version < 8
-        || accepted.source_revision != release.release().accepted_revision
+        || accepted.source_revision != release.release().source_revision
     {
         return Err("HOST_VM_WORKER_RELEASESET_V8_REQUIRED".to_owned());
     }
