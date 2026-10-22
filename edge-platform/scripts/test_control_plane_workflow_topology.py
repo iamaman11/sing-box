@@ -5217,6 +5217,7 @@ def test_one_host_apply_reconciles_root_trust_before_native_dispatch() -> None:
         "group: vultr-control-plane-production",
         "name: production-vultr",
         "resolve_durable_release.sh",
+        "GH_TOKEN: ${{ github.token }}",
         "source ",
         "refresh-receipt ",
         "host_receipt_refresh=ROOT_PROTECTED_GIT_PINNED",
