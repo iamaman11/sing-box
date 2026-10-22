@@ -1,43 +1,80 @@
 schema_version: 1
-hosts {
+hosts: {
   machine_id: "application-acceptance-1"
   kind: FLEET_HOST_KIND_VM
   vm_machine_id: "application-acceptance-1"
   desired_spec_path: "infra/application/disposable-acceptance.json"
+  vm_containers: {
+    container_name: "vultr-line1-gateway"
+    compose_project: "vultr-edge"
+    compose_service: "line1-gateway"
+  }
+  vm_containers: {
+    container_name: "vultr-line2-proxy"
+    compose_project: "vultr-edge"
+    compose_service: "line2-proxy"
+  }
+  vm_containers: {
+    container_name: "vultr-warp-egress"
+    compose_project: "vultr-edge"
+    compose_service: "warp-egress"
+  }
   vm_provider_spec_path: "infra/vultr/application-acceptance.json"
-  vm_containers { container_name: "vultr-line1-gateway" compose_project: "vultr-edge" compose_service: "line1-gateway" }
-  vm_containers { container_name: "vultr-line2-proxy" compose_project: "vultr-edge" compose_service: "line2-proxy" }
-  vm_containers { container_name: "vultr-warp-egress" compose_project: "vultr-edge" compose_service: "warp-egress" }
 }
-hosts {
+hosts: {
   machine_id: "application-acceptance-2"
   kind: FLEET_HOST_KIND_VM
   vm_machine_id: "application-acceptance-2"
   desired_spec_path: "infra/hosts/specs/application-acceptance-2.textproto"
-  vm_provider_spec_path: "infra/hosts/specs/application-acceptance-2.textproto"
-  target {
+  target: {
     run_state: FLEET_HOST_RUN_STATE_RUNNING
   }
-  vm_containers { container_name: "vultr-line1-gateway" compose_project: "vultr-edge" compose_service: "line1-gateway" }
-  vm_containers { container_name: "vultr-line2-proxy" compose_project: "vultr-edge" compose_service: "line2-proxy" }
-  vm_containers { container_name: "vultr-warp-egress" compose_project: "vultr-edge" compose_service: "warp-egress" }
+  vm_containers: {
+    container_name: "vultr-line1-gateway"
+    compose_project: "vultr-edge"
+    compose_service: "line1-gateway"
+  }
+  vm_containers: {
+    container_name: "vultr-line2-proxy"
+    compose_project: "vultr-edge"
+    compose_service: "line2-proxy"
+  }
+  vm_containers: {
+    container_name: "vultr-warp-egress"
+    compose_project: "vultr-edge"
+    compose_service: "warp-egress"
+  }
+  worker_authority_public_key: "w\x04\xc7E\xb6\xac9J\xb6\xc40\x1c}\xb4\x16\x89\xd3J\x13ن\t\xc0\xad\xfb\xe4\x92\x1c\xec\xe9\xe9\xb7"
+  vm_provider_spec_path: "infra/hosts/specs/application-acceptance-2.textproto"
 }
-hosts {
+hosts: {
   machine_id: "production-1"
   kind: FLEET_HOST_KIND_VM
   vm_machine_id: "production-1"
   desired_spec_path: "infra/production/production.textproto"
-  vm_containers { container_name: "vultr-line1-gateway" compose_project: "vultr-edge" compose_service: "line1-gateway" }
-  vm_containers { container_name: "vultr-line2-proxy" compose_project: "vultr-edge" compose_service: "line2-proxy" }
-  vm_containers { container_name: "vultr-warp-egress" compose_project: "vultr-edge" compose_service: "warp-egress" }
+  vm_containers: {
+    container_name: "vultr-line1-gateway"
+    compose_project: "vultr-edge"
+    compose_service: "line1-gateway"
+  }
+  vm_containers: {
+    container_name: "vultr-line2-proxy"
+    compose_project: "vultr-edge"
+    compose_service: "line2-proxy"
+  }
+  vm_containers: {
+    container_name: "vultr-warp-egress"
+    compose_project: "vultr-edge"
+    compose_service: "warp-egress"
+  }
 }
-hosts {
+hosts: {
   machine_id: "sing-box-windows-lab"
   kind: FLEET_HOST_KIND_WINDOWS
   windows_runner_name: "DESKTOP-0E1F6UQ"
   windows_runner_label: "sing-box-windows-lab"
   desired_spec_path: "infra/production/production.textproto"
-  target {
+  target: {
     run_state: FLEET_HOST_RUN_STATE_STOPPED
     windows_mode: FLEET_HOST_MODE_PROXY_ONLY
   }
