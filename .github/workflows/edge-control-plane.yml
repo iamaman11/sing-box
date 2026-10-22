@@ -1021,6 +1021,10 @@ jobs:
           bash edge-platform/scripts/resolve_durable_release.sh
           source "${OUTPUT_DIR}/resolved.env"
           test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          for key in EDGE_DOCKER_ENGINE_VERSION EDGE_CONTAINERD_VERSION EDGE_COMPOSE_VERSION; do
+            test -n "${!key}"
+            echo "${key}=${!key}" >> "${GITHUB_ENV}"
+          done
           [[ "${EDGE_FLEET_REGISTRY_SHA256}" =~ ^[0-9a-f]{64}$ ]]
           echo "${EDGE_FLEET_REGISTRY_SHA256}  ${OUTPUT_DIR}/fleet-registry.pb" | sha256sum --check --status
           bin="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
@@ -1172,6 +1176,10 @@ jobs:
           bash edge-platform/scripts/resolve_durable_release.sh
           source "${OUTPUT_DIR}/resolved.env"
           test "${EDGE_ACCEPTED_REVISION}" = "${ACCEPTED_SHA}"
+          for key in EDGE_DOCKER_ENGINE_VERSION EDGE_CONTAINERD_VERSION EDGE_COMPOSE_VERSION; do
+            test -n "${!key}"
+            echo "${key}=${!key}" >> "${GITHUB_ENV}"
+          done
           bin="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
           echo "${EDGE_ORCHESTRATOR_SHA256}  ${bin}" | sha256sum --check --status
           chmod 0755 "${bin}"
