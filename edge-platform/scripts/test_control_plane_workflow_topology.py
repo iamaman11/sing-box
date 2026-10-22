@@ -5510,6 +5510,23 @@ def test_release_pinned_vm_substrate_versions_reach_native_trust_owners() -> Non
 
 
 
+
+def test_vm_fingerprint_is_readonly_untrusted_evidence() -> None:
+    observed = Path(".github/workflows/host-native-observe.yml").read_text(
+        encoding="utf-8"
+    ).split("      - name: Verify installed VM native owner and diagnose without mutation", 1)[1].split(
+        "      - name: Transfer exact same-run typed HostIntent", 1
+    )[0]
+    require(
+        'actual_agent_sha="$(sha256sum "${owner}" | cut -d\' \' -f1)"' in observed
+        and 'host_vm_installed_agent_sha256_observed=' in observed
+        and 'host_vm_installed_agent_identity_proof=RUNNER_COPIED_UNAUTHENTICATED' in observed
+        and '[[ "${actual_agent_sha}" =~ ^[0-9a-f]{64}$ ]]' in observed
+        and 'host_vm_installed_agent_identity_proof=CRYPTOGRAPHICALLY_VERIFIED' not in observed,
+        "VM status must expose the installed executable fingerprint as untrusted observation only",
+    )
+
+
 if __name__ == "__main__":
     main()
     test_one_host_apply_reconciles_root_trust_before_native_dispatch()
@@ -5519,3 +5536,4 @@ if __name__ == "__main__":
     test_promotion_finds_exact_pr_run_without_unreliable_sha_api_filter()
     test_native_vm_artifact_transport_is_same_run_and_not_gh_cli()
     verify_receipt_resume_inline_release_context(ROUTER.read_text(encoding="utf-8"))
+    test_vm_fingerprint_is_readonly_untrusted_evidence()
