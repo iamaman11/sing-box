@@ -770,6 +770,23 @@ pub async fn get_vm_credential_bundle_with_access(
         .map_err(|_| "HOST_VM_CREDENTIAL_HTTP_CLIENT_INVALID".to_owned())?;
     let url =
         format!("https://{worker}.{subdomain}.workers.dev/v1/credentials?generation={generation}");
+    // A positive credential GET is not sufficient if the same bytes are
+    // publicly reachable. Prove the configured Access application rejects
+    // a credentialless request before sending the scoped service identity.
+    let anonymous = client
+        .get(&url)
+        .send()
+        .await
+        .map_err(|_| "HOST_VM_CREDENTIAL_UNAUTHENTICATED_GET_UNPROVEN".to_owned())?;
+    if !matches!(
+        anonymous.status(),
+        reqwest::StatusCode::FORBIDDEN
+            | reqwest::StatusCode::UNAUTHORIZED
+            | reqwest::StatusCode::FOUND
+            | reqwest::StatusCode::SEE_OTHER
+    ) {
+        return Err("HOST_VM_CREDENTIAL_ACCESS_DENIAL_NOT_PROVEN".to_owned());
+    }
     let mut response = client
         .get(url)
         .header("CF-Access-Client-Id", access_client_id)
