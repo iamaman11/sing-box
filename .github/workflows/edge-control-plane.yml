@@ -184,7 +184,7 @@ jobs:
     # Status/Windows/recover are read-only or separately signed native lanes.
     needs: [host, host_report, host_refresh_trust]
     if: >-
-      !cancelled() &&
+      always() && !cancelled() &&
       needs.host.result == 'success' &&
       needs.host_report.result == 'success' &&
       needs.host.outputs.host_targets_present == 'true' &&
