@@ -826,11 +826,8 @@ pub(crate) fn run(
             signer_public_key_hex,
             candidate_path,
         } => {
-            let expected = signer_registration_candidate(
-                &desired,
-                &machine_id,
-                &signer_public_key_hex,
-            )?;
+            let expected =
+                signer_registration_candidate(&desired, &machine_id, &signer_public_key_hex)?;
             let metadata = std::fs::symlink_metadata(&candidate_path)
                 .map_err(|_| "HOST_SIGNER_CANDIDATE_MISSING")?;
             if !metadata.file_type().is_file()
@@ -840,8 +837,7 @@ pub(crate) fn run(
                 return Err("HOST_SIGNER_CANDIDATE_INVALID_FILE".to_owned());
             }
             let actual = decode_host_registry(
-                &std::fs::read(&candidate_path)
-                    .map_err(|_| "HOST_SIGNER_CANDIDATE_UNREADABLE")?,
+                &std::fs::read(&candidate_path).map_err(|_| "HOST_SIGNER_CANDIDATE_UNREADABLE")?,
             )?;
             if actual != expected {
                 return Err("HOST_SIGNER_CANDIDATE_UNEXPECTED_GIT_CHANGE".to_owned());
@@ -987,8 +983,8 @@ fn signer_registration_candidate(
     {
         return Err("HOST_SIGNER_GIT_FIRST_USE_SCOPE_INVALID".to_owned());
     }
-    let key = exact_hex_sha256(signer_public_key_hex)
-        .map_err(|_| "HOST_SIGNER_PUBLIC_KEY_NOT_HEX32")?;
+    let key =
+        exact_hex_sha256(signer_public_key_hex).map_err(|_| "HOST_SIGNER_PUBLIC_KEY_NOT_HEX32")?;
     if key.iter().all(|b| *b == 0) {
         return Err("HOST_SIGNER_PUBLIC_KEY_ZERO_FORBIDDEN".to_owned());
     }
@@ -1713,8 +1709,14 @@ mod tests {
         };
         let candidate = signer_registration_candidate(&source, machine, &"ab".repeat(32)).unwrap();
         assert!(source.hosts[0].worker_authority_public_key.is_empty());
-        assert_eq!(candidate.hosts[0].worker_authority_public_key, vec![0xab; 32]);
-        assert_eq!(candidate.hosts[0].native_receipt_public_key, Vec::<u8>::new());
+        assert_eq!(
+            candidate.hosts[0].worker_authority_public_key,
+            vec![0xab; 32]
+        );
+        assert_eq!(
+            candidate.hosts[0].native_receipt_public_key,
+            Vec::<u8>::new()
+        );
         assert_eq!(candidate.hosts[0].vm_first_use_credential, None);
         assert_eq!(
             signer_registration_candidate(&candidate, machine, &"ab".repeat(32)).unwrap_err(),

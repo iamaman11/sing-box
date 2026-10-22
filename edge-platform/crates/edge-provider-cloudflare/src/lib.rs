@@ -767,7 +767,9 @@ pub async fn get_access_application_audience(
         .ok_or("HOST_ACCESS_APP_AUDIENCE_MISSING")?;
     if aud.len() < 8
         || aud.len() > 64
-        || !aud.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+        || !aud
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
     {
         return Err("HOST_ACCESS_APP_AUDIENCE_INVALID".to_owned());
     }

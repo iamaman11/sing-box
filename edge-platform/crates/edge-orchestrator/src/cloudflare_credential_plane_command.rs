@@ -1658,10 +1658,12 @@ pub(crate) async fn host_vm_signer_commit(
 ) -> Result<(), String> {
     protected_signer_path(key_path)?;
     protected_signer_path(public_path)?;
-    let reservation =
-        env::var("HOST_SIGNER_RESERVATION_SHA").map_err(|_| "HOST_SIGNER_GIT_RESERVATION_REQUIRED")?;
+    let reservation = env::var("HOST_SIGNER_RESERVATION_SHA")
+        .map_err(|_| "HOST_SIGNER_GIT_RESERVATION_REQUIRED")?;
     if reservation.len() != 40
-        || !reservation.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        || !reservation
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
     {
         return Err("HOST_SIGNER_GIT_RESERVATION_INVALID".to_owned());
     }
@@ -1678,24 +1680,18 @@ pub(crate) async fn host_vm_signer_commit(
     if authority.status != "active" || authority.id == before.control_token_identity.id {
         return Err("HOST_SIGNER_DISTINCT_CLOUDFLARE_WRITE_OWNER_REQUIRED".to_owned());
     }
-    let aud = cloudflare::get_access_application_audience(
-        &read,
-        &desired.target_account_id,
-        id,
-    )
-    .await?;
+    let aud =
+        cloudflare::get_access_application_audience(&read, &desired.target_account_id, id).await?;
     let auth = before
         .access_organization
         .as_ref()
         .ok_or("HOST_SIGNER_ACCESS_ORGANIZATION_MISSING")?;
     let issuer = format!("https://{}", auth.auth_domain);
-    if !issuer.ends_with(".cloudflareaccess.com")
-        || !issuer.starts_with("https://")
-    {
+    if !issuer.ends_with(".cloudflareaccess.com") || !issuer.starts_with("https://") {
         return Err("HOST_SIGNER_ACCESS_ISSUER_INVALID".to_owned());
     }
-    let metadata = fs::symlink_metadata(key_path)
-        .map_err(|_| "HOST_SIGNER_EPHEMERAL_KEY_MISSING")?;
+    let metadata =
+        fs::symlink_metadata(key_path).map_err(|_| "HOST_SIGNER_EPHEMERAL_KEY_MISSING")?;
     if !metadata.file_type().is_file() || metadata.len() > 256 || metadata.len() < 40 {
         return Err("HOST_SIGNER_EPHEMERAL_KEY_INVALID".to_owned());
     }
@@ -1703,7 +1699,10 @@ pub(crate) async fn host_vm_signer_commit(
     let pair = ring::signature::Ed25519KeyPair::from_pkcs8(&bytes)
         .map_err(|_| "HOST_SIGNER_EPHEMERAL_KEY_NOT_ED25519")?;
     use ring::signature::KeyPair;
-    let pub_hex = pair.public_key().as_ref().iter()
+    let pub_hex = pair
+        .public_key()
+        .as_ref()
+        .iter()
         .map(|b| format!("{b:02x}"))
         .collect::<String>();
     let stored_public =
@@ -1735,7 +1734,8 @@ pub(crate) async fn host_vm_signer_commit(
     )
     .await
     .map_err(|_| "HOST_SIGNER_SECRET_WRITE_UNCERTAIN_NO_REPLAY".to_owned())?;
-    let after_patch = observe(&read, desired).await
+    let after_patch = observe(&read, desired)
+        .await
         .map_err(|_| "HOST_SIGNER_WRITE_ACK_READBACK_UNCERTAIN_NO_REPLAY".to_owned())?;
     let vm_after = projection_observation(&after_patch, "vm")?;
     if projection_observation(&before, "windows")?
@@ -1761,7 +1761,8 @@ pub(crate) async fn host_vm_signer_commit(
         .await
         .map_err(|_| "HOST_SIGNER_DEPLOY_ACK_UNCERTAIN_NO_REPLAY".to_owned())?;
     }
-    let final_read = observe(&read, desired).await
+    let final_read = observe(&read, desired)
+        .await
         .map_err(|_| "HOST_SIGNER_FINAL_READ_UNCERTAIN_NO_REPLAY".to_owned())?;
     let final_vm = projection_observation(&final_read, "vm")?;
     if projection_observation(&before, "windows")?
