@@ -5344,35 +5344,46 @@ def test_promotion_finds_exact_pr_run_without_unreliable_sha_api_filter() -> Non
 
 
 def test_release_pinned_vm_substrate_versions_reach_native_trust_owners() -> None:
-    """Strict SSH native entrypoints must inherit exact published substrate versions."""
+    """One validated Rust ReleaseSet context, no shell-owned trust versions."""
     workflow = ROUTER.read_text(encoding="utf-8")
-    resolver = Path("edge-platform/scripts/resolve_durable_release.sh").read_text(encoding="utf-8")
     native = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
-    versions = ("EDGE_DOCKER_ENGINE_VERSION", "EDGE_CONTAINERD_VERSION", "EDGE_COMPOSE_VERSION")
-    export = '          for key in EDGE_DOCKER_ENGINE_VERSION EDGE_CONTAINERD_VERSION EDGE_COMPOSE_VERSION; do\n'
-    for key in versions:
-        require(key + "=$" in resolver and f'env::var("{key}")' in native,
-                "VM substrate must originate from the verified ReleaseSet: " + key)
-    cases = (
-        ("  host_refresh_trust:\n", "  host_resume_receipt:\n", 'refresh-receipt "${TARGET_MACHINE}"'),
-        ("  host_resume_receipt:\n", "  host_resume_native:\n", 'refresh-receipt "${{ steps.source.outputs.machine_id }}"'),
-    )
-    for start, end, native_invocation in cases:
+    context = Path("edge-platform/crates/edge-orchestrator/src/lib.rs").read_text(encoding="utf-8")
+    versions = ("docker_engine_version", "containerd_version", "compose_version")
+    for field in versions:
+        require(f"release.{field}.clone()" in native,
+                "strict Host release substrate field is missing: " + field)
+        require(f"{field}: required(&values," in context,
+                "ReleaseSet must type-validate: " + field)
+    refresh = native.split("pub(crate) async fn host_receipt_refresh(", 1)[1].split(
+        "/// Fail-closed VM create admission", 1)[0]
+    first_use = native.split("pub(crate) async fn host_first_use(", 1)[1].split(
+        "///", 1)[0]
+    admission = native.split("async fn acquire_transient_access_ready_exact(", 1)[1].split(
+        "async fn run_lease_acquire(", 1)[0]
+    require(refresh.index("pinned_host_substrate_versions(context)?")
+            < refresh.index("acceptance_lease_acquire_with_substrate("),
+            "trust refresh must validate typed ReleaseSet before SSH access mutation")
+    require(first_use.index("pinned_host_substrate_versions(context)?")
+            < first_use.index("acceptance_create_machine("),
+            "first-use must validate substrate before provider CREATE")
+    require("let substrate = host_substrate_versions_from_env()?" not in admission,
+            "native SSH accept cannot read process-global runtime versions after mutation")
+    require("substrate: &HostSubstrateVersions" in admission,
+            "strict SSH acquisition must accept a typed immutable substrate")
+    for start, end in (
+        ("  host_refresh_trust:\n", "  host_resume_receipt:\n"),
+        ("  host_resume_receipt:\n", "  host_resume_native:\n"),
+    ):
         section = workflow.split(start, 1)[1].split(end, 1)[0]
-        require(section.count(export) == 1, "one exact substrate binding per native owner")
-        before = section.index(export)
-        require(section.index("resolve_durable_release.sh") < before
-                and before < section.index(native_invocation),
-                "published versions must be forwarded before native SSH lifecycle")
-        binding = section[before:section.index("          done\n", before)]
-        require('test -n "${!key}"' in binding
-                and 'echo "${key}=${!key}" >> "${GITHUB_ENV}"' in binding,
-                "exact published substrate values must be inherited, not defaulted")
-        broken = section.replace('echo "${key}=${!key}" >> "${GITHUB_ENV}"', ":", 1)
-        require(broken != section and 'echo "${key}=${!key}" >> "${GITHUB_ENV}"' not in broken,
-                "environment propagation negative fixture must be nonempty")
-    first_use = workflow.split("  host_first_use:\n", 1)[1].split("  host_refresh_trust:\n", 1)[0]
-    require(first_use.count(export) == 1, "first-use and trust-refresh must share one version contract")
+        require('echo "${key}=${!key}" >> "${GITHUB_ENV}"' not in section,
+                "native trust path must not materialize a second shell substrate owner")
+        require("resolve_durable_release.sh" in section and "refresh-receipt" in section,
+                "native trust must inherit exact published ReleaseSet context")
+    first_use_workflow = workflow.split("  host_first_use:\n", 1)[1].split(
+        "  host_refresh_trust:\n", 1)[0]
+    require("EDGE_DOCKER_ENGINE_VERSION EDGE_CONTAINERD_VERSION EDGE_COMPOSE_VERSION" in first_use_workflow,
+            "existing provider first-use compatibility must retain pinned substrate inputs")
+
 
 
 if __name__ == "__main__":
