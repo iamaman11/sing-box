@@ -1013,7 +1013,10 @@ mod tests {
         let (_, v8_bound) =
             bind_native_host_artifacts(&v8_intent, &registry_pb, spec, &v8_bytes, Some(&bundle_pb))
                 .unwrap();
-        assert_eq!(v8_bound.runtime_release_sha256, bound.runtime_release_sha256);
+        assert_eq!(
+            v8_bound.runtime_release_sha256,
+            bound.runtime_release_sha256
+        );
         assert_eq!(
             bind_native_host_artifacts(&v8_intent, &registry_pb, spec, &v8_bytes, Some(b"wrong"))
                 .unwrap_err(),
@@ -1027,8 +1030,13 @@ mod tests {
         );
         assert_eq!(
             bind_native_host_artifacts(
-                &v8_intent, &registry_pb, spec, &future.encode_to_vec(), Some(&bundle_pb),
-            ).unwrap_err(),
+                &v8_intent,
+                &registry_pb,
+                spec,
+                &future.encode_to_vec(),
+                Some(&bundle_pb),
+            )
+            .unwrap_err(),
             "HOST_NATIVE_RELEASE_SCHEMA_INVALID"
         );
         assert_ne!(
