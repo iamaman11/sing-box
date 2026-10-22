@@ -1564,6 +1564,27 @@ fn attest_vm_first_use_credential_bytes(
     Ok(())
 }
 
+/// Read-only Worker origin checks remain valid after the exact public Git pin.
+/// A registered receipt is NOT a provider CREATE or INSTALL permit.
+fn vm_worker_readonly_proof_git_state(
+    host: &edge_shared_types::FleetHost,
+    machine_id: &str,
+    generation: u64,
+    sha256: &str,
+) -> Result<&'static str, &'static str> {
+    if host.machine_id != machine_id {
+        return Err("HOST_VM_CREDENTIAL_PROOF_MACHINE_MISMATCH");
+    }
+    match host.vm_first_use_credential.as_ref() {
+        Some(pin) if pin.generation == generation && pin.bundle_sha256 == sha256 => {
+            Ok("PROTECTED_GIT_EXACT")
+        }
+        Some(_) => Err("HOST_VM_CREDENTIAL_PROOF_GIT_PIN_MISMATCH"),
+        None if host.native_receipt_public_key.is_empty() => Ok("NOT_YET_REGISTERED"),
+        None => Err("HOST_VM_CREDENTIAL_PROOF_REGISTERED_RECEIPT_WITHOUT_SOURCE"),
+    }
+}
+
 pub(crate) async fn host_vm_credential_proof(
     machine_id: &str,
     release: &edge_orchestrator::OrchestrationContext,
@@ -1589,12 +1610,8 @@ pub(crate) async fn host_vm_credential_proof(
         return Err("HOST_VM_CREDENTIAL_PROOF_SOURCE_UNTRUSTED".to_owned());
     }
     let host = release.verified_vm_first_use_host(machine_id)?;
-    if host.machine_id != machine_id
-        || !host.native_receipt_public_key.is_empty()
-        || host.vm_first_use_credential.is_some()
-    {
-        return Err("HOST_VM_CREDENTIAL_PROOF_FIRST_USE_NOT_ELIGIBLE".to_owned());
-    }
+    let git_pin = vm_worker_readonly_proof_git_state(&host, machine_id, generation, expected_sha256)
+        .map_err(str::to_owned)?;
     let production = ProductionComposition::canonical().map_err(|err| err.to_string())?;
     let plane = &production.cloudflare.credential_plane;
     if production.cloudflare.active_account_id != plane.target_account_id
@@ -1617,7 +1634,7 @@ pub(crate) async fn host_vm_credential_proof(
     println!("host_vm_first_use_generation={generation}");
     println!("host_vm_first_use_bundle_sha256={expected_sha256}");
     println!("host_vm_first_use_worker_owner=CANONICAL_CLOUDFLARE_VM");
-    println!("host_vm_first_use_credential_git_pin=NOT_YET_REGISTERED");
+    println!("host_vm_first_use_credential_git_pin={git_pin}");
     println!("host_vm_create=NOT_AUTHORIZED");
     println!("host_mutations=0");
     Ok(())
@@ -3881,6 +3898,49 @@ fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn vm_worker_readonly_proof_rechecks_existing_git_pin_without_granting_mutation() {
+        let mut host = edge_shared_types::FleetHost {
+            machine_id: "acceptance".into(),
+            ..Default::default()
+        };
+        let digest = "a".repeat(64);
+        assert_eq!(
+            vm_worker_readonly_proof_git_state(&host, "acceptance", 27, &digest),
+            Ok("NOT_YET_REGISTERED")
+        );
+        host.vm_first_use_credential = Some(edge_shared_types::FleetVmFirstUseCredential {
+            generation: 27,
+            bundle_sha256: digest.clone(),
+        });
+        assert_eq!(
+            vm_worker_readonly_proof_git_state(&host, "acceptance", 27, &digest),
+            Ok("PROTECTED_GIT_EXACT")
+        );
+        host.native_receipt_public_key = vec![7; 32];
+        assert_eq!(
+            vm_worker_readonly_proof_git_state(&host, "acceptance", 27, &digest),
+            Ok("PROTECTED_GIT_EXACT")
+        );
+        assert_eq!(
+            vm_worker_readonly_proof_git_state(&host, "wrong", 27, &digest),
+            Err("HOST_VM_CREDENTIAL_PROOF_MACHINE_MISMATCH")
+        );
+        assert_eq!(
+            vm_worker_readonly_proof_git_state(&host, "acceptance", 28, &digest),
+            Err("HOST_VM_CREDENTIAL_PROOF_GIT_PIN_MISMATCH")
+        );
+        assert_eq!(
+            vm_worker_readonly_proof_git_state(&host, "acceptance", 27, &"b".repeat(64)),
+            Err("HOST_VM_CREDENTIAL_PROOF_GIT_PIN_MISMATCH")
+        );
+        host.vm_first_use_credential = None;
+        assert_eq!(
+            vm_worker_readonly_proof_git_state(&host, "acceptance", 27, &digest),
+            Err("HOST_VM_CREDENTIAL_PROOF_REGISTERED_RECEIPT_WITHOUT_SOURCE")
+        );
+    }
 
     #[test]
     fn first_use_credential_proof_rejects_empty_dummy_or_incorrect_identity() {
