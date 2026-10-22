@@ -439,6 +439,43 @@ fn verify_canonical_dummy_ab_probe(
     Ok(())
 }
 
+/// A bounded diagnostic code for Worker Host authorization. A rejected HTTP
+/// response never grants permission for native mutation or an authorization replay.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostWorkerAuthorizationRejection {
+    AccessJwtRejected,
+    GithubApprovalDenied,
+    GithubDependencyUnavailable,
+    UnclassifiedPolicyDenied,
+    UnclassifiedAuthorizationFailure,
+}
+
+impl HostWorkerAuthorizationRejection {
+    fn from_response(status: StatusCode, reason: Option<&str>) -> Self {
+        match (status, reason) {
+            (StatusCode::FORBIDDEN, Some("ACCESS_JWT_REJECTED")) => Self::AccessJwtRejected,
+            (StatusCode::FORBIDDEN, Some("GITHUB_APPROVAL_DENIED")) => Self::GithubApprovalDenied,
+            (StatusCode::SERVICE_UNAVAILABLE, Some("GITHUB_DEPENDENCY_UNAVAILABLE")) => {
+                Self::GithubDependencyUnavailable
+            }
+            (StatusCode::FORBIDDEN, _) => Self::UnclassifiedPolicyDenied,
+            _ => Self::UnclassifiedAuthorizationFailure,
+        }
+    }
+
+    fn code(self) -> &'static str {
+        match self {
+            Self::AccessJwtRejected => "HOST_WORKER_ACCESS_JWT_REJECTED",
+            Self::GithubApprovalDenied => "HOST_WORKER_GITHUB_APPROVAL_DENIED",
+            Self::GithubDependencyUnavailable => {
+                "HOST_WORKER_GITHUB_DEPENDENCY_UNAVAILABLE_NO_REPLAY"
+            }
+            Self::UnclassifiedPolicyDenied => "HOST_WORKER_POLICY_DENIED",
+            Self::UnclassifiedAuthorizationFailure => "HOST_WORKER_AUTHORIZATION_NOT_ACCEPTED",
+        }
+    }
+}
+
 /// Ask the ONE existing VM credential Worker to issue its independent
 /// Ed25519 authorization for an exact already approved protobuf HostIntent.
 /// Never retry a POST whose result is uncertain. This function only acquires
@@ -478,9 +515,20 @@ pub async fn request_canonical_host_authorization(
         })?;
     match response.status() {
         StatusCode::NOT_FOUND => return Err("HOST_WORKER_SIGNER_NOT_PROVISIONED".to_owned()),
-        StatusCode::FORBIDDEN => return Err("HOST_WORKER_POLICY_DENIED".to_owned()),
         StatusCode::OK => {}
-        _ => return Err("HOST_WORKER_AUTHORIZATION_NOT_ACCEPTED".to_owned()),
+        status => {
+            // This fixed response hint is diagnostic only, never authority
+            // to execute or replay. Unknown upstream values fail closed.
+            let reason = response
+                .headers()
+                .get("X-Host-Authorization-Reason")
+                .and_then(|value| value.to_str().ok());
+            return Err(
+                HostWorkerAuthorizationRejection::from_response(status, reason)
+                    .code()
+                    .to_owned(),
+            );
+        }
     }
     if response
         .content_length()
@@ -523,6 +571,44 @@ pub async fn fetch_canonical_credential_bundle(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn host_worker_auth_rejections_are_closed_and_bounded() {
+        let cases = [
+            (
+                StatusCode::FORBIDDEN,
+                Some("ACCESS_JWT_REJECTED"),
+                "HOST_WORKER_ACCESS_JWT_REJECTED",
+            ),
+            (
+                StatusCode::FORBIDDEN,
+                Some("GITHUB_APPROVAL_DENIED"),
+                "HOST_WORKER_GITHUB_APPROVAL_DENIED",
+            ),
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Some("GITHUB_DEPENDENCY_UNAVAILABLE"),
+                "HOST_WORKER_GITHUB_DEPENDENCY_UNAVAILABLE_NO_REPLAY",
+            ),
+            (StatusCode::FORBIDDEN, None, "HOST_WORKER_POLICY_DENIED"),
+            (
+                StatusCode::FORBIDDEN,
+                Some("UNTRUSTED_REASON"),
+                "HOST_WORKER_POLICY_DENIED",
+            ),
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Some("ACCESS_JWT_REJECTED"),
+                "HOST_WORKER_AUTHORIZATION_NOT_ACCEPTED",
+            ),
+        ];
+        for (status, reason, expected) in cases {
+            assert_eq!(
+                HostWorkerAuthorizationRejection::from_response(status, reason).code(),
+                expected
+            );
+        }
+    }
 
     #[test]
     fn initial_worker_dummy_probe_requires_exact_full_slot_not_just_generation() {
