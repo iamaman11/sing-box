@@ -1518,6 +1518,111 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
     Ok(())
 }
 
+/// A historical journal is a candidate selector, NEVER proof of active
+/// credentials. This read-only native owner must independently retrieve the
+/// precise generation through the existing Cloudflare VM Access identity,
+/// decode canonical protobuf, and verify non-dummy VM payload + exact digest.
+fn attest_vm_first_use_credential_bytes(
+    bytes: &[u8],
+    generation: u64,
+    expected_sha256: &str,
+) -> Result<(), String> {
+    if generation == 0
+        || matches!(
+            generation,
+            CREDENTIAL_DUMMY_PROBE_GENERATION_A | CREDENTIAL_DUMMY_PROBE_GENERATION_B
+        )
+        || expected_sha256.len() != 64
+        || !expected_sha256
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        || expected_sha256.bytes().all(|b| b == b'0')
+    {
+        return Err("HOST_VM_FIRST_USE_CANDIDATE_IDENTITY_INVALID".to_owned());
+    }
+    let bundle = edge_shared_types::decode_credential_delivery_bundle(bytes)
+        .map_err(|_| "HOST_VM_FIRST_USE_CREDENTIAL_PROTOBUF_INVALID".to_owned())?;
+    if bundle.generation != generation
+        || bundle.projection != CredentialProjectionKind::Vm as i32
+        || bundle.dummy_non_secret
+        || !matches!(
+            bundle.payload,
+            Some(edge_shared_types::credential_delivery_bundle::Payload::Vm(
+                _
+            ))
+        )
+        || !matches!(
+            CredentialDeliverySlot::try_from(bundle.slot),
+            Ok(CredentialDeliverySlot::A | CredentialDeliverySlot::B)
+        )
+    {
+        return Err("HOST_VM_FIRST_USE_CREDENTIAL_NOT_FULL_VM_PAYLOAD".to_owned());
+    }
+    if sha256_hex(bytes) != expected_sha256 {
+        return Err("HOST_VM_FIRST_USE_CREDENTIAL_DIGEST_MISMATCH".to_owned());
+    }
+    Ok(())
+}
+
+pub(crate) async fn host_vm_credential_proof(
+    machine_id: &str,
+    release: &edge_orchestrator::OrchestrationContext,
+    generation: u64,
+    expected_sha256: &str,
+) -> Result<(), String> {
+    for (key, expected) in [
+        ("GITHUB_REPOSITORY", "iamaman11/sing-box"),
+        ("GITHUB_REPOSITORY_ID", "1221750822"),
+        ("GITHUB_EVENT_NAME", "issue_comment"),
+        ("GITHUB_ACTOR_ID", "44100369"),
+        ("GITHUB_RUN_ATTEMPT", "1"),
+        ("GITHUB_JOB", "host_capabilities"),
+    ] {
+        if env::var(key).ok().as_deref() != Some(expected) {
+            return Err(format!("HOST_VM_CREDENTIAL_PROOF_UNTRUSTED_{key}"));
+        }
+    }
+    if env::var("GITHUB_SHA").ok().as_deref() != Some(release.release().accepted_revision.as_str())
+        || env::var("HOST_ORIGINAL_COMMAND").ok().as_deref()
+            != Some(format!("/host status {machine_id} --deep").as_str())
+    {
+        return Err("HOST_VM_CREDENTIAL_PROOF_SOURCE_UNTRUSTED".to_owned());
+    }
+    let host = release.verified_vm_first_use_host(machine_id)?;
+    if host.machine_id != machine_id
+        || !host.native_receipt_public_key.is_empty()
+        || host.vm_first_use_credential.is_some()
+    {
+        return Err("HOST_VM_CREDENTIAL_PROOF_FIRST_USE_NOT_ELIGIBLE".to_owned());
+    }
+    let production = ProductionComposition::canonical().map_err(|err| err.to_string())?;
+    let plane = &production.cloudflare.credential_plane;
+    if production.cloudflare.active_account_id != plane.target_account_id
+        || production.cloudflare.migration_target_account_id.is_some()
+    {
+        return Err("HOST_VM_CREDENTIAL_PROOF_CLOUDFLARE_ACCOUNT_DRIFT".to_owned());
+    }
+    let id = required_env("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID")?;
+    let secret = required_env("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET")?;
+    let bytes = cloudflare::get_vm_credential_bundle_with_access(
+        &plane.vm_worker_name,
+        &plane.workers_dev_subdomain,
+        generation,
+        &id,
+        &secret,
+    )
+    .await?;
+    attest_vm_first_use_credential_bytes(&bytes, generation, expected_sha256)?;
+    println!("host_vm_first_use_credential_proof=EXACT_NON_DUMMY_VM_WORKER_PAYLOAD");
+    println!("host_vm_first_use_generation={generation}");
+    println!("host_vm_first_use_bundle_sha256={expected_sha256}");
+    println!("host_vm_first_use_worker_owner=CANONICAL_CLOUDFLARE_VM");
+    println!("host_vm_first_use_credential_git_pin=NOT_YET_REGISTERED");
+    println!("host_vm_create=NOT_AUTHORIZED");
+    println!("host_mutations=0");
+    Ok(())
+}
+
 /// One existing protected VM Worker authority, with no second signer service.
 /// The private Ed25519 key is generated once in the GitHub-hosted protected
 /// job and never enters Git, artifacts, stdout or a VM runner. Before COMMIT
@@ -3776,6 +3881,32 @@ fn sha256_hex(bytes: &[u8]) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn first_use_credential_proof_rejects_empty_dummy_or_incorrect_identity() {
+        let malformed = &[0x00, 0x01, 0x02];
+        let digest = sha256_hex(malformed);
+        assert!(attest_vm_first_use_credential_bytes(malformed, 42, &digest).is_err());
+        let dummy = CredentialDeliveryBundle {
+            schema_version: 1,
+            generation: 321_654,
+            projection: CredentialProjectionKind::Vm as i32,
+            dummy_non_secret: true,
+            slot: CredentialDeliverySlot::Unspecified as i32,
+            payload: None,
+        }
+        .encode_to_vec();
+        let sha = sha256_hex(&dummy);
+        assert_eq!(
+            attest_vm_first_use_credential_bytes(&dummy, 321_654, &sha).unwrap_err(),
+            "HOST_VM_FIRST_USE_CREDENTIAL_NOT_FULL_VM_PAYLOAD"
+        );
+        assert!(attest_vm_first_use_credential_bytes(&dummy, 321_655, &sha).is_err());
+        assert!(
+            attest_vm_first_use_credential_bytes(&dummy, CREDENTIAL_DUMMY_PROBE_GENERATION_A, &sha)
+                .is_err()
+        );
+    }
 
     #[test]
     fn worker_host_signer_pkcs8_uses_exact_urlsafe_base64_contract() {

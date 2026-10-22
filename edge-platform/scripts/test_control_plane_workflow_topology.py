@@ -773,13 +773,13 @@ def test_host_first_use_registration_is_reserved_before_provider_create() -> Non
         and first_use.count(create) == 1
         and first_use.count(registration) == 1
         and first_use.index(reservation) < first_use.index(create) < first_use.index(registration)
-        and "gh pr create" in first_use.split(create, 1)[0]
-        and "--draft" in first_use.split(create, 1)[0]
-        and "gh pr create" not in first_use.split(registration, 1)[1]
+        and 'gh api -X POST "repos/${GITHUB_REPOSITORY}/pulls"' in first_use.split(create, 1)[0]
+        and "-F draft=true" in first_use.split(create, 1)[0]
+        and 'gh api -X POST "repos/${GITHUB_REPOSITORY}/pulls"' not in first_use.split(registration, 1)[1]
         and "HOST_RECEIPT_RESERVATION_EXISTS_NO_REPLAY" in first_use
         and 'test "${GITHUB_RUN_ATTEMPT}" = 1' in first_use
         and "HOST_RECEIPT_RESERVATION_SHA" in first_use.split(registration, 1)[1]
-        and "gh pr ready" in first_use.split(registration, 1)[1]
+        and "markPullRequestReadyForReview" in first_use.split(registration, 1)[1]
         and "host_receipt_candidate=EXACT_ONE_PUBLIC_KEY_CHANGE" in first_use,
         "First-use must reserve a draft Git PR before CREATE and finalize only the exact reserved identity",
     )

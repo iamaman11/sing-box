@@ -234,6 +234,19 @@ async fn run(
                 )
                 .await
             }
+            cli::HostCommand::VmCredentialProof {
+                machine_id,
+                generation,
+                bundle_sha256,
+            } => {
+                cloudflare_credential_plane_command::host_vm_credential_proof(
+                    &machine_id,
+                    release_context,
+                    generation,
+                    &bundle_sha256,
+                )
+                .await
+            }
             cli::HostCommand::VmWorkerSignerPrepare {
                 machine_id,
                 key_path,
