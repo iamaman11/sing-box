@@ -5343,10 +5343,43 @@ def test_promotion_finds_exact_pr_run_without_unreliable_sha_api_filter() -> Non
                 "promotion must accept only exact successful PR candidate")
 
 
+def test_release_pinned_vm_substrate_versions_reach_native_trust_owners() -> None:
+    """Strict SSH native entrypoints must inherit exact published substrate versions."""
+    workflow = ROUTER.read_text(encoding="utf-8")
+    resolver = Path("edge-platform/scripts/resolve_durable_release.sh").read_text(encoding="utf-8")
+    native = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
+    versions = ("EDGE_DOCKER_ENGINE_VERSION", "EDGE_CONTAINERD_VERSION", "EDGE_COMPOSE_VERSION")
+    export = '          for key in EDGE_DOCKER_ENGINE_VERSION EDGE_CONTAINERD_VERSION EDGE_COMPOSE_VERSION; do\n'
+    for key in versions:
+        require(key + "=$" in resolver and f'env::var("{key}")' in native,
+                "VM substrate must originate from the verified ReleaseSet: " + key)
+    cases = (
+        ("  host_refresh_trust:\n", "  host_resume_receipt:\n", 'refresh-receipt "${TARGET_MACHINE}"'),
+        ("  host_resume_receipt:\n", "  host_resume_native:\n", 'refresh-receipt "${{ steps.source.outputs.machine_id }}"'),
+    )
+    for start, end, native_invocation in cases:
+        section = workflow.split(start, 1)[1].split(end, 1)[0]
+        require(section.count(export) == 1, "one exact substrate binding per native owner")
+        before = section.index(export)
+        require(section.index("resolve_durable_release.sh") < before
+                and before < section.index(native_invocation),
+                "published versions must be forwarded before native SSH lifecycle")
+        binding = section[before:section.index("          done\n", before)]
+        require('test -n "${!key}"' in binding
+                and 'echo "${key}=${!key}" >> "${GITHUB_ENV}"' in binding,
+                "exact published substrate values must be inherited, not defaulted")
+        broken = section.replace('echo "${key}=${!key}" >> "${GITHUB_ENV}"', ":", 1)
+        require(broken != section and 'echo "${key}=${!key}" >> "${GITHUB_ENV}"' not in broken,
+                "environment propagation negative fixture must be nonempty")
+    first_use = workflow.split("  host_first_use:\n", 1)[1].split("  host_refresh_trust:\n", 1)[0]
+    require(first_use.count(export) == 1, "first-use and trust-refresh must share one version contract")
+
+
 if __name__ == "__main__":
     main()
     test_one_host_apply_reconciles_root_trust_before_native_dispatch()
     test_vm_typed_desired_preparation_is_shared_and_fail_closed()
+    test_release_pinned_vm_substrate_versions_reach_native_trust_owners()
     test_promotion_finds_exact_pr_run_without_unreliable_sha_api_filter()
     test_native_vm_artifact_transport_is_same_run_and_not_gh_cli()
     verify_receipt_resume_inline_release_context(ROUTER.read_text(encoding="utf-8"))
