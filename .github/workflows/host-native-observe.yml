@@ -85,6 +85,13 @@ jobs:
             test ! -L "${path}"
             test "$(stat -c '%u:%g:%a' "${path}")" = "0:0:755"
           done
+          # Observation of the exact installed executable, not a guess from
+          # first-use Actions. Runner-copied evidence does NOT authenticate a
+          # mutation receipt or authorize an owner replacement.
+          actual_agent_sha="$(sha256sum "${owner}" | cut -d' ' -f1)"
+          [[ "${actual_agent_sha}" =~ ^[0-9a-f]{64}$ ]]
+          echo "host_vm_installed_agent_sha256_observed=${actual_agent_sha}"
+          echo 'host_vm_installed_agent_identity_proof=RUNNER_COPIED_UNAUTHENTICATED'
           test "$(id -u)" != 0
           if sudo -n id -u >/dev/null 2>&1; then
             echo 'HOST_VM_GENERIC_ROOT_AUTHORITY_FORBIDDEN' >&2
