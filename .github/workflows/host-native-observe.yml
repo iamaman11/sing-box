@@ -134,11 +134,17 @@ jobs:
           fi
 
 
+      - name: Transfer exact same-run typed HostIntent with native Actions artifact
+        if: env.TARGET_KIND == 'VM' && (startsWith(env.COMMAND_BODY, '/host apply ') || startsWith(env.COMMAND_BODY, '/host recover '))
+        uses: actions/download-artifact@v4
+        with:
+          name: host-intent-${{ inputs.source_comment_id }}
+          path: ${{ runner.temp }}/host-operation
+
       - name: Dispatch one signed native VM host transaction
         if: env.TARGET_KIND == 'VM' && (startsWith(env.COMMAND_BODY, '/host apply ') || startsWith(env.COMMAND_BODY, '/host recover '))
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
           SOURCE_COMMENT_ID: ${{ inputs.source_comment_id }}
         run: |
           set -euo pipefail
@@ -161,10 +167,11 @@ jobs:
           # No generic sudo, no bundle-converge/rollback/credentials paths.
           # Older installed sudoers intentionally fails closed here.
           sudo -n -l "${owner}" local host-apply >/dev/null
+          # The official same-run artifact action has already transferred
+          # only the exact prepared protobuf from the existing GitHub owner.
+          # Do not require gh CLI on the low-privilege VM runner.
           path="${RUNNER_TEMP}/host-operation"
-          install -d -m 0700 "${path}"
-          gh run download "${GITHUB_RUN_ID}" -R "${GITHUB_REPOSITORY}" \
-            -n "host-intent-${SOURCE_COMMENT_ID}" -D "${path}"
+          test -d "${path}" && test ! -L "${path}"
           intent="${path}/host-intent.pb"
           test -f "${intent}" && test ! -L "${intent}"
           test "$(stat -c '%s' "${intent}")" -gt 0
