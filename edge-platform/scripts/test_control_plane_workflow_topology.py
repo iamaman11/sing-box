@@ -849,6 +849,23 @@ def test_host_native_receipt_boundary_and_legacy_workflow_admission(router: str)
         and """sudo -n "${owner}" local host-apply < "${intent}" > "${result}" """ .strip() in child,
         "The one native owner may emit the complete 8192-byte authenticated receipt without truncation",
     )
+    rust_context = Path(
+        "edge-platform/crates/edge-orchestrator/src/lib.rs"
+    ).read_text(encoding="utf-8")
+    worker_owner = Path(
+        "edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs"
+    ).read_text(encoding="utf-8")
+    vm_code_only = worker_owner.split(
+        "pub(crate) async fn host_vm_worker_authorizer_upgrade(", 1
+    )[1].split("fn attest_vm_first_use_credential_bytes(", 1)[0]
+    require(
+        "pub fn verified_vm_worker_code_upgrade_host(" in rust_context
+        and "pub fn verified_vm_worker_authorizer_host(" in rust_context
+        and "release.verified_vm_worker_code_upgrade_host(machine_id)?" in vm_code_only
+        and "HOST_VM_WORKER_BOOTSTRAP_SCOPE_INVALID" in rust_context,
+        "code-only Worker upgrades must permit enrolled VM keys without reopening signer enrollment",
+    )
+
     # On an enrolled VM the exact signed APPLY is prepared once, but
     # native dispatch MUST wait until existing Worker source is proven current
     # (or upgraded once) by the single protected Worker owner. This is the

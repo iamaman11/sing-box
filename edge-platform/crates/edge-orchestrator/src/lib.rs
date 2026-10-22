@@ -192,6 +192,20 @@ impl OrchestrationContext {
     /// One already registered Git-owned VM may receive the canonical Worker
     /// source BEFORE a signer has been pinned. This does not authorize
     /// enrollment or change any host target, secret or receipt identity.
+    /// Code-only upgrades are valid both before and after Git pins for the
+    /// signer and native receipt. This does not enroll either identity: only
+    /// the canonical Worker code owner may verify or deploy exact source bytes.
+    pub fn verified_vm_worker_code_upgrade_host(
+        &self,
+        machine_id: &str,
+    ) -> Result<FleetHost, String> {
+        let host = self.verified_vm_host_from_release(machine_id)?;
+        if host.vm_provider_spec_path.is_empty() || host.vm_containers.is_empty() {
+            return Err("HOST_VM_WORKER_CODE_UPGRADE_SCOPE_INVALID".to_owned());
+        }
+        Ok(host)
+    }
+
     pub fn verified_vm_worker_authorizer_host(
         &self,
         machine_id: &str,
