@@ -5435,8 +5435,8 @@ def test_vm_local_worker_access_proof_is_native_read_only() -> None:
     """Deep status must distinguish local Access readiness from CI Worker GET."""
     workflow = Path(".github/workflows/host-native-observe.yml").read_text(encoding="utf-8")
     diagnostic = workflow.split("      - name: Verify installed VM native owner", 1)[1].split(
-        "      - name: Transfer exact same-run typed HostIntent", 1)[0]
-    )
+        "      - name: Transfer exact same-run typed HostIntent", 1
+    )[0]
     require(diagnostic.count("local credential-initial-probe") == 2,
             "one fixed sudo capability check and one native root read-only proof")
     require('if [[ "${COMMAND_BODY}" == "/host status ${TARGET_MACHINE} --deep" ]]; then' in diagnostic,
