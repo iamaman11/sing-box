@@ -1685,18 +1685,30 @@ jobs:
           candidate_tree="$(gh api "repos/${REPOSITORY}/git/commits/${candidate_revision}" --jq '.tree.sha')"
           test "${accepted_tree}" = "${candidate_tree}"
 
-          # Detect out-of-order pull_request.closed/merged events by validating
-          # the final merged PR against GitHub's actual committed merge SHA.
-          associated_prs="$(gh api "repos/${REPOSITORY}/commits/${ACCEPTED_REVISION}/pulls?per_page=10")"
-          trusted_pr="$(jq -cer --arg accepted "${ACCEPTED_REVISION}" --arg candidate "${candidate_revision}" '
-            [.[] | select(.merged_at != null)
-              | select(.base.ref == "main")
-              | select(.merge_commit_sha == $accepted)
-              | select(.head.sha == $candidate)]
-            | if length == 1 then .[0] else error("accepted merge has no unique matching merged PR") end
-          ' <<<"${associated_prs}")"
-          test "$(jq -er '.merged_at' <<<"${trusted_pr}")" != "null"
-
+          # The protected merge itself names the PR number. Reverse
+          # commit->pull associations are eventually consistent and may return
+          # an empty array even for a completed merged PR. Resolve the exact
+          # immutable Git merge subject, then authenticate the numbered PR.
+          # A nonstandard merge title fails closed; no search or guess.
+          merge_subject="$(jq -er '.message | split("\n")[0]' <<<"${accepted_commit}")"
+          merge_pattern='^Merge pull request #([1-9][0-9]*) from iamaman11/[A-Za-z0-9._/-]+$'
+          if [[ ! "${merge_subject}" =~ ${merge_pattern} ]]; then
+            echo "HOST_RELEASE_MERGE_SUBJECT_NOT_CANONICAL" >&2
+            exit 1
+          fi
+          pr_number="${BASH_REMATCH[1]}"
+          trusted_pr="$(gh api "repos/${REPOSITORY}/pulls/${pr_number}")"
+          jq -e --arg accepted "${ACCEPTED_REVISION}" --arg candidate "${candidate_revision}" \
+            --argjson pr_number "${pr_number}" '
+            .number == $pr_number
+            and .state == "closed"
+            and .merged_at != null
+            and .base.ref == "main"
+            and .base.repo.full_name == "iamaman11/sing-box"
+            and .head.repo.full_name == "iamaman11/sing-box"
+            and .merge_commit_sha == $accepted
+            and .head.sha == $candidate
+          ' <<<"${trusted_pr}" >/dev/null
           # GitHub Actions can return an empty list when filtering PR runs by
           # head_sha even though the returned run itself has that exact SHA.
           # Read a bounded, newest-first PR-run history and verify every field
