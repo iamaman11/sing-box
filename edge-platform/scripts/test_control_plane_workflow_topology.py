@@ -3778,7 +3778,7 @@ def main() -> None:
         and "github.event.workflow_run.head_branch == 'main'" in router
         and "verify-merged-receipt" in router
         and "refresh-receipt" in router
-        and router.index("verify-merged-receipt") < router.index("refresh-receipt")
+        and router.split("  host_resume_receipt:\n", 1)[1].index("verify-merged-receipt") < router.split("  host_resume_receipt:\n", 1)[1].index("refresh-receipt")
         and all("uses: ./.github/workflows/" + name + ".yml" not in router
                 for name in ("windows-physical", "vm-application-lifecycle",
                              "credential-lifecycle", "vultr-lifecycle",
