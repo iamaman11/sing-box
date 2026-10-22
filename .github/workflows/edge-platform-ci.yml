@@ -1697,17 +1697,33 @@ jobs:
           ' <<<"${associated_prs}")"
           test "$(jq -er '.merged_at' <<<"${trusted_pr}")" != "null"
 
-          runs="$(gh api "repos/${REPOSITORY}/actions/workflows/edge-platform-ci.yml/runs?event=pull_request&head_sha=${candidate_revision}&per_page=100")"
-          latest_run="$(jq -cer --arg head "${candidate_revision}" --argjson current_run_id "${CURRENT_RUN_ID}" '
-            [.workflow_runs[]
-              | select(.head_sha == $head)
-              | select(.event == "pull_request")
-              | select(.id != $current_run_id)
-              | select(.status == "completed")
-              | select(.conclusion == "success")]
-            | sort_by(.id)
-            | last
-          ' <<<"${runs}")"
+          # GitHub Actions can return an empty list when filtering PR runs by
+          # head_sha even though the returned run itself has that exact SHA.
+          # Read a bounded, newest-first PR-run history and verify every field
+          # client-side. This is read-only and cannot choose another candidate.
+          latest_run=""
+          for page in {1..10}; do
+            runs="$(gh api "repos/${REPOSITORY}/actions/runs?event=pull_request&per_page=100&page=${page}")"
+            page_count="$(jq -er '.workflow_runs | length' <<<"${runs}")"
+            [[ "${page_count}" =~ ^[0-9]+$ ]]
+            latest_run="$(jq -cr --arg head "${candidate_revision}" --argjson current_run_id "${CURRENT_RUN_ID}" '
+              [.workflow_runs[]
+                | select(.path == ".github/workflows/edge-platform-ci.yml")
+                | select(.head_sha == $head)
+                | select(.event == "pull_request")
+                | select(.id != $current_run_id)
+                | select(.status == "completed")
+                | select(.conclusion == "success")]
+              | sort_by(.id)
+              | last // empty
+            ' <<<"${runs}")"
+            if [[ -n "${latest_run}" ]]; then break; fi
+            if (( page_count < 100 )); then break; fi
+          done
+          if [[ -z "${latest_run}" ]]; then
+            echo "HOST_RELEASE_CANDIDATE_NOT_IN_BOUNDED_PR_HISTORY" >&2
+            exit 1
+          fi
           test "$(jq -er '.status' <<<"${latest_run}")" = "completed"
           test "$(jq -er '.conclusion' <<<"${latest_run}")" = "success"
           candidate_run_id="$(jq -er '.id' <<<"${latest_run}")"
