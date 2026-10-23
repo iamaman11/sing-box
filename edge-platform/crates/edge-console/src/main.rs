@@ -1,5 +1,7 @@
-mod controller_client_and_reporting;
-use controller_client_and_reporting::*;
+mod controller_client;
+mod console_reporting;
+use controller_client::*;
+use console_reporting::*;
 
 mod cli;
 mod command_dispatch;
