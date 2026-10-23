@@ -60,6 +60,17 @@ assert worker.count("if: needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREF
 assert "if: steps.plan.outputs.required == 'false' && needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'" not in worker
 assert "vm-worker-signer-prepare" in worker and "vm-worker-signer-commit" in worker
 assert worker.index("Apply exact VM Worker code once") < worker.index("Prepare one ephemeral VM signer")
+# The same /host apply must never upgrade Worker bytes and trigger native INSTALL.
+# The closed, Rust-owned plan decision gates the dependent native job.
+native_dispatch = router.split("  host_observe:\n", 1)[1].split("  host_report:\n", 1)[0]
+assert "needs.host_worker_authorizer.result == 'success' &&" in native_dispatch
+assert "needs.host_worker_authorizer.outputs.source_upgrade_required == 'false'" in native_dispatch
+assert "source_upgrade_required: ${{ steps.plan.outputs.required }}" in worker
+assert worker.index("source_upgrade_required: ${{ steps.plan.outputs.required }}") < worker.index("Plan exact VM Worker release with GET only")
+assert "case \"${RUST_WORKER_PLAN_REQUIRED}\" in worker
+assert "true|false)" in worker
+assert "if: steps.plan.outputs.required == 'true'" in worker
+
 
 # Physical CREATE must never depend on a Git-only credential reference.
 # The same bounded native Worker GET checks the typed non-dummy payload at
