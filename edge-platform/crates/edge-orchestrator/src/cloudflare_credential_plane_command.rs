@@ -4127,7 +4127,19 @@ mod tests {
             assert!(source.contains("c.nbf!==undefined"));
             assert!(!source.contains("||!Number.isInteger(c.nbf)"));
             assert!(source.contains("X-Host-Authorization-Reason"));
-            assert!(source.contains("ACCESS_JWT_REJECTED"));
+            for reason in [
+                "JWT_MISSING",
+                "JWT_MALFORMED",
+                "JWT_NOT_YET_VALID",
+                "JWT_EXPIRED",
+                "JWT_ISSUER_MISMATCH",
+                "JWT_AUDIENCE_MISMATCH",
+                "JWT_SIGNATURE_REJECTED",
+                "JWT_KEY_UNAVAILABLE",
+                "WORKER_CONFIG_UNPROVEN",
+            ] {
+                assert!(source.contains(reason), "Worker must expose {reason} safely");
+            }
             assert!(source.contains("GITHUB_APPROVAL_DENIED"));
             assert!(source.contains("GITHUB_DEPENDENCY_UNAVAILABLE"));
             assert!(source.contains("approval===\"UNAVAILABLE\"?503:403"));
