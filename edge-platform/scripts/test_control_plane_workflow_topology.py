@@ -67,7 +67,7 @@ assert "needs.host_worker_authorizer.result == 'success' &&" in native_dispatch
 assert "needs.host_worker_authorizer.outputs.source_upgrade_required == 'false'" in native_dispatch
 assert "source_upgrade_required: ${{ steps.plan.outputs.required }}" in worker
 assert worker.index("source_upgrade_required: ${{ steps.plan.outputs.required }}") < worker.index("Plan exact VM Worker release with GET only")
-assert "case \"${RUST_WORKER_PLAN_REQUIRED}\" in worker
+assert 'case "${RUST_WORKER_PLAN_REQUIRED}" in' in worker
 assert "true|false)" in worker
 assert "if: steps.plan.outputs.required == 'true'" in worker
 
