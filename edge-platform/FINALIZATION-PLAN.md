@@ -25,6 +25,8 @@
 - Остаточные текстовые admission-решения переносятся в Rust/Protobuf и GitHub outputs, не создавая четвёртой /host команды.
 - CI не доказывает физический installed owner, 3/3 Docker, 10/10 endpoints или signed receipt. UNKNOWN_NO_REPLAY остаётся запрещением повтора.
 
+**Свидетельства нового прохода (до физической приёмки):** [PR #454](https://github.com/iamaman11/sing-box/pull/454) объединяет Rust-owned typed host/readback, native Docker gateway и Vultr access-readiness modules; до зелёного CI и защищённого merge остаётся кандидатом. Read-only [VM #40028823627](https://github.com/iamaman11/sing-box/actions/runs/40028823627) → `NO_NATIVE_TARGET_AVAILABLE` (0 мутаций); отдельный [Windows #40029166044](https://github.com/iamaman11/sing-box/actions/runs/40029166044) → runner отвечает, но установленный `edge-diagnostic host-observe` не поддерживается, typed readback `UNPROVEN`. Текущий Windows `STOPPED/PROXY_ONLY` не изменять. Эти свидетельства не подтверждают signed receipt, 3/3, 10/10, TUN или recover.
+
 ## Срез 2 — физическая эксплуатационная приёмка
 
 1. **Fresh VM:** сначала `/host status application-acceptance-3 --deep`; при отсутствии целевого native owner — один штатный `/host apply application-acceptance-3` в Issue #1 с существующим Vultr first-use. До provider CREATE доказать Git desired/ReleaseSet, source Worker trust, exact CredentialRef и доступность authorizer. Отказ/неизвестный ACK → STOP/UNKNOWN_NO_REPLAY, а не повторный CREATE. Новая VM генерирует собственную receipt identity; public key регистрируется через защищённый Git, затем signed INSTALL штатным root owner.

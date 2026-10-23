@@ -1627,6 +1627,35 @@ mod tests {
     use edge_shared_types::ManagedHost;
 
     #[test]
+    fn verified_host_workflow_output_is_closed_and_never_parses_diagnostic_text() {
+        let path = std::env::temp_dir().join(format!(
+            "singbox-verified-host-output-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let _file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .unwrap();
+        assert!(append_host_verifier_output(&path, "host_mutations", "0").is_err());
+        assert!(append_host_verifier_output(&path, "typed_verdict", "PASS\nrequired=true").is_err());
+        assert!(append_host_verifier_output(&path, "native_receipt_proof", "true").is_err());
+        assert!(append_host_verifier_output(&path, "typed_verdict", "UNPROVEN_NO_NATIVE_OWNER").is_ok());
+        assert!(append_host_verifier_output(&path, "native_receipt_proof", "OBSERVED_ONLY").is_ok());
+        let recorded = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(
+            recorded,
+            "typed_verdict=UNPROVEN_NO_NATIVE_OWNER\nnative_receipt_proof=OBSERVED_ONLY\n"
+        );
+        std::fs::remove_file(&path).unwrap();
+        assert!(append_host_verifier_output(&path, "typed_verdict", "PASS").is_err());
+    }
+
+    #[test]
     fn workflow_action_is_closed_scalar_rust_mapping_no_json() {
         let actions = [
             HostWorkflowOperation::Status,
