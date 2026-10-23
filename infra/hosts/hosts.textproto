@@ -44,7 +44,6 @@ hosts: {
     compose_project: "vultr-edge"
     compose_service: "warp-egress"
   }
-  native_receipt_public_key: "ndh~8\xba\xbe\xe6\x8e4ⲉ\xc0ٻU\xf6eڵ\xd3\x0f\\P/z\xfc.\x89\xd4s"
   vm_first_use_credential: {
     generation: 38503639351
     bundle_sha256: "d85524a08e90c12e959b4af642e76f126e835b5630b771aae0474d6d61e94644"
