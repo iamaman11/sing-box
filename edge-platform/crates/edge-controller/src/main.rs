@@ -271,106 +271,15 @@ async fn run(parsed: cli::Cli) -> Result<(), ControllerError> {
             io::stdout().write_all(&status.encode_proto())?;
             Ok(())
         }
-        Command::ControllerBootstrapRuntime(args) => {
-            let response = controller_bootstrap_runtime(
-                cli::controller_endpoint(args.endpoint),
-                args.mode.into(),
-            )
-            .await?;
-            io::stdout().write_all(&response.encode_proto())?;
-            if response.success {
-                Ok(())
-            } else {
-                Err(ControllerError::Command(format_bootstrap_failure(
-                    &response,
-                )))
-            }
-        }
-        Command::BootstrapRuntime(args) => {
-            let response = bootstrap_runtime(cli::agent_endpoint(args.endpoint), args.mode.into())
-                .await
-                .map_err(ControllerError::Command)?;
-            io::stdout().write_all(&response.encode_proto())?;
-            if response.success {
-                Ok(())
-            } else {
-                Err(ControllerError::Command(format_bootstrap_failure(
-                    &response,
-                )))
-            }
-        }
-        Command::StartLocal(args) => {
-            let response = start_local_runtime_via_controller(args.resolve()).await?;
-            io::stdout().write_all(&response.encode_proto())?;
-            if response.success {
-                Ok(())
-            } else {
-                Err(ControllerError::Command(response.note))
-            }
-        }
-        Command::StopLocal(args) => {
-            let response = stop_local_runtime_via_controller(args.resolve()).await?;
-            io::stdout().write_all(&response.encode_proto())?;
-            if response.success {
-                Ok(())
-            } else {
-                Err(ControllerError::Command(response.note))
-            }
-        }
-        Command::RestartLocal(args) => {
-            let response = restart_local_runtime_via_controller(args.resolve()).await?;
-            io::stdout().write_all(&response.encode_proto())?;
-            if response.success {
-                Ok(())
-            } else {
-                Err(ControllerError::Command(response.note))
-            }
-        }
         Command::GetSelector(args) => {
             let selector = fetch_selector_state(args.resolve()).await?;
             io::stdout().write_all(&selector.encode_to_vec())?;
             Ok(())
         }
-        Command::SetSelector(args) => {
-            let response = set_selector_via_controller(
-                cli::controller_endpoint(args.endpoint),
-                "proxy-selector",
-                &args.name,
-            )
-            .await?;
-            io::stdout().write_all(&response.encode_to_vec())?;
-            if response.success {
-                Ok(())
-            } else {
-                Err(ControllerError::Command(
-                    "selector update failed".to_owned(),
-                ))
-            }
-        }
         Command::Trace(args) => {
             let trace = get_trace_via_controller(args.resolve()).await?;
             io::stdout().write_all(&trace.encode_to_vec())?;
             Ok(())
-        }
-        Command::Deploy(args) => {
-            let (request, endpoint) = args.into_parts();
-            let response = deploy_via_controller(endpoint, request).await?;
-            io::stdout().write_all(&response.encode_to_vec())?;
-            if response.success {
-                Ok(())
-            } else {
-                Err(ControllerError::Command("deploy failed".to_owned()))
-            }
-        }
-        Command::Destroy(args) => {
-            let (request, endpoint) = args.into_parts();
-            let response = destroy_via_controller(endpoint, request).await?;
-            io::stdout().write_all(&response.encode_to_vec())?;
-            if response.success {
-                Ok(())
-            } else {
-                Err(ControllerError::Command("destroy failed".to_owned()))
-            }
         }
     }
 }
