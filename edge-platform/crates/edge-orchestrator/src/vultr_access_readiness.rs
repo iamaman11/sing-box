@@ -3,9 +3,9 @@ use super::*;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) struct TcpReadinessPolicy {
     pub(super) max_attempts: usize,
-    max_elapsed: Duration,
-    connect_timeout: Duration,
-    backoff: Duration,
+    pub(super) max_elapsed: Duration,
+    pub(super) connect_timeout: Duration,
+    pub(super) backoff: Duration,
 }
 
 impl TcpReadinessPolicy {
@@ -51,8 +51,8 @@ pub(super) enum TcpReadinessFailureClass {
 pub(super) struct TcpReadinessObservation {
     pub(super) attempts: usize,
     pub(super) elapsed_ms: u64,
-    final_state: TcpReadinessState,
-    last_error_class: Option<TcpReadinessFailureClass>,
+    pub(super) final_state: TcpReadinessState,
+    pub(super) last_error_class: Option<TcpReadinessFailureClass>,
 }
 
 impl TcpReadinessObservation {
@@ -152,13 +152,13 @@ pub(super) async fn observe_tcp_readiness(
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub(super) struct SupportAccessProviderEvidence {
-    controller_ipv4: String,
+    pub(super) controller_ipv4: String,
     pub(super) firewall_group_id: Option<String>,
-    matching_rule_ids: Vec<u64>,
-    exact_controller_rules_present_once: bool,
-    machine_firewall_group_id: Option<String>,
+    pub(super) matching_rule_ids: Vec<u64>,
+    pub(super) exact_controller_rules_present_once: bool,
+    pub(super) machine_firewall_group_id: Option<String>,
     pub(super) firewall_group_attached_to_machine: bool,
-    acquire_plan_disposition: String,
+    pub(super) acquire_plan_disposition: String,
 }
 
 pub(super) fn classify_support_access_provider_evidence(
