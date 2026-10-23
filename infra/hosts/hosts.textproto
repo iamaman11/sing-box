@@ -44,6 +44,7 @@ hosts: {
     compose_project: "vultr-edge"
     compose_service: "warp-egress"
   }
+  native_receipt_public_key: "\xae\x91\x12P\x88/i\\\xbe\"e\x01\x83\xb3os\xfbf#jG\xdb\xe2\xdcIF\x13\xae\x883?'"
   vm_first_use_credential: {
     generation: 38503639351
     bundle_sha256: "d85524a08e90c12e959b4af642e76f126e835b5630b771aae0474d6d61e94644"
@@ -83,4 +84,3 @@ hosts: {
     windows_mode: FLEET_HOST_MODE_PROXY_ONLY
   }
 }
-# native-receipt-registration-pending application-acceptance-2 issue1-comment-6367107566
