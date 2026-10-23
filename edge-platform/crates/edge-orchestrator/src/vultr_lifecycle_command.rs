@@ -1535,6 +1535,10 @@ pub(crate) async fn host_first_use_provider_preflight(
         let value = env::var(name).map_err(|_| "HOST_FIRST_USE_ACCESS_IDENTITY_REQUIRED")?;
         validate_bootstrap_secret(label, &value)?;
     }
+    crate::cloudflare_credential_plane_command::verify_current_vm_first_use_worker_source(
+        &host,
+    )
+    .await?;
     let provider_spec = Path::new(&host.vm_provider_spec_path);
     let desired = load_desired_state(provider_spec)?;
     if desired.machines.len() != 1 || desired.machines[0].id != machine_id {
@@ -1614,6 +1618,12 @@ pub(crate) async fn host_first_use(
     // CREATE and the support-access lease are both mutations: reject missing
     // or malformed release-pinned substrate versions before either starts.
     let substrate = pinned_host_substrate_versions(context)?;
+    // The same real Cloudflare Access GET is rechecked immediately before
+    // CREATE, not inferred from the earlier preflight or a Git hash alone.
+    crate::cloudflare_credential_plane_command::verify_current_vm_first_use_worker_source(
+        &git_host,
+    )
+    .await?;
     // Provider CREATE must be the exact first transition. NOOP means an
     // existing VM or an uncertain earlier response: never automatic adoption.
     acceptance_create_machine(provider_spec, machine_id).await?;
