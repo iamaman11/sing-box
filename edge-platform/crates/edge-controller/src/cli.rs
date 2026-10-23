@@ -209,14 +209,15 @@ mod tests {
     }
 
     #[test]
-    fn parses_local_controller_commands() {
-        for args in [
-            vec!["edge-controller", "get-status"],
-            vec!["edge-controller", "start-local"],
-            vec!["edge-controller", "stop-local"],
-            vec!["edge-controller", "restart-local"],
+    fn only_readonly_cli_commands_are_parseable() {
+        for command in ["get-status", "get-selector", "trace"] {
+            assert!(Cli::try_parse_from(["edge-controller", command]).is_ok());
+        }
+        for command in [
+            "start-local", "stop-local", "restart-local", "bootstrap-runtime",
+            "controller-bootstrap-runtime", "set-selector", "deploy", "destroy",
         ] {
-            assert!(Cli::try_parse_from(args).is_ok());
+            assert!(Cli::try_parse_from(["edge-controller", command]).is_err());
         }
     }
 
