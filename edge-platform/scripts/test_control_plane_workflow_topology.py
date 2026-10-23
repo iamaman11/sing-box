@@ -5368,12 +5368,13 @@ def test_vm_typed_desired_preparation_is_shared_and_fail_closed() -> None:
     helper = Path("edge-platform/scripts/compile_vm_host_desired.sh")
     script = helper.read_text(encoding="utf-8")
     shared = 'bash edge-platform/scripts/compile_vm_host_desired.sh "${TARGET_MACHINE}"'
-    require(router.count(shared) == 3,
-            "first-use, VM status and root trust must use one VM protobuf compiler")
+    require(router.count(shared) == 4,
+            "first-use, VM status, root trust and receipt resume must share one compiler")
     sections = (
         router.split("  host_capabilities:\n", 1)[1].split("  host_first_use:\n", 1)[0],
         router.split("  host_first_use:\n", 1)[1].split("  host_refresh_trust:\n", 1)[0],
         router.split("  host_refresh_trust:\n", 1)[1].split("  host_resume_receipt:\n", 1)[0],
+        router.split("  host_resume_receipt:\n", 1)[1].split("  host_resume_native:\n", 1)[0],
     )
     require(all(section.count(shared) == 1 for section in sections),
             "missing or duplicate VM typed preparation in a lifecycle branch")
@@ -5381,6 +5382,11 @@ def test_vm_typed_desired_preparation_is_shared_and_fail_closed() -> None:
     require(trust.index(shared) < trust.index("Materialize scoped operator credential")
             < trust.index("refresh-receipt "),
             "VM desired must be prepared before privileged trust reconciliation")
+    receipt = sections[3]
+    require(receipt.index("verify-merged-receipt") < receipt.index(shared)
+            < receipt.index("Materialize exact temporary SSH operator credential")
+            < receipt.index("refresh-receipt "),
+            "receipt continuation must compile VM desired after Git proof and before root trust mutation")
     require('buf="${RUNNER_TEMP}/host-vm-buf"' in sections[0]
             and 'test -x "${buf}"' in sections[0],
             "status proof must reuse the verified pinned compiler")
