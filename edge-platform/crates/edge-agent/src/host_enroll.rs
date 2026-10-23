@@ -485,13 +485,11 @@ pub(crate) async fn refresh_current() -> Result<(), String> {
         .build()
         .map_err(|_| "HOST_REFRESH_HTTPS_CLIENT_UNAVAILABLE")?;
     let base = "https://api.github.com/repos/iamaman11/sing-box";
+    let head_url = format!("{base}/git/ref/heads/main");
+    let latest_url = format!("{base}/releases/latest");
     let (head_bytes, latest_bytes) = tokio::try_join!(
-        bounded_https_get(&client, &format!("{base}/git/ref/heads/main"), 32768),
-        bounded_https_get(
-            &client,
-            &format!("{base}/releases/latest"),
-            MAX_GITHUB_REPLY
-        )
+        bounded_https_get(&client, &head_url, 32768),
+        bounded_https_get(&client, &latest_url, MAX_GITHUB_REPLY)
     )?;
     let head: serde_json::Value =
         serde_json::from_slice(&head_bytes).map_err(|_| "HOST_REFRESH_MAIN_REF_INVALID")?;
