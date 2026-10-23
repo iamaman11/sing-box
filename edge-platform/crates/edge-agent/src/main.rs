@@ -171,9 +171,6 @@ async fn run(parsed: cli::Cli) -> Result<(), AgentError> {
     use cli::Command;
 
     match parsed.command {
-        Command::AcceptanceServe(_) => Err(AgentError::Command(
-            "HOST_VM_LEGACY_RPC_LISTENER_DISABLED_USE_HOST".to_owned(),
-        )),
         Command::Local { command } => {
             if !native_local_entrypoint_allowed(&command) {
                 return Err(AgentError::Command(
@@ -4974,51 +4971,16 @@ mod native_mutation_ingress_tests {
     use super::*;
 
     #[test]
-    fn vm_legacy_mutators_cannot_reach_dispatch() {
-        for command in [
-            cli::LocalCommand::BootstrapBase,
-            cli::LocalCommand::BootstrapTunnel,
-            cli::LocalCommand::BootstrapFull,
-            cli::LocalCommand::BundleConverge,
-            cli::LocalCommand::BundleStageInitial,
-            cli::LocalCommand::BundleRollback,
-            cli::LocalCommand::MeshCleanup,
-            cli::LocalCommand::CredentialStage { generation: 1 },
-            cli::LocalCommand::CredentialTransition {
-                action: "promote".to_owned(),
-            },
-            cli::LocalCommand::CredentialInitialApply { generation: 1 },
+    fn vm_direct_mutation_cli_does_not_parse() {
+        use clap::Parser;
+        for name in [
+            "bootstrap-base", "bootstrap-full", "bundle-converge",
+            "bundle-rollback", "mesh-cleanup", "credential-stage",
+            "credential-initial-apply", "credential-transition",
+            "credential-existing-join",
         ] {
-            assert!(!native_local_entrypoint_allowed(&command));
+            assert!(cli::Cli::try_parse_from(["edge-agent", "local", name]).is_err());
         }
-        assert!(native_local_entrypoint_allowed(
-            &cli::LocalCommand::HostApply
-        ));
-        assert!(native_local_entrypoint_allowed(
-            &cli::LocalCommand::HostObserve
-        ));
-        assert!(native_local_entrypoint_allowed(
-            &cli::LocalCommand::HostResources
-        ));
-        assert!(deny_legacy_vm_rpc_mutation().is_err());
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    fn vm_scope_test() -> Vec<edge_shared_types::FleetVmContainer> {
-        [
-            ("vultr-line1-gateway", "line1-gateway"),
-            ("vultr-line2-proxy", "line2-proxy"),
-            ("vultr-warp-egress", "warp-egress"),
-        ]
-        .into_iter()
-        .map(|(name, service)| edge_shared_types::FleetVmContainer {
-            container_name: name.to_owned(),
-            compose_project: "vultr-edge".to_owned(),
-            compose_service: service.to_owned(),
-        })
-        .collect()
     }
 
     #[test]
