@@ -26,6 +26,12 @@ permissions: {}
 
 jobs:
   observe:
+    # A VM signed apply MUST NOT overlap its own or another VM root upgrade:
+    # the existing production lease group serializes upgrade and native BEGIN.
+    # Status remains independent and read-only; Windows is not affected.
+    concurrency:
+      group: ${{ (inputs.kind == 'VM' && startsWith(inputs.command_body, '/host apply ')) && 'vultr-control-plane-production' || format('host-readonly-{0}', inputs.source_comment_id) }}
+      cancel-in-progress: false
     # Git selects a single owner from Rust's exact protobuf matrix.
     # This job NEVER holds issues:write, Docker socket or generic root.
     runs-on: ${{ fromJSON(inputs.runner_labels) }}
