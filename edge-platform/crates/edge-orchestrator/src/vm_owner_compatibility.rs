@@ -261,6 +261,20 @@ pub(super) async fn reconcile_before_enrollment(
         }
         OwnerDecision::Current => {}
     }
+    // A digest and BEGIN cannot turn leftover staging into a known outcome.
+    let clean = read(concat!(
+        "set -eu; for path in ",
+        "/tmp/singbox-owner-upgrade-next ",
+        "/usr/local/libexec/sing-box/.edge-agent.next ",
+        "/usr/local/libexec/sing-box/.edge-agent-upgrade-next-begin ",
+        "/usr/local/libexec/sing-box/.edge-agent-previous-next ",
+        "/usr/local/libexec/sing-box/.edge-agent-rollback-begin ",
+        "/usr/local/libexec/sing-box/edge-agent.failed; do ",
+        "test ! -e \"$path\"; test ! -L \"$path\"; done; echo CLEAR"
+    ))?;
+    if clean != "CLEAR" {
+        return Err("HOST_OWNER_INCOMPLETE_TRANSITION_UNKNOWN_NO_REPLAY".into());
+    }
     let installed = read(&format!("sha256sum {owner} | cut -d' ' -f1"))?;
     if installed != expected.sha256 {
         return Err("HOST_OWNER_POST_UPGRADE_DIGEST_UNPROVEN_NO_REPLAY".into());
