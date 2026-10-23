@@ -214,8 +214,14 @@ mod tests {
             assert!(Cli::try_parse_from(["edge-controller", command]).is_ok());
         }
         for command in [
-            "start-local", "stop-local", "restart-local", "bootstrap-runtime",
-            "controller-bootstrap-runtime", "set-selector", "deploy", "destroy",
+            "start-local",
+            "stop-local",
+            "restart-local",
+            "bootstrap-runtime",
+            "controller-bootstrap-runtime",
+            "set-selector",
+            "deploy",
+            "destroy",
         ] {
             assert!(Cli::try_parse_from(["edge-controller", command]).is_err());
         }

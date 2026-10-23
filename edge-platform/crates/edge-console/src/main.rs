@@ -1,7 +1,7 @@
-mod controller_client;
 mod console_reporting;
-use controller_client::*;
+mod controller_client;
 use console_reporting::*;
+use controller_client::*;
 
 mod cli;
 mod command_dispatch;
@@ -581,9 +581,13 @@ async fn process_privileged_request(
             #[cfg(windows)]
             let evidence = match evidence {
                 Ok(detail)
-                    if (detail.contains("credential_lifecycle_state=EXISTING_ACTIVE_UNVERIFIED")
-                        || detail.contains("credential_lifecycle_state=EXISTING_TRANSITION_UNVERIFIED"))
-                        && require_stopped_proxy_only_initial_commit_owner(install_root).is_ok() =>
+                    if (detail
+                        .contains("credential_lifecycle_state=EXISTING_ACTIVE_UNVERIFIED")
+                        || detail.contains(
+                            "credential_lifecycle_state=EXISTING_TRANSITION_UNVERIFIED",
+                        ))
+                        && require_stopped_proxy_only_initial_commit_owner(install_root)
+                            .is_ok() =>
                 {
                     let identity = install_root
                         .join("state")
@@ -598,17 +602,19 @@ async fn process_privileged_request(
                         &identity,
                         edge_shared_types::CredentialProjectionKind::Windows,
                         CredentialOriginSelection::Active,
-                    ).await;
-                    let staged = detail.contains(
-                        "credential_lifecycle_state=EXISTING_TRANSITION_UNVERIFIED"
-                    );
+                    )
+                    .await;
+                    let staged = detail
+                        .contains("credential_lifecycle_state=EXISTING_TRANSITION_UNVERIFIED");
                     let candidate_ok = if staged && active_proof.is_ok() {
                         attest_worker_credential_origin(
                             &store,
                             &identity,
                             edge_shared_types::CredentialProjectionKind::Windows,
                             CredentialOriginSelection::Candidate,
-                        ).await.is_ok()
+                        )
+                        .await
+                        .is_ok()
                     } else {
                         !staged
                     };

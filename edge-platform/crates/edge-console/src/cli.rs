@@ -244,12 +244,25 @@ mod tests {
     #[test]
     fn readonly_console_commands_remain_parseable() {
         for command in [
-            "status", "doctor", "credential-state", "credential-initial-probe",
-            "privileged-ping", "privileged-runtime-evidence", "privileged-dispatch",
-            "verify-runtime", "quality-line1", "secrets", "get-selector",
-            "get-ubuntu-selector", "trace", "trace-ubuntu",
+            "status",
+            "doctor",
+            "credential-state",
+            "credential-initial-probe",
+            "privileged-ping",
+            "privileged-runtime-evidence",
+            "privileged-dispatch",
+            "verify-runtime",
+            "quality-line1",
+            "secrets",
+            "get-selector",
+            "get-ubuntu-selector",
+            "trace",
+            "trace-ubuntu",
         ] {
-            assert!(Cli::try_parse_from(["edge-console", command]).is_ok(), "{command}");
+            assert!(
+                Cli::try_parse_from(["edge-console", command]).is_ok(),
+                "{command}"
+            );
         }
         assert!(Cli::try_parse_from(["edge-console", "get-operation", "42"]).is_ok());
     }
@@ -257,20 +270,43 @@ mod tests {
     #[test]
     fn legacy_console_mutation_ingress_is_unparseable() {
         for command in [
-            "menu", "ensure-controller", "reconcile", "credential-initial-attest",
-            "credential-initial-acceptance-bootstrap", "credential-initial-acceptance-stage",
-            "credential-initial-line1-witness", "credential-existing-line1-witness",
-            "smoke-runtime", "stage2-preflight", "provision-runtime-state",
-            "privileged-activate", "privileged-reinstall-accepted",
-            "privileged-rollback-previous", "privileged-offline-activate",
-            "offline-bootstrap", "privileged-stage-credential", "credential-transition",
-            "privileged-initial-credential-commit", "privileged-existing-join",
-            "privileged-restart-controller-service", "privileged-start-proxy-only-controller",
-            "privileged-stop-proxy-only-controller", "set-secret", "get-secret",
-            "start-local", "start-local-visible", "stop-local", "restart-local",
-            "set-selector", "set-ubuntu-selector", "powershell",
+            "menu",
+            "ensure-controller",
+            "reconcile",
+            "credential-initial-attest",
+            "credential-initial-acceptance-bootstrap",
+            "credential-initial-acceptance-stage",
+            "credential-initial-line1-witness",
+            "credential-existing-line1-witness",
+            "smoke-runtime",
+            "stage2-preflight",
+            "provision-runtime-state",
+            "privileged-activate",
+            "privileged-reinstall-accepted",
+            "privileged-rollback-previous",
+            "privileged-offline-activate",
+            "offline-bootstrap",
+            "privileged-stage-credential",
+            "credential-transition",
+            "privileged-initial-credential-commit",
+            "privileged-existing-join",
+            "privileged-restart-controller-service",
+            "privileged-start-proxy-only-controller",
+            "privileged-stop-proxy-only-controller",
+            "set-secret",
+            "get-secret",
+            "start-local",
+            "start-local-visible",
+            "stop-local",
+            "restart-local",
+            "set-selector",
+            "set-ubuntu-selector",
+            "powershell",
         ] {
-            assert!(Cli::try_parse_from(["edge-console", command]).is_err(), "{command}");
+            assert!(
+                Cli::try_parse_from(["edge-console", command]).is_err(),
+                "{command}"
+            );
         }
     }
 }

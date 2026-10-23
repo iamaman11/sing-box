@@ -12,7 +12,9 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             "HOST_WINDOWS_LEGACY_CONSOLE_MUTATION_DISABLED_USE_HOST".to_owned(),
         ));
     }
-    let command = parsed.command.ok_or_else(|| ConsoleError::Command("HOST_WINDOWS_NO_COMMAND".to_owned()))?;
+    let command = parsed
+        .command
+        .ok_or_else(|| ConsoleError::Command("HOST_WINDOWS_NO_COMMAND".to_owned()))?;
     match command {
         Command::Status(args) => {
             let status = fetch_status(args.resolve()).await?;
