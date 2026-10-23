@@ -1,11 +1,6 @@
 use super::*;
 
 pub(super) async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
-    if !native_local_entrypoint_allowed(&command) {
-        return Err(AgentError::Command(
-            "HOST_VM_LEGACY_LOCAL_MUTATION_DISABLED_USE_SIGNED_HOST_INTENT".to_owned(),
-        ));
-    }
     let stack_dir = PathBuf::from(DEFAULT_STACK_DIR);
     match command {
         cli::LocalCommand::Status { fast } => {

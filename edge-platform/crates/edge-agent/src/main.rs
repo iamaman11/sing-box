@@ -139,26 +139,6 @@ async fn main() -> ExitCode {
 /// Production ingress permits only read-only diagnostics, one signed
 /// HostIntent, and protected local-root enrollment. Deprecated commands
 /// stay parseable for old clients but cannot reach any mutation effector.
-fn native_local_entrypoint_allowed(command: &cli::LocalCommand) -> bool {
-    matches!(
-        command,
-        cli::LocalCommand::Status { .. }
-            | cli::LocalCommand::Verify
-            | cli::LocalCommand::Diagnose
-            | cli::LocalCommand::HostObserve
-            | cli::LocalCommand::HostResources
-            | cli::LocalCommand::HostApply
-            | cli::LocalCommand::HostRefresh
-            | cli::LocalCommand::HostEnroll { .. }
-            | cli::LocalCommand::QualityLine2
-            | cli::LocalCommand::CredentialPublicEndpoint
-            | cli::LocalCommand::CredentialRuntimeSource
-            | cli::LocalCommand::MeshVerify
-            | cli::LocalCommand::CredentialState
-            | cli::LocalCommand::CredentialInitialProbe
-    )
-}
-
 /// No legacy gRPC mutator may bypass the signed native host journal.
 /// Enforcement lives in each method, independently of listener/sudoers.
 fn deny_legacy_vm_rpc_mutation() -> Result<(), Status> {
@@ -171,14 +151,7 @@ async fn run(parsed: cli::Cli) -> Result<(), AgentError> {
     use cli::Command;
 
     match parsed.command {
-        Command::Local { command } => {
-            if !native_local_entrypoint_allowed(&command) {
-                return Err(AgentError::Command(
-                    "HOST_VM_LEGACY_LOCAL_MUTATION_DISABLED_USE_SIGNED_HOST_INTENT".to_owned(),
-                ));
-            }
-            run_local(command).await
-        }
+        Command::Local { command } => run_local(command).await,
     }
 }
 

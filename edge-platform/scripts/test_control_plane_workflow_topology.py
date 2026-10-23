@@ -45,6 +45,8 @@ assert "local host-refresh" in native
 assert 'HostRefresh,' in agent_cli
 assert "LocalCommand::HostRefresh => host_enroll::refresh_current()" in agent_dispatch
 assert "mod local_dispatch;" in agent_main
+assert "native_local_entrypoint_allowed" not in agent_main
+assert "native_local_entrypoint_allowed" not in agent_dispatch
 assert 'SING_BOX_NATIVE_HOST_TRUST = ${LOCAL_OWNER} local host-refresh' in vm_installer
 assert "host-enroll machine release" in vm_installer
 assert "SING_BOX_NATIVE_HOST_TRUST" in vm_installer
