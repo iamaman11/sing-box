@@ -364,9 +364,10 @@ jobs:
           agent_network = Path(
               "edge-platform/crates/edge-agent/src/network_observation.rs"
           ).read_text()
-          agent_docker = Path(
-              "edge-platform/crates/edge-agent/src/docker_observation.rs"
-          ).read_text()
+          agent_docker = (
+              Path("edge-platform/crates/edge-agent/src/docker_observation.rs").read_text()
+              + Path("edge-platform/crates/edge-agent/src/docker_runtime_readback.rs").read_text()
+          )
           application_service = Path(
               "edge-platform/crates/edge-orchestrator/src/application_lifecycle_service.rs"
           ).read_text()

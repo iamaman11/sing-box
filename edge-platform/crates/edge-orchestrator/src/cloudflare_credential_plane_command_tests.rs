@@ -949,3 +949,29 @@ fn delivery_contract_rejects_extra_bindings() {
     observed.projections[0].worker_binding_count = Some(3);
     assert!(plan(&desired, &observed).is_err());
 }
+
+#[test]
+fn vm_worker_upgrade_decision_is_closed_and_fail_closed() {
+    use VmWorkerUpgradeDecision as Decision;
+
+    let accepted = Decision::from_verified_state(ProjectionDeliveryState::FixedAb).unwrap();
+    assert_eq!(accepted, Decision::AlreadyAccepted);
+    assert_eq!(accepted.workflow_required(), "false");
+
+    let upgrade =
+        Decision::from_verified_state(ProjectionDeliveryState::FixedAbProofUpgradeRequired)
+            .unwrap();
+    assert_eq!(upgrade, Decision::UpgradeRequired);
+    assert_eq!(upgrade.workflow_required(), "true");
+
+    for unproven in [
+        ProjectionDeliveryState::LegacyLocked,
+        ProjectionDeliveryState::FixedAbVersionTagMissing,
+        ProjectionDeliveryState::FixedAbLatestPendingDeployment,
+    ] {
+        assert_eq!(
+            Decision::from_verified_state(unproven),
+            Err("HOST_VM_WORKER_PLAN_STATE_NOT_ADMITTED")
+        );
+    }
+}

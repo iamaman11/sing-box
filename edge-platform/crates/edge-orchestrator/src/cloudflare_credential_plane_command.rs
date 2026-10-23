@@ -1389,6 +1389,46 @@ fn verify_vm_worker_predecessor(
     )
 }
 
+/// The only admitted outcomes after exact Worker source and identity verification.
+/// Other lifecycle states are blocked before publishing any GitHub decision.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum VmWorkerUpgradeDecision {
+    AlreadyAccepted,
+    UpgradeRequired,
+}
+
+impl VmWorkerUpgradeDecision {
+    fn from_verified_state(state: ProjectionDeliveryState) -> Result<Self, &'static str> {
+        match state {
+            ProjectionDeliveryState::FixedAb => Ok(Self::AlreadyAccepted),
+            ProjectionDeliveryState::FixedAbProofUpgradeRequired => Ok(Self::UpgradeRequired),
+            _ => Err("HOST_VM_WORKER_PLAN_STATE_NOT_ADMITTED"),
+        }
+    }
+
+    fn workflow_required(self) -> &'static str {
+        match self {
+            Self::AlreadyAccepted => "false",
+            Self::UpgradeRequired => "true",
+        }
+    }
+}
+
+/// Publish only the closed Rust decision scalar to GitHub Actions.
+/// Any invalid source or missing output channel fails closed.
+fn emit_vm_worker_plan_required(decision: VmWorkerUpgradeDecision) -> Result<(), String> {
+    let path = env::var_os("GITHUB_OUTPUT").ok_or("HOST_WORKFLOW_OUTPUT_REQUIRED")?;
+    let mut output = OpenOptions::new()
+        .append(true)
+        .open(path)
+        .map_err(|_| "HOST_WORKFLOW_OUTPUT_NOT_WRITABLE")?;
+    writeln!(output, "required={}", decision.workflow_required())
+        .map_err(|_| "HOST_WORKFLOW_OUTPUT_WRITE_FAILED")?;
+    output
+        .sync_all()
+        .map_err(|_| "HOST_WORKFLOW_OUTPUT_SYNC_FAILED".to_owned())
+}
+
 /// VM-only Host authorizer code promotion. The one public /host apply
 /// selects the Git-owned VM; the protected workflow reserves a durable BEGIN
 /// before dispatch and supplies the existing distinct Cloudflare read/write
@@ -1483,7 +1523,11 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
     {
         return Err("HOST_VM_WORKER_PENDING_OR_SPLIT_DEPLOYMENT_FORBIDDEN".to_owned());
     }
+    let decision = VmWorkerUpgradeDecision::from_verified_state(state).map_err(str::to_owned)?;
     if state == ProjectionDeliveryState::FixedAb {
+        if plan_only {
+            emit_vm_worker_plan_required(decision)?;
+        }
         println!("host_vm_worker_authorizer=SOURCE_ALREADY_ACCEPTED");
         println!("worker_mutations=0");
         println!("host_signed_install=NOT_AUTHORIZED");
@@ -1493,6 +1537,7 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
         return Err("HOST_VM_WORKER_BASELINE_NOT_PROVEN_FOR_CODE_UPGRADE".to_owned());
     }
     if plan_only {
+        emit_vm_worker_plan_required(decision)?;
         println!("host_vm_worker_authorizer=EXACT_VM_CODE_ONLY_PLAN");
         println!("worker_mutations=0");
         println!("host_signed_install=NOT_AUTHORIZED");
