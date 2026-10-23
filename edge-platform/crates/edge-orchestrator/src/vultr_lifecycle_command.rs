@@ -27,7 +27,9 @@ use crate::vultr_support_resources::{
     firewall_rule_spec, observe_verified_firewall_bindings, public_key_material,
     release_controller_ipv4_access, resolve_managed_ssh_key, validate_machine_catalog,
 };
-use edge_controller_core::application_lifecycle::{ApplicationBootstrapMode, DesiredApplicationState};
+use edge_controller_core::application_lifecycle::{
+    ApplicationBootstrapMode, DesiredApplicationState,
+};
 use edge_controller_core::host_substrate_lifecycle::HostSubstrateAction;
 use edge_controller_core::lifecycle::{
     AuthorizedPlan, PlanDisposition, authorize_plan, verify_exact_authority,
@@ -62,9 +64,7 @@ mod vm_owner_upgrade;
 
 // Historical acceptance-v1 preflight still guards internal, unreachable
 // old helpers. It is NOT a new CLI or VM first-use mutation authority.
-fn validate_disposable_acceptance(
-    desired: &DesiredApplicationState,
-) -> Result<(), String> {
+fn validate_disposable_acceptance(desired: &DesiredApplicationState) -> Result<(), String> {
     if desired.environment != "application-acceptance" {
         return Err(format!(
             "application acceptance requires environment application-acceptance, got {}",
