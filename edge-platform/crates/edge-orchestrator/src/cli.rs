@@ -238,14 +238,6 @@ pub(crate) enum HostCommand {
         #[arg(long)]
         output_path: PathBuf,
     },
-    /// Refresh an already-enrolled root trust snapshot from the accepted
-    /// protected Git ReleaseSet. Never creates, adopts or installs a VM.
-    #[command(hide = true)]
-    RefreshReceipt {
-        machine_id: String,
-        #[arg(long)]
-        agent_path: PathBuf,
-    },
     /// Internal read-only Vultr provider plan before any Git receipt reservation.
     /// No VM/provider mutation and no alternate accepted desired.
     #[command(hide = true)]

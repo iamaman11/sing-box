@@ -66,11 +66,12 @@ unset credential_access_client_id credential_access_client_secret
 cat > "${SUDOERS_FILE}" <<EOF
 Cmnd_Alias SING_BOX_RUNTIME_READ = ${LOCAL_OWNER} local status --fast, ${LOCAL_OWNER} local status, ${LOCAL_OWNER} local host-observe, ${LOCAL_OWNER} local host-resources, ${LOCAL_OWNER} local verify, ${LOCAL_OWNER} local diagnose, ${LOCAL_OWNER} local quality-line2, ${LOCAL_OWNER} local credential-initial-probe, ${LOCAL_OWNER} local bundle-verify, ${LOCAL_OWNER} local mesh-verify, ${LOCAL_OWNER} local credential-state
 Cmnd_Alias SING_BOX_NATIVE_HOST_TRANSACTION = ${LOCAL_OWNER} local host-apply
+Cmnd_Alias SING_BOX_NATIVE_HOST_TRUST = ${LOCAL_OWNER} local host-refresh
 # The runner may transport only the exact host operation to the installed
 # root Agent, which independently validates Worker signature, Git provenance,
 # machine identity, protected journal and physical readback. No generic sudo,
 # direct Docker, bundle/credential mutation, rollback or Mesh cleanup.
-${RUNNER_USER} ALL=(root) NOPASSWD: SING_BOX_RUNTIME_READ, SING_BOX_NATIVE_HOST_TRANSACTION
+${RUNNER_USER} ALL=(root) NOPASSWD: SING_BOX_RUNTIME_READ, SING_BOX_NATIVE_HOST_TRANSACTION, SING_BOX_NATIVE_HOST_TRUST
 EOF
 chmod 0440 "${SUDOERS_FILE}"
 visudo -cf "${SUDOERS_FILE}" >/dev/null
@@ -107,6 +108,7 @@ if sudo -u "${RUNNER_USER}" test -r /var/run/docker.sock 2>/dev/null; then
   exit 9
 fi
 sudo -u "${RUNNER_USER}" sudo -n "${LOCAL_OWNER}" local status >/dev/null
+sudo -u "${RUNNER_USER}" sudo -n -l "${LOCAL_OWNER}" local host-refresh >/dev/null
 
 if systemctl cat edge-agent.service >/dev/null 2>&1; then
   systemctl disable --now edge-agent.service >/dev/null

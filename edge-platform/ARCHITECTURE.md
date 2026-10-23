@@ -41,7 +41,7 @@
 - `host apply <id>` — подписанный одноразовый переход к Git desired и ReleaseSet;
 - `host recover <id>` — диагностика/безопасная новая операция после установления фактов, никогда replay неизвестной мутации.
 
-**CLI:** прежние mutation-команды заблокированы до Rust dispatch и скрыты; доступны host, immutable ReleaseSet build и read-only проверки. Архивные workflows ещё требуют закрытия.
+**CLI:** прежние mutation-команды недоступны через Rust dispatch; удалены шесть исторических GitHub workflow. Не возвращать SSH refresh или generic sudo. Новый root-owned `host-refresh` без аргументов выбирает только защищённый текущий main и обновляет trust/binary атомарно; `host-apply` остаётся единственным исполнителем ресурсов.
 
 **Реализовано частично в PR #403:** Protobuf DAG для Compose-owned containers/networks/images/config; typed reason, Rust planner, VM root Agent, Worker authorization и одноразовый journal. Для одной конфигурации Line1/Line2 реализован подписанный `config/<project>/<service>` в существующем `host apply`: GitHub approval → Worker Ed25519 → точный DAG node/owner → native config-only handler. Чужой ресурс, image-pair, START/STOP и cross-scope UNKNOWN блокируются. Read-only планы неизменно `owner_attested=false`, `mutation_authorized=false`.
 
@@ -49,7 +49,7 @@
 
 **Native receipt и legacy boundary (PR #403):** root `host-enroll` создаёт защищённый Ed25519 receipt key, выдаёт public key для регистрации в Git; без exact key match apply BLOCKED. VM CLI допускает только host apply, enrollment и чтение; старый RPC listener отключён. VM/Windows legacy mutating RPC всегда PermissionDenied; новые RPC проверяются CI по умолчанию. Windows SYSTEM signed apply и физическая приёмка НЕ готовы.
 
-**Не принято:** физическая установка scoped signer/root Agent и ключей receipt, остальные resource kinds DNS/firewall/routes/TLS/CredentialRef, Windows SYSTEM apply и полное deep-acceptance. Обычный `resource_id=sing-box` остаётся host-wide; `host recover` read-only. Код PR и CI не означают эксплуатационный допуск. Старые команды не возвращать; `UNPROVEN` не считать PASS.
+**Не принято:** физическая приёмка новой VM после hard cut, реальная Worker Access авторизация, ресурсные handlers для host DNS/firewall/routes, Windows SYSTEM apply/TUN/reboot и полное deep-acceptance. Код и CI ≠ runtime. Обычный `resource_id=sing-box` остаётся host-wide; `host recover` read-only. Код PR и CI не означают эксплуатационный допуск. Старые команды не возвращать; `UNPROVEN` не считать PASS.
 
 ## Неопределённость и восстановление
 

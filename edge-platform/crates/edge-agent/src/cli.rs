@@ -52,6 +52,9 @@ pub(crate) enum LocalCommand {
     HostResources,
     /// One native VM host transaction, with an exact protobuf intent on stdin.
     HostApply,
+    /// Refresh the exact protected main release from the installed root
+    /// owner; no caller-selected SHA/path and no SSH.
+    HostRefresh,
     /// First-use root-only trust enrollment. Never exposed by the runner sudoers.
     HostEnroll {
         machine_id: String,
@@ -125,6 +128,7 @@ impl LocalCommand {
             Self::HostObserve => "local-host-observe",
             Self::HostResources => "local-host-resources",
             Self::HostApply => "local-host-apply",
+            Self::HostRefresh => "local-host-refresh",
             Self::HostEnroll { .. } => "local-host-enroll",
             Self::QualityLine2 => "local-quality-line2",
             Self::CredentialPublicEndpoint => "local-credential-public-endpoint",
@@ -192,6 +196,8 @@ mod tests {
         assert!(Cli::try_parse_from(["edge-agent", "local", "host-resources"]).is_ok());
         assert!(Cli::try_parse_from(["edge-agent", "local", "host-resources", "stop"]).is_err());
         assert!(Cli::try_parse_from(["edge-agent", "local", "host-apply"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "host-refresh"]).is_ok());
+        assert!(Cli::try_parse_from(["edge-agent", "local", "host-refresh", "sha"]).is_err());
         assert!(Cli::try_parse_from(["edge-agent", "local", "host-apply", "unsafe"]).is_err());
         assert!(Cli::try_parse_from(["edge-agent", "local", "host-observe", "write"]).is_err());
         assert!(Cli::try_parse_from(["edge-agent", "local", "quality-line2"]).is_ok());

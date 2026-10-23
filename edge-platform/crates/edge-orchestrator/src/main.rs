@@ -273,17 +273,6 @@ async fn run(
                 )
                 .await
             }
-            cli::HostCommand::RefreshReceipt {
-                machine_id,
-                agent_path,
-            } => {
-                vultr_lifecycle_command::host_receipt_refresh(
-                    &machine_id,
-                    &agent_path,
-                    release_context,
-                )
-                .await
-            }
             cli::HostCommand::FirstUsePreflight { machine_id } => {
                 vultr_lifecycle_command::host_first_use_provider_preflight(
                     &machine_id,

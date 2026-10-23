@@ -1146,48 +1146,6 @@ jobs:
           grep -Fxq 'host_receipt_merge=EXACT_ONE_PUBLIC_KEY_CHANGE' "${RUNNER_TEMP}/host-receipt-merge-proof.txt"
           grep -Fxq 'host_mutations=0' "${RUNNER_TEMP}/host-receipt-merge-proof.txt"
 
-      - name: Materialize exact temporary SSH operator credential
-        if: steps.source.outputs.machine_id != ''
-        shell: bash
-        env:
-          VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}
-        run: |
-          set -euo pipefail
-          umask 077
-          path="${RUNNER_TEMP}/host-resume-operator"
-          printf '%s\n' "${VULTR_SSH_PRIVATE_KEY}" > "${path}"
-          test -s "${path}"
-          chmod 0600 "${path}"
-          echo "EDGE_SSH_PRIVATE_KEY_PATH=${path}" >> "${GITHUB_ENV}"
-          ip="$(curl -4 --fail --silent --show-error --connect-timeout 10 --max-time 20 https://api.ipify.org)"
-          python3 - "${ip}" <<'PY'
-          import ipaddress
-          import sys
-          ip = ipaddress.ip_address(sys.argv[1])
-          if ip.version != 4 or not ip.is_global:
-              raise SystemExit("HOST_RESUME_EGRESS_UNPROVEN")
-          PY
-          echo "EDGE_CONTROLLER_IPV4=${ip}" >> "${GITHUB_ENV}"
-
-      - name: Refresh existing root trust once and prove Git receipt match
-        if: steps.source.outputs.machine_id != ''
-        shell: bash
-        env:
-          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
-        run: |
-          set -euo pipefail
-          test "${GITHUB_RUN_ATTEMPT}" = 1
-          bin="${RUNNER_TEMP}/host-resume-release/edge-orchestrator-linux-amd64"
-          registry="${RUNNER_TEMP}/host-resume-release/fleet-registry.pb"
-          "${bin}" host \
-            --hosts-pb "${registry}" \
-            --hosts-sha256 "$(sha256sum "${registry}" | cut -d' ' -f1)" \
-            refresh-receipt "${{ steps.source.outputs.machine_id }}" --agent-path "${RUNNER_TEMP}/host-resume-release/edge-agent-linux-amd64" \
-            | tee "${RUNNER_TEMP}/host-root-refresh.txt"
-          grep -Fxq 'host_receipt_refresh=ROOT_PROTECTED_GIT_PINNED' "${RUNNER_TEMP}/host-root-refresh.txt"
-          grep -Eq '^host_mutations=[01]$' "${RUNNER_TEMP}/host-root-refresh.txt"
-          grep -Fxq 'host_owner_compatibility=EXACT_ACCEPTED_AGENT' "${RUNNER_TEMP}/host-root-refresh.txt"
-
       - name: Prepare one fresh signed native intent under original operator scope
         id: prepare
         if: steps.source.outputs.machine_id != ''
