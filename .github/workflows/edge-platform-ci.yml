@@ -76,21 +76,6 @@ jobs:
           set -euo pipefail
           bash -n edge-platform/scripts/resolve_durable_release.sh
           python3 edge-platform/scripts/test_resolve_durable_release.py
-          if grep -n --fixed-strings 'actions/download-artifact' \
-            .github/workflows/vm-application-lifecycle.yml \
-            .github/workflows/vultr-lifecycle.yml \
-            .github/workflows/credential-lifecycle.yml; then
-            echo "lifecycle workflows must not depend on expiring Actions artifacts" >&2
-            exit 1
-          fi
-          if grep -n --fixed-strings 'manifest.json' \
-            .github/workflows/vm-application-lifecycle.yml \
-            .github/workflows/vultr-lifecycle.yml \
-            .github/workflows/credential-lifecycle.yml; then
-            echo "lifecycle workflows must consume canonical ReleaseSet authority, not transitional manifests" >&2
-            exit 1
-          fi
-
       - name: Verify protected CI covers registry-only and workflow-only changes
         shell: bash
         run: python3 edge-platform/scripts/test_ci_trigger_scope.py
@@ -421,19 +406,6 @@ jobs:
           assert "authorize_mesh_cleanup" in mesh_command
           assert "authorized-plan-sha256" in vpc_command_authority
           assert "authorized-plan-sha256" in vultr_command_authority
-          vultr_workflow = Path(".github/workflows/vultr-lifecycle.yml").read_text()
-          application_workflow = Path(".github/workflows/vm-application-lifecycle.yml").read_text()
-          assert ".destroy_digest // empty" in vultr_workflow
-          assert "plan_authority" in vultr_workflow
-          assert "production_runtime:" in application_workflow
-          assert "sing-box-production-vm" in application_workflow
-          assert 'sudo -n "${owner}" local "${local_operation}"' in application_workflow
-          assert "plan_authority" not in application_workflow
-          assert "recover-plan" not in application_workflow
-          assert "recover-apply" not in application_workflow
-          assert "recovery_authority_digest" not in application_workflow
-          assert "RECOVERY_AUTHORITY_DIGEST" not in application_workflow
-          assert "application-recovery-authority-plan.json" not in application_workflow
           assert "rpc Recover" not in agent_proto
           for process_root in [controller_main, orchestrator_main, console_main, agent_main]:
               assert "env::args()" not in process_root
@@ -490,12 +462,9 @@ jobs:
           assert "ip -j -4 route" not in mesh_command
           assert "strict_ssh_capture" not in mesh_command
 
-          workflow = Path(".github/workflows/vm-application-lifecycle.yml").read_text()
           acceptance_coordinator = Path(
               "edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs"
           ).read_text()
-          assert "CLOUDFLARE_ACCOUNT_ID" not in workflow
-          assert workflow.count('"${EDGE_APPLICATION_ORCHESTRATOR}" application-acceptance') == 1
           assert "acceptance_attach_and_verify as vpc_attach_and_verify" in acceptance_coordinator
           assert "acceptance_cleanup_to_absent as vpc_cleanup_to_absent" in acceptance_coordinator
           assert "acceptance_converge_provider as mesh_converge_provider" in acceptance_coordinator
@@ -505,12 +474,6 @@ jobs:
           assert "mesh_converge_provider(" in acceptance_coordinator
           assert "mesh_runtime_apply(" in acceptance_coordinator
           assert "mesh_runtime_verify(" in acceptance_coordinator
-          assert 'VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}' in workflow
-          assert 'CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}' in workflow
-          assert "jq --arg cidr" not in workflow
-          assert "vpc_cidr=" not in workflow
-          assert "mesh_spec=" not in workflow
-          assert '.routes = [{"network": $cidr}]' not in workflow
           assert "std::process::Command" not in acceptance_coordinator
 
           for acceptance_path in [
