@@ -61,9 +61,45 @@ def exact_production_worker():
     text = Path("infra/production/production.textproto").read_text(encoding="utf-8")
     ids = re.findall(r'^  active_account_id: "([0-9a-f]{32})"$', text, re.M)
     workers = re.findall(r'^    vm_worker_name: "([a-z0-9-]+)"$', text, re.M)
-    if len(ids) != 1 or len(workers) != 1:
+    subdomains = re.findall(r'^    workers_dev_subdomain: "([a-z0-9-]+)"$', text, re.M)
+    if len(ids) != 1 or len(workers) != 1 or len(subdomains) != 1:
         return None
-    return ids[0], workers[0]
+    return ids[0], workers[0], subdomains[0]
+
+
+def observe_worker_host_get_route(worker, subdomain, client_id, client_secret):
+    """Bounded GET-only Access/route witness, never signed POST admission.
+
+    Worker returns 404 for this GET, but an upstream 404 is ambiguous.
+    Neither status can authorize host operations or retry a failed POST.
+    """
+    if not re.fullmatch(r"[a-z0-9-]{1,96}", worker) or not re.fullmatch(
+            r"[a-z0-9-]{1,96}", subdomain):
+        return "GIT_WORKER_IDENTITY_UNPROVEN"
+    if not client_id or not client_secret:
+        return "ACCESS_SERVICE_IDENTITY_UNAVAILABLE"
+    url = f"https://{worker}.{subdomain}.workers.dev/v1/host/authorize"
+    request = Request(url, headers={
+        "CF-Access-Client-Id": client_id,
+        "CF-Access-Client-Secret": client_secret,
+    }, method="GET")
+    try:
+        with build_opener(DenyRedirect()).open(request, timeout=TIMEOUT) as response:
+            # No response body or credential material enters diagnostic output.
+            return ("UNEXPECTED_GET_SUCCESS_NOT_SIGNING_PROOF"
+                    if response.status == 200 else "GET_RESPONSE_NOT_SIGNING_PROOF")
+    except HTTPError as error:
+        if error.code == 404:
+            return "GET_404_WORKER_OR_EDGE_NOT_POST_PROOF"
+        if error.code == 403:
+            return "GET_403_ACCESS_OR_EDGE_DENIED"
+        if error.code == 401:
+            return "GET_401_ACCESS_UNPROVEN"
+        if error.code in (301, 302, 303, 307, 308):
+            return "GET_REDIRECT_FORBIDDEN"
+        return "GET_HTTP_UNEXPECTED_UNPROVEN"
+    except (URLError, TimeoutError, ValueError, OSError):
+        return "GET_TRANSPORT_UNPROVEN"
 
 
 def target_machine(application_spec_path, machine_id):
@@ -147,6 +183,7 @@ def observe(machine_id, desired_spec_path):
         "github_runner_visibility": "UNPROVEN",
         "cloudflare_api": "UNPROVEN",
         "worker_host_signing_bindings": "UNPROVEN",
+        "worker_host_route_get": "UNPROVEN",
         "worker_signing_public_key": "UNPROVEN_NO_NATIVE_ATTESTATION",
         "vm_access_service_identity": "UNPROVEN",
         "operator_ssh_private_key": "UNPROVEN",
@@ -193,7 +230,7 @@ def observe(machine_id, desired_spec_path):
                                     api, "api.cloudflare.com")
         if isinstance(verification, dict) and verification.get("success") is True:
             result["cloudflare_api"] = "TOKEN_VALID_API_READABLE"
-            account, worker = identity
+            account, worker, _subdomain = identity
             failure = []
             secrets = observe_json(
                 f"https://api.cloudflare.com/client/v4/accounts/{account}/workers/scripts/{worker}/secrets",
@@ -202,9 +239,14 @@ def observe(machine_id, desired_spec_path):
                 worker_bindings(secrets) if secrets is not None else
                 "UNPROVEN_WORKER_SECRETS_" + (failure[0] if failure else "UNKNOWN"))
 
-    if (os.environ.get("CLOUDFLARE_VM_ACCESS_CLIENT_ID")
-            and os.environ.get("CLOUDFLARE_VM_ACCESS_CLIENT_SECRET")):
+    access_id = os.environ.get("CLOUDFLARE_VM_ACCESS_CLIENT_ID", "")
+    access_secret = os.environ.get("CLOUDFLARE_VM_ACCESS_CLIENT_SECRET", "")
+    if access_id and access_secret:
         result["vm_access_service_identity"] = "PRESENT_UNVERIFIED"
+        if identity:
+            _account, worker, subdomain = identity
+            result["worker_host_route_get"] = observe_worker_host_get_route(
+                worker, subdomain, access_id, access_secret)
 
     if os.environ.get("VULTR_SSH_PRIVATE_KEY"):
         result["operator_ssh_private_key"] = "PRESENT_UNVERIFIED"
