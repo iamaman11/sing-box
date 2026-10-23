@@ -426,7 +426,12 @@ jobs:
           assert "VultrVpcCommand" not in orchestrator_cli
           assert "CredentialReadOnlyCommand" in orchestrator_cli
           assert "HostWorkflowOperation" in Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text()
-          assert "host_action_json=" in Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text()
+          host_source = Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text()
+          assert 'writeln!(file, "operation={}", action.as_str())' in host_source
+          assert "host_action_json" not in host_source
+          assert "HostWorkflowDecision" not in host_source
+          assert "fromJSON(needs.host.outputs.host_action_json)" not in Path(".github/workflows/edge-control-plane.yml").read_text()
+          assert "fromJSON(needs.host.outputs.host_matrix)" in Path(".github/workflows/edge-control-plane.yml").read_text()
           assert "mod host_dispatch;" in orchestrator_main
           assert "mod local_dispatch;" in agent_main
           assert "mod controller_rpc;" in controller_main
