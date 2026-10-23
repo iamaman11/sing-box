@@ -85,10 +85,6 @@ pub(crate) enum HostCommand {
         machine_id: Option<String>,
         #[arg(long)]
         deep: bool,
-        /// Internal only: resolve exact Git-owned credential peers for the
-        /// pre-existing workflow; does not authorize any credential action.
-        #[arg(long, hide = true)]
-        credential_pair_windows: Option<String>,
     },
     /// Internal read-only ingestion of a native protobuf observation.
     /// GitHub runner output is NOT independent proof of native owner identity.

@@ -207,27 +207,10 @@ pub(crate) fn run(
         return Err("host protobuf differs from protected Git inventory SHA-256".to_owned());
     }
     let desired = decode_host_registry(&bytes)?;
-    if let HostCommand::Status {
-        machine_id: Some(vm_id),
-        deep: false,
-        credential_pair_windows: Some(windows_id),
-    } = &command
-    {
-        let output = github_output.ok_or("HOST_CREDENTIAL_OUTPUT_REQUIRED")?;
-        let (runner_name, runner_label) = resolve_credential_peer(&desired, vm_id, windows_id)?;
-        append_credential_peer_outputs(output, vm_id, &runner_name, &runner_label)?;
-        println!("host_credential_pair_resolution=READ_ONLY_TYPED");
-        println!("host_mutations=0");
-        return Ok(());
-    }
     match command {
-        HostCommand::Status {
-            machine_id,
-            deep,
-            credential_pair_windows,
-        } => {
-            if credential_pair_windows.is_some() {
-                return Err("HOST_CREDENTIAL_PEER_REQUIRES_EXACT_VM_AND_FAST".to_owned());
+        HostCommand::Status { machine_id, deep } => {
+            if let Some(path) = github_output {
+                append_action_output(path, HostWorkflowOperation::Status)?;
             }
             if deep && machine_id.is_none() {
                 return Err("HOST_DEEP_REQUIRES_EXACT_MACHINE".to_owned());
@@ -1218,7 +1201,7 @@ fn host_lifecycle_admission(
             &selected.windows_runner_label,
             &selected.desired_spec_path,
         )?;
-        append_action_output(output, "WORKER_AUTHORIZER_PREFLIGHT")?;
+        append_action_output(output, HostWorkflowOperation::WorkerAuthorizerPreflight)?;
         append_observation_matrix(output, &[])?;
         println!("host_operation_id=issue1-comment-{comment_id}");
         println!("host_machine_id={machine_id}");
@@ -1254,7 +1237,7 @@ fn host_lifecycle_admission(
             &selected.windows_runner_label,
             &selected.desired_spec_path,
         )?;
-        append_action_output(output, "FIRST_USE_PREFLIGHT")?;
+        append_action_output(output, HostWorkflowOperation::FirstUsePreflight)?;
         append_observation_matrix(output, &[])?;
         println!("host_operation_id=issue1-comment-{comment_id}");
         println!("host_machine_id={machine_id}");
@@ -1396,8 +1379,8 @@ fn host_lifecycle_admission(
     append_action_output(
         output,
         match operation {
-            HostLifecycleOperation::Apply => "APPLY_PREFLIGHT",
-            HostLifecycleOperation::Recover => "RECOVER_PREFLIGHT",
+            HostLifecycleOperation::Apply => HostWorkflowOperation::ApplyPreflight,
+            HostLifecycleOperation::Recover => HostWorkflowOperation::RecoverPreflight,
         },
     )?;
     let targets = if matches!(
@@ -1451,16 +1434,58 @@ fn exact_hex_sha256(value: &str) -> Result<Vec<u8>, String> {
         .collect()
 }
 
-fn append_action_output(path: &Path, action: &str) -> Result<(), String> {
+/// Closed Rust operation contract at the GitHub Actions transport boundary.
+/// GitHub expressions receive one JSON object emitted from the same checked
+/// Rust enum as the human-readable operation. Neither shell, regex nor
+/// diagnostics can introduce a new privileged operation.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+enum HostWorkflowOperation {
+    Status,
+    ApplyPreflight,
+    RecoverPreflight,
+    FirstUsePreflight,
+    WorkerAuthorizerPreflight,
+}
+
+impl HostWorkflowOperation {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::Status => "STATUS",
+            Self::ApplyPreflight => "APPLY_PREFLIGHT",
+            Self::RecoverPreflight => "RECOVER_PREFLIGHT",
+            Self::FirstUsePreflight => "FIRST_USE_PREFLIGHT",
+            Self::WorkerAuthorizerPreflight => "WORKER_AUTHORIZER_PREFLIGHT",
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct HostWorkflowDecision {
+    schema: u32,
+    operation: HostWorkflowOperation,
+}
+
+fn append_action_output(path: &Path, action: HostWorkflowOperation) -> Result<(), String> {
     let metadata =
         std::fs::symlink_metadata(path).map_err(|_| "HOST_OUTPUT_UNAVAILABLE".to_owned())?;
     if !metadata.file_type().is_file() {
         return Err("HOST_OUTPUT_NOT_REGULAR".to_owned());
     }
+    let decision = HostWorkflowDecision {
+        schema: 1,
+        operation: action,
+    };
+    let json = serde_json::to_string(&decision)
+        .map_err(|_| "HOST_WORKFLOW_TYPED_DECISION_ENCODE_FAILED")?;
     OpenOptions::new()
         .append(true)
         .open(path)
-        .and_then(|mut file| writeln!(file, "operation={action}"))
+        .and_then(|mut file| {
+            writeln!(file, "operation={}", action.as_str())?;
+            writeln!(file, "host_action_json={json}")
+        })
         .map_err(|_| "HOST_ACTION_OUTPUT_WRITE_FAILED".to_owned())
 }
 
@@ -1571,73 +1596,47 @@ fn append_control_outputs(
         .map_err(|_| "Host GitHub output write failed".to_owned())
 }
 
-fn resolve_credential_peer(
-    desired: &HostRegistry,
-    vm_id: &str,
-    windows_id: &str,
-) -> Result<(String, String), String> {
-    let vm = desired
-        .hosts
-        .iter()
-        .find(|host| host.machine_id == vm_id)
-        .ok_or("HOST_CREDENTIAL_VM_UNKNOWN")?;
-    if ManagedHostKind::try_from(vm.kind) != Ok(ManagedHostKind::Vm)
-        || !matches!(
-            vm.owner.as_ref(),
-            Some(managed_host::Owner::VmMachineId(owner)) if owner == vm_id
-        )
-        || vm.desired_spec_path != "infra/application/disposable-acceptance.json"
-    {
-        return Err("HOST_CREDENTIAL_VM_ORIGIN_INVALID".to_owned());
-    }
-    let eligible = desired
-        .hosts
-        .iter()
-        .filter(|host| ManagedHostKind::try_from(host.kind) == Ok(ManagedHostKind::Windows))
-        .collect::<Vec<_>>();
-    let chosen = if windows_id == "auto" {
-        if eligible.len() != 1 {
-            return Err("HOST_CREDENTIAL_WINDOWS_EXPLICIT_ID_REQUIRED".to_owned());
-        }
-        eligible[0]
-    } else {
-        eligible
-            .into_iter()
-            .find(|host| host.machine_id == windows_id)
-            .ok_or("HOST_CREDENTIAL_WINDOWS_UNKNOWN")?
-    };
-    let name = match chosen.owner.as_ref() {
-        Some(managed_host::Owner::WindowsRunnerName(name)) => name.clone(),
-        _ => return Err("HOST_CREDENTIAL_WINDOWS_OWNER_INVALID".to_owned()),
-    };
-    Ok((name, chosen.windows_runner_label.clone()))
-}
-
-fn append_credential_peer_outputs(
-    path: &Path,
-    vm_id: &str,
-    windows_runner_name: &str,
-    windows_runner_label: &str,
-) -> Result<(), String> {
-    let metadata = std::fs::symlink_metadata(path)
-        .map_err(|_| "HOST_CREDENTIAL_OUTPUT_UNAVAILABLE".to_owned())?;
-    if !metadata.file_type().is_file() {
-        return Err("HOST_CREDENTIAL_OUTPUT_NOT_REGULAR".to_owned());
-    }
-    let values = format!(
-        "machine_id={vm_id}\nwindows_runner_name={windows_runner_name}\nwindows_runner_label={windows_runner_label}\n"
-    );
-    OpenOptions::new()
-        .append(true)
-        .open(path)
-        .and_then(|mut output| output.write_all(values.as_bytes()))
-        .map_err(|_| "HOST_CREDENTIAL_OUTPUT_WRITE_FAILED".to_owned())
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
     use edge_shared_types::ManagedHost;
+
+    #[test]
+    fn workflow_actions_are_closed_and_schema_one() {
+        for operation in [
+            HostWorkflowOperation::Status,
+            HostWorkflowOperation::ApplyPreflight,
+            HostWorkflowOperation::RecoverPreflight,
+            HostWorkflowOperation::FirstUsePreflight,
+            HostWorkflowOperation::WorkerAuthorizerPreflight,
+        ] {
+            let encoded = serde_json::to_string(&HostWorkflowDecision {
+                schema: 1,
+                operation,
+            })
+            .unwrap();
+            assert!(!encoded.contains('\n'));
+            let decoded: HostWorkflowDecision = serde_json::from_str(&encoded).unwrap();
+            assert_eq!(decoded.schema, 1);
+            assert_eq!(decoded.operation, operation);
+            assert_eq!(
+                serde_json::to_value(operation).unwrap(),
+                serde_json::json!(operation.as_str())
+            );
+        }
+        assert!(
+            serde_json::from_str::<HostWorkflowDecision>(
+                r#"{"schema":1,"operation":"SHELL"}"#
+            )
+            .is_err()
+        );
+        assert!(
+            serde_json::from_str::<HostWorkflowDecision>(
+                r#"{"schema":1,"operation":"APPLY_PREFLIGHT","execute":"ssh"}"#
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn fresh_running_vm_does_not_queue_runner_before_git_receipt() {
@@ -2061,81 +2060,6 @@ mod tests {
         std::fs::remove_file(spec).unwrap();
         std::fs::remove_file(&intent_path).unwrap();
         std::fs::remove_file(intent_path.with_extension("receipt.pb")).unwrap();
-    }
-
-    #[test]
-    fn credential_peer_is_selected_from_typed_registry_not_textproto_regex() {
-        let registry = HostRegistry {
-            schema_version: 1,
-            hosts: vec![
-                ManagedHost {
-                    machine_id: "application-acceptance-1".to_owned(),
-                    kind: ManagedHostKind::Vm as i32,
-                    owner: Some(managed_host::Owner::VmMachineId(
-                        "application-acceptance-1".to_owned(),
-                    )),
-                    windows_runner_label: String::new(),
-                    vm_containers: Vec::new(),
-                    desired_spec_path: "infra/application/disposable-acceptance.json".to_owned(),
-                    target: None,
-                    native_receipt_public_key: Vec::new(),
-                    vm_first_use_credential: None,
-                    worker_authority_public_key: Vec::new(),
-                    vm_provider_spec_path: String::new(),
-                },
-                ManagedHost {
-                    machine_id: "sing-box-windows-lab".to_owned(),
-                    kind: ManagedHostKind::Windows as i32,
-                    owner: Some(managed_host::Owner::WindowsRunnerName(
-                        "DESKTOP-0E1F6UQ".to_owned(),
-                    )),
-                    windows_runner_label: "sing-box-windows-lab".to_owned(),
-                    vm_containers: Vec::new(),
-                    desired_spec_path: "infra/production/production.textproto".to_owned(),
-                    target: None,
-                    native_receipt_public_key: Vec::new(),
-                    vm_first_use_credential: None,
-                    worker_authority_public_key: Vec::new(),
-                    vm_provider_spec_path: String::new(),
-                },
-            ],
-        };
-        assert_eq!(
-            resolve_credential_peer(&registry, "application-acceptance-1", "auto").unwrap(),
-            (
-                "DESKTOP-0E1F6UQ".to_owned(),
-                "sing-box-windows-lab".to_owned()
-            )
-        );
-        assert_eq!(
-            resolve_credential_peer(&registry, "production-1", "auto").unwrap_err(),
-            "HOST_CREDENTIAL_VM_UNKNOWN"
-        );
-        assert_eq!(
-            resolve_credential_peer(&registry, "application-acceptance-1", "not-enrolled")
-                .unwrap_err(),
-            "HOST_CREDENTIAL_WINDOWS_UNKNOWN"
-        );
-        let mut two_windows = registry.clone();
-        two_windows.hosts.push(ManagedHost {
-            machine_id: "other-windows".to_owned(),
-            kind: ManagedHostKind::Windows as i32,
-            owner: Some(managed_host::Owner::WindowsRunnerName(
-                "OTHER-PC".to_owned(),
-            )),
-            windows_runner_label: "other-label".to_owned(),
-            vm_containers: Vec::new(),
-            desired_spec_path: "infra/production/production.textproto".to_owned(),
-            target: None,
-            native_receipt_public_key: Vec::new(),
-            vm_first_use_credential: None,
-            worker_authority_public_key: Vec::new(),
-            vm_provider_spec_path: String::new(),
-        });
-        assert_eq!(
-            resolve_credential_peer(&two_windows, "application-acceptance-1", "auto").unwrap_err(),
-            "HOST_CREDENTIAL_WINDOWS_EXPLICIT_ID_REQUIRED"
-        );
     }
 
     #[test]

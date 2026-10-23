@@ -38,11 +38,13 @@ orchestrator_cli=Path("edge-platform/crates/edge-orchestrator/src/cli.rs").read_
 orchestrator_main=Path("edge-platform/crates/edge-orchestrator/src/main.rs").read_text(encoding="utf-8")
 agent_cli=Path("edge-platform/crates/edge-agent/src/cli.rs").read_text(encoding="utf-8")
 agent_main=Path("edge-platform/crates/edge-agent/src/main.rs").read_text(encoding="utf-8")
+agent_dispatch=Path("edge-platform/crates/edge-agent/src/local_dispatch.rs").read_text(encoding="utf-8")
 vm_installer=Path("edge-platform/scripts/install-vultr-production-runner.sh").read_text(encoding="utf-8")
 assert "RefreshReceipt" not in orchestrator_cli and "RefreshReceipt" not in orchestrator_main
 assert "local host-refresh" in native
 assert 'HostRefresh,' in agent_cli
-assert "LocalCommand::HostRefresh => host_enroll::refresh_current()" in agent_main
+assert "LocalCommand::HostRefresh => host_enroll::refresh_current()" in agent_dispatch
+assert "mod local_dispatch;" in agent_main
 assert 'SING_BOX_NATIVE_HOST_TRUST = ${LOCAL_OWNER} local host-refresh' in vm_installer
 assert "host-enroll machine release" in vm_installer
 assert "SING_BOX_NATIVE_HOST_TRUST" in vm_installer
@@ -52,8 +54,8 @@ assert 'local host-refresh *' not in vm_installer
 # Every step checks the live Worker source through the Rust protected owner.
 # A failed/unknown update skips all signing steps (Actions success gate).
 worker = router.split("  host_worker_authorizer:",1)[1].split("  host_capabilities:",1)[0]
-assert worker.count("if: needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'") == 4
-assert "if: steps.plan.outputs.required == 'false' && needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'" not in worker
+assert worker.count("if: fromJSON(needs.host.outputs.host_action_json).operation == 'WORKER_AUTHORIZER_PREFLIGHT'") == 4
+assert "if: steps.plan.outputs.required == 'false' && fromJSON(needs.host.outputs.host_action_json).operation == 'WORKER_AUTHORIZER_PREFLIGHT'" not in worker
 assert "vm-worker-signer-prepare" in worker and "vm-worker-signer-commit" in worker
 assert worker.index("Apply exact VM Worker code once") < worker.index("Prepare one ephemeral VM signer")
 
@@ -68,5 +70,15 @@ assert provider.index(gate) < provider.index('host_first_use_provider_plan=EXACT
 assert provider.rindex(gate) < provider.index("acceptance_create_machine(provider_spec, machine_id).await?")
 assert "get_vm_credential_bundle_with_access(" in worker_src
 assert "attest_vm_first_use_credential_bytes(&bytes, generation, expected_sha256)?" in worker_src
+
+# GitHub receives ONLY the validated Rust closed enum decision as JSON.
+# The old operation output may exist for humans but cannot steer execution.
+assert "host_action_json: ${{ steps.observe.outputs.host_action_json }}" in router
+assert "needs.host.outputs.operation" not in router
+assert "fromJSON(needs.host.outputs.host_action_json).operation" in router
+assert "credential_pair_windows" not in orchestrator_cli
+for marker in ("mod controller_rpc;", "mod command_dispatch;", "mod local_dispatch;"):
+    owner = ("edge-controller" if "controller" in marker else "edge-console" if "command" in marker else "edge-agent")
+    assert marker in Path(f"edge-platform/crates/{owner}/src/main.rs").read_text(encoding="utf-8")
 
 print("native_only_workflow_topology=PASS")
