@@ -1389,6 +1389,19 @@ fn verify_vm_worker_predecessor(
     )
 }
 
+/// Publish only an enum-derived routing scalar to GitHub Actions.
+/// The live Worker checks have already succeeded in Rust before this call.
+fn emit_vm_worker_plan_required(required: bool) -> Result<(), String> {
+    let path = env::var_os("GITHUB_OUTPUT").ok_or("HOST_WORKFLOW_OUTPUT_REQUIRED")?;
+    let mut output = OpenOptions::new()
+        .append(true)
+        .open(path)
+        .map_err(|_| "HOST_WORKFLOW_OUTPUT_NOT_WRITABLE")?;
+    writeln!(output, "required={required}")
+        .map_err(|_| "HOST_WORKFLOW_OUTPUT_WRITE_FAILED")?;
+    output.sync_all().map_err(|_| "HOST_WORKFLOW_OUTPUT_SYNC_FAILED".to_owned())
+}
+
 /// VM-only Host authorizer code promotion. The one public /host apply
 /// selects the Git-owned VM; the protected workflow reserves a durable BEGIN
 /// before dispatch and supplies the existing distinct Cloudflare read/write
@@ -1484,6 +1497,9 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
         return Err("HOST_VM_WORKER_PENDING_OR_SPLIT_DEPLOYMENT_FORBIDDEN".to_owned());
     }
     if state == ProjectionDeliveryState::FixedAb {
+        if plan_only {
+            emit_vm_worker_plan_required(false)?;
+        }
         println!("host_vm_worker_authorizer=SOURCE_ALREADY_ACCEPTED");
         println!("worker_mutations=0");
         println!("host_signed_install=NOT_AUTHORIZED");
@@ -1493,6 +1509,7 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
         return Err("HOST_VM_WORKER_BASELINE_NOT_PROVEN_FOR_CODE_UPGRADE".to_owned());
     }
     if plan_only {
+        emit_vm_worker_plan_required(true)?;
         println!("host_vm_worker_authorizer=EXACT_VM_CODE_ONLY_PLAN");
         println!("worker_mutations=0");
         println!("host_signed_install=NOT_AUTHORIZED");
