@@ -36,7 +36,6 @@ jobs:
       machine_id: ${{ steps.observe.outputs.machine_id }}
       desired_spec_path: ${{ steps.observe.outputs.desired_spec_path }}
       operation: ${{ steps.observe.outputs.operation }}
-      host_action_json: ${{ steps.observe.outputs.host_action_json }}
       windows_runner_label: ${{ steps.observe.outputs.windows_runner_label }}
       admitted_at_unix: ${{ steps.observe.outputs.admitted_at_unix }}
       host_matrix: ${{ steps.observe.outputs.host_matrix }}
@@ -169,7 +168,7 @@ jobs:
 
 
       - name: Retain one typed intent and blocked/prepared receipt
-        if: ${{ fromJSON(steps.observe.outputs.host_action_json).operation == 'APPLY_PREFLIGHT' || fromJSON(steps.observe.outputs.host_action_json).operation == 'RECOVER_PREFLIGHT' }}
+        if: ${{ steps.observe.outputs.operation == 'APPLY_PREFLIGHT' || steps.observe.outputs.operation == 'RECOVER_PREFLIGHT' }}
         uses: actions/upload-artifact@v4
         with:
           name: host-intent-${{ github.event.comment.id }}
@@ -190,12 +189,12 @@ jobs:
       needs.host_report.result == 'success' &&
       needs.host.outputs.host_targets_present == 'true' &&
       (needs.host.outputs.kind != 'VM' ||
-       fromJSON(needs.host.outputs.host_action_json).operation != 'APPLY_PREFLIGHT' ||
+       needs.host.outputs.operation != 'APPLY_PREFLIGHT' ||
        needs.host_worker_authorizer.result == 'success') &&
       (github.event.comment.body == '/host status' ||
        startsWith(github.event.comment.body, '/host status ') ||
-       fromJSON(needs.host.outputs.host_action_json).operation == 'APPLY_PREFLIGHT' ||
-       fromJSON(needs.host.outputs.host_action_json).operation == 'RECOVER_PREFLIGHT')
+       needs.host.outputs.operation == 'APPLY_PREFLIGHT' ||
+       needs.host.outputs.operation == 'RECOVER_PREFLIGHT')
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.host.outputs.host_matrix) }}
@@ -221,10 +220,10 @@ jobs:
       needs.host.result == 'success' &&
       (github.event.comment.body == '/host status' ||
        startsWith(github.event.comment.body, '/host status ') ||
-       fromJSON(needs.host.outputs.host_action_json).operation == 'APPLY_PREFLIGHT' ||
-       fromJSON(needs.host.outputs.host_action_json).operation == 'RECOVER_PREFLIGHT' ||
-       fromJSON(needs.host.outputs.host_action_json).operation == 'FIRST_USE_PREFLIGHT' ||
-       fromJSON(needs.host.outputs.host_action_json).operation == 'WORKER_AUTHORIZER_PREFLIGHT')
+       needs.host.outputs.operation == 'APPLY_PREFLIGHT' ||
+       needs.host.outputs.operation == 'RECOVER_PREFLIGHT' ||
+       needs.host.outputs.operation == 'FIRST_USE_PREFLIGHT' ||
+       needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT')
     runs-on: ubuntu-24.04
     timeout-minutes: 3
     permissions:
@@ -237,7 +236,7 @@ jobs:
       SOURCE_COMMENT_ID: ${{ github.event.comment.id }}
       COMMAND_BODY: ${{ github.event.comment.body }}
       TARGETS_PRESENT: ${{ needs.host.outputs.host_targets_present }}
-      HOST_OPERATION: ${{ fromJSON(needs.host.outputs.host_action_json).operation }}
+      HOST_OPERATION: ${{ needs.host.outputs.operation }}
     steps:
       - name: Publish one read-only observation pointer immediately
         id: publish
@@ -275,8 +274,8 @@ jobs:
     if: >-
       needs.host.result == 'success' &&
       needs.host_report.result == 'success' &&
-      (fromJSON(needs.host.outputs.host_action_json).operation == 'WORKER_AUTHORIZER_PREFLIGHT' ||
-       fromJSON(needs.host.outputs.host_action_json).operation == 'APPLY_PREFLIGHT') &&
+      (needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT' ||
+       needs.host.outputs.operation == 'APPLY_PREFLIGHT') &&
       needs.host.outputs.kind == 'VM' &&
       github.event_name == 'issue_comment' &&
       github.event.comment.body == format('/host apply {0}', needs.host.outputs.machine_id) &&
@@ -400,7 +399,7 @@ jobs:
 
 
       - name: Prepare one ephemeral VM signer with existing protected owner
-        if: fromJSON(needs.host.outputs.host_action_json).operation == 'WORKER_AUTHORIZER_PREFLIGHT'
+        if: needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'
         shell: bash
         env:
           CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
@@ -417,7 +416,7 @@ jobs:
           [[ "$(cat "${pub}")" =~ ^[0-9a-f]{64}$ ]]
 
       - name: Reserve exact public-key Git draft before VM Worker mutation
-        if: fromJSON(needs.host.outputs.host_action_json).operation == 'WORKER_AUTHORIZER_PREFLIGHT'
+        if: needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'
         shell: bash
         env:
           REGISTRATION_TOKEN: ${{ secrets.IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN }}
@@ -488,7 +487,7 @@ jobs:
           echo 'host_vm_signer=PROTECTED_PUBLIC_DRAFT_RESERVED_BEFORE_WRITE'
 
       - name: Install exactly five Host signer secret bindings once
-        if: fromJSON(needs.host.outputs.host_action_json).operation == 'WORKER_AUTHORIZER_PREFLIGHT'
+        if: needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'
         shell: bash
         env:
           CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
@@ -507,7 +506,7 @@ jobs:
           grep -Fxq 'host_signed_install=NOT_AUTHORIZED' "${RUNNER_TEMP}/host-signer-evidence.txt"
 
       - name: Open reserved VM signer PR for protected review
-        if: fromJSON(needs.host.outputs.host_action_json).operation == 'WORKER_AUTHORIZER_PREFLIGHT'
+        if: needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'
         shell: bash
         env:
           REGISTRATION_TOKEN: ${{ secrets.IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN }}
@@ -620,7 +619,7 @@ jobs:
     if: >-
       needs.host.result == 'success' &&
       needs.host_report.result == 'success' &&
-      fromJSON(needs.host.outputs.host_action_json).operation == 'FIRST_USE_PREFLIGHT' &&
+      needs.host.outputs.operation == 'FIRST_USE_PREFLIGHT' &&
       needs.host.outputs.kind == 'VM' &&
       github.run_attempt == 1
     runs-on: ubuntu-24.04

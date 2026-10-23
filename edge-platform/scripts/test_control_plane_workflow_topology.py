@@ -54,8 +54,8 @@ assert 'local host-refresh *' not in vm_installer
 # Every step checks the live Worker source through the Rust protected owner.
 # A failed/unknown update skips all signing steps (Actions success gate).
 worker = router.split("  host_worker_authorizer:",1)[1].split("  host_capabilities:",1)[0]
-assert worker.count("if: fromJSON(needs.host.outputs.host_action_json).operation == 'WORKER_AUTHORIZER_PREFLIGHT'") == 4
-assert "if: steps.plan.outputs.required == 'false' && fromJSON(needs.host.outputs.host_action_json).operation == 'WORKER_AUTHORIZER_PREFLIGHT'" not in worker
+assert worker.count("if: needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'") == 4
+assert "if: steps.plan.outputs.required == 'false' && needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'" not in worker
 assert "vm-worker-signer-prepare" in worker and "vm-worker-signer-commit" in worker
 assert worker.index("Apply exact VM Worker code once") < worker.index("Prepare one ephemeral VM signer")
 
@@ -71,11 +71,16 @@ assert provider.rindex(gate) < provider.index("acceptance_create_machine(provide
 assert "get_vm_credential_bundle_with_access(" in worker_src
 assert "attest_vm_first_use_credential_bytes(&bytes, generation, expected_sha256)?" in worker_src
 
-# GitHub receives ONLY the validated Rust closed enum decision as JSON.
-# The old operation output may exist for humans but cannot steer execution.
-assert "host_action_json: ${{ steps.observe.outputs.host_action_json }}" in router
-assert "needs.host.outputs.operation" not in router
-assert "fromJSON(needs.host.outputs.host_action_json).operation" in router
+# GitHub needs only a scalar for job/step routing.
+# All structured desired/intent/result/receipt stays Protobuf.
+assert "operation: ${{ steps.observe.outputs.operation }}" in router
+assert "host_action_json" not in router
+assert "needs.host.outputs.operation" in router
+assert "fromJSON(needs.host.outputs.host_matrix)" in router  # GitHub matrix API
+host_source=Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(encoding="utf-8")
+assert "enum HostWorkflowOperation" in host_source
+assert 'writeln!(file, "operation={}", action.as_str())' in host_source
+assert "HostWorkflowDecision" not in host_source
 assert "credential_pair_windows" not in orchestrator_cli
 for marker in ("mod controller_rpc;", "mod command_dispatch;", "mod local_dispatch;"):
     owner = ("edge-controller" if "controller" in marker else "edge-console" if "command" in marker else "edge-agent")

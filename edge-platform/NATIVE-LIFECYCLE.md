@@ -14,4 +14,4 @@ Only one security check **per actual trust boundary**: exact Git desired/release
 
 Acceptance for freshly created VM: 3/3 containers, Line1 4/4, Line2 6/6, exact running artifact, signed receipt, independent network proof. Keep Windows STOPPED/PROXY_ONLY and do not touch independent Cloudflare One/Mesh.
 
-Rust ingress is closed by typed Clap variants: no historical Vultr/Cloudflare mutator subcommands and no VM local bootstrap/credential direct mutation commands. Native `host-refresh` and signed `host-apply` share the existing protected Root Agent; `host_action_json` schema 1 is the typed GitHub workflow decision. This code change is not a physical VM readiness or Windows-TUN acceptance proof.
+Rust ingress is closed by typed Clap variants: no historical Vultr/Cloudflare mutator subcommands and no VM local bootstrap/credential direct mutation commands. Native `host-refresh` and signed `host-apply` share the existing protected Root Agent; `operation` is a closed Rust enum mapped to GitHub's required scalar output. This code change is not a physical VM readiness or Windows-TUN acceptance proof.

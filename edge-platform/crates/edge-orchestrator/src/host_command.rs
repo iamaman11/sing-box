@@ -1434,12 +1434,9 @@ fn exact_hex_sha256(value: &str) -> Result<Vec<u8>, String> {
         .collect()
 }
 
-/// Closed Rust operation contract at the GitHub Actions transport boundary.
-/// GitHub expressions receive one JSON object emitted from the same checked
-/// Rust enum as the human-readable operation. Neither shell, regex nor
-/// diagnostics can introduce a new privileged operation.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+/// GitHub Actions conditionals require scalar outputs, not Protobuf.
+/// The scalar is a closed Rust enum projection, NEVER parsed diagnostics.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HostWorkflowOperation {
     Status,
     ApplyPreflight,
@@ -1449,7 +1446,7 @@ enum HostWorkflowOperation {
 }
 
 impl HostWorkflowOperation {
-    fn as_str(self) -> &'static str {
+    const fn as_str(self) -> &'static str {
         match self {
             Self::Status => "STATUS",
             Self::ApplyPreflight => "APPLY_PREFLIGHT",
@@ -1460,32 +1457,16 @@ impl HostWorkflowOperation {
     }
 }
 
-#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(deny_unknown_fields)]
-struct HostWorkflowDecision {
-    schema: u32,
-    operation: HostWorkflowOperation,
-}
-
 fn append_action_output(path: &Path, action: HostWorkflowOperation) -> Result<(), String> {
     let metadata =
         std::fs::symlink_metadata(path).map_err(|_| "HOST_OUTPUT_UNAVAILABLE".to_owned())?;
     if !metadata.file_type().is_file() {
         return Err("HOST_OUTPUT_NOT_REGULAR".to_owned());
     }
-    let decision = HostWorkflowDecision {
-        schema: 1,
-        operation: action,
-    };
-    let json = serde_json::to_string(&decision)
-        .map_err(|_| "HOST_WORKFLOW_TYPED_DECISION_ENCODE_FAILED")?;
     OpenOptions::new()
         .append(true)
         .open(path)
-        .and_then(|mut file| {
-            writeln!(file, "operation={}", action.as_str())?;
-            writeln!(file, "host_action_json={json}")
-        })
+        .and_then(|mut file| writeln!(file, "operation={}", action.as_str()))
         .map_err(|_| "HOST_ACTION_OUTPUT_WRITE_FAILED".to_owned())
 }
 
@@ -1602,38 +1583,28 @@ mod tests {
     use edge_shared_types::ManagedHost;
 
     #[test]
-    fn workflow_actions_are_closed_and_schema_one() {
-        for operation in [
+    fn workflow_action_is_closed_scalar_rust_mapping_no_json() {
+        let actions = [
             HostWorkflowOperation::Status,
             HostWorkflowOperation::ApplyPreflight,
             HostWorkflowOperation::RecoverPreflight,
             HostWorkflowOperation::FirstUsePreflight,
             HostWorkflowOperation::WorkerAuthorizerPreflight,
-        ] {
-            let encoded = serde_json::to_string(&HostWorkflowDecision {
-                schema: 1,
-                operation,
-            })
-            .unwrap();
-            assert!(!encoded.contains('\n'));
-            let decoded: HostWorkflowDecision = serde_json::from_str(&encoded).unwrap();
-            assert_eq!(decoded.schema, 1);
-            assert_eq!(decoded.operation, operation);
-            assert_eq!(
-                serde_json::to_value(operation).unwrap(),
-                serde_json::json!(operation.as_str())
-            );
-        }
-        assert!(
-            serde_json::from_str::<HostWorkflowDecision>(r#"{"schema":1,"operation":"SHELL"}"#)
-                .is_err()
+        ];
+        let names = actions.map(HostWorkflowOperation::as_str);
+        assert_eq!(
+            names,
+            [
+                "STATUS",
+                "APPLY_PREFLIGHT",
+                "RECOVER_PREFLIGHT",
+                "FIRST_USE_PREFLIGHT",
+                "WORKER_AUTHORIZER_PREFLIGHT",
+            ]
         );
-        assert!(
-            serde_json::from_str::<HostWorkflowDecision>(
-                r#"{"schema":1,"operation":"APPLY_PREFLIGHT","execute":"ssh"}"#
-            )
-            .is_err()
-        );
+        assert!(names.iter().all(|name| {
+            !name.is_empty() && name.bytes().all(|b| b.is_ascii_uppercase() || b == b'_')
+        }));
     }
 
     #[test]
