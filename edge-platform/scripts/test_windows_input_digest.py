@@ -151,6 +151,10 @@ def test_reuse_requires_supported_schema_and_exact_identity() -> None:
     )
     assert subject.decide_reuse(**kwargs)
     assert subject.decide_reuse(**{**kwargs, "base_schema": "7"})
+    assert subject.decide_reuse(**{**kwargs, "base_schema": "8"})
+    assert not subject.decide_reuse(**{**kwargs, "base_schema": "9"})
+    assert not subject.decide_reuse(**{**kwargs, "base_schema": "8", "base_digest": "0" * 64})
+    assert not subject.decide_reuse(**{**kwargs, "base_schema": "8", "base_artifact_sha256": ""})
     assert not subject.decide_reuse(**{**kwargs, "base_schema": "5"})
     assert not subject.decide_reuse(**{**kwargs, "base_digest": "0" * 64})
 
