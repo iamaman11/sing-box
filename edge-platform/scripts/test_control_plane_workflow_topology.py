@@ -5315,6 +5315,17 @@ def test_one_host_apply_reconciles_root_trust_before_native_dispatch() -> None:
             "native dispatch must wait for Git-pinned root trust")
     require(refresh.index("--agent-path") < refresh.index("host_owner_compatibility=EXACT_ACCEPTED_AGENT"),
             "published Agent must be passed to typed compatibility check before acceptance")
+
+    # Native owner transition must emit an anchored 0/1 mutation counter.
+    resume = workflow.split("  host_resume_receipt:\n", 1)[1].split(
+        "  host_resume_native:\n", 1
+    )[0]
+    for section in (refresh, resume):
+        require(
+            "grep -Eq '^host_mutations=[01]$'" in section,
+            "native mutation counter must have a closed exact regex",
+        )
+    
     require("gh run download" not in refresh
             and "vultr-lifecycle apply" not in refresh
             and "local host-apply" not in refresh,
@@ -5323,6 +5334,33 @@ def test_one_host_apply_reconciles_root_trust_before_native_dispatch() -> None:
                              "needs.host_refresh_trust.result == 'skipped'", 1)
     require(broken != observe and "needs.host_refresh_trust.result == 'skipped'" in broken,
             "missing-trust admission negative fixture not generated")
+
+def test_root_owner_readback_is_privileged_and_typed() -> None:
+    """Old v7 Agent cannot export its own new capability contract.
+    Its one historical handoff must respect the root:root 0700 boundary.
+    """
+    compat = Path("edge-platform/crates/edge-orchestrator/src/vm_owner_compatibility.rs").read_text(
+        encoding="utf-8"
+    )
+    for proof in (
+        "sudo -n test -f {trust_path}",
+        "sudo -n test ! -L {trust_path}",
+        "sudo -n stat -c '%u:%g:%a' {trust_path}",
+        "sudo -n base64 -w0 {trust_path}",
+        "HOST_OWNER_ROOT_TRUST_READBACK_DENIED_OR_UNAVAILABLE",
+        "sudo -n test -d {journal}",
+        "sudo -n test ! -L {journal}",
+        "sudo -n stat -c '%u:%g:%a' {journal}",
+        "sudo -n find {journal}",
+        "HOST_OWNER_ROOT_JOURNAL_READBACK_DENIED_OR_UNAVAILABLE",
+    ):
+        require(proof in compat, "old-owner root readback missing bounded evidence: " + proof)
+    for invalid in (
+        "set -eu; test -f {trust_path}",
+        "set -eu; test -d {journal}",
+    ):
+        require(invalid not in compat, "owner must not traverse root 0700 as singbox-ops")
+
 
 def test_vm_typed_desired_preparation_is_shared_and_fail_closed() -> None:
     """Every VM entrypoint must prepare the same bounded derived protobuf before use."""
@@ -5541,3 +5579,4 @@ if __name__ == "__main__":
     test_native_vm_artifact_transport_is_same_run_and_not_gh_cli()
     verify_receipt_resume_inline_release_context(ROUTER.read_text(encoding="utf-8"))
     test_vm_fingerprint_is_readonly_untrusted_evidence()
+    test_root_owner_readback_is_privileged_and_typed()

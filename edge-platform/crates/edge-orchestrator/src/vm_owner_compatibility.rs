@@ -196,7 +196,8 @@ pub(super) async fn reconcile_before_enrollment(
     if stat != "0:0:755" {
         return Err("HOST_OWNER_INSTALLED_FILE_UNTRUSTED".into());
     }
-    let status = read(&format!("sudo -n {owner} local status"))?;
+    let status = read(&format!("sudo -n {owner} local status"))
+        .map_err(|_| "HOST_OWNER_NATIVE_STATUS_UNAVAILABLE")?;
     if !status
         .lines()
         .any(|line| line == "host_native_trust=PROTECTED_LOCAL_ONLY")
@@ -205,14 +206,16 @@ pub(super) async fn reconcile_before_enrollment(
     }
     let trust_path = "/opt/vultr-edge-stack/native-host/trust.pb";
     let encoded = read(&format!(
-        "set -eu; test -f {trust_path}; test ! -L {trust_path};          test \"$(stat -c '%u:%g:%a' {trust_path})\" = 0:0:600;          sudo -n base64 -w0 {trust_path}"
-    ))?;
+        "set -eu; sudo -n test -f {trust_path}; sudo -n test ! -L {trust_path};          test \"$(sudo -n stat -c '%u:%g:%a' {trust_path})\" = 0:0:600;          sudo -n base64 -w0 {trust_path}"
+    ))
+    .map_err(|_| "HOST_OWNER_ROOT_TRUST_READBACK_DENIED_OR_UNAVAILABLE")?;
     let previous = decode_root_trust(&encoded, machine_id, &host.worker_authority_public_key)?;
     verify_accepted_predecessor(&previous).await?;
     let journal = "/opt/vultr-edge-stack/native-host/journal";
     let pending = read(&format!(
-        "set -eu; test -d {journal}; test ! -L {journal};          test \"$(stat -c '%u:%g:%a' {journal})\" = 0:0:700;          sudo -n find {journal} -maxdepth 1 -name '*.pending.pb' -print -quit"
-    ))?;
+        "set -eu; sudo -n test -d {journal}; sudo -n test ! -L {journal};          test \"$(sudo -n stat -c '%u:%g:%a' {journal})\" = 0:0:700;          sudo -n find {journal} -maxdepth 1 -name '*.pending.pb' -print -quit"
+    ))
+    .map_err(|_| "HOST_OWNER_ROOT_JOURNAL_READBACK_DENIED_OR_UNAVAILABLE")?;
     if !pending.is_empty() {
         return Err("HOST_OWNER_NATIVE_JOURNAL_UNKNOWN_NO_REPLAY".into());
     }
