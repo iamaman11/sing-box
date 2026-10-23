@@ -2100,6 +2100,7 @@ fn prepare_mesh_runtime_state(stack_dir: &Path) -> Result<(), String> {
     set_private_directory_permissions(&state)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MeshDiagnosticDepth {
     Basic,
     Deep,
