@@ -5569,6 +5569,38 @@ def test_vm_fingerprint_is_readonly_untrusted_evidence() -> None:
     )
 
 
+def test_vm_receipt_reservation_distinguishes_historical_merged_epochs() -> None:
+    workflow = ROUTER.read_text(encoding="utf-8")
+    first_use = workflow.split("  host_first_use:\n", 1)[1].split(
+        "  host_refresh_trust:\n", 1
+    )[0]
+    reservation = first_use.split("      - name: Reserve protected receipt registration before VM CREATE", 1)[1].split(
+        "      - name: Run one typed provider CREATE and native root enrollment", 1
+    )[0]
+    for expected in (
+        'host-receipt-${TARGET_MACHINE}-',
+        "HOST_RECEIPT_RESERVATION_INVENTORY_UNPROVEN_NO_REPLAY",
+        "HOST_RECEIPT_PRIOR_EPOCH_NOT_MERGED_NO_REPLAY",
+        "HOST_RECEIPT_PRIOR_EPOCH_NOT_CANONICAL_NO_REPLAY",
+        "HOST_RECEIPT_PENDING_OR_SAME_OPERATION_NO_REPLAY",
+        '.merged_at != null',
+        '.state == "closed"',
+        '.base.ref == "main"',
+        '.head.sha == $sha',
+        "compare/${merged_sha}...${GITHUB_SHA}",
+    ):
+        require(expected in reservation, "historical reservation provenance missing: " + expected)
+    require(
+        reservation.index("HOST_RECEIPT_PRIOR_EPOCH_NOT_CANONICAL_NO_REPLAY")
+        < reservation.index('gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs"'),
+        "historical receipt epoch admission must precede all Git reservation writes",
+    )
+    require(
+        'test "${active}" = 0' not in reservation,
+        "merged historical receipt branches must not block a clean first-use epoch",
+    )
+
+
 if __name__ == "__main__":
     main()
     test_one_host_apply_reconciles_root_trust_before_native_dispatch()
@@ -5580,3 +5612,4 @@ if __name__ == "__main__":
     verify_receipt_resume_inline_release_context(ROUTER.read_text(encoding="utf-8"))
     test_vm_fingerprint_is_readonly_untrusted_evidence()
     test_root_owner_readback_is_privileged_and_typed()
+    test_vm_receipt_reservation_distinguishes_historical_merged_epochs()

@@ -837,10 +837,52 @@ jobs:
           base="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
           test "${base}" = "${GITHUB_SHA}"
           branch="host-receipt-${TARGET_MACHINE}-${SOURCE_COMMENT_ID}"
-          # No second first-use reservation for the same VM, even when
-          # another operator comment races before the first PR is merged.
-          active="$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/heads/host-receipt-${TARGET_MACHINE}-" --jq 'length')"
-          test "${active}" = 0 || { echo 'HOST_FIRST_USE_ALREADY_RESERVED_NO_REPLAY' >&2; exit 1; }
+          # Historical MERGED receipt branches are durable proof of a
+          # completed older VM epoch; they are not active reservations.
+          # Provider EXACT_CREATE_ONLY and a fresh Git receipt scope were
+          # proven before this step. Unknown branches always block CREATE.
+          prefix="refs/heads/host-receipt-${TARGET_MACHINE}-"
+          prior_refs="$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/heads/host-receipt-${TARGET_MACHINE}-")"
+          jq -e --arg prefix "${prefix}" \
+            'type == "array" and length <= 32 and
+             all(.[]; (.ref | startswith($prefix)) and
+                 (.object.sha | test("^[0-9a-f]{40}$")))' \
+            <<< "${prior_refs}" >/dev/null || {
+              echo 'HOST_RECEIPT_RESERVATION_INVENTORY_UNPROVEN_NO_REPLAY' >&2
+              exit 1
+            }
+          while IFS=$'\t' read -r prior_ref prior_sha; do
+            test -n "${prior_ref}" || continue
+            old_id="${prior_ref#${prefix}}"
+            [[ "${old_id}" =~ ^[1-9][0-9]*$ ]] &&
+              (( old_id < SOURCE_COMMENT_ID )) &&
+              test "${prior_ref}" != "refs/heads/${branch}" || {
+                echo 'HOST_RECEIPT_PENDING_OR_SAME_OPERATION_NO_REPLAY' >&2
+                exit 1
+              }
+            prior_branch="${prior_ref#refs/heads/}"
+            matching="$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=all&head=iamaman11:${prior_branch}")"
+            merged_sha="$(jq -er \
+              --arg old "${prior_branch}" --arg sha "${prior_sha}" \
+              --arg repo "${GITHUB_REPOSITORY}" \
+              '[.[] | select(.head.ref == $old and .head.sha == $sha and
+                .head.repo.full_name == $repo and .base.ref == "main" and
+                .state == "closed" and .merged_at != null and
+                .draft == false and .merge_commit_sha != null)] |
+               if length == 1 then .[0].merge_commit_sha else empty end' \
+              <<< "${matching}")" || {
+                echo 'HOST_RECEIPT_PRIOR_EPOCH_NOT_MERGED_NO_REPLAY' >&2
+                exit 1
+              }
+            [[ "${merged_sha}" =~ ^[0-9a-f]{40}$ ]] || exit 1
+            merge_status="$(gh api \
+              "repos/${GITHUB_REPOSITORY}/compare/${merged_sha}...${GITHUB_SHA}" \
+              --jq '.status')"
+            case "${merge_status}" in
+              ahead|identical) ;;
+              *) echo 'HOST_RECEIPT_PRIOR_EPOCH_NOT_CANONICAL_NO_REPLAY' >&2; exit 1 ;;
+            esac
+          done < <(jq -r '.[] | [.ref, .object.sha] | @tsv' <<< "${prior_refs}")
           # A branch already present means possible earlier/uncertain first-use.
           # Never repeat VM CREATE based on GitHub workflow retries.
           if gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}" >/dev/null 2>&1; then
