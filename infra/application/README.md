@@ -1,134 +1,23 @@
-# VM application desired state
+# VM application inputs — implementation reference
 
-> **IMPLEMENTATION REFERENCE / NOT A CURRENT PLAN (2026-10-18).** The only normative architecture is [edge-platform/ARCHITECTURE.md](https://github.com/iamaman11/sing-box/blob/main/edge-platform/ARCHITECTURE.md); the single completion plan is [edge-platform/FINALIZATION-PLAN.md](https://github.com/iamaman11/sing-box/blob/main/edge-platform/FINALIZATION-PLAN.md). Dated deployment commands or "current" labels below are historical implementation details, not authorization. Live host/transaction evidence remains in [Issue #26](https://github.com/iamaman11/sing-box/issues/26).
+**Не отдельный план и не операторский интерфейс.** Нормативный [ARCHITECTURE.md](../../edge-platform/ARCHITECTURE.md), единственный [FINALIZATION-PLAN.md](../../edge-platform/FINALIZATION-PLAN.md), действующие [три /host-команды](../../edge-platform/COMMAND-INVENTORY.md).
 
+## Действующий desired и владельцы
 
-## Authority
+Git `infra/hosts/hosts.textproto` определяет host/target и пути typed spec (например `infra/hosts/specs/application-acceptance-3.textproto`). Immutable ReleaseSet содержит digest установочного bundle/image/executable. Worker владеет секретами и signer; self-hosted runner — доставка, установленный VM root Agent — единственный mutating owner Docker/sing-box. Ни provider key, ни private receipt key, ни runtime secret не являются Git desired.
 
-Git owns desired application policy. The exact durable ReleaseSet owns immutable executable/image identity. The production VM self-hosted runner is transport only; the root-owned local runtime owner performs VM-local lifecycle operations.
+Наблюдение контейнеров — нативный Bollard/host readback. Изменения — только known scoped handler `host_native.rs` по подписанному intent, локальному lock/журналу и exact owner; не прямые Compose CLI команды оператора.
 
-```text
-protected main + exact ReleaseSet
-        |
-        v
-production VM self-hosted runner
-        |
-        v
-root-owned typed local owner
-   +-- fixed Docker Compose mutation
-   +-- Bollard Docker observation
-   '-- rtnetlink / bounded host probes
-        |
-        v
-Docker Engine / application runtime
-```
+Для `application-acceptance-3` целевой Git состав — `line1-gateway`, `line2-proxy`, `warp-egress` (**3 контейнера**, Compose project `vultr-edge`). Сетевые endpoints, TLS/auth, DIRECT/WARP, DNS и firewall требуют независимого физического witness: `running`/NOOP не равен readiness.
 
-Provider lifecycle remains GitHub-hosted. No provider credential moves onto the VM.
+## Форматы и устаревшие inputs
 
-## Application/runtime ownership
+Protobuf/textproto — внутреннее управляемое состояние. JSON допустим как обязательный внешний формат (sing-box config, GitHub REST/Actions matrix) и в явно ещё потребляемых исторических input-файлах: они не становятся альтернативным desired. `infra/application/disposable-acceptance.json` и старые A/B snapshot/proof-slot notes — **не новый авторизованный путь** установки/credential mutation.
 
-The Linux local owner owns only VM-local application lifecycle, configuration, runtime observation and local credential state.
+Сгенерированные Docker/Compose/sing-box файлы и локальные секретные projections — результат рендера native owner, а не самостоятельная база состояния. Удаление/замена устаревших inputs допустимы только после проверки реальных зависимостей first-use и тестов.
 
-- Docker Compose remains the declarative four-container composition/mutation adapter.
-- Bollard remains the typed Docker Engine observation/diagnostic adapter.
-- The runner invokes only a closed allowlist of local operations.
-- No arbitrary shell/filesystem/Docker/systemd API is exposed.
-- The retired TCP/gRPC edge-agent transport is not steady-state authority.
+## Диагностика и эксплуатация
 
-## Runtime secrets
+Использовать только `/host status <machine-id> --deep`, `/host apply <machine-id>` (включая ограниченный config resource), `/host recover <machine-id>` (сейчас read-only). Никаких устаревших `/vm diagnose`, `/production rollback`, A/B first-use, SSH runtime mutation, второго агента или generic Docker control. При неопределённом результате — `UNKNOWN_NO_REPLAY`.
 
-Application secret values are never Git desired state.
-
-Historical/current compatibility code may materialize `.env.runtime` for the container stack.
-That file is a generated consumer artifact and must not become a second durable source of truth.
-
-Accepted canonical credential target:
-- typed local active/candidate credential state;
-- fresh generations, not imported legacy Windows credentials;
-- VM/Windows receive separate credential projections;
-- generated `.env.runtime` and sing-box JSON are reproducible from typed policy + typed local
-  secret state;
-- missing desired production generation fails closed instead of silently generating a new identity.
-
-Secret lifecycle classes remain separate: client tunnel credentials, server identity, Line 2
-authentication, Cloudflare Access machine identities, Mesh node token and provider API credentials
-do not rotate as one monolithic bundle unless their actual lifecycle requires it.
-
-## VM control transport
-
-Steady-state control is outbound GitHub runner transport plus the local typed owner. Routine operation does not acquire a temporary /32 SSH lease and does not local-forward to port 50061.
-
-Strict SSH may be used only for bootstrap, migration or explicit break-glass recovery and must be closed again after enrollment/recovery.
-
-## Application operations
-
-Lower-level typed application operations remain implementation boundaries for:
-- materialize/apply;
-- verify;
-- upgrade;
-- rollback.
-
-Normal production operation uses the single `/production` composition surface rather than exposing
-independent production-facing DNS/Mesh/Zero Trust owners. `/production rollback` uses the same
-persistent self-hosted-runner -> root-owned local-owner boundary as converge/verify and authorizes the
-mutation with the exact active bundle digest; the old lease/SSH rollback dispatch is not a production path.
-
-## Rollback
-
-Keep one previous accepted application release/artifact identity for bounded runtime rollback.
-
-Credential rollback is separate from release rollback. The canonical credential architecture uses a fixed A/B credential
-buffer so a previous accepted credential generation remains available for a bounded grace/recovery
-period without introducing a secret-history database.
-
-## Legacy JSON
-
-Files under `infra/application/*.json`, `infra/cloudflare/*.json` and similar acceptance paths
-are frozen migration debt unless an active disposable/legacy test still consumes them.
-
-Rules:
-- no new production authority in JSON;
-- migrate/delete a legacy JSON contract when its owning path is touched;
-- never replace one internal JSON contract with another internal JSON contract.
-
-## Disposable acceptance
-
-Disposable acceptance may keep legacy JSON inputs until its path is deliberately migrated.
-It must remain isolated from permanent production state and must leave zero leaked resources.
-
-
-### Universal, read-only VM checks (GitHub operator)
-
-Target an **exact canonical application manifest** instead of a hardcoded VM name:
-
-```text
-/vm diagnose infra/application/disposable-acceptance.json
-/vm quality-line2 infra/application/disposable-acceptance.json
-/vm credential-initial-probe infra/application/disposable-acceptance.json
-```
-
-The protected GitHub revision supplies `machine_id`, `vultr_spec_path`, application profile, and runner selection. The workflow rejects missing, ambiguous, or inconsistent declarations before scheduling a self-hosted runner and requires its observed identity to match the Git-owned machine. The same syntax applies to every VM with a canonical application manifest; it does not discover/operate unmanaged hosts. Both commands are read-only and never install containers or publish credentials. Credential-bearing converge/rollback require a **per-target immutable ReleaseSet bundle and verified provider ownership** and are deliberately not exposed by this read-only interface yet.
-
-The initial credential probe is read-only. The existing root-owned edge-agent proves the exact canonical dummy A/B Worker deliveries using its VM-only Cloudflare Access identity and requires an empty local credential store, no application containers and a reachable Docker daemon. It does not stage, publish or promote credentials.
-
-The VM credential preflight inspects **both** reserved dummy generations through its own Cloudflare Access identity. A 404 at the exact dummy generation is reported as `NOT_FOUND_OR_OTHER_GENERATION`, **not** as an empty Worker slot or permission to publish. A syntactically valid non-dummy payload is reported only as `NONCANONICAL_PAYLOAD`; secret bytes and discovered generations are never logged. Any such result fails closed; provider metadata alone cannot resolve it. The active initial-pair journal, Worker version fences and no-replay ownership remain mandatory before any first-use write.
-
-## Fixed Worker-slot evidence, 2026-10-13
-
-The legacy `GET /v1/credentials?generation=N` searches **both** opaque
-`EDGE_CREDENTIAL_BUNDLE_A/B` bindings. Receiving the canonical dummy for
-generation 9000002 therefore does **not** identify which binding contains it.
-The historical physical VM output `slot_B=EXACT_CANONICAL_DUMMY` is a
-generation-only observation and cannot authorize a write to B.
-
-A true first-use selected-slot witness requires the same Access-protected
-Worker's fixed-binding `GET /v1/proof-slot` operation, which compares a
-public canonical dummy digest inside the Worker and reveals **only** an exact
-status (204), noncanonical binding (409), or unsupported/rejected operation
-(404). A 404 is never proof of an empty slot. The new contract is only source
-until an exact accepted release and a code-only Worker version update with
-strict A/B secret binding inheritance is physically verified. The original
-credential GET continues unchanged. No unknown slot may be reset/rewritten.
-
-Source work in Draft PR #353 does not mean Cloudflare Workers, the acceptance
-VM or Windows have been changed, and it is not the N1/N2 10/10 acceptance.
+Свежая VM, 3/3 контейнера и 10/10 Line1/Line2 не имеют физической приёмки только на основании исходников, GitHub CI или legacy свидетельств. Критерии и очередность — исключительно в [плане](../../edge-platform/FINALIZATION-PLAN.md).
