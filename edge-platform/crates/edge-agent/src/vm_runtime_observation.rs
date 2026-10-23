@@ -134,7 +134,10 @@ pub(super) fn inspect_compose(
     })
 }
 
-pub(super) async fn inspect_datapath_readiness(state: &mut AgentState, docker: &DockerObservation) -> bool {
+pub(super) async fn inspect_datapath_readiness(
+    state: &mut AgentState,
+    docker: &DockerObservation,
+) -> bool {
     let direct_ready = probe_direct_egress(&state.running_containers);
     state.direct_egress_ready = Some(direct_ready);
     if !direct_ready {
@@ -539,7 +542,9 @@ pub(super) fn runtime_probe_status_label(value: i32) -> &'static str {
     }
 }
 
-pub(super) fn mesh_tunnel_protocol_evidence_from_diagnostics(diagnostics: &MeshRuntimeDiagnostics) -> String {
+pub(super) fn mesh_tunnel_protocol_evidence_from_diagnostics(
+    diagnostics: &MeshRuntimeDiagnostics,
+) -> String {
     match diagnostics.tunnel_protocol.as_deref() {
         Some(protocol) => format!("Mesh runtime tunnel protocol evidence: {protocol}"),
         None => format!(
@@ -603,7 +608,11 @@ pub(super) fn bounded_container_runtime_summary(evidence: &ContainerRuntimeEvide
     )
 }
 
-pub(super) fn bounded_command_output(program: &str, args: &[&str], timeout_seconds: u64) -> Option<String> {
+pub(super) fn bounded_command_output(
+    program: &str,
+    args: &[&str],
+    timeout_seconds: u64,
+) -> Option<String> {
     let timeout = format!("{timeout_seconds}s");
     let output = Command::new("timeout")
         .arg(timeout)
@@ -635,4 +644,3 @@ pub(super) fn cloudflare_trace_has_warp_mode(raw: &str, expected: &str) -> bool 
     }
     ip_present && warp == Some(expected)
 }
-

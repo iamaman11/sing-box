@@ -21,7 +21,6 @@ use crate::mesh_network_diagnostics::{
 use crate::runtime_probe::{BoundedCommandProbe, bounded_command_probe};
 use clap::Parser;
 use local_dispatch::run_local;
-use vm_runtime_observation::*;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
@@ -31,6 +30,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{Command, ExitCode, Stdio};
 use std::thread::sleep;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use vm_runtime_observation::*;
 
 use edge_observability::init as init_observability;
 use edge_secrets::{
