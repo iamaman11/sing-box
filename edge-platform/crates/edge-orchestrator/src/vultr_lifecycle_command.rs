@@ -55,6 +55,8 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tonic::Request;
 
+#[path = "vm_owner_compatibility.rs"]
+mod vm_owner_compatibility;
 #[path = "vm_owner_upgrade.rs"]
 mod vm_owner_upgrade;
 
@@ -1401,11 +1403,12 @@ async fn run_transport_proof(
 
 /// The only authorized bridge after a receipt-key-only protected Git merge:
 /// the EXISTING Vultr lease opens bounded SSH to the EXISTING root Agent.
-/// NO provider CREATE, no root binary replacement, no Docker privileges for
-/// the runner, no journal replay. The native owner independently verifies the
-/// new immutable published ReleaseSet and matches its own private receipt key.
+/// NO provider CREATE, Docker privileges for runner or journal replay.
+/// First prove and, if necessary, upgrade the exact existing native owner
+/// through its bounded durable transition before enrollment and receipt proof.
 pub(crate) async fn host_receipt_refresh(
     machine_id: &str,
+    agent_path: &Path,
     context: &OrchestrationContext,
 ) -> Result<(), String> {
     if env::var("GITHUB_RUN_ATTEMPT").as_deref() != Ok("1") {
@@ -1445,6 +1448,11 @@ pub(crate) async fn host_receipt_refresh(
         {
             return Err("HOST_RECEIPT_REFRESH_RELEASE_SHA_INVALID".to_owned());
         }
+        // Installed owner compatibility is a typed dependency of trust refresh.
+        // The older agent MUST NOT decode a release newer than its schema.
+        let owner_transition = vm_owner_compatibility::reconcile_before_enrollment(
+            machine_id, context, agent_path, ip, &key_path, &expected_ssh_key,
+        ).await?;
         let command = format!(
             "sudo -n /usr/local/libexec/sing-box/edge-agent local host-enroll {machine_id} {release_sha}"
         );
@@ -1458,7 +1466,11 @@ pub(crate) async fn host_receipt_refresh(
         }
         println!("host_receipt_refresh=ROOT_PROTECTED_GIT_PINNED");
         println!("host_machine_id={machine_id}");
-        println!("host_mutations=0");
+        println!("host_owner_transition={}", match owner_transition {
+            vm_owner_compatibility::OwnerDecision::Upgrade => "UPGRADED_ONCE",
+            vm_owner_compatibility::OwnerDecision::Current => "NOOP_EXACT_OWNER",
+        });
+        println!("host_mutations={}", u8::from(owner_transition == vm_owner_compatibility::OwnerDecision::Upgrade));
         Ok(())
     }.await;
     let cleanup = acceptance_lease_release(spec, machine_id).await;

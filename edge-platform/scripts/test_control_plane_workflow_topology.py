@@ -5303,14 +5303,18 @@ def test_one_host_apply_reconciles_root_trust_before_native_dispatch() -> None:
         "GH_TOKEN: ${{ github.token }}",
         "source ",
         "refresh-receipt ",
+        "--agent-path",
         "host_receipt_refresh=ROOT_PROTECTED_GIT_PINNED",
-        "host_mutations=0",
+        "host_owner_compatibility=EXACT_ACCEPTED_AGENT",
+        "host_mutations=[01]",
     ):
         require(guard in refresh, "root trust step missing required contract: " + guard)
     require("needs: [host, host_report, host_refresh_trust, host_worker_authorizer]" in observe
             and "!cancelled()" in observe
             and "needs.host_refresh_trust.result == 'success'" in observe,
             "native dispatch must wait for Git-pinned root trust")
+    require(refresh.index("--agent-path") < refresh.index("host_owner_compatibility=EXACT_ACCEPTED_AGENT"),
+            "published Agent must be passed to typed compatibility check before acceptance")
     require("gh run download" not in refresh
             and "vultr-lifecycle apply" not in refresh
             and "local host-apply" not in refresh,
