@@ -143,6 +143,105 @@ pub(super) fn decide(
     Ok(OwnerDecision::Upgrade)
 }
 
+
+fn fixed_readback(
+    ip: &str, machine_id: &str, key: &std::path::Path, public: &str, command: &str,
+) -> Result<String, String> {
+    super::strict_ssh_capture(ip, machine_id, key, public, command)
+}
+
+/// Existing operator lease and exact Git-owned VM are established by
+/// host_receipt_refresh. No free-form command input crosses this boundary.
+pub(super) async fn reconcile_before_enrollment(
+    machine_id: &str,
+    context: &edge_orchestrator::OrchestrationContext,
+    candidate: &std::path::Path,
+    ip: &str,
+    key: &std::path::Path,
+    public: &str,
+) -> Result<(), String> {
+    let host = context.verified_vm_first_use_host(machine_id)?;
+    let read = |command: &str| fixed_readback(ip, machine_id, key, public, command);
+    let owner = "/usr/local/libexec/sing-box/edge-agent";
+    let stat = read(&format!(
+        "set -eu; test -f {owner}; test ! -L {owner}; stat -c '%u:%g:%a' {owner}"
+    ))?;
+    if stat != "0:0:755" {
+        return Err("HOST_OWNER_INSTALLED_FILE_UNTRUSTED".into());
+    }
+    let status = read(&format!("sudo -n {owner} local status"))?;
+    if !status.lines().any(|line| line == "host_native_trust=PROTECTED_LOCAL_ONLY") {
+        return Err("HOST_OWNER_NATIVE_TRUST_OR_JOURNAL_UNPROVEN".into());
+    }
+    let trust_path = "/opt/vultr-edge-stack/native-host/trust.pb";
+    let encoded = read(&format!(
+        "set -eu; test -f {trust_path}; test ! -L {trust_path};          test \"$(stat -c '%u:%g:%a' {trust_path})\" = 0:0:600;          sudo -n base64 -w0 {trust_path}"
+    ))?;
+    let previous = decode_root_trust(&encoded, machine_id, &host.worker_authority_public_key)?;
+    verify_accepted_predecessor(&previous).await?;
+    let journal = "/opt/vultr-edge-stack/native-host/journal";
+    let pending = read(&format!(
+        "set -eu; test -d {journal}; test ! -L {journal};          test \"$(stat -c '%u:%g:%a' {journal})\" = 0:0:700;          sudo -n find {journal} -maxdepth 1 -name '*.pending.pb' -print -quit"
+    ))?;
+    if !pending.is_empty() {
+        return Err("HOST_OWNER_NATIVE_JOURNAL_UNKNOWN_NO_REPLAY".into());
+    }
+    let current = read(&format!("sha256sum {owner} | cut -d' ' -f1"))?;
+    let expected = context.expected_application_artifact()?;
+    context.validate_application_artifact(&expected, candidate)?;
+    let existing_begin = "/usr/local/libexec/sing-box/.edge-agent-upgrade-begin";
+    let previous_binary = "/usr/local/libexec/sing-box/edge-agent.previous";
+    let proven_chain = if current == expected.sha256
+        && current != previous.agent_sha256
+    {
+        let begin = read(&format!(
+            "set -eu; test -f {existing_begin}; test ! -L {existing_begin};              test \"$(stat -c '%u:%g:%a' {existing_begin})\" = 0:0:600;              sudo -n cat {existing_begin}"
+        ))?;
+        let actual_previous = read(&format!(
+            "set -eu; test -f {previous_binary}; test ! -L {previous_binary};              test \"$(stat -c '%u:%g:%a' {previous_binary})\" = 0:0:755;              sha256sum {previous_binary} | cut -d' ' -f1"
+        ))?;
+        begin == format!("{} {}", previous.agent_sha256, current)
+            && actual_previous == previous.agent_sha256
+    } else {
+        false
+    };
+    match decide(&current, &previous.agent_sha256, &expected.sha256, proven_chain)? {
+        OwnerDecision::Upgrade => {
+            // No second owner and no second SSH lease: invoke the existing
+            // exact-artifact, durable-BEGIN upgrade from the same /host apply.
+            super::vm_owner_upgrade::run(&[
+                host.vm_provider_spec_path.clone(),
+                machine_id.to_owned(),
+                candidate.display().to_string(),
+                previous.agent_sha256.clone(),
+            ], context).await?;
+        }
+        OwnerDecision::Current => {}
+    }
+    let installed = read(&format!("sha256sum {owner} | cut -d' ' -f1"))?;
+    if installed != expected.sha256 {
+        return Err("HOST_OWNER_POST_UPGRADE_DIGEST_UNPROVEN_NO_REPLAY".into());
+    }
+    if previous.agent_sha256 != expected.sha256 {
+        let begin = read(&format!("sudo -n cat {existing_begin}"))?;
+        let archived = read(&format!("sha256sum {previous_binary} | cut -d' ' -f1"))?;
+        if begin != format!("{} {}", previous.agent_sha256, expected.sha256)
+            || archived != previous.agent_sha256
+        {
+            return Err("HOST_OWNER_POST_UPGRADE_JOURNAL_UNPROVEN_NO_REPLAY".into());
+        }
+    }
+    if !read(&format!("sudo -n {owner} local status"))?
+        .lines().any(|line| line == "host_native_trust=PROTECTED_LOCAL_ONLY")
+    {
+        return Err("HOST_OWNER_POST_UPGRADE_TRUST_UNPROVEN".into());
+    }
+    println!("host_owner_compatibility=EXACT_ACCEPTED_AGENT");
+    println!("host_owner_installed_sha256={installed}");
+    println!("host_owner_previous_release_sha256={}", previous.release_sha256);
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
