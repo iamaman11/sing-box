@@ -113,8 +113,7 @@ fn initial_policy_test_bundle() -> ApplyBundleRequest {
             },
             BundleFile {
                 relative_path: RUNTIME_POLICY_FILE.to_owned(),
-                content: b"PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n"
-                    .to_vec(),
+                content: b"PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n".to_vec(),
                 executable: false,
                 sensitive: false,
             },
@@ -629,10 +628,8 @@ fn runtime_policy_rejects_incomplete_or_shell_unsafe_values() {
         .is_err()
     );
     assert!(
-        validate_runtime_policy_env(
-            "PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n"
-        )
-        .is_ok()
+        validate_runtime_policy_env("PROXY_USERNAME=acceptance\nPROXY_CERT_CN=acceptance.local\n")
+            .is_ok()
     );
     assert!(
         validate_runtime_policy_env(
@@ -854,9 +851,7 @@ fn certificate_observation_uses_staging_provider_directory() {
     let root = unique_test_dir();
     let stack = root.join("stack");
     let owner = root
-        .join(
-            "certificate-state/acme/certificates/acme-staging-v02.api.letsencrypt.org-directory",
-        )
+        .join("certificate-state/acme/certificates/acme-staging-v02.api.letsencrypt.org-directory")
         .join("edge.example.com");
     fs::create_dir_all(stack.join("rendered")).unwrap();
     fs::create_dir_all(&owner).unwrap();
@@ -1652,8 +1647,7 @@ fn requires_tunnel_containers_for_tunnel_bootstrap() {
     )
     .unwrap();
 
-    let verification =
-        verify_bootstrap_post_state(&root, BootstrapMode::BootstrapTunnel, &state);
+    let verification = verify_bootstrap_post_state(&root, BootstrapMode::BootstrapTunnel, &state);
     assert!(!verification.success);
     assert!(
         verification

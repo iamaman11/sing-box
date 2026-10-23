@@ -424,8 +424,8 @@ fn stale_support_access_authority_is_rejected_before_mutation() {
     )
     .unwrap();
 
-    let error = verify_exact_authority(&before.authority.authority_digest, &changed.authority)
-        .unwrap_err();
+    let error =
+        verify_exact_authority(&before.authority.authority_digest, &changed.authority).unwrap_err();
     assert!(error.to_string().contains("stale"));
 }
 
@@ -461,11 +461,7 @@ fn access_reconcile_allows_only_firewall_only_update() {
     );
 }
 
-fn operational_instance(
-    power_status: &str,
-    status: &str,
-    server_status: &str,
-) -> VultrInstance {
+fn operational_instance(power_status: &str, status: &str, server_status: &str) -> VultrInstance {
     VultrInstance {
         id: "instance-1".to_owned(),
         label: "edge-1".to_owned(),

@@ -113,9 +113,7 @@ fn windows_service_startup_decision_is_mode_scoped_and_fail_closed() {
     );
     assert_eq!(
         windows_startup_decision(
-            &RuntimeProcessClassification::Conflicting(
-                vec![managed.clone(), external.clone(),]
-            ),
+            &RuntimeProcessClassification::Conflicting(vec![managed.clone(), external.clone(),]),
             1,
             true,
             WindowsDatapathMode::ProxyOnly,
@@ -176,9 +174,7 @@ fn failed_scm_start_cleanup_is_exact_single_child_of_current_owner_only() {
 fn native_managed_tun_requires_real_pre_tun_authentication_on_every_start() {
     use edge_local_runtime::ProcessObservation;
 
-    assert!(
-        require_native_windows_route_capture_safety(WindowsDatapathMode::ProxyOnly).is_ok()
-    );
+    assert!(require_native_windows_route_capture_safety(WindowsDatapathMode::ProxyOnly).is_ok());
     for unsafe_mode in [
         WindowsDatapathMode::ManagedTun,
         WindowsDatapathMode::Unspecified,
@@ -491,8 +487,7 @@ fn merges_local_runtime_status() {
 async fn collects_status_through_service_impl() {
     let repo_root = temp_repo_root();
     std::fs::create_dir_all(repo_root.join("edge-platform/crates/edge-agent/src")).unwrap();
-    std::fs::create_dir_all(repo_root.join("edge-platform/crates/edge-controller/src"))
-        .unwrap();
+    std::fs::create_dir_all(repo_root.join("edge-platform/crates/edge-controller/src")).unwrap();
     std::fs::create_dir_all(repo_root.join("edge-platform/crates/edge-console/src")).unwrap();
     std::fs::create_dir_all(repo_root.join("edge-platform/proto")).unwrap();
     std::fs::create_dir_all(repo_root.join("win/vultr-waw/stack/tunnel-edge")).unwrap();
@@ -812,9 +807,8 @@ fn rejects_operation_target_without_persisted_trust_or_override() {
         target_ip: "203.0.113.99".to_owned(),
     };
 
-    let error =
-        resolve_operation_agent_connection_target(&state, &target, DEFAULT_AGENT_ENDPOINT)
-            .unwrap_err();
+    let error = resolve_operation_agent_connection_target(&state, &target, DEFAULT_AGENT_ENDPOINT)
+        .unwrap_err();
     assert!(error.contains("no persisted agent trust"));
 
     let _ = std::fs::remove_file(db_path);

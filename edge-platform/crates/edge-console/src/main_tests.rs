@@ -80,8 +80,8 @@ fn native_offline_zip_proof_uses_real_rust_child_and_rejects_all_mismatches() {
 
     let corrupt_zip = root.join("corrupt.zip");
     fs::write(&corrupt_zip, b"not-a-zip").unwrap();
-    let corrupt = require_offline_bootstrap_installer_archive_identity(&corrupt_zip, &packaged)
-        .unwrap_err();
+    let corrupt =
+        require_offline_bootstrap_installer_archive_identity(&corrupt_zip, &packaged).unwrap_err();
     assert!(corrupt.contains("OPEN_ZIP"), "{corrupt}");
 
     let _ = fs::remove_dir_all(root);
@@ -399,16 +399,16 @@ fn rollback_test_activation(
         sing_box_path: sing_box.to_string_lossy().into_owned(),
         diagnostic_path: diagnostic.to_string_lossy().into_owned(),
         controller_sha256: vec![
-            193, 71, 33, 53, 177, 76, 119, 200, 190, 249, 142, 115, 247, 2, 8, 50, 95, 160,
-            220, 241, 230, 189, 102, 138, 233, 179, 26, 156, 234, 41, 95, 231,
+            193, 71, 33, 53, 177, 76, 119, 200, 190, 249, 142, 115, 247, 2, 8, 50, 95, 160, 220,
+            241, 230, 189, 102, 138, 233, 179, 26, 156, 234, 41, 95, 231,
         ],
         console_sha256: vec![
-            147, 216, 135, 76, 140, 134, 240, 252, 137, 61, 190, 21, 199, 101, 255, 160, 252,
-            211, 66, 247, 152, 219, 246, 105, 224, 143, 140, 190, 9, 93, 35, 12,
+            147, 216, 135, 76, 140, 134, 240, 252, 137, 61, 190, 21, 199, 101, 255, 160, 252, 211,
+            66, 247, 152, 219, 246, 105, 224, 143, 140, 190, 9, 93, 35, 12,
         ],
         sing_box_sha256: vec![
-            106, 175, 72, 98, 84, 64, 79, 91, 126, 34, 43, 199, 22, 96, 133, 30, 4, 200, 107,
-            148, 52, 206, 132, 38, 56, 207, 20, 34, 143, 61, 95, 113,
+            106, 175, 72, 98, 84, 64, 79, 91, 126, 34, 43, 199, 22, 96, 133, 30, 4, 200, 107, 148,
+            52, 206, 132, 38, 56, 207, 20, 34, 143, 61, 95, 113,
         ],
         diagnostic_sha256: vec![
             90, 105, 94, 234, 91, 0, 163, 31, 138, 239, 125, 187, 137, 200, 247, 152, 250, 179,
@@ -470,8 +470,7 @@ fn previous_release_rollback_preflight_accepts_only_verified_previous_pb() {
     )
     .unwrap();
 
-    let (observed_current, observed_previous) =
-        load_previous_release_rollback_pair(&root).unwrap();
+    let (observed_current, observed_previous) = load_previous_release_rollback_pair(&root).unwrap();
     assert_eq!(observed_current.release_set_sha256, "a".repeat(64));
     assert_eq!(observed_previous.release_set_sha256, "b".repeat(64));
 
@@ -620,8 +619,7 @@ fn builds_canonical_windows_runtime_state_from_client_only_env() {
         ("REALITY_WARP_PUBLIC_KEY", "warp-public-key".to_owned()),
         ("REALITY_WARP_SHORT_ID", "b1c2d3e4".to_owned()),
     ]);
-    let state =
-        windows_runtime_state_from_provision_env(|name| values.get(name).cloned()).unwrap();
+    let state = windows_runtime_state_from_provision_env(|name| values.get(name).cloned()).unwrap();
     assert_eq!(state.schema_version, 1);
     assert_eq!(state.instance_id, "instance-1");
     assert_eq!(state.server_ip, "203.0.113.10");
@@ -760,6 +758,7 @@ fn privileged_child_failure_evidence_is_bounded_and_secret_safe() {
     };
     assert!(encode_windows_privileged_result(&result).is_ok());
 }
+
 
 #[test]
 fn initial_windows_proof_refuses_active_or_incomplete_local_state() {
