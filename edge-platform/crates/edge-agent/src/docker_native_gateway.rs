@@ -5,12 +5,12 @@ use super::*;
 /// admission and the post-BEGIN native Docker effector. Policy checking
 /// cannot create directories, start processes or inspect arbitrary paths.
 #[derive(Debug)]
-pub(super) struct  NativeGatewayPolicy {
+pub(super) struct NativeGatewayPolicy {
     pub(super) ports: Vec<(String, String, String)>,
     pub(super) mounts: Vec<(String, String, String)>,
 }
 
-pub(super) fn  compile_native_gateway_policy(
+pub(super) fn compile_native_gateway_policy(
     host: &FleetHost,
     compose: &serde_yaml::Value,
     service: &str,
@@ -169,7 +169,7 @@ pub(super) fn  compile_native_gateway_policy(
 /// Build one application-owned gateway through Bollard from the *same*
 /// pure admission policy. Canonicalized paths are rechecked under root;
 /// symlinks leading outside the owner root are never accepted.
-pub(super) fn  native_gateway_create_body(
+pub(super) fn native_gateway_create_body(
     stack_dir: &Path,
     host: &FleetHost,
     service: &str,
@@ -273,7 +273,7 @@ pub(super) fn  native_gateway_create_body(
 /// All image, network, mount and port policy is prepared before BEGIN.
 /// A failed STOP/DELETE/CREATE/START ACK is UNKNOWN_NO_REPLAY; the shared
 /// journal remains pending and no automatic compensation is attempted.
-pub(super) async fn  recreate_native_gateway_once(
+pub(super) async fn recreate_native_gateway_once(
     docker: &Docker,
     host: &FleetHost,
     service: &str,
