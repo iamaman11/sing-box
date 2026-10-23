@@ -16,6 +16,7 @@ mod cloudflare_zero_trust_doctor;
 mod credential_existing_join;
 mod credential_initial_journal;
 mod host_command;
+mod host_dispatch;
 mod line2_external_witness;
 mod production_command;
 mod vm_host_desired;
@@ -31,37 +32,6 @@ mod vultr_vpc_lifecycle_service;
 use clap::Parser;
 use edge_observability::init as init_observability;
 
-// Only the host chain may mutate installed resources. Legacy domain modules
-// stay compiled for release-input tests/read-only diagnostics, but their
-// mutation commands have no CLI authority. Check before release-context load
-// AND within run(): hiding a clap command alone is not a security boundary.
-fn legacy_entrypoint_allowed(command: &cli::Command) -> bool {
-    use cli::Command;
-    match command {
-        Command::Host { .. } | Command::ApplicationBundleBuild(_) => true,
-        Command::CloudflareZeroTrust {
-            command: cli::CloudflareZeroTrustCommand::Doctor(_),
-        } => true,
-        Command::CloudflareTargetPlane { command } => matches!(
-            command,
-            cli::CloudflareTargetPlaneCommand::Inventory
-                | cli::CloudflareTargetPlaneCommand::Plan
-                | cli::CloudflareTargetPlaneCommand::Verify
-                | cli::CloudflareTargetPlaneCommand::VerifyActive
-        ),
-        Command::Production { command } => matches!(
-            command,
-            cli::ProductionCommand::Validate
-                | cli::ProductionCommand::Diagnose
-                | cli::ProductionCommand::DnsNoop
-        ),
-        Command::Credentials {
-            command: cli::CredentialDeliveryCommand::ContractVerify,
-        } => true,
-        _ => false,
-    }
-}
-
 #[tokio::main]
 async fn main() -> ExitCode {
     let telemetry = init_observability("edge-orchestrator");
@@ -74,10 +44,6 @@ async fn main() -> ExitCode {
         }
     };
     let command = parsed.command_name();
-    if !legacy_entrypoint_allowed(&parsed.command) {
-        eprintln!("HOST_LEGACY_MUTATION_INGRESS_DISABLED_USE_HOST");
-        return ExitCode::from(1);
-    }
     if let cli::Command::ApplicationBundleBuild(args) = &parsed.command {
         let result = application_lifecycle_command::build_candidate_application_bundle(
             &args.spec_path,
@@ -165,24 +131,13 @@ async fn run(
 ) -> Result<(), String> {
     use cli::Command;
 
-    // Defense in depth if run() is invoked without the top-level CLI gate.
-    if !legacy_entrypoint_allowed(&parsed.command) {
-        return Err("HOST_LEGACY_MUTATION_INGRESS_DISABLED_USE_HOST".to_owned());
-    }
+    // Exhaustive CLI variants are the ingress boundary. Unreachable legacy
+    // mutation commands are not defined as top-level CLI variants anymore.
     match parsed.command {
-        Command::ApplicationAcceptance(args) => {
-            application_acceptance_command::run(args, release_context).await
-        }
         Command::ApplicationBundleBuild(_) => Err(
             "application-bundle-build must execute before durable runtime context resolution"
                 .to_owned(),
         ),
-        Command::ApplicationCleanup(args) => {
-            application_acceptance_command::run_cleanup(args, release_context).await
-        }
-        Command::ApplicationLifecycle { command } => {
-            application_lifecycle_command::run(command.into_legacy_args(), release_context).await
-        }
         Command::CloudflareTargetPlane { command } => match command {
             cli::CloudflareTargetPlaneCommand::Inventory => {
                 cloudflare_target_plane_command::inventory().await
@@ -190,20 +145,11 @@ async fn run(
             cli::CloudflareTargetPlaneCommand::Plan => {
                 cloudflare_target_plane_command::plan_command().await
             }
-            cli::CloudflareTargetPlaneCommand::Converge => {
-                cloudflare_target_plane_command::converge().await
-            }
-            cli::CloudflareTargetPlaneCommand::ActiveConverge => {
-                cloudflare_target_plane_command::converge_active().await
-            }
             cli::CloudflareTargetPlaneCommand::Verify => {
                 cloudflare_target_plane_command::verify().await
             }
             cli::CloudflareTargetPlaneCommand::VerifyActive => {
                 cloudflare_target_plane_command::verify_active_invariant().await
-            }
-            cli::CloudflareTargetPlaneCommand::AcceptanceProfile { command } => {
-                cloudflare_mesh_profile_command::run(command).await
             }
         },
         Command::CloudflareZeroTrust { command } => match command {
@@ -211,9 +157,15 @@ async fn run(
                 cloudflare_zero_trust_doctor::run(&args.spec_path, args.scope).await
             }
         },
-        Command::Credentials { command } => {
-            cloudflare_credential_plane_command::run_delivery(command, release_context).await
-        }
+        Command::Credentials { command } => match command {
+            cli::CredentialReadOnlyCommand::ContractVerify => {
+                cloudflare_credential_plane_command::run_delivery(
+                    cli::CredentialDeliveryCommand::ContractVerify,
+                    release_context,
+                )
+                .await
+            }
+        },
         Command::Host {
             command,
             hosts_pb,
@@ -222,167 +174,53 @@ async fn run(
             runner_inventory_json,
             source_comment_id,
             intent_output,
-        } => match command {
-            cli::HostCommand::VmWorkerAuthorizerUpgrade {
-                machine_id,
-                plan_only,
-            } => {
-                cloudflare_credential_plane_command::host_vm_worker_authorizer_upgrade(
-                    &machine_id,
-                    release_context,
-                    plan_only,
-                )
-                .await
-            }
-            cli::HostCommand::VmCredentialProof {
-                machine_id,
-                generation,
-                bundle_sha256,
-            } => {
-                cloudflare_credential_plane_command::host_vm_credential_proof(
-                    &machine_id,
-                    release_context,
-                    generation,
-                    &bundle_sha256,
-                )
-                .await
-            }
-            cli::HostCommand::VmWorkerSignerPrepare {
-                machine_id,
-                key_path,
-                public_path,
-            } => {
-                cloudflare_credential_plane_command::host_vm_signer_prepare(
-                    &machine_id,
-                    release_context,
-                    &key_path,
-                    &public_path,
-                )
-                .await
-            }
-            cli::HostCommand::VmWorkerSignerCommit {
-                machine_id,
-                key_path,
-                public_path,
-            } => {
-                cloudflare_credential_plane_command::host_vm_signer_commit(
-                    &machine_id,
-                    release_context,
-                    &key_path,
-                    &public_path,
-                )
-                .await
-            }
-            cli::HostCommand::FirstUsePreflight { machine_id } => {
-                vultr_lifecycle_command::host_first_use_provider_preflight(
-                    &machine_id,
-                    release_context,
-                )
-                .await
-            }
-            cli::HostCommand::FirstUse {
-                machine_id,
-                installer_path,
-                agent_path,
-            } => {
-                vultr_lifecycle_command::host_first_use(
-                    &machine_id,
-                    &installer_path,
-                    &agent_path,
-                    release_context,
-                )
-                .await
-            }
-            other => host_command::run(
-                other,
-                release_context,
-                &hosts_pb,
-                &hosts_sha256,
-                github_output.as_deref(),
-                runner_inventory_json.as_deref(),
+        } => {
+            host_dispatch::run(
+                command,
+                hosts_pb,
+                hosts_sha256,
+                github_output,
+                runner_inventory_json,
                 source_comment_id,
-                intent_output.as_deref(),
-            ),
-        },
+                intent_output,
+                release_context,
+            )
+            .await
+        }
         Command::Production { command } => match command {
             cli::ProductionCommand::Validate => production_command::validate(release_context),
             cli::ProductionCommand::Diagnose => cloudflare_production_inventory::run().await,
             cli::ProductionCommand::DnsNoop => {
                 production_command::verify_dns_noop(release_context).await
             }
-            cli::ProductionCommand::EnrollRuntime(args) => {
-                production_command::enroll_runtime(
-                    release_context,
-                    &args.edge_agent_artifact_path,
-                    &args.runner_installer_path,
-                )
-                .await
-            }
         },
-        Command::VultrLifecycle { command } => {
-            vultr_lifecycle_command::run(command.into_legacy_args(), release_context).await
-        }
-        Command::VultrVpc { command } => {
-            vultr_vpc_lifecycle_command::run(command.into_legacy_args()).await
-        }
     }
 }
 
 #[cfg(test)]
 mod canonical_host_ingress_tests {
     use super::*;
-    use cli::{CloudflareTargetPlaneCommand as Cloudflare, ProductionCommand as Production};
-
     #[test]
-    fn legacy_mutations_blocked_before_release_context_and_dispatch() {
-        let blocked = [
-            cli::Command::CloudflareTargetPlane {
-                command: Cloudflare::Converge,
-            },
-            cli::Command::CloudflareTargetPlane {
-                command: Cloudflare::ActiveConverge,
-            },
-            cli::Command::Production {
-                command: Production::EnrollRuntime(cli::ProductionEnrollRuntimeArgs {
-                    edge_agent_artifact_path: "agent".into(),
-                    runner_installer_path: "runner".into(),
-                }),
-            },
-            cli::Command::Credentials {
-                command: cli::CredentialDeliveryCommand::HostBootstrapConverge,
-            },
-            cli::Command::VultrLifecycle {
-                command: cli::VultrLifecycleCommand::Inventory(cli::SpecArgs {
-                    spec_path: "spec".into(),
-                }),
-            },
-        ];
-        for cmd in &blocked {
-            assert!(!legacy_entrypoint_allowed(cmd));
+    fn read_only_and_host_commands_are_the_only_cli_routes() {
+        use clap::Parser;
+        let required=["edge-orchestrator","host","--hosts-pb","hosts.pb","--hosts-sha256"];
+        let mut status=required.to_vec();
+        status.extend(["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status","application-acceptance-3","--deep"]);
+        assert!(cli::Cli::try_parse_from(status).is_ok());
+        for (command, argument) in [
+            ("vultr-lifecycle","inventory"),
+            ("vultr-vpc","verify"),
+            ("application-lifecycle","materialize"),
+            ("application-acceptance","--help"),
+            ("application-cleanup","--help"),
+            ("credentials","host-bootstrap-converge"),
+            ("cloudflare-target-plane","converge"),
+            ("production","enroll-runtime"),
+        ] {
+            assert!(cli::Cli::try_parse_from(["edge-orchestrator", command, argument]).is_err(),
+                "legacy entrypoint must not be parseable: {command} {argument}");
         }
-        assert!(legacy_entrypoint_allowed(
-            &cli::Command::CloudflareTargetPlane {
-                command: Cloudflare::Inventory
-            }
-        ));
-        assert!(legacy_entrypoint_allowed(&cli::Command::Production {
-            command: Production::Diagnose
-        }));
-        assert!(legacy_entrypoint_allowed(&cli::Command::Credentials {
-            command: cli::CredentialDeliveryCommand::ContractVerify
-        }));
-        assert!(legacy_entrypoint_allowed(&cli::Command::Host {
-            hosts_pb: "hosts.pb".into(),
-            hosts_sha256: "test".into(),
-            github_output: None,
-            runner_inventory_json: None,
-            source_comment_id: None,
-            intent_output: None,
-            command: cli::HostCommand::Status {
-                machine_id: None,
-                deep: false,
-                credential_pair_windows: None,
-            },
-        }));
+        assert!(cli::Cli::try_parse_from(["edge-orchestrator","credentials","contract-verify"]).is_ok());
+        assert!(cli::Cli::try_parse_from(["edge-orchestrator","production","diagnose"]).is_ok());
     }
 }
