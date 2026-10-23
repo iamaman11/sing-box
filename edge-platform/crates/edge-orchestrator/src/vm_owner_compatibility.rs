@@ -219,7 +219,7 @@ pub(super) async fn reconcile_before_enrollment(
     let current = read(&format!("sha256sum {owner} | cut -d' ' -f1"))?;
     let expected = context.expected_application_artifact()?;
     context.validate_application_artifact(&expected, candidate)?;
-    if previous.schema_version < context.release().schema_version
+    if previous.schema_version < context.application_release_authority()?.schema_version
         && expected.sha256 == previous.agent_sha256
     {
         return Err("HOST_OWNER_RELEASE_SCHEMA_CHANGED_WITHOUT_AGENT_REBUILD".into());
