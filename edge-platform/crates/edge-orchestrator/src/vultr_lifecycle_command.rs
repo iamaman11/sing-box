@@ -55,10 +55,10 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tonic::Request;
 
-#[path = "vm_owner_upgrade.rs"]
-mod vm_owner_upgrade;
 #[path = "vm_owner_compatibility.rs"]
 mod vm_owner_compatibility;
+#[path = "vm_owner_upgrade.rs"]
+mod vm_owner_upgrade;
 
 const DEFAULT_CLOUD_INIT_PATH: &str = "win/vultr-waw/cloud-init.yaml";
 const CANONICAL_SSH_PUBLIC_KEY_PATH: &str = "infra/vultr/singbox-ops.pub";
