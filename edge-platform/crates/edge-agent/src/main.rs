@@ -5004,7 +5004,6 @@ mod native_mutation_ingress_tests {
         .collect()
     }
 
-
     #[test]
     fn foreign_same_named_container_never_proves_native_owner() {
         use edge_shared_types::FleetNativeOwnerState;
