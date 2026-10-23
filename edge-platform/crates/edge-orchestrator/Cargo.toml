@@ -15,6 +15,7 @@ edge-provider-vultr = { path = "../edge-provider-vultr" }
 edge-shared-types = { path = "../edge-shared-types" }
 edge-secrets = { path = "../edge-secrets" }
 ring = "0.17.14"
+reqwest = { version = "0.12.24", default-features = false, features = ["rustls-tls", "json"] }
 prost = "0.14.3"
 rand_core = { version = "0.6.4", features = ["getrandom"] }
 serde = { version = "1.0.228", features = ["derive"] }
