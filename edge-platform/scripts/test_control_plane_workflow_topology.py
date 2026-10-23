@@ -48,4 +48,25 @@ assert "host-enroll machine release" in vm_installer
 assert "SING_BOX_NATIVE_HOST_TRUST" in vm_installer
 assert 'local host-refresh *' not in vm_installer
 
+# Signer enrollment is a continuation of the SAME Worker update operation.
+# Every step checks the live Worker source through the Rust protected owner.
+# A failed/unknown update skips all signing steps (Actions success gate).
+worker = router.split("  host_worker_authorizer:",1)[1].split("  host_capabilities:",1)[0]
+assert worker.count("if: needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'") == 4
+assert "if: steps.plan.outputs.required == 'false' && needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'" not in worker
+assert "vm-worker-signer-prepare" in worker and "vm-worker-signer-commit" in worker
+assert worker.index("Apply exact VM Worker code once") < worker.index("Prepare one ephemeral VM signer")
+
+# Physical CREATE must never depend on a Git-only credential reference.
+# The same bounded native Worker GET checks the typed non-dummy payload at
+# preflight and again immediately before provider mutation.
+provider=Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_command.rs").read_text(encoding="utf-8")
+worker_src=Path("edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs").read_text(encoding="utf-8")
+gate="verify_current_vm_first_use_worker_source("
+assert provider.count(gate)==2, "missing actual Worker GET before first-use / CREATE"
+assert provider.index(gate) < provider.index('host_first_use_provider_plan=EXACT_CREATE_ONLY')
+assert provider.rindex(gate) < provider.index("acceptance_create_machine(provider_spec, machine_id).await?")
+assert "get_vm_credential_bundle_with_access(" in worker_src
+assert "attest_vm_first_use_credential_bytes(&bytes, generation, expected_sha256)?" in worker_src
+
 print("native_only_workflow_topology=PASS")
