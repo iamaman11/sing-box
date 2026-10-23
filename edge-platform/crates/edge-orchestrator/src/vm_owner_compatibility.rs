@@ -12,6 +12,7 @@ fn sha256_hex(value: &[u8]) -> String {
 }
 
 pub(super) struct PreviousOwner {
+    pub(super) schema_version: u32,
     pub(super) agent_sha256: String,
     pub(super) release_bytes: Vec<u8>,
     pub(super) release_sha256: String,
@@ -55,6 +56,7 @@ pub(super) fn decode_root_trust(
         return Err("HOST_OWNER_PREVIOUS_AGENT_DIGEST_INVALID".into());
     }
     Ok(PreviousOwner {
+        schema_version: release.schema_version,
         agent_sha256: agent.iter().map(|b| format!("{b:02x}")).collect(),
         release_sha256: sha256_hex(&trust.release_set_pb),
         release_bytes: trust.release_set_pb,
@@ -116,6 +118,7 @@ pub(super) async fn verify_accepted_predecessor(previous: &PreviousOwner) -> Res
     Ok(())
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
 pub(super) enum OwnerDecision {
     Upgrade,
     Current,
@@ -159,7 +162,7 @@ pub(super) async fn reconcile_before_enrollment(
     ip: &str,
     key: &std::path::Path,
     public: &str,
-) -> Result<(), String> {
+) -> Result<OwnerDecision, String> {
     let host = context.verified_vm_first_use_host(machine_id)?;
     let read = |command: &str| fixed_readback(ip, machine_id, key, public, command);
     let owner = "/usr/local/libexec/sing-box/edge-agent";
@@ -189,6 +192,11 @@ pub(super) async fn reconcile_before_enrollment(
     let current = read(&format!("sha256sum {owner} | cut -d' ' -f1"))?;
     let expected = context.expected_application_artifact()?;
     context.validate_application_artifact(&expected, candidate)?;
+    if previous.schema_version < context.release().schema_version
+        && expected.sha256 == previous.agent_sha256
+    {
+        return Err("HOST_OWNER_RELEASE_SCHEMA_CHANGED_WITHOUT_AGENT_REBUILD".into());
+    }
     let existing_begin = "/usr/local/libexec/sing-box/.edge-agent-upgrade-begin";
     let previous_binary = "/usr/local/libexec/sing-box/edge-agent.previous";
     let proven_chain = if current == expected.sha256
@@ -205,7 +213,8 @@ pub(super) async fn reconcile_before_enrollment(
     } else {
         false
     };
-    match decide(&current, &previous.agent_sha256, &expected.sha256, proven_chain)? {
+    let decision = decide(&current, &previous.agent_sha256, &expected.sha256, proven_chain)?;
+    match decision {
         OwnerDecision::Upgrade => {
             // No second owner and no second SSH lease: invoke the existing
             // exact-artifact, durable-BEGIN upgrade from the same /host apply.
@@ -239,7 +248,7 @@ pub(super) async fn reconcile_before_enrollment(
     println!("host_owner_compatibility=EXACT_ACCEPTED_AGENT");
     println!("host_owner_installed_sha256={installed}");
     println!("host_owner_previous_release_sha256={}", previous.release_sha256);
-    Ok(())
+    Ok(decision)
 }
 
 #[cfg(test)]
