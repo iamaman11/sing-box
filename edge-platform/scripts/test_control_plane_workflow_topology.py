@@ -5335,6 +5335,33 @@ def test_one_host_apply_reconciles_root_trust_before_native_dispatch() -> None:
     require(broken != observe and "needs.host_refresh_trust.result == 'skipped'" in broken,
             "missing-trust admission negative fixture not generated")
 
+def test_root_owner_readback_is_privileged_and_typed() -> None:
+    """Old v7 Agent cannot export its own new capability contract.
+    Its one historical handoff must respect the root:root 0700 boundary.
+    """
+    compat = Path("edge-platform/crates/edge-orchestrator/src/vm_owner_compatibility.rs").read_text(
+        encoding="utf-8"
+    )
+    for proof in (
+        "sudo -n test -f {trust_path}",
+        "sudo -n test ! -L {trust_path}",
+        "sudo -n stat -c '%u:%g:%a' {trust_path}",
+        "sudo -n base64 -w0 {trust_path}",
+        "HOST_OWNER_ROOT_TRUST_READBACK_DENIED_OR_UNAVAILABLE",
+        "sudo -n test -d {journal}",
+        "sudo -n test ! -L {journal}",
+        "sudo -n stat -c '%u:%g:%a' {journal}",
+        "sudo -n find {journal}",
+        "HOST_OWNER_ROOT_JOURNAL_READBACK_DENIED_OR_UNAVAILABLE",
+    ):
+        require(proof in compat, "old-owner root readback missing bounded evidence: " + proof)
+    for invalid in (
+        "set -eu; test -f {trust_path}",
+        "set -eu; test -d {journal}",
+    ):
+        require(invalid not in compat, "owner must not traverse root 0700 as singbox-ops")
+
+
 def test_vm_typed_desired_preparation_is_shared_and_fail_closed() -> None:
     """Every VM entrypoint must prepare the same bounded derived protobuf before use."""
     router = ROUTER.read_text(encoding="utf-8")
@@ -5552,3 +5579,4 @@ if __name__ == "__main__":
     test_native_vm_artifact_transport_is_same_run_and_not_gh_cli()
     verify_receipt_resume_inline_release_context(ROUTER.read_text(encoding="utf-8"))
     test_vm_fingerprint_is_readonly_untrusted_evidence()
+    test_root_owner_readback_is_privileged_and_typed()
