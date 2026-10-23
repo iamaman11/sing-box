@@ -496,9 +496,7 @@ impl HostWorkerAuthorizationRejection {
             Self::GithubDependencyUnavailable => {
                 "HOST_WORKER_GITHUB_DEPENDENCY_UNAVAILABLE_NO_REPLAY"
             }
-            Self::ForbiddenWithoutWorkerReason => {
-                "HOST_WORKER_FORBIDDEN_WITHOUT_WORKER_REASON"
-            }
+            Self::ForbiddenWithoutWorkerReason => "HOST_WORKER_FORBIDDEN_WITHOUT_WORKER_REASON",
             Self::UnclassifiedPolicyDenied => "HOST_WORKER_POLICY_DENIED",
             Self::UnclassifiedAuthorizationFailure => "HOST_WORKER_AUTHORIZATION_NOT_ACCEPTED",
         }
