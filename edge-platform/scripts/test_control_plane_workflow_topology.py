@@ -38,11 +38,15 @@ orchestrator_cli=Path("edge-platform/crates/edge-orchestrator/src/cli.rs").read_
 orchestrator_main=Path("edge-platform/crates/edge-orchestrator/src/main.rs").read_text(encoding="utf-8")
 agent_cli=Path("edge-platform/crates/edge-agent/src/cli.rs").read_text(encoding="utf-8")
 agent_main=Path("edge-platform/crates/edge-agent/src/main.rs").read_text(encoding="utf-8")
+agent_dispatch=Path("edge-platform/crates/edge-agent/src/local_dispatch.rs").read_text(encoding="utf-8")
 vm_installer=Path("edge-platform/scripts/install-vultr-production-runner.sh").read_text(encoding="utf-8")
 assert "RefreshReceipt" not in orchestrator_cli and "RefreshReceipt" not in orchestrator_main
 assert "local host-refresh" in native
 assert 'HostRefresh,' in agent_cli
-assert "LocalCommand::HostRefresh => host_enroll::refresh_current()" in agent_main
+assert "LocalCommand::HostRefresh => host_enroll::refresh_current()" in agent_dispatch
+assert "mod local_dispatch;" in agent_main
+assert "native_local_entrypoint_allowed" not in agent_main
+assert "native_local_entrypoint_allowed" not in agent_dispatch
 assert 'SING_BOX_NATIVE_HOST_TRUST = ${LOCAL_OWNER} local host-refresh' in vm_installer
 assert "host-enroll machine release" in vm_installer
 assert "SING_BOX_NATIVE_HOST_TRUST" in vm_installer
@@ -68,5 +72,20 @@ assert provider.index(gate) < provider.index('host_first_use_provider_plan=EXACT
 assert provider.rindex(gate) < provider.index("acceptance_create_machine(provider_spec, machine_id).await?")
 assert "get_vm_credential_bundle_with_access(" in worker_src
 assert "attest_vm_first_use_credential_bytes(&bytes, generation, expected_sha256)?" in worker_src
+
+# GitHub needs only a scalar for job/step routing.
+# All structured desired/intent/result/receipt stays Protobuf.
+assert "operation: ${{ steps.observe.outputs.operation }}" in router
+assert "host_action_json" not in router
+assert "needs.host.outputs.operation" in router
+assert "fromJSON(needs.host.outputs.host_matrix)" in router  # GitHub matrix API
+host_source=Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(encoding="utf-8")
+assert "enum HostWorkflowOperation" in host_source
+assert 'writeln!(file, "operation={}", action.as_str())' in host_source
+assert "HostWorkflowDecision" not in host_source
+assert "credential_pair_windows" not in orchestrator_cli
+for marker in ("mod controller_rpc;", "mod command_dispatch;", "mod local_dispatch;"):
+    owner = ("edge-controller" if "controller" in marker else "edge-console" if "command" in marker else "edge-agent")
+    assert marker in Path(f"edge-platform/crates/{owner}/src/main.rs").read_text(encoding="utf-8")
 
 print("native_only_workflow_topology=PASS")

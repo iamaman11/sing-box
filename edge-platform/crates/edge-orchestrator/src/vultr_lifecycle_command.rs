@@ -1,4 +1,3 @@
-use crate::application_acceptance_command::validate_disposable_acceptance;
 use crate::application_lifecycle_command::{
     acceptance_stage_initial_policy, load_application_desired,
 };
@@ -27,6 +26,9 @@ use crate::vultr_support_resources::{
     ensure_firewall_profile, ensure_persistent_firewall_profile, firewall_group_description,
     firewall_rule_spec, observe_verified_firewall_bindings, public_key_material,
     release_controller_ipv4_access, resolve_managed_ssh_key, validate_machine_catalog,
+};
+use edge_controller_core::application_lifecycle::{
+    ApplicationBootstrapMode, DesiredApplicationState,
 };
 use edge_controller_core::host_substrate_lifecycle::HostSubstrateAction;
 use edge_controller_core::lifecycle::{
@@ -59,6 +61,43 @@ use tonic::Request;
 mod vm_owner_compatibility;
 #[path = "vm_owner_upgrade.rs"]
 mod vm_owner_upgrade;
+
+// Historical acceptance-v1 preflight still guards internal, unreachable
+// old helpers. It is NOT a new CLI or VM first-use mutation authority.
+fn validate_disposable_acceptance(desired: &DesiredApplicationState) -> Result<(), String> {
+    if desired.environment != "application-acceptance" {
+        return Err(format!(
+            "application acceptance requires environment application-acceptance, got {}",
+            desired.environment
+        ));
+    }
+    if desired.machine_id != "application-acceptance-1" {
+        return Err(format!(
+            "application acceptance requires machine application-acceptance-1, got {}",
+            desired.machine_id
+        ));
+    }
+    if desired.bootstrap_mode != ApplicationBootstrapMode::Full {
+        return Err("application acceptance requires full bootstrap mode".to_owned());
+    }
+    let line1 = desired
+        .runtime_policy
+        .line1
+        .as_ref()
+        .ok_or_else(|| "application acceptance requires line1 runtime policy".to_owned())?;
+    if line1.acme_provider != "letsencrypt" {
+        return Err(
+            "disposable network acceptance requires publicly trusted Let's Encrypt ACME authority"
+                .to_owned(),
+        );
+    }
+    desired
+        .runtime_policy
+        .line2
+        .as_ref()
+        .ok_or_else(|| "application acceptance requires line2 runtime policy".to_owned())?;
+    Ok(())
+}
 
 const DEFAULT_CLOUD_INIT_PATH: &str = "win/vultr-waw/cloud-init.yaml";
 const CANONICAL_SSH_PUBLIC_KEY_PATH: &str = "infra/vultr/singbox-ops.pub";

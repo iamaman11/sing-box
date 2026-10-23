@@ -420,8 +420,22 @@ jobs:
           assert "CloudflareZeroTrust" not in controller_cli
           assert "Line3Mesh" not in controller_cli
           assert "VultrVpc" not in controller_cli
-          assert "ApplicationLifecycle" in orchestrator_cli
-          assert "VultrLifecycle" in orchestrator_cli
+          assert "ApplicationLifecycle" not in orchestrator_cli
+          assert "VultrLifecycle" not in orchestrator_cli
+          assert "    ApplicationAcceptance(" not in orchestrator_cli
+          assert "VultrVpcCommand" not in orchestrator_cli
+          assert "CredentialReadOnlyCommand" in orchestrator_cli
+          assert "HostWorkflowOperation" in Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text()
+          host_source = Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text()
+          assert 'writeln!(file, "operation={}", action.as_str())' in host_source
+          assert "host_action_json" not in host_source
+          assert "HostWorkflowDecision" not in host_source
+          assert "fromJSON(needs.host.outputs.host_action_json)" not in Path(".github/workflows/edge-control-plane.yml").read_text()
+          assert "fromJSON(needs.host.outputs.host_matrix)" in Path(".github/workflows/edge-control-plane.yml").read_text()
+          assert "mod host_dispatch;" in orchestrator_main
+          assert "mod local_dispatch;" in agent_main
+          assert "mod controller_rpc;" in controller_main
+          assert "mod command_dispatch;" in console_main
           assert "cloudflare-dns" not in orchestrator_cli
           assert "line3-mesh" not in orchestrator_cli
           assert "pub async fn run(args: Vec<String>)" not in dns_command
@@ -462,19 +476,12 @@ jobs:
           assert "ip -j -4 route" not in mesh_command
           assert "strict_ssh_capture" not in mesh_command
 
-          acceptance_coordinator = Path(
-              "edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs"
-          ).read_text()
-          assert "acceptance_attach_and_verify as vpc_attach_and_verify" in acceptance_coordinator
-          assert "acceptance_cleanup_to_absent as vpc_cleanup_to_absent" in acceptance_coordinator
-          assert "acceptance_converge_provider as mesh_converge_provider" in acceptance_coordinator
-          assert "acceptance_runtime_apply as mesh_runtime_apply" in acceptance_coordinator
-          assert "acceptance_runtime_verify as mesh_runtime_verify" in acceptance_coordinator
-          assert "vpc_attach_and_verify(&args.vpc_spec_path)" in acceptance_coordinator
-          assert "mesh_converge_provider(" in acceptance_coordinator
-          assert "mesh_runtime_apply(" in acceptance_coordinator
-          assert "mesh_runtime_verify(" in acceptance_coordinator
-          assert "std::process::Command" not in acceptance_coordinator
+          # The disconnected SSH/cleanup acceptance-v1 coordinator must be
+          # physically absent. The only remaining legacy validation is scoped
+          # to the unreachable old Vultr helper, never the signed first-use.
+          assert not Path("edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs").exists()
+          assert "mod application_acceptance_command;" not in orchestrator_main
+          assert "fn validate_disposable_acceptance(" in vultr_command_authority
 
           for acceptance_path in [
               "infra/application/disposable-acceptance.json",
