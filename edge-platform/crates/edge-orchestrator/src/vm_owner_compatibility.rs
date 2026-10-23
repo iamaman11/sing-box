@@ -312,6 +312,30 @@ mod tests {
         ));
     }
     #[test]
+    fn exact_v7_trust_proves_historical_agent_but_not_a_different_signer() {
+        let mut release = ReleaseSet::default();
+        release.schema_version = 7;
+        release.vm_runtime = Some(Default::default());
+        release.vm_runtime.as_mut().unwrap().edge_agent_sha256 = vec![0xAB; 32];
+        let trust = FleetNativeTrustSnapshot {
+            schema_version: 1,
+            machine_id: "vm".into(),
+            registry_pb: vec![1],
+            release_set_pb: release.encode_to_vec(),
+            application_bundle_pb: vec![2],
+            selected_spec_bytes: vec![3],
+            pinned_worker_public_key: vec![4; 32],
+        };
+        let encoded = base64::engine::general_purpose::STANDARD.encode(trust.encode_to_vec());
+        let selected = decode_root_trust(&encoded, "vm", &[4; 32]).unwrap();
+        assert_eq!(selected.schema_version, 7);
+        assert_eq!(selected.agent_sha256, "ab".repeat(32));
+        assert_eq!(selected.release_bytes, release.encode_to_vec());
+        assert!(decode_root_trust(&encoded, "vm", &[5; 32]).is_err());
+        assert!(decode_root_trust(&encoded, "other-vm", &[4; 32]).is_err());
+    }
+
+    #[test]
     fn empty_or_unpinned_trust_is_not_predecessor() {
         assert!(decode_root_trust("", "vm", &[1; 32]).is_err());
         assert!(decode_root_trust("YWJj", "vm", &[1; 32]).is_err());
