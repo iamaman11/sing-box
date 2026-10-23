@@ -192,7 +192,7 @@ def decide_reuse(
 ) -> bool:
     if not LOWER_HEX_64.fullmatch(candidate_digest):
         raise ValueError("candidate Windows input digest must be a lowercase SHA-256")
-    if base_schema not in {"6", "7"}:
+    if base_schema not in {"6", "7", "8"}:
         return False
     return (
         LOWER_HEX_64.fullmatch(base_digest) is not None
