@@ -475,7 +475,11 @@ pub(crate) async fn refresh_current() -> Result<(), String> {
         .iter()
         .find(|h| h.machine_id == previous.machine_id && h.kind == FleetHostKind::Vm as i32)
         .ok_or("HOST_REFRESH_PREVIOUS_OWNER_ABSENT")?;
-    if host.native_receipt_public_key != identity
+    // First-use root trust precedes public receipt registration. The
+    // protected merge is allowed to advance that EMPTY prior pin to the
+    // exact existing local key, but may never substitute another key.
+    if (!host.native_receipt_public_key.is_empty()
+        && host.native_receipt_public_key != identity)
         || previous.pinned_worker_public_key != host.worker_authority_public_key
     {
         return Err("HOST_REFRESH_PREVIOUS_GIT_IDENTITY_UNPROVEN".into());
