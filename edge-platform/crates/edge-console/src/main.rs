@@ -5,8 +5,8 @@ mod credential_transition;
 mod error;
 mod initial_line1_witness;
 
-use command_dispatch::run;
 use clap::Parser;
+use command_dispatch::run;
 use edge_controller_core::{
     local_singbox_config_path, windows_credential_store_path, windows_runtime_state_path,
 };

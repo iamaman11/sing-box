@@ -203,24 +203,40 @@ mod canonical_host_ingress_tests {
     #[test]
     fn read_only_and_host_commands_are_the_only_cli_routes() {
         use clap::Parser;
-        let required=["edge-orchestrator","host","--hosts-pb","hosts.pb","--hosts-sha256"];
-        let mut status=required.to_vec();
-        status.extend(["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","status","application-acceptance-3","--deep"]);
+        let required = [
+            "edge-orchestrator",
+            "host",
+            "--hosts-pb",
+            "hosts.pb",
+            "--hosts-sha256",
+        ];
+        let mut status = required.to_vec();
+        status.extend([
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            "status",
+            "application-acceptance-3",
+            "--deep",
+        ]);
         assert!(cli::Cli::try_parse_from(status).is_ok());
         for (command, argument) in [
-            ("vultr-lifecycle","inventory"),
-            ("vultr-vpc","verify"),
-            ("application-lifecycle","materialize"),
-            ("application-acceptance","--help"),
-            ("application-cleanup","--help"),
-            ("credentials","host-bootstrap-converge"),
-            ("cloudflare-target-plane","converge"),
-            ("production","enroll-runtime"),
+            ("vultr-lifecycle", "inventory"),
+            ("vultr-vpc", "verify"),
+            ("application-lifecycle", "materialize"),
+            ("application-acceptance", "--help"),
+            ("application-cleanup", "--help"),
+            ("credentials", "host-bootstrap-converge"),
+            ("cloudflare-target-plane", "converge"),
+            ("production", "enroll-runtime"),
         ] {
-            assert!(cli::Cli::try_parse_from(["edge-orchestrator", command, argument]).is_err(),
-                "legacy entrypoint must not be parseable: {command} {argument}");
+            assert!(
+                cli::Cli::try_parse_from(["edge-orchestrator", command, argument]).is_err(),
+                "legacy entrypoint must not be parseable: {command} {argument}"
+            );
         }
-        assert!(cli::Cli::try_parse_from(["edge-orchestrator","credentials","contract-verify"]).is_ok());
-        assert!(cli::Cli::try_parse_from(["edge-orchestrator","production","diagnose"]).is_ok());
+        assert!(
+            cli::Cli::try_parse_from(["edge-orchestrator", "credentials", "contract-verify"])
+                .is_ok()
+        );
+        assert!(cli::Cli::try_parse_from(["edge-orchestrator", "production", "diagnose"]).is_ok());
     }
 }

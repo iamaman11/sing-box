@@ -64,7 +64,6 @@ pub(crate) enum LocalCommand {
     CredentialState,
     // Read-only Access-authenticated fixed A/B dummy proof for a fresh VM.
     CredentialInitialProbe,
-
 }
 
 impl LocalCommand {
@@ -84,7 +83,6 @@ impl LocalCommand {
             Self::MeshVerify => "local-mesh-verify",
             Self::CredentialState => "local-credential-state",
             Self::CredentialInitialProbe => "local-credential-initial-probe",
-
         }
     }
 }
@@ -111,11 +109,21 @@ mod tests {
             "credential-state",
             "credential-initial-probe",
         ] {
-            assert!(Cli::try_parse_from(["edge-agent", "local", op]).is_ok(), "{op}");
+            assert!(
+                Cli::try_parse_from(["edge-agent", "local", op]).is_ok(),
+                "{op}"
+            );
         }
-        assert!(Cli::try_parse_from([
-            "edge-agent", "local", "host-enroll", "acceptance-3", &"a".repeat(64)
-        ]).is_ok());
+        assert!(
+            Cli::try_parse_from([
+                "edge-agent",
+                "local",
+                "host-enroll",
+                "acceptance-3",
+                &"a".repeat(64)
+            ])
+            .is_ok()
+        );
         for op in [
             "acceptance-serve",
             "serve",
@@ -136,7 +144,10 @@ mod tests {
             "credential-transition",
             "exec",
         ] {
-            assert!(Cli::try_parse_from(["edge-agent", "local", op]).is_err(), "{op}");
+            assert!(
+                Cli::try_parse_from(["edge-agent", "local", op]).is_err(),
+                "{op}"
+            );
         }
         assert!(Cli::try_parse_from(["edge-agent", "acceptance-serve"]).is_err());
         assert!(Cli::try_parse_from(["edge-agent", "local", "host-apply", "arbitrary"]).is_err());

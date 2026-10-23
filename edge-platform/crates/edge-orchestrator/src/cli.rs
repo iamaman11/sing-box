@@ -526,36 +526,64 @@ mod tests {
 
     #[test]
     fn host_status_apply_recover_remain_parseable_and_bounded() {
-        let base=["edge-orchestrator","host","--hosts-pb","registry.pb","--hosts-sha256","aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"];
-        for operation in ["status","apply","recover"] {
-            let mut command=base.to_vec();
+        let base = [
+            "edge-orchestrator",
+            "host",
+            "--hosts-pb",
+            "registry.pb",
+            "--hosts-sha256",
+            "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        ];
+        for operation in ["status", "apply", "recover"] {
+            let mut command = base.to_vec();
             command.push(operation);
             command.push("application-acceptance-3");
             assert!(Cli::try_parse_from(command).is_ok(), "{operation}");
         }
-        let mut scoped=base.to_vec();
-        scoped.extend(["apply","application-acceptance-3","--resource-id","config/vultr-edge/line2-proxy"]);
+        let mut scoped = base.to_vec();
+        scoped.extend([
+            "apply",
+            "application-acceptance-3",
+            "--resource-id",
+            "config/vultr-edge/line2-proxy",
+        ]);
         assert!(Cli::try_parse_from(scoped).is_ok());
     }
 
     #[test]
     fn historical_provider_and_credential_mutations_are_not_public_or_hidden_cli() {
         for args in [
-            vec!["edge-orchestrator","vultr-lifecycle","create"],
-            vec!["edge-orchestrator","vultr-vpc","apply"],
-            vec!["edge-orchestrator","application-acceptance","some-spec"],
-            vec!["edge-orchestrator","application-cleanup","some-spec"],
-            vec!["edge-orchestrator","application-lifecycle","materialize"],
-            vec!["edge-orchestrator","cloudflare-target-plane","converge"],
-            vec!["edge-orchestrator","cloudflare-target-plane","active-converge"],
-            vec!["edge-orchestrator","credentials","host-bootstrap-converge"],
-            vec!["edge-orchestrator","credentials","initial-pair-commit-plan"],
-            vec!["edge-orchestrator","production","enroll-runtime"],
-            vec!["edge-orchestrator","shell"],
+            vec!["edge-orchestrator", "vultr-lifecycle", "create"],
+            vec!["edge-orchestrator", "vultr-vpc", "apply"],
+            vec!["edge-orchestrator", "application-acceptance", "some-spec"],
+            vec!["edge-orchestrator", "application-cleanup", "some-spec"],
+            vec!["edge-orchestrator", "application-lifecycle", "materialize"],
+            vec!["edge-orchestrator", "cloudflare-target-plane", "converge"],
+            vec![
+                "edge-orchestrator",
+                "cloudflare-target-plane",
+                "active-converge",
+            ],
+            vec![
+                "edge-orchestrator",
+                "credentials",
+                "host-bootstrap-converge",
+            ],
+            vec![
+                "edge-orchestrator",
+                "credentials",
+                "initial-pair-commit-plan",
+            ],
+            vec!["edge-orchestrator", "production", "enroll-runtime"],
+            vec!["edge-orchestrator", "shell"],
         ] {
             assert!(Cli::try_parse_from(args.clone()).is_err(), "{args:?}");
         }
-        assert!(Cli::try_parse_from(["edge-orchestrator","credentials","contract-verify"]).is_ok());
-        assert!(Cli::try_parse_from(["edge-orchestrator","cloudflare-target-plane","verify"]).is_ok());
+        assert!(
+            Cli::try_parse_from(["edge-orchestrator", "credentials", "contract-verify"]).is_ok()
+        );
+        assert!(
+            Cli::try_parse_from(["edge-orchestrator", "cloudflare-target-plane", "verify"]).is_ok()
+        );
     }
 }

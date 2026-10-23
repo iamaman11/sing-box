@@ -1625,10 +1625,8 @@ mod tests {
             );
         }
         assert!(
-            serde_json::from_str::<HostWorkflowDecision>(
-                r#"{"schema":1,"operation":"SHELL"}"#
-            )
-            .is_err()
+            serde_json::from_str::<HostWorkflowDecision>(r#"{"schema":1,"operation":"SHELL"}"#)
+                .is_err()
         );
         assert!(
             serde_json::from_str::<HostWorkflowDecision>(

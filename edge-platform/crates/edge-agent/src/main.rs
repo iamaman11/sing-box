@@ -1,11 +1,11 @@
 mod cli;
-mod local_dispatch;
 mod docker_observation;
 mod error;
 mod host_diagnostics;
 mod host_enroll;
 mod host_native;
 mod line2_quality;
+mod local_dispatch;
 mod mesh_network_diagnostics;
 mod network_observation;
 mod runtime_probe;
@@ -18,8 +18,8 @@ use crate::mesh_network_diagnostics::{
     collect_container_network_diagnostics, collect_host_network_diagnostics, extract_route_events,
 };
 use crate::runtime_probe::{BoundedCommandProbe, bounded_command_probe};
-use local_dispatch::run_local;
 use clap::Parser;
+use local_dispatch::run_local;
 use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
@@ -4974,9 +4974,14 @@ mod native_mutation_ingress_tests {
     fn vm_direct_mutation_cli_does_not_parse() {
         use clap::Parser;
         for name in [
-            "bootstrap-base", "bootstrap-full", "bundle-converge",
-            "bundle-rollback", "mesh-cleanup", "credential-stage",
-            "credential-initial-apply", "credential-transition",
+            "bootstrap-base",
+            "bootstrap-full",
+            "bundle-converge",
+            "bundle-rollback",
+            "mesh-cleanup",
+            "credential-stage",
+            "credential-initial-apply",
+            "credential-transition",
             "credential-existing-join",
         ] {
             assert!(cli::Cli::try_parse_from(["edge-agent", "local", name]).is_err());
