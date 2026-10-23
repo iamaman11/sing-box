@@ -226,9 +226,7 @@ pub(super) async fn reconcile_before_enrollment(
     }
     let existing_begin = "/usr/local/libexec/sing-box/.edge-agent-upgrade-begin";
     let previous_binary = "/usr/local/libexec/sing-box/edge-agent.previous";
-    let proven_chain = if current == expected.sha256
-        && current != previous.agent_sha256
-    {
+    let proven_chain = if current == expected.sha256 && current != previous.agent_sha256 {
         let begin = read(&format!(
             "set -eu; test -f {existing_begin}; test ! -L {existing_begin};              test \"$(stat -c '%u:%g:%a' {existing_begin})\" = 0:0:600;              sudo -n cat {existing_begin}"
         ))?;
@@ -240,7 +238,12 @@ pub(super) async fn reconcile_before_enrollment(
     } else {
         false
     };
-    let decision = decide(&current, &previous.agent_sha256, &expected.sha256, proven_chain)?;
+    let decision = decide(
+        &current,
+        &previous.agent_sha256,
+        &expected.sha256,
+        proven_chain,
+    )?;
     match decision {
         OwnerDecision::Upgrade => {
             // No second owner and no second SSH lease: invoke the existing
@@ -279,7 +282,10 @@ pub(super) async fn reconcile_before_enrollment(
     }
     println!("host_owner_compatibility=EXACT_ACCEPTED_AGENT");
     println!("host_owner_installed_sha256={installed}");
-    println!("host_owner_previous_release_sha256={}", previous.release_sha256);
+    println!(
+        "host_owner_previous_release_sha256={}",
+        previous.release_sha256
+    );
     Ok(decision)
 }
 
