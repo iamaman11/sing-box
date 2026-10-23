@@ -981,7 +981,8 @@ jobs:
   host_refresh_trust:
     # Existing VM only: reconcile protected root trust to the currently
     # published Git ReleaseSet before the same /host apply can reach root.
-    # Never CREATE, install a root binary, or access a Docker socket here.
+    # No VM CREATE or Docker socket. An exact existing root owner upgrade is
+    # admitted only through the typed, durable compatibility dependency.
     needs: host
     if: >-
       github.event_name == 'issue_comment' &&
