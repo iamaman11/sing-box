@@ -163,7 +163,7 @@ pub(super) struct SupportAccessProviderEvidence {
 
 pub(super) fn classify_support_access_provider_evidence(
     controller_ipv4: String,
-    pub(super) firewall_group_id: Option<String>,
+    firewall_group_id: Option<String>,
     observed_rules: &[VultrFirewallRule],
     target_rules: &std::collections::BTreeSet<crate::vultr_support_resources::FirewallRuleSpec>,
     machine_firewall_group_id: Option<String>,
