@@ -958,9 +958,9 @@ fn vm_worker_upgrade_decision_is_closed_and_fail_closed() {
     assert_eq!(accepted, Decision::AlreadyAccepted);
     assert_eq!(accepted.workflow_required(), "false");
 
-    let upgrade = Decision::from_verified_state(
-        ProjectionDeliveryState::FixedAbProofUpgradeRequired,
-    ).unwrap();
+    let upgrade =
+        Decision::from_verified_state(ProjectionDeliveryState::FixedAbProofUpgradeRequired)
+            .unwrap();
     assert_eq!(upgrade, Decision::UpgradeRequired);
     assert_eq!(upgrade.workflow_required(), "true");
 
