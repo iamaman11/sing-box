@@ -21,6 +21,9 @@ assert "refresh-receipt" not in router.split("  host_resume_receipt:",1)[0]
 assert "refresh-receipt" not in router, "routine and receipt-resume SSH refresh prohibited"
 assert "local host-refresh" in native, "native root must own trust and binary upgrades"
 assert "Refresh protected Git main release" in native
+assert "issues/26/comments" not in router, "historical A/B journal must not gate current status"
+assert "sing-box-credential-existing-join-begin" not in router
+assert "vm-credential-proof" not in router
 assert "host_first_use:" in router and "host_resume_receipt:" in router
 assert "  workflow_call:" in native and "  workflow_call:" not in router
 assert "  pull_request:" in ci and "  push:" in ci
