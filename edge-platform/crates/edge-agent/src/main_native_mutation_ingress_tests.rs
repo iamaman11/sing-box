@@ -1548,29 +1548,6 @@ fn classifies_cloudflare_trace_without_exposing_addresses() {
 }
 
 #[test]
-fn post_bootstrap_reobservation_is_bounded_and_stops_when_ready() {
-    let not_ready = BootstrapVerification {
-        success: false,
-        warnings: vec!["consumer datapath not converged".to_owned()],
-    };
-    assert!(should_reobserve_bootstrap_post_state(&not_ready, 0));
-    assert!(should_reobserve_bootstrap_post_state(
-        &not_ready,
-        POST_BOOTSTRAP_REOBSERVE_ATTEMPTS - 2
-    ));
-    assert!(!should_reobserve_bootstrap_post_state(
-        &not_ready,
-        POST_BOOTSTRAP_REOBSERVE_ATTEMPTS - 1
-    ));
-
-    let ready = BootstrapVerification {
-        success: true,
-        warnings: Vec::new(),
-    };
-    assert!(!should_reobserve_bootstrap_post_state(&ready, 0));
-}
-
-#[test]
 fn verifies_base_bootstrap_from_running_container_state() {
     let state = AgentState {
         healthy: true,

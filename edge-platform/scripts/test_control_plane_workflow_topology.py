@@ -112,4 +112,24 @@ for name in ("cloudflare_mesh_lifecycle_command", "cloudflare_mesh_profile_comma
     assert f"mod {name};" not in orchestrator_main
 assert "MeshProfileCommand" not in orchestrator_cli
 
+# After the typed CLI hard-cut, no parallel VM credential/Bootstrap/Mesh
+# mutation handlers may stay compiled inside the local root process.
+agent_main = Path("edge-platform/crates/edge-agent/src/main.rs").read_text(encoding="utf-8")
+observation = Path("edge-platform/crates/edge-agent/src/vm_runtime_observation.rs").read_text(encoding="utf-8")
+assert "mod vm_runtime_observation;" in agent_main
+assert "use vm_runtime_observation::*;" in agent_main
+assert "pub(super) async fn inspect_datapath_readiness(" in observation
+assert "pub(super) fn probe_direct_egress(" in observation
+for retired_handler in (
+    "initial_commit_vm_credential", "initial_apply_vm_credential",
+    "transition_vm_credential", "converge_mesh_runtime", "cleanup_mesh_runtime",
+    "run_bootstrap", "execute_typed_bootstrap", "wait_for_bootstrap_post_state",
+    "should_reobserve_bootstrap_post_state", "run_mesh_compose",
+    "apply_vm_credential_runtime",
+):
+    assert retired_handler not in agent_main
+    assert retired_handler not in observation
+assert "mod host_native;" in agent_main
+assert Path("edge-platform/crates/edge-agent/src/host_native.rs").exists()
+
 print("native_only_workflow_topology=PASS")

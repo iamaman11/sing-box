@@ -84,3 +84,9 @@ This source cleanup does not prove physical VM readiness or enable Windows TUN. 
 ### Retired Mesh mutation dependency cut (2026-10-23)
 
 The previously compiled but **unreachable** `cloudflare_mesh_lifecycle_command` and `cloudflare_mesh_profile_command` modules are physically deleted along with their obsolete `MeshProfileCommand::Apply` variant. Worker/Provider read-only observations and shared `cloudflare_mesh_lifecycle_service` contracts that existing first-use or `/host status` depend on are preserved. This is not a new command and does not grant the GitHub runner Docker/SSH or secrets. The only approved VM mutation owner remains the signed Root Agent. Platform/unit test sources are separated from production modules without changing test contents or namespace visibility.
+
+### Root Agent: удаление недостижимых локальных мутаций (2026-10-23)
+
+Из `edge-agent/main.rs` физически удалены одиннадцать ранее недоступных прямых VM handlers для credential commit/apply/transition, прямых bootstrap-переходов и Mesh converge/cleanup. Все они не имели маршрута через действующий типизированный `LocalCommand`; их удаление **не** удаляет нужные host-wide проверки readback. Сбор сетевых/контейнерных наблюдений и egress-диагностика вынесены в `vm_runtime_observation.rs` и остаются исключительно read-only. Не создавать новый `local` mutation verb или RPC listener, чтобы вернуть старое исполнение.
+
+Контроль ресурсов остаётся в `host_native.rs` (signed intent → owner lock → journal → bounded Bollard/readback → receipt). Worker, Git registry, Windows SYSTEM controller и три пользовательские команды `/host` не меняются. Прочие исторические вспомогательные функции в старом `main.rs` проверяются отдельно на зависимости: текущая очистка не выдаёт их за принятый runtime и не разрешает запускать вместо `host-apply`.
