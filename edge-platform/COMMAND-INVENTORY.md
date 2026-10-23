@@ -18,7 +18,7 @@
 
 - DNS, firewall, маршрутизация VM: read-only kernel/nft/DNS + Docker network resources; **произвольная самостоятельная нативная мутация DNS/firewall/host routes НЕ реализована** как `/host apply`. Нельзя запускать shell/SSH вместо handler.
 - Windows: `sing-box-windows-lab` намеренно `STOPPED / PROXY_ONLY`. Нативный Windows SYSTEM apply, управляемый TUN, reboot/rollback приёмка — НЕ ПРИНЯТЫ. Не запускать SCM и не менять TUN/DNS/default route.
-- Worker Access: тестовый JWT контракт PASS, физический `/v1/host/authorize` до исправления Access политики даёт `403`; без read-only доказательства фактической конфигурации подписанный INSTALL не считать рабочим.
+- Worker Access: ранее зафиксирован `403` на физическом `/v1/host/authorize`; это историческое свидетельство, не текущая проверка. Перед подписанным INSTALL нужна новая read-only проверка реальной Access authorizer/identity, а не вывод из CI.
 - Точные положительные сетевые результаты (3/3 контейнера, 4/4 Line1, 6/6 Line2, TLS, auth, DIRECT/WARP) требуют физической проверки после нового CREATE. CI и GitHub runner не заменяют end-to-end proof.
 - Никаких других агентов, служб, A/B recovery, дублирующих desired/secret registries и бесконечных retry.
 
@@ -30,4 +30,4 @@
 
 JSON не является форматом внутренних управляющих решений. JSON используется только там, где необходим внешнему GitHub API или matrix; `/host` operation — закрытый Rust enum → неизбежный скалярный output Actions. HostIntent/receipt/readback — Protobuf.
 
-VM `edge-agent` does not expose the old gRPC acceptance listener or retired direct bundle/credential mutation CLI; both were removed as executable code, not merely hidden. Exact physical VM operations are strictly `host status|apply|recover`; receipt registration continuation uses the same closed Rust-enum-derived scalar `operation` accepted by the ordinary workflow. No JSON action dispatcher is introduced. Status is read-only; apply/recover are signed native owner transactions. Do not infer a successful install from a CI-only ReleaseSet.
+VM `edge-agent` does not expose the old gRPC acceptance listener or retired direct bundle/credential mutation CLI; both were removed as executable code, not merely hidden. Exact physical VM operations are strictly `host status|apply|recover`; receipt registration continuation uses the same closed Rust-enum-derived scalar `operation` accepted by the ordinary workflow. No JSON action dispatcher is introduced. Status и recover сейчас read-only; apply может инициировать только новый scoped signed native transaction либо штатный first-use с обязательным receipt. Do not infer a successful install from a CI-only ReleaseSet.

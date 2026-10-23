@@ -5,7 +5,7 @@ The local execution agent is an **executor**, not an architecture or desired-sta
 ## Canonical authority
 
 - The remote repository is the only long-term project source of truth.
-- GitHub Issue #26 is the sole current execution-order authority.
+- `edge-platform/FINALIZATION-PLAN.md` on protected GitHub `main` is the sole current execution plan. GitHub Issue #26 records physical facts/history; Issue #1 is the sole operator-command ingress.
 - Every mutation task pins the exact repository/release authority required by that operation.
 - If the pinned authority differs from current accepted authority, report drift and stop before mutation.
 
@@ -18,7 +18,7 @@ For every instruction:
 3. If exact evidence is absent, return `UNKNOWN` / `UNPROVEN` and stop that decision path.
 4. Do not infer ownership from names, dates, nearby resources or similar configuration.
 5. Do not make a new architecture decision during execution.
-6. Do not advance a master-plan checkpoint unless #26 authorizes it.
+6. Do not advance an acceptance checkpoint without matching the current canonical plan and independently proven native/physical evidence.
 
 ## Mutation discipline
 
@@ -30,7 +30,7 @@ For every instruction:
 
 ## Current Cloudflare boundaries
 
-Issue #26 owns current execution and ordering. Issue #169 is historical Cloudflare convergence/retirement evidence only; the bounded Stage-3 historical deletion slice is closed and #169 does not authorize further mutation.
+The canonical plan owns sequencing. Issue #26 records evidence only; Issue #169 is historical Cloudflare convergence/retirement evidence only; the bounded Stage-3 historical deletion slice is closed and #169 does not authorize further mutation.
 
 Target boundaries:
 

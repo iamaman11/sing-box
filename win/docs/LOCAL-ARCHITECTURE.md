@@ -3,7 +3,7 @@
 > **IMPLEMENTATION REFERENCE / NOT A CURRENT PLAN (2026-10-18).** The only normative architecture is [edge-platform/ARCHITECTURE.md](https://github.com/iamaman11/sing-box/blob/main/edge-platform/ARCHITECTURE.md); the single completion plan is [edge-platform/FINALIZATION-PLAN.md](https://github.com/iamaman11/sing-box/blob/main/edge-platform/FINALIZATION-PLAN.md). Dated deployment commands or "current" labels below are historical implementation details, not authorization. Live host/transaction evidence remains in [Issue #26](https://github.com/iamaman11/sing-box/issues/26).
 
 
-Execution order: GitHub Issue #26.
+**Current execution order:** `edge-platform/FINALIZATION-PLAN.md` on protected `main`. Issue #26 is only the physical evidence cursor. The Windows dispatcher/Stages below describe historical installed implementations, **not** accepted signed SYSTEM HostApply or permission to run TUN.
 Historical Cloudflare/credential convergence evidence for Stage 3 classification: Issue #169.
 Windows implementation/evidence history: Issue #154.
 Diagnostics specification: Issue #60.

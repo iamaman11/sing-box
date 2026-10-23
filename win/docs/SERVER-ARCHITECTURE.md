@@ -1,133 +1,27 @@
-# Server architecture
+# VM server architecture — implementation reference
 
-> **IMPLEMENTATION REFERENCE / NOT A CURRENT PLAN (2026-10-18).** The only normative architecture is [edge-platform/ARCHITECTURE.md](https://github.com/iamaman11/sing-box/blob/main/edge-platform/ARCHITECTURE.md); the single completion plan is [edge-platform/FINALIZATION-PLAN.md](https://github.com/iamaman11/sing-box/blob/main/edge-platform/FINALIZATION-PLAN.md). Dated deployment commands or "current" labels below are historical implementation details, not authorization. Live host/transaction evidence remains in [Issue #26](https://github.com/iamaman11/sing-box/issues/26).
+**Не отдельная архитектура и не план.** Нормативная [архитектура](../../edge-platform/ARCHITECTURE.md), [единственный план](../../edge-platform/FINALIZATION-PLAN.md), [команды](../../edge-platform/COMMAND-INVENTORY.md). Этот текст описывает техническую сторону VM; Git desired/ReleaseSet и native readback всегда важнее старых README.
 
+## Границы
 
-Execution order is owned by GitHub Issue #26.
-Stable ownership/invariants are in `edge-platform/ARCHITECTURE.md`.
+| Компонент | Владелец |
+| --- | --- |
+| Machine/Resource identity, target, immutable input | Git `infra/hosts/hosts.textproto`, Rust/Protobuf + ReleaseSet |
+| Провайдер Vultr, first-use до native ownership | существующий Rust Vultr engine на GitHub-hosted Actions; SSH только начальное enrollment |
+| Подпись HostIntent / credential reference | защищённый VM Cloudflare Worker |
+| VM application, Docker, конфиг и локальный network readback | установленный root `edge-agent` |
+| Сообщение, runner evidence | GitHub self-hosted runner, без root/секретов/mutating authority |
 
-## Control plane
+Обычный VM runtime путь: `/host apply` → exact protected release → Worker-signed scoped HostIntent → runner bounded dispatch (`host-refresh` без аргументов / `host-apply`) → root lock + local journal BEGIN → native step → readback + signed receipt. Нет обычного SSH, старого TCP/gRPC mutation listener, `bundle-converge`/rollback sudo или `/production` команд.
 
-```text
-GitHub-hosted edge-orchestrator
-  -> Vultr / Cloudflare provider lifecycle
+## Resource scope
 
-GitHub self-hosted production-VM runner
-  -> exact allowlisted local command only
-  -> root-owned local edge-agent runtime owner
-      +-- fixed Docker Compose mutation
-      +-- Bollard Docker observation/diagnostics
-      '-- bounded host/network probes
-  -> Docker Engine / four project-owned container identities
-```
+Принятая целевая конфигурация новой `application-acceptance-3` содержит ровно три управляемых контейнера Compose project `vultr-edge`: `line1-gateway`, `line2-proxy`, `warp-egress`. Приёмка отдельно требует Line1 4/4, Line2 6/6, TLS/auth, DIRECT/WARP и host DNS/firewall/routes readback. Существующий `cloudflare-mesh` в исторической production composition — **чужая отдельная область ownership**; не удалять/принимать её в управление ради числа контейнеров.
 
-The self-hosted runner is outbound transport only. It has no provider credentials, generic root, Docker socket or plaintext application-secret authority.
+Docker observation — Bollard; изменения — только known native handler, а не произвольный Compose/docker/root shell. Images/configs должны быть закреплены exact ReleaseSet; рендеренные YAML/JSON/env — потребительский результат, не второй desired. Worker secrets и приватный receipt key не входят в Git.
 
-Strict SSH is bootstrap/migration/break-glass transport only. The historical hosted-runner -> /32 lease -> SSH -> local-forward -> TCP/gRPC agent path is not steady-state architecture.
+## Recovery и приёмка
 
-## Host model
+Нет replay после неизвестного BEGIN/ACK. `/host recover` сейчас только read-only. Отдельная операция допустима при доказанном owner и poststate с новым signed ID; host DNS/firewall/routes mutations без адресного native handler блокируются. Сравнение Git, Docker и release без аутентифицированного receipt или внешнего TLS/auth witness не означает PASS.
 
-Canonical host root:
-
-```text
-/opt/vultr-edge-stack/
-  bin/
-  stack/
-  runtime-secrets/
-  warp-state/
-  mesh-state/
-  certificate-state/
-```
-
-Exact details are owned by the current Rust/application lifecycle, not by this document.
-
-Cloud-init prepares only host/bootstrap prerequisites. It must not become full application
-deployment or a durable secret store.
-
-## Current dataplane services
-
-Canonical `win/vultr-waw/stack/docker-compose.yml` currently defines four **project-owned** container identities:
-
-1. `warp-egress` — shared VM-side Cloudflare WARP egress for the WARP variants of Lines 1 and 2;
-2. `line1-gateway` — profile `tunnel`, direct/WARP VLESS + Hysteria gateway for Windows Line 1;
-3. `line2-proxy` — one sing-box process exposing all six authenticated HTTP/SOCKS5/HTTPS direct/WARP Line 2 inbounds;
-4. `cloudflare-mesh` — profile `mesh`, independent Cloudflare Mesh connector/egress for external Android Line 3, with its own `/dev/net/tun` and Mesh state.
-
-`BootstrapFull` starts the first three application containers; the existing typed Mesh lifecycle converges the fourth because its node/token/provider identity is independent. `cloudflare-mesh` does not use the shared `warp-egress` container. Windows MANAGED_TUN is a Windows process/datapath and does not add another VM container.
-
-Profiles allow bounded composition without creating separate host control planes. Do not require that the entire Docker host contain exactly four containers: unrelated containers are foreign/unknown and must not be mutated merely to make a host-wide count match.
-
-Project-owned OCI images are pulled by exact digest from the accepted ReleaseSet. No normal
-production image build occurs on the VM.
-
-## edge-agent responsibilities
-
-The retained Linux runtime logic is a **local typed owner**, not a remote management daemon.
-
-It owns:
-- fixed Docker Compose lifecycle operations;
-- Bollard container/image/health/restart/OOM/network/port/mount observations;
-- bounded host/network observations;
-- local application and credential state transitions;
-- secret-safe evidence.
-
-It does not expose generic shell, arbitrary Docker API passthrough, provider mutation or runner-readable credential plaintext.
-
-## Transport
-
-Steady-state transport is the production VM repository self-hosted runner invoking a closed local owner surface. The runner cannot invoke arbitrary sudo commands and is not in the Docker group.
-
-SSH remains only for initial enrollment, migration and explicit break-glass recovery. Port 50061/TCP-gRPC is migration debt while legacy consumers remain and must not be re-established as the normal production path.
-
-## Secret/runtime model
-
-Provider API tokens never belong on the VM application runtime.
-
-Canonical credential target:
-- VM receives only the VM credential projection required by its runtime;
-- local active/candidate typed secret state is root/private;
-- missing desired generation fails closed;
-- generated `.env.runtime` and rendered sing-box JSON are derived artifacts;
-- Cloudflare credential delivery is not required for every runtime request/start once active local
-  state exists.
-
-Mesh node token remains tied to the Mesh-node/provider lifecycle, not to Windows client credential
-rotation.
-
-## Lifecycle
-
-Normal steady-state production path:
-
-```text
-resolve exact accepted ReleaseSet
- -> GitHub-hosted typed provider observe/converge
- -> transport the exact ReleaseSet-bound application bundle
- -> production VM self-hosted low-privilege runner
- -> fixed sudo allowlist -> root-owned local edge-agent
- -> local bundle-converge / bundle-verify / bundle-rollback / diagnose
- -> provider + runtime verification
-```
-
-Routine production converge/verify/diagnose/rollback does not acquire a support lease, open SSH, or use a
-TCP/gRPC agent listener. `/production enroll-runtime` is the explicit bootstrap/re-enrollment exception
-and must compensate its bounded temporary support access before PASS.
-
-Steady-state rollback restores the previous exact accepted application release through the same persistent
-self-hosted-runner -> local-owner boundary. The exact current ReleaseSet-bound bundle is used only as stale
-authorization: the local owner refuses the swap if active changed, switches to the previous immutable
-bundle, and accepts the rollback only after full runtime readiness. The old lease/remote rollback
-implementation is deleted from the normal orchestrator surface.
-
-Credential rollback is independent from application-release rollback.
-
-## Recovery
-
-A replacement VM must be reconstructible from:
-- Git desired state;
-- exact accepted ReleaseSet;
-- Vultr API;
-- dedicated Cloudflare account/shared DNS boundaries;
-- credential plane;
-- bootstrap trust credentials.
-
-No Windows legacy checkout or old DPAPI/Vault state is part of server recovery.
+Состояние физической приёмки смотреть в [Issue #26](https://github.com/iamaman11/sing-box/issues/26), порядок работ и criteria — **только** в [FINALIZATION-PLAN.md](../../edge-platform/FINALIZATION-PLAN.md).
