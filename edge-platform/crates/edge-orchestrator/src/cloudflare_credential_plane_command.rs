@@ -1397,9 +1397,10 @@ fn emit_vm_worker_plan_required(required: bool) -> Result<(), String> {
         .append(true)
         .open(path)
         .map_err(|_| "HOST_WORKFLOW_OUTPUT_NOT_WRITABLE")?;
-    writeln!(output, "required={required}")
-        .map_err(|_| "HOST_WORKFLOW_OUTPUT_WRITE_FAILED")?;
-    output.sync_all().map_err(|_| "HOST_WORKFLOW_OUTPUT_SYNC_FAILED".to_owned())
+    writeln!(output, "required={required}").map_err(|_| "HOST_WORKFLOW_OUTPUT_WRITE_FAILED")?;
+    output
+        .sync_all()
+        .map_err(|_| "HOST_WORKFLOW_OUTPUT_SYNC_FAILED".to_owned())
 }
 
 /// VM-only Host authorizer code promotion. The one public /host apply
