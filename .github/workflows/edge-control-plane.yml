@@ -189,7 +189,8 @@ jobs:
       needs.host.outputs.host_targets_present == 'true' &&
       (needs.host.outputs.kind != 'VM' ||
        needs.host.outputs.operation != 'APPLY_PREFLIGHT' ||
-       needs.host_worker_authorizer.result == 'success') &&
+       needs.host_worker_authorizer.result == 'success' &&
+       needs.host_worker_authorizer.outputs.source_upgrade_required == 'false') &&
       (github.event.comment.body == '/host status' ||
        startsWith(github.event.comment.body, '/host status ') ||
        needs.host.outputs.operation == 'APPLY_PREFLIGHT' ||
@@ -290,6 +291,11 @@ jobs:
     permissions:
       contents: read
       issues: write
+    # Rust writes a closed, verified plan scalar. If this run upgraded Worker
+    # bytes, native INSTALL MUST be a separate future /host apply operation.
+    # Absent/invalid output fails closed at host_observe.
+    outputs:
+      source_upgrade_required: ${{ steps.plan.outputs.required }}
     env:
       TARGET_MACHINE: ${{ needs.host.outputs.machine_id }}
       SOURCE_COMMENT_ID: ${{ github.event.comment.id }}
