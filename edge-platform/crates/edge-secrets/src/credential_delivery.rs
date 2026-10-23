@@ -454,6 +454,7 @@ enum HostWorkerAuthorizationRejection {
     WorkerConfigUnproven,
     GithubApprovalDenied,
     GithubDependencyUnavailable,
+    ForbiddenWithoutWorkerReason,
     UnclassifiedPolicyDenied,
     UnclassifiedAuthorizationFailure,
 }
@@ -474,6 +475,7 @@ impl HostWorkerAuthorizationRejection {
             (StatusCode::SERVICE_UNAVAILABLE, Some("GITHUB_DEPENDENCY_UNAVAILABLE")) => {
                 Self::GithubDependencyUnavailable
             }
+            (StatusCode::FORBIDDEN, None) => Self::ForbiddenWithoutWorkerReason,
             (StatusCode::FORBIDDEN, _) => Self::UnclassifiedPolicyDenied,
             _ => Self::UnclassifiedAuthorizationFailure,
         }
@@ -493,6 +495,9 @@ impl HostWorkerAuthorizationRejection {
             Self::GithubApprovalDenied => "HOST_WORKER_GITHUB_APPROVAL_DENIED",
             Self::GithubDependencyUnavailable => {
                 "HOST_WORKER_GITHUB_DEPENDENCY_UNAVAILABLE_NO_REPLAY"
+            }
+            Self::ForbiddenWithoutWorkerReason => {
+                "HOST_WORKER_FORBIDDEN_WITHOUT_WORKER_REASON"
             }
             Self::UnclassifiedPolicyDenied => "HOST_WORKER_POLICY_DENIED",
             Self::UnclassifiedAuthorizationFailure => "HOST_WORKER_AUTHORIZATION_NOT_ACCEPTED",
@@ -654,7 +659,11 @@ mod tests {
                 Some("GITHUB_DEPENDENCY_UNAVAILABLE"),
                 "HOST_WORKER_GITHUB_DEPENDENCY_UNAVAILABLE_NO_REPLAY",
             ),
-            (StatusCode::FORBIDDEN, None, "HOST_WORKER_POLICY_DENIED"),
+            (
+                StatusCode::FORBIDDEN,
+                None,
+                "HOST_WORKER_FORBIDDEN_WITHOUT_WORKER_REASON",
+            ),
             (
                 StatusCode::FORBIDDEN,
                 Some("UNTRUSTED_REASON"),

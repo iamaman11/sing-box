@@ -27,6 +27,13 @@
 
 **Свидетельства нового прохода (до физической приёмки):** [PR #454](https://github.com/iamaman11/sing-box/pull/454) объединяет Rust-owned typed host/readback, native Docker gateway и Vultr access-readiness modules; до зелёного CI и защищённого merge остаётся кандидатом. Read-only [VM #40028823627](https://github.com/iamaman11/sing-box/actions/runs/40028823627) → `NO_NATIVE_TARGET_AVAILABLE` (0 мутаций); отдельный [Windows #40029166044](https://github.com/iamaman11/sing-box/actions/runs/40029166044) → runner отвечает, но установленный `edge-diagnostic host-observe` не поддерживается, typed readback `UNPROVEN`. Текущий Windows `STOPPED/PROXY_ONLY` не изменять. Эти свидетельства не подтверждают signed receipt, 3/3, 10/10, TUN или recover.
 
+### 24.10.2026 — обнаружен точный блокер первой signed INSTALL
+
+- Приняты PR #454 и #455, защищённый main `82395a4036826045e8977364f93c476735376b78`, ReleaseSet `edge-release-0f44bc4921fb0032b4c2306bdfc511bca737ac7b1e330302e8cd1fdaa35e58a8`.
+- Штатный first-use создал VM и записал публичный native receipt в защищённый Git. Подписанная установка через original issue #1 comment #6375623954, [Actions #40032332299](https://github.com/iamaman11/sing-box/actions/runs/40032332299) завершилась ДО durable BEGIN: Worker authorization HTTP 403, исходная классификация `HOST_WORKER_POLICY_DENIED` означает *отсутствующий или неизвестный Worker reason*, а не установленную причину в Worker.
+- [Read-only #40032656859](https://github.com/iamaman11/sing-box/actions/runs/40032656859): `VM_RELEASE_ABSENT_LOCAL_ONLY`, **0/3** контейнера, все три `CONTAINER_ABSENT`; 4/4 Line1 и 6/6 Line2, replace/reinstall/recover не доказаны.
+- Для различения Cloudflare Access/edge и Worker разрешена только фиксированная GET-диагностика оригинального URL (без тела, без POST, без повторения original HostIntent). Даже `GET_404_WORKER_OR_EDGE_NOT_POST_PROOF` не является authorization, release или физической приёмкой. Windows остаётся STOPPED/PROXY_ONLY.
+
 ## Срез 2 — физическая эксплуатационная приёмка
 
 1. **Fresh VM:** сначала `/host status application-acceptance-3 --deep`; при отсутствии целевого native owner — один штатный `/host apply application-acceptance-3` в Issue #1 с существующим Vultr first-use. До provider CREATE доказать Git desired/ReleaseSet, source Worker trust, exact CredentialRef и доступность authorizer. Отказ/неизвестный ACK → STOP/UNKNOWN_NO_REPLAY, а не повторный CREATE. Новая VM генерирует собственную receipt identity; public key регистрируется через защищённый Git, затем signed INSTALL штатным root owner.
