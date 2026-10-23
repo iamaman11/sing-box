@@ -478,8 +478,7 @@ pub(crate) async fn refresh_current() -> Result<(), String> {
     // First-use root trust precedes public receipt registration. The
     // protected merge is allowed to advance that EMPTY prior pin to the
     // exact existing local key, but may never substitute another key.
-    if (!host.native_receipt_public_key.is_empty()
-        && host.native_receipt_public_key != identity)
+    if (!host.native_receipt_public_key.is_empty() && host.native_receipt_public_key != identity)
         || previous.pinned_worker_public_key != host.worker_authority_public_key
     {
         return Err("HOST_REFRESH_PREVIOUS_GIT_IDENTITY_UNPROVEN".into());
@@ -559,6 +558,9 @@ pub(crate) async fn refresh_current() -> Result<(), String> {
         let stage = parent.join(stage_name);
         fs::set_permissions(&stage, fs::Permissions::from_mode(0o755))
             .map_err(|_| "HOST_REFRESH_OWNER_BINARY_STAGE_INVALID")?;
+        fs::File::open(&stage)
+            .and_then(|file| file.sync_all())
+            .map_err(|_| "HOST_REFRESH_OWNER_BINARY_STAGE_SYNC_UNCERTAIN")?;
         fs::rename(&stage, binary).map_err(|_| "HOST_REFRESH_OWNER_BINARY_REPLACE_UNCERTAIN")?;
         fs::File::open(parent)
             .and_then(|dir| dir.sync_all())
