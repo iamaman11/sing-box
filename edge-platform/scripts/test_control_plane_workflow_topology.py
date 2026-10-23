@@ -28,4 +28,20 @@ assert all(name not in router for name in legacy)
 for p in root.glob("*.yml"):
     src=p.read_text(encoding="utf-8")
     assert "\t" not in src
+
+# A retired hosted SSH refresh must never be revived as a hidden Rust command.
+orchestrator_cli=Path("edge-platform/crates/edge-orchestrator/src/cli.rs").read_text(encoding="utf-8")
+orchestrator_main=Path("edge-platform/crates/edge-orchestrator/src/main.rs").read_text(encoding="utf-8")
+agent_cli=Path("edge-platform/crates/edge-agent/src/cli.rs").read_text(encoding="utf-8")
+agent_main=Path("edge-platform/crates/edge-agent/src/main.rs").read_text(encoding="utf-8")
+vm_installer=Path("edge-platform/scripts/install-vultr-production-runner.sh").read_text(encoding="utf-8")
+assert "RefreshReceipt" not in orchestrator_cli and "RefreshReceipt" not in orchestrator_main
+assert "local host-refresh" in native
+assert 'HostRefresh,' in agent_cli
+assert "LocalCommand::HostRefresh => host_enroll::refresh_current()" in agent_main
+assert 'SING_BOX_NATIVE_HOST_TRUST = ${LOCAL_OWNER} local host-refresh' in vm_installer
+assert "host-enroll machine release" in vm_installer
+assert "SING_BOX_NATIVE_HOST_TRUST" in vm_installer
+assert 'local host-refresh *' not in vm_installer
+
 print("native_only_workflow_topology=PASS")

@@ -949,9 +949,6 @@ pub(crate) fn run(
         HostCommand::VmWorkerAuthorizerUpgrade { .. } => {
             Err("HOST_VM_WORKER_UPGRADE_MUST_USE_PROTECTED_CREDENTIAL_OWNER".to_owned())
         }
-        HostCommand::RefreshReceipt { .. } => {
-            Err("HOST_RECEIPT_REFRESH_MUST_USE_EXISTING_NATIVE_VULTR_OWNER".to_owned())
-        }
         HostCommand::FirstUsePreflight { .. } => {
             Err("HOST_FIRST_USE_PREFLIGHT_MUST_USE_EXISTING_NATIVE_VULTR_OWNER".to_owned())
         }
