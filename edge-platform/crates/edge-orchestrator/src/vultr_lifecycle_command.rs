@@ -1450,7 +1450,7 @@ pub(crate) async fn host_receipt_refresh(
         }
         // Installed owner compatibility is a typed dependency of trust refresh.
         // The older agent MUST NOT decode a release newer than its schema.
-        vm_owner_compatibility::reconcile_before_enrollment(
+        let owner_transition = vm_owner_compatibility::reconcile_before_enrollment(
             machine_id, context, agent_path, ip, &key_path, &expected_ssh_key,
         ).await?;
         let command = format!(
@@ -1466,7 +1466,11 @@ pub(crate) async fn host_receipt_refresh(
         }
         println!("host_receipt_refresh=ROOT_PROTECTED_GIT_PINNED");
         println!("host_machine_id={machine_id}");
-        println!("host_mutations=0");
+        println!("host_owner_transition={}", match owner_transition {
+            vm_owner_compatibility::OwnerDecision::Upgrade => "UPGRADED_ONCE",
+            vm_owner_compatibility::OwnerDecision::Current => "NOOP_EXACT_OWNER",
+        });
+        println!("host_mutations={}", u8::from(owner_transition == vm_owner_compatibility::OwnerDecision::Upgrade));
         Ok(())
     }.await;
     let cleanup = acceptance_lease_release(spec, machine_id).await;
