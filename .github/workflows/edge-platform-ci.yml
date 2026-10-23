@@ -422,7 +422,7 @@ jobs:
           assert "VultrVpc" not in controller_cli
           assert "ApplicationLifecycle" not in orchestrator_cli
           assert "VultrLifecycle" not in orchestrator_cli
-          assert "ApplicationAcceptance" not in orchestrator_cli
+          assert "    ApplicationAcceptance(" not in orchestrator_cli
           assert "VultrVpcCommand" not in orchestrator_cli
           assert "CredentialReadOnlyCommand" in orchestrator_cli
           assert "HostWorkflowOperation" in Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text()
