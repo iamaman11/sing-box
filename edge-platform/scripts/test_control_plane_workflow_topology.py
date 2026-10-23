@@ -48,4 +48,13 @@ assert "host-enroll machine release" in vm_installer
 assert "SING_BOX_NATIVE_HOST_TRUST" in vm_installer
 assert 'local host-refresh *' not in vm_installer
 
+# Signer enrollment is a continuation of the SAME Worker update operation.
+# Every step checks the live Worker source through the Rust protected owner.
+# A failed/unknown update skips all signing steps (Actions success gate).
+worker = router.split("  host_worker_authorizer:",1)[1].split("  host_capabilities:",1)[0]
+assert worker.count("if: needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'") == 4
+assert "if: steps.plan.outputs.required == 'false' && needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'" not in worker
+assert "vm-worker-signer-prepare" in worker and "vm-worker-signer-commit" in worker
+assert worker.index("Apply exact VM Worker code once") < worker.index("Prepare one ephemeral VM signer")
+
 print("native_only_workflow_topology=PASS")
