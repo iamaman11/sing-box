@@ -1,6 +1,5 @@
 use std::process::ExitCode;
 
-mod application_acceptance_command;
 mod application_lifecycle_command;
 mod application_lifecycle_service;
 mod cli;

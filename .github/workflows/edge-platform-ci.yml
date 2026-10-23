@@ -476,19 +476,12 @@ jobs:
           assert "ip -j -4 route" not in mesh_command
           assert "strict_ssh_capture" not in mesh_command
 
-          acceptance_coordinator = Path(
-              "edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs"
-          ).read_text()
-          assert "acceptance_attach_and_verify as vpc_attach_and_verify" in acceptance_coordinator
-          assert "acceptance_cleanup_to_absent as vpc_cleanup_to_absent" in acceptance_coordinator
-          assert "acceptance_converge_provider as mesh_converge_provider" in acceptance_coordinator
-          assert "acceptance_runtime_apply as mesh_runtime_apply" in acceptance_coordinator
-          assert "acceptance_runtime_verify as mesh_runtime_verify" in acceptance_coordinator
-          assert "vpc_attach_and_verify(&args.vpc_spec_path)" in acceptance_coordinator
-          assert "mesh_converge_provider(" in acceptance_coordinator
-          assert "mesh_runtime_apply(" in acceptance_coordinator
-          assert "mesh_runtime_verify(" in acceptance_coordinator
-          assert "std::process::Command" not in acceptance_coordinator
+          # The disconnected SSH/cleanup acceptance-v1 coordinator must be
+          # physically absent. The only remaining legacy validation is scoped
+          # to the unreachable old Vultr helper, never the signed first-use.
+          assert not Path("edge-platform/crates/edge-orchestrator/src/application_acceptance_command.rs").exists()
+          assert "mod application_acceptance_command;" not in orchestrator_main
+          assert "fn validate_disposable_acceptance(" in vultr_command_authority
 
           for acceptance_path in [
               "infra/application/disposable-acceptance.json",

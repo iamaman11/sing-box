@@ -72,3 +72,5 @@ Git desired → Rust typed graph/planner → immutable ReleaseSet → Worker sig
 - Устаревшие исходники старых orchestrator/provider helper-модулей могут оставаться компилируемыми зависимостями first-use/render/test. Это НЕ второй доступный mutation ingress и не отдельный владелец состояния. Дальнейшее их физическое удаление требует доказанного отсутствия зависимостей в единственном first-use.
 
 Внутренние structured desired, intent, result и receipt используют Protobuf. JSON допустим только на границе обязательного внешнего API (GitHub REST, Actions `strategy.matrix`); для выбора одной `/host` операции JSON не применяется.
+
+Удалён устаревший `application_acceptance_command.rs` (альтернативный SSH/cleanup lifecycle) и его маршрутизатор. Строгий валидатор исторической acceptance-v1 схемы остался локальным в недоступном CLI helper; текущий `/host` first-use продолжает использовать только проверенный FleetHost и Rust/Protobuf-путь.
