@@ -94,7 +94,7 @@ fn encoded_powershell_command_survives_windows_command_quoting() {
     let probe = r#"
 $ErrorActionPreference = 'Stop'
 if ('embedded "quotes" and кириллица' -cne 'embedded "quotes" and кириллица') {
-throw 'argv encoding defect'
+    throw 'argv encoding defect'
 }
 "#;
     let output = Command::new("powershell.exe")

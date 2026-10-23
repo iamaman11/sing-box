@@ -330,18 +330,18 @@ fn firewall_binding_must_match_desired_profile() {
   "schema": 1,
   "environment": "production",
   "machines": [
-{
-  "id": "edge-1",
-  "role": "edge",
-  "provider": {
-    "region": "waw",
-    "plan": "vc2-1c-1gb",
-    "os_id": 2625,
-    "enable_ipv6": false,
-    "firewall_profile": "edge"
-  },
-  "bootstrap_profile": "singbox-host-v2"
-}
+    {
+      "id": "edge-1",
+      "role": "edge",
+      "provider": {
+        "region": "waw",
+        "plan": "vc2-1c-1gb",
+        "os_id": 2625,
+        "enable_ipv6": false,
+        "firewall_profile": "edge"
+      },
+      "bootstrap_profile": "singbox-host-v2"
+    }
   ]
 }"#,
     )

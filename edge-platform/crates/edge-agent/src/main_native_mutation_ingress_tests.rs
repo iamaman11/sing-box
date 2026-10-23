@@ -1142,13 +1142,13 @@ fn inspects_compose_expectations() {
         root.join("docker-compose.yml"),
         r#"services:
   line2-proxy:
-container_name: vultr-line2-proxy
-ports:
-  - "3128:3128/tcp"
+    container_name: vultr-line2-proxy
+    ports:
+      - "3128:3128/tcp"
   line1-gateway:
-container_name: vultr-line1-gateway
-ports:
-  - "8443:8443/udp"
+    container_name: vultr-line1-gateway
+    ports:
+      - "8443:8443/udp"
 "#,
     )
     .unwrap();
@@ -1177,17 +1177,17 @@ fn compose_observation_honors_enabled_application_profiles() {
         root.join("docker-compose.yml"),
         r#"services:
   line2-proxy:
-container_name: vultr-line2-proxy
-ports:
-  - "3128:3128/tcp"
+    container_name: vultr-line2-proxy
+    ports:
+      - "3128:3128/tcp"
   line1-gateway:
-profiles: [tunnel]
-container_name: vultr-line1-gateway
-ports:
-  - "8443:8443/udp"
+    profiles: [tunnel]
+    container_name: vultr-line1-gateway
+    ports:
+      - "8443:8443/udp"
   cloudflare-mesh:
-profiles: [mesh]
-container_name: vultr-cloudflare-mesh
+    profiles: [mesh]
+    container_name: vultr-cloudflare-mesh
 "#,
     )
     .unwrap();
