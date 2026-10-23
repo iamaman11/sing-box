@@ -312,7 +312,6 @@ dependencies = [
  "bollard",
  "edge-secrets",
  "edge-shared-types",
- "edge-trust",
  "futures-util",
  "prost",
  "ring",
@@ -322,7 +321,6 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tokio",
- "tonic",
 ]
 
 [[package]]

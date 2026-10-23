@@ -88,4 +88,21 @@ for marker in ("mod controller_rpc;", "mod command_dispatch;", "mod local_dispat
     owner = ("edge-controller" if "controller" in marker else "edge-console" if "command" in marker else "edge-agent")
     assert marker in Path(f"edge-platform/crates/{owner}/src/main.rs").read_text(encoding="utf-8")
 
+# Receipt merge continuation uses the same closed Rust enum projection
+# as ordinary /host apply. GitHub's compulsory scalar job output is transport,
+# not a free-form command parser or a new source of mutation authority.
+assert "operation: ${{ steps.prepare.outputs.operation }}" in router
+assert "needs.host_resume_receipt.outputs.operation == 'APPLY_PREFLIGHT'" in router
+assert "if: steps.prepare.outputs.operation == 'APPLY_PREFLIGHT'" in router
+assert "host_action_json" not in router
+host_source = Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(encoding="utf-8")
+assert "enum HostWorkflowOperation" in host_source
+assert "HostWorkflowDecision" not in host_source
+# The retired VM gRPC listener must not reappear beside signed native owner.
+agent_main = Path("edge-platform/crates/edge-agent/src/main.rs").read_text(encoding="utf-8")
+assert "AgentServerImpl" not in agent_main and "serve_acceptance_rpc(" not in agent_main
+assert "async fn run_local_bundle_converge(" not in agent_main
+assert "async fn run_local_bootstrap(" not in agent_main
+assert 'mod native_mutation_ingress_tests;' in agent_main
+
 print("native_only_workflow_topology=PASS")
