@@ -88,4 +88,17 @@ for marker in ("mod controller_rpc;", "mod command_dispatch;", "mod local_dispat
     owner = ("edge-controller" if "controller" in marker else "edge-console" if "command" in marker else "edge-agent")
     assert marker in Path(f"edge-platform/crates/{owner}/src/main.rs").read_text(encoding="utf-8")
 
+# Resume after Git receipt publication also consumes the closed Rust enum.
+# A text-only operation string cannot select a host mutation in either path.
+assert "fromJSON(steps.prepare.outputs.host_action_json).schema == 1" in router
+assert "fromJSON(needs.host_resume_receipt.outputs.host_action_json).operation" in router
+assert "needs.host_resume_receipt.outputs.operation ==" not in router
+assert "if: steps.prepare.outputs.operation ==" not in router
+# The retired VM gRPC listener must not reappear beside signed native owner.
+agent_main = Path("edge-platform/crates/edge-agent/src/main.rs").read_text(encoding="utf-8")
+assert "AgentServerImpl" not in agent_main and "serve_acceptance_rpc(" not in agent_main
+assert "async fn run_local_bundle_converge(" not in agent_main
+assert "async fn run_local_bootstrap(" not in agent_main
+assert 'mod native_mutation_ingress_tests;' in agent_main
+
 print("native_only_workflow_topology=PASS")

@@ -74,3 +74,9 @@ Git desired → Rust typed graph/planner → immutable ReleaseSet → Worker sig
 Внутренние structured desired, intent, result и receipt используют Protobuf. JSON допустим только на границе обязательного внешнего API (GitHub REST, Actions `strategy.matrix`); для выбора одной `/host` операции JSON не применяется.
 
 Удалён устаревший `application_acceptance_command.rs` (альтернативный SSH/cleanup lifecycle) и его маршрутизатор. Строгий валидатор исторической acceptance-v1 схемы остался локальным в недоступном CLI helper; текущий `/host` first-use продолжает использовать только проверенный FleetHost и Rust/Protobuf-путь.
+
+### Retired VM RPC and code ownership (2026-10-23)
+
+VM no longer starts or exposes the historical `AgentServiceServer` acceptance RPC listener: it was unreachable after removal of `acceptance-serve` from the executable CLI. Its direct bootstrap/bundle/credential RPC mutation branches and retired direct local bundle mutation helpers are deleted. The protobuf service schema remains available where other transport consumers still reference it, but it grants no VM root mutation authority. The *only* privileged VM mutation path is installed Root Agent `local host-apply` with signed `HostIntent`, Worker signature, protected Git inventory, durable BEGIN journal and receipt. `local host-refresh` and first-use `host-enroll` retain their existing bounded native scope. VM, Windows console/controller and Vultr test suites live alongside their source modules, not inside the production entrypoint. The protected receipt-merge continuation consumes `host_action_json` schema 1, exactly like normal `/host apply`.
+
+This source cleanup does not prove physical VM readiness or enable Windows TUN. No SSH alternate route, extra runner or service was introduced.
