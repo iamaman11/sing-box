@@ -4986,7 +4986,24 @@ mod native_mutation_ingress_tests {
         ] {
             assert!(cli::Cli::try_parse_from(["edge-agent", "local", name]).is_err());
         }
+        assert!(deny_legacy_vm_rpc_mutation().is_err());
     }
+
+    fn vm_scope_test() -> Vec<edge_shared_types::FleetVmContainer> {
+        [
+            ("vultr-line1-gateway", "line1-gateway"),
+            ("vultr-line2-proxy", "line2-proxy"),
+            ("vultr-warp-egress", "warp-egress"),
+        ]
+        .into_iter()
+        .map(|(name, service)| edge_shared_types::FleetVmContainer {
+            container_name: name.to_owned(),
+            compose_project: "vultr-edge".to_owned(),
+            compose_service: service.to_owned(),
+        })
+        .collect()
+    }
+
 
     #[test]
     fn foreign_same_named_container_never_proves_native_owner() {
