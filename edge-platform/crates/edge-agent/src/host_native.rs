@@ -4,7 +4,7 @@
 use super::*;
 use edge_shared_types::host_journal::execute_native_host_once;
 use edge_shared_types::host_lifecycle::decode_host_intent;
-use edge_shared_types::{FleetHostKind, FleetHostPlannedStep, FleetNativeTrustSnapshot};
+use edge_shared_types::{FleetHostKind, FleetHostPlannedStep, FleetNativeTrustSnapshot, ReleaseSet};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
@@ -575,6 +575,34 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
     }
     let registry_pb = trust.registry_pb;
     let release_pb = trust.release_set_pb;
+    // A trust refresh can complete before binary publication if power is
+    // lost. Never BEGIN with an executable that differs from the EXACT
+    // accepted ReleaseSet, even if its Ed25519 trust and registry match.
+    let accepted_release = ReleaseSet::decode(release_pb.as_slice())
+        .map_err(|_| "HOST_NATIVE_VM_RELEASE_DECODE_FAILED")?;
+    let expected_owner_sha = accepted_release.vm_runtime
+        .as_ref()
+        .ok_or("HOST_NATIVE_VM_RELEASE_OWNER_ABSENT")?
+        .edge_agent_sha256.as_slice();
+    if expected_owner_sha.len() != 32 || expected_owner_sha.iter().all(|b| *b == 0) {
+        return Err("HOST_NATIVE_VM_RELEASE_OWNER_DIGEST_INVALID".into());
+    }
+    let owner_binary = Path::new("/usr/local/libexec/sing-box/edge-agent");
+    let owner_meta = fs::symlink_metadata(owner_binary)
+        .map_err(|_| "HOST_NATIVE_VM_OWNER_BINARY_UNAVAILABLE")?;
+    if !owner_meta.file_type().is_file()
+        || owner_meta.uid() != 0
+        || owner_meta.permissions().mode() & 0o777 != 0o755
+        || owner_meta.len() == 0
+        || owner_meta.len() > 32 * 1024 * 1024
+    {
+        return Err("HOST_NATIVE_VM_OWNER_BINARY_UNPROTECTED".into());
+    }
+    let installed_owner = fs::read(owner_binary)
+        .map_err(|_| "HOST_NATIVE_VM_OWNER_BINARY_UNREADABLE")?;
+    if ring::digest::digest(&ring::digest::SHA256, &installed_owner).as_ref() != expected_owner_sha {
+        return Err("HOST_NATIVE_VM_OWNER_RELEASE_DRIFT".into());
+    }
     let bundle_pb = trust.application_bundle_pb;
     let signer_key = trust.pinned_worker_public_key;
     let spec = trust.selected_spec_bytes;
