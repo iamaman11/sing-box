@@ -759,7 +759,6 @@ fn privileged_child_failure_evidence_is_bounded_and_secret_safe() {
     assert!(encode_windows_privileged_result(&result).is_ok());
 }
 
-
 #[test]
 fn initial_windows_proof_refuses_active_or_incomplete_local_state() {
     assert!(initial_windows_credential_eligibility(false, false, false).is_ok());
