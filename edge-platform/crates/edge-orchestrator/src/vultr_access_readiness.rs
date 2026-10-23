@@ -263,7 +263,7 @@ pub(super) async fn capture_support_access_provider_evidence(
 pub(super) fn support_access_timeout_error(
     target_ip: &str,
     tcp_readiness: &TcpReadinessObservation,
-    pub(super) provider_evidence: Result<SupportAccessProviderEvidence, String>,
+    provider_evidence: Result<SupportAccessProviderEvidence, String>,
 ) -> String {
     let evidence_json = match provider_evidence {
         Ok(evidence) => serde_json::to_string(&evidence).unwrap_or_else(|err| {
