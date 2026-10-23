@@ -1247,6 +1247,16 @@ jobs:
           grep -Fxq 'host_receipt_merge=EXACT_ONE_PUBLIC_KEY_CHANGE' "${RUNNER_TEMP}/host-receipt-merge-proof.txt"
           grep -Fxq 'host_mutations=0' "${RUNNER_TEMP}/host-receipt-merge-proof.txt"
 
+      - name: Compile exact VM desired before receipt trust continuation
+        if: steps.source.outputs.machine_id != ''
+        shell: bash
+        env:
+          TARGET_MACHINE: ${{ steps.source.outputs.machine_id }}
+        run: |
+          set -euo pipefail
+          bash edge-platform/scripts/compile_vm_host_desired.sh "${TARGET_MACHINE}"
+          test -s "infra/hosts/specs/${TARGET_MACHINE}.binpb"
+
       - name: Materialize exact temporary SSH operator credential
         if: steps.source.outputs.machine_id != ''
         shell: bash
