@@ -8,7 +8,11 @@ use ring::digest::{SHA256, digest};
 use std::time::Duration;
 
 fn sha256_hex(value: &[u8]) -> String {
-    digest(&SHA256, value).as_ref().iter().map(|b| format!("{b:02x}")).collect()
+    digest(&SHA256, value)
+        .as_ref()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect()
 }
 
 pub(super) struct PreviousOwner {
@@ -48,10 +52,12 @@ pub(super) fn decode_root_trust(
     if release.encode_to_vec() != trust.release_set_pb {
         return Err("HOST_OWNER_PREVIOUS_RELEASE_NONCANONICAL".into());
     }
-    let agent = release.vm_runtime
+    let agent = release
+        .vm_runtime
         .as_ref()
         .ok_or("HOST_OWNER_PREVIOUS_AGENT_MISSING")?
-        .edge_agent_sha256.as_slice();
+        .edge_agent_sha256
+        .as_slice();
     if agent.len() != 32 {
         return Err("HOST_OWNER_PREVIOUS_AGENT_DIGEST_INVALID".into());
     }
@@ -67,49 +73,60 @@ pub(super) fn decode_root_trust(
 /// old local bytes are not a second desired source.
 pub(super) async fn verify_accepted_predecessor(previous: &PreviousOwner) -> Result<(), String> {
     let tag = format!("edge-release-{}", previous.release_sha256);
-    let metadata_url = format!(
-        "https://api.github.com/repos/iamaman11/sing-box/releases/tags/{tag}"
-    );
+    let metadata_url =
+        format!("https://api.github.com/repos/iamaman11/sing-box/releases/tags/{tag}");
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(25))
         .build()
         .map_err(|_| "HOST_OWNER_GITHUB_CLIENT_INVALID")?;
-    let meta = client.get(metadata_url)
+    let meta = client
+        .get(metadata_url)
         .header("User-Agent", "sing-box-native-owner-compat")
-        .send().await.map_err(|_| "HOST_OWNER_PREVIOUS_GITHUB_UNAVAILABLE")?
-        .error_for_status().map_err(|_| "HOST_OWNER_PREVIOUS_RELEASE_NOT_PUBLISHED")?
-        .bytes().await.map_err(|_| "HOST_OWNER_PREVIOUS_METADATA_UNREADABLE")?;
+        .send()
+        .await
+        .map_err(|_| "HOST_OWNER_PREVIOUS_GITHUB_UNAVAILABLE")?
+        .error_for_status()
+        .map_err(|_| "HOST_OWNER_PREVIOUS_RELEASE_NOT_PUBLISHED")?
+        .bytes()
+        .await
+        .map_err(|_| "HOST_OWNER_PREVIOUS_METADATA_UNREADABLE")?;
     if meta.len() > 262144 {
         return Err("HOST_OWNER_PREVIOUS_METADATA_TOO_LARGE".into());
     }
-    let release: serde_json::Value = serde_json::from_slice(&meta)
-        .map_err(|_| "HOST_OWNER_PREVIOUS_METADATA_INVALID")?;
+    let release: serde_json::Value =
+        serde_json::from_slice(&meta).map_err(|_| "HOST_OWNER_PREVIOUS_METADATA_INVALID")?;
     if release["tag_name"].as_str() != Some(tag.as_str())
         || release["draft"].as_bool() != Some(false)
         || release["prerelease"].as_bool() != Some(false)
     {
         return Err("HOST_OWNER_PREVIOUS_RELEASE_NOT_ACCEPTED".into());
     }
-    let url = format!(
-        "https://github.com/iamaman11/sing-box/releases/download/{tag}/release-set.pb"
-    );
-    let assets = release["assets"].as_array()
+    let url =
+        format!("https://github.com/iamaman11/sing-box/releases/download/{tag}/release-set.pb");
+    let assets = release["assets"]
+        .as_array()
         .ok_or("HOST_OWNER_PREVIOUS_ASSETS_MISSING")?;
-    let mut matches = assets.iter()
+    let mut matches = assets
+        .iter()
         .filter(|asset| asset["name"].as_str() == Some("release-set.pb"));
     let asset = matches.next().ok_or("HOST_OWNER_PREVIOUS_ASSET_MISSING")?;
     if matches.next().is_some()
         || asset["browser_download_url"].as_str() != Some(url.as_str())
-        || asset["digest"].as_str()
-            != Some(format!("sha256:{}", previous.release_sha256).as_str())
+        || asset["digest"].as_str() != Some(format!("sha256:{}", previous.release_sha256).as_str())
     {
         return Err("HOST_OWNER_PREVIOUS_ASSET_UNTRUSTED".into());
     }
-    let downloaded = client.get(url)
+    let downloaded = client
+        .get(url)
         .header("User-Agent", "sing-box-native-owner-compat")
-        .send().await.map_err(|_| "HOST_OWNER_PREVIOUS_ASSET_UNAVAILABLE")?
-        .error_for_status().map_err(|_| "HOST_OWNER_PREVIOUS_ASSET_REJECTED")?
-        .bytes().await.map_err(|_| "HOST_OWNER_PREVIOUS_ASSET_UNREADABLE")?;
+        .send()
+        .await
+        .map_err(|_| "HOST_OWNER_PREVIOUS_ASSET_UNAVAILABLE")?
+        .error_for_status()
+        .map_err(|_| "HOST_OWNER_PREVIOUS_ASSET_REJECTED")?
+        .bytes()
+        .await
+        .map_err(|_| "HOST_OWNER_PREVIOUS_ASSET_UNREADABLE")?;
     if downloaded.len() != previous.release_bytes.len()
         || downloaded.as_ref() != previous.release_bytes.as_slice()
     {
@@ -130,7 +147,11 @@ pub(super) fn decide(
     desired: &str,
     proven_upgrade_chain: bool,
 ) -> Result<OwnerDecision, String> {
-    let valid = |v: &str| v.len() == 64 && v.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b));
+    let valid = |v: &str| {
+        v.len() == 64
+            && v.bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    };
     if !valid(actual) || !valid(previous) || !valid(desired) {
         return Err("HOST_OWNER_FINGERPRINT_INVALID".into());
     }
@@ -146,9 +167,12 @@ pub(super) fn decide(
     Ok(OwnerDecision::Upgrade)
 }
 
-
 fn fixed_readback(
-    ip: &str, machine_id: &str, key: &std::path::Path, public: &str, command: &str,
+    ip: &str,
+    machine_id: &str,
+    key: &std::path::Path,
+    public: &str,
+    command: &str,
 ) -> Result<String, String> {
     super::strict_ssh_capture(ip, machine_id, key, public, command)
 }
@@ -173,7 +197,10 @@ pub(super) async fn reconcile_before_enrollment(
         return Err("HOST_OWNER_INSTALLED_FILE_UNTRUSTED".into());
     }
     let status = read(&format!("sudo -n {owner} local status"))?;
-    if !status.lines().any(|line| line == "host_native_trust=PROTECTED_LOCAL_ONLY") {
+    if !status
+        .lines()
+        .any(|line| line == "host_native_trust=PROTECTED_LOCAL_ONLY")
+    {
         return Err("HOST_OWNER_NATIVE_TRUST_OR_JOURNAL_UNPROVEN".into());
     }
     let trust_path = "/opt/vultr-edge-stack/native-host/trust.pb";
@@ -218,12 +245,16 @@ pub(super) async fn reconcile_before_enrollment(
         OwnerDecision::Upgrade => {
             // No second owner and no second SSH lease: invoke the existing
             // exact-artifact, durable-BEGIN upgrade from the same /host apply.
-            super::vm_owner_upgrade::run(&[
-                host.vm_provider_spec_path.clone(),
-                machine_id.to_owned(),
-                candidate.display().to_string(),
-                previous.agent_sha256.clone(),
-            ], context).await?;
+            super::vm_owner_upgrade::run(
+                &[
+                    host.vm_provider_spec_path.clone(),
+                    machine_id.to_owned(),
+                    candidate.display().to_string(),
+                    previous.agent_sha256.clone(),
+                ],
+                context,
+            )
+            .await?;
         }
         OwnerDecision::Current => {}
     }
@@ -241,7 +272,8 @@ pub(super) async fn reconcile_before_enrollment(
         }
     }
     if !read(&format!("sudo -n {owner} local status"))?
-        .lines().any(|line| line == "host_native_trust=PROTECTED_LOCAL_ONLY")
+        .lines()
+        .any(|line| line == "host_native_trust=PROTECTED_LOCAL_ONLY")
     {
         return Err("HOST_OWNER_POST_UPGRADE_TRUST_UNPROVEN".into());
     }
@@ -258,11 +290,20 @@ mod tests {
     fn drift_and_lost_ack_are_not_replayed() {
         let old = "a".repeat(64);
         let new = "b".repeat(64);
-        assert!(matches!(decide(&old, &old, &new, false).unwrap(), OwnerDecision::Upgrade));
+        assert!(matches!(
+            decide(&old, &old, &new, false).unwrap(),
+            OwnerDecision::Upgrade
+        ));
         assert!(decide(&new, &old, &new, false).is_err());
-        assert!(matches!(decide(&new, &old, &new, true).unwrap(), OwnerDecision::Current));
+        assert!(matches!(
+            decide(&new, &old, &new, true).unwrap(),
+            OwnerDecision::Current
+        ));
         assert!(decide(&"c".repeat(64), &old, &new, true).is_err());
-        assert!(matches!(decide(&old, &old, &old, false).unwrap(), OwnerDecision::Current));
+        assert!(matches!(
+            decide(&old, &old, &old, false).unwrap(),
+            OwnerDecision::Current
+        ));
     }
     #[test]
     fn empty_or_unpinned_trust_is_not_predecessor() {
