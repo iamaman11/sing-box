@@ -362,14 +362,10 @@ jobs:
           fi
           "${owner}" host --hosts-pb "${registry}" \
             --hosts-sha256 "$(sha256sum "${registry}" | cut -d' ' -f1)" \
+            --github-output "${GITHUB_OUTPUT}" \
             readback "${TARGET_MACHINE}" --observation-path "${observation}" "${extra[@]}" \
             > "${RUNNER_TEMP}/host-readback-result.txt"
           result="${RUNNER_TEMP}/host-readback-result.txt"
-          grep -Fxq 'host_mutations=0' "${result}"
-          grep -Fxq 'host_native_readback_authorizes_mutation=false' "${result}"
-          grep -Fxq 'host_plan_mutation_authorized=false' "${result}"
-          grep -Fxq 'host_plan_owner_attested=false' "${result}"
-          grep -Fxq 'host_native_readback_source=RUNNER_COPIED_UNAUTHENTICATED' "${result}"
           # One exact Rust parser also audits the native transaction result.
           # This is correlation, never authenticated SYSTEM/root attestation.
           if [[ "${TARGET_KIND}" = VM &&
@@ -387,18 +383,11 @@ jobs:
             test "$(stat -c '%s' "${intent}")" -le 4096
             "${owner}" host --hosts-pb "${registry}" \
               --hosts-sha256 "$(sha256sum "${registry}" | cut -d' ' -f1)" \
+              --github-output "${GITHUB_OUTPUT}" \
               native-result "${TARGET_MACHINE}" --intent-path "${intent}" \
               --result-path "${out}/host-operation/host-result.pb" \
               > "${RUNNER_TEMP}/host-native-result-correlation.txt"
             audit="${RUNNER_TEMP}/host-native-result-correlation.txt"
-            grep -Fxq 'host_native_result_correlation=EXACT' "${audit}"
-            grep -Fxq 'host_native_result_authenticated=true' "${audit}"
-            grep -Eq '^host_native_result_remote_acceptance=(VERIFIED_PHYSICAL|OBSERVED_ONLY)$' "${audit}"
-            grep -Fxq 'host_mutations=0' "${audit}"
-            receipt_proof="$(sed -n 's/^host_native_result_remote_acceptance=//p' "${audit}")"
-            [[ "${receipt_proof}" = VERIFIED_PHYSICAL || "${receipt_proof}" = OBSERVED_ONLY ]]
-            printf 'native_receipt_proof=%s\n' "${receipt_proof}" >> "${GITHUB_OUTPUT}"
-            echo 'native_result_audit=EXACT_SIGNED_NATIVE_OWNER' >> "${GITHUB_OUTPUT}"
             {
               echo '### Native owner cryptographically verified receipt'
               echo '~~~text'
@@ -406,9 +395,6 @@ jobs:
               echo '~~~'
             } >> "${GITHUB_STEP_SUMMARY}"
           fi
-          verdict="$(sed -n 's/^host_native_readback_verdict=//p' "${result}")"
-          [[ "${verdict}" =~ ^[A-Z0-9_]{1,96}$ ]]
-          printf 'typed_verdict=%s\n' "${verdict}" >> "${GITHUB_OUTPUT}"
           {
             echo '### Exact typed Host readback (UNAUTHENTICATED runner copy)'
             echo '~~~text'

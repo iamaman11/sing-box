@@ -19,6 +19,12 @@
 
 **Критерий окончания:** нет второго достижимого mutating ingress; решения GitHub не зависят от grep диагностики; source/Windows/Linux/OCI/ReleaseSet CI на exact SHA проходят; защищённый merge + no-rebuild release promotion. Никаких новых служб, скриптов восстановления, secret stores, JSON-диспетчеров или shell-обходов.
 
+### Кодовый срез после PR #453
+
+- PR #453 уже слит; Worker preflight Rust-owned; точный ReleaseSet для main 155a5df1 опубликован.
+- Остаточные текстовые admission-решения переносятся в Rust/Protobuf и GitHub outputs, не создавая четвёртой /host команды.
+- CI не доказывает физический installed owner, 3/3 Docker, 10/10 endpoints или signed receipt. UNKNOWN_NO_REPLAY остаётся запрещением повтора.
+
 ## Срез 2 — физическая эксплуатационная приёмка
 
 1. **Fresh VM:** сначала `/host status application-acceptance-3 --deep`; при отсутствии целевого native owner — один штатный `/host apply application-acceptance-3` в Issue #1 с существующим Vultr first-use. До provider CREATE доказать Git desired/ReleaseSet, source Worker trust, exact CredentialRef и доступность authorizer. Отказ/неизвестный ACK → STOP/UNKNOWN_NO_REPLAY, а не повторный CREATE. Новая VM генерирует собственную receipt identity; public key регистрируется через защищённый Git, затем signed INSTALL штатным root owner.

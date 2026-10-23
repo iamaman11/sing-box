@@ -449,6 +449,9 @@ pub(crate) fn run(
                     .map_err(|_| "HOST_PLAN_STEP_INVALID")?
             );
             println!("host_reconcile_reason={}", proposed.reason_code);
+            if proposed.owner_attested || proposed.mutation_authorized {
+                return Err("HOST_READBACK_MUST_NEVER_AUTHORIZE_MUTATION".to_owned());
+            }
             println!("host_plan_owner_attested={}", proposed.owner_attested);
             println!(
                 "host_plan_mutation_authorized={}",
@@ -677,6 +680,9 @@ pub(crate) fn run(
                 println!("host_vm_resources_origin=RUNNER_COPIED_UNAUTHENTICATED");
                 println!("host_vm_resources_authorize_mutation=false");
             }
+            if let Some(path) = github_output {
+                append_host_verifier_output(path, "typed_verdict", summary)?;
+            }
             println!("host_native_readback_source=RUNNER_COPIED_UNAUTHENTICATED");
             println!("host_native_readback_authorizes_mutation=false");
             println!("host_mutations=0");
@@ -737,6 +743,13 @@ pub(crate) fn run(
                 verify_native_receipt(&intent, &native_receipt, selected).map_err(str::to_owned)?;
             println!("host_machine_id={machine_id}");
             println!("host_operation_id={}", intent.operation_id);
+            if let Some(path) = github_output {
+                append_host_verifier_output(
+                    path,
+                    "native_receipt_proof",
+                    if result.physical_readback { "VERIFIED_PHYSICAL" } else { "OBSERVED_ONLY" },
+                )?;
+            }
             println!("host_native_result_correlation=EXACT");
             println!(
                 "host_native_result_claimed_state={:?}",
@@ -939,6 +952,30 @@ pub(crate) fn run(
             Err("HOST_FIRST_USE_MUST_USE_EXISTING_NATIVE_VULTR_OWNER".to_owned())
         }
     }
+}
+
+/// GitHub outputs are only derived from verified typed protobuf. Diagnostic
+/// stdout can never authorize a transition or masquerade as native proof.
+fn append_host_verifier_output(path: &Path, key: &str, value: &str) -> Result<(), String> {
+    if !matches!(key, "typed_verdict" | "native_receipt_proof")
+        || value.is_empty()
+        || value.len() > 96
+        || !value.bytes().all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == b'_')
+    {
+        return Err("HOST_TYPED_WORKFLOW_VERDICT_INVALID".to_owned());
+    }
+    let meta = std::fs::symlink_metadata(path)
+        .map_err(|_| "HOST_TYPED_WORKFLOW_OUTPUT_UNAVAILABLE")?;
+    if !meta.file_type().is_file() {
+        return Err("HOST_TYPED_WORKFLOW_OUTPUT_NOT_REGULAR".to_owned());
+    }
+    let mut output = OpenOptions::new()
+        .append(true)
+        .open(path)
+        .map_err(|_| "HOST_TYPED_WORKFLOW_OUTPUT_UNWRITABLE")?;
+    writeln!(output, "{key}={value}")
+        .map_err(|_| "HOST_TYPED_WORKFLOW_OUTPUT_WRITE_FAILED")?;
+    output.sync_all().map_err(|_| "HOST_TYPED_WORKFLOW_OUTPUT_SYNC_FAILED".to_owned())
 }
 
 /// One public-only protected Git candidate; never installs or reads a private
