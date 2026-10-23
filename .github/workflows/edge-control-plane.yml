@@ -964,7 +964,6 @@ jobs:
       kind: ${{ steps.prepare.outputs.kind }}
       runner_labels: ${{ steps.prepare.outputs.runner_labels }}
       operation: ${{ steps.prepare.outputs.operation }}
-      host_action_json: ${{ steps.prepare.outputs.host_action_json }}
     env:
       GH_TOKEN: ${{ github.token }}
       ACCEPTED_SHA: ${{ github.event.workflow_run.head_sha }}
@@ -1081,7 +1080,7 @@ jobs:
           test -s "${RUNNER_TEMP}/host-intent.receipt.pb"
 
       - name: Transfer only typed prepared intent to installed native owner
-        if: fromJSON(steps.prepare.outputs.host_action_json).schema == 1 && fromJSON(steps.prepare.outputs.host_action_json).operation == 'APPLY_PREFLIGHT'
+        if: steps.prepare.outputs.operation == 'APPLY_PREFLIGHT'
         uses: actions/upload-artifact@v4
         with:
           name: host-intent-${{ steps.source.outputs.comment_id }}
@@ -1097,8 +1096,7 @@ jobs:
     needs: host_resume_receipt
     if: >-
       needs.host_resume_receipt.result == 'success' &&
-      fromJSON(needs.host_resume_receipt.outputs.host_action_json).schema == 1 &&
-       fromJSON(needs.host_resume_receipt.outputs.host_action_json).operation == 'APPLY_PREFLIGHT' &&
+      needs.host_resume_receipt.outputs.operation == 'APPLY_PREFLIGHT' &&
       needs.host_resume_receipt.outputs.kind == 'VM'
     permissions:
       contents: read

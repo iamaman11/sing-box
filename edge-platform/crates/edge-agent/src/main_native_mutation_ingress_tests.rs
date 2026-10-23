@@ -93,7 +93,6 @@ fn vm_owned_runtime_scope_excludes_unrelated_docker_workloads() {
 }
 
 use super::*;
-use edge_shared_types::agent_service_server::AgentService;
 use edge_shared_types::{
     CredentialDeliveryBundle, CredentialDeliverySlot, ProxyCredentialGeneration,
     RealityPrivateIdentity, RealityPrivateIdentityGeneration, TunnelAuthentication,

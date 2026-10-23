@@ -88,12 +88,16 @@ for marker in ("mod controller_rpc;", "mod command_dispatch;", "mod local_dispat
     owner = ("edge-controller" if "controller" in marker else "edge-console" if "command" in marker else "edge-agent")
     assert marker in Path(f"edge-platform/crates/{owner}/src/main.rs").read_text(encoding="utf-8")
 
-# Resume after Git receipt publication also consumes the closed Rust enum.
-# A text-only operation string cannot select a host mutation in either path.
-assert "fromJSON(steps.prepare.outputs.host_action_json).schema == 1" in router
-assert "fromJSON(needs.host_resume_receipt.outputs.host_action_json).operation" in router
-assert "needs.host_resume_receipt.outputs.operation ==" not in router
-assert "if: steps.prepare.outputs.operation ==" not in router
+# Receipt merge continuation uses the same closed Rust enum projection
+# as ordinary /host apply. GitHub's compulsory scalar job output is transport,
+# not a free-form command parser or a new source of mutation authority.
+assert "operation: ${{ steps.prepare.outputs.operation }}" in router
+assert "needs.host_resume_receipt.outputs.operation == 'APPLY_PREFLIGHT'" in router
+assert "if: steps.prepare.outputs.operation == 'APPLY_PREFLIGHT'" in router
+assert "host_action_json" not in router
+host_source = Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(encoding="utf-8")
+assert "enum HostWorkflowOperation" in host_source
+assert "HostWorkflowDecision" not in host_source
 # The retired VM gRPC listener must not reappear beside signed native owner.
 agent_main = Path("edge-platform/crates/edge-agent/src/main.rs").read_text(encoding="utf-8")
 assert "AgentServerImpl" not in agent_main and "serve_acceptance_rpc(" not in agent_main

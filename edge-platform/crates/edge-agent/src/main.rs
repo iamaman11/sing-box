@@ -37,7 +37,6 @@ use edge_secrets::{
     fetch_canonical_credential_bundle, verify_canonical_dummy_ab_slots,
     verify_initial_selected_dummy_slot,
 };
-use edge_shared_types::agent_service_server::{AgentService, AgentServiceServer};
 use edge_shared_types::{
     AgentState, AgentVersion, ApplicationBundleReleaseState, ApplyBundleRequest,
     ApplyBundleResponse, BootstrapMode, BootstrapRuntimeRequest, BootstrapRuntimeResponse,
@@ -53,12 +52,9 @@ use edge_shared_types::{
     StageCredentialCandidateRequest, VerifyRuntimeRequest, canonical_apply_bundle_digest,
     parse_credential_transition_action,
 };
-use edge_trust::optional_agent_server_tls_from_env;
 use error::AgentError;
 use prost::Message;
 use serde::{Deserialize, Serialize};
-use tonic::transport::Server;
-use tonic::{Request, Response, Status};
 
 const DEFAULT_ACCEPTANCE_AGENT_ADDR: &str = "127.0.0.1:50061";
 const DEFAULT_STACK_DIR: &str = "/opt/vultr-edge-stack/stack";
@@ -739,7 +735,7 @@ fn apply_bundle(
     stack_dir: &Path,
     request: ApplyBundleRequest,
 ) -> Result<ApplyBundleResponse, String> {
-    // One canonical bundle contract for local CLI and AgentService RPC.
+    // Historical bundle payload validation remains an offline data guard; there is no VM RPC ingress.
     // In particular a missing digest must NEVER fall back to writing host
     // paths, certificate files or the agent's execution environment.
     validate_digest_bound_bundle_request(&request)?;
