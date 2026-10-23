@@ -57,6 +57,8 @@ use tonic::Request;
 
 #[path = "vm_owner_upgrade.rs"]
 mod vm_owner_upgrade;
+#[path = "vm_owner_compatibility.rs"]
+mod vm_owner_compatibility;
 
 const DEFAULT_CLOUD_INIT_PATH: &str = "win/vultr-waw/cloud-init.yaml";
 const CANONICAL_SSH_PUBLIC_KEY_PATH: &str = "infra/vultr/singbox-ops.pub";
@@ -1406,6 +1408,7 @@ async fn run_transport_proof(
 /// new immutable published ReleaseSet and matches its own private receipt key.
 pub(crate) async fn host_receipt_refresh(
     machine_id: &str,
+    agent_path: &Path,
     context: &OrchestrationContext,
 ) -> Result<(), String> {
     if env::var("GITHUB_RUN_ATTEMPT").as_deref() != Ok("1") {
@@ -1445,6 +1448,11 @@ pub(crate) async fn host_receipt_refresh(
         {
             return Err("HOST_RECEIPT_REFRESH_RELEASE_SHA_INVALID".to_owned());
         }
+        // Installed owner compatibility is a typed dependency of trust refresh.
+        // The older agent MUST NOT decode a release newer than its schema.
+        vm_owner_compatibility::reconcile_before_enrollment(
+            machine_id, context, agent_path, ip, &key_path, &expected_ssh_key,
+        ).await?;
         let command = format!(
             "sudo -n /usr/local/libexec/sing-box/edge-agent local host-enroll {machine_id} {release_sha}"
         );
