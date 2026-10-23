@@ -1535,10 +1535,8 @@ pub(crate) async fn host_first_use_provider_preflight(
         let value = env::var(name).map_err(|_| "HOST_FIRST_USE_ACCESS_IDENTITY_REQUIRED")?;
         validate_bootstrap_secret(label, &value)?;
     }
-    crate::cloudflare_credential_plane_command::verify_current_vm_first_use_worker_source(
-        &host,
-    )
-    .await?;
+    crate::cloudflare_credential_plane_command::verify_current_vm_first_use_worker_source(&host)
+        .await?;
     let provider_spec = Path::new(&host.vm_provider_spec_path);
     let desired = load_desired_state(provider_spec)?;
     if desired.machines.len() != 1 || desired.machines[0].id != machine_id {

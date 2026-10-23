@@ -1647,24 +1647,24 @@ async fn fetch_and_attest_vm_first_use_worker_source(
     generation: u64,
     expected_sha256: &str,
 ) -> Result<(), String> {
-        let production = ProductionComposition::canonical().map_err(|err| err.to_string())?;
-        let plane = &production.cloudflare.credential_plane;
-        if production.cloudflare.active_account_id != plane.target_account_id
-            || production.cloudflare.migration_target_account_id.is_some()
-        {
-            return Err("HOST_VM_CREDENTIAL_PROOF_CLOUDFLARE_ACCOUNT_DRIFT".to_owned());
-        }
-        let id = required_env("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID")?;
-        let secret = required_env("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET")?;
-        let bytes = cloudflare::get_vm_credential_bundle_with_access(
-            &plane.vm_worker_name,
-            &plane.workers_dev_subdomain,
-            generation,
-            &id,
-            &secret,
-        )
-        .await?;
-        attest_vm_first_use_credential_bytes(&bytes, generation, expected_sha256)?;
+    let production = ProductionComposition::canonical().map_err(|err| err.to_string())?;
+    let plane = &production.cloudflare.credential_plane;
+    if production.cloudflare.active_account_id != plane.target_account_id
+        || production.cloudflare.migration_target_account_id.is_some()
+    {
+        return Err("HOST_VM_CREDENTIAL_PROOF_CLOUDFLARE_ACCOUNT_DRIFT".to_owned());
+    }
+    let id = required_env("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID")?;
+    let secret = required_env("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET")?;
+    let bytes = cloudflare::get_vm_credential_bundle_with_access(
+        &plane.vm_worker_name,
+        &plane.workers_dev_subdomain,
+        generation,
+        &id,
+        &secret,
+    )
+    .await?;
+    attest_vm_first_use_credential_bytes(&bytes, generation, expected_sha256)?;
     Ok(())
 }
 
@@ -1676,12 +1676,11 @@ pub(crate) async fn verify_current_vm_first_use_worker_source(
 ) -> Result<(), String> {
     edge_shared_types::host_lifecycle::verify_vm_first_use_git_prerequisites(host)
         .map_err(str::to_owned)?;
-    let pinned = host.vm_first_use_credential.as_ref()
+    let pinned = host
+        .vm_first_use_credential
+        .as_ref()
         .ok_or("HOST_VM_FIRST_USE_CREDENTIAL_GIT_REQUIRED")?;
-    fetch_and_attest_vm_first_use_worker_source(
-        pinned.generation,
-        &pinned.bundle_sha256,
-    ).await?;
+    fetch_and_attest_vm_first_use_worker_source(pinned.generation, &pinned.bundle_sha256).await?;
     println!("host_vm_first_use_worker_source=GIT_PIN_VERIFIED_WITH_ACCESS_GET");
     println!("host_worker_mutations=0");
     Ok(())
