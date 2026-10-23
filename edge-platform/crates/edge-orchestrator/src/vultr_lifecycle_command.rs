@@ -1959,22 +1959,27 @@ pub(crate) async fn bootstrap_production_runner(
 
     // Export only the public key after ALL root enrollment, runner ACL and
     // owner-boundary checks succeeded. This is never a signed INSTALL receipt.
-    let output_path = env::var_os("GITHUB_OUTPUT")
-        .ok_or("HOST_FIRST_USE_GITHUB_OUTPUT_REQUIRED")?;
+    let output_path =
+        env::var_os("GITHUB_OUTPUT").ok_or("HOST_FIRST_USE_GITHUB_OUTPUT_REQUIRED")?;
     let output_meta = std::fs::symlink_metadata(&output_path)
         .map_err(|_| "HOST_FIRST_USE_GITHUB_OUTPUT_UNAVAILABLE")?;
     if !output_meta.file_type().is_file()
         || receipt_public_key.len() != 64
-        || !receipt_public_key.bytes().all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
+        || !receipt_public_key
+            .bytes()
+            .all(|ch| ch.is_ascii_hexdigit() && !ch.is_ascii_uppercase())
     {
         return Err("HOST_FIRST_USE_PUBLIC_RECEIPT_OUTPUT_INVALID".to_owned());
     }
     {
-        let mut output = OpenOptions::new().append(true).open(&output_path)
+        let mut output = OpenOptions::new()
+            .append(true)
+            .open(&output_path)
             .map_err(|_| "HOST_FIRST_USE_PUBLIC_RECEIPT_OUTPUT_UNWRITABLE")?;
         writeln!(output, "receipt_public_key_hex={receipt_public_key}")
             .map_err(|_| "HOST_FIRST_USE_PUBLIC_RECEIPT_OUTPUT_WRITE_FAILED")?;
-        output.sync_all()
+        output
+            .sync_all()
             .map_err(|_| "HOST_FIRST_USE_PUBLIC_RECEIPT_OUTPUT_SYNC_FAILED")?;
     }
     println!("host_first_use_receipt_public_key_hex={receipt_public_key}");

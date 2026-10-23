@@ -747,7 +747,11 @@ pub(crate) fn run(
                 append_host_verifier_output(
                     path,
                     "native_receipt_proof",
-                    if result.physical_readback { "VERIFIED_PHYSICAL" } else { "OBSERVED_ONLY" },
+                    if result.physical_readback {
+                        "VERIFIED_PHYSICAL"
+                    } else {
+                        "OBSERVED_ONLY"
+                    },
                 )?;
             }
             println!("host_native_result_correlation=EXACT");
@@ -960,12 +964,14 @@ fn append_host_verifier_output(path: &Path, key: &str, value: &str) -> Result<()
     if !matches!(key, "typed_verdict" | "native_receipt_proof")
         || value.is_empty()
         || value.len() > 96
-        || !value.bytes().all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == b'_')
+        || !value
+            .bytes()
+            .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == b'_')
     {
         return Err("HOST_TYPED_WORKFLOW_VERDICT_INVALID".to_owned());
     }
-    let meta = std::fs::symlink_metadata(path)
-        .map_err(|_| "HOST_TYPED_WORKFLOW_OUTPUT_UNAVAILABLE")?;
+    let meta =
+        std::fs::symlink_metadata(path).map_err(|_| "HOST_TYPED_WORKFLOW_OUTPUT_UNAVAILABLE")?;
     if !meta.file_type().is_file() {
         return Err("HOST_TYPED_WORKFLOW_OUTPUT_NOT_REGULAR".to_owned());
     }
@@ -973,9 +979,10 @@ fn append_host_verifier_output(path: &Path, key: &str, value: &str) -> Result<()
         .append(true)
         .open(path)
         .map_err(|_| "HOST_TYPED_WORKFLOW_OUTPUT_UNWRITABLE")?;
-    writeln!(output, "{key}={value}")
-        .map_err(|_| "HOST_TYPED_WORKFLOW_OUTPUT_WRITE_FAILED")?;
-    output.sync_all().map_err(|_| "HOST_TYPED_WORKFLOW_OUTPUT_SYNC_FAILED".to_owned())
+    writeln!(output, "{key}={value}").map_err(|_| "HOST_TYPED_WORKFLOW_OUTPUT_WRITE_FAILED")?;
+    output
+        .sync_all()
+        .map_err(|_| "HOST_TYPED_WORKFLOW_OUTPUT_SYNC_FAILED".to_owned())
 }
 
 /// One public-only protected Git candidate; never installs or reads a private
