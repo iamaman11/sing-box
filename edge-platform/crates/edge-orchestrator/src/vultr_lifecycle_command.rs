@@ -1403,9 +1403,9 @@ async fn run_transport_proof(
 
 /// The only authorized bridge after a receipt-key-only protected Git merge:
 /// the EXISTING Vultr lease opens bounded SSH to the EXISTING root Agent.
-/// NO provider CREATE, no root binary replacement, no Docker privileges for
-/// the runner, no journal replay. The native owner independently verifies the
-/// new immutable published ReleaseSet and matches its own private receipt key.
+/// NO provider CREATE, Docker privileges for runner or journal replay.
+/// First prove and, if necessary, upgrade the exact existing native owner
+/// through its bounded durable transition before enrollment and receipt proof.
 pub(crate) async fn host_receipt_refresh(
     machine_id: &str,
     agent_path: &Path,
