@@ -146,6 +146,7 @@ fn native_local_entrypoint_allowed(command: &cli::LocalCommand) -> bool {
             | cli::LocalCommand::HostObserve
             | cli::LocalCommand::HostResources
             | cli::LocalCommand::HostApply
+            | cli::LocalCommand::HostRefresh
             | cli::LocalCommand::HostEnroll { .. }
             | cli::LocalCommand::QualityLine2
             | cli::LocalCommand::CredentialPublicEndpoint
@@ -389,6 +390,9 @@ async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
                 .map_err(|_| AgentError::Command("HOST_RESOURCE_REPORT_STDOUT_FAILED".into()))
         }
         cli::LocalCommand::HostApply => host_native::apply(&stack_dir)
+            .await
+            .map_err(AgentError::Command),
+        cli::LocalCommand::HostRefresh => host_enroll::refresh_current()
             .await
             .map_err(AgentError::Command),
         cli::LocalCommand::HostEnroll {

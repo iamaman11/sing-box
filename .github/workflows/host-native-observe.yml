@@ -154,6 +154,20 @@ jobs:
           name: host-intent-${{ inputs.source_comment_id }}
           path: ${{ runner.temp }}/host-operation
 
+      - name: Refresh protected Git main release with existing native root owner
+        if: env.TARGET_KIND == 'VM' && startsWith(env.COMMAND_BODY, '/host apply ')
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${RUNNER_NAME}" = "sing-box-production-${TARGET_OWNER}"
+          owner=/usr/local/libexec/sing-box/edge-agent
+          test -x "${owner}" && test ! -L "${owner}"
+          # The root Agent has NO caller-supplied SHA, path or secret; it
+          # fetches/proves latest protected main and checks the local receipt.
+          # It owns one lock across trust and atomic binary replacement.
+          sudo -n -l "${owner}" local host-refresh >/dev/null
+          sudo -n "${owner}" local host-refresh
+
       - name: Dispatch one signed native VM host transaction
         if: env.TARGET_KIND == 'VM' && (startsWith(env.COMMAND_BODY, '/host apply ') || startsWith(env.COMMAND_BODY, '/host recover '))
         shell: bash

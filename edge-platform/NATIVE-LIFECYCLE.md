@@ -6,7 +6,7 @@ Canonical desired/code is protected GitHub main. This source change is **not** p
 
 Six historical reusable workflows were removed. There is no legacy mutation ingress. GitHub runner is a transport, not root.
 
-SSH exists only for Vultr initial CREATE/bootstrap and completion of initial receipt enrollment after protected Git merge (`host_resume_receipt`). The everyday hosted SSH `host_refresh_trust` is removed. Stale root trust must fail closed until a **native signed** trust-upgrade contract is implemented and accepted. Never invent a second SSH recovery path.
+SSH exists only for Vultr initial CREATE/bootstrap and completion of initial receipt enrollment after protected Git merge (`host_resume_receipt`). The everyday hosted SSH `host_refresh_trust` and SSH receipt-resume update are removed. VM runner has only `sudo edge-agent local host-refresh` (zero arguments): existing root Agent independently selects the latest protected Git main release, checks its published assets and immutable identities, updates protected trust and its exact binary under one native kernel lock. No arbitrary shell, path, desired, credential or Docker rights are granted. Signing of application effects remains on the separate Worker HostIntent channel.
 
 Fresh host `application-acceptance-3` replaces the deleted `application-acceptance-2`: no old receipt key, first-use credential generation or worker signer identity is copied. The previous host's audit evidence remains in historical Git, not as current admission authority.
 

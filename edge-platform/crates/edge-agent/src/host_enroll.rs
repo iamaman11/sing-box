@@ -221,6 +221,11 @@ fn refresh_release_snapshots(trusted: &Path, trust_pb: &[u8]) -> Result<(), Stri
 /// alters a running application. Rollout remains an independently signed
 /// apply/recover request with a fresh operation ID.
 pub(crate) async fn enroll(machine_id: &str, release_digest: &str) -> Result<(), String> {
+    let _resource_lock = super::host_native::owner_operation_lock()?;
+    enroll_locked(machine_id, release_digest).await
+}
+
+async fn enroll_locked(machine_id: &str, release_digest: &str) -> Result<(), String> {
     if unsafe { geteuid() } != 0 {
         return Err("HOST_ENROLL_REQUIRES_LOCAL_ROOT".into());
     }
@@ -237,9 +242,7 @@ pub(crate) async fn enroll(machine_id: &str, release_digest: &str) -> Result<(),
     }
     checked_root_directory(Path::new("/opt"))?;
     checked_root_directory(Path::new(HOST_PARENT))?;
-    // Apply and refresh are mutually exclusive. The same lock protects the
-    // permanent native journal; no new scheduler, watchdog or ledger.
-    let _resource_lock = super::host_native::owner_operation_lock()?;
+    // Caller holds the single native root lock through trust + binary update.
     let trusted = Path::new(super::host_native::TRUSTED_ROOT);
     let refreshing = match fs::symlink_metadata(trusted) {
         Ok(meta) => {
@@ -451,6 +454,133 @@ pub(crate) async fn enroll(machine_id: &str, release_digest: &str) -> Result<(),
     );
     println!("host_mutations=0");
     Ok(())
+}
+
+
+/// Refresh the CURRENT protected main release using the EXISTING native root
+/// owner, with NO SSH, no caller-supplied path, release SHA or trust bytes.
+/// Only this binary can update its root-owned trust and binary. It never
+/// mutates Docker, credentials, routes, DNS or the resource operation journal.
+pub(crate) async fn refresh_current() -> Result<(), String> {
+    let _guard = super::host_native::owner_operation_lock()?;
+    let trusted = Path::new(super::host_native::TRUSTED_ROOT);
+    let previous = super::host_native::root_file(&trusted.join("trust.pb"), 9 * 1024 * 1024)?;
+    let previous = super::host_native::decode_native_trust_snapshot(&previous)?;
+    // A pre-enrollment runner cannot create trust. Only completed root
+    // receipt enrollment is eligible for native release refresh.
+    let identity = read_existing_receipt_identity(trusted)?;
+    let registry = edge_shared_types::decode_host_registry(&previous.registry_pb)
+        .map_err(|_| "HOST_REFRESH_PREVIOUS_REGISTRY_INVALID")?;
+    let host = registry.hosts.iter()
+        .find(|h| h.machine_id == previous.machine_id && h.kind == FleetHostKind::Vm as i32)
+        .ok_or("HOST_REFRESH_PREVIOUS_OWNER_ABSENT")?;
+    if host.native_receipt_public_key != identity
+        || previous.pinned_worker_public_key != host.worker_authority_public_key
+    {
+        return Err("HOST_REFRESH_PREVIOUS_GIT_IDENTITY_UNPROVEN".into());
+    }
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(30))
+        .build()
+        .map_err(|_| "HOST_REFRESH_HTTPS_CLIENT_UNAVAILABLE")?;
+    let base = "https://api.github.com/repos/iamaman11/sing-box";
+    let (head_bytes, latest_bytes) = tokio::try_join!(
+        bounded_https_get(&client, &format!("{base}/git/ref/heads/main"), 32768),
+        bounded_https_get(&client, &format!("{base}/releases/latest"), MAX_GITHUB_REPLY)
+    )?;
+    let head: serde_json::Value = serde_json::from_slice(&head_bytes)
+        .map_err(|_| "HOST_REFRESH_MAIN_REF_INVALID")?;
+    let latest: serde_json::Value = serde_json::from_slice(&latest_bytes)
+        .map_err(|_| "HOST_REFRESH_LATEST_RELEASE_INVALID")?;
+    let release_digest = current_published_release_digest(&head, &latest)?;
+    let tag = format!("edge-release-{release_digest}");
+    // This path belongs to the EXACT existing root Agent. No target is
+    // accepted from the unprivileged GitHub runner.
+    let binary = Path::new("/usr/local/libexec/sing-box/edge-agent");
+    let parent = binary.parent().ok_or("HOST_REFRESH_OWNER_BINARY_PATH_INVALID")?;
+    checked_root_directory(parent)?;
+    let meta = fs::symlink_metadata(binary)
+        .map_err(|_| "HOST_REFRESH_OWNER_BINARY_UNAVAILABLE")?;
+    if !meta.file_type().is_file()
+        || meta.uid() != 0
+        || meta.permissions().mode() != 0o755
+        || meta.len() == 0
+        || meta.len() > 32 * 1024 * 1024
+    {
+        return Err("HOST_REFRESH_OWNER_BINARY_NOT_PROTECTED".into());
+    }
+    let installed = fs::read(binary).map_err(|_| "HOST_REFRESH_OWNER_BINARY_UNREADABLE")?;
+    let asset = latest["assets"].as_array()
+        .ok_or("HOST_REFRESH_RELEASE_ASSETS_MISSING")?
+        .iter()
+        .filter(|entry| entry["name"].as_str() == Some("edge-agent-linux-amd64"))
+        .collect::<Vec<_>>();
+    if asset.len() != 1 {
+        return Err("HOST_REFRESH_OWNER_ASSET_NOT_EXACT".into());
+    }
+    let published_digest = asset[0]["digest"].as_str()
+        .and_then(|value| value.strip_prefix("sha256:"))
+        .ok_or("HOST_REFRESH_OWNER_ASSET_SHA_MISSING")?;
+    if !lowercase_sha(published_digest) {
+        return Err("HOST_REFRESH_OWNER_ASSET_SHA_INVALID".into());
+    }
+    let binary_changed =
+        super::host_native::sha256_hex(&installed) != published_digest;
+    let next_binary = if binary_changed {
+        Some(accepted_release_asset(
+            &client, &latest, &tag, "edge-agent-linux-amd64", 32 * 1024 * 1024,
+        ).await?)
+    } else {
+        None
+    };
+    // Shared enrollment validation proves ReleaseSet, source tree, registry,
+    // Worker signer and stable native receipt; preserves journal and key.
+    // No second lock is acquired; this lock spans the entire upgrade.
+    enroll_locked(&previous.machine_id, &release_digest).await?;
+    if let Some(bytes) = next_binary {
+        let stage_name = format!(".edge-agent-next-{}", std::process::id());
+        write_protected_file(parent, &stage_name, &bytes)?;
+        let stage = parent.join(stage_name);
+        fs::set_permissions(&stage, fs::Permissions::from_mode(0o755))
+            .map_err(|_| "HOST_REFRESH_OWNER_BINARY_STAGE_INVALID")?;
+        fs::rename(&stage, binary)
+            .map_err(|_| "HOST_REFRESH_OWNER_BINARY_REPLACE_UNCERTAIN")?;
+        fs::File::open(parent)
+            .and_then(|dir| dir.sync_all())
+            .map_err(|_| "HOST_REFRESH_OWNER_BINARY_SYNC_UNCERTAIN")?;
+    }
+    println!("host_native_trust_refresh=CURRENT_PROTECTED_MAIN");
+    println!("host_native_binary_refresh={}", if binary_changed { "UPDATED" } else { "UNCHANGED" });
+    println!("host_resource_mutations=0");
+    println!("host_release_set_sha256={release_digest}");
+    Ok(())
+}
+
+/// Never allow a runner to select an old accepted release as new local trust.
+/// GitHub latest must represent the exact protected main commit, not a tag or
+/// a historic release that merely passed CI.
+fn current_published_release_digest(
+    head: &serde_json::Value,
+    release: &serde_json::Value,
+) -> Result<String, String> {
+    let main = head["object"]["sha"].as_str()
+        .ok_or("HOST_REFRESH_MAIN_SHA_UNPROVEN")?;
+    if head["object"]["type"].as_str() != Some("commit")
+        || main.len() != 40
+        || !main.bytes().all(|b| b.is_ascii_hexdigit())
+        || release["target_commitish"].as_str() != Some(main)
+        || release["draft"].as_bool() != Some(false)
+        || release["prerelease"].as_bool() != Some(false)
+    {
+        return Err("HOST_REFRESH_CURRENT_MAIN_RELEASE_MISMATCH".into());
+    }
+    let digest = release["tag_name"].as_str()
+        .and_then(|value| value.strip_prefix("edge-release-"))
+        .ok_or("HOST_REFRESH_LATEST_TAG_INVALID")?;
+    if !lowercase_sha(digest) {
+        return Err("HOST_REFRESH_LATEST_DIGEST_INVALID".into());
+    }
+    Ok(digest.to_owned())
 }
 
 #[cfg(test)]

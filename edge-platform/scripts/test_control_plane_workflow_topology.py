@@ -18,7 +18,9 @@ assert "github.actor_id == '44100369'" in router
 assert router.count("uses: ./.github/workflows/host-native-observe.yml")==2
 assert "host_refresh_trust:" not in router and "needs.host_refresh_trust" not in router
 assert "refresh-receipt" not in router.split("  host_resume_receipt:",1)[0]
-assert "refresh-receipt" in router.split("  host_resume_receipt:",1)[1], "bootstrap Git receipt enrollment is kept"
+assert "refresh-receipt" not in router, "routine and receipt-resume SSH refresh prohibited"
+assert "local host-refresh" in native, "native root must own trust and binary upgrades"
+assert "Refresh protected Git main release" in native
 assert "host_first_use:" in router and "host_resume_receipt:" in router
 assert "  workflow_call:" in native and "  workflow_call:" not in router
 assert "  pull_request:" in ci and "  push:" in ci
