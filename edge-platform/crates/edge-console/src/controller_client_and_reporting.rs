@@ -28,7 +28,9 @@ pub(super) async fn connect_controller(
     }
 }
 
-pub(super) async fn fetch_status(endpoint: String) -> Result<ControllerStatus, Box<dyn std::error::Error>> {
+pub(super) async fn fetch_status(
+    endpoint: String,
+) -> Result<ControllerStatus, Box<dyn std::error::Error>> {
     let mut client = connect_controller(endpoint).await?;
     let response = client.get_status(Request::new(Empty {})).await?;
     Ok(response.into_inner())
@@ -45,7 +47,9 @@ pub(super) async fn fetch_credential_state(
         .state)
 }
 
-pub(super) async fn fetch_doctor(endpoint: String) -> Result<DoctorResponse, Box<dyn std::error::Error>> {
+pub(super) async fn fetch_doctor(
+    endpoint: String,
+) -> Result<DoctorResponse, Box<dyn std::error::Error>> {
     let mut client = connect_controller(endpoint).await?;
     let response = client
         .doctor(Request::new(DoctorRequest {
@@ -95,7 +99,9 @@ pub(super) async fn set_secret_ref(
     Ok(response.into_inner())
 }
 
-pub(super) async fn start_local(endpoint: String) -> Result<LocalRuntimeResponse, Box<dyn std::error::Error>> {
+pub(super) async fn start_local(
+    endpoint: String,
+) -> Result<LocalRuntimeResponse, Box<dyn std::error::Error>> {
     let mut client = connect_controller(endpoint).await?;
     let response = client
         .start_local_runtime(Request::new(StartLocalRuntimeRequest {
@@ -125,7 +131,9 @@ pub(super) async fn start_local_visible(
     Ok(response.into_inner())
 }
 
-pub(super) async fn stop_local(endpoint: String) -> Result<LocalRuntimeResponse, Box<dyn std::error::Error>> {
+pub(super) async fn stop_local(
+    endpoint: String,
+) -> Result<LocalRuntimeResponse, Box<dyn std::error::Error>> {
     let mut client = connect_controller(endpoint).await?;
     let response = client
         .stop_local_runtime(Request::new(StopLocalRuntimeRequest {
@@ -194,7 +202,9 @@ pub(super) async fn set_selector(
     Ok(response.into_inner())
 }
 
-pub(super) async fn fetch_trace(endpoint: String) -> Result<TraceObservation, Box<dyn std::error::Error>> {
+pub(super) async fn fetch_trace(
+    endpoint: String,
+) -> Result<TraceObservation, Box<dyn std::error::Error>> {
     fetch_trace_with_proxy(endpoint, None).await
 }
 
@@ -401,7 +411,9 @@ pub(super) fn print_status(status: &ControllerStatus) {
     }
 }
 
-pub(super) fn print_windows_credential_state(state: Option<&edge_shared_types::LocalCredentialState>) {
+pub(super) fn print_windows_credential_state(
+    state: Option<&edge_shared_types::LocalCredentialState>,
+) {
     println!("credential_state_present={}", state.is_some());
     let Some(state) = state else {
         return;
@@ -710,7 +722,9 @@ pub(super) fn join_ports(ports: &[u32]) -> String {
         .join(", ")
 }
 
-pub(super) fn finish_local_result(response: LocalRuntimeResponse) -> Result<(), Box<dyn std::error::Error>> {
+pub(super) fn finish_local_result(
+    response: LocalRuntimeResponse,
+) -> Result<(), Box<dyn std::error::Error>> {
     if response.success {
         Ok(())
     } else {
@@ -718,7 +732,9 @@ pub(super) fn finish_local_result(response: LocalRuntimeResponse) -> Result<(), 
     }
 }
 
-pub(super) fn finish_selector_result(response: SetSelectorResponse) -> Result<(), Box<dyn std::error::Error>> {
+pub(super) fn finish_selector_result(
+    response: SetSelectorResponse,
+) -> Result<(), Box<dyn std::error::Error>> {
     if response.success {
         Ok(())
     } else {
