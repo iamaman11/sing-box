@@ -14,71 +14,24 @@ pub(crate) struct Cli {
 
 impl Cli {
     pub fn command_name(&self) -> &'static str {
-        self.command.as_ref().map(Command::name).unwrap_or("menu")
+        self.command.as_ref().map(Command::name).unwrap_or("none")
     }
 }
 
 #[derive(Debug, Subcommand)]
 pub(crate) enum Command {
-    Menu(EndpointArgs),
-    EnsureController(EndpointArgs),
-    Reconcile(EndpointArgs),
     Status(EndpointArgs),
     Doctor(EndpointArgs),
     CredentialState(EndpointArgs),
-    // Read-only first-enrollment proof; never applies credentials or changes TUN.
     CredentialInitialProbe(InstallRootArgs),
-    CredentialInitialAttest(InitialCredentialAttestArgs),
-    CredentialInitialAcceptanceBootstrap(IsolatedAcceptanceRootArgs),
-    CredentialInitialAcceptanceStage(InitialLine1WitnessArgs),
-    CredentialInitialLine1Witness(AttestedLine1WitnessArgs),
-    // Existing ACTIVE A -> candidate B: same disposable Line1 verifier, with
-    // exact serving SYSTEM/isolated Worker projection parity.
-    CredentialExistingLine1Witness(ExistingLine1WitnessArgs),
-    SmokeRuntime,
-    Stage2Preflight,
-    ProvisionRuntimeState(InstallRootArgs),
     PrivilegedPing(InstallRootArgs),
     PrivilegedRuntimeEvidence(InstallRootArgs),
-    PrivilegedActivate(PrivilegedActivateArgs),
-    PrivilegedRollbackPrevious(InstallRootArgs),
-    PrivilegedOfflineActivate(PrivilegedActivateArgs),
-    #[cfg(windows)]
-    OfflineBootstrap(PrivilegedActivateArgs),
-    PrivilegedOfflineRollbackPrevious(InstallRootArgs),
-    PrivilegedReinstallAccepted(PrivilegedActivateArgs),
-    PrivilegedRestartControllerService(InstallRootArgs),
-    // Explicit ProxyOnly SCM lifecycle: only existing SYSTEM dispatcher may mutate.
-    PrivilegedStartProxyOnlyController(InstallRootArgs),
-    PrivilegedStopProxyOnlyController(InstallRootArgs),
-    PrivilegedStageCredential(PrivilegedCredentialStageArgs),
-    // First-use-only, single immutable COMMIT_INTENT, SYSTEM dispatch.
-    PrivilegedInitialCredentialCommit(PrivilegedInitialCredentialCommitArgs),
-    // Exact separately authorized recovery of a previously failed paired first-use.
-    PrivilegedInitialCredentialRecover(PrivilegedInitialCredentialRecoverArgs),
-    PrivilegedExistingPrepare(PrivilegedExistingPrepareArgs),
-    PrivilegedExistingJoin(PrivilegedExistingJoinArgs),
-    CredentialTransition(CredentialTransitionArgs),
-    RestartVerifyRuntime,
+    PrivilegedDispatch(InstallRootArgs),
     VerifyRuntime,
     QualityLine1,
-    PrivilegedPrepareCredentialAccess(InstallRootArgs),
-    PrivilegedInstallCredentialAccess(InstallRootArgs),
-    #[cfg(windows)]
-    PrivilegedConvergeControllerService(InstallRootArgs),
-    PrivilegedDispatch(InstallRootArgs),
     Secrets(EndpointArgs),
-    GetSecret(NameEndpointArgs),
-    SetSecret(SetSecretArgs),
-    StartLocal(EndpointArgs),
-    StartLocalVisible(EndpointArgs),
-    StopLocal(EndpointArgs),
-    RestartLocal(EndpointArgs),
-    RestartLocalVisible(EndpointArgs),
     GetSelector(EndpointArgs),
     GetUbuntuSelector(EndpointArgs),
-    SetSelector(NameEndpointArgs),
-    SetUbuntuSelector(NameEndpointArgs),
     Trace(EndpointArgs),
     TraceUbuntu(EndpointArgs),
     GetOperation(OperationEndpointArgs),
@@ -88,63 +41,18 @@ pub(crate) enum Command {
 impl Command {
     fn name(&self) -> &'static str {
         match self {
-            Self::Menu(_) => "menu",
-            Self::EnsureController(_) => "ensure-controller",
-            Self::Reconcile(_) => "reconcile",
             Self::Status(_) => "status",
             Self::Doctor(_) => "doctor",
             Self::CredentialState(_) => "credential-state",
             Self::CredentialInitialProbe(_) => "credential-initial-probe",
-            Self::CredentialInitialAttest(_) => "credential-initial-attest",
-            Self::CredentialInitialAcceptanceBootstrap(_) => {
-                "credential-initial-acceptance-bootstrap"
-            }
-            Self::CredentialInitialAcceptanceStage(_) => "credential-initial-acceptance-stage",
-            Self::CredentialInitialLine1Witness(_) => "credential-initial-line1-witness",
-            Self::CredentialExistingLine1Witness(_) => "credential-existing-line1-witness",
-            Self::SmokeRuntime => "smoke-runtime",
-            Self::Stage2Preflight => "stage2-preflight",
-            Self::ProvisionRuntimeState(_) => "provision-runtime-state",
             Self::PrivilegedPing(_) => "privileged-ping",
             Self::PrivilegedRuntimeEvidence(_) => "privileged-runtime-evidence",
-            Self::PrivilegedActivate(_) => "privileged-activate",
-            Self::PrivilegedRollbackPrevious(_) => "privileged-rollback-previous",
-            Self::PrivilegedOfflineActivate(_) => "privileged-offline-activate",
-            #[cfg(windows)]
-            Self::OfflineBootstrap(_) => "offline-bootstrap",
-            Self::PrivilegedOfflineRollbackPrevious(_) => "privileged-offline-rollback-previous",
-            Self::PrivilegedReinstallAccepted(_) => "privileged-reinstall-accepted",
-            Self::PrivilegedRestartControllerService(_) => "privileged-restart-controller-service",
-            Self::PrivilegedStartProxyOnlyController(_) => "privileged-start-proxy-only-controller",
-            Self::PrivilegedStopProxyOnlyController(_) => "privileged-stop-proxy-only-controller",
-            Self::PrivilegedStageCredential(_) => "privileged-stage-credential",
-            Self::PrivilegedInitialCredentialCommit(_) => "privileged-initial-credential-commit",
-            Self::PrivilegedInitialCredentialRecover(_) => "privileged-initial-credential-recover",
-            Self::PrivilegedExistingPrepare(_) => "privileged-existing-prepare",
-            Self::PrivilegedExistingJoin(_) => "privileged-existing-join",
-            Self::CredentialTransition(_) => "credential-transition",
-            Self::RestartVerifyRuntime => "restart-verify-runtime",
+            Self::PrivilegedDispatch(_) => "privileged-dispatch",
             Self::VerifyRuntime => "verify-runtime",
             Self::QualityLine1 => "quality-line1",
-            Self::PrivilegedPrepareCredentialAccess(_) => "privileged-prepare-credential-access",
-            Self::PrivilegedInstallCredentialAccess(_) => "privileged-install-credential-access",
-            #[cfg(windows)]
-            Self::PrivilegedConvergeControllerService(_) => {
-                "privileged-converge-controller-service"
-            }
-            Self::PrivilegedDispatch(_) => "privileged-dispatch",
             Self::Secrets(_) => "secrets",
-            Self::GetSecret(_) => "get-secret",
-            Self::SetSecret(_) => "set-secret",
-            Self::StartLocal(_) => "start-local",
-            Self::StartLocalVisible(_) => "start-local-visible",
-            Self::StopLocal(_) => "stop-local",
-            Self::RestartLocal(_) => "restart-local",
-            Self::RestartLocalVisible(_) => "restart-local-visible",
             Self::GetSelector(_) => "get-selector",
             Self::GetUbuntuSelector(_) => "get-ubuntu-selector",
-            Self::SetSelector(_) => "set-selector",
-            Self::SetUbuntuSelector(_) => "set-ubuntu-selector",
             Self::Trace(_) => "trace",
             Self::TraceUbuntu(_) => "trace-ubuntu",
             Self::GetOperation(_) => "get-operation",
@@ -334,116 +242,35 @@ mod tests {
     use clap::Parser;
 
     #[test]
-    fn parses_installed_automation_commands() {
-        assert!(Cli::try_parse_from(["edge-console", "ensure-controller"]).is_ok());
-        assert!(Cli::try_parse_from(["edge-console", "credential-initial-probe"]).is_ok());
-        assert!(
-            Cli::try_parse_from([
-                "edge-console",
-                "credential-initial-probe",
-                "--install-root",
-                r"C:\sing-box"
-            ])
-            .is_ok()
-        );
-        assert!(Cli::try_parse_from(["edge-console", "reconcile"]).is_ok());
-        assert!(Cli::try_parse_from(["edge-console", "smoke-runtime"]).is_ok());
-        assert!(
-            Cli::try_parse_from([
-                "edge-console",
-                "provision-runtime-state",
-                "--install-root",
-                r"C:\sing-box"
-            ])
-            .is_ok()
-        );
-        assert!(Cli::try_parse_from(["edge-console", "privileged-ping"]).is_ok());
-        assert!(Cli::try_parse_from(["edge-console", "privileged-runtime-evidence"]).is_ok());
-        assert!(
-            Cli::try_parse_from(["edge-console", "privileged-restart-controller-service"]).is_ok()
-        );
-        assert!(Cli::try_parse_from(["edge-console", "verify-runtime"]).is_ok());
-        assert!(Cli::try_parse_from(["edge-console", "quality-line1"]).is_ok());
-        assert!(
-            Cli::try_parse_from(["edge-console", "privileged-prepare-credential-access"]).is_ok()
-        );
-        assert!(
-            Cli::try_parse_from(["edge-console", "privileged-install-credential-access"]).is_ok()
-        );
-        assert!(
-            Cli::try_parse_from([
-                "edge-console",
-                "credential-transition",
-                "validate-candidate"
-            ])
-            .is_ok()
-        );
-        assert!(Cli::try_parse_from(["edge-console", "stage2-preflight"]).is_ok());
-        assert!(
-            Cli::try_parse_from([
-                "edge-console",
-                "privileged-offline-activate",
-                "0123456789abcdef0123456789abcdef01234567",
-                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-            ])
-            .is_ok()
-        );
-        assert!(
-            Cli::try_parse_from(["edge-console", "privileged-offline-rollback-previous"]).is_ok()
-        );
-        assert!(Cli::try_parse_from(["edge-console", "restart-verify-runtime"]).is_ok());
-        assert!(
-            Cli::try_parse_from([
-                "edge-console",
-                "privileged-activate",
-                "0123456789abcdef0123456789abcdef01234567",
-                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-            ])
-            .is_ok()
-        );
-        assert!(
-            Cli::try_parse_from([
-                "edge-console",
-                "privileged-reinstall-accepted",
-                "0123456789abcdef0123456789abcdef01234567",
-                "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
-            ])
-            .is_ok()
-        );
-        assert!(
-            Cli::try_parse_from([
-                "edge-console",
-                "privileged-dispatch",
-                "--install-root",
-                r"C:\sing-box"
-            ])
-            .is_ok()
-        );
+    fn readonly_console_commands_remain_parseable() {
+        for command in [
+            "status", "doctor", "credential-state", "credential-initial-probe",
+            "privileged-ping", "privileged-runtime-evidence", "privileged-dispatch",
+            "verify-runtime", "quality-line1", "secrets", "get-selector",
+            "get-ubuntu-selector", "trace", "trace-ubuntu",
+        ] {
+            assert!(Cli::try_parse_from(["edge-console", command]).is_ok(), "{command}");
+        }
+        assert!(Cli::try_parse_from(["edge-console", "get-operation", "42"]).is_ok());
     }
 
     #[test]
-    fn parses_operation_id_as_typed_integer() {
-        assert!(Cli::try_parse_from(["edge-console", "credential-initial-attest"]).is_err());
-        assert!(
-            Cli::try_parse_from([
-                "edge-console",
-                "credential-initial-attest",
-                "101",
-                "a",
-                &"a".repeat(64),
-                &"b".repeat(64),
-                "1011",
-                "--install-root",
-                r"C:\sing-box-acceptance",
-            ])
-            .is_ok()
-        );
-        let cli = Cli::try_parse_from(["edge-console", "get-operation", "42"]).unwrap();
-        assert_eq!(cli.command_name(), "get-operation");
-    }
-
-    #[test]
-    fn rejects_unknown_console_command() {
-        assert!(Cli::try_parse_from(["edge-console", "powershell"]).is_err());
+    fn legacy_console_mutation_ingress_is_unparseable() {
+        for command in [
+            "menu", "ensure-controller", "reconcile", "credential-initial-attest",
+            "credential-initial-acceptance-bootstrap", "credential-initial-acceptance-stage",
+            "credential-initial-line1-witness", "credential-existing-line1-witness",
+            "smoke-runtime", "stage2-preflight", "provision-runtime-state",
+            "privileged-activate", "privileged-reinstall-accepted",
+            "privileged-rollback-previous", "privileged-offline-activate",
+            "offline-bootstrap", "privileged-stage-credential", "credential-transition",
+            "privileged-initial-credential-commit", "privileged-existing-join",
+            "privileged-restart-controller-service", "privileged-start-proxy-only-controller",
+            "privileged-stop-proxy-only-controller", "set-secret", "get-secret",
+            "start-local", "start-local-visible", "stop-local", "restart-local",
+            "set-selector", "set-ubuntu-selector", "powershell",
+        ] {
+            assert!(Cli::try_parse_from(["edge-console", command]).is_err(), "{command}");
+        }
     }
 }
