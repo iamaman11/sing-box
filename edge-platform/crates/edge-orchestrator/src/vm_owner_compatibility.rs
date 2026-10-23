@@ -292,6 +292,7 @@ pub(super) async fn reconcile_before_enrollment(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use base64::Engine as _;
     #[test]
     fn drift_and_lost_ack_are_not_replayed() {
         let old = "a".repeat(64);
