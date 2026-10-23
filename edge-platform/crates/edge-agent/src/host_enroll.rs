@@ -503,7 +503,7 @@ pub(crate) async fn refresh_current() -> Result<(), String> {
         .map_err(|_| "HOST_REFRESH_OWNER_BINARY_UNAVAILABLE")?;
     if !meta.file_type().is_file()
         || meta.uid() != 0
-        || meta.permissions().mode() != 0o755
+        || meta.permissions().mode() & 0o777 != 0o755
         || meta.len() == 0
         || meta.len() > 32 * 1024 * 1024
     {
@@ -586,6 +586,35 @@ fn current_published_release_digest(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn native_refresh_accepts_only_exact_latest_main_release() {
+        let sha = "a".repeat(40);
+        let digest = "b".repeat(64);
+        let head = serde_json::json!({"object":{"type":"commit","sha":sha}});
+        let latest = serde_json::json!({
+            "target_commitish":sha,
+            "draft":false,
+            "prerelease":false,
+            "tag_name":format!("edge-release-{digest}")
+        });
+        assert_eq!(
+            current_published_release_digest(&head, &latest).unwrap(),
+            digest
+        );
+        let mut stale = latest.clone();
+        stale["target_commitish"] = serde_json::json!("c".repeat(40));
+        assert!(current_published_release_digest(&head, &stale).is_err());
+        let mut draft = latest.clone();
+        draft["draft"] = serde_json::json!(true);
+        assert!(current_published_release_digest(&head, &draft).is_err());
+        let mut unsafe_tag = latest.clone();
+        unsafe_tag["tag_name"] = serde_json::json!("edge-release-../escape");
+        assert!(current_published_release_digest(&head, &unsafe_tag).is_err());
+        let mut invalid_head = head;
+        invalid_head["object"]["type"] = serde_json::json!("tag");
+        assert!(current_published_release_digest(&invalid_head, &latest).is_err());
+    }
+
     #[test]
     fn enrollment_can_never_choose_a_worker_signer_outside_protected_git() {
         let mut host = edge_shared_types::FleetHost {
