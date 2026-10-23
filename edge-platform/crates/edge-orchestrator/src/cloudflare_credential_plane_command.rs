@@ -4138,7 +4138,10 @@ mod tests {
                 "JWT_KEY_UNAVAILABLE",
                 "WORKER_CONFIG_UNPROVEN",
             ] {
-                assert!(source.contains(reason), "Worker must expose {reason} safely");
+                assert!(
+                    source.contains(reason),
+                    "Worker must expose {reason} safely"
+                );
             }
             assert!(source.contains("GITHUB_APPROVAL_DENIED"));
             assert!(source.contains("GITHUB_DEPENDENCY_UNAVAILABLE"));
