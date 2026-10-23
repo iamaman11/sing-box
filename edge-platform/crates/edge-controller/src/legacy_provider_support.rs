@@ -164,7 +164,10 @@ pub(super) async fn prepare_agent_transport(
     })
 }
 
-pub(super) fn should_fallback_to_ssh_bootstrap(direct_endpoint: &str, state: &Arc<Mutex<EdgeState>>) -> bool {
+pub(super) fn should_fallback_to_ssh_bootstrap(
+    direct_endpoint: &str,
+    state: &Arc<Mutex<EdgeState>>,
+) -> bool {
     env::var_os("EDGE_AGENT_ENDPOINT").is_none()
         && direct_endpoint == DEFAULT_AGENT_ENDPOINT
         && has_configured_secret_ref(state, SECRET_SSH_PRIVATE_KEY_PATH)
@@ -336,7 +339,10 @@ pub(super) fn default_edge_agent_binary_path(repo_root: &Path) -> Option<PathBuf
     candidates.into_iter().find(|candidate| candidate.is_file())
 }
 
-pub(super) fn stage_ssh_private_key(repo_root: &Path, source_path: &Path) -> Result<PathBuf, String> {
+pub(super) fn stage_ssh_private_key(
+    repo_root: &Path,
+    source_path: &Path,
+) -> Result<PathBuf, String> {
     let runtime_dir = repo_root.join("edge-platform").join(".runtime");
     fs::create_dir_all(&runtime_dir)
         .map_err(|err| format!("failed to create {}: {err}", runtime_dir.display()))?;
@@ -590,7 +596,11 @@ pub(super) fn start_ssh_tunnel(
     ))
 }
 
-pub(super) fn ssh_args(config: &BootstrapAccessConfig, target_ip: &str, command: &str) -> Vec<String> {
+pub(super) fn ssh_args(
+    config: &BootstrapAccessConfig,
+    target_ip: &str,
+    command: &str,
+) -> Vec<String> {
     vec![
         "-i".to_owned(),
         config.private_key_path.display().to_string(),
