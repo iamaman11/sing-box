@@ -336,7 +336,18 @@ jobs:
             --hosts-sha256 "${HOST_FLEET_SHA256}" \
             vm-worker-authorizer-upgrade "${TARGET_MACHINE}" --plan-only |
             tee "${RUNNER_TEMP}/host-vm-worker-plan.txt"
-          # The Rust producer writes the only enum-derived required scalar.
+          # Rust emits only required=true/false after exact live GET validation.
+
+      - name: Require exact Rust VM Worker plan decision
+        shell: bash
+        env:
+          RUST_WORKER_PLAN_REQUIRED: ${{ steps.plan.outputs.required }}
+        run: |
+          set -euo pipefail
+          case "${RUST_WORKER_PLAN_REQUIRED}" in
+            true|false) ;;
+            *) echo 'HOST_VM_WORKER_TYPED_DECISION_MISSING_OR_INVALID' >&2; exit 1 ;;
+          esac
 
       - name: Reserve one durable VM Worker version transaction before mutation
         if: steps.plan.outputs.required == 'true'

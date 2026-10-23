@@ -69,14 +69,14 @@ pub(super) fn select_unique_vultr_instance_by_label(
 }
 
 pub(super) struct PrepareAgentTransportContext<'a> {
-    repo_root: &'a Path,
-    direct_endpoint: &'a str,
-    request: &'a DeployRequest,
-    target: &'a ResolvedDeployTarget,
-    preexisting_agent_target: Option<AgentConnectionTarget>,
-    preexisting_agent_trust: bool,
-    operation_id: i64,
-    state: &'a Arc<Mutex<EdgeState>>,
+    pub(super) repo_root: &'a Path,
+    pub(super) direct_endpoint: &'a str,
+    pub(super) request: &'a DeployRequest,
+    pub(super) target: &'a ResolvedDeployTarget,
+    pub(super) preexisting_agent_target: Option<AgentConnectionTarget>,
+    pub(super) preexisting_agent_trust: bool,
+    pub(super) operation_id: i64,
+    pub(super) state: &'a Arc<Mutex<EdgeState>>,
 }
 
 pub(super) async fn prepare_agent_transport(
