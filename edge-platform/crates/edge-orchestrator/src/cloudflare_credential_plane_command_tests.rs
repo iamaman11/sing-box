@@ -119,8 +119,7 @@ fn only_one_vm_worker_may_hold_host_signer_secrets() {
         .collect::<Vec<_>>();
     assert!(require_exact_secret_bindings("sing-box-credentials-vm", "vm", &extra).is_ok());
     assert!(
-        require_exact_secret_bindings("sing-box-credentials-windows", "windows", &extra)
-            .is_err()
+        require_exact_secret_bindings("sing-box-credentials-windows", "windows", &extra).is_err()
     );
     let mut injected = extra;
     injected[3].name = "ATTACKER_EXTRA_SECRET".to_owned();
@@ -313,9 +312,7 @@ fn exact_patch_readback_blocks_foreign_versions_or_implicit_deploy() {
     changed = pending.clone();
     changed.worker_secret_bindings.pop();
     assert!(verify_exact_pending_worker_version(&original, &changed, "fresh-version").is_err());
-    assert!(
-        verify_exact_pending_worker_version(&original, &original, "fresh-version").is_err()
-    );
+    assert!(verify_exact_pending_worker_version(&original, &original, "fresh-version").is_err());
 }
 
 #[test]
@@ -373,82 +370,47 @@ fn initial_provider_intent_is_exact_version_and_identity_bound() {
     make_terminal(&mut observed, "vm");
     make_terminal(&mut observed, "windows");
 
-    let initial = initial_pair_provider_intent_sha256(
-        &desired,
-        &observed,
-        207,
-        CredentialDeliverySlotArg::A,
-    )
-    .unwrap();
+    let initial =
+        initial_pair_provider_intent_sha256(&desired, &observed, 207, CredentialDeliverySlotArg::A)
+            .unwrap();
     assert_eq!(initial.len(), 64);
     assert!(initial.bytes().all(|byte| byte.is_ascii_hexdigit()));
     assert_eq!(
         initial,
-        initial_pair_provider_intent_sha256(
-            &desired,
-            &observed,
-            207,
-            CredentialDeliverySlotArg::A
-        )
-        .unwrap()
+        initial_pair_provider_intent_sha256(&desired, &observed, 207, CredentialDeliverySlotArg::A)
+            .unwrap()
     );
     assert_ne!(
         initial,
-        initial_pair_provider_intent_sha256(
-            &desired,
-            &observed,
-            208,
-            CredentialDeliverySlotArg::A
-        )
-        .unwrap()
+        initial_pair_provider_intent_sha256(&desired, &observed, 208, CredentialDeliverySlotArg::A)
+            .unwrap()
     );
     assert_ne!(
         initial,
-        initial_pair_provider_intent_sha256(
-            &desired,
-            &observed,
-            207,
-            CredentialDeliverySlotArg::B
-        )
-        .unwrap()
+        initial_pair_provider_intent_sha256(&desired, &observed, 207, CredentialDeliverySlotArg::B)
+            .unwrap()
     );
 
     // Even a fully valid new Worker deployment invalidates all previously
     // observed attestations. Never reuse an intent under a changed version.
-    observed.projections[0].worker_latest_version_id =
-        Some("windows-updated-version".to_owned());
-    observed.projections[0].worker_active_version_ids =
-        vec!["windows-updated-version".to_owned()];
-    let changed = initial_pair_provider_intent_sha256(
-        &desired,
-        &observed,
-        207,
-        CredentialDeliverySlotArg::A,
-    )
-    .unwrap();
+    observed.projections[0].worker_latest_version_id = Some("windows-updated-version".to_owned());
+    observed.projections[0].worker_active_version_ids = vec!["windows-updated-version".to_owned()];
+    let changed =
+        initial_pair_provider_intent_sha256(&desired, &observed, 207, CredentialDeliverySlotArg::A)
+            .unwrap();
     assert_ne!(initial, changed);
     observed.projections[0].worker_active_version_ids = vec!["windows-version-id".to_owned()];
     assert!(
-        initial_pair_provider_intent_sha256(
-            &desired,
-            &observed,
-            207,
-            CredentialDeliverySlotArg::A
-        )
-        .is_err()
+        initial_pair_provider_intent_sha256(&desired, &observed, 207, CredentialDeliverySlotArg::A)
+            .is_err()
     );
     observed.projections[0].worker_latest_version_id = Some("windows-version-id".to_owned());
     observed.projections[0].host_service_token_client_id =
         Some("replaced-access-client-id".to_owned());
     assert_ne!(
         initial,
-        initial_pair_provider_intent_sha256(
-            &desired,
-            &observed,
-            207,
-            CredentialDeliverySlotArg::A
-        )
-        .unwrap()
+        initial_pair_provider_intent_sha256(&desired, &observed, 207, CredentialDeliverySlotArg::A)
+            .unwrap()
     );
 }
 
@@ -493,8 +455,7 @@ fn initial_pair_provider_gate_rejects_any_identity_or_version_drift() {
         )
         .is_err()
     );
-    observed.projections[1].host_service_token_client_id =
-        Some("distinct-client-id".to_owned());
+    observed.projections[1].host_service_token_client_id = Some("distinct-client-id".to_owned());
     observed.projections[1].worker_active_version_ids = vec!["stale-active-version".to_owned()];
     assert!(
         validate_initial_pair_provider_observation(
@@ -813,8 +774,7 @@ fn vm_only_upgrade_keeps_unknown_but_consistent_windows_code_read_only() {
     windows.worker_version_tag = Some("independent-windows-release-abc".to_owned());
     windows.worker_latest_version_tag = windows.worker_version_tag.clone();
     assert!(
-        projection_delivery_state(&d, &projection_desired(&d, "windows").unwrap(), &obs)
-            .is_err()
+        projection_delivery_state(&d, &projection_desired(&d, "windows").unwrap(), &obs).is_err()
     );
     assert!(verify_vm_only_windows_neighbour(&d, &obs).is_ok());
     let baseline = super::projection_observation(&obs, "windows")

@@ -106,12 +106,8 @@ fn native_stop_requires_complete_state_and_never_adopts_mesh() {
             .is_ok()
     );
     assert!(
-        exact_application_compose_owner(
-            "vultr-cloudflare-mesh",
-            &valid_project,
-            &vm_scope_test()
-        )
-        .is_err()
+        exact_application_compose_owner("vultr-cloudflare-mesh", &valid_project, &vm_scope_test())
+            .is_err()
     );
 }
 
@@ -146,8 +142,7 @@ fn native_owner_requires_exact_compose_service_identity() {
     );
     labels.remove("com.docker.compose.project");
     assert!(
-        exact_application_compose_owner("vultr-line1-gateway", &labels, &vm_scope_test())
-            .is_err()
+        exact_application_compose_owner("vultr-line1-gateway", &labels, &vm_scope_test()).is_err()
     );
     labels.insert("com.docker.compose.project".into(), "vultr-edge".into());
     labels.insert("com.docker.compose.service".into(), "warp-egress".into());
@@ -176,8 +171,7 @@ fn bollard_inspect_string_mount_type_is_exactly_bind_without_debug_quotes() {
     assert_ne!(format!("{:?}", "bind"), "bind");
 
     for kind in [None, Some("volume"), Some("tmpfs"), Some("BIND"), Some("")] {
-        let result =
-            require_exact_readonly_config_bind("vultr-line1-gateway", kind, Some(false));
+        let result = require_exact_readonly_config_bind("vultr-line1-gateway", kind, Some(false));
         assert!(result.is_err());
     }
     for writable in [Some(true), None] {
