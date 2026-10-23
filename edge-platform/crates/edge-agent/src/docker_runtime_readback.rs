@@ -97,7 +97,8 @@ pub(super) async fn observe_native_nft_ruleset() -> Option<(Vec<u8>, u32)> {
 
 /// Same installed root Agent, same typed readback: netlink, DNS configuration,
 /// and nft ruleset are separate observations. Unknown stays UNKNOWN.
-pub(super) async fn observe_native_vm_network_readback() -> edge_shared_types::FleetVmNetworkReadback {
+pub(super) async fn observe_native_vm_network_readback() -> edge_shared_types::FleetVmNetworkReadback
+{
     let ipv4 = super::super::network_observation::observe_ipv4_network()
         .await
         .ok()
@@ -152,7 +153,10 @@ pub(super) fn observe_native_vm_credential_readback(
         {
             state
         }
-        Ok(None) if super::super::vm_credential_store_root(stack_dir).is_ok_and(|path| !path.exists()) => {
+        Ok(None)
+            if super::super::vm_credential_store_root(stack_dir)
+                .is_ok_and(|path| !path.exists()) =>
+        {
             return make(State::StoreAbsent, 0, 0);
         }
         _ => return make(State::Unproven, 0, 0),
@@ -337,7 +341,8 @@ pub(crate) async fn observe_vm_resource_report(
             Err(error) => (None, error.status as i32, error.code),
         };
     let credential = observe_native_vm_credential_readback(stack_dir);
-    let mut bootstrap_phase = super::super::host_native::local_vm_bootstrap_phase(host, &credential);
+    let mut bootstrap_phase =
+        super::super::host_native::local_vm_bootstrap_phase(host, &credential);
     // Run only for a trust-verified, Git-pinned first use with no local ACTIVE.
     // A failed GET becomes an exact read-only dependency reason, never a
     // failed deep report, a credential write or permission to start Docker.
