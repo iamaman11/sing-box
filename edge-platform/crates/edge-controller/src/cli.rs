@@ -27,16 +27,8 @@ pub(crate) enum Command {
     #[cfg(windows)]
     WindowsService(ServeArgs),
     GetStatus(ControllerEndpointArgs),
-    ControllerBootstrapRuntime(ControllerBootstrapArgs),
-    BootstrapRuntime(AgentBootstrapArgs),
-    StartLocal(ControllerEndpointArgs),
-    StopLocal(ControllerEndpointArgs),
-    RestartLocal(ControllerEndpointArgs),
     GetSelector(ControllerEndpointArgs),
-    SetSelector(SetSelectorArgs),
     Trace(ControllerEndpointArgs),
-    Deploy(DeployArgs),
-    Destroy(DestroyArgs),
 }
 
 impl Command {
@@ -46,16 +38,8 @@ impl Command {
             #[cfg(windows)]
             Self::WindowsService(_) => "windows-service",
             Self::GetStatus(_) => "get-status",
-            Self::ControllerBootstrapRuntime(_) => "controller-bootstrap-runtime",
-            Self::BootstrapRuntime(_) => "bootstrap-runtime",
-            Self::StartLocal(_) => "start-local",
-            Self::StopLocal(_) => "stop-local",
-            Self::RestartLocal(_) => "restart-local",
             Self::GetSelector(_) => "get-selector",
-            Self::SetSelector(_) => "set-selector",
             Self::Trace(_) => "trace",
-            Self::Deploy(_) => "deploy",
-            Self::Destroy(_) => "destroy",
         }
     }
 }
