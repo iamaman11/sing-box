@@ -443,7 +443,15 @@ fn verify_canonical_dummy_ab_probe(
 /// response never grants permission for native mutation or an authorization replay.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HostWorkerAuthorizationRejection {
-    AccessJwtRejected,
+    JwtMissing,
+    JwtMalformed,
+    JwtExpired,
+    JwtNotYetValid,
+    JwtIssuerMismatch,
+    JwtAudienceMismatch,
+    JwtSignatureRejected,
+    JwtKeyUnavailable,
+    WorkerConfigUnproven,
     GithubApprovalDenied,
     GithubDependencyUnavailable,
     UnclassifiedPolicyDenied,
@@ -453,7 +461,15 @@ enum HostWorkerAuthorizationRejection {
 impl HostWorkerAuthorizationRejection {
     fn from_response(status: StatusCode, reason: Option<&str>) -> Self {
         match (status, reason) {
-            (StatusCode::FORBIDDEN, Some("ACCESS_JWT_REJECTED")) => Self::AccessJwtRejected,
+            (StatusCode::FORBIDDEN, Some("JWT_MISSING")) => Self::JwtMissing,
+            (StatusCode::FORBIDDEN, Some("JWT_MALFORMED")) => Self::JwtMalformed,
+            (StatusCode::FORBIDDEN, Some("JWT_EXPIRED")) => Self::JwtExpired,
+            (StatusCode::FORBIDDEN, Some("JWT_NOT_YET_VALID")) => Self::JwtNotYetValid,
+            (StatusCode::FORBIDDEN, Some("JWT_ISSUER_MISMATCH")) => Self::JwtIssuerMismatch,
+            (StatusCode::FORBIDDEN, Some("JWT_AUDIENCE_MISMATCH")) => Self::JwtAudienceMismatch,
+            (StatusCode::FORBIDDEN, Some("JWT_SIGNATURE_REJECTED")) => Self::JwtSignatureRejected,
+            (StatusCode::FORBIDDEN, Some("JWT_KEY_UNAVAILABLE")) => Self::JwtKeyUnavailable,
+            (StatusCode::FORBIDDEN, Some("WORKER_CONFIG_UNPROVEN")) => Self::WorkerConfigUnproven,
             (StatusCode::FORBIDDEN, Some("GITHUB_APPROVAL_DENIED")) => Self::GithubApprovalDenied,
             (StatusCode::SERVICE_UNAVAILABLE, Some("GITHUB_DEPENDENCY_UNAVAILABLE")) => {
                 Self::GithubDependencyUnavailable
@@ -465,7 +481,15 @@ impl HostWorkerAuthorizationRejection {
 
     fn code(self) -> &'static str {
         match self {
-            Self::AccessJwtRejected => "HOST_WORKER_ACCESS_JWT_REJECTED",
+            Self::JwtMissing => "HOST_WORKER_JWT_MISSING",
+            Self::JwtMalformed => "HOST_WORKER_JWT_MALFORMED",
+            Self::JwtExpired => "HOST_WORKER_JWT_EXPIRED",
+            Self::JwtNotYetValid => "HOST_WORKER_JWT_NOT_YET_VALID",
+            Self::JwtIssuerMismatch => "HOST_WORKER_JWT_ISSUER_MISMATCH",
+            Self::JwtAudienceMismatch => "HOST_WORKER_JWT_AUDIENCE_MISMATCH",
+            Self::JwtSignatureRejected => "HOST_WORKER_JWT_SIGNATURE_REJECTED",
+            Self::JwtKeyUnavailable => "HOST_WORKER_JWT_KEY_UNAVAILABLE",
+            Self::WorkerConfigUnproven => "HOST_WORKER_CONFIG_UNPROVEN",
             Self::GithubApprovalDenied => "HOST_WORKER_GITHUB_APPROVAL_DENIED",
             Self::GithubDependencyUnavailable => {
                 "HOST_WORKER_GITHUB_DEPENDENCY_UNAVAILABLE_NO_REPLAY"
@@ -577,8 +601,48 @@ mod tests {
         let cases = [
             (
                 StatusCode::FORBIDDEN,
-                Some("ACCESS_JWT_REJECTED"),
-                "HOST_WORKER_ACCESS_JWT_REJECTED",
+                Some("JWT_MISSING"),
+                "HOST_WORKER_JWT_MISSING",
+            ),
+            (
+                StatusCode::FORBIDDEN,
+                Some("JWT_MALFORMED"),
+                "HOST_WORKER_JWT_MALFORMED",
+            ),
+            (
+                StatusCode::FORBIDDEN,
+                Some("JWT_EXPIRED"),
+                "HOST_WORKER_JWT_EXPIRED",
+            ),
+            (
+                StatusCode::FORBIDDEN,
+                Some("JWT_NOT_YET_VALID"),
+                "HOST_WORKER_JWT_NOT_YET_VALID",
+            ),
+            (
+                StatusCode::FORBIDDEN,
+                Some("JWT_ISSUER_MISMATCH"),
+                "HOST_WORKER_JWT_ISSUER_MISMATCH",
+            ),
+            (
+                StatusCode::FORBIDDEN,
+                Some("JWT_AUDIENCE_MISMATCH"),
+                "HOST_WORKER_JWT_AUDIENCE_MISMATCH",
+            ),
+            (
+                StatusCode::FORBIDDEN,
+                Some("JWT_SIGNATURE_REJECTED"),
+                "HOST_WORKER_JWT_SIGNATURE_REJECTED",
+            ),
+            (
+                StatusCode::FORBIDDEN,
+                Some("JWT_KEY_UNAVAILABLE"),
+                "HOST_WORKER_JWT_KEY_UNAVAILABLE",
+            ),
+            (
+                StatusCode::FORBIDDEN,
+                Some("WORKER_CONFIG_UNPROVEN"),
+                "HOST_WORKER_CONFIG_UNPROVEN",
             ),
             (
                 StatusCode::FORBIDDEN,
