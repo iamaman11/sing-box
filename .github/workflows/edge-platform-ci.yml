@@ -422,16 +422,15 @@ jobs:
           assert "VultrVpc" not in controller_cli
           assert "ApplicationLifecycle" not in orchestrator_cli
           assert "VultrLifecycle" not in orchestrator_cli
-assert "ApplicationAcceptance" not in orchestrator_cli
-assert "VultrVpcCommand" not in orchestrator_cli
-assert "CredentialReadOnlyCommand" in orchestrator_cli
-assert "HostWorkflowOperation" in Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text()
-assert "host_action_json=" in Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text()
-assert "mod host_dispatch;" in orchestrator_main
-assert "mod local_dispatch;" in agent_main
-assert "mod controller_rpc;" in controller_main
-assert "mod command_dispatch;" in console_main
-
+          assert "ApplicationAcceptance" not in orchestrator_cli
+          assert "VultrVpcCommand" not in orchestrator_cli
+          assert "CredentialReadOnlyCommand" in orchestrator_cli
+          assert "HostWorkflowOperation" in Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text()
+          assert "host_action_json=" in Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text()
+          assert "mod host_dispatch;" in orchestrator_main
+          assert "mod local_dispatch;" in agent_main
+          assert "mod controller_rpc;" in controller_main
+          assert "mod command_dispatch;" in console_main
           assert "cloudflare-dns" not in orchestrator_cli
           assert "line3-mesh" not in orchestrator_cli
           assert "pub async fn run(args: Vec<String>)" not in dns_command
