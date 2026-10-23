@@ -57,4 +57,16 @@ assert "if: steps.plan.outputs.required == 'false' && needs.host.outputs.operati
 assert "vm-worker-signer-prepare" in worker and "vm-worker-signer-commit" in worker
 assert worker.index("Apply exact VM Worker code once") < worker.index("Prepare one ephemeral VM signer")
 
+# Physical CREATE must never depend on a Git-only credential reference.
+# The same bounded native Worker GET checks the typed non-dummy payload at
+# preflight and again immediately before provider mutation.
+provider=Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_command.rs").read_text(encoding="utf-8")
+worker_src=Path("edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs").read_text(encoding="utf-8")
+gate="verify_current_vm_first_use_worker_source("
+assert provider.count(gate)==2, "missing actual Worker GET before first-use / CREATE"
+assert provider.index(gate) < provider.index('host_first_use_provider_plan=EXACT_CREATE_ONLY')
+assert provider.rindex(gate) < provider.index("acceptance_create_machine(provider_spec, machine_id).await?")
+assert "get_vm_credential_bundle_with_access(" in worker_src
+assert "attest_vm_first_use_credential_bytes(&bytes, generation, expected_sha256)?" in worker_src
+
 print("native_only_workflow_topology=PASS")
