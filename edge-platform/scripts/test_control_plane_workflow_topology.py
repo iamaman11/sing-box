@@ -105,4 +105,11 @@ assert "async fn run_local_bundle_converge(" not in agent_main
 assert "async fn run_local_bootstrap(" not in agent_main
 assert 'mod native_mutation_ingress_tests;' in agent_main
 
+# A single canonical /host dispatch: retired Mesh direct mutation modules
+# cannot be reintroduced through a hidden Rust binary or a stray workflow.
+for name in ("cloudflare_mesh_lifecycle_command", "cloudflare_mesh_profile_command"):
+    assert not Path(f"edge-platform/crates/edge-orchestrator/src/{name}.rs").exists()
+    assert f"mod {name};" not in orchestrator_main
+assert "MeshProfileCommand" not in orchestrator_cli
+
 print("native_only_workflow_topology=PASS")

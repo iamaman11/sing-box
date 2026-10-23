@@ -499,13 +499,6 @@ pub(crate) enum CloudflareZeroTrustCommand {
     Doctor(ZeroTrustDoctorArgs),
 }
 
-#[derive(Debug, Subcommand)]
-pub(crate) enum MeshProfileCommand {
-    Plan,
-    Apply { authorized_plan_sha256: String },
-    Verify,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub(crate) enum ZeroTrustReadinessScope {
     AndroidClient,

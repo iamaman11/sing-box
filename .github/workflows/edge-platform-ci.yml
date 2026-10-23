@@ -206,8 +206,6 @@ jobs:
           grep -Fq 'ACME_PROVIDER must be letsencrypt or the exact Let’s Encrypt staging directory' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'MESH_RUNTIME_SECRET_FILE: &str = "mesh-node-v1.env"' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'run_mesh_compose(' edge-platform/crates/edge-agent/src/main.rs
-          grep -Fq 'pub(crate) async fn acceptance_runtime_apply(' edge-platform/crates/edge-orchestrator/src/cloudflare_mesh_lifecycle_command.rs
-          grep -Fq 'pub(crate) async fn acceptance_runtime_cleanup(' edge-platform/crates/edge-orchestrator/src/cloudflare_mesh_lifecycle_command.rs
           grep -Fq '${MESH_STATE_DIR:-../mesh-state}:/var/lib/cloudflare-warp' win/vultr-waw/stack/docker-compose.yml
           grep -Fq 'mesh_registration_state_dir' edge-platform/crates/edge-agent/src/main.rs
           grep -Fq 'MESH_STATE_DIR_KEY' edge-platform/crates/edge-agent/src/main.rs
@@ -365,9 +363,6 @@ jobs:
           application_service = Path(
               "edge-platform/crates/edge-orchestrator/src/application_lifecycle_service.rs"
           ).read_text()
-          mesh_command = Path(
-              "edge-platform/crates/edge-orchestrator/src/cloudflare_mesh_lifecycle_command.rs"
-          ).read_text()
 
           assert not Path("edge-platform/proto/edge_platform.proto").exists()
           assert not Path("edge-platform/proto/release_set.proto").exists()
@@ -402,8 +397,6 @@ jobs:
               assert "verify_exact_authority" in mutation_boundary
           assert "authorize_dns_apply" in dns_command
           assert "authorize_dns_cleanup" in dns_command
-          assert "authorize_mesh_apply" in mesh_command
-          assert "authorize_mesh_cleanup" in mesh_command
           assert "authorized-plan-sha256" in vpc_command_authority
           assert "authorized-plan-sha256" in vultr_command_authority
           assert "rpc Recover" not in agent_proto
@@ -433,13 +426,18 @@ jobs:
           assert "fromJSON(needs.host.outputs.host_action_json)" not in Path(".github/workflows/edge-control-plane.yml").read_text()
           assert "fromJSON(needs.host.outputs.host_matrix)" in Path(".github/workflows/edge-control-plane.yml").read_text()
           assert "mod host_dispatch;" in orchestrator_main
+          # Retired Cloudflare Mesh direct mutate handlers are absent, not
+          # reachable via a hidden Clap command or alternative SSH transport.
+          for retired in ("cloudflare_mesh_lifecycle_command", "cloudflare_mesh_profile_command"):
+              assert not Path(f"edge-platform/crates/edge-orchestrator/src/{retired}.rs").exists()
+              assert f"mod {retired};" not in orchestrator_main
+          assert "MeshProfileCommand" not in orchestrator_cli
           assert "mod local_dispatch;" in agent_main
           assert "mod controller_rpc;" in controller_main
           assert "mod command_dispatch;" in console_main
           assert "cloudflare-dns" not in orchestrator_cli
           assert "line3-mesh" not in orchestrator_cli
           assert "pub async fn run(args: Vec<String>)" not in dns_command
-          assert "pub async fn run(args: Vec<String>)" not in mesh_command
           assert "EDGE_CORRELATION_ID" in observability
           assert "with_max_level(Level::INFO)" in observability
           assert 'clap = { version = "=4.6.7"' in agent_manifest
@@ -468,13 +466,6 @@ jobs:
           assert "observe_ipv4_network_remote" in application_service
           assert ".observe_ipv4_network(" in application_service
 
-          assert "verify_vpc_ready" in mesh_command
-          assert "observe_ipv4_network_remote" in mesh_command
-          assert "run-local route authority comes only from verified Vultr VPC state" in mesh_command
-          assert "guest_vpc" in mesh_command
-          assert "ip -j -4 address" not in mesh_command
-          assert "ip -j -4 route" not in mesh_command
-          assert "strict_ssh_capture" not in mesh_command
 
           # The disconnected SSH/cleanup acceptance-v1 coordinator must be
           # physically absent. The only remaining legacy validation is scoped
