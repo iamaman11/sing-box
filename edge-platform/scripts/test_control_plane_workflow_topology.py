@@ -5316,13 +5316,16 @@ def test_one_host_apply_reconciles_root_trust_before_native_dispatch() -> None:
     require(refresh.index("--agent-path") < refresh.index("host_owner_compatibility=EXACT_ACCEPTED_AGENT"),
             "published Agent must be passed to typed compatibility check before acceptance")
 
-    # The owner update may truthfully report either 0 or 1 native mutation.
-    # A shell typo here previously hid successful admission or a real failure.
+    # Native owner transition must emit an anchored 0/1 mutation counter.
     resume = workflow.split("  host_resume_receipt:\n", 1)[1].split(
         "  host_resume_native:\n", 1
     )[0]
-    require(
-        "grep -Eq '^host_mutations=[01]
+    for section in (refresh, resume):
+        require(
+            "grep -Eq '^host_mutations=[01]$'" in section,
+            "native mutation counter must have a closed exact regex",
+        )
+    
     require("gh run download" not in refresh
             and "vultr-lifecycle apply" not in refresh
             and "local host-apply" not in refresh,
