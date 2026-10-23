@@ -1636,16 +1636,23 @@ mod tests {
                 .unwrap()
                 .as_nanos()
         ));
-        let _file = OpenOptions::new()
+        let file = OpenOptions::new()
             .write(true)
             .create_new(true)
             .open(&path)
             .unwrap();
+        drop(file);
         assert!(append_host_verifier_output(&path, "host_mutations", "0").is_err());
-        assert!(append_host_verifier_output(&path, "typed_verdict", "PASS\nrequired=true").is_err());
+        assert!(
+            append_host_verifier_output(&path, "typed_verdict", "PASS\nrequired=true").is_err()
+        );
         assert!(append_host_verifier_output(&path, "native_receipt_proof", "true").is_err());
-        assert!(append_host_verifier_output(&path, "typed_verdict", "UNPROVEN_NO_NATIVE_OWNER").is_ok());
-        assert!(append_host_verifier_output(&path, "native_receipt_proof", "OBSERVED_ONLY").is_ok());
+        assert!(
+            append_host_verifier_output(&path, "typed_verdict", "UNPROVEN_NO_NATIVE_OWNER").is_ok()
+        );
+        assert!(
+            append_host_verifier_output(&path, "native_receipt_proof", "OBSERVED_ONLY").is_ok()
+        );
         let recorded = std::fs::read_to_string(&path).unwrap();
         assert_eq!(
             recorded,
