@@ -3768,14 +3768,32 @@ async function GITHUB(info,e,now){
   return Number.isFinite(merged)&&merged>=stamp&&merged<=now+30&&
      now-merged<=86400?"APPROVED":"DENIED"; }catch{return "UNAVAILABLE"}
 }
-async function ACCESS(q,e){const iss=e.EDGE_HOST_ACCESS_ISSUER,aud=e.EDGE_HOST_ACCESS_AUD,t=q.headers.get("Cf-Access-Jwt-Assertion");if(typeof iss!=="string"||!/^https:\/\/[a-z0-9-]+\.cloudflareaccess\.com$/.test(iss)||typeof aud!=="string"||aud.length<8||aud.length>256||!t||t.length>8192)return false;
-const parts=t.split(".");if(parts.length!==3)return false;let h,c;try{h=JSON.parse(TD.decode(B64(parts[0])));c=JSON.parse(TD.decode(B64(parts[1])))}catch{return false}
-const now=Math.floor(Date.now()/1000);if(!h||h.alg!=="RS256"||typeof h.kid!=="string"||!c||c.iss!==iss||!Array.isArray(c.aud)||!c.aud.includes(aud)||!Number.isInteger(c.exp)||c.exp<=now||(c.nbf!==undefined&&(!Number.isInteger(c.nbf)||c.nbf>now+60)))return false;
-try{const res=await fetch(iss+"/cdn-cgi/access/certs",{redirect:"error"});if(!res.ok)return false;const certs=await res.json();const keys=Array.isArray(certs.keys)?certs.keys:[];const jwk=keys.find(k=>k.kid===h.kid&&k.kty==="RSA");if(!jwk)return false;const key=await crypto.subtle.importKey("jwk",jwk,{name:"RSASSA-PKCS1-v1_5",hash:"SHA-256"},false,["verify"]);return await crypto.subtle.verify("RSASSA-PKCS1-v1_5",key,B64(parts[2]),TE.encode(parts[0]+"."+parts[1]))}catch{return false}}
+async function ACCESS_REASON(q,e){
+const iss=e.EDGE_HOST_ACCESS_ISSUER,aud=e.EDGE_HOST_ACCESS_AUD;
+if(typeof iss!=="string"||!/^https:\/\/[a-z0-9-]+\.cloudflareaccess\.com$/.test(iss)||typeof aud!=="string"||aud.length<8||aud.length>256)return "WORKER_CONFIG_UNPROVEN";
+const t=q.headers.get("Cf-Access-Jwt-Assertion");
+if(!t)return "JWT_MISSING";
+if(t.length>8192)return "JWT_MALFORMED";
+const parts=t.split(".");if(parts.length!==3)return "JWT_MALFORMED";
+let h,c;try{h=JSON.parse(TD.decode(B64(parts[0])));c=JSON.parse(TD.decode(B64(parts[1])))}catch{return "JWT_MALFORMED"}
+if(!h||h.alg!=="RS256"||typeof h.kid!=="string"||!c)return "JWT_MALFORMED";
+if(c.iss!==iss)return "JWT_ISSUER_MISMATCH";
+if(!Array.isArray(c.aud)||!c.aud.includes(aud))return "JWT_AUDIENCE_MISMATCH";
+const now=Math.floor(Date.now()/1000);
+if(!Number.isInteger(c.exp))return "JWT_MALFORMED";
+if(c.exp<=now)return "JWT_EXPIRED";
+if(c.nbf!==undefined&&(!Number.isInteger(c.nbf)||c.nbf>now+60))return "JWT_NOT_YET_VALID";
+try{const res=await fetch(iss+"/cdn-cgi/access/certs",{redirect:"error"});if(!res.ok)return "JWT_KEY_UNAVAILABLE";
+const certs=await res.json(),keys=Array.isArray(certs.keys)?certs.keys:[];
+const jwk=keys.find(k=>k.kid===h.kid&&k.kty==="RSA");
+if(!jwk)return "JWT_KEY_UNAVAILABLE";
+const key=await crypto.subtle.importKey("jwk",jwk,{name:"RSASSA-PKCS1-v1_5",hash:"SHA-256"},false,["verify"]);
+return await crypto.subtle.verify("RSASSA-PKCS1-v1_5",key,B64(parts[2]),TE.encode(parts[0]+"."+parts[1]))?"OK":"JWT_SIGNATURE_REJECTED"}catch{return "JWT_KEY_UNAVAILABLE"}}
+async function ACCESS(q,e){return await ACCESS_REASON(q,e)==="OK"}
 async function AUTHORIZE(q,e,u){if(P!==__HOST_SIGNER_PROJECTION__)return new Response(null,{status:404,headers:NO});if(q.method!=="POST"||u.search||q.headers.get("Content-Type")!=="application/x-protobuf")return new Response(null,{status:404,headers:NO});
 const k=e.EDGE_HOST_SIGNING_PKCS8_BASE64,id=e.EDGE_HOST_SIGNING_KEY_ID,actor=String(e.EDGE_HOST_GITHUB_ACTOR_ID||"");
 if(typeof k!=="string"||typeof id!=="string"||!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id)||!/^[1-9][0-9]{0,19}$/.test(actor))return new Response(null,{status:404,headers:NO});
-if(!await ACCESS(q,e))return new Response(null,{status:403,headers:{...NO,"X-Host-Authorization-Reason":"ACCESS_JWT_REJECTED"}});
+const reason=await ACCESS_REASON(q,e);if(reason!=="OK")return new Response(null,{status:403,headers:{...NO,"X-Host-Authorization-Reason":reason}});
 if(Number(q.headers.get("Content-Length"))>8192)return new Response(null,{status:413,headers:NO});
 let raw;try{raw=new Uint8Array(await q.arrayBuffer())}catch{return new Response(null,{status:400,headers:NO})}
 if(!raw.length||raw.length>8192)return new Response(null,{status:413,headers:NO});
