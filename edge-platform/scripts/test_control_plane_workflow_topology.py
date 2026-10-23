@@ -5315,6 +5315,473 @@ def test_one_host_apply_reconciles_root_trust_before_native_dispatch() -> None:
             "native dispatch must wait for Git-pinned root trust")
     require(refresh.index("--agent-path") < refresh.index("host_owner_compatibility=EXACT_ACCEPTED_AGENT"),
             "published Agent must be passed to typed compatibility check before acceptance")
+
+    # The owner update may truthfully report either 0 or 1 native mutation.
+    # A shell typo here previously hid successful admission or a real failure.
+    resume = workflow.split("  host_resume_receipt:\n", 1)[1].split(
+        "  host_resume_native:\n", 1
+    )[0]
+    require(
+        "grep -Eq '^host_mutations=[01]
+    require("gh run download" not in refresh
+            and "vultr-lifecycle apply" not in refresh
+            and "local host-apply" not in refresh,
+            "root trust must not be a second Docker/runtime mutator")
+    broken = observe.replace("needs.host_refresh_trust.result == 'success'",
+                             "needs.host_refresh_trust.result == 'skipped'", 1)
+    require(broken != observe and "needs.host_refresh_trust.result == 'skipped'" in broken,
+            "missing-trust admission negative fixture not generated")
+
+def test_vm_typed_desired_preparation_is_shared_and_fail_closed() -> None:
+    """Every VM entrypoint must prepare the same bounded derived protobuf before use."""
+    router = ROUTER.read_text(encoding="utf-8")
+    helper = Path("edge-platform/scripts/compile_vm_host_desired.sh")
+    script = helper.read_text(encoding="utf-8")
+    shared = 'bash edge-platform/scripts/compile_vm_host_desired.sh "${TARGET_MACHINE}"'
+    require(router.count(shared) == 3,
+            "first-use, VM status and root trust must use one VM protobuf compiler")
+    sections = (
+        router.split("  host_capabilities:\n", 1)[1].split("  host_first_use:\n", 1)[0],
+        router.split("  host_first_use:\n", 1)[1].split("  host_refresh_trust:\n", 1)[0],
+        router.split("  host_refresh_trust:\n", 1)[1].split("  host_resume_receipt:\n", 1)[0],
+    )
+    require(all(section.count(shared) == 1 for section in sections),
+            "missing or duplicate VM typed preparation in a lifecycle branch")
+    trust = sections[2]
+    require(trust.index(shared) < trust.index("Materialize scoped operator credential")
+            < trust.index("refresh-receipt "),
+            "VM desired must be prepared before privileged trust reconciliation")
+    require('buf="${RUNNER_TEMP}/host-vm-buf"' in sections[0]
+            and 'test -x "${buf}"' in sections[0],
+            "status proof must reuse the verified pinned compiler")
+    for required in (
+        "infra/hosts/specs/${machine}.textproto",
+        "infra/hosts/specs/${machine}.binpb",
+        "edge.platform.v1.FleetVmHostDesired",
+        "sha256sum --check --status",
+        "HOST_VM_TYPED_DERIVED_ALREADY_PRESENT",
+        "HOST_VM_TYPED_COMPILER_VERSION_MISMATCH",
+        "HOST_VM_TYPED_COMPILED_INVALID_SIZE",
+        "131072",
+    ):
+        require(required in script, "VM typed compilation contract missing: " + required)
+    # Test rejection without downloading tools or touching any real host.
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        spec = root / "infra/hosts/specs/acceptance-fixture.textproto"
+        spec.parent.mkdir(parents=True)
+        def rejected(machine: str, reason: str) -> None:
+            result = subprocess.run(
+                ["bash", str(helper.resolve()), machine], cwd=root,
+                capture_output=True, text=True, check=False,
+            )
+            require(result.returncode != 0 and reason in result.stderr,
+                    "VM typed preparation must reject " + reason)
+        rejected("../escape", "HOST_VM_TYPED_SPEC_NAME_INVALID")
+        rejected("acceptance-fixture", "HOST_VM_TYPED_SOURCE_UNREADABLE")
+        spec.write_text("schema_version: 1\n", encoding="ascii")
+        derived = spec.with_suffix(".binpb")
+        derived.write_bytes(b"must-not-be-overwritten")
+        rejected("acceptance-fixture", "HOST_VM_TYPED_DERIVED_ALREADY_PRESENT")
+        derived.unlink()
+        spec.write_bytes(b"x" * 131073)
+        rejected("acceptance-fixture", "HOST_VM_TYPED_SOURCE_INVALID_SIZE")
+        spec.unlink()
+        original = root / "outside.textproto"
+        original.write_text("schema_version: 1\n", encoding="ascii")
+        spec.symlink_to(original)
+        rejected("acceptance-fixture", "HOST_VM_TYPED_SOURCE_UNREADABLE")
+
+
+def test_promotion_rejects_mismatched_merged_pr_without_reverse_lookup() -> None:
+    """The real promotion jq gate validates one exact immutable Git merge."""
+    ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
+    promotion = ci.split("  promote:\n", 1)[1]
+    marker = '--argjson pr_number "${pr_number}" \''
+    closing = '\' <<<"${trusted_pr}" >/dev/null'
+    require(promotion.count(marker) == 1 and closing in promotion,
+            "one canonical direct merged-PR verification is required")
+    predicate = promotion.split(marker, 1)[1].split(closing, 1)[0]
+    accepted = "a" * 40
+    candidate = "b" * 40
+    valid = {
+        "number": 428, "state": "closed", "merged_at": "2026-10-22T16:22:00Z",
+        "base": {"ref": "main", "repo": {"full_name": "iamaman11/sing-box"}},
+        "head": {"sha": candidate, "repo": {"full_name": "iamaman11/sing-box"}},
+        "merge_commit_sha": accepted,
+    }
+    import copy
+    invalid = []
+    for mutate in (
+        lambda p: p.update(number=429),
+        lambda p: p.update(state="open"),
+        lambda p: p.update(merged_at=None),
+        lambda p: p["base"].update(ref="other"),
+        lambda p: p["base"]["repo"].update(full_name="foreign/sing-box"),
+        lambda p: p["head"]["repo"].update(full_name="foreign/sing-box"),
+        lambda p: p.update(merge_commit_sha="c" * 40),
+        lambda p: p["head"].update(sha="c" * 40),
+    ):
+        item = copy.deepcopy(valid)
+        mutate(item)
+        invalid.append(item)
+    for item, good in [(valid, True)] + [(v, False) for v in invalid]:
+        proc = subprocess.run(
+            ["jq", "-e", "--arg", "accepted", accepted, "--arg", "candidate",
+             candidate, "--argjson", "pr_number", "428", predicate],
+            input=json.dumps(item), text=True, capture_output=True, check=False,
+        )
+        require((proc.returncode == 0) == good,
+                "promotion exact PR join must fail closed: " + proc.stderr)
+
+def test_promotion_finds_exact_pr_run_without_unreliable_sha_api_filter() -> None:
+    """A broken server-side head_sha filter must not hide the accepted PR CI."""
+    ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
+    block = ci.split("  promote:\n", 1)[1].split("      - name: Download exact candidate artifacts", 1)[0]
+    require("head_sha=${candidate_revision}&" not in block,
+            "promotion must not rely on the inconsistent Actions head_sha filter")
+    for required in (
+        "for page in {1..10}; do",
+        "/actions/runs?event=pull_request&per_page=100&page=${page}",
+        'select(.path == ".github/workflows/edge-platform-ci.yml")',
+        "select(.head_sha == $head)",
+        'select(.event == "pull_request")',
+        "select(.id != $current_run_id)",
+        'select(.status == "completed")',
+        'select(.conclusion == "success")',
+        "sort_by(.id)",
+        "last // empty",
+        "HOST_RELEASE_CANDIDATE_NOT_IN_BOUNDED_PR_HISTORY",
+    ):
+        require(required in block, "missing fail-closed candidate selection: " + required)
+    # Run the actual jq predicate against a conflicting set of PR/check runs.
+    start = 'latest_run="$(jq -cr --arg head "${candidate_revision}" --argjson current_run_id "${CURRENT_RUN_ID}" \''
+    require(block.count(start) == 1, "one tested candidate filter required")
+    predicate = block.split(start, 1)[1].split('\' <<<"${runs}")"', 1)[0]
+    head = "c" * 40
+    valid = {"id": 42, "path": ".github/workflows/edge-platform-ci.yml",
+             "head_sha": head, "event": "pull_request",
+             "status": "completed", "conclusion": "success"}
+    negatives = [dict(valid, id=41, head_sha="b" * 40),
+                 dict(valid, id=43, path=".github/workflows/foreign.yml"),
+                 dict(valid, id=44, conclusion="failure"),
+                 dict(valid, id=45, status="in_progress"),
+                 dict(valid, id=46, event="push"),
+                 dict(valid, id=99)]
+    for rows, expected in ((negatives + [valid], 42), (negatives, None)):
+        result = subprocess.run(["jq", "-cr", "--arg", "head", head,
+                                 "--argjson", "current_run_id", "99", predicate],
+                                input=json.dumps({"workflow_runs": rows}),
+                                capture_output=True, text=True, check=False)
+        require(result.returncode == 0, "jq selection must not fail: " + result.stderr)
+        selected = json.loads(result.stdout) if result.stdout.strip() else None
+        require((selected or {}).get("id") == expected,
+                "promotion must accept only exact successful PR candidate")
+
+
+def test_release_pinned_vm_substrate_versions_reach_native_trust_owners() -> None:
+    """One validated Rust ReleaseSet context, no shell-owned trust versions."""
+    workflow = ROUTER.read_text(encoding="utf-8")
+    native = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
+    context = Path("edge-platform/crates/edge-orchestrator/src/lib.rs").read_text(encoding="utf-8")
+    versions = ("docker_engine_version", "containerd_version", "compose_version")
+    for field in versions:
+        require(f"release.{field}.clone()" in native,
+                "strict Host release substrate field is missing: " + field)
+        require(f"{field}: required(&values," in context,
+                "ReleaseSet must type-validate: " + field)
+    refresh = native.split("pub(crate) async fn host_receipt_refresh(", 1)[1].split(
+        "/// Fail-closed VM create admission", 1)[0]
+    first_use = native.split("pub(crate) async fn host_first_use(", 1)[1].split(
+        "///", 1)[0]
+    admission = native.split("async fn acquire_transient_access_ready_exact(", 1)[1].split(
+        "async fn run_lease_acquire(", 1)[0]
+    require(refresh.index("pinned_host_substrate_versions(context)?")
+            < refresh.index("acceptance_lease_acquire_with_substrate("),
+            "trust refresh must validate typed ReleaseSet before SSH access mutation")
+    require(first_use.index("pinned_host_substrate_versions(context)?")
+            < first_use.index("acceptance_create_machine("),
+            "first-use must validate substrate before provider CREATE")
+    require("let substrate = host_substrate_versions_from_env()?" not in admission,
+            "native SSH accept cannot read process-global runtime versions after mutation")
+    require("substrate: &HostSubstrateVersions" in admission,
+            "strict SSH acquisition must accept a typed immutable substrate")
+    for start, end in (
+        ("  host_refresh_trust:\n", "  host_resume_receipt:\n"),
+        ("  host_resume_receipt:\n", "  host_resume_native:\n"),
+    ):
+        section = workflow.split(start, 1)[1].split(end, 1)[0]
+        require('echo "${key}=${!key}" >> "${GITHUB_ENV}"' not in section,
+                "native trust path must not materialize a second shell substrate owner")
+        require("resolve_durable_release.sh" in section and "refresh-receipt" in section,
+                "native trust must inherit exact published ReleaseSet context")
+    first_use_workflow = workflow.split("  host_first_use:\n", 1)[1].split(
+        "  host_refresh_trust:\n", 1)[0]
+    require("EDGE_DOCKER_ENGINE_VERSION EDGE_CONTAINERD_VERSION EDGE_COMPOSE_VERSION" in first_use_workflow,
+            "existing provider first-use compatibility must retain pinned substrate inputs")
+
+
+
+
+def test_vm_fingerprint_is_readonly_untrusted_evidence() -> None:
+    observed = Path(".github/workflows/host-native-observe.yml").read_text(
+        encoding="utf-8"
+    ).split("      - name: Verify installed VM native owner and diagnose without mutation", 1)[1].split(
+        "      - name: Transfer exact same-run typed HostIntent", 1
+    )[0]
+    require(
+        'actual_agent_sha="$(sha256sum "${owner}" | cut -d\' \' -f1)"' in observed
+        and 'host_vm_installed_agent_sha256_observed=' in observed
+        and 'host_vm_installed_agent_identity_proof=RUNNER_COPIED_UNAUTHENTICATED' in observed
+        and '[[ "${actual_agent_sha}" =~ ^[0-9a-f]{64}$ ]]' in observed
+        and 'host_vm_installed_agent_identity_proof=CRYPTOGRAPHICALLY_VERIFIED' not in observed,
+        "VM status must expose the installed executable fingerprint as untrusted observation only",
+    )
+
+
+if __name__ == "__main__":
+    main()
+    test_one_host_apply_reconciles_root_trust_before_native_dispatch()
+    test_vm_typed_desired_preparation_is_shared_and_fail_closed()
+    test_release_pinned_vm_substrate_versions_reach_native_trust_owners()
+    test_promotion_rejects_mismatched_merged_pr_without_reverse_lookup()
+    test_promotion_finds_exact_pr_run_without_unreliable_sha_api_filter()
+    test_native_vm_artifact_transport_is_same_run_and_not_gh_cli()
+    verify_receipt_resume_inline_release_context(ROUTER.read_text(encoding="utf-8"))
+    test_vm_fingerprint_is_readonly_untrusted_evidence()
+ \"${RUNNER_TEMP}/host-trust-refresh.txt\"" in refresh
+        and "grep -Eq '^host_mutations=[01]
+    require("gh run download" not in refresh
+            and "vultr-lifecycle apply" not in refresh
+            and "local host-apply" not in refresh,
+            "root trust must not be a second Docker/runtime mutator")
+    broken = observe.replace("needs.host_refresh_trust.result == 'success'",
+                             "needs.host_refresh_trust.result == 'skipped'", 1)
+    require(broken != observe and "needs.host_refresh_trust.result == 'skipped'" in broken,
+            "missing-trust admission negative fixture not generated")
+
+def test_vm_typed_desired_preparation_is_shared_and_fail_closed() -> None:
+    """Every VM entrypoint must prepare the same bounded derived protobuf before use."""
+    router = ROUTER.read_text(encoding="utf-8")
+    helper = Path("edge-platform/scripts/compile_vm_host_desired.sh")
+    script = helper.read_text(encoding="utf-8")
+    shared = 'bash edge-platform/scripts/compile_vm_host_desired.sh "${TARGET_MACHINE}"'
+    require(router.count(shared) == 3,
+            "first-use, VM status and root trust must use one VM protobuf compiler")
+    sections = (
+        router.split("  host_capabilities:\n", 1)[1].split("  host_first_use:\n", 1)[0],
+        router.split("  host_first_use:\n", 1)[1].split("  host_refresh_trust:\n", 1)[0],
+        router.split("  host_refresh_trust:\n", 1)[1].split("  host_resume_receipt:\n", 1)[0],
+    )
+    require(all(section.count(shared) == 1 for section in sections),
+            "missing or duplicate VM typed preparation in a lifecycle branch")
+    trust = sections[2]
+    require(trust.index(shared) < trust.index("Materialize scoped operator credential")
+            < trust.index("refresh-receipt "),
+            "VM desired must be prepared before privileged trust reconciliation")
+    require('buf="${RUNNER_TEMP}/host-vm-buf"' in sections[0]
+            and 'test -x "${buf}"' in sections[0],
+            "status proof must reuse the verified pinned compiler")
+    for required in (
+        "infra/hosts/specs/${machine}.textproto",
+        "infra/hosts/specs/${machine}.binpb",
+        "edge.platform.v1.FleetVmHostDesired",
+        "sha256sum --check --status",
+        "HOST_VM_TYPED_DERIVED_ALREADY_PRESENT",
+        "HOST_VM_TYPED_COMPILER_VERSION_MISMATCH",
+        "HOST_VM_TYPED_COMPILED_INVALID_SIZE",
+        "131072",
+    ):
+        require(required in script, "VM typed compilation contract missing: " + required)
+    # Test rejection without downloading tools or touching any real host.
+    with tempfile.TemporaryDirectory() as scratch:
+        root = Path(scratch)
+        spec = root / "infra/hosts/specs/acceptance-fixture.textproto"
+        spec.parent.mkdir(parents=True)
+        def rejected(machine: str, reason: str) -> None:
+            result = subprocess.run(
+                ["bash", str(helper.resolve()), machine], cwd=root,
+                capture_output=True, text=True, check=False,
+            )
+            require(result.returncode != 0 and reason in result.stderr,
+                    "VM typed preparation must reject " + reason)
+        rejected("../escape", "HOST_VM_TYPED_SPEC_NAME_INVALID")
+        rejected("acceptance-fixture", "HOST_VM_TYPED_SOURCE_UNREADABLE")
+        spec.write_text("schema_version: 1\n", encoding="ascii")
+        derived = spec.with_suffix(".binpb")
+        derived.write_bytes(b"must-not-be-overwritten")
+        rejected("acceptance-fixture", "HOST_VM_TYPED_DERIVED_ALREADY_PRESENT")
+        derived.unlink()
+        spec.write_bytes(b"x" * 131073)
+        rejected("acceptance-fixture", "HOST_VM_TYPED_SOURCE_INVALID_SIZE")
+        spec.unlink()
+        original = root / "outside.textproto"
+        original.write_text("schema_version: 1\n", encoding="ascii")
+        spec.symlink_to(original)
+        rejected("acceptance-fixture", "HOST_VM_TYPED_SOURCE_UNREADABLE")
+
+
+def test_promotion_rejects_mismatched_merged_pr_without_reverse_lookup() -> None:
+    """The real promotion jq gate validates one exact immutable Git merge."""
+    ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
+    promotion = ci.split("  promote:\n", 1)[1]
+    marker = '--argjson pr_number "${pr_number}" \''
+    closing = '\' <<<"${trusted_pr}" >/dev/null'
+    require(promotion.count(marker) == 1 and closing in promotion,
+            "one canonical direct merged-PR verification is required")
+    predicate = promotion.split(marker, 1)[1].split(closing, 1)[0]
+    accepted = "a" * 40
+    candidate = "b" * 40
+    valid = {
+        "number": 428, "state": "closed", "merged_at": "2026-10-22T16:22:00Z",
+        "base": {"ref": "main", "repo": {"full_name": "iamaman11/sing-box"}},
+        "head": {"sha": candidate, "repo": {"full_name": "iamaman11/sing-box"}},
+        "merge_commit_sha": accepted,
+    }
+    import copy
+    invalid = []
+    for mutate in (
+        lambda p: p.update(number=429),
+        lambda p: p.update(state="open"),
+        lambda p: p.update(merged_at=None),
+        lambda p: p["base"].update(ref="other"),
+        lambda p: p["base"]["repo"].update(full_name="foreign/sing-box"),
+        lambda p: p["head"]["repo"].update(full_name="foreign/sing-box"),
+        lambda p: p.update(merge_commit_sha="c" * 40),
+        lambda p: p["head"].update(sha="c" * 40),
+    ):
+        item = copy.deepcopy(valid)
+        mutate(item)
+        invalid.append(item)
+    for item, good in [(valid, True)] + [(v, False) for v in invalid]:
+        proc = subprocess.run(
+            ["jq", "-e", "--arg", "accepted", accepted, "--arg", "candidate",
+             candidate, "--argjson", "pr_number", "428", predicate],
+            input=json.dumps(item), text=True, capture_output=True, check=False,
+        )
+        require((proc.returncode == 0) == good,
+                "promotion exact PR join must fail closed: " + proc.stderr)
+
+def test_promotion_finds_exact_pr_run_without_unreliable_sha_api_filter() -> None:
+    """A broken server-side head_sha filter must not hide the accepted PR CI."""
+    ci = EDGE_PLATFORM_CI.read_text(encoding="utf-8")
+    block = ci.split("  promote:\n", 1)[1].split("      - name: Download exact candidate artifacts", 1)[0]
+    require("head_sha=${candidate_revision}&" not in block,
+            "promotion must not rely on the inconsistent Actions head_sha filter")
+    for required in (
+        "for page in {1..10}; do",
+        "/actions/runs?event=pull_request&per_page=100&page=${page}",
+        'select(.path == ".github/workflows/edge-platform-ci.yml")',
+        "select(.head_sha == $head)",
+        'select(.event == "pull_request")',
+        "select(.id != $current_run_id)",
+        'select(.status == "completed")',
+        'select(.conclusion == "success")',
+        "sort_by(.id)",
+        "last // empty",
+        "HOST_RELEASE_CANDIDATE_NOT_IN_BOUNDED_PR_HISTORY",
+    ):
+        require(required in block, "missing fail-closed candidate selection: " + required)
+    # Run the actual jq predicate against a conflicting set of PR/check runs.
+    start = 'latest_run="$(jq -cr --arg head "${candidate_revision}" --argjson current_run_id "${CURRENT_RUN_ID}" \''
+    require(block.count(start) == 1, "one tested candidate filter required")
+    predicate = block.split(start, 1)[1].split('\' <<<"${runs}")"', 1)[0]
+    head = "c" * 40
+    valid = {"id": 42, "path": ".github/workflows/edge-platform-ci.yml",
+             "head_sha": head, "event": "pull_request",
+             "status": "completed", "conclusion": "success"}
+    negatives = [dict(valid, id=41, head_sha="b" * 40),
+                 dict(valid, id=43, path=".github/workflows/foreign.yml"),
+                 dict(valid, id=44, conclusion="failure"),
+                 dict(valid, id=45, status="in_progress"),
+                 dict(valid, id=46, event="push"),
+                 dict(valid, id=99)]
+    for rows, expected in ((negatives + [valid], 42), (negatives, None)):
+        result = subprocess.run(["jq", "-cr", "--arg", "head", head,
+                                 "--argjson", "current_run_id", "99", predicate],
+                                input=json.dumps({"workflow_runs": rows}),
+                                capture_output=True, text=True, check=False)
+        require(result.returncode == 0, "jq selection must not fail: " + result.stderr)
+        selected = json.loads(result.stdout) if result.stdout.strip() else None
+        require((selected or {}).get("id") == expected,
+                "promotion must accept only exact successful PR candidate")
+
+
+def test_release_pinned_vm_substrate_versions_reach_native_trust_owners() -> None:
+    """One validated Rust ReleaseSet context, no shell-owned trust versions."""
+    workflow = ROUTER.read_text(encoding="utf-8")
+    native = VULTR_LIFECYCLE_COMMAND.read_text(encoding="utf-8")
+    context = Path("edge-platform/crates/edge-orchestrator/src/lib.rs").read_text(encoding="utf-8")
+    versions = ("docker_engine_version", "containerd_version", "compose_version")
+    for field in versions:
+        require(f"release.{field}.clone()" in native,
+                "strict Host release substrate field is missing: " + field)
+        require(f"{field}: required(&values," in context,
+                "ReleaseSet must type-validate: " + field)
+    refresh = native.split("pub(crate) async fn host_receipt_refresh(", 1)[1].split(
+        "/// Fail-closed VM create admission", 1)[0]
+    first_use = native.split("pub(crate) async fn host_first_use(", 1)[1].split(
+        "///", 1)[0]
+    admission = native.split("async fn acquire_transient_access_ready_exact(", 1)[1].split(
+        "async fn run_lease_acquire(", 1)[0]
+    require(refresh.index("pinned_host_substrate_versions(context)?")
+            < refresh.index("acceptance_lease_acquire_with_substrate("),
+            "trust refresh must validate typed ReleaseSet before SSH access mutation")
+    require(first_use.index("pinned_host_substrate_versions(context)?")
+            < first_use.index("acceptance_create_machine("),
+            "first-use must validate substrate before provider CREATE")
+    require("let substrate = host_substrate_versions_from_env()?" not in admission,
+            "native SSH accept cannot read process-global runtime versions after mutation")
+    require("substrate: &HostSubstrateVersions" in admission,
+            "strict SSH acquisition must accept a typed immutable substrate")
+    for start, end in (
+        ("  host_refresh_trust:\n", "  host_resume_receipt:\n"),
+        ("  host_resume_receipt:\n", "  host_resume_native:\n"),
+    ):
+        section = workflow.split(start, 1)[1].split(end, 1)[0]
+        require('echo "${key}=${!key}" >> "${GITHUB_ENV}"' not in section,
+                "native trust path must not materialize a second shell substrate owner")
+        require("resolve_durable_release.sh" in section and "refresh-receipt" in section,
+                "native trust must inherit exact published ReleaseSet context")
+    first_use_workflow = workflow.split("  host_first_use:\n", 1)[1].split(
+        "  host_refresh_trust:\n", 1)[0]
+    require("EDGE_DOCKER_ENGINE_VERSION EDGE_CONTAINERD_VERSION EDGE_COMPOSE_VERSION" in first_use_workflow,
+            "existing provider first-use compatibility must retain pinned substrate inputs")
+
+
+
+
+def test_vm_fingerprint_is_readonly_untrusted_evidence() -> None:
+    observed = Path(".github/workflows/host-native-observe.yml").read_text(
+        encoding="utf-8"
+    ).split("      - name: Verify installed VM native owner and diagnose without mutation", 1)[1].split(
+        "      - name: Transfer exact same-run typed HostIntent", 1
+    )[0]
+    require(
+        'actual_agent_sha="$(sha256sum "${owner}" | cut -d\' \' -f1)"' in observed
+        and 'host_vm_installed_agent_sha256_observed=' in observed
+        and 'host_vm_installed_agent_identity_proof=RUNNER_COPIED_UNAUTHENTICATED' in observed
+        and '[[ "${actual_agent_sha}" =~ ^[0-9a-f]{64}$ ]]' in observed
+        and 'host_vm_installed_agent_identity_proof=CRYPTOGRAPHICALLY_VERIFIED' not in observed,
+        "VM status must expose the installed executable fingerprint as untrusted observation only",
+    )
+
+
+if __name__ == "__main__":
+    main()
+    test_one_host_apply_reconciles_root_trust_before_native_dispatch()
+    test_vm_typed_desired_preparation_is_shared_and_fail_closed()
+    test_release_pinned_vm_substrate_versions_reach_native_trust_owners()
+    test_promotion_rejects_mismatched_merged_pr_without_reverse_lookup()
+    test_promotion_finds_exact_pr_run_without_unreliable_sha_api_filter()
+    test_native_vm_artifact_transport_is_same_run_and_not_gh_cli()
+    verify_receipt_resume_inline_release_context(ROUTER.read_text(encoding="utf-8"))
+    test_vm_fingerprint_is_readonly_untrusted_evidence()
+ \"${RUNNER_TEMP}/host-root-refresh.txt\"" in resume
+        and "grep -Eq '^host_mutations=[01] \"" not in workflow,
+        "both VM trust lanes must parse exact owner mutation counters without shell syntax drift",
+    )
+
     require("gh run download" not in refresh
             and "vultr-lifecycle apply" not in refresh
             and "local host-apply" not in refresh,
