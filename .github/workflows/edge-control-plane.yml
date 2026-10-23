@@ -1071,7 +1071,7 @@ jobs:
           "${bin}" host \
             --hosts-pb "${registry}" \
             --hosts-sha256 "${EDGE_FLEET_REGISTRY_SHA256}" \
-            refresh-receipt "${TARGET_MACHINE}" |
+            refresh-receipt "${TARGET_MACHINE}" --agent-path "${OUTPUT_DIR}/edge-agent-linux-amd64" |
             tee "${RUNNER_TEMP}/host-trust-refresh.txt"
           grep -Fxq 'host_receipt_refresh=ROOT_PROTECTED_GIT_PINNED' "${RUNNER_TEMP}/host-trust-refresh.txt"
           grep -Fxq 'host_mutations=0' "${RUNNER_TEMP}/host-trust-refresh.txt"
@@ -1239,7 +1239,7 @@ jobs:
           "${bin}" host \
             --hosts-pb "${registry}" \
             --hosts-sha256 "$(sha256sum "${registry}" | cut -d' ' -f1)" \
-            refresh-receipt "${{ steps.source.outputs.machine_id }}" \
+            refresh-receipt "${{ steps.source.outputs.machine_id }}" --agent-path "${RUNNER_TEMP}/host-resume-release/edge-agent-linux-amd64" \
             | tee "${RUNNER_TEMP}/host-root-refresh.txt"
           grep -Fxq 'host_receipt_refresh=ROOT_PROTECTED_GIT_PINNED' "${RUNNER_TEMP}/host-root-refresh.txt"
           grep -Fxq 'host_mutations=0' "${RUNNER_TEMP}/host-root-refresh.txt"
