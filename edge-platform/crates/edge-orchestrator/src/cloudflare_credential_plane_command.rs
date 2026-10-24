@@ -3822,13 +3822,74 @@ function GHFAIL(stage,kind,r,e){
  }
  return out;
 }
+// Installation-scoped GitHub App, not OAuth or an operator PAT. One fresh,
+// short-lived token per authorization; no cache, log, body, or token exposure.
+// The immutable App/installation IDs are non-secret, pinned to this repository.
+const GITHUB_APP_ID="5456373",GITHUB_INSTALLATION_ID="174880562";
+function GITHUB_APP_ERROR(stage,kind,r,e){
+ return GHFAIL(stage,kind,r,e);
+}
+async function GITHUB_INSTALLATION_AUTH(e,now){
+ const raw=e.EDGE_HOST_GITHUB_APP_PKCS8_BASE64;
+ if(typeof raw!=="string"||!raw||raw.length>8192)
+  return{error:GITHUB_APP_ERROR("GITHUB_APP_JWT","CONFIG_MISSING",null)};
+ let key,jwt;
+ try{
+  const bytes=B64(raw);
+  if(!bytes||bytes.length<800||bytes.length>4096)throw new Error("invalid key size");
+  key=await crypto.subtle.importKey("pkcs8",bytes,
+   {name:"RSASSA-PKCS1-v1_5",hash:"SHA-256"},false,["sign"]);
+  const enc=ob=>{
+   const data=TE.encode(JSON.stringify(ob));
+   let binary="";for(const c of data)binary+=String.fromCharCode(c);
+   return btoa(binary).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+  };
+  const header=enc({alg:"RS256",typ:"JWT"});
+  const body=enc({iat:now-60,exp:now+540,iss:GITHUB_APP_ID});
+  const signing=header+"."+body;
+  const sig=new Uint8Array(await crypto.subtle.sign("RSASSA-PKCS1-v1_5",key,TE.encode(signing)));
+  let binary="";for(const c of sig)binary+=String.fromCharCode(c);
+  jwt=signing+"."+btoa(binary).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+ }catch(err){return{error:GITHUB_APP_ERROR("GITHUB_APP_JWT","SIGN_EXCEPTION",null,err)}}
+ const url="https://api.github.com/app/installations/"+GITHUB_INSTALLATION_ID+"/access_tokens";
+ let r;
+ try{
+  r=await fetch(url,{method:"POST",redirect:"manual",headers:{
+   "Accept":"application/vnd.github+json","Content-Type":"application/json",
+   "Authorization":"Bearer "+jwt,"User-Agent":"sing-box-host-authorizer"
+  },body:JSON.stringify({repositories:["sing-box"],
+   permissions:{contents:"read",issues:"read",pull_requests:"read"}})});
+ }catch(err){return{error:GITHUB_APP_ERROR("GITHUB_INSTALLATION_TOKEN","FETCH_EXCEPTION",null,err)}}
+ if(r.status>=300&&r.status<400)
+  return{error:GITHUB_APP_ERROR("GITHUB_INSTALLATION_TOKEN","REDIRECT",r)};
+ if(!r.ok)return{error:GITHUB_APP_ERROR("GITHUB_INSTALLATION_TOKEN","HTTP",r)};
+ let issued;
+ try{issued=await r.json()}
+ catch(err){return{error:GITHUB_APP_ERROR("GITHUB_INSTALLATION_TOKEN","RESPONSE_DECODE",r,err)}}
+ const permissions=issued?.permissions;
+ const expiry=Date.parse(issued?.expires_at)/1000;
+ const matching=Array.isArray(issued?.repositories)&&issued.repositories.length===1&&
+  issued.repositories[0]?.full_name==="iamaman11/sing-box";
+ const allowed=permissions&&typeof permissions==="object"&&
+  ["contents","issues","pull_requests"].every(x=>permissions[x]==="read")&&
+  Object.entries(permissions).every(([k,v])=>
+   ["contents","issues","pull_requests","metadata"].includes(k)&&v==="read");
+ if(typeof issued?.token!=="string"||!/^[A-Za-z0-9_]{10,4096}$/.test(issued.token)||
+    !Number.isFinite(expiry)||expiry<=now+60||expiry>now+3600||
+    !matching||!allowed)
+  return{error:GITHUB_APP_ERROR("GITHUB_INSTALLATION_TOKEN","RESPONSE_INVALID",r)};
+ return{token:issued.token};
+}
 async function GITHUB(info,e,now){
  const actor=String(e.EDGE_HOST_GITHUB_ACTOR_ID||"");
  if(!/^[1-9][0-9]{0,19}$/.test(actor)||Math.abs(now-info.when)>300||
     !/^[0-9a-f]{64}$/.test(info.release))return "DENIED";
  const id=info.id.slice("issue1-comment-".length);
  const base="https://api.github.com/repos/iamaman11/sing-box";
- const headers={"Accept":"application/vnd.github+json","User-Agent":"sing-box-host-authorizer"};
+ const installation=await GITHUB_INSTALLATION_AUTH(e,now);
+ if(installation.error)return installation.error;
+ const headers={"Accept":"application/vnd.github+json","User-Agent":"sing-box-host-authorizer",
+  "Authorization":"Bearer "+installation.token};
  // Cloudflare Workers supports manual redirect; ALL GitHub 3xx are rejected.
  // Separate fetch, HTTP, and JSON decoding so an incident has one exact stage.
  async function GITHUB_GET(path,stage){
