@@ -25,8 +25,7 @@ const BOT_ID: u64 = 41898282;
 struct PriorBegin {
     operator_comment_id: u64,
     source_revision: String,
-    github_run_id: u64,
-}
+    github_run_id: u64,}
 
 fn id_after(part: &str, prefix: &str) -> Result<u64, &'static str> {
     let digits = part
@@ -255,7 +254,8 @@ fn prior_failed_upload_matches(
                 && j.get("status").and_then(Value::as_str) == Some("completed")
                 && j.get("conclusion").and_then(Value::as_str) == Some("failure")
         })
-        .count() != 1
+        .count()
+        != 1
     {
         return false;
     }
@@ -263,8 +263,12 @@ fn prior_failed_upload_matches(
         time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok()
     };
     let (Some(created), Some(finished), Some(uploaded)) = (
-        run.get("created_at").and_then(Value::as_str).and_then(parse),
-        run.get("updated_at").and_then(Value::as_str).and_then(parse),
+        run.get("created_at")
+            .and_then(Value::as_str)
+            .and_then(parse),
+        run.get("updated_at")
+            .and_then(Value::as_str)
+            .and_then(parse),
         parse(pending_created_on),
     ) else {
         return false;
@@ -277,12 +281,12 @@ fn prior_failed_upload_matches(
     let mut terminal_run = run.clone();
     terminal_run["conclusion"] = Value::String("success".into());
     let mut terminal_jobs = jobs.clone();
-    let Some(job) = terminal_jobs["jobs"].as_array_mut()
-        .and_then(|jobs| jobs.iter_mut().find(|j| {
+    let Some(job) = terminal_jobs["jobs"].as_array_mut().and_then(|jobs| {
+        jobs.iter_mut().find(|j| {
             j.get("name").and_then(Value::as_str) == Some("host_worker_authorizer")
                 && j.get("run_id").and_then(Value::as_u64) == Some(prior.github_run_id)
-        }))
-    else {
+        })
+    }) else {
         return false;
     };
     job["conclusion"] = Value::String("success".into());
@@ -300,21 +304,18 @@ pub(crate) async fn verify_pending_vm_worker_begins(
     let path = env::var_os("HOST_VM_WORKER_BEGIN_HISTORY_PATH")
         .ok_or("HOST_VM_WORKER_HISTORY_PATH_REQUIRED")?;
     let path = Path::new(&path);
-    let metadata = fs::symlink_metadata(path)
-        .map_err(|_| "HOST_VM_WORKER_HISTORY_UNAVAILABLE_NO_REPLAY")?;
-    if !metadata.file_type().is_file() || metadata.len() == 0
-        || metadata.len() > 10 * 1024 * 1024
-    {
+    let metadata =
+        fs::symlink_metadata(path).map_err(|_| "HOST_VM_WORKER_HISTORY_UNAVAILABLE_NO_REPLAY")?;
+    if !metadata.file_type().is_file() || metadata.len() == 0 || metadata.len() > 10 * 1024 * 1024 {
         return Err("HOST_VM_WORKER_HISTORY_UNTRUSTED_NO_REPLAY".into());
     }
-    let history = fs::read_to_string(path)
-        .map_err(|_| "HOST_VM_WORKER_HISTORY_UNREADABLE_NO_REPLAY")?;
+    let history =
+        fs::read_to_string(path).map_err(|_| "HOST_VM_WORKER_HISTORY_UNREADABLE_NO_REPLAY")?;
     let beginnings = prior_begins(&history, machine_id)?;
     if beginnings.is_empty() {
         return Err("HOST_VM_WORKER_PENDING_BEGIN_MISSING_NO_REPLAY".into());
     }
-    let token = env::var("GH_TOKEN")
-        .map_err(|_| "HOST_VM_WORKER_PRIOR_GITHUB_TOKEN_REQUIRED")?;
+    let token = env::var("GH_TOKEN").map_err(|_| "HOST_VM_WORKER_PRIOR_GITHUB_TOKEN_REQUIRED")?;
     if token.is_empty() || token.len() > 1024 {
         return Err("HOST_VM_WORKER_PRIOR_GITHUB_TOKEN_INVALID".into());
     }
@@ -330,22 +331,30 @@ pub(crate) async fn verify_pending_vm_worker_begins(
             &client,
             &token,
             &format!("issues/comments/{}", prior.operator_comment_id),
-        ).await?;
+        )
+        .await?;
         let run = github_get_json(
             &client,
             &token,
             &format!("actions/runs/{}", prior.github_run_id),
-        ).await?;
+        )
+        .await?;
         let jobs = github_get_json(
             &client,
             &token,
             &format!("actions/runs/{}/jobs?per_page=100", prior.github_run_id),
-        ).await?;
+        )
+        .await?;
         if prior_run_is_terminal(prior, machine_id, &operator, &run, &jobs) {
             continue;
         }
         if !prior_failed_upload_matches(
-            prior, machine_id, &operator, &run, &jobs, pending_created_on
+            prior,
+            machine_id,
+            &operator,
+            &run,
+            &jobs,
+            pending_created_on,
         ) {
             return Err("HOST_VM_WORKER_PENDING_PRIOR_BEGIN_UNRECONCILED_NO_REPLAY".into());
         }
@@ -362,17 +371,14 @@ pub(crate) async fn verify_pending_vm_worker_begins(
 /// The new transaction must have its *own* protected GitHub BEGIN after its
 /// independent preflight; an old failed comment can never authorize deployment.
 pub(crate) async fn verify_current_vm_worker_begin(machine_id: &str) -> Result<(), String> {
-    let token = env::var("GH_TOKEN")
-        .map_err(|_| "HOST_VM_WORKER_PRIOR_GITHUB_TOKEN_REQUIRED")?;
-    let run = env::var("GITHUB_RUN_ID")
-        .map_err(|_| "HOST_VM_WORKER_CURRENT_RUN_UNPROVEN")?;
-    let comment = env::var("SOURCE_COMMENT_ID")
-        .map_err(|_| "HOST_VM_WORKER_CURRENT_COMMENT_UNPROVEN")?;
-    let revision = env::var("GITHUB_SHA")
-        .map_err(|_| "HOST_VM_WORKER_CURRENT_REVISION_UNPROVEN")?;
-    let expected = format!(
-        "{BEGIN_PREFIX}{machine_id} comment={comment} revision={revision} run={run} -->"
-    );
+    let token = env::var("GH_TOKEN").map_err(|_| "HOST_VM_WORKER_PRIOR_GITHUB_TOKEN_REQUIRED")?;
+    let run = env::var("GITHUB_RUN_ID").map_err(|_| "HOST_VM_WORKER_CURRENT_RUN_UNPROVEN")?;
+    let comment =
+        env::var("SOURCE_COMMENT_ID").map_err(|_| "HOST_VM_WORKER_CURRENT_COMMENT_UNPROVEN")?;
+    let revision =
+        env::var("GITHUB_SHA").map_err(|_| "HOST_VM_WORKER_CURRENT_REVISION_UNPROVEN")?;
+    let expected =
+        format!("{BEGIN_PREFIX}{machine_id} comment={comment} revision={revision} run={run} -->");
     let client = Client::builder()
         .user_agent("sing-box-rust-native-worker-reconciliation/1")
         .redirect(Policy::none())
@@ -394,7 +400,8 @@ pub(crate) async fn verify_current_vm_worker_begin(machine_id: &str) -> Result<(
     for page in 1..=30_u32 {
         let path = format!("issues/26/comments?per_page=100&page={page}");
         let records = github_get_json(&client, &token, &path).await?;
-        let rows = records.as_array()
+        let rows = records
+            .as_array()
             .ok_or("HOST_VM_WORKER_NEW_BEGIN_HISTORY_INVALID_NO_REPLAY")?;
         for row in rows {
             if row.get("body").and_then(Value::as_str) == Some(expected.as_str()) {
@@ -539,7 +546,9 @@ mod tests {
         let prior = prior_begins(
             &serde_json::json!([begin("application-acceptance-3", 12, 23)]).to_string(),
             "application-acceptance-3",
-        ).unwrap().remove(0);
+        )
+        .unwrap()
+        .remove(0);
         let operator = serde_json::json!({
             "id":12,"user":{"id":ACTOR_ID},"issue_url":ISSUE1,
             "body":"/host apply application-acceptance-3",
@@ -560,34 +569,51 @@ mod tests {
             "status":"completed","conclusion":"failure"
         }]});
         assert!(prior_failed_upload_matches(
-            &prior,"application-acceptance-3",&operator,&run,&jobs,
+            &prior,
+            "application-acceptance-3",
+            &operator,
+            &run,
+            &jobs,
             "2026-10-24T21:22:15.946199Z"
         ));
-        for created in [
-            "2026-10-24T21:20:00Z",
-            "2026-10-24T21:22:24Z",
-            "not-a-date"
-        ] {
+        for created in ["2026-10-24T21:20:00Z", "2026-10-24T21:22:24Z", "not-a-date"] {
             assert!(!prior_failed_upload_matches(
-                &prior,"application-acceptance-3",&operator,&run,&jobs,created
+                &prior,
+                "application-acceptance-3",
+                &operator,
+                &run,
+                &jobs,
+                created
             ));
         }
         let mut foreign = jobs.clone();
         foreign["jobs"][0]["conclusion"] = Value::String("success".into());
         assert!(!prior_failed_upload_matches(
-            &prior,"application-acceptance-3",&operator,&run,&foreign,
+            &prior,
+            "application-acceptance-3",
+            &operator,
+            &run,
+            &foreign,
             "2026-10-24T21:22:15.946199Z"
         ));
         let mut replay = run.clone();
         replay["run_attempt"] = Value::from(2);
         assert!(!prior_failed_upload_matches(
-            &prior,"application-acceptance-3",&operator,&replay,&jobs,
+            &prior,
+            "application-acceptance-3",
+            &operator,
+            &replay,
+            &jobs,
             "2026-10-24T21:22:15.946199Z"
         ));
         let mut tampered = operator.clone();
         tampered["updated_at"] = Value::String("2026-10-24T21:22:30Z".into());
         assert!(!prior_failed_upload_matches(
-            &prior,"application-acceptance-3",&tampered,&run,&jobs,
+            &prior,
+            "application-acceptance-3",
+            &tampered,
+            &run,
+            &jobs,
             "2026-10-24T21:22:15.946199Z"
         ));
     }
