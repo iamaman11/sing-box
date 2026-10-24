@@ -3861,12 +3861,16 @@ const now=Math.floor(Date.now()/1000);
 if(!Number.isInteger(c.exp))return "JWT_MALFORMED";
 if(c.exp<=now)return "JWT_EXPIRED";
 if(c.nbf!==undefined&&(!Number.isInteger(c.nbf)||c.nbf>now+60))return "JWT_NOT_YET_VALID";
-try{const res=await fetch(iss+"/cdn-cgi/access/certs",{redirect:"error"});if(!res.ok)return "JWT_KEY_UNAVAILABLE";
-const certs=await res.json(),keys=Array.isArray(certs.keys)?certs.keys:[];
-const jwk=keys.find(k=>k.kid===h.kid&&k.kty==="RSA");
-if(!jwk)return "JWT_KEY_UNAVAILABLE";
-const key=await crypto.subtle.importKey("jwk",jwk,{name:"RSASSA-PKCS1-v1_5",hash:"SHA-256"},false,["verify"]);
-return await crypto.subtle.verify("RSASSA-PKCS1-v1_5",key,B64(parts[2]),TE.encode(parts[0]+"."+parts[1]))?"OK":"JWT_SIGNATURE_REJECTED"}catch{return "JWT_KEY_UNAVAILABLE"}}
+let res;try{res=await fetch(iss+"/cdn-cgi/access/certs",{redirect:"error"})}catch{return "JWT_JWKS_FETCH_FAILED"}
+if(!res.ok)return "JWT_JWKS_HTTP_UNAVAILABLE";
+let certs;try{certs=await res.json()}catch{return "JWT_JWKS_INVALID"}
+if(!certs||!Array.isArray(certs.keys)||certs.keys.length===0||certs.keys.length>8)return "JWT_JWKS_INVALID";
+const jwk=certs.keys.find(k=>k&&k.kid===h.kid&&k.kty==="RSA");
+if(!jwk)return "JWT_KID_NOT_FOUND";
+if(typeof jwk.n!=="string"||typeof jwk.e!=="string"||(jwk.alg!==undefined&&jwk.alg!=="RS256")||(jwk.use!==undefined&&jwk.use!=="sig"))return "JWT_JWK_INVALID";
+let key;try{key=await crypto.subtle.importKey("jwk",{kty:"RSA",n:jwk.n,e:jwk.e,alg:"RS256",ext:true},{name:"RSASSA-PKCS1-v1_5",hash:"SHA-256"},false,["verify"])}catch{return "JWT_JWK_IMPORT_FAILED"}
+let verified;try{verified=await crypto.subtle.verify("RSASSA-PKCS1-v1_5",key,B64(parts[2]),TE.encode(parts[0]+"."+parts[1]))}catch{return "JWT_SIGNATURE_VERIFIER_UNAVAILABLE"}
+return verified?"OK":"JWT_SIGNATURE_REJECTED"}
 async function ACCESS(q,e){return await ACCESS_REASON(q,e)==="OK"}
 async function AUTHORIZE(q,e,u){if(P!==__HOST_SIGNER_PROJECTION__)return new Response(null,{status:404,headers:NO});if(q.method!=="POST"||u.search||q.headers.get("Content-Type")!=="application/x-protobuf")return new Response(null,{status:404,headers:NO});
 const k=e.EDGE_HOST_SIGNING_PKCS8_BASE64,id=e.EDGE_HOST_SIGNING_KEY_ID,actor=String(e.EDGE_HOST_GITHUB_ACTOR_ID||"");
