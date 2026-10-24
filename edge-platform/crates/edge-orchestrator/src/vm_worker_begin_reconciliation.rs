@@ -534,4 +534,62 @@ mod tests {
             &jobs
         ));
     }
+    #[test]
+    fn failed_begin_reconciliation_requires_exact_original_failed_window() {
+        let prior = prior_begins(
+            &serde_json::json!([begin("application-acceptance-3", 12, 23)]).to_string(),
+            "application-acceptance-3",
+        ).unwrap().remove(0);
+        let operator = serde_json::json!({
+            "id":12,"user":{"id":ACTOR_ID},"issue_url":ISSUE1,
+            "body":"/host apply application-acceptance-3",
+            "created_at":"2026-10-24T21:20:00Z",
+            "updated_at":"2026-10-24T21:20:00Z"
+        });
+        let run = serde_json::json!({
+            "id":23,"head_sha":revision(),"status":"completed",
+            "conclusion":"failure","event":"issue_comment","run_attempt":1,
+            "actor":{"id":ACTOR_ID},"triggering_actor":{"id":ACTOR_ID},
+            "path":".github/workflows/edge-control-plane.yml",
+            "name":"/host apply application-acceptance-3",
+            "created_at":"2026-10-24T21:20:45Z",
+            "updated_at":"2026-10-24T21:22:23Z"
+        });
+        let jobs = serde_json::json!({"total_count":1,"jobs":[{
+            "name":"host_worker_authorizer","run_id":23,
+            "status":"completed","conclusion":"failure"
+        }]});
+        assert!(prior_failed_upload_matches(
+            &prior,"application-acceptance-3",&operator,&run,&jobs,
+            "2026-10-24T21:22:15.946199Z"
+        ));
+        for created in [
+            "2026-10-24T21:20:00Z",
+            "2026-10-24T21:22:24Z",
+            "not-a-date"
+        ] {
+            assert!(!prior_failed_upload_matches(
+                &prior,"application-acceptance-3",&operator,&run,&jobs,created
+            ));
+        }
+        let mut foreign = jobs.clone();
+        foreign["jobs"][0]["conclusion"] = Value::String("success".into());
+        assert!(!prior_failed_upload_matches(
+            &prior,"application-acceptance-3",&operator,&run,&foreign,
+            "2026-10-24T21:22:15.946199Z"
+        ));
+        let mut replay = run.clone();
+        replay["run_attempt"] = Value::from(2);
+        assert!(!prior_failed_upload_matches(
+            &prior,"application-acceptance-3",&operator,&replay,&jobs,
+            "2026-10-24T21:22:15.946199Z"
+        ));
+        let mut tampered = operator.clone();
+        tampered["updated_at"] = Value::String("2026-10-24T21:22:30Z".into());
+        assert!(!prior_failed_upload_matches(
+            &prior,"application-acceptance-3",&tampered,&run,&jobs,
+            "2026-10-24T21:22:15.946199Z"
+        ));
+    }
+
 }
