@@ -531,9 +531,7 @@ impl HostWorkerAuthorizationRejection {
 /// A bounded GET-only proof of the same Access JWT that protects POST.
 /// No HostIntent, GitHub approval, signature, replay or native resource mutation.
 /// Return codes are safe to print from existing native read-only diagnostics.
-pub async fn diagnose_canonical_host_access(
-    identity_path: &Path,
-) -> Result<(), &'static str> {
+pub async fn diagnose_canonical_host_access(identity_path: &Path) -> Result<(), &'static str> {
     let identity = match read_access_service_identity(identity_path) {
         Ok(identity) => identity,
         Err(_) => return Err("HOST_WORKER_ACCESS_IDENTITY_UNAVAILABLE"),
