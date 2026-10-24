@@ -43,8 +43,8 @@ fn id_after(part: &str, prefix: &str) -> Result<u64, &'static str> {
 }
 
 fn prior_begins(history: &str, machine_id: &str) -> Result<Vec<PriorBegin>, String> {
-    let records: Vec<Value> = serde_json::from_str(history)
-        .map_err(|_| "HOST_VM_WORKER_HISTORY_MALFORMED_NO_REPLAY")?;
+    let records: Vec<Value> =
+        serde_json::from_str(history).map_err(|_| "HOST_VM_WORKER_HISTORY_MALFORMED_NO_REPLAY")?;
     if records.len() > 3000 {
         return Err("HOST_VM_WORKER_HISTORY_UNBOUNDED_NO_REPLAY".into());
     }
@@ -114,8 +114,7 @@ fn prior_run_is_terminal(
         && operator.get("body").and_then(Value::as_str) == Some(exact_command.as_str())
         && operator.get("created_at") == operator.get("updated_at")
         && run.get("id").and_then(Value::as_u64) == Some(prior.github_run_id)
-        && run.get("head_sha").and_then(Value::as_str)
-            == Some(prior.source_revision.as_str())
+        && run.get("head_sha").and_then(Value::as_str) == Some(prior.source_revision.as_str())
         && run.get("status").and_then(Value::as_str) == Some("completed")
         && run.get("conclusion").and_then(Value::as_str) == Some("success")
         && run.get("event").and_then(Value::as_str) == Some("issue_comment")
@@ -125,15 +124,26 @@ fn prior_run_is_terminal(
         && run.get("path").and_then(Value::as_str)
             == Some(".github/workflows/edge-control-plane.yml")
         && run.get("name").and_then(Value::as_str) == Some(exact_command.as_str())
-        && jobs.get("total_count").and_then(Value::as_u64).is_some_and(|n| n <= 100)
-        && jobs.get("jobs").and_then(Value::as_array).is_some_and(|items| {
-            items.iter().filter(|job| {
-                job.get("name").and_then(Value::as_str) == Some("host_worker_authorizer")
-                    && job.get("status").and_then(Value::as_str) == Some("completed")
-                    && job.get("conclusion").and_then(Value::as_str) == Some("success")
-                    && job.get("run_id").and_then(Value::as_u64) == Some(prior.github_run_id)
-            }).count() == 1
-        })
+        && jobs
+            .get("total_count")
+            .and_then(Value::as_u64)
+            .is_some_and(|n| n <= 100)
+        && jobs
+            .get("jobs")
+            .and_then(Value::as_array)
+            .is_some_and(|items| {
+                items
+                    .iter()
+                    .filter(|job| {
+                        job.get("name").and_then(Value::as_str) == Some("host_worker_authorizer")
+                            && job.get("status").and_then(Value::as_str) == Some("completed")
+                            && job.get("conclusion").and_then(Value::as_str) == Some("success")
+                            && job.get("run_id").and_then(Value::as_u64)
+                                == Some(prior.github_run_id)
+                    })
+                    .count()
+                    == 1
+            })
 }
 
 async fn github_get_json(client: &Client, token: &str, path: &str) -> Result<Value, String> {
@@ -145,7 +155,9 @@ async fn github_get_json(client: &Client, token: &str, path: &str) -> Result<Val
         .await
         .map_err(|_| "HOST_VM_WORKER_PRIOR_GITHUB_READ_UNPROVEN_NO_REPLAY")?;
     if response.status() != StatusCode::OK
-        || response.content_length().is_some_and(|n| n == 0 || n > 2_097_152)
+        || response
+            .content_length()
+            .is_some_and(|n| n == 0 || n > 2_097_152)
     {
         return Err("HOST_VM_WORKER_PRIOR_GITHUB_READ_UNPROVEN_NO_REPLAY".into());
     }
@@ -167,20 +179,19 @@ pub(crate) async fn verify_prior_vm_worker_begins(machine_id: &str) -> Result<()
     let history_path = env::var_os("HOST_VM_WORKER_BEGIN_HISTORY_PATH")
         .ok_or("HOST_VM_WORKER_HISTORY_PATH_REQUIRED")?;
     let path = Path::new(&history_path);
-    let meta = fs::symlink_metadata(path)
-        .map_err(|_| "HOST_VM_WORKER_HISTORY_UNAVAILABLE_NO_REPLAY")?;
+    let meta =
+        fs::symlink_metadata(path).map_err(|_| "HOST_VM_WORKER_HISTORY_UNAVAILABLE_NO_REPLAY")?;
     if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 10 * 1024 * 1024 {
         return Err("HOST_VM_WORKER_HISTORY_UNTRUSTED_NO_REPLAY".into());
     }
-    let history = fs::read_to_string(path)
-        .map_err(|_| "HOST_VM_WORKER_HISTORY_UNREADABLE_NO_REPLAY")?;
+    let history =
+        fs::read_to_string(path).map_err(|_| "HOST_VM_WORKER_HISTORY_UNREADABLE_NO_REPLAY")?;
     let beginnings = prior_begins(&history, machine_id)?;
     if beginnings.is_empty() {
         println!("host_vm_worker_prior_begin=NONE");
         return Ok(());
     }
-    let token = env::var("GH_TOKEN")
-        .map_err(|_| "HOST_VM_WORKER_PRIOR_GITHUB_TOKEN_REQUIRED")?;
+    let token = env::var("GH_TOKEN").map_err(|_| "HOST_VM_WORKER_PRIOR_GITHUB_TOKEN_REQUIRED")?;
     if token.is_empty() || token.len() > 1024 {
         return Err("HOST_VM_WORKER_PRIOR_GITHUB_TOKEN_INVALID".into());
     }
@@ -248,20 +259,49 @@ mod tests {
     #[test]
     fn forged_edited_duplicate_or_malformed_begin_is_blocking() {
         let item = begin("application-acceptance-3", 12, 23);
-        assert!(prior_begins(&serde_json::json!([item, begin("application-acceptance-3", 12, 24)]).to_string(), "application-acceptance-3").is_err());
+        assert!(
+            prior_begins(
+                &serde_json::json!([item, begin("application-acceptance-3", 12, 24)]).to_string(),
+                "application-acceptance-3"
+            )
+            .is_err()
+        );
         let mut changed = begin("application-acceptance-3", 12, 23);
         changed["updated_at"] = Value::String("2026-10-23T23:33:50Z".into());
-        assert!(prior_begins(&serde_json::json!([changed]).to_string(), "application-acceptance-3").is_err());
+        assert!(
+            prior_begins(
+                &serde_json::json!([changed]).to_string(),
+                "application-acceptance-3"
+            )
+            .is_err()
+        );
         let mut malformed = begin("application-acceptance-3", 12, 23);
         malformed["body"] = Value::String("<!-- sing-box-vm-worker-authorizer-begin/v1 machine=application-acceptance-3 comment=12 revision=garbage run=23 -->".into());
-        assert!(prior_begins(&serde_json::json!([malformed]).to_string(), "application-acceptance-3").is_err());
+        assert!(
+            prior_begins(
+                &serde_json::json!([malformed]).to_string(),
+                "application-acceptance-3"
+            )
+            .is_err()
+        );
         let mut forged = begin("application-acceptance-3", 12, 23);
         forged["user"]["id"] = Value::from(ACTOR_ID);
-        assert!(prior_begins(&serde_json::json!([forged]).to_string(), "application-acceptance-3").is_err());
+        assert!(
+            prior_begins(
+                &serde_json::json!([forged]).to_string(),
+                "application-acceptance-3"
+            )
+            .is_err()
+        );
     }
     #[test]
     fn run_must_be_exact_terminal_worker_owner_and_operator() {
-        let prior = prior_begins(&serde_json::json!([begin("application-acceptance-3", 12, 23)]).to_string(), "application-acceptance-3").unwrap().remove(0);
+        let prior = prior_begins(
+            &serde_json::json!([begin("application-acceptance-3", 12, 23)]).to_string(),
+            "application-acceptance-3",
+        )
+        .unwrap()
+        .remove(0);
         let operator = serde_json::json!({"id":12,"user":{"id":ACTOR_ID},"issue_url":ISSUE1,
             "body":"/host apply application-acceptance-3","created_at":"today","updated_at":"today"});
         let run = serde_json::json!({"id":23,"head_sha":revision(),"status":"completed",
@@ -271,15 +311,39 @@ mod tests {
             "name":"/host apply application-acceptance-3"});
         let jobs = serde_json::json!({"total_count":1,"jobs":[{"name":"host_worker_authorizer",
             "run_id":23,"status":"completed","conclusion":"success"}]});
-        assert!(prior_run_is_terminal(&prior, "application-acceptance-3", &operator, &run, &jobs));
+        assert!(prior_run_is_terminal(
+            &prior,
+            "application-acceptance-3",
+            &operator,
+            &run,
+            &jobs
+        ));
         let mut failed = run.clone();
         failed["conclusion"] = Value::String("failure".into());
-        assert!(!prior_run_is_terminal(&prior, "application-acceptance-3", &operator, &failed, &jobs));
+        assert!(!prior_run_is_terminal(
+            &prior,
+            "application-acceptance-3",
+            &operator,
+            &failed,
+            &jobs
+        ));
         let mut wrong = jobs.clone();
         wrong["jobs"][0]["conclusion"] = Value::String("skipped".into());
-        assert!(!prior_run_is_terminal(&prior, "application-acceptance-3", &operator, &run, &wrong));
+        assert!(!prior_run_is_terminal(
+            &prior,
+            "application-acceptance-3",
+            &operator,
+            &run,
+            &wrong
+        ));
         let mut wrong_actor = operator.clone();
         wrong_actor["user"]["id"] = Value::from(BOT_ID);
-        assert!(!prior_run_is_terminal(&prior, "application-acceptance-3", &wrong_actor, &run, &jobs));
+        assert!(!prior_run_is_terminal(
+            &prior,
+            "application-acceptance-3",
+            &wrong_actor,
+            &run,
+            &jobs
+        ));
     }
 }
