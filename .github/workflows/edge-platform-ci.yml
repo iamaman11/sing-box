@@ -403,8 +403,12 @@ jobs:
           mesh_service = Path("edge-platform/crates/edge-orchestrator/src/cloudflare_mesh_lifecycle_service.rs").read_text()
           vpc_service = Path("edge-platform/crates/edge-orchestrator/src/vultr_vpc_lifecycle_service.rs").read_text()
           vultr_service = Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_service.rs").read_text()
-          for planner in [vpc_command_authority, vultr_command_authority]:
-              assert "plan_authority" in planner
+          # Deleted direct Vultr CLI plans are not a proof requirement:
+          # the surviving Git-scoped first-use is the only VM provider owner.
+          assert "plan_authority" in vpc_command_authority
+          assert "host_first_use_provider_preflight(" in vultr_command_authority
+          assert "host_first_use(" in vultr_command_authority
+          assert "pub async fn run(args: Vec<String>" not in vultr_command_authority
           for mutation_boundary in [application_service, dns_service, mesh_service, vpc_service, vultr_service]:
               assert "verify_exact_authority" in mutation_boundary
           assert "authorize_dns_apply" in dns_command
