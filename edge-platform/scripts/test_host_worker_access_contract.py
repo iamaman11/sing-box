@@ -38,8 +38,9 @@ const release='a'.repeat(64);
 const approvedAt=new Date((now-10)*1000).toISOString();
 let githubMode='approved';
 let jwksMode='valid';
-globalThis.fetch=async url=>{
+globalThis.fetch=async (url,init)=>{
  if(url===iss+'/cdn-cgi/access/certs'){
+   assert.equal(init?.redirect,'manual','Workers supports manual redirects, not error');
    if(jwksMode==='fetch_fail')throw Error('unavailable JWKS endpoint');
    if(jwksMode==='same_zone')throw new TypeError('Cloudflare 1042 same-zone Worker fetch denied');
    if(jwksMode==='cloudflare_ip')throw new TypeError('subrequest 1024 to Cloudflare-owned IP');
@@ -51,6 +52,7 @@ globalThis.fetch=async url=>{
    if(jwksMode==='invocation')throw new TypeError('Illegal invocation');
    if(jwksMode==='type_error')throw new TypeError('fetch failed');
    if(jwksMode==='http')return {ok:false,status:503};
+   if(jwksMode==='http_redirect')return {ok:false,status:302,json:async()=>{throw Error('redirect followed')}};
    if(jwksMode==='invalid')return {ok:true,json:async()=>({})};
    if(jwksMode==='missing_kid')return {ok:true,json:async()=>({keys:[]})};
    if(jwksMode==='import_bad')return {ok:true,json:async()=>({keys:[{kid:jwk.kid,kty:'RSA',n:'invalid'}]})};
@@ -111,6 +113,7 @@ for(const [mode,reason] of [
  ['cloudflare_ip','JWT_JWKS_FETCH_CLOUDFLARE_IP_BLOCKED'],
  ['host_denied','JWT_JWKS_FETCH_HOST_BLOCKED'],
  ['redirect','JWT_JWKS_FETCH_REDIRECT_BLOCKED'],
+ ['http_redirect','JWT_JWKS_FETCH_REDIRECT_BLOCKED'],
  ['timeout','JWT_JWKS_FETCH_TIMEOUT'],
  ['dns','JWT_JWKS_FETCH_DNS_FAILED'],
  ['tls','JWT_JWKS_FETCH_TLS_FAILED'],
