@@ -77,7 +77,8 @@ const contractWorker :Workerd.Worker = (
     (d / "config.capnp").write_text(capnp, encoding="utf-8")
     cmd = ["npm", "exec", "--yes", "--package=workerd@1.20261015.1", "--",
            "workerd", "serve", "config.capnp"]
-    with subprocess.Popen(cmd, cwd=d, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL) as proc:
+    proc = subprocess.Popen(cmd, cwd=d, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
         passed = False
         for _ in range(80):
             if proc.poll() is not None:
@@ -96,4 +97,12 @@ const contractWorker :Workerd.Worker = (
                 time.sleep(0.5)
         if not passed:
             raise SystemExit("ring generated v2 -> production Worker signer in pinned workerd: FAIL")
+    finally:
+        # A successful 'serve' is long-lived: never wait for it implicitly.
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+            proc.wait(timeout=5)
 print("ring_pkcs8_v2_to_pinned_workerd_sign_verify=PASS")
