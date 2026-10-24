@@ -191,8 +191,7 @@ jobs:
        needs.host.outputs.operation != 'APPLY_PREFLIGHT' ||
        needs.host_worker_authorizer.result == 'success' &&
        needs.host_worker_authorizer.outputs.source_upgrade_required == 'false') &&
-      (github.event.comment.body == '/host status' ||
-       startsWith(github.event.comment.body, '/host status ') ||
+      (needs.host.outputs.operation == 'STATUS' ||
        needs.host.outputs.operation == 'APPLY_PREFLIGHT' ||
        needs.host.outputs.operation == 'RECOVER_PREFLIGHT')
     strategy:
@@ -208,6 +207,7 @@ jobs:
       owner: ${{ matrix.owner }}
       kind: ${{ matrix.kind }}
       runner_labels: ${{ toJSON(matrix.runner_labels) }}
+      operation: ${{ needs.host.outputs.operation }}
       command_body: ${{ github.event.comment.body }}
       source_comment_id: ${{ github.event.comment.id }}
 
@@ -218,8 +218,7 @@ jobs:
     if: >-
       github.run_attempt == 1 &&
       needs.host.result == 'success' &&
-      (github.event.comment.body == '/host status' ||
-       startsWith(github.event.comment.body, '/host status ') ||
+      (needs.host.outputs.operation == 'STATUS' ||
        needs.host.outputs.operation == 'APPLY_PREFLIGHT' ||
        needs.host.outputs.operation == 'RECOVER_PREFLIGHT' ||
        needs.host.outputs.operation == 'FIRST_USE_PREFLIGHT' ||
@@ -249,7 +248,8 @@ jobs:
             false)
               if [[ "${HOST_OPERATION}" == "WORKER_AUTHORIZER_PREFLIGHT" ]]; then
                 result=CANONICAL_VM_WORKER_AUTHORIZER_STAGE
-              elif [[ "${COMMAND_BODY}" == "/host apply "* ]]; then
+              elif [[ "${HOST_OPERATION}" == FIRST_USE_PREFLIGHT ||
+                       "${HOST_OPERATION}" == APPLY_PREFLIGHT ]]; then
                 result=FIRST_USE_GIT_RECEIPT_REGISTRATION_REQUIRED
               else
                 result=NO_NATIVE_TARGET_AVAILABLE
