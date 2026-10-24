@@ -4181,7 +4181,7 @@ if(decision!=="APPROVED"){
  return new Response(null,{status:decision==="UNAVAILABLE"?503:403,headers:h});
 }
 const op=info.id;
-const issued=Math.floor(Date.now()/1000),expires=issued+120,kid=TE.encode(id),oid=TE.encode(op),pk=B64(k);
+const issued=Math.floor(Date.now()/1000),expires=issued+120,kid=TE.encode(id),oid=TE.encode(op);
 const payload=CAT(TE.encode("sing-box/native-host-authorization/v1:"),U32(raw.length),raw,U32(kid.length),kid,U32(oid.length),oid,U64(issued),U64(expires));
 const signed=await HOST_SIGNER_SIGN(k,payload);
 if(signed.reason)return new Response(null,{status:503,headers:{...NO,"X-Host-Authorization-Reason":signed.reason}});
