@@ -109,7 +109,6 @@ const DEFAULT_CLOUD_INIT_PATH: &str = "win/vultr-waw/cloud-init.yaml";
 const CANONICAL_SSH_PUBLIC_KEY_PATH: &str = "infra/vultr/singbox-ops.pub";
 const FIREWALL_PROFILES_PATH: &str = "infra/vultr/firewall-profiles.json";
 
-
 async fn apply_machine_value(
     spec_path: &Path,
     machine_id: &str,
@@ -404,7 +403,6 @@ async fn exact_existing_machine_provider_id(
         .provider_id)
 }
 
-
 fn require_disposable_initial_probe_target(spec: &str, machine: &str) -> Result<(), String> {
     if spec != "infra/vultr/application-acceptance.json" || machine != "application-acceptance-1" {
         return Err(
@@ -564,7 +562,6 @@ async fn install_disposable_initial_vm_access_identity(
     Ok("CREATED_ONCE")
 }
 
-
 fn require_six_exact_vm_local_line2(
     response: &InitialVmCredentialRuntimeResponse,
 ) -> Result<(), String> {
@@ -609,7 +606,6 @@ fn authorize_initial_runtime_job(job: &str, apply: bool) -> Result<(), String> {
         )
     }
 }
-
 
 /// The only authorized bridge after a receipt-key-only protected Git merge:
 /// the EXISTING Vultr lease opens bounded SSH to the EXISTING root Agent.
@@ -863,7 +859,6 @@ pub(crate) async fn host_first_use(
         )),
     }
 }
-
 
 pub(crate) async fn bootstrap_production_runner(
     desired: &DesiredState,
@@ -1254,7 +1249,6 @@ fn validate_runner_registration_token(value: &str) -> Result<(), String> {
     Ok(())
 }
 
-
 async fn acquire_access_with_authority(
     desired: &DesiredState,
     machine_id: &str,
@@ -1339,7 +1333,6 @@ async fn acquire_access_with_authority(
         "mutations_performed": 1,
     }))
 }
-
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum AccessReconcileClass {
@@ -1614,7 +1607,6 @@ async fn build_access_authority(
     }
 }
 
-
 async fn release_access_with_authority(
     desired: &DesiredState,
     machine_id: &str,
@@ -1697,7 +1689,6 @@ async fn release_access_with_authority(
         "mutations_performed": 1,
     }))
 }
-
 
 fn instance_action_disposition(
     action: InstanceAction,
@@ -1804,7 +1795,6 @@ async fn build_instance_action_authority(
     Ok((authorized, operational))
 }
 
-
 pub(crate) fn validate_linux_boot_id(value: &str) -> Result<(), String> {
     let bytes = value.as_bytes();
     if bytes.len() != 36
@@ -1881,7 +1871,6 @@ pub(crate) async fn wait_for_guest_boot_id_change(
         "guest reboot was not proven for {logical_hostname} at {target_ip}: boot_id did not change after {attempts} observations; last_state={last_state}"
     ))
 }
-
 
 struct SupportCleanupAuthorityContext {
     authorized: AuthorizedPlan<serde_json::Value>,
@@ -2057,7 +2046,6 @@ async fn build_support_cleanup_authority(
         remaining_instances,
     })
 }
-
 
 pub(crate) async fn acceptance_require_clean_room(
     spec_path: &Path,
@@ -2873,7 +2861,6 @@ fn print_json_value(value: serde_json::Value) -> Result<(), String> {
     println!("{json}");
     Ok(())
 }
-
 
 #[cfg(test)]
 #[path = "vultr_lifecycle_command_tests.rs"]
