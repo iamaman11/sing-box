@@ -1537,6 +1537,11 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
         return Err("HOST_VM_WORKER_BASELINE_NOT_PROVEN_FOR_CODE_UPGRADE".to_owned());
     }
     if plan_only {
+        // Reconcile any previous durable BEGIN against the original protected
+        // issue command and a terminal successful Worker owner run. The
+        // Cloudflare predecessor source and exact active/latest version were
+        // independently proven above; an unknown ACK remains NO_REPLAY.
+        crate::vm_worker_begin_reconciliation::verify_prior_vm_worker_begins(machine_id).await?;
         emit_vm_worker_plan_required(decision)?;
         println!("host_vm_worker_authorizer=EXACT_VM_CODE_ONLY_PLAN");
         println!("worker_mutations=0");
