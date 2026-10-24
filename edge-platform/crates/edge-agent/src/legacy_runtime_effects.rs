@@ -103,5 +103,3 @@ pub(super) fn run_fixed_command(
     }
     Ok(())
 }
-
-#[derive(Debug, Clone)]
