@@ -180,9 +180,16 @@ fn receipt_public_key_hex(public_key: &[u8]) -> String {
         .collect()
 }
 
-/// Root-owned trust can advance to a NEW accepted immutable ReleaseSet
-/// without replacing the stable journal. Pending UNKNOWN_NO_REPLAY is an
-/// explicit gate: an update must never erase the record that forbids replay.
+/// A signed, immutable code/trust refresh is NOT a native resource
+/// mutation. Preserve the complete prior journal byte-for-byte even when a
+/// previous operation is UNKNOWN_NO_REPLAY or an entry is untrusted. Otherwise
+/// a failed journal write permanently prevents shipping the diagnostic owner
+/// that must inspect that very failure (root/refresh deadlock).
+///
+/// Identity, receipt pin, root-owned private journal directory, accepted Git
+/// ReleaseSet and root owner lock remain mandatory. Mutation admission still
+/// performs the full fail-closed journal scan in host_native/host_journal;
+/// an upgrade NEVER releases pending, repairs entries or authorizes replay.
 fn validate_existing_trust_for_refresh(
     trusted: &Path,
     machine_id: &str,
@@ -195,9 +202,16 @@ fn validate_existing_trust_for_refresh(
     }
     let journal = trusted.join("journal");
     checked_root_directory(&journal)?;
-    if super::host_native::protected_journal_has_pending(&journal)? {
-        return Err("HOST_ENROLL_UNRESOLVED_RESOURCE_NO_REPLAY".into());
+    let meta = fs::symlink_metadata(&journal)
+        .map_err(|_| "HOST_ENROLL_JOURNAL_DIRECTORY_UNAVAILABLE")?;
+    if !meta.file_type().is_dir()
+        || meta.uid() != 0
+        || meta.permissions().mode() & 0o077 != 0
+    {
+        return Err("HOST_ENROLL_JOURNAL_ROOT_NOT_PRIVATE".into());
     }
+    // Do not touch any journal entry here. Only signed *resource mutations*
+    // may consult durable BEGIN/pending/terminal records for admission.
     Ok(())
 }
 
@@ -550,6 +564,8 @@ pub(crate) async fn refresh_current() -> Result<(), String> {
     };
     // Shared enrollment validation proves ReleaseSet, source tree, registry,
     // Worker signer and stable native receipt; preserves journal and key.
+    // A suspicious or pending resource journal does NOT veto diagnostics-only
+    // binary delivery. It remains a strict veto for any subsequent host-apply.
     // No second lock is acquired; this lock spans the entire upgrade.
     enroll_locked(&previous.machine_id, &release_digest).await?;
     if let Some(bytes) = next_binary {
