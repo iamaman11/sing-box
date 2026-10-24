@@ -615,6 +615,70 @@ pub async fn diagnose_canonical_host_access(identity_path: &Path) -> Result<(), 
     Err(HostWorkerAuthorizationRejection::from_response(response.status(), reason).code())
 }
 
+// Diagnostic metadata is NEVER admission authority. Only a closed set of
+// enum tokens and digit-only bounded values may leave the native owner.
+// A mismatched operation ID or malformed header suppresses this witness.
+fn github_worker_failure_detail(headers: &HeaderMap, operation_id: &str) -> Option<String> {
+    let read = |key: &str| headers.get(key).and_then(|value| value.to_str().ok());
+    if read("X-Host-Github-Operation-Id") != Some(operation_id) {
+        return None;
+    }
+    let stage = match read("X-Host-Github-Stage")? {
+        "GITHUB_COMMENT" => "GITHUB_COMMENT",
+        "GITHUB_RELEASE" => "GITHUB_RELEASE",
+        "GITHUB_MAIN" => "GITHUB_MAIN",
+        "GITHUB_PULLS" => "GITHUB_PULLS",
+        _ => return None,
+    };
+    let kind = match read("X-Host-Github-Kind")? {
+        "HTTP" => "HTTP",
+        "REDIRECT" => "REDIRECT",
+        "FETCH_EXCEPTION" => "FETCH_EXCEPTION",
+        "RESPONSE_DECODE" => "RESPONSE_DECODE",
+        _ => return None,
+    };
+    let mut result = format!("stage={stage};kind={kind}");
+    for (header, name, max_len) in [
+        ("X-Host-Github-Http-Status", "http_status", 3_usize),
+        ("X-Host-Github-Rate-Limit-Remaining", "rate_limit_remaining", 10),
+        ("X-Host-Github-Rate-Limit-Reset", "rate_limit_reset", 12),
+        ("X-Host-Github-Retry-After", "retry_after", 8),
+    ] {
+        if let Some(value) = read(header) {
+            if !value.is_empty()
+                && value.len() <= max_len
+                && value.bytes().all(|byte| byte.is_ascii_digit())
+                && (name != "http_status"
+                    || value.parse::<u16>().is_ok_and(|status| (100..=599).contains(&status)))
+            {
+                result.push_str(&format!(";{name}={value}"));
+            }
+        }
+    }
+    if let Some(exception) = read("X-Host-Github-Exception-Class") {
+        let safe = match exception {
+            "TypeError" | "TimeoutError" | "SyntaxError" | "RangeError" | "Error" | "OTHER" => {
+                Some(exception)
+            }
+            _ => None,
+        };
+        if let Some(safe) = safe {
+            result.push_str(&format!(";exception_class={safe}"));
+        }
+    }
+    if let Some(request_id) = read("X-Host-Github-Request-Id") {
+        if !request_id.is_empty()
+            && request_id.len() <= 64
+            && request_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+        {
+            result.push_str(&format!(";github_request_id={request_id}"));
+        }
+    }
+    Some(result)
+}
+
 /// Ask the ONE existing VM credential Worker to issue its independent
 /// Ed25519 authorization for an exact already approved protobuf HostIntent.
 /// Never retry a POST whose result is uncertain. This function only acquires
@@ -662,11 +726,17 @@ pub async fn request_canonical_host_authorization(
                 .headers()
                 .get("X-Host-Authorization-Reason")
                 .and_then(|value| value.to_str().ok());
-            return Err(
-                HostWorkerAuthorizationRejection::from_response(status, reason)
-                    .code()
-                    .to_owned(),
-            );
+            let rejection = HostWorkerAuthorizationRejection::from_response(status, reason);
+            let mut code = rejection.code().to_owned();
+            if status == StatusCode::SERVICE_UNAVAILABLE
+                && reason == Some("GITHUB_DEPENDENCY_UNAVAILABLE")
+            {
+                if let Some(detail) = github_worker_failure_detail(response.headers(), &intent.operation_id) {
+                    code.push(':');
+                    code.push_str(&detail);
+                }
+            }
+            return Err(code);
         }
     }
     if response
@@ -710,6 +780,29 @@ pub async fn fetch_canonical_credential_bundle(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn github_worker_diagnostics_are_bounded_and_operation_pinned() {
+        let mut headers = HeaderMap::new();
+        headers.insert("X-Host-Github-Operation-Id", HeaderValue::from_static("issue1-comment-17"));
+        headers.insert("X-Host-Github-Stage", HeaderValue::from_static("GITHUB_RELEASE"));
+        headers.insert("X-Host-Github-Kind", HeaderValue::from_static("HTTP"));
+        headers.insert("X-Host-Github-Http-Status", HeaderValue::from_static("429"));
+        headers.insert("X-Host-Github-Rate-Limit-Remaining", HeaderValue::from_static("0"));
+        headers.insert("X-Host-Github-Request-Id", HeaderValue::from_static("A1-B2"));
+        assert_eq!(
+            github_worker_failure_detail(&headers, "issue1-comment-17"),
+            Some("stage=GITHUB_RELEASE;kind=HTTP;http_status=429;rate_limit_remaining=0;github_request_id=A1-B2".to_owned()),
+        );
+        assert!(github_worker_failure_detail(&headers, "issue1-comment-18").is_none());
+        headers.insert("X-Host-Github-Stage", HeaderValue::from_static("GITHUB_FOREIGN"));
+        assert!(github_worker_failure_detail(&headers, "issue1-comment-17").is_none());
+        headers.insert("X-Host-Github-Stage", HeaderValue::from_static("GITHUB_RELEASE"));
+        headers.insert("X-Host-Github-Http-Status", HeaderValue::from_static("999"));
+        headers.insert("X-Host-Github-Request-Id", HeaderValue::from_static("invalid!"));
+        let safe = github_worker_failure_detail(&headers, "issue1-comment-17").unwrap();
+        assert_eq!(safe, "stage=GITHUB_RELEASE;kind=HTTP;rate_limit_remaining=0");
+    }
+
 
     #[test]
     fn host_worker_auth_rejections_are_closed_and_bounded() {
