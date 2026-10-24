@@ -10,7 +10,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let bytes = ring::signature::Ed25519KeyPair::generate_pkcs8(&rng)?;
     let pair = ring::signature::Ed25519KeyPair::from_pkcs8(bytes.as_ref())?;
     let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes.as_ref());
-    let pubkey = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(pair.public_key().as_ref());
+    let pubkey =
+        base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(pair.public_key().as_ref());
     let mut options = std::fs::OpenOptions::new();
     options.create_new(true).write(true);
     #[cfg(unix)]
@@ -19,7 +20,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         options.mode(0o600);
     }
     let mut out = options.open(path)?;
-    write!(out, "{{\"ring_pkcs8_v2\":\"{encoded}\",\"public_key\":\"{pubkey}\"}}")?;
+    write!(
+        out,
+        "{{\"ring_pkcs8_v2\":\"{encoded}\",\"public_key\":\"{pubkey}\"}}"
+    )?;
     out.sync_all()?;
     println!("host_signer_ring_test_fixture=CREATED_PRIVATE_EPHEMERAL");
     Ok(())
