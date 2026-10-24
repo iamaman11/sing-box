@@ -1,33 +1,27 @@
-# sing-box — единственный рабочий интерфейс /host
+# sing-box — единственный операторский интерфейс
 
-Канон: защищённый [main](https://github.com/iamaman11/sing-box). Никаких отдельных пользовательских `/vm`, `/windows`, `/vultr`, `/credentials`, ручного SSH/docker exec.
+**Канон:** защищённый [`main`](https://github.com/iamaman11/sing-box). Команды публикуются только в [Issue #1](https://github.com/iamaman11/sing-box/issues/1) и исполняются существующим Rust owner/Actions workflow; это не прямое разрешение на Cloudflare/Docker/SCM/SSH mutation.
 
-| Команда | Текущая реальная семантика |
+| Синтаксис | Поддерживаемый смысл и предел |
 | --- | --- |
-| `/host status [machine-id] [--deep]` | read-only: Git desired, runner, native Agent/SCM; для VM — bounded Docker-контейнеры, Compose scope, установленная конфигурация, локальная сеть, DNS и nft readback; неизвестность = UNPROVEN |
-| `/host apply <machine-id>` | разовый типизированный Git ReleaseSet → native root Agent; установка пустой VM, Start/Stop, ReplaceRelease, согласованная конфигурация по immutable Git desired, журнал и receipt |
-| `/host apply <machine-id> config/vultr-edge/line1-gateway` | точная ограниченная правка конфигурации Line1 с Git-authorized signed intent, без изменения других Docker ресурсов |
-| `/host apply <machine-id> config/vultr-edge/line2-proxy` | точная ограниченная правка конфигурации Line2 |
-| `/host recover <machine-id>` | типизированный read-only preflight; нельзя replay UNKNOWN; не универсальная переустановка |
+| `/host status [machine-id] [--deep]` | Только read-only: Git/ReleaseSet, runner, native owner и bounded ресурсы, DNS/network readback, reason/owner/scope; `UNPROVEN` не означает healthy |
+| `/host apply <machine-id>` | Единственный типизированный однократный маршрут Git/ReleaseSet → owner-gated Worker/signature → VM root Agent / Windows SYSTEM Controller, журнал и signed native receipt. Может завершиться только кодовым Worker upgrade/first-use или `BLOCKED`: не утверждать, что VM установлена, пока это не доказано |
+| `/host apply <machine-id> config/vultr-edge/line1-gateway` | Узкий signed config-only scope Line1; соседние ресурсы не изменять |
+| `/host apply <machine-id> config/vultr-edge/line2-proxy` | Узкий signed config-only scope Line2 |
+| `/host recover <machine-id>` | Сейчас **только read-only preflight**; никакой повтор UNKNOWN, переустановка или rollback без отдельно принятого native handler |
 
-## Единственный VM owner
+Нет других пользовательских `/vm`, `/windows`, `/vultr`, `/production`, `/credentials` команд. Внутренние Rust build/read-only/first-use verbs и typed `HostWorkflowOperation → GitHub Actions operation` не создают новых операторских ingress. `HostIntent`, desired, result и receipt — Protobuf; JSON допускается на необходимых внешних API/renderer границах, не как второй dispatcher.
 
-До первого bootstrap: Vultr API + SSH строго для установки первого Agent/runner. Git защищает неизменяемый ReleaseSet, native receipt identity и Worker signer pin. После bootstrap GitHub-hosted SSH refresh отсутствует. Уже установленный root Agent выполняет `local host-refresh` без аргументов: берёт `releases/latest` и `heads/main`, сверяет SHA/asset/публичные ключи, атомарно обновляет trust и собственный бинарник под общим root lock. Runner имеет только разрешённую пару `host-refresh` и `host-apply`, без общего root или Docker socket. При несоответствии точной версии бинарника ReleaseSet — BLOCKED до исправления, не replay.
+## Владелец и безопасность
 
-## Реальные границы (не выдавать за готовое)
+- **VM:** первоначальная Vultr API/SSH подготовка допускается только для *первого bootstrap* штатного root Agent и ограниченного self-hosted runner. После enrollment никакого SSH-runtime, `docker exec`, Compose/root shell или нового mutation listener. Root `host-refresh` (без аргументов) сверяет exact protected release и обновляет собственный binary/trust; `host-apply` — один resource effector под root lock/journal. Runner доставляет только типизированные операции, не владеет Docker socket.
+- **Windows:** SCM `EdgePlatformController` и SYSTEM activation boundary — целевой единственный owner. Текущий `sing-box-windows-lab` **STOPPED/PROXY_ONLY**, signed SYSTEM apply/TUN/reboot/rollback **НЕ ПРИНЯТЫ**. Нельзя включать TUN, менять DNS/routes, трогать Cloudflare One.
+- **VM network:** Docker observation и nft/DNS/route readback существуют, однако самостоятельные native handlers для host DNS/firewall/routes не приняты. При `UNSUPPORTED` не переключаться на shell/SSH.
+- **Cloudflare Worker:** версия `latest` не обязательно является активной. Pending upload и legacy journal BEGIN не дают права на повтор или deploy. Для текущего несовпадения active/pending и необходимых version-bound доказательств см. [единственный план](FINALIZATION-PLAN.md). Значения восьми Worker secrets не публиковать.
+- **Физическое доказательство:** после любого apply требовать exact installed release, authenticated native receipt, 3/3 VM контейнера, независимые Line1 4/4 + Line2 6/6 TLS/auth/DIRECT/WARP, DNS/firewall/routes, negative scope и отдельную Windows матрицу. CI, `NOOP`, copied runner protobuf и «container running» не равны PASS.
 
-- DNS, firewall, маршрутизация VM: read-only kernel/nft/DNS + Docker network resources; **произвольная самостоятельная нативная мутация DNS/firewall/host routes НЕ реализована** как `/host apply`. Нельзя запускать shell/SSH вместо handler.
-- Windows: `sing-box-windows-lab` намеренно `STOPPED / PROXY_ONLY`. Нативный Windows SYSTEM apply, управляемый TUN, reboot/rollback приёмка — НЕ ПРИНЯТЫ. Не запускать SCM и не менять TUN/DNS/default route.
-- Worker Access: ранее зафиксирован `403` на физическом `/v1/host/authorize`; это историческое свидетельство, не текущая проверка. Перед подписанным INSTALL нужна новая read-only проверка реальной Access authorizer/identity, а не вывод из CI.
-- Точные положительные сетевые результаты (3/3 контейнера, 4/4 Line1, 6/6 Line2, TLS, auth, DIRECT/WARP) требуют физической проверки после нового CREATE. CI и GitHub runner не заменяют end-to-end proof.
-- Никаких других агентов, служб, A/B recovery, дублирующих desired/secret registries и бесконечных retry.
+## Операторский порядок
 
-## Как выполнять запрос из чата
+Прочитать текущий `main` и [единый план](FINALIZATION-PLAN.md) → `/host status --deep` и точный read-only provider/journal witness → подтвердить fresh Git/ReleaseSet/owner/scope/NO_REPLAY → только затем новая `/host apply` через Issue #1 → прочитать Actions/native signed receipt и независимо проверить poststate.
 
-Прочитать защищённый `main` → `/host status --deep` → объяснить один exact reason → при доказанном scope обновить Git desired/release → `/host apply` через Issue #1 и дождаться GitHub Actions + signed native receipt → независимая внешняя проверка. GitHub connector в этом чате может публиковать операторские команды в Issue #1 и читать Actions, но не имеет прямых root/SCM/Vultr полномочий. Секреты остаются в защищённом GitHub Environment/Worker, а физическое исполнение принадлежит только установленному Agent/Controller. Публикация комментария не является доказательством созданной VM или успешного native receipt. При отсутствии инструмента, штатной авторизации или receipt результат остаётся UNPROVEN.
-
-**Транспортный контракт:** Rust формирует закрытый `HostWorkflowOperation` и записывает `operation` в существующий GitHub Actions scalar output; условия Actions читают поле `operation` через `needs.host.outputs.operation`. Текстовые строки лога не разрешают mutation. Внутренние Rust read-only/ReleaseSet build verbs — не дополнительные пользовательские `/host` команды. Удалён парсер старых прямых Vultr/VPC/application и VM credential/bootstrap mutation команд.
-
-JSON не является форматом внутренних управляющих решений. JSON используется только там, где необходим внешнему GitHub API или matrix; `/host` operation — закрытый Rust enum → неизбежный скалярный output Actions. HostIntent/receipt/readback — Protobuf.
-
-VM `edge-agent` does not expose the old gRPC acceptance listener or retired direct bundle/credential mutation CLI; both were removed as executable code, not merely hidden. Exact physical VM operations are strictly `host status|apply|recover`; receipt registration continuation uses the same closed Rust-enum-derived scalar `operation` accepted by the ordinary workflow. No JSON action dispatcher is introduced. Status и recover сейчас read-only; apply может инициировать только новый scoped signed native transaction либо штатный first-use с обязательным receipt. Do not infer a successful install from a CI-only ReleaseSet.
+При неизвестном ACK либо недоказанном результате — `UNKNOWN_NO_REPLAY`, не повторять исходный Issue comment/HostIntent и не создавать второй транспорт. Разрешён один адресный **read-only** запрос существующему локальному агенту с конкретным недостающим полем; секреты, ключи, raw configs и JWT не переносить в issue/чат. Только защищённый Rust owner может принять дальнейшее новое решение.
