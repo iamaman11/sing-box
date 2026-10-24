@@ -1429,6 +1429,55 @@ fn emit_vm_worker_plan_required(decision: VmWorkerUpgradeDecision) -> Result<(),
         .map_err(|_| "HOST_WORKFLOW_OUTPUT_SYNC_FAILED".to_owned())
 }
 
+/// Strict version-bound proof. /scripts/.../content/v2 may serve latest
+/// bytes while a different version still receives 100% of production traffic.
+fn verify_pending_vm_worker_exact_modules(
+    vm: &ProjectionDesired,
+    before: &ProjectionObservation,
+    accepted: &AcceptedVmWorkerSource,
+    material: &DeliveryWorkerMaterial,
+    active: &cloudflare::CloudflareWorkerExactModule,
+    pending: &cloudflare::CloudflareWorkerExactModule,
+) -> Result<(), String> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    let denied = "HOST_VM_WORKER_PENDING_EXACT_PROOF_REJECTED_NO_REPLAY";
+    let Some(active_id) = before.worker_active_version_ids.first() else {
+        return Err(denied.into());
+    };
+    let Some(latest_id) = before.worker_latest_version_id.as_deref() else {
+        return Err(denied.into());
+    };
+    if before.worker_name != vm.worker_name
+        || vm.projection != "vm"
+        || before.worker_active_version_ids.len() != 1
+        || active_id == latest_id
+        || before.worker_active_deployment_id.is_none()
+        || before.worker_binding_count != Some(8)
+        || active.id != *active_id
+        || pending.id != latest_id
+        || active.version_tag
+            != format!("sing-box-phase6-ab-vm-{}", &accepted.predecessor[..16])
+        || pending.version_tag != material.version_tag
+        || before.worker_latest_version_tag.as_deref() != Some(material.version_tag.as_str())
+        || active.secret_bindings != pending.secret_bindings
+        || active.secret_bindings != before.worker_secret_bindings
+    {
+        return Err(denied.into());
+    }
+    require_exact_secret_bindings(&vm.worker_name, "vm", &active.secret_bindings)?;
+    let actual_active = STANDARD.decode(active.content_base64.as_bytes())
+        .map_err(|_| denied)?;
+    let actual_pending = STANDARD.decode(pending.content_base64.as_bytes())
+        .map_err(|_| denied)?;
+    if sha256_hex(&actual_active) != accepted.predecessor
+        || sha256_hex(&actual_pending) != accepted.desired
+        || actual_pending != material.source.as_bytes()
+    {
+        return Err("HOST_VM_WORKER_PENDING_SOURCE_MISMATCH_NO_REPLAY".into());
+    }
+    Ok(())
+}
+
 /// VM-only Host authorizer code promotion. The one public /host apply
 /// selects the Git-owned VM; the protected workflow reserves a durable BEGIN
 /// before dispatch and supplies the existing distinct Cloudflare read/write
@@ -1491,6 +1540,96 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
     let material = delivery_worker_material("vm")?;
     if sha256_hex(material.source.as_bytes()) != accepted_source.desired {
         return Err("HOST_VM_WORKER_DESIRED_RELEASE_SOURCE_MISMATCH".to_owned());
+    }
+    // Recover a *verified existing pending version*, not the failed HostIntent.
+    // Both version-specific modules, including the *active predecessor*, must
+    // be read with include=modules. Never infer active source from content/v2.
+    if let (Some(latest), [active]) = (
+        original.worker_latest_version_id.as_deref(),
+        original.worker_active_version_ids.as_slice(),
+    ) {
+        if latest != active {
+            let worker_id = original.worker_id.as_deref()
+                .ok_or("HOST_VM_WORKER_PENDING_IDENTITY_MISSING_NO_REPLAY")?;
+            let active_module = cloudflare::get_worker_exact_version_module(
+                &read_token, &desired.target_account_id, worker_id, active,
+            ).await?;
+            let pending_module = cloudflare::get_worker_exact_version_module(
+                &read_token, &desired.target_account_id, worker_id, latest,
+            ).await?;
+            verify_pending_vm_worker_exact_modules(
+                &vm, original, &accepted_source, &material, &active_module, &pending_module,
+            )?;
+            let observed_again = observe(&read_token, desired).await?;
+            validate_access_boundary(desired, &observed_again)?;
+            if observed_again.projections != before.projections {
+                return Err("HOST_VM_WORKER_PENDING_PRESTATE_DRIFT_NO_REPLAY".into());
+            }
+            println!("host_vm_worker_pending_source=EXACT_VERSION_BOUND_SHA256_PROVEN");
+            if plan_only {
+                crate::vm_worker_begin_reconciliation::verify_pending_vm_worker_begins(
+                    machine_id, &pending_module.created_on,
+                ).await?;
+                emit_vm_worker_plan_required(VmWorkerUpgradeDecision::UpgradeRequired)?;
+                println!("host_vm_worker_authorizer=EXACT_EXISTING_PENDING_DEPLOY_PLAN");
+                println!("worker_mutations=0");
+                println!("host_signed_install=NOT_AUTHORIZED");
+                return Ok(());
+            }
+            // The workflow reserved a new BEGIN after plan-only had proven
+            // exactly one earlier failed upload. Verify fresh authorization;
+            // no repetition of that earlier GitHub comment/HostIntent.
+            crate::vm_worker_begin_reconciliation::verify_current_vm_worker_begin(
+                machine_id,
+            ).await?;
+            let before_write = observe(&read_token, desired).await?;
+            validate_access_boundary(desired, &before_write)?;
+            if before_write.projections != before.projections {
+                return Err("HOST_VM_WORKER_PENDING_BEFORE_DEPLOY_DRIFT_NO_REPLAY".into());
+            }
+            // Deployment is the ONE write in the new separately authorized
+            // transaction. A failed ACK never authorizes a second POST.
+            let ack = cloudflare::deploy_worker_version(
+                &write_token, &desired.target_account_id, &vm.worker_name, latest,
+            ).await;
+            let after = observe(&read_token, desired).await?;
+            validate_access_boundary(desired, &after)?;
+            if projection_observation(&before, "windows")?
+                != projection_observation(&after, "windows")?
+                || verify_exact_active_worker_version(projection_observation(&after, "vm")?, latest)
+                    .is_err()
+                || projection_delivery_state(desired, &vm, &after)? != ProjectionDeliveryState::FixedAb
+                || projection_observation(&after, "vm")?.worker_binding_count != Some(8)
+            {
+                return Err("HOST_VM_WORKER_PENDING_DEPLOY_POSTSTATE_UNPROVEN_NO_REPLAY".into());
+            }
+            let verified_active = cloudflare::get_worker_exact_version_module(
+                &read_token, &desired.target_account_id, worker_id, latest,
+            ).await?;
+            if verified_active != pending_module {
+                return Err("HOST_VM_WORKER_PENDING_DEPLOY_ACTIVE_SOURCE_DRIFT_NO_REPLAY".into());
+            }
+            let final_observation = observe(&read_token, desired).await?;
+            if final_observation.projections != after.projections {
+                return Err("HOST_VM_WORKER_PENDING_DEPLOY_SECOND_READBACK_DRIFT_NO_REPLAY".into());
+            }
+            if ack.is_err() {
+                return Err("HOST_VM_WORKER_PENDING_DEPLOY_ACK_UNCERTAIN_NO_REPLAY".into());
+            }
+            println!("host_vm_worker_source_readback=EXACT_ACCEPTED_VERSION_MODULE_BYTES");
+            println!("host_vm_worker_authorizer=CANONICAL_VM_CODE_ACTIVE");
+            println!("host_vm_worker_active_version_id={latest}");
+            println!("worker_mutations=1");
+            println!("worker_upload_mutations=0");
+            println!("worker_secret_mutations=0");
+            println!("windows_worker_mutations=0");
+            println!("host_signed_install=NOT_AUTHORIZED");
+            return Ok(());
+        }
+    } else if original.worker_latest_version_id.is_some()
+        && !original.worker_active_version_ids.is_empty()
+    {
+        return Err("HOST_VM_WORKER_SPLIT_DEPLOYMENT_UNPROVEN_NO_REPLAY".into());
     }
     let raw = cloudflare::get_worker_active_module_bytes(
         &read_token,
