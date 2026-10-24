@@ -180,7 +180,12 @@ fn host_authorization_is_closed_by_default_exact_and_access_bound() {
         // authorize a signature or silently change fail-closed semantics.
         assert!(source.contains("decision===\"UNAVAILABLE\"?503:403"));
         assert!(source.contains("X-Host-Github-Operation-Id"));
-        for stage in ["GITHUB_COMMENT", "GITHUB_RELEASE", "GITHUB_MAIN", "GITHUB_PULLS"] {
+        for stage in [
+            "GITHUB_COMMENT",
+            "GITHUB_RELEASE",
+            "GITHUB_MAIN",
+            "GITHUB_PULLS",
+        ] {
             assert!(source.contains(stage));
         }
         for kind in ["HTTP", "REDIRECT", "FETCH_EXCEPTION", "RESPONSE_DECODE"] {
