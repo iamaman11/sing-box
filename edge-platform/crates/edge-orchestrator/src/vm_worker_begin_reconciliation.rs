@@ -229,6 +229,194 @@ pub(crate) async fn verify_prior_vm_worker_begins(machine_id: &str) -> Result<()
     Ok(())
 }
 
+/// The only admissible exception to a successful prior Worker authorizer run:
+/// one EXACT failed run whose immutable accepted source now exists as the
+/// latest un-deployed version, created *inside* that failed run. This is NOT
+/// permission to replay the old operation or upload source a second time.
+fn prior_failed_upload_matches(
+    prior: &PriorBegin,
+    machine_id: &str,
+    operator: &Value,
+    run: &Value,
+    jobs: &Value,
+    pending_created_on: &str,
+) -> bool {
+    if run.get("conclusion").and_then(Value::as_str) != Some("failure") {
+        return false;
+    }
+    let Some(items) = jobs.get("jobs").and_then(Value::as_array) else {
+        return false;
+    };
+    if items
+        .iter()
+        .filter(|j| {
+            j.get("name").and_then(Value::as_str) == Some("host_worker_authorizer")
+                && j.get("run_id").and_then(Value::as_u64) == Some(prior.github_run_id)
+                && j.get("status").and_then(Value::as_str) == Some("completed")
+                && j.get("conclusion").and_then(Value::as_str) == Some("failure")
+        })
+        .count() != 1
+    {
+        return false;
+    }
+    let parse = |value: &str| {
+        time::OffsetDateTime::parse(value, &time::format_description::well_known::Rfc3339).ok()
+    };
+    let (Some(created), Some(finished), Some(uploaded)) = (
+        run.get("created_at").and_then(Value::as_str).and_then(parse),
+        run.get("updated_at").and_then(Value::as_str).and_then(parse),
+        parse(pending_created_on),
+    ) else {
+        return false;
+    };
+    if !(created < uploaded && uploaded < finished) {
+        return false;
+    }
+    // Reuse the complete existing authenticated operator/run/job admission
+    // checklist while checking that exactly the two terminal outcomes differ.
+    let mut terminal_run = run.clone();
+    terminal_run["conclusion"] = Value::String("success".into());
+    let mut terminal_jobs = jobs.clone();
+    let Some(job) = terminal_jobs["jobs"].as_array_mut()
+        .and_then(|jobs| jobs.iter_mut().find(|j| {
+            j.get("name").and_then(Value::as_str) == Some("host_worker_authorizer")
+                && j.get("run_id").and_then(Value::as_u64) == Some(prior.github_run_id)
+        }))
+    else {
+        return false;
+    };
+    job["conclusion"] = Value::String("success".into());
+    prior_run_is_terminal(prior, machine_id, operator, &terminal_run, &terminal_jobs)
+}
+
+/// Read-only preflight for a *new* owner-gated operation to deploy the already
+/// present immutable version. The failed BEGIN remains an audit record and
+/// is never marked successful or resumed. All earlier BEGINs must have ended
+/// successfully and precisely one failed BEGIN must explain this pending upload.
+pub(crate) async fn verify_pending_vm_worker_begins(
+    machine_id: &str,
+    pending_created_on: &str,
+) -> Result<(), String> {
+    let path = env::var_os("HOST_VM_WORKER_BEGIN_HISTORY_PATH")
+        .ok_or("HOST_VM_WORKER_HISTORY_PATH_REQUIRED")?;
+    let path = Path::new(&path);
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|_| "HOST_VM_WORKER_HISTORY_UNAVAILABLE_NO_REPLAY")?;
+    if !metadata.file_type().is_file() || metadata.len() == 0
+        || metadata.len() > 10 * 1024 * 1024
+    {
+        return Err("HOST_VM_WORKER_HISTORY_UNTRUSTED_NO_REPLAY".into());
+    }
+    let history = fs::read_to_string(path)
+        .map_err(|_| "HOST_VM_WORKER_HISTORY_UNREADABLE_NO_REPLAY")?;
+    let beginnings = prior_begins(&history, machine_id)?;
+    if beginnings.is_empty() {
+        return Err("HOST_VM_WORKER_PENDING_BEGIN_MISSING_NO_REPLAY".into());
+    }
+    let token = env::var("GH_TOKEN")
+        .map_err(|_| "HOST_VM_WORKER_PRIOR_GITHUB_TOKEN_REQUIRED")?;
+    if token.is_empty() || token.len() > 1024 {
+        return Err("HOST_VM_WORKER_PRIOR_GITHUB_TOKEN_INVALID".into());
+    }
+    let client = Client::builder()
+        .user_agent("sing-box-rust-native-worker-reconciliation/1")
+        .redirect(Policy::none())
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|_| "HOST_VM_WORKER_PRIOR_GITHUB_CLIENT_UNAVAILABLE")?;
+    let mut failed_uploads = 0_u32;
+    for prior in &beginnings {
+        let operator = github_get_json(
+            &client,
+            &token,
+            &format!("issues/comments/{}", prior.operator_comment_id),
+        ).await?;
+        let run = github_get_json(
+            &client,
+            &token,
+            &format!("actions/runs/{}", prior.github_run_id),
+        ).await?;
+        let jobs = github_get_json(
+            &client,
+            &token,
+            &format!("actions/runs/{}/jobs?per_page=100", prior.github_run_id),
+        ).await?;
+        if prior_run_is_terminal(prior, machine_id, &operator, &run, &jobs) {
+            continue;
+        }
+        if !prior_failed_upload_matches(
+            prior, machine_id, &operator, &run, &jobs, pending_created_on
+        ) {
+            return Err("HOST_VM_WORKER_PENDING_PRIOR_BEGIN_UNRECONCILED_NO_REPLAY".into());
+        }
+        failed_uploads += 1;
+    }
+    if failed_uploads != 1 {
+        return Err("HOST_VM_WORKER_PENDING_FAILED_BEGIN_COUNT_INVALID_NO_REPLAY".into());
+    }
+    println!("host_vm_worker_failed_begin=ONE_TERMINAL_FAILED_UPLOAD_PROVEN");
+    println!("host_vm_worker_pending_source=EXACT_VERSION_BOUND_REQUIRED");
+    Ok(())
+}
+
+/// The new transaction must have its *own* protected GitHub BEGIN after its
+/// independent preflight; an old failed comment can never authorize deployment.
+pub(crate) async fn verify_current_vm_worker_begin(machine_id: &str) -> Result<(), String> {
+    let token = env::var("GH_TOKEN")
+        .map_err(|_| "HOST_VM_WORKER_PRIOR_GITHUB_TOKEN_REQUIRED")?;
+    let run = env::var("GITHUB_RUN_ID")
+        .map_err(|_| "HOST_VM_WORKER_CURRENT_RUN_UNPROVEN")?;
+    let comment = env::var("SOURCE_COMMENT_ID")
+        .map_err(|_| "HOST_VM_WORKER_CURRENT_COMMENT_UNPROVEN")?;
+    let revision = env::var("GITHUB_SHA")
+        .map_err(|_| "HOST_VM_WORKER_CURRENT_REVISION_UNPROVEN")?;
+    let expected = format!(
+        "{BEGIN_PREFIX}{machine_id} comment={comment} revision={revision} run={run} -->"
+    );
+    let client = Client::builder()
+        .user_agent("sing-box-rust-native-worker-reconciliation/1")
+        .redirect(Policy::none())
+        .timeout(Duration::from_secs(20))
+        .build()
+        .map_err(|_| "HOST_VM_WORKER_PRIOR_GITHUB_CLIENT_UNAVAILABLE")?;
+    // Read the exact current operator comment, not another run's reservation.
+    let operator = github_get_json(&client, &token, &format!("issues/comments/{comment}")).await?;
+    if operator.get("body").and_then(Value::as_str)
+        != Some(format!("/host apply {machine_id}").as_str())
+        || operator.pointer("/user/id").and_then(Value::as_u64) != Some(ACTOR_ID)
+        || operator.get("created_at") != operator.get("updated_at")
+    {
+        return Err("HOST_VM_WORKER_NEW_OPERATOR_UNPROVEN_NO_REPLAY".into());
+    }
+    // The Issue #26 comment is issued by the protected workflow. Paginate to
+    // the complete bounded history; never accept a free-form user assertion.
+    let mut matches = 0;
+    for page in 1..=30_u32 {
+        let path = format!("issues/26/comments?per_page=100&page={page}");
+        let records = github_get_json(&client, &token, &path).await?;
+        let rows = records.as_array()
+            .ok_or("HOST_VM_WORKER_NEW_BEGIN_HISTORY_INVALID_NO_REPLAY")?;
+        for row in rows {
+            if row.get("body").and_then(Value::as_str) == Some(expected.as_str()) {
+                if row.pointer("/user/id").and_then(Value::as_u64) != Some(BOT_ID)
+                    || row.get("created_at") != row.get("updated_at")
+                {
+                    return Err("HOST_VM_WORKER_NEW_BEGIN_UNTRUSTED_NO_REPLAY".into());
+                }
+                matches += 1;
+            }
+        }
+        if rows.len() < 100 {
+            break;
+        }
+    }
+    if matches != 1 {
+        return Err("HOST_VM_WORKER_NEW_BEGIN_NOT_EXACT_NO_REPLAY".into());
+    }
+    println!("host_vm_worker_current_begin=EXACT_FRESH_GITHUB_PROOF");
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
