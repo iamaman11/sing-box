@@ -959,6 +959,97 @@ mod tests {
     }
 
     #[test]
+    fn host_worker_rejection_witness_preserves_status_with_strict_allowlists() {
+        let id = "issue1-comment-6388202614";
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-Host-Authorization-Reason",
+            HeaderValue::from_static("JWT_AUDIENCE_MISMATCH"),
+        );
+        assert_eq!(
+            host_worker_rejection_witness(StatusCode::FORBIDDEN, &headers, id),
+            "HOST_WORKER_JWT_AUDIENCE_MISMATCH:worker_http_status=403;authorization_reason=JWT_AUDIENCE_MISMATCH;operation_id=issue1-comment-6388202614"
+        );
+
+        // Untrusted free-form reason, even if it names a secret, is never emitted.
+        headers.insert(
+            "X-Host-Authorization-Reason",
+            HeaderValue::from_static("UNTRUSTED_private_key_value"),
+        );
+        let unclassified = host_worker_rejection_witness(StatusCode::FORBIDDEN, &headers, id);
+        assert_eq!(
+            unclassified,
+            "HOST_WORKER_POLICY_DENIED:worker_http_status=403;operation_id=issue1-comment-6388202614"
+        );
+        assert!(!unclassified.contains("private_key_value"));
+        assert_eq!(
+            host_worker_rejection_witness(StatusCode::BAD_REQUEST, &headers, id),
+            "HOST_WORKER_AUTHORIZATION_NOT_ACCEPTED:worker_http_status=400;operation_id=issue1-comment-6388202614"
+        );
+        assert_eq!(
+            host_worker_rejection_witness(StatusCode::NOT_FOUND, &headers, id),
+            "HOST_WORKER_SIGNER_NOT_PROVISIONED:worker_http_status=404;operation_id=issue1-comment-6388202614"
+        );
+        assert_eq!(
+            host_worker_rejection_witness(StatusCode::BAD_GATEWAY, &headers, "secret-unsafe-id"),
+            "HOST_WORKER_AUTHORIZATION_NOT_ACCEPTED:worker_http_status=502"
+        );
+    }
+
+    #[test]
+    fn github_witness_preserves_both_http_statuses_only_for_matching_operation() {
+        let id = "issue1-comment-6388202614";
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-Host-Authorization-Reason",
+            HeaderValue::from_static("GITHUB_DEPENDENCY_UNAVAILABLE"),
+        );
+        headers.insert("X-Host-Github-Operation-Id", HeaderValue::from_static(id));
+        headers.insert(
+            "X-Host-Github-Stage",
+            HeaderValue::from_static("GITHUB_INSTALLATION_TOKEN"),
+        );
+        headers.insert(
+            "X-Host-Github-Kind",
+            HeaderValue::from_static("RESPONSE_INVALID"),
+        );
+        headers.insert("X-Host-Github-Http-Status", HeaderValue::from_static("201"));
+        let accepted = host_worker_rejection_witness(StatusCode::SERVICE_UNAVAILABLE, &headers, id);
+        assert_eq!(
+            accepted,
+            "HOST_WORKER_GITHUB_DEPENDENCY_UNAVAILABLE_NO_REPLAY:worker_http_status=503;authorization_reason=GITHUB_DEPENDENCY_UNAVAILABLE;stage=GITHUB_INSTALLATION_TOKEN;kind=RESPONSE_INVALID;http_status=201;operation_id=issue1-comment-6388202614"
+        );
+
+        headers.insert(
+            "X-Host-Github-Operation-Id",
+            HeaderValue::from_static("issue1-comment-999"),
+        );
+        let mismatched =
+            host_worker_rejection_witness(StatusCode::SERVICE_UNAVAILABLE, &headers, id);
+        assert!(!mismatched.contains("stage="));
+        assert!(!mismatched.contains("kind="));
+        assert!(!mismatched.contains("http_status=201"));
+        assert!(mismatched.contains("worker_http_status=503"));
+
+        // A malicious stage or an unclassified HTTP response cannot forge
+        // an approval, leak a header, or enable automatic replay.
+        headers.insert("X-Host-Github-Operation-Id", HeaderValue::from_static(id));
+        headers.insert(
+            "X-Host-Github-Stage",
+            HeaderValue::from_static("GITHUB_SECRET_LEAK"),
+        );
+        let spoofed = host_worker_rejection_witness(StatusCode::SERVICE_UNAVAILABLE, &headers, id);
+        assert!(!spoofed.contains("GITHUB_SECRET_LEAK"));
+        assert!(!spoofed.contains("stage="));
+        headers.insert(
+            "X-Host-Github-Stage",
+            HeaderValue::from_static("GITHUB_COMMENT"),
+        );
+        assert!(!host_worker_rejection_witness(StatusCode::TOO_MANY_REQUESTS, &headers, id)
+            .contains("stage="));
+    }
+
+    #[test]
     fn initial_worker_dummy_probe_requires_exact_full_slot_not_just_generation() {
         let dummy = CredentialDeliveryBundle {
             schema_version: 1,
