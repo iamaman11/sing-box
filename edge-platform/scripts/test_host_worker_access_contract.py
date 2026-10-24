@@ -298,6 +298,17 @@ const req=async t=>new Request(url,{method:'POST',
 githubMode='approved';
 let response=await AUTHORIZE(await req(await jwt()),env,url);
 assert.equal(response.status,200,'approved HostIntent signed with nbf-absent JWT');
+// Signer failures must be bounded/typed; no private key or exception details.
+response=await AUTHORIZE(await req(await jwt()),
+ {...env,EDGE_HOST_SIGNING_PKCS8_BASE64:'INVALID-KEY'},url);
+assert.equal(response.status,503);
+assert.equal(response.headers.get('X-Host-Authorization-Reason'),'HOST_SIGNER_KEY_INVALID');
+assert.equal(await response.text(),'');
+response=await AUTHORIZE(await req(await jwt()),
+ {...env,EDGE_HOST_SIGNING_PKCS8_BASE64:Buffer.alloc(80,1).toString('base64url')},url);
+assert.equal(response.status,503);
+assert.equal(response.headers.get('X-Host-Authorization-Reason'),'HOST_SIGNER_CRYPTO_FAILED');
+assert.equal(await response.text(),'');
 response=await AUTHORIZE(await req(await jwt({nbf:now+3600})),env,url);
 assert.equal(response.status,403);
 assert.equal(response.headers.get('X-Host-Authorization-Reason'),'JWT_NOT_YET_VALID');

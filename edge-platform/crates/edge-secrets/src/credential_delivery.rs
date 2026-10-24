@@ -470,6 +470,9 @@ enum HostWorkerAuthorizationRejection {
     WorkerConfigUnproven,
     GithubApprovalDenied,
     GithubDependencyUnavailable,
+    HostSignerKeyInvalid,
+    HostSignerCryptoFailed,
+    HostSignerSignatureInvalid,
     ForbiddenWithoutWorkerReason,
     UnclassifiedPolicyDenied,
     UnclassifiedAuthorizationFailure,
@@ -527,6 +530,15 @@ impl HostWorkerAuthorizationRejection {
             (StatusCode::SERVICE_UNAVAILABLE, Some("GITHUB_DEPENDENCY_UNAVAILABLE")) => {
                 Self::GithubDependencyUnavailable
             }
+            (StatusCode::SERVICE_UNAVAILABLE, Some("HOST_SIGNER_KEY_INVALID")) => {
+                Self::HostSignerKeyInvalid
+            }
+            (StatusCode::SERVICE_UNAVAILABLE, Some("HOST_SIGNER_CRYPTO_FAILED")) => {
+                Self::HostSignerCryptoFailed
+            }
+            (StatusCode::SERVICE_UNAVAILABLE, Some("HOST_SIGNER_SIGNATURE_INVALID")) => {
+                Self::HostSignerSignatureInvalid
+            }
             (StatusCode::FORBIDDEN, None) => Self::ForbiddenWithoutWorkerReason,
             (StatusCode::FORBIDDEN, _) => Self::UnclassifiedPolicyDenied,
             _ => Self::UnclassifiedAuthorizationFailure,
@@ -566,6 +578,9 @@ impl HostWorkerAuthorizationRejection {
             Self::GithubDependencyUnavailable => {
                 "HOST_WORKER_GITHUB_DEPENDENCY_UNAVAILABLE_NO_REPLAY"
             }
+            Self::HostSignerKeyInvalid => "HOST_WORKER_SIGNER_KEY_INVALID_NO_REPLAY",
+            Self::HostSignerCryptoFailed => "HOST_WORKER_SIGNER_CRYPTO_FAILED_NO_REPLAY",
+            Self::HostSignerSignatureInvalid => "HOST_WORKER_SIGNER_SIGNATURE_INVALID_NO_REPLAY",
             Self::ForbiddenWithoutWorkerReason => "HOST_WORKER_FORBIDDEN_WITHOUT_WORKER_REASON",
             Self::UnclassifiedPolicyDenied => "HOST_WORKER_POLICY_DENIED",
             Self::UnclassifiedAuthorizationFailure => "HOST_WORKER_AUTHORIZATION_NOT_ACCEPTED",
@@ -935,6 +950,21 @@ mod tests {
                 "HOST_WORKER_GITHUB_DEPENDENCY_UNAVAILABLE_NO_REPLAY",
             ),
             (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Some("HOST_SIGNER_KEY_INVALID"),
+                "HOST_WORKER_SIGNER_KEY_INVALID_NO_REPLAY",
+            ),
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Some("HOST_SIGNER_CRYPTO_FAILED"),
+                "HOST_WORKER_SIGNER_CRYPTO_FAILED_NO_REPLAY",
+            ),
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Some("HOST_SIGNER_SIGNATURE_INVALID"),
+                "HOST_WORKER_SIGNER_SIGNATURE_INVALID_NO_REPLAY",
+            ),
+            (
                 StatusCode::FORBIDDEN,
                 None,
                 "HOST_WORKER_FORBIDDEN_WITHOUT_WORKER_REASON",
@@ -1048,6 +1078,45 @@ mod tests {
         assert!(
             !host_worker_rejection_witness(StatusCode::TOO_MANY_REQUESTS, &headers, id)
                 .contains("stage=")
+        );
+    }
+
+    #[test]
+    fn signer_503_witness_never_accepts_spoofed_reason() {
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            "X-Host-Authorization-Reason",
+            HeaderValue::from_static("HOST_SIGNER_CRYPTO_FAILED"),
+        );
+        let witness = host_worker_rejection_witness(
+            StatusCode::SERVICE_UNAVAILABLE,
+            &headers,
+            "issue1-comment-6388725669",
+        );
+        assert_eq!(
+            witness,
+            "HOST_WORKER_SIGNER_CRYPTO_FAILED_NO_REPLAY:worker_http_status=503;authorization_reason=HOST_SIGNER_CRYPTO_FAILED;operation_id=issue1-comment-6388725669"
+        );
+        let untrusted = host_worker_rejection_witness(
+            StatusCode::FORBIDDEN,
+            &headers,
+            "issue1-comment-6388725669",
+        );
+        assert_eq!(
+            untrusted,
+            "HOST_WORKER_POLICY_DENIED:worker_http_status=403;operation_id=issue1-comment-6388725669"
+        );
+        headers.insert(
+            "X-Host-Authorization-Reason",
+            HeaderValue::from_static("HOST_SIGNER_PRIVATE_KEY_SECRET"),
+        );
+        assert!(
+            !host_worker_rejection_witness(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &headers,
+                "issue1-comment-6388725669"
+            )
+            .contains("PRIVATE_KEY_SECRET")
         );
     }
 

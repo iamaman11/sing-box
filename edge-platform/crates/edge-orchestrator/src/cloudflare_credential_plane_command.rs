@@ -4112,10 +4112,15 @@ if(decision!=="APPROVED"){
 }
 const op=info.id;
 const issued=Math.floor(Date.now()/1000),expires=issued+120,kid=TE.encode(id),oid=TE.encode(op),pk=B64(k);
-if(pk===null||pk.length<40||pk.length>4096)return new Response(null,{status:503,headers:NO});
+// All signer-stage failures are typed, bounded, and fail closed. They never
+// expose private key material, exception details or signed payload bytes.
+if(pk===null||pk.length<40||pk.length>4096)
+ return new Response(null,{status:503,headers:{...NO,"X-Host-Authorization-Reason":"HOST_SIGNER_KEY_INVALID"}});
 const payload=CAT(TE.encode("sing-box/native-host-authorization/v1:"),U32(raw.length),raw,U32(kid.length),kid,U32(oid.length),oid,U64(issued),U64(expires));
-let signature;try{const key=await crypto.subtle.importKey("pkcs8",pk,{name:"Ed25519"},false,["sign"]);signature=new Uint8Array(await crypto.subtle.sign("Ed25519",key,payload))}catch{return new Response(null,{status:503,headers:NO})}
-if(signature.length!==64)return new Response(null,{status:503,headers:NO});
+let signature;try{const key=await crypto.subtle.importKey("pkcs8",pk,{name:"Ed25519"},false,["sign"]);signature=new Uint8Array(await crypto.subtle.sign("Ed25519",key,payload))}catch{
+ return new Response(null,{status:503,headers:{...NO,"X-Host-Authorization-Reason":"HOST_SIGNER_CRYPTO_FAILED"}})}
+if(signature.length!==64)
+ return new Response(null,{status:503,headers:{...NO,"X-Host-Authorization-Reason":"HOST_SIGNER_SIGNATURE_INVALID"}});
 const out=CAT(FNUM(1,1),FLD(2,kid),FLD(3,oid),FNUM(4,issued),FNUM(5,expires),FLD(6,signature));
 return new Response(out,{status:200,headers:{"Content-Type":"application/x-protobuf","Cache-Control":"no-store","X-Content-Type-Options":"nosniff"}})}
 export default{async fetch(q,e){const u=new URL(q.url);if(u.pathname==="/v1/host/authorize")return q.method==="GET"?HOST_AUTH_DIAGNOSTIC(q,e,u):AUTHORIZE(q,e,u);const x=u.searchParams.get("generation");
