@@ -37,7 +37,11 @@ const iss='https://test.cloudflareaccess.com',aud='test-audience';
 const release='a'.repeat(64);
 let approvedAt=new Date((now-10)*1000).toISOString();
 let githubMode='approved';
+let appMode='valid';
 let jwksMode='valid';
+const appPkcs8=await crypto.subtle.exportKey('pkcs8',keys.privateKey);
+const appEnv={EDGE_HOST_GITHUB_ACTOR_ID:'44100369',
+ EDGE_HOST_GITHUB_APP_PKCS8_BASE64:Buffer.from(appPkcs8).toString('base64url')};
 globalThis.fetch=async (url,init)=>{
  if(url===iss+'/cdn-cgi/access/certs'){
    assert.equal(init?.redirect,'manual','Workers supports manual redirects, not error');
@@ -58,9 +62,37 @@ globalThis.fetch=async (url,init)=>{
    if(jwksMode==='import_bad')return {ok:true,json:async()=>({keys:[{kid:jwk.kid,kty:'RSA',n:'invalid'}]})};
    return {ok:true,json:async()=>({keys:[jwk]})};
  }
+ const issueToken='https://api.github.com/app/installations/174880562/access_tokens';
+ if(url===issueToken){
+  assert.equal(init?.method,'POST','installation token is minted, never replayed');
+  assert.equal(init?.redirect,'manual');
+  assert.deepEqual(JSON.parse(init.body),{repositories:['sing-box'],
+   permissions:{contents:'read',issues:'read',pull_requests:'read'}});
+  const auth=init.headers.Authorization;
+  assert.ok(auth.startsWith('Bearer '));
+  const segments=auth.slice(7).split('.');
+  assert.equal(segments.length,3);
+  assert.deepEqual(JSON.parse(Buffer.from(segments[0],'base64url').toString()),{alg:'RS256',typ:'JWT'});
+  const claims=JSON.parse(Buffer.from(segments[1],'base64url').toString());
+  assert.equal(claims.iss,'5456373');
+  assert.equal(claims.exp-claims.iat,600);
+  assert.equal(await crypto.subtle.verify('RSASSA-PKCS1-v1_5',keys.publicKey,
+   Buffer.from(segments[2],'base64url'),TE.encode(segments[0]+'.'+segments[1])),true);
+  if(appMode==='fetch')throw new TypeError('secret transport');
+  if(appMode==='redirect')return{ok:false,status:302};
+  if(appMode==='http')return{ok:false,status:403,headers:new Headers({'X-RateLimit-Remaining':'0'})};
+  if(appMode==='decode')return{ok:true,status:201,json:async()=>{throw new SyntaxError('private token bytes')}};
+  return{ok:true,status:201,json:async()=>({
+   token:'ghs_TESTTOKEN1234567890',expires_at:new Date((now+1800)*1000).toISOString(),
+   permissions:{metadata:'read',issues:'read',contents:'read',pull_requests:'read'},
+   repositories:[{full_name:appMode==='scope'?'iamaman11/other':'iamaman11/sing-box'}]
+  })};
+ }
  const api='https://api.github.com/repos/iamaman11/sing-box';
  assert.ok(url.startsWith(api+'/'),'all approval reads stay on the pinned GitHub origin');
  assert.equal(init?.redirect,'manual','Cloudflare Workers does not support redirect:error');
+ assert.equal(init?.headers?.Authorization,'Bearer ghs_TESTTOKEN1234567890',
+  'repository reads require installation token, not operator PAT or anonymous');
  if(githubMode==='offline')throw Error('simulated GitHub outage');
  const failureAt={http_comment:'/issues/comments/6346290327',
   http_release:'/releases/tags/edge-release-'+release,
@@ -164,11 +196,35 @@ jwksMode='valid';
 
 const info={id:'issue1-comment-6346290327',m:'application-acceptance-2',kind:2,action:2,
  when:now,release,resource:'sing-box'};
-assert.equal(await GITHUB(info,{EDGE_HOST_GITHUB_ACTOR_ID:'44100369'},now),'APPROVED');
+assert.equal(await GITHUB(info,appEnv,now),'APPROVED');
+// Missing Worker binding, invalid private key, unsafe token scope or
+// inaccessible issuance must never fall back to GitHub anonymous reads.
+let authFailure=await GITHUB(info,{EDGE_HOST_GITHUB_ACTOR_ID:'44100369'},now);
+assert.equal(authFailure.stage,'GITHUB_APP_JWT');
+assert.equal(authFailure.kind,'CONFIG_MISSING');
+authFailure=await GITHUB(info,{...appEnv,EDGE_HOST_GITHUB_APP_PKCS8_BASE64:'invalid'},now);
+assert.equal(authFailure.stage,'GITHUB_APP_JWT');
+assert.equal(authFailure.kind,'SIGN_EXCEPTION');
+for(const [mode,stage,kind] of [
+ ['http','GITHUB_INSTALLATION_TOKEN','HTTP'],
+ ['redirect','GITHUB_INSTALLATION_TOKEN','REDIRECT'],
+ ['fetch','GITHUB_INSTALLATION_TOKEN','FETCH_EXCEPTION'],
+ ['decode','GITHUB_INSTALLATION_TOKEN','RESPONSE_DECODE'],
+ ['scope','GITHUB_INSTALLATION_TOKEN','RESPONSE_INVALID']
+]){
+ appMode=mode;
+ authFailure=await GITHUB(info,appEnv,now);
+ assert.equal(authFailure.decision,'UNAVAILABLE',mode);
+ assert.equal(authFailure.stage,stage,mode);
+ assert.equal(authFailure.kind,kind,mode);
+ assert.equal(JSON.stringify(authFailure).includes('secret transport'),false);
+ assert.equal(JSON.stringify(authFailure).includes('private token bytes'),false);
+}
+appMode='valid';
 githubMode='denied';
-assert.equal(await GITHUB(info,{EDGE_HOST_GITHUB_ACTOR_ID:'44100369'},now),'DENIED');
+assert.equal(await GITHUB(info,appEnv,now),'DENIED');
 githubMode='offline';
-let failure=await GITHUB(info,{EDGE_HOST_GITHUB_ACTOR_ID:'44100369'},now);
+let failure=await GITHUB(info,appEnv,now);
 assert.equal(failure.decision,'UNAVAILABLE');
 assert.equal(failure.stage,'GITHUB_COMMENT');
 assert.equal(failure.kind,'FETCH_EXCEPTION');
@@ -178,10 +234,10 @@ assert.equal(failure.exception_class,'Error');
 approvedAt=new Date((now-302)*1000).toISOString();
 const oldInfo={...info,when:now-280};
 githubMode='approved';
-assert.equal(await GITHUB(oldInfo,{EDGE_HOST_GITHUB_ACTOR_ID:'44100369'},now),'APPROVED');
+assert.equal(await GITHUB(oldInfo,appEnv,now),'APPROVED');
 for(const mode of ['redirect_comment','redirect_release','redirect_main','redirect_pulls']){
  githubMode=mode;
- failure=await GITHUB(oldInfo,{EDGE_HOST_GITHUB_ACTOR_ID:'44100369'},now);
+ failure=await GITHUB(oldInfo,appEnv,now);
  assert.equal(failure.decision,'UNAVAILABLE',mode+' must fail closed');
  assert.equal(failure.kind,'REDIRECT',mode+' must block all 3xx');
  assert.equal(failure.http_status,302,mode+' does not follow Location');
@@ -194,7 +250,7 @@ for(const [mode,stage] of [
  ['decode_main','GITHUB_MAIN'],['decode_pulls','GITHUB_PULLS']
 ]){
  githubMode=mode;
- failure=await GITHUB(oldInfo,{EDGE_HOST_GITHUB_ACTOR_ID:'44100369'},now);
+ failure=await GITHUB(oldInfo,appEnv,now);
  assert.equal(failure.decision,'UNAVAILABLE',mode);
  assert.equal(failure.stage,stage,mode);
  if(mode.startsWith('http_')){
@@ -213,7 +269,7 @@ approvedAt=new Date((now-10)*1000).toISOString();
 
 const ed=await crypto.subtle.generateKey({name:'Ed25519'},true,['sign','verify']);
 const pkcs8=await crypto.subtle.exportKey('pkcs8',ed.privateKey);
-const env={...accessEnv,EDGE_HOST_GITHUB_ACTOR_ID:'44100369',
+const env={...accessEnv,...appEnv,
  EDGE_HOST_SIGNING_KEY_ID:'test-signer',
  EDGE_HOST_SIGNING_PKCS8_BASE64:Buffer.from(pkcs8).toString('base64url')};
 const bytes=CAT(FNUM(1,1),FLD(2,TE.encode(info.m)),FNUM(3,2),
