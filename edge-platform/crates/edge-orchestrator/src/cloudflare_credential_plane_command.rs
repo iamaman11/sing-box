@@ -3805,7 +3805,8 @@ async function GITHUB(info,e,now){
  const base="https://api.github.com/repos/iamaman11/sing-box";
  const headers={"Accept":"application/vnd.github+json","User-Agent":"sing-box-host-authorizer"};
  try{
-  const comment=await fetch(base+"/issues/comments/"+id,{redirect:"error",headers});
+  const comment=await fetch(base+"/issues/comments/"+id,{redirect:"manual",headers});
+  if(comment.status>=300&&comment.status<400)return "DENIED";
   if(!comment.ok)return [401,403,429].includes(comment.status)||comment.status>=500?"UNAVAILABLE":"DENIED";
   const c=await comment.json(),stamp=Date.parse(c.created_at)/1000;
   if(!c||String(c.user?.id)!==actor||c.issue_url!==base+"/issues/1"||
@@ -3815,7 +3816,8 @@ async function GITHUB(info,e,now){
         (info.resource==="sing-box"?"":" "+info.resource))return "DENIED";
   // Exact immutable published ReleaseSet is required for every issuance.
   const tag="edge-release-"+info.release;
-  const release=await fetch(base+"/releases/tags/"+tag,{redirect:"error",headers});
+  const release=await fetch(base+"/releases/tags/"+tag,{redirect:"manual",headers});
+  if(release.status>=300&&release.status<400)return "DENIED";
   if(!release.ok)return [401,403,429].includes(release.status)||release.status>=500?"UNAVAILABLE":"DENIED";
   const value=await release.json();
   if(value.tag_name!==tag||value.draft!==false||value.prerelease!==false||
@@ -3827,12 +3829,14 @@ async function GITHUB(info,e,now){
   // Worker signs a fresh 120s intent; native root journal still blocks replay.
   if(info.kind!==2||info.action!==2||info.resource!=="sing-box")return "DENIED";
   const accepted=value.target_commitish;
-  const main=await fetch(base+"/git/ref/heads/main",{redirect:"error",headers});
+  const main=await fetch(base+"/git/ref/heads/main",{redirect:"manual",headers});
+  if(main.status>=300&&main.status<400)return "DENIED";
   if(!main.ok)return [401,403,429].includes(main.status)||main.status>=500?"UNAVAILABLE":"DENIED";
   const branch=await main.json();
   if(branch.object?.type!=="commit"||branch.object?.sha!==accepted)return "DENIED";
   const response=await fetch(base+"/commits/"+accepted+"/pulls?per_page=20",
-      {redirect:"error",headers});
+      {redirect:"manual",headers});
+  if(response.status>=300&&response.status<400)return "DENIED";
   if(!response.ok)return [401,403,429].includes(response.status)||response.status>=500?"UNAVAILABLE":"DENIED";
   const prs=await response.json();
   if(!Array.isArray(prs))return "DENIED";
