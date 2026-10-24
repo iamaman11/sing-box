@@ -1378,7 +1378,7 @@ fn verify_vm_worker_predecessor(
         || current.worker_active_version_ids.as_slice()
             != [current.worker_latest_version_id.as_deref().unwrap_or("")]
         || current.worker_active_deployment_id.is_none()
-        || current.worker_binding_count != Some(7)
+        || !matches!(current.worker_binding_count, Some(7 | 8))
     {
         return Err("HOST_VM_WORKER_PREDECESSOR_STATE_MISMATCH".to_owned());
     }
@@ -1554,6 +1554,7 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
     let bindings = match original.worker_secret_bindings.len() {
         2 => cloudflare::WorkerCodeBindingScope::FixedAb,
         7 => cloudflare::WorkerCodeBindingScope::VmHostSigner,
+        8 => cloudflare::WorkerCodeBindingScope::VmHostSignerGitHubApp,
         _ => return Err("HOST_VM_WORKER_BINDINGS_INCOMPLETE".to_owned()),
     };
     let source = material;
@@ -2178,6 +2179,7 @@ async fn initial_worker_proof_upgrade(
             old.worker_secret_bindings.len(),
         ) {
             ("vm", 7) => cloudflare::WorkerCodeBindingScope::VmHostSigner,
+            ("vm", 8) => cloudflare::WorkerCodeBindingScope::VmHostSignerGitHubApp,
             ("vm" | "windows", 2) => cloudflare::WorkerCodeBindingScope::FixedAb,
             _ => return Err("WORKER_CODE_BINDINGS_NOT_EXACT_PROJECTION_SCOPE".to_owned()),
         };
@@ -3152,7 +3154,7 @@ fn projection_delivery_state(
     // may additionally carry five independent Host signer guard secrets, with
     // no second worker or duplicate issuer. Windows never permits signer keys.
     let guarded_host_signer =
-        projection.projection == "vm" && current.worker_binding_count == Some(7);
+        projection.projection == "vm" && matches!(current.worker_binding_count, Some(7 | 8));
     if current.worker_binding_count == Some(2) || guarded_host_signer {
         require_exact_secret_bindings(
             &projection.worker_name,
@@ -3685,7 +3687,7 @@ fn require_exact_secret_bindings(
         .collect::<Vec<_>>();
     observed.sort_unstable();
     let mut expected = vec![(SLOT_A, "secret_text"), (SLOT_B, "secret_text")];
-    if projection == "vm" && observed.len() == 7 {
+    if projection == "vm" && matches!(observed.len(), 7 | 8) {
         // Exactly one Worker may carry the host signing secret. No extra
         // implicit credentials, fallback secrets or caller-provided key.
         expected.extend_from_slice(&[
@@ -3695,6 +3697,9 @@ fn require_exact_secret_bindings(
             ("EDGE_HOST_ACCESS_ISSUER", "secret_text"),
             ("EDGE_HOST_ACCESS_AUD", "secret_text"),
         ]);
+    }
+    if projection == "vm" && observed.len() == 8 {
+        expected.push(("EDGE_HOST_GITHUB_APP_PKCS8_BASE64", "secret_text"));
     }
     expected.sort_unstable();
     if observed != expected {
