@@ -160,7 +160,13 @@ fn host_authorization_is_closed_by_default_exact_and_access_bound() {
             "JWT_ISSUER_MISMATCH",
             "JWT_AUDIENCE_MISMATCH",
             "JWT_SIGNATURE_REJECTED",
-            "JWT_KEY_UNAVAILABLE",
+            "JWT_JWKS_FETCH_FAILED",
+            "JWT_JWKS_HTTP_UNAVAILABLE",
+            "JWT_JWKS_INVALID",
+            "JWT_KID_NOT_FOUND",
+            "JWT_KEY_IMPORT_FAILED",
+            "JWT_SIGNATURE_MALFORMED",
+            "JWT_SIGNATURE_VERIFY_FAILED",
             "WORKER_CONFIG_UNPROVEN",
         ] {
             assert!(
