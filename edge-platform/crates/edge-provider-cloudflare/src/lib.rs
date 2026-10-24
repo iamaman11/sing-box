@@ -616,7 +616,10 @@ fn exact_binding_inherit_metadata(
         ("EDGE_CREDENTIAL_BUNDLE_A", "secret_text"),
         ("EDGE_CREDENTIAL_BUNDLE_B", "secret_text"),
     ];
-    if matches!(scope, WorkerCodeBindingScope::VmHostSigner | WorkerCodeBindingScope::VmHostSignerGitHubApp) {
+    if matches!(
+        scope,
+        WorkerCodeBindingScope::VmHostSigner | WorkerCodeBindingScope::VmHostSignerGitHubApp
+    ) {
         expected.extend_from_slice(&[
             ("EDGE_HOST_SIGNING_PKCS8_BASE64", "secret_text"),
             ("EDGE_HOST_SIGNING_KEY_ID", "secret_text"),
