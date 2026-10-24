@@ -3804,8 +3804,15 @@ async function GITHUB(info,e,now){
  const id=info.id.slice("issue1-comment-".length);
  const base="https://api.github.com/repos/iamaman11/sing-box";
  const headers={"Accept":"application/vnd.github+json","User-Agent":"sing-box-host-authorizer"};
+ // Workers rejects redirect:"error" before any HTTP request. Pin the
+ // GitHub origin and never follow redirects to another authority.
+ async function GITHUB_GET(path){
+  const r=await fetch(base+path,{redirect:"manual",headers});
+  return r.status>=300&&r.status<400?null:r;
+ }
  try{
-  const comment=await fetch(base+"/issues/comments/"+id,{redirect:"error",headers});
+  const comment=await GITHUB_GET("/issues/comments/"+id);
+  if(!comment)return "UNAVAILABLE";
   if(!comment.ok)return [401,403,429].includes(comment.status)||comment.status>=500?"UNAVAILABLE":"DENIED";
   const c=await comment.json(),stamp=Date.parse(c.created_at)/1000;
   if(!c||String(c.user?.id)!==actor||c.issue_url!==base+"/issues/1"||
@@ -3815,7 +3822,8 @@ async function GITHUB(info,e,now){
         (info.resource==="sing-box"?"":" "+info.resource))return "DENIED";
   // Exact immutable published ReleaseSet is required for every issuance.
   const tag="edge-release-"+info.release;
-  const release=await fetch(base+"/releases/tags/"+tag,{redirect:"error",headers});
+  const release=await GITHUB_GET("/releases/tags/"+tag);
+  if(!release)return "UNAVAILABLE";
   if(!release.ok)return [401,403,429].includes(release.status)||release.status>=500?"UNAVAILABLE":"DENIED";
   const value=await release.json();
   if(value.tag_name!==tag||value.draft!==false||value.prerelease!==false||
@@ -3827,12 +3835,13 @@ async function GITHUB(info,e,now){
   // Worker signs a fresh 120s intent; native root journal still blocks replay.
   if(info.kind!==2||info.action!==2||info.resource!=="sing-box")return "DENIED";
   const accepted=value.target_commitish;
-  const main=await fetch(base+"/git/ref/heads/main",{redirect:"error",headers});
+  const main=await GITHUB_GET("/git/ref/heads/main");
+  if(!main)return "UNAVAILABLE";
   if(!main.ok)return [401,403,429].includes(main.status)||main.status>=500?"UNAVAILABLE":"DENIED";
   const branch=await main.json();
   if(branch.object?.type!=="commit"||branch.object?.sha!==accepted)return "DENIED";
-  const response=await fetch(base+"/commits/"+accepted+"/pulls?per_page=20",
-      {redirect:"error",headers});
+  const response=await GITHUB_GET("/commits/"+accepted+"/pulls?per_page=20");
+  if(!response)return "UNAVAILABLE";
   if(!response.ok)return [401,403,429].includes(response.status)||response.status>=500?"UNAVAILABLE":"DENIED";
   const prs=await response.json();
   if(!Array.isArray(prs))return "DENIED";
