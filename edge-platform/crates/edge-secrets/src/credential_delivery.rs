@@ -487,15 +487,31 @@ impl HostWorkerAuthorizationRejection {
             (StatusCode::FORBIDDEN, Some("JWT_SIGNATURE_REJECTED")) => Self::JwtSignatureRejected,
             (StatusCode::FORBIDDEN, Some("JWT_KEY_UNAVAILABLE")) => Self::JwtKeyUnavailable,
             (StatusCode::FORBIDDEN, Some("JWT_JWKS_FETCH_FAILED")) => Self::JwtJwksFetchFailed,
-            (StatusCode::FORBIDDEN, Some("JWT_JWKS_FETCH_SAME_ZONE_BLOCKED")) => Self::JwtJwksFetchSameZoneBlocked,
-            (StatusCode::FORBIDDEN, Some("JWT_JWKS_FETCH_CLOUDFLARE_IP_BLOCKED")) => Self::JwtJwksFetchCloudflareIpBlocked,
-            (StatusCode::FORBIDDEN, Some("JWT_JWKS_FETCH_HOST_BLOCKED")) => Self::JwtJwksFetchHostBlocked,
-            (StatusCode::FORBIDDEN, Some("JWT_JWKS_FETCH_REDIRECT_BLOCKED")) => Self::JwtJwksFetchRedirectBlocked,
+            (StatusCode::FORBIDDEN, Some("JWT_JWKS_FETCH_SAME_ZONE_BLOCKED")) => {
+                Self::JwtJwksFetchSameZoneBlocked
+            }
+            (StatusCode::FORBIDDEN, Some("JWT_JWKS_FETCH_CLOUDFLARE_IP_BLOCKED")) => {
+                Self::JwtJwksFetchCloudflareIpBlocked
+            }
+            (StatusCode::FORBIDDEN, Some("JWT_JWKS_FETCH_HOST_BLOCKED")) => {
+                Self::JwtJwksFetchHostBlocked
+            }
+            (StatusCode::FORBIDDEN, Some("JWT_JWKS_FETCH_REDIRECT_BLOCKED")) => {
+                Self::JwtJwksFetchRedirectBlocked
+            }
             (StatusCode::FORBIDDEN, Some("JWT_JWKS_FETCH_TIMEOUT")) => Self::JwtJwksFetchTimeout,
-            (StatusCode::FORBIDDEN, Some("JWT_JWKS_FETCH_DNS_FAILED")) => Self::JwtJwksFetchDnsFailed,
-            (StatusCode::FORBIDDEN, Some("JWT_JWKS_FETCH_TLS_FAILED")) => Self::JwtJwksFetchTlsFailed,
-            (StatusCode::FORBIDDEN, Some("JWT_JWKS_FETCH_ILLEGAL_INVOCATION")) => Self::JwtJwksFetchIllegalInvocation,
-            (StatusCode::FORBIDDEN, Some("JWT_JWKS_FETCH_TYPE_ERROR")) => Self::JwtJwksFetchTypeError,
+            (StatusCode::FORBIDDEN, Some("JWT_JWKS_FETCH_DNS_FAILED")) => {
+                Self::JwtJwksFetchDnsFailed
+            }
+            (StatusCode::FORBIDDEN, Some("JWT_JWKS_FETCH_TLS_FAILED")) => {
+                Self::JwtJwksFetchTlsFailed
+            }
+            (StatusCode::FORBIDDEN, Some("JWT_JWKS_FETCH_ILLEGAL_INVOCATION")) => {
+                Self::JwtJwksFetchIllegalInvocation
+            }
+            (StatusCode::FORBIDDEN, Some("JWT_JWKS_FETCH_TYPE_ERROR")) => {
+                Self::JwtJwksFetchTypeError
+            }
             (StatusCode::FORBIDDEN, Some("JWT_JWKS_HTTP_UNAVAILABLE")) => {
                 Self::JwtJwksHttpUnavailable
             }
@@ -529,7 +545,9 @@ impl HostWorkerAuthorizationRejection {
             Self::JwtKeyUnavailable => "HOST_WORKER_JWT_KEY_UNAVAILABLE",
             Self::JwtJwksFetchFailed => "HOST_WORKER_JWT_JWKS_FETCH_FAILED",
             Self::JwtJwksFetchSameZoneBlocked => "HOST_WORKER_JWT_JWKS_FETCH_SAME_ZONE_BLOCKED",
-            Self::JwtJwksFetchCloudflareIpBlocked => "HOST_WORKER_JWT_JWKS_FETCH_CLOUDFLARE_IP_BLOCKED",
+            Self::JwtJwksFetchCloudflareIpBlocked => {
+                "HOST_WORKER_JWT_JWKS_FETCH_CLOUDFLARE_IP_BLOCKED"
+            },
             Self::JwtJwksFetchHostBlocked => "HOST_WORKER_JWT_JWKS_FETCH_HOST_BLOCKED",
             Self::JwtJwksFetchRedirectBlocked => "HOST_WORKER_JWT_JWKS_FETCH_REDIRECT_BLOCKED",
             Self::JwtJwksFetchTimeout => "HOST_WORKER_JWT_JWKS_FETCH_TIMEOUT",
