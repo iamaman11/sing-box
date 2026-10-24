@@ -1049,9 +1049,12 @@ fn pending_vm_worker_reconciliation_refuses_unbound_or_drifted_code() {
     let vm = projection_desired(&d, "vm").unwrap();
     let mut state = observation(&d);
     make_terminal(&mut state, "vm");
-    let mut current = state.projections.iter()
+    let mut current = state
+        .projections
+        .iter()
         .find(|projection| projection.projection == "vm")
-        .unwrap().clone();
+        .unwrap()
+        .clone();
     current.worker_active_version_ids = vec!["old-version".into()];
     current.worker_latest_version_id = Some("pending-version".into());
     let names = [
