@@ -1045,8 +1045,10 @@ mod tests {
             "X-Host-Github-Stage",
             HeaderValue::from_static("GITHUB_COMMENT"),
         );
-        assert!(!host_worker_rejection_witness(StatusCode::TOO_MANY_REQUESTS, &headers, id)
-            .contains("stage="));
+        assert!(
+            !host_worker_rejection_witness(StatusCode::TOO_MANY_REQUESTS, &headers, id)
+                .contains("stage=")
+        );
     }
 
     #[test]
