@@ -2640,26 +2640,32 @@ mod tests {
         let inherited = metadata["bindings"].as_array().unwrap();
         assert_eq!(inherited.len(), 8);
         assert!(inherited.iter().all(|binding| binding["type"] == "inherit"));
-        assert!(exact_binding_inherit_metadata(
-            "fixed-version",
-            WorkerCodeBindingScope::VmHostSigner,
-            &bindings,
-        )
-        .is_err());
-        assert!(exact_binding_inherit_metadata(
-            "fixed-version",
-            WorkerCodeBindingScope::VmHostSignerGitHubApp,
-            &bindings[..7],
-        )
-        .is_err());
+        assert!(
+            exact_binding_inherit_metadata(
+                "fixed-version",
+                WorkerCodeBindingScope::VmHostSigner,
+                &bindings,
+            )
+            .is_err()
+        );
+        assert!(
+            exact_binding_inherit_metadata(
+                "fixed-version",
+                WorkerCodeBindingScope::VmHostSignerGitHubApp,
+                &bindings[..7],
+            )
+            .is_err()
+        );
         let mut forged = bindings;
         forged[7].name = "UNREVIEWED_SECRET".to_owned();
-        assert!(exact_binding_inherit_metadata(
-            "fixed-version",
-            WorkerCodeBindingScope::VmHostSignerGitHubApp,
-            &forged,
-        )
-        .is_err());
+        assert!(
+            exact_binding_inherit_metadata(
+                "fixed-version",
+                WorkerCodeBindingScope::VmHostSignerGitHubApp,
+                &forged,
+            )
+            .is_err()
+        );
     }
 
     #[test]
