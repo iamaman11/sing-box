@@ -299,7 +299,7 @@ fn admit_after_protected_owner_check_once(
     // This permanent, non-replaceable record is the BEGIN. If a process
     // crashes after create_new but before sync_all, it is UNKNOWN_NO_REPLAY,
     // never permission to resume the same mutation.
-    let mut file = create_private_native_record(path)
+    let mut file = create_private_native_record(&path)
         .map_err(|_| "HOST_OPERATION_EXISTS_OR_JOURNAL_UNAVAILABLE")?;
     file.write_all(&recorded.encode_to_vec())
         .map_err(|_| "HOST_JOURNAL_WRITE_UNCERTAIN_NO_REPLAY")?;
