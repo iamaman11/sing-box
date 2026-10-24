@@ -451,6 +451,13 @@ enum HostWorkerAuthorizationRejection {
     JwtAudienceMismatch,
     JwtSignatureRejected,
     JwtKeyUnavailable,
+    JwtJwksFetchFailed,
+    JwtJwksHttpUnavailable,
+    JwtJwksInvalid,
+    JwtKidNotFound,
+    JwtJwkInvalid,
+    JwtJwkImportFailed,
+    JwtSignatureVerifierUnavailable,
     WorkerConfigUnproven,
     GithubApprovalDenied,
     GithubDependencyUnavailable,
@@ -470,6 +477,15 @@ impl HostWorkerAuthorizationRejection {
             (StatusCode::FORBIDDEN, Some("JWT_AUDIENCE_MISMATCH")) => Self::JwtAudienceMismatch,
             (StatusCode::FORBIDDEN, Some("JWT_SIGNATURE_REJECTED")) => Self::JwtSignatureRejected,
             (StatusCode::FORBIDDEN, Some("JWT_KEY_UNAVAILABLE")) => Self::JwtKeyUnavailable,
+            (StatusCode::FORBIDDEN, Some("JWT_JWKS_FETCH_FAILED")) => Self::JwtJwksFetchFailed,
+            (StatusCode::FORBIDDEN, Some("JWT_JWKS_HTTP_UNAVAILABLE")) => Self::JwtJwksHttpUnavailable,
+            (StatusCode::FORBIDDEN, Some("JWT_JWKS_INVALID")) => Self::JwtJwksInvalid,
+            (StatusCode::FORBIDDEN, Some("JWT_KID_NOT_FOUND")) => Self::JwtKidNotFound,
+            (StatusCode::FORBIDDEN, Some("JWT_JWK_INVALID")) => Self::JwtJwkInvalid,
+            (StatusCode::FORBIDDEN, Some("JWT_JWK_IMPORT_FAILED")) => Self::JwtJwkImportFailed,
+            (StatusCode::FORBIDDEN, Some("JWT_SIGNATURE_VERIFIER_UNAVAILABLE")) => {
+                Self::JwtSignatureVerifierUnavailable
+            }
             (StatusCode::FORBIDDEN, Some("WORKER_CONFIG_UNPROVEN")) => Self::WorkerConfigUnproven,
             (StatusCode::FORBIDDEN, Some("GITHUB_APPROVAL_DENIED")) => Self::GithubApprovalDenied,
             (StatusCode::SERVICE_UNAVAILABLE, Some("GITHUB_DEPENDENCY_UNAVAILABLE")) => {
@@ -491,6 +507,15 @@ impl HostWorkerAuthorizationRejection {
             Self::JwtAudienceMismatch => "HOST_WORKER_JWT_AUDIENCE_MISMATCH",
             Self::JwtSignatureRejected => "HOST_WORKER_JWT_SIGNATURE_REJECTED",
             Self::JwtKeyUnavailable => "HOST_WORKER_JWT_KEY_UNAVAILABLE",
+            Self::JwtJwksFetchFailed => "HOST_WORKER_JWT_JWKS_FETCH_FAILED",
+            Self::JwtJwksHttpUnavailable => "HOST_WORKER_JWT_JWKS_HTTP_UNAVAILABLE",
+            Self::JwtJwksInvalid => "HOST_WORKER_JWT_JWKS_INVALID",
+            Self::JwtKidNotFound => "HOST_WORKER_JWT_KID_NOT_FOUND",
+            Self::JwtJwkInvalid => "HOST_WORKER_JWT_JWK_INVALID",
+            Self::JwtJwkImportFailed => "HOST_WORKER_JWT_JWK_IMPORT_FAILED",
+            Self::JwtSignatureVerifierUnavailable => {
+                "HOST_WORKER_JWT_SIGNATURE_VERIFIER_UNAVAILABLE"
+            }
             Self::WorkerConfigUnproven => "HOST_WORKER_CONFIG_UNPROVEN",
             Self::GithubApprovalDenied => "HOST_WORKER_GITHUB_APPROVAL_DENIED",
             Self::GithubDependencyUnavailable => {
@@ -642,6 +667,13 @@ mod tests {
                 Some("JWT_KEY_UNAVAILABLE"),
                 "HOST_WORKER_JWT_KEY_UNAVAILABLE",
             ),
+            (StatusCode::FORBIDDEN, Some("JWT_JWKS_FETCH_FAILED"), "HOST_WORKER_JWT_JWKS_FETCH_FAILED"),
+            (StatusCode::FORBIDDEN, Some("JWT_JWKS_HTTP_UNAVAILABLE"), "HOST_WORKER_JWT_JWKS_HTTP_UNAVAILABLE"),
+            (StatusCode::FORBIDDEN, Some("JWT_JWKS_INVALID"), "HOST_WORKER_JWT_JWKS_INVALID"),
+            (StatusCode::FORBIDDEN, Some("JWT_KID_NOT_FOUND"), "HOST_WORKER_JWT_KID_NOT_FOUND"),
+            (StatusCode::FORBIDDEN, Some("JWT_JWK_INVALID"), "HOST_WORKER_JWT_JWK_INVALID"),
+            (StatusCode::FORBIDDEN, Some("JWT_JWK_IMPORT_FAILED"), "HOST_WORKER_JWT_JWK_IMPORT_FAILED"),
+            (StatusCode::FORBIDDEN, Some("JWT_SIGNATURE_VERIFIER_UNAVAILABLE"), "HOST_WORKER_JWT_SIGNATURE_VERIFIER_UNAVAILABLE"),
             (
                 StatusCode::FORBIDDEN,
                 Some("WORKER_CONFIG_UNPROVEN"),
