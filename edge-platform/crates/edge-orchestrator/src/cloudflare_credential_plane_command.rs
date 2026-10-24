@@ -1590,11 +1590,7 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
         {
             return Err("HOST_VM_GITHUB_APP_PATCH_POSTSTATE_UNPROVEN_NO_REPLAY".to_owned());
         }
-        require_exact_secret_bindings(
-            &vm.worker_name,
-            "vm",
-            &patched_vm.worker_secret_bindings,
-        )?;
+        require_exact_secret_bindings(&vm.worker_name, "vm", &patched_vm.worker_secret_bindings)?;
         let source_after_patch = cloudflare::get_worker_active_module_bytes(
             &read_token,
             &desired.target_account_id,
@@ -1614,11 +1610,7 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
     // Code upload STRICTLY inherits all eight verified Worker secret names
     // from the current latest version (including the pending secret patch).
     let code_original = projection_observation(&code_baseline, "vm")?;
-    require_exact_secret_bindings(
-        &vm.worker_name,
-        "vm",
-        &code_original.worker_secret_bindings,
-    )?;
+    require_exact_secret_bindings(&vm.worker_name, "vm", &code_original.worker_secret_bindings)?;
     if code_original.worker_binding_count != Some(8) {
         return Err("HOST_VM_GITHUB_APP_BINDINGS_NOT_READY".to_owned());
     }
@@ -3748,14 +3740,17 @@ fn validate_host_github_app_private_key(value: &str) -> Result<(), String> {
     use base64::Engine as _;
     if value.len() < 1000
         || value.len() > 8192
-        || !value.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+        || !value
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
     {
         return Err("HOST_VM_GITHUB_APP_KEY_ENCODING_INVALID".to_owned());
     }
     let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
         .decode(value)
         .map_err(|_| "HOST_VM_GITHUB_APP_KEY_ENCODING_INVALID".to_owned())?;
-    if decoded.len() < 800 || decoded.len() > 4096
+    if decoded.len() < 800
+        || decoded.len() > 4096
         || ring::signature::RsaKeyPair::from_pkcs8(&decoded).is_err()
     {
         return Err("HOST_VM_GITHUB_APP_PKCS8_RSA_INVALID".to_owned());
