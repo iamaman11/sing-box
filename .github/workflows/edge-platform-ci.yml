@@ -55,6 +55,10 @@ jobs:
         shell: bash
         run: python3 edge-platform/scripts/test_resolve_release_dependencies.py
 
+      - name: Reject unaccepted Worker predecessor from PR history
+        shell: bash
+        run: python3 edge-platform/scripts/test_vm_worker_source_digest.py
+
       - name: Test VM runtime input identity
         shell: bash
         run: python3 edge-platform/scripts/test_runtime_input_digest.py
