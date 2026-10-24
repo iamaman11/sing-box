@@ -39,6 +39,11 @@ let approvedAt=new Date((now-10)*1000).toISOString();
 let githubMode='approved';
 let appMode='valid';
 let jwksMode='valid';
+// October 2026 ghs_APPID_JWT is ~520 chars and contains dots.
+// Keep stateless and legacy token internals opaque.
+const legacyToken='ghs_TESTTOKEN1234567890';
+const statelessToken='ghs_5456373_'+
+ ['a'.repeat(160),'b'.repeat(160),'c'.repeat(160)].join('.');
 const appPkcs8=await crypto.subtle.exportKey('pkcs8',keys.privateKey);
 const appEnv={EDGE_HOST_GITHUB_ACTOR_ID:'44100369',
  EDGE_HOST_GITHUB_APP_PKCS8_BASE64:Buffer.from(appPkcs8).toString('base64url')};
@@ -83,7 +88,9 @@ globalThis.fetch=async (url,init)=>{
   if(appMode==='http')return{ok:false,status:403,headers:new Headers({'X-RateLimit-Remaining':'0'})};
   if(appMode==='decode')return{ok:true,status:201,json:async()=>{throw new SyntaxError('private token bytes')}};
   return{ok:true,status:201,json:async()=>({
-   token:'ghs_TESTTOKEN1234567890',expires_at:new Date((now+1800)*1000).toISOString(),
+   token:appMode==='legacy'?legacyToken:
+    appMode==='token_controls'?'ghs_BAD\\r\\nINJECTED':statelessToken,
+   expires_at:new Date((now+1800)*1000).toISOString(),
    permissions:{metadata:'read',issues:'read',contents:'read',pull_requests:'read'},
    repository_selection:'selected',
    repositories:[{id:1221750822,full_name:appMode==='scope'?'iamaman11/other':'iamaman11/sing-box'}]
@@ -92,7 +99,8 @@ globalThis.fetch=async (url,init)=>{
  const api='https://api.github.com/repos/iamaman11/sing-box';
  assert.ok(url.startsWith(api+'/'),'all approval reads stay on the pinned GitHub origin');
  assert.equal(init?.redirect,'manual','Cloudflare Workers does not support redirect:error');
- assert.equal(init?.headers?.Authorization,'Bearer ghs_TESTTOKEN1234567890',
+ assert.equal(init?.headers?.Authorization,
+  'Bearer '+(appMode==='legacy'?legacyToken:statelessToken),
   'repository reads require installation token, not operator PAT or anonymous');
  if(githubMode==='offline')throw Error('simulated GitHub outage');
  const failureAt={http_comment:'/issues/comments/6346290327',
@@ -197,7 +205,12 @@ jwksMode='valid';
 
 const info={id:'issue1-comment-6346290327',m:'application-acceptance-2',kind:2,action:2,
  when:now,release,resource:'sing-box'};
-assert.equal(await GITHUB(info,appEnv,now),'APPROVED');
+assert.equal(await GITHUB(info,appEnv,now),'APPROVED',
+ 'stateless 2026 token with JWT dots must pass');
+appMode='legacy';
+assert.equal(await GITHUB(info,appEnv,now),'APPROVED',
+ 'legacy opaque token remains valid');
+appMode='valid';
 // Missing Worker binding, invalid private key, unsafe token scope or
 // inaccessible issuance must never fall back to GitHub anonymous reads.
 let authFailure=await GITHUB(info,{EDGE_HOST_GITHUB_ACTOR_ID:'44100369'},now);
@@ -211,7 +224,8 @@ for(const [mode,stage,kind] of [
  ['redirect','GITHUB_INSTALLATION_TOKEN','REDIRECT'],
  ['fetch','GITHUB_INSTALLATION_TOKEN','FETCH_EXCEPTION'],
  ['decode','GITHUB_INSTALLATION_TOKEN','RESPONSE_DECODE'],
- ['scope','GITHUB_INSTALLATION_TOKEN','RESPONSE_INVALID']
+ ['scope','GITHUB_INSTALLATION_TOKEN','RESPONSE_INVALID'],
+ ['token_controls','GITHUB_INSTALLATION_TOKEN','RESPONSE_INVALID']
 ]){
  appMode=mode;
  authFailure=await GITHUB(info,appEnv,now);
