@@ -1,7 +1,11 @@
 // Cohesive native Rust module; no new runtime owner or workflow.
 use super::*;
 
-pub(super) fn start_warp_egress(stack_dir: &Path, images: &BTreeMap<String, String>) -> Result<(), String> {
+pub(super) fn start_warp_egress(
+    stack_dir: &Path,
+    images: &BTreeMap<String,
+    String>,
+) -> Result<(), String> {
     run_compose(stack_dir, images, &["pull", "warp-egress"])?;
     run_compose(
         stack_dir,
@@ -10,7 +14,11 @@ pub(super) fn start_warp_egress(stack_dir: &Path, images: &BTreeMap<String, Stri
     )
 }
 
-pub(super) fn start_line1_gateway(stack_dir: &Path, images: &BTreeMap<String, String>) -> Result<(), String> {
+pub(super) fn start_line1_gateway(
+    stack_dir: &Path,
+    images: &BTreeMap<String,
+    String>,
+) -> Result<(), String> {
     run_compose(
         stack_dir,
         images,
@@ -31,7 +39,11 @@ pub(super) fn start_line1_gateway(stack_dir: &Path, images: &BTreeMap<String, St
     )
 }
 
-pub(super) fn start_line2_proxy(stack_dir: &Path, images: &BTreeMap<String, String>) -> Result<(), String> {
+pub(super) fn start_line2_proxy(
+    stack_dir: &Path,
+    images: &BTreeMap<String,
+    String>,
+) -> Result<(), String> {
     run_compose(stack_dir, images, &["pull", "line2-proxy"])?;
     run_compose(
         stack_dir,
