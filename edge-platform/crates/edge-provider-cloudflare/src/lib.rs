@@ -599,6 +599,7 @@ pub async fn patch_latest_worker_version_secrets(
 pub enum WorkerCodeBindingScope {
     FixedAb,
     VmHostSigner,
+    VmHostSignerGitHubApp,
 }
 
 /// Strict code-only version metadata. The caller supplies live GET-only binding
@@ -615,7 +616,7 @@ fn exact_binding_inherit_metadata(
         ("EDGE_CREDENTIAL_BUNDLE_A", "secret_text"),
         ("EDGE_CREDENTIAL_BUNDLE_B", "secret_text"),
     ];
-    if scope == WorkerCodeBindingScope::VmHostSigner {
+    if matches!(scope, WorkerCodeBindingScope::VmHostSigner | WorkerCodeBindingScope::VmHostSignerGitHubApp) {
         expected.extend_from_slice(&[
             ("EDGE_HOST_SIGNING_PKCS8_BASE64", "secret_text"),
             ("EDGE_HOST_SIGNING_KEY_ID", "secret_text"),
@@ -623,6 +624,9 @@ fn exact_binding_inherit_metadata(
             ("EDGE_HOST_ACCESS_ISSUER", "secret_text"),
             ("EDGE_HOST_ACCESS_AUD", "secret_text"),
         ]);
+    }
+    if scope == WorkerCodeBindingScope::VmHostSignerGitHubApp {
+        expected.push(("EDGE_HOST_GITHUB_APP_PKCS8_BASE64", "secret_text"));
     }
     let mut actual = observed
         .iter()
