@@ -1004,7 +1004,6 @@ mod tests {
     use ring::signature::{Ed25519KeyPair, KeyPair};
     use std::time::{SystemTime, UNIX_EPOCH};
 
-
     #[cfg(unix)]
     #[test]
     fn new_native_journal_record_is_private_under_umask_022() {
@@ -1028,10 +1027,15 @@ mod tests {
             );
             return;
         }
-        unsafe extern "C" { fn umask(mask: u32) -> u32; }
-        unsafe { umask(0o022); }
+        unsafe extern "C" {
+            fn umask(mask: u32) -> u32;
+        }
+        unsafe {
+            umask(0o022);
+        }
         let path = std::env::temp_dir().join(format!(
-            "sing-box-private-native-record-{}", std::process::id()
+            "sing-box-private-native-record-{}",
+            std::process::id()
         ));
         let file = create_private_native_record(&path).unwrap();
         let meta = file.metadata().unwrap();
@@ -1044,7 +1048,9 @@ mod tests {
 
     #[cfg(unix)]
     unsafe fn libc_geteuid_for_test() -> u32 {
-        unsafe extern "C" { fn geteuid() -> u32; }
+        unsafe extern "C" {
+            fn geteuid() -> u32;
+        }
         unsafe { geteuid() }
     }
 

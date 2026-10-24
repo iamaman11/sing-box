@@ -184,8 +184,7 @@ pub(super) fn print_native_journal_diagnostic() {
     }
     let journal = Path::new(JOURNAL_ROOT);
     let meta = match fs::symlink_metadata(journal) {
-        Ok(m) if m.file_type().is_dir() && m.uid() == 0
-            && m.permissions().mode() & 0o077 == 0 => m,
+        Ok(m) if m.file_type().is_dir() && m.uid() == 0 && m.permissions().mode() & 0o077 == 0 => m,
         _ => {
             println!("host_native_journal_diagnostic=ROOT_UNPROVEN");
             return;
@@ -220,8 +219,15 @@ pub(super) fn print_native_journal_diagnostic() {
 fn print_native_journal_entry(label: &str, entry: &NativeJournalEntryMetadata) {
     println!(
         "{label}=name:{} kind:{} uid:{} gid:{} mode:{:04o} size:{} mtime:{} pending:{} failure:{}",
-        entry.name, entry.kind, entry.uid, entry.gid, entry.mode,
-        entry.size, entry.modified_unix, entry.pending, entry.failure
+        entry.name,
+        entry.kind,
+        entry.uid,
+        entry.gid,
+        entry.mode,
+        entry.size,
+        entry.modified_unix,
+        entry.pending,
+        entry.failure
     );
 }
 
@@ -980,9 +986,8 @@ mod native_host_path_tests {
     #[test]
     fn native_journal_scans_past_pending_for_a_later_untrusted_file() {
         use std::os::unix::fs::{MetadataExt, PermissionsExt};
-        let dir = std::env::temp_dir().join(format!(
-            "sing-box-journal-scan-{}", std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("sing-box-journal-scan-{}", std::process::id()));
         fs::create_dir(&dir).unwrap();
         let pending = dir.join("resource-correct.pending.pb");
         let invalid = dir.join("journal-bad.pb");

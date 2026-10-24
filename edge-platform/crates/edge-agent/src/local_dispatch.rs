@@ -8,7 +8,8 @@ fn local_line2_log_hint(lines: &[String]) -> &'static str {
         if normalized.contains("invalid config")
             || normalized.contains("failed to parse")
             || normalized.contains("config parse")
-            || normalized.contains("json:") {
+            || normalized.contains("json:")
+        {
             return "CONFIG_PARSE_LOG_HINT";
         }
         if normalized.contains("permission denied") {
@@ -29,7 +30,6 @@ fn local_line2_log_hint(lines: &[String]) -> &'static str {
     }
     "UNCLASSIFIED_OR_NO_LOG"
 }
-
 
 pub(super) async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
     let stack_dir = PathBuf::from(DEFAULT_STACK_DIR);
@@ -112,11 +112,26 @@ pub(super) async fn run_local(command: cli::LocalCommand) -> Result<(), AgentErr
                     println!("host_native_poststate_origin=LOCAL_OBSERVATION_NOT_RECEIPT");
                     println!("host_native_poststate_host_kind={}", observed.host_kind);
                     println!("host_native_poststate_owner_state={}", observed.owner_state);
-                    println!("host_native_poststate_release_proof={}", observed.release_proof);
-                    println!("host_native_poststate_runtime_ready={}", observed.runtime_ready);
-                    println!("host_native_poststate_runtime_ready_proven={}", observed.runtime_ready_proven);
-                    println!("host_native_poststate_observed_at_unix={}", observed.observed_at_unix);
-                    println!("host_native_poststate_reason_count={}", observed.reason_codes.len());
+                    println!(
+                        "host_native_poststate_release_proof={}",
+                        observed.release_proof
+                    );
+                    println!(
+                        "host_native_poststate_runtime_ready={}",
+                        observed.runtime_ready
+                    );
+                    println!(
+                        "host_native_poststate_runtime_ready_proven={}",
+                        observed.runtime_ready_proven
+                    );
+                    println!(
+                        "host_native_poststate_observed_at_unix={}",
+                        observed.observed_at_unix
+                    );
+                    println!(
+                        "host_native_poststate_reason_count={}",
+                        observed.reason_codes.len()
+                    );
                     for code in observed.reason_codes.iter().take(16) {
                         if code.len() <= 96
                             && !code.is_empty()
@@ -136,21 +151,46 @@ pub(super) async fn run_local(command: cli::LocalCommand) -> Result<(), AgentErr
             // Never export raw Docker error text or even redacted log lines
             // through GitHub. A hint is not a physical root-cause proof.
             if let Ok(host) = host_native::registered_vm_host()
-                && host.vm_containers.iter().any(|c| c.container_name == "vultr-line2-proxy")
+                && host
+                    .vm_containers
+                    .iter()
+                    .any(|c| c.container_name == "vultr-line2-proxy")
             {
-                match observe_container_runtime("vultr-line2-proxy").await {
+                match observe_container_runtime("vultr-line2-proxy").await
+                {
                     Ok(line2) => {
                         println!("host_vm_line2_metadata_origin=ROOT_DOCKER_INSPECT_RUNNER_COPIED");
                         println!("host_vm_line2_present={}", line2.present);
                         println!("host_vm_line2_running={}", line2.running);
-                        println!("host_vm_line2_exit_code={}", line2.exit_code
-                            .map(|value| value.to_string()).unwrap_or("UNPROVEN".into()));
-                        println!("host_vm_line2_restart_count={}", line2.restart_count
-                            .map(|value| value.to_string()).unwrap_or("UNPROVEN".into()));
-                        println!("host_vm_line2_oom_killed={}", line2.oom_killed
-                            .map(|value| value.to_string()).unwrap_or("UNPROVEN".into()));
-                        println!("host_vm_line2_runtime_error_present={}", line2.runtime_error.is_some());
-                        println!("host_vm_line2_log_hint={}", local_line2_log_hint(&line2.log_tail));
+                        println!(
+                            "host_vm_line2_exit_code={}",
+                            line2
+                                .exit_code
+                                .map(|value| value.to_string())
+                                .unwrap_or("UNPROVEN".into())
+                        );
+                        println!(
+                            "host_vm_line2_restart_count={}",
+                            line2
+                                .restart_count
+                                .map(|value| value.to_string())
+                                .unwrap_or("UNPROVEN".into())
+                        );
+                        println!(
+                            "host_vm_line2_oom_killed={}",
+                            line2
+                                .oom_killed
+                                .map(|value| value.to_string())
+                                .unwrap_or("UNPROVEN".into())
+                        );
+                        println!(
+                            "host_vm_line2_runtime_error_present={}",
+                            line2.runtime_error.is_some()
+                        );
+                        println!(
+                            "host_vm_line2_log_hint={}",
+                            local_line2_log_hint(&line2.log_tail)
+                        );
                     }
                     Err(_) => println!("host_vm_line2_metadata=UNPROVEN_DOCKER_READBACK"),
                 }
