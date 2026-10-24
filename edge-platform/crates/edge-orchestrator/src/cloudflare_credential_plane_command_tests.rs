@@ -34,7 +34,9 @@ fn vm_github_app_binding_scope_requires_exact_eighth_secret() {
         binding_type: "secret_text".to_owned(),
     });
     require_exact_secret_bindings("sing-box-credentials-vm", "vm", &seven).unwrap();
-    assert!(require_exact_secret_bindings("sing-box-credentials-windows", "windows", &seven).is_err());
+    assert!(
+        require_exact_secret_bindings("sing-box-credentials-windows", "windows", &seven).is_err()
+    );
     seven.push(cloudflare::CloudflareWorkerSecretBinding {
         name: "AN_UNEXPECTED_SECRET".to_owned(),
         binding_type: "secret_text".to_owned(),
