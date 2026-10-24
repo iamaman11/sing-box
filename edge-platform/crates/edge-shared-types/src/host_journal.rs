@@ -14,9 +14,23 @@ use crate::{
 };
 use prost::Message;
 use ring::digest::{SHA256, digest};
-use std::fs::{self, OpenOptions};
+use std::fs::{self, File, OpenOptions};
 use std::io::Write;
 use std::path::Path;
+
+/// Create a single durable native journal record with private permissions at
+/// creation time, even when the root agent inherited umask 022. Never chmod an
+/// existing record: unknown/legacy BEGIN state must remain immutable.
+fn create_private_native_record(path: &Path) -> std::io::Result<File> {
+    let mut options = OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    options.open(path)
+}
 
 #[cfg(unix)]
 fn verify_native_journal_protection(path: &Path) -> Result<(), &'static str> {
@@ -250,10 +264,7 @@ fn admit_after_protected_owner_check_once(
     // An uncertain action retains the gate and cannot be silently retried
     // under a new operation ID.
     let scope_path = native_scope_pending_path(protected_journal_dir, intent);
-    let mut scope = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(&scope_path)
+    let mut scope = create_private_native_record(&scope_path)
         .map_err(|_| "HOST_RESOURCE_PENDING_OR_UNAVAILABLE")?;
     scope
         .write_all(&intent.encode_to_vec())
@@ -288,10 +299,7 @@ fn admit_after_protected_owner_check_once(
     // This permanent, non-replaceable record is the BEGIN. If a process
     // crashes after create_new but before sync_all, it is UNKNOWN_NO_REPLAY,
     // never permission to resume the same mutation.
-    let mut file = OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(path)
+    let mut file = create_private_native_record(path)
         .map_err(|_| "HOST_OPERATION_EXISTS_OR_JOURNAL_UNAVAILABLE")?;
     file.write_all(&recorded.encode_to_vec())
         .map_err(|_| "HOST_JOURNAL_WRITE_UNCERTAIN_NO_REPLAY")?;
@@ -856,12 +864,19 @@ where
     }
     let observed = native_readback()?;
     validate_native_observation(&observed)?;
-    if observed.host_kind != intent.kind
-        || observed.observed_at_unix > now_unix.saturating_add(60)
-        || now_unix.saturating_sub(observed.observed_at_unix) > 300
-        || !observed.reason_codes.is_empty()
-    {
-        return Err("HOST_NATIVE_POSTSTATE_UNPROVEN");
+    if observed.host_kind != intent.kind {
+        return Err("HOST_NATIVE_POSTSTATE_KIND_MISMATCH");
+    }
+    if observed.observed_at_unix > now_unix.saturating_add(60) {
+        return Err("HOST_NATIVE_POSTSTATE_FUTURE_TIMESTAMP");
+    }
+    if now_unix.saturating_sub(observed.observed_at_unix) > 300 {
+        return Err("HOST_NATIVE_POSTSTATE_STALE_TIMESTAMP");
+    }
+    if !observed.reason_codes.is_empty() {
+        // Read-only native observation retains the actual bounded reason codes;
+        // a nonempty list may not be waved through as a successful INSTALL.
+        return Err("HOST_NATIVE_POSTSTATE_REASONS_PRESENT");
     }
     let kind = FleetHostKind::try_from(intent.kind).map_err(|_| "HOST_NATIVE_KIND_INVALID")?;
     let expected_proof = match kind {
@@ -960,10 +975,7 @@ fn store_native_terminal_and_unlock_once(
     if pending != intent.encode_to_vec() {
         return Err("HOST_RESOURCE_PENDING_IDENTITY_MISMATCH");
     }
-    let mut writer = OpenOptions::new()
-        .create_new(true)
-        .write(true)
-        .open(journal_dir.join(format!("{id}.{terminal}.pb")))
+    let mut writer = create_private_native_record(&journal_dir.join(format!("{id}.{terminal}.pb")))
         .map_err(|_| "HOST_TERMINAL_RECEIPT_EXISTS_OR_UNAVAILABLE")?;
     writer
         .write_all(&result.encode_to_vec())
@@ -991,6 +1003,50 @@ mod tests {
     use ring::rand::SystemRandom;
     use ring::signature::{Ed25519KeyPair, KeyPair};
     use std::time::{SystemTime, UNIX_EPOCH};
+
+
+    #[cfg(unix)]
+    #[test]
+    fn new_native_journal_record_is_private_under_umask_022() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        // umask is process-wide, so run the umask fixture in a separate test
+        // process instead of changing it inside a parallel Rust test runner.
+        const CHILD: &str = "SING_BOX_PRIVATE_JOURNAL_UMASK_CHILD";
+        if std::env::var_os(CHILD).is_none() {
+            let executable = std::env::current_exe().unwrap();
+            let output = std::process::Command::new(executable)
+                .arg("--exact")
+                .arg("host_journal::tests::new_native_journal_record_is_private_under_umask_022")
+                .arg("--nocapture")
+                .env(CHILD, "1")
+                .output()
+                .unwrap();
+            assert!(
+                output.status.success(),
+                "child umask fixture failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            return;
+        }
+        unsafe extern "C" { fn umask(mask: u32) -> u32; }
+        unsafe { umask(0o022); }
+        let path = std::env::temp_dir().join(format!(
+            "sing-box-private-native-record-{}", std::process::id()
+        ));
+        let file = create_private_native_record(&path).unwrap();
+        let meta = file.metadata().unwrap();
+        assert_eq!(meta.mode() & 0o777, 0o600);
+        assert_eq!(meta.uid(), unsafe { libc_geteuid_for_test() });
+        assert!(create_private_native_record(&path).is_err());
+        drop(file);
+        std::fs::remove_file(path).unwrap();
+    }
+
+    #[cfg(unix)]
+    unsafe fn libc_geteuid_for_test() -> u32 {
+        unsafe extern "C" { fn geteuid() -> u32; }
+        unsafe { geteuid() }
+    }
 
     #[test]
     fn recovery_requires_native_convergence_and_never_accepts_unknown() {
@@ -1203,7 +1259,7 @@ mod tests {
                 || Ok(wrong_observation)
             )
             .unwrap_err(),
-            "HOST_NATIVE_POSTSTATE_UNPROVEN"
+            "HOST_NATIVE_POSTSTATE_REASONS_PRESENT"
         );
         // Missing runtime readiness cannot complete a RUNNING desired target.
         assert_eq!(
