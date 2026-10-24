@@ -138,7 +138,7 @@ pub(super) async fn run_local(command: cli::LocalCommand) -> Result<(), AgentErr
             if let Ok(host) = host_native::registered_vm_host()
                 && host.vm_containers.iter().any(|c| c.container_name == "vultr-line2-proxy")
             {
-                match docker_runtime_readback::observe_container_runtime("vultr-line2-proxy").await {
+                match observe_container_runtime("vultr-line2-proxy").await {
                     Ok(line2) => {
                         println!("host_vm_line2_metadata_origin=ROOT_DOCKER_INSPECT_RUNNER_COPIED");
                         println!("host_vm_line2_present={}", line2.present);
