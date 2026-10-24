@@ -44,7 +44,6 @@ globalThis.fetch=async url=>{
    if(jwksMode==='malformed')return {ok:true,json:async()=>({keys:null})};
    if(jwksMode==='kid-not-found')return {ok:true,json:async()=>({keys:[{...jwk,kid:'other-account'}]})};
    if(jwksMode==='jwk-invalid')return {ok:true,json:async()=>({keys:[{...jwk,alg:'HS256'}]})};
-   if(jwksMode==='import-failed')return {ok:true,json:async()=>({keys:[{...jwk,n:'@@@'}]})};
    return {ok:true,json:async()=>({keys:[{...jwk,alg:'RS256',use:'sig'}]})};
  }
  if(githubMode==='offline')throw Error('simulated GitHub outage');
@@ -111,6 +110,7 @@ const req=async t=>new Request(url,{method:'POST',
 githubMode='approved';
 let response=await AUTHORIZE(await req(await jwt()),env,url);
 assert.equal(response.status,200,'approved HostIntent signed with nbf-absent JWT');
+const originalImportKey=crypto.subtle.importKey.bind(crypto.subtle);
 for(const [scenario,expected] of [
   ['fetch-failed','JWT_JWKS_FETCH_FAILED'],
   ['http-unavailable','JWT_JWKS_HTTP_UNAVAILABLE'],
@@ -120,7 +120,9 @@ for(const [scenario,expected] of [
   ['import-failed','JWT_JWK_IMPORT_FAILED'],
 ]){
   jwksMode=scenario;
+  if(scenario==='import-failed')crypto.subtle.importKey=async()=>{throw Error('simulated WebCrypto import outage')};
   const rejected=await AUTHORIZE(await req(await jwt()),env,url);
+  crypto.subtle.importKey=originalImportKey;
   assert.equal(rejected.status,403,scenario+' should block authorization');
   assert.equal(rejected.headers.get('X-Host-Authorization-Reason'),expected,scenario);
 }
