@@ -36,9 +36,17 @@ const now=Math.floor(Date.now()/1000);
 const iss='https://test.cloudflareaccess.com',aud='test-audience';
 const release='a'.repeat(64);
 const approvedAt=new Date((now-10)*1000).toISOString();
-let githubMode='approved';
+let githubMode='approved',jwksMode='valid';
 globalThis.fetch=async url=>{
- if(url===iss+'/cdn-cgi/access/certs')return {ok:true,json:async()=>({keys:[jwk]})};
+ if(url===iss+'/cdn-cgi/access/certs'){
+   if(jwksMode==='fetch-failed')throw Error('simulated JWKS network failure');
+   if(jwksMode==='http-unavailable')return {ok:false,status:503};
+   if(jwksMode==='malformed')return {ok:true,json:async()=>({keys:null})};
+   if(jwksMode==='kid-not-found')return {ok:true,json:async()=>({keys:[{...jwk,kid:'other-account'}]})};
+   if(jwksMode==='jwk-invalid')return {ok:true,json:async()=>({keys:[{...jwk,alg:'HS256'}]})};
+   if(jwksMode==='import-failed')return {ok:true,json:async()=>({keys:[{...jwk,n:'@@@'}]})};
+   return {ok:true,json:async()=>({keys:[{...jwk,alg:'RS256',use:'sig'}]})};
+ }
  if(githubMode==='offline')throw Error('simulated GitHub outage');
  if(url.endsWith('/issues/comments/6346290327'))return {ok:true,json:async()=>({
    user:{id:githubMode==='denied'?123:44100369},
@@ -103,6 +111,22 @@ const req=async t=>new Request(url,{method:'POST',
 githubMode='approved';
 let response=await AUTHORIZE(await req(await jwt()),env,url);
 assert.equal(response.status,200,'approved HostIntent signed with nbf-absent JWT');
+for(const [scenario,expected] of [
+  ['fetch-failed','JWT_JWKS_FETCH_FAILED'],
+  ['http-unavailable','JWT_JWKS_HTTP_UNAVAILABLE'],
+  ['malformed','JWT_JWKS_INVALID'],
+  ['kid-not-found','JWT_KID_NOT_FOUND'],
+  ['jwk-invalid','JWT_JWK_INVALID'],
+  ['import-failed','JWT_JWK_IMPORT_FAILED'],
+]){
+  jwksMode=scenario;
+  const rejected=await AUTHORIZE(await req(await jwt()),env,url);
+  assert.equal(rejected.status,403,scenario+' should block authorization');
+  assert.equal(rejected.headers.get('X-Host-Authorization-Reason'),expected,scenario);
+}
+jwksMode='valid';
+response=await AUTHORIZE(await req(await jwt()),env,url);
+assert.equal(response.status,200,'strict JWKS recovery must still verify RSA');
 response=await AUTHORIZE(await req(await jwt({nbf:now+3600})),env,url);
 assert.equal(response.status,403);
 assert.equal(response.headers.get('X-Host-Authorization-Reason'),'JWT_NOT_YET_VALID');
