@@ -307,7 +307,7 @@ assert.equal(await response.text(),'');
 response=await AUTHORIZE(await req(await jwt()),
  {...env,EDGE_HOST_SIGNING_PKCS8_BASE64:Buffer.alloc(80,1).toString('base64url')},url);
 assert.equal(response.status,503);
-assert.equal(response.headers.get('X-Host-Authorization-Reason'),'HOST_SIGNER_CRYPTO_FAILED');
+assert.equal(response.headers.get('X-Host-Authorization-Reason'),'HOST_SIGNER_KEY_INVALID');
 assert.equal(await response.text(),'');
 // Exercise RFC8410 v1 and both RFC5958 v2 public-key wrappers. This
 // test invokes the EXACT generated Worker source, never a duplicate parser.
