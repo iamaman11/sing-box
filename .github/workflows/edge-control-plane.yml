@@ -386,6 +386,10 @@ jobs:
         env:
           CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
           CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN: ${{ secrets.CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN }}
+          # Protected Environment secret, consumed ONLY in the existing native
+          # mutation owner AFTER the typed plan and durable GitHub BEGIN.
+          # No local Vault, runner agent or extra service in the runtime path.
+          EDGE_HOST_GITHUB_APP_PKCS8_BASE64: ${{ secrets.EDGE_HOST_GITHUB_APP_PKCS8_BASE64 }}
         run: |
           set -euo pipefail
           test -n "${CLOUDFLARE_CONTROL_TOKEN}" && test -n "${CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN}"
