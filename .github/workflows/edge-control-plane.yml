@@ -290,6 +290,7 @@ jobs:
     timeout-minutes: 20
     permissions:
       contents: read
+      actions: read
       issues: write
     # Rust writes a closed, verified plan scalar. If this run upgraded Worker
     # bytes, native INSTALL MUST be a separate future /host apply operation.
@@ -336,6 +337,12 @@ jobs:
         run: |
           set -euo pipefail
           test -n "${CLOUDFLARE_CONTROL_TOKEN}" && test -n "${CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN}"
+          # Complete GitHub records are transport evidence only: Rust owns
+          # all operation-specific admission decisions.
+          history="${RUNNER_TEMP}/vm-worker-begins.json"
+          gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/26/comments?per_page=100" | jq -s 'add' > "${history}"
+          test -s "${history}" && test ! -L "${history}"
+          export HOST_VM_WORKER_BEGIN_HISTORY_PATH="${history}"
           "${HOST_VM_WORKER_OWNER}" host \
             --hosts-pb "${HOST_FLEET_REGISTRY}" \
             --hosts-sha256 "${HOST_FLEET_SHA256}" \
@@ -363,19 +370,9 @@ jobs:
           [[ "${TARGET_MACHINE}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]
           [[ "${SOURCE_COMMENT_ID}" =~ ^[1-9][0-9]*$ ]]
           test "${HOST_ORIGINAL_COMMAND}" = "/host apply ${TARGET_MACHINE}"
-          # An earlier BEGIN for the same VM means a prior/uncertain Worker
-          # operation. NEVER issue another upload with a fresh comment ID.
-          history="${RUNNER_TEMP}/vm-worker-begins.json"
-          gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/26/comments?per_page=100" | jq -s 'add' > "${history}"
-          python3 - "${history}" "${TARGET_MACHINE}" <<'PY'
-          import json, sys
-          comments = json.load(open(sys.argv[1], encoding="utf-8"))
-          assert isinstance(comments, list)
-          prefix = "<!-- sing-box-vm-worker-authorizer-begin/v1 machine=" + sys.argv[2] + " "
-          if any(isinstance(c, dict) and isinstance(c.get("body"), str)
-                 and c["body"].startswith(prefix) for c in comments):
-              raise SystemExit("HOST_VM_WORKER_PRIOR_BEGIN_NO_REPLAY")
-          PY
+          # Prior BEGINs were checked by the Rust GET-only plan against the
+          # original operator comment, completed owner job and Cloudflare
+          # predecessor. Unknown/failed earlier outcomes remain NO_REPLAY.
           record="<!-- sing-box-vm-worker-authorizer-begin/v1 machine=${TARGET_MACHINE} comment=${SOURCE_COMMENT_ID} revision=${GITHUB_SHA} run=${GITHUB_RUN_ID} -->"
           reservation_id="$(gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/26/comments" -f "body=${record}" --jq '.id')"
           [[ "${reservation_id}" =~ ^[1-9][0-9]*$ ]]
