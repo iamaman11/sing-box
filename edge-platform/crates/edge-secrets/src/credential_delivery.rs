@@ -547,7 +547,7 @@ impl HostWorkerAuthorizationRejection {
             Self::JwtJwksFetchSameZoneBlocked => "HOST_WORKER_JWT_JWKS_FETCH_SAME_ZONE_BLOCKED",
             Self::JwtJwksFetchCloudflareIpBlocked => {
                 "HOST_WORKER_JWT_JWKS_FETCH_CLOUDFLARE_IP_BLOCKED"
-            },
+            }
             Self::JwtJwksFetchHostBlocked => "HOST_WORKER_JWT_JWKS_FETCH_HOST_BLOCKED",
             Self::JwtJwksFetchRedirectBlocked => "HOST_WORKER_JWT_JWKS_FETCH_REDIRECT_BLOCKED",
             Self::JwtJwksFetchTimeout => "HOST_WORKER_JWT_JWKS_FETCH_TIMEOUT",
