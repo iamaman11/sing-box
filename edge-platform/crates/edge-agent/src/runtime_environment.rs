@@ -1,7 +1,9 @@
 // Cohesive native Rust module; no new runtime owner or workflow.
 use super::*;
 
-pub(super) fn read_typed_runtime_environment(stack_dir: &Path) -> Result<BTreeMap<String, String>, String> {
+pub(super) fn read_typed_runtime_environment(
+    stack_dir: &Path,
+) -> Result<BTreeMap<String, String>, String> {
     let path = stack_dir.join(RUNTIME_ENV_FILE);
     let values = read_strict_env_file(&path)?;
 
@@ -77,7 +79,9 @@ pub(super) fn read_typed_runtime_environment(stack_dir: &Path) -> Result<BTreeMa
     Ok(values)
 }
 
-pub(super) fn read_exact_image_environment(stack_dir: &Path) -> Result<BTreeMap<String, String>, String> {
+pub(super) fn read_exact_image_environment(
+    stack_dir: &Path,
+) -> Result<BTreeMap<String, String>, String> {
     let path = stack_dir.join(IMAGE_ENV_FILE);
     let values = read_strict_env_file(&path)?;
     let expected = BTreeSet::from([
@@ -146,7 +150,11 @@ pub(super) fn read_strict_env_file(path: &Path) -> Result<BTreeMap<String, Strin
     Ok(values)
 }
 
-pub(super) fn validate_exact_image_ref(label: &str, value: &str, repository: &str) -> Result<(), String> {
+pub(super) fn validate_exact_image_ref(
+    label: &str,
+    value: &str,
+    repository: &str,
+) -> Result<(), String> {
     let prefix = format!("{repository}@sha256:");
     let digest = value
         .strip_prefix(&prefix)
