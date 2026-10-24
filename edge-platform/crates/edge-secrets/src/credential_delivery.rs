@@ -451,6 +451,13 @@ enum HostWorkerAuthorizationRejection {
     JwtAudienceMismatch,
     JwtSignatureRejected,
     JwtKeyUnavailable,
+    JwtJwksFetchFailed,
+    JwtJwksHttpUnavailable,
+    JwtJwksInvalid,
+    JwtKidNotFound,
+    JwtKeyImportFailed,
+    JwtSignatureMalformed,
+    JwtSignatureVerifyFailed,
     WorkerConfigUnproven,
     GithubApprovalDenied,
     GithubDependencyUnavailable,
@@ -470,6 +477,17 @@ impl HostWorkerAuthorizationRejection {
             (StatusCode::FORBIDDEN, Some("JWT_AUDIENCE_MISMATCH")) => Self::JwtAudienceMismatch,
             (StatusCode::FORBIDDEN, Some("JWT_SIGNATURE_REJECTED")) => Self::JwtSignatureRejected,
             (StatusCode::FORBIDDEN, Some("JWT_KEY_UNAVAILABLE")) => Self::JwtKeyUnavailable,
+            (StatusCode::FORBIDDEN, Some("JWT_JWKS_FETCH_FAILED")) => Self::JwtJwksFetchFailed,
+            (StatusCode::FORBIDDEN, Some("JWT_JWKS_HTTP_UNAVAILABLE")) => {
+                Self::JwtJwksHttpUnavailable
+            }
+            (StatusCode::FORBIDDEN, Some("JWT_JWKS_INVALID")) => Self::JwtJwksInvalid,
+            (StatusCode::FORBIDDEN, Some("JWT_KID_NOT_FOUND")) => Self::JwtKidNotFound,
+            (StatusCode::FORBIDDEN, Some("JWT_KEY_IMPORT_FAILED")) => Self::JwtKeyImportFailed,
+            (StatusCode::FORBIDDEN, Some("JWT_SIGNATURE_MALFORMED")) => Self::JwtSignatureMalformed,
+            (StatusCode::FORBIDDEN, Some("JWT_SIGNATURE_VERIFY_FAILED")) => {
+                Self::JwtSignatureVerifyFailed
+            }
             (StatusCode::FORBIDDEN, Some("WORKER_CONFIG_UNPROVEN")) => Self::WorkerConfigUnproven,
             (StatusCode::FORBIDDEN, Some("GITHUB_APPROVAL_DENIED")) => Self::GithubApprovalDenied,
             (StatusCode::SERVICE_UNAVAILABLE, Some("GITHUB_DEPENDENCY_UNAVAILABLE")) => {
@@ -491,6 +509,13 @@ impl HostWorkerAuthorizationRejection {
             Self::JwtAudienceMismatch => "HOST_WORKER_JWT_AUDIENCE_MISMATCH",
             Self::JwtSignatureRejected => "HOST_WORKER_JWT_SIGNATURE_REJECTED",
             Self::JwtKeyUnavailable => "HOST_WORKER_JWT_KEY_UNAVAILABLE",
+            Self::JwtJwksFetchFailed => "HOST_WORKER_JWT_JWKS_FETCH_FAILED",
+            Self::JwtJwksHttpUnavailable => "HOST_WORKER_JWT_JWKS_HTTP_UNAVAILABLE",
+            Self::JwtJwksInvalid => "HOST_WORKER_JWT_JWKS_INVALID",
+            Self::JwtKidNotFound => "HOST_WORKER_JWT_KID_NOT_FOUND",
+            Self::JwtKeyImportFailed => "HOST_WORKER_JWT_KEY_IMPORT_FAILED",
+            Self::JwtSignatureMalformed => "HOST_WORKER_JWT_SIGNATURE_MALFORMED",
+            Self::JwtSignatureVerifyFailed => "HOST_WORKER_JWT_SIGNATURE_VERIFY_FAILED",
             Self::WorkerConfigUnproven => "HOST_WORKER_CONFIG_UNPROVEN",
             Self::GithubApprovalDenied => "HOST_WORKER_GITHUB_APPROVAL_DENIED",
             Self::GithubDependencyUnavailable => {
@@ -501,6 +526,48 @@ impl HostWorkerAuthorizationRejection {
             Self::UnclassifiedAuthorizationFailure => "HOST_WORKER_AUTHORIZATION_NOT_ACCEPTED",
         }
     }
+}
+
+/// A bounded GET-only proof of the same Access JWT that protects POST.
+/// No HostIntent, GitHub approval, signature, replay or native resource mutation.
+/// Return codes are safe to print from existing native read-only diagnostics.
+pub async fn diagnose_canonical_host_access(identity_path: &Path) -> Result<(), &'static str> {
+    let identity = match read_access_service_identity(identity_path) {
+        Ok(identity) => identity,
+        Err(_) => return Err("HOST_WORKER_ACCESS_IDENTITY_UNAVAILABLE"),
+    };
+    let mut url = match canonical_credential_worker_url(CredentialProjectionKind::Vm, 1)
+        .ok()
+        .and_then(|url| reqwest::Url::parse(&url).ok())
+    {
+        Some(url) => url,
+        None => return Err("HOST_WORKER_CANONICAL_URL_INVALID"),
+    };
+    url.set_path("/v1/host/authorize");
+    url.set_query(None);
+    let client = match credential_worker_client(&identity) {
+        Ok(client) => client,
+        Err(_) => return Err("HOST_WORKER_ACCESS_CLIENT_UNAVAILABLE"),
+    };
+    let response = match client.get(url).send().await {
+        Ok(response) => response,
+        Err(_) => return Err("HOST_WORKER_ACCESS_DIAGNOSTIC_GET_UNAVAILABLE"),
+    };
+    let scope = response
+        .headers()
+        .get("X-Host-Authorization-Scope")
+        .and_then(|header| header.to_str().ok());
+    if scope != Some("READ_ONLY_NO_MUTATION") {
+        return Err("HOST_WORKER_ACCESS_DIAGNOSTIC_UNTRUSTED_RESPONSE");
+    }
+    if response.status() == StatusCode::NO_CONTENT {
+        return Ok(());
+    }
+    let reason = response
+        .headers()
+        .get("X-Host-Authorization-Reason")
+        .and_then(|header| header.to_str().ok());
+    Err(HostWorkerAuthorizationRejection::from_response(response.status(), reason).code())
 }
 
 /// Ask the ONE existing VM credential Worker to issue its independent

@@ -72,6 +72,17 @@ pub(super) async fn run_local(command: cli::LocalCommand) -> Result<(), AgentErr
             let state = inspect_runtime(&stack_dir, AgentMode::Runtime).await;
             print_agent_state_evidence("DIAGNOSE", &state);
             println!("host_native_trust={}", host_native::local_trust_preflight());
+            // Read-only verification of the SAME Cloudflare Access JWT used
+            // by signed INSTALL. No HostIntent, POST, or second owner.
+            let worker_access = match vm_credential_access_identity_path(&stack_dir) {
+                Ok(path) => match edge_secrets::diagnose_canonical_host_access(&path).await {
+                    Ok(()) => "HOST_WORKER_JWT_VERIFIED_READ_ONLY",
+                    Err(reason) => reason,
+                },
+                Err(_) => "HOST_WORKER_ACCESS_IDENTITY_UNAVAILABLE",
+            };
+            println!("host_worker_access_proof={worker_access}");
+            println!("host_worker_access_mutations=0");
             let network = network_observation::observe_ipv4_network()
                 .await
                 .map_err(AgentError::Command)?;

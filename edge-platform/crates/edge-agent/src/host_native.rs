@@ -664,6 +664,12 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
     )
     .await?;
     let identity = super::vm_credential_access_identity_path(stack_dir)?;
+    // Same Service Auth identity, same Worker and same strict JWT/JWKS
+    // verifier as the subsequent POST. A failed GET proof blocks before
+    // sending HostIntent; it cannot authorize a native effect by itself.
+    edge_secrets::diagnose_canonical_host_access(&identity)
+        .await
+        .map_err(str::to_owned)?;
     // POST is never retried after an ambiguous result.
     let authorization =
         edge_secrets::request_canonical_host_authorization(&intent_pb, &identity).await?;
