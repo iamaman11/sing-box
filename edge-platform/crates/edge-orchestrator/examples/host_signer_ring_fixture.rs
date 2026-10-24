@@ -7,8 +7,10 @@ use std::io::Write;
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let path = std::env::args().nth(1).ok_or("output path required")?;
     let rng = ring::rand::SystemRandom::new();
-    let bytes = ring::signature::Ed25519KeyPair::generate_pkcs8(&rng)?;
-    let pair = ring::signature::Ed25519KeyPair::from_pkcs8(bytes.as_ref())?;
+    let bytes = ring::signature::Ed25519KeyPair::generate_pkcs8(&rng)
+        .map_err(|_| "synthetic Ed25519 generation failed")?;
+    let pair = ring::signature::Ed25519KeyPair::from_pkcs8(bytes.as_ref())
+        .map_err(|_| "synthetic Ed25519 self verification failed")?;
     let encoded = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes.as_ref());
     let pubkey =
         base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(pair.public_key().as_ref());
