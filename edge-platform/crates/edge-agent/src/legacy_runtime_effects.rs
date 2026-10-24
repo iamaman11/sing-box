@@ -3,8 +3,7 @@ use super::*;
 
 pub(super) fn start_warp_egress(
     stack_dir: &Path,
-    images: &BTreeMap<String,
-    String>,
+    images: &BTreeMap<String, String>,
 ) -> Result<(), String> {
     run_compose(stack_dir, images, &["pull", "warp-egress"])?;
     run_compose(
@@ -16,8 +15,7 @@ pub(super) fn start_warp_egress(
 
 pub(super) fn start_line1_gateway(
     stack_dir: &Path,
-    images: &BTreeMap<String,
-    String>,
+    images: &BTreeMap<String, String>,
 ) -> Result<(), String> {
     run_compose(
         stack_dir,
@@ -41,8 +39,7 @@ pub(super) fn start_line1_gateway(
 
 pub(super) fn start_line2_proxy(
     stack_dir: &Path,
-    images: &BTreeMap<String,
-    String>,
+    images: &BTreeMap<String, String>,
 ) -> Result<(), String> {
     run_compose(stack_dir, images, &["pull", "line2-proxy"])?;
     run_compose(
