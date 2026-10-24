@@ -640,7 +640,11 @@ fn github_worker_failure_detail(headers: &HeaderMap, operation_id: &str) -> Opti
     let mut result = format!("stage={stage};kind={kind}");
     for (header, name, max_len) in [
         ("X-Host-Github-Http-Status", "http_status", 3_usize),
-        ("X-Host-Github-Rate-Limit-Remaining", "rate_limit_remaining", 10),
+        (
+            "X-Host-Github-Rate-Limit-Remaining",
+            "rate_limit_remaining",
+            10,
+        ),
         ("X-Host-Github-Rate-Limit-Reset", "rate_limit_reset", 12),
         ("X-Host-Github-Retry-After", "retry_after", 8),
     ] {
@@ -649,7 +653,9 @@ fn github_worker_failure_detail(headers: &HeaderMap, operation_id: &str) -> Opti
                 && value.len() <= max_len
                 && value.bytes().all(|byte| byte.is_ascii_digit())
                 && (name != "http_status"
-                    || value.parse::<u16>().is_ok_and(|status| (100..=599).contains(&status)))
+                    || value
+                        .parse::<u16>()
+                        .is_ok_and(|status| (100..=599).contains(&status)))
             {
                 result.push_str(&format!(";{name}={value}"));
             }
@@ -731,7 +737,9 @@ pub async fn request_canonical_host_authorization(
             if status == StatusCode::SERVICE_UNAVAILABLE
                 && reason == Some("GITHUB_DEPENDENCY_UNAVAILABLE")
             {
-                if let Some(detail) = github_worker_failure_detail(response.headers(), &intent.operation_id) {
+                if let Some(detail) =
+                    github_worker_failure_detail(response.headers(), &intent.operation_id)
+                {
                     code.push(':');
                     code.push_str(&detail);
                 }
@@ -783,26 +791,46 @@ mod tests {
     #[test]
     fn github_worker_diagnostics_are_bounded_and_operation_pinned() {
         let mut headers = HeaderMap::new();
-        headers.insert("X-Host-Github-Operation-Id", HeaderValue::from_static("issue1-comment-17"));
-        headers.insert("X-Host-Github-Stage", HeaderValue::from_static("GITHUB_RELEASE"));
+        headers.insert(
+            "X-Host-Github-Operation-Id",
+            HeaderValue::from_static("issue1-comment-17"),
+        );
+        headers.insert(
+            "X-Host-Github-Stage",
+            HeaderValue::from_static("GITHUB_RELEASE"),
+        );
         headers.insert("X-Host-Github-Kind", HeaderValue::from_static("HTTP"));
         headers.insert("X-Host-Github-Http-Status", HeaderValue::from_static("429"));
-        headers.insert("X-Host-Github-Rate-Limit-Remaining", HeaderValue::from_static("0"));
-        headers.insert("X-Host-Github-Request-Id", HeaderValue::from_static("A1-B2"));
+        headers.insert(
+            "X-Host-Github-Rate-Limit-Remaining",
+            HeaderValue::from_static("0"),
+        );
+        headers.insert(
+            "X-Host-Github-Request-Id",
+            HeaderValue::from_static("A1-B2"),
+        );
         assert_eq!(
             github_worker_failure_detail(&headers, "issue1-comment-17"),
             Some("stage=GITHUB_RELEASE;kind=HTTP;http_status=429;rate_limit_remaining=0;github_request_id=A1-B2".to_owned()),
         );
         assert!(github_worker_failure_detail(&headers, "issue1-comment-18").is_none());
-        headers.insert("X-Host-Github-Stage", HeaderValue::from_static("GITHUB_FOREIGN"));
+        headers.insert(
+            "X-Host-Github-Stage",
+            HeaderValue::from_static("GITHUB_FOREIGN"),
+        );
         assert!(github_worker_failure_detail(&headers, "issue1-comment-17").is_none());
         headers.insert("X-Host-Github-Stage", HeaderValue::from_static("GITHUB_RELEASE"));
         headers.insert("X-Host-Github-Http-Status", HeaderValue::from_static("999"));
-        headers.insert("X-Host-Github-Request-Id", HeaderValue::from_static("invalid!"));
+        headers.insert(
+            "X-Host-Github-Request-Id",
+            HeaderValue::from_static("invalid!"),
+        );
         let safe = github_worker_failure_detail(&headers, "issue1-comment-17").unwrap();
-        assert_eq!(safe, "stage=GITHUB_RELEASE;kind=HTTP;rate_limit_remaining=0");
+        assert_eq!(
+            safe,
+            "stage=GITHUB_RELEASE;kind=HTTP;rate_limit_remaining=0"
+        );
     }
-
 
     #[test]
     fn host_worker_auth_rejections_are_closed_and_bounded() {
