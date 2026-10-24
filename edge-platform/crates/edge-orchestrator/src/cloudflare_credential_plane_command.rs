@@ -1455,8 +1455,7 @@ fn verify_pending_vm_worker_exact_modules(
         || before.worker_binding_count != Some(8)
         || active.id != *active_id
         || pending.id != latest_id
-        || active.version_tag
-            != format!("sing-box-phase6-ab-vm-{}", &accepted.predecessor[..16])
+        || active.version_tag != format!("sing-box-phase6-ab-vm-{}", &accepted.predecessor[..16])
         || pending.version_tag != material.version_tag
         || before.worker_latest_version_tag.as_deref() != Some(material.version_tag.as_str())
         || active.secret_bindings != pending.secret_bindings
@@ -1465,9 +1464,11 @@ fn verify_pending_vm_worker_exact_modules(
         return Err(denied.into());
     }
     require_exact_secret_bindings(&vm.worker_name, "vm", &active.secret_bindings)?;
-    let actual_active = STANDARD.decode(active.content_base64.as_bytes())
+    let actual_active = STANDARD
+        .decode(active.content_base64.as_bytes())
         .map_err(|_| denied)?;
-    let actual_pending = STANDARD.decode(pending.content_base64.as_bytes())
+    let actual_pending = STANDARD
+        .decode(pending.content_base64.as_bytes())
         .map_err(|_| denied)?;
     if sha256_hex(&actual_active) != accepted.predecessor
         || sha256_hex(&actual_pending) != accepted.desired
@@ -1549,16 +1550,31 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
         original.worker_active_version_ids.as_slice(),
     ) {
         if latest != active {
-            let worker_id = original.worker_id.as_deref()
+            let worker_id = original
+                .worker_id
+                .as_deref()
                 .ok_or("HOST_VM_WORKER_PENDING_IDENTITY_MISSING_NO_REPLAY")?;
             let active_module = cloudflare::get_worker_exact_version_module(
-                &read_token, &desired.target_account_id, worker_id, active,
-            ).await?;
+                &read_token,
+                &desired.target_account_id,
+                worker_id,
+                active,
+            )
+            .await?;
             let pending_module = cloudflare::get_worker_exact_version_module(
-                &read_token, &desired.target_account_id, worker_id, latest,
-            ).await?;
+                &read_token,
+                &desired.target_account_id,
+                worker_id,
+                latest,
+            )
+            .await?;
             verify_pending_vm_worker_exact_modules(
-                &vm, original, &accepted_source, &material, &active_module, &pending_module,
+                &vm,
+                original,
+                &accepted_source,
+                &material,
+                &active_module,
+                &pending_module,
             )?;
             let observed_again = observe(&read_token, desired).await?;
             validate_access_boundary(desired, &observed_again)?;
@@ -1568,8 +1584,10 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
             println!("host_vm_worker_pending_source=EXACT_VERSION_BOUND_SHA256_PROVEN");
             if plan_only {
                 crate::vm_worker_begin_reconciliation::verify_pending_vm_worker_begins(
-                    machine_id, &pending_module.created_on,
-                ).await?;
+                    machine_id,
+                    &pending_module.created_on,
+                )
+                .await?;
                 emit_vm_worker_plan_required(VmWorkerUpgradeDecision::UpgradeRequired)?;
                 println!("host_vm_worker_authorizer=EXACT_EXISTING_PENDING_DEPLOY_PLAN");
                 println!("worker_mutations=0");
@@ -1579,9 +1597,8 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
             // The workflow reserved a new BEGIN after plan-only had proven
             // exactly one earlier failed upload. Verify fresh authorization;
             // no repetition of that earlier GitHub comment/HostIntent.
-            crate::vm_worker_begin_reconciliation::verify_current_vm_worker_begin(
-                machine_id,
-            ).await?;
+            crate::vm_worker_begin_reconciliation::verify_current_vm_worker_begin(machine_id)
+                .await?;
             let before_write = observe(&read_token, desired).await?;
             validate_access_boundary(desired, &before_write)?;
             if before_write.projections != before.projections {
@@ -1590,22 +1607,31 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
             // Deployment is the ONE write in the new separately authorized
             // transaction. A failed ACK never authorizes a second POST.
             let ack = cloudflare::deploy_worker_version(
-                &write_token, &desired.target_account_id, &vm.worker_name, latest,
-            ).await;
+                &write_token,
+                &desired.target_account_id,
+                &vm.worker_name,
+                latest,
+            )
+            .await;
             let after = observe(&read_token, desired).await?;
             validate_access_boundary(desired, &after)?;
             if projection_observation(&before, "windows")?
                 != projection_observation(&after, "windows")?
                 || verify_exact_active_worker_version(projection_observation(&after, "vm")?, latest)
                     .is_err()
-                || projection_delivery_state(desired, &vm, &after)? != ProjectionDeliveryState::FixedAb
+                || projection_delivery_state(desired, &vm, &after)?
+                    != ProjectionDeliveryState::FixedAb
                 || projection_observation(&after, "vm")?.worker_binding_count != Some(8)
             {
                 return Err("HOST_VM_WORKER_PENDING_DEPLOY_POSTSTATE_UNPROVEN_NO_REPLAY".into());
             }
             let verified_active = cloudflare::get_worker_exact_version_module(
-                &read_token, &desired.target_account_id, worker_id, latest,
-            ).await?;
+                &read_token,
+                &desired.target_account_id,
+                worker_id,
+                latest,
+            )
+            .await?;
             if verified_active != pending_module {
                 return Err("HOST_VM_WORKER_PENDING_DEPLOY_ACTIVE_SOURCE_DRIFT_NO_REPLAY".into());
             }
