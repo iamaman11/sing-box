@@ -1,5 +1,36 @@
 use super::*;
 
+/// Strictly bounded classification, not an authority or a diagnosis of cause.
+/// The log contents may be attacker controlled; print no raw lines.
+fn local_line2_log_hint(lines: &[String]) -> &'static str {
+    for line in lines.iter().take(40) {
+        let normalized = line.to_ascii_lowercase();
+        if normalized.contains("invalid config")
+            || normalized.contains("failed to parse")
+            || normalized.contains("config parse")
+            || normalized.contains("json:")
+        {
+            return "CONFIG_PARSE_LOG_HINT";
+        }
+        if normalized.contains("permission denied") {
+            return "PERMISSION_LOG_HINT";
+        }
+        if normalized.contains("address already in use") {
+            return "LISTENER_BIND_LOG_HINT";
+        }
+        if normalized.contains("no such host") {
+            return "DNS_LOG_HINT";
+        }
+        if normalized.contains("connection refused") {
+            return "UPSTREAM_LOG_HINT";
+        }
+        if normalized.contains("panic") {
+            return "PANIC_LOG_HINT";
+        }
+    }
+    "UNCLASSIFIED_OR_NO_LOG"
+}
+
 pub(super) async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
     let stack_dir = PathBuf::from(DEFAULT_STACK_DIR);
     match command {
@@ -72,6 +103,97 @@ pub(super) async fn run_local(command: cli::LocalCommand) -> Result<(), AgentErr
             let state = inspect_runtime(&stack_dir, AgentMode::Runtime).await;
             print_agent_state_evidence("DIAGNOSE", &state);
             println!("host_native_trust={}", host_native::local_trust_preflight());
+            host_native::print_native_journal_diagnostic();
+            // Snapshot uses the very same native readback as physical apply,
+            // without an intent or completion authority. Preserve every
+            // bounded non-sensitive reason, not only POSTSTATE_UNPROVEN.
+            match capture_local_host_observation(&stack_dir).await {
+                Ok(observed) => {
+                    println!("host_native_poststate_origin=LOCAL_OBSERVATION_NOT_RECEIPT");
+                    println!("host_native_poststate_host_kind={}", observed.host_kind);
+                    println!("host_native_poststate_owner_state={}", observed.owner_state);
+                    println!(
+                        "host_native_poststate_release_proof={}",
+                        observed.release_proof
+                    );
+                    println!(
+                        "host_native_poststate_runtime_ready={}",
+                        observed.runtime_ready
+                    );
+                    println!(
+                        "host_native_poststate_runtime_ready_proven={}",
+                        observed.runtime_ready_proven
+                    );
+                    println!(
+                        "host_native_poststate_observed_at_unix={}",
+                        observed.observed_at_unix
+                    );
+                    println!(
+                        "host_native_poststate_reason_count={}",
+                        observed.reason_codes.len()
+                    );
+                    for code in observed.reason_codes.iter().take(16) {
+                        if code.len() <= 96
+                            && !code.is_empty()
+                            && code.bytes().all(|byte| {
+                                byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_'
+                            })
+                        {
+                            println!("host_native_poststate_reason={code}");
+                        } else {
+                            println!("host_native_poststate_reason=UNSAFE_OR_NONCANONICAL");
+                        }
+                    }
+                }
+                Err(_) => println!("host_native_poststate_snapshot=UNAVAILABLE_READ_ONLY"),
+            }
+            // The existing root Agent may inspect its own Git-owned Line2.
+            // Never export raw Docker error text or even redacted log lines
+            // through GitHub. A hint is not a physical root-cause proof.
+            if let Ok(host) = host_native::registered_vm_host()
+                && host
+                    .vm_containers
+                    .iter()
+                    .any(|c| c.container_name == "vultr-line2-proxy")
+            {
+                match observe_container_runtime("vultr-line2-proxy").await {
+                    Ok(line2) => {
+                        println!("host_vm_line2_metadata_origin=ROOT_DOCKER_INSPECT_RUNNER_COPIED");
+                        println!("host_vm_line2_present={}", line2.present);
+                        println!("host_vm_line2_running={}", line2.running);
+                        println!(
+                            "host_vm_line2_exit_code={}",
+                            line2
+                                .exit_code
+                                .map(|value| value.to_string())
+                                .unwrap_or("UNPROVEN".into())
+                        );
+                        println!(
+                            "host_vm_line2_restart_count={}",
+                            line2
+                                .restart_count
+                                .map(|value| value.to_string())
+                                .unwrap_or("UNPROVEN".into())
+                        );
+                        println!(
+                            "host_vm_line2_oom_killed={}",
+                            line2
+                                .oom_killed
+                                .map(|value| value.to_string())
+                                .unwrap_or("UNPROVEN".into())
+                        );
+                        println!(
+                            "host_vm_line2_runtime_error_present={}",
+                            line2.runtime_error.is_some()
+                        );
+                        println!(
+                            "host_vm_line2_log_hint={}",
+                            local_line2_log_hint(&line2.log_tail)
+                        );
+                    }
+                    Err(_) => println!("host_vm_line2_metadata=UNPROVEN_DOCKER_READBACK"),
+                }
+            }
             // Read-only verification of the SAME Cloudflare Access JWT used
             // by signed INSTALL. No HostIntent, POST, or second owner.
             let worker_access = match vm_credential_access_identity_path(&stack_dir) {
@@ -259,5 +381,17 @@ pub(super) async fn run_local(command: cli::LocalCommand) -> Result<(), AgentErr
             println!("credential_runtime_mutations=0");
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod native_read_only_diagnostics_tests {
+    use super::*;
+
+    #[test]
+    fn line2_log_classification_never_returns_raw_content() {
+        let lines = vec!["FATAL invalid config with credential=secret".to_owned()];
+        assert_eq!(local_line2_log_hint(&lines), "CONFIG_PARSE_LOG_HINT");
+        assert_eq!(local_line2_log_hint(&[]), "UNCLASSIFIED_OR_NO_LOG");
     }
 }
