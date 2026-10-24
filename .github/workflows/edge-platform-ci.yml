@@ -414,7 +414,8 @@ jobs:
           assert "authorize_dns_apply" in dns_command
           assert "authorize_dns_cleanup" in dns_command
           assert "authorized-plan-sha256" in vpc_command_authority
-          assert "authorized-plan-sha256" in vultr_command_authority
+          # The retired free-form Vultr plan SHA grammar was removed.
+          assert "authorized-plan-sha256" not in vultr_command_authority
           assert "rpc Recover" not in agent_proto
           for process_root in [controller_main, orchestrator_main, console_main, agent_main]:
               assert "env::args()" not in process_root
