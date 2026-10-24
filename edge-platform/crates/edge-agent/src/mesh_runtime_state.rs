@@ -1,6 +1,7 @@
 // Cohesive native Rust module; no new runtime owner or workflow.
 use super::*;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum MeshDiagnosticDepth {
     Basic,
     Deep,
