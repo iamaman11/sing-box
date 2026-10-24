@@ -1053,17 +1053,23 @@ fn pending_vm_worker_reconciliation_refuses_unbound_or_drifted_code() {
     current.worker_active_version_ids = vec!["old-version".into()];
     current.worker_latest_version_id = Some("pending-version".into());
     let names = [
-        "EDGE_CREDENTIAL_BUNDLE_A", "EDGE_CREDENTIAL_BUNDLE_B",
-        "EDGE_HOST_ACCESS_AUD", "EDGE_HOST_ACCESS_ISSUER",
-        "EDGE_HOST_GITHUB_ACTOR_ID", "EDGE_HOST_GITHUB_APP_PKCS8_BASE64",
-        "EDGE_HOST_SIGNING_KEY_ID", "EDGE_HOST_SIGNING_PKCS8_BASE64"
+        "EDGE_CREDENTIAL_BUNDLE_A",
+        "EDGE_CREDENTIAL_BUNDLE_B",
+        "EDGE_HOST_ACCESS_AUD",
+        "EDGE_HOST_ACCESS_ISSUER",
+        "EDGE_HOST_GITHUB_ACTOR_ID",
+        "EDGE_HOST_GITHUB_APP_PKCS8_BASE64",
+        "EDGE_HOST_SIGNING_KEY_ID",
+        "EDGE_HOST_SIGNING_PKCS8_BASE64",
     ];
     current.worker_binding_count = Some(8);
-    current.worker_secret_bindings = names.iter().map(|name|
-        cloudflare::CloudflareWorkerSecretBinding {
-            name: (*name).into(), binding_type: "secret_text".into()
-        }
-    ).collect();
+    current.worker_secret_bindings = names
+        .iter()
+        .map(|name| cloudflare::CloudflareWorkerSecretBinding {
+            name: (*name).into(),
+            binding_type: "secret_text".into(),
+        })
+        .collect();
     let old_source = "old version JavaScript";
     let new_source = "new accepted exact JavaScript";
     let accepted = AcceptedVmWorkerSource {
@@ -1073,7 +1079,9 @@ fn pending_vm_worker_reconciliation_refuses_unbound_or_drifted_code() {
     let tag = format!("sing-box-phase6-ab-vm-{}", &accepted.desired[..16]);
     current.worker_latest_version_tag = Some(tag.clone());
     let material = DeliveryWorkerMaterial {
-        source: new_source.into(), version_tag: tag.clone(), slots: vec![]
+        source: new_source.into(),
+        version_tag: tag.clone(),
+        slots: vec![],
     };
     let old = cloudflare::CloudflareWorkerExactModule {
         id: "old-version".into(),
@@ -1089,33 +1097,55 @@ fn pending_vm_worker_reconciliation_refuses_unbound_or_drifted_code() {
         content_base64: STANDARD.encode(new_source.as_bytes()),
         secret_bindings: current.worker_secret_bindings.clone(),
     };
-    assert!(verify_pending_vm_worker_exact_modules(
-        &vm, &current, &accepted, &material, &old, &pending
-    ).is_ok());
+    assert!(
+        verify_pending_vm_worker_exact_modules(&vm, &current, &accepted, &material, &old, &pending)
+            .is_ok()
+    );
     let mut foreign = pending.clone();
     foreign.id = "foreign-version".into();
-    assert!(verify_pending_vm_worker_exact_modules(
-        &vm, &current, &accepted, &material, &old, &foreign
-    ).is_err());
+    assert!(
+        verify_pending_vm_worker_exact_modules(&vm, &current, &accepted, &material, &old, &foreign)
+            .is_err()
+    );
     foreign = pending.clone();
     foreign.content_base64 = STANDARD.encode("wrong source bytes");
-    assert!(verify_pending_vm_worker_exact_modules(
-        &vm, &current, &accepted, &material, &old, &foreign
-    ).is_err());
+    assert!(
+        verify_pending_vm_worker_exact_modules(&vm, &current, &accepted, &material, &old, &foreign)
+            .is_err()
+    );
     foreign = pending.clone();
     foreign.secret_bindings.pop();
-    assert!(verify_pending_vm_worker_exact_modules(
-        &vm, &current, &accepted, &material, &old, &foreign
-    ).is_err());
+    assert!(
+        verify_pending_vm_worker_exact_modules(&vm, &current, &accepted, &material, &old, &foreign)
+            .is_err()
+    );
     let mut wrong_active = current.clone();
-    wrong_active.worker_active_version_ids = vec!["old", "second"].into_iter()
-        .map(str::to_owned).collect();
-    assert!(verify_pending_vm_worker_exact_modules(
-        &vm, &wrong_active, &accepted, &material, &old, &pending
-    ).is_err());
+    wrong_active.worker_active_version_ids = vec!["old", "second"]
+        .into_iter()
+        .map(str::to_owned)
+        .collect();
+    assert!(
+        verify_pending_vm_worker_exact_modules(
+            &vm,
+            &wrong_active,
+            &accepted,
+            &material,
+            &old,
+            &pending
+        )
+        .is_err()
+    );
     let mut wrong_deploy = current;
     wrong_deploy.worker_active_deployment_id = None;
-    assert!(verify_pending_vm_worker_exact_modules(
-        &vm, &wrong_deploy, &accepted, &material, &old, &pending
-    ).is_err());
+    assert!(
+        verify_pending_vm_worker_exact_modules(
+            &vm,
+            &wrong_deploy,
+            &accepted,
+            &material,
+            &old,
+            &pending
+        )
+        .is_err()
+    );
 }
