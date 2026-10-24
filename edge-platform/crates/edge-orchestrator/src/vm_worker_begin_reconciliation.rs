@@ -25,7 +25,8 @@ const BOT_ID: u64 = 41898282;
 struct PriorBegin {
     operator_comment_id: u64,
     source_revision: String,
-    github_run_id: u64,}
+    github_run_id: u64,
+}
 
 fn id_after(part: &str, prefix: &str) -> Result<u64, &'static str> {
     let digits = part
@@ -617,5 +618,4 @@ mod tests {
             "2026-10-24T21:22:15.946199Z"
         ));
     }
-
 }
