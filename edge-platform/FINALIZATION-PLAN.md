@@ -12,6 +12,8 @@
 - **Native readback — partial:** [#40140857338](https://github.com/iamaman11/sing-box/actions/runs/40140857338): три owned контейнера существуют, Line1/WARP running без полной приёмки, Line2 not running с 12 restarts. `UNPROVEN_NATIVE_OWNER_OR_RUNTIME`, 3/3 resource problems, TLS/auth/DIRECT/WARP, DNS, firewall, routes, 4/4+6/6 и signed receipt **не приняты**.
 - **Read-only local-agent diagnosis:** `SING_BOX_NATIVE_ROOT_CAUSE_V1`, 2026-10-24T23:09:49Z, MUTATIONS=0. Источник дефекта в коде подтверждён: `create_new(true)` без Unix `0600` в native journal, в то время как scanner требует root-owned private regular files; `umask 022` способен дать `0644`, но фактический offending файл/umask **UNPROVEN**. Scanner прекращает обход на первом pending; poststate объединяет причины отказа. Line2 exit/log reason **UNPROVEN**.
 
+**Gate существующей установки:** текущий root `host-refresh` проверяет journal до обновления собственного бинарника. При недоверенном journal новые диагностические поля этого PR пока могут оставаться недоступны на VM. Сам merge не устраняет ограничение; сначала требуется безопасное независимое доказательство metadata локального owner. Если такой доступ отсутствует, состояние остаётся `BLOCKED_NO_REPLAY`.
+
 **Жёсткое правило:** никакого VM APPLY/RECOVER, ручного chmod/chown, снятия pending, перезапуска/пересоздания контейнеров, SSH-runtime или второго root-транспорта до доказанного protected-local metadata + typed journal/physical readback. Runner-copied status не равно authenticated native owner receipt.
 
 ## Срез 1 — адресное исправление диагностики → безопасная VM-приёмка
