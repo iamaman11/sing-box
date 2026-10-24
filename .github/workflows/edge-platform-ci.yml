@@ -586,6 +586,19 @@ jobs:
           EDGE_FLEET_CANONICAL_PB: ${{ runner.temp }}/hosts-canonical.binpb
         run: cargo test --workspace --locked
 
+      - name: Contract real ring v2 signer against pinned workerd
+        shell: bash
+        run: |
+          set -euo pipefail
+          private_temp="$(mktemp -d "${RUNNER_TEMP}/singbox-ring-fixture-XXXXXXXX")"
+          chmod 700 "$private_temp"
+          trap 'rm -rf -- "$private_temp"' EXIT
+          (
+            cd edge-platform
+            cargo run --locked --quiet -p edge-orchestrator --example host_signer_ring_fixture -- "$private_temp/ring.json"
+          )
+          python3 edge-platform/scripts/test_host_signer_ring_workerd.py "$private_temp/ring.json"
+
   dependencies:
     name: Resolve exact dependencies
     if: github.event_name == 'pull_request' && github.event.action != 'closed'
