@@ -3725,4 +3725,40 @@ mod tests {
         assert!(gateway_rule_from_value(serde_json::json!({"id": "rule-1"})).is_err());
         assert!(access_application_from_value(serde_json::json!({"id": "app-1"})).is_err());
     }
+    #[test]
+    fn exact_version_module_requires_version_bound_script_and_eight_secrets() {
+        let bindings: Vec<Value> = (0..8).map(|i| serde_json::json!({
+            "name": format!("SECRET_{i}"), "type": "secret_text"
+        })).collect();
+        let original = serde_json::json!({
+            "id":"exact-version",
+            "created_on":"2026-10-24T21:22:15.946199Z",
+            "main_module":"index.mjs",
+            "annotations":{"workers/tag":"sing-box-phase6-ab-vm-abc"},
+            "modules":[{"name":"index.mjs","content_type":"application/javascript+module",
+                "content_base64":"aGVsbG8="}],
+            "bindings":bindings
+        });
+        let parsed = exact_worker_module_from_value(original.clone(), "exact-version").unwrap();
+        assert_eq!(parsed.id, "exact-version");
+        assert_eq!(parsed.secret_bindings.len(), 8);
+        for (pointer, replacement) in [
+            ("/id", serde_json::json!("foreign")),
+            ("/main_module", serde_json::json!("foreign.js")),
+            ("/modules/0/content_type", serde_json::json!("text/plain")),
+            ("/modules/0/name", serde_json::json!("foreign.js")),
+            ("/modules/0/content_base64", serde_json::json!("")),
+            ("/bindings/0/type", serde_json::json!("plain_text")),
+            ("/bindings/0/name", serde_json::json!("SECRET_1")),
+        ] {
+            let mut altered = original.clone();
+            *altered.pointer_mut(pointer).unwrap() = replacement;
+            assert!(exact_worker_module_from_value(altered, "exact-version").is_err(),
+                "invalid exact module field {pointer} must fail closed");
+        }
+        let mut without_modules = original;
+        without_modules["modules"] = serde_json::json!([]);
+        assert!(exact_worker_module_from_value(without_modules, "exact-version").is_err());
+    }
+
 }
