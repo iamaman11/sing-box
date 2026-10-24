@@ -739,6 +739,15 @@ pub async fn request_canonical_host_authorization(
                 .and_then(|value| value.to_str().ok());
             let rejection = HostWorkerAuthorizationRejection::from_response(status, reason);
             let mut code = rejection.code().to_owned();
+            // On the fail-closed unknown-response path retain the exact HTTP
+            // status as a bounded, typed numeric observation. Otherwise 400
+            // (protobuf), 413 (size), 429 (edge) and 500 (Worker exception)
+            // are all collapsed into an unaddressable generic diagnostic.
+            // This status is NEVER permission to issue/retry a HostIntent.
+            if rejection == HostWorkerAuthorizationRejection::UnclassifiedAuthorizationFailure {
+                code.push_str(":http_status=");
+                code.push_str(&status.as_u16().to_string());
+            }
             if status == StatusCode::SERVICE_UNAVAILABLE
                 && reason == Some("GITHUB_DEPENDENCY_UNAVAILABLE")
             {
@@ -920,6 +929,39 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn unclassified_host_worker_http_failure_preserves_bounded_status_only() {
+        // The real native INSTALL reached the Worker after exact source/JWT
+        // proof, but an unclassified non-200 was previously indistinguishable.
+        // This must never leak response bodies/headers or authorize replay.
+        for status in [400u16, 401, 413, 429, 500, 502, 503, 504] {
+            let status = StatusCode::from_u16(status).unwrap();
+            let reason = None;
+            let rejection = HostWorkerAuthorizationRejection::from_response(status, reason);
+            assert_eq!(
+                rejection,
+                HostWorkerAuthorizationRejection::UnclassifiedAuthorizationFailure
+            );
+            let mut code = rejection.code().to_owned();
+            if rejection == HostWorkerAuthorizationRejection::UnclassifiedAuthorizationFailure {
+                code.push_str(":http_status=");
+                code.push_str(&status.as_u16().to_string());
+            }
+            assert_eq!(
+                code,
+                format!("HOST_WORKER_AUTHORIZATION_NOT_ACCEPTED:http_status={}", status.as_u16())
+            );
+        }
+        assert_eq!(
+            HostWorkerAuthorizationRejection::from_response(
+                StatusCode::FORBIDDEN,
+                Some("GITHUB_APPROVAL_DENIED"),
+            )
+            .code(),
+            "HOST_WORKER_GITHUB_APPROVAL_DENIED"
+        );
     }
 
     #[test]
