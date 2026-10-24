@@ -3962,7 +3962,13 @@ async function GITHUB_INSTALLATION_AUTH(e,now){
   ["contents","issues","pull_requests"].every(x=>permissions[x]==="read")&&
   Object.entries(permissions).every(([k,v])=>
    ["contents","issues","pull_requests","metadata"].includes(k)&&v==="read");
- if(typeof issued?.token!=="string"||!/^[A-Za-z0-9_]{10,4096}$/.test(issued.token)||
+ // GitHub installation tokens are opaque (stateless ghs_APPID_JWT since Oct 2026).
+ // Do not parse or constrain token internals; only require a bounded,
+ // header-safe ghs_ value. Repo, permissions and expiry remain independent.
+ const token=issued?.token;
+ const tokenSafe=typeof token==="string"&&token.startsWith("ghs_")&&
+  token.length>=16&&token.length<=4096&&!/[\x00-\x20\x7f]/.test(token);
+ if(!tokenSafe||
     !Number.isFinite(expiry)||expiry<=now+60||expiry>now+3660||
     !matching||!allowed)
   return{error:GITHUB_APP_ERROR("GITHUB_INSTALLATION_TOKEN","RESPONSE_INVALID",r)};
