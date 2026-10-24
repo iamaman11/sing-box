@@ -478,12 +478,16 @@ impl HostWorkerAuthorizationRejection {
             (StatusCode::FORBIDDEN, Some("JWT_SIGNATURE_REJECTED")) => Self::JwtSignatureRejected,
             (StatusCode::FORBIDDEN, Some("JWT_KEY_UNAVAILABLE")) => Self::JwtKeyUnavailable,
             (StatusCode::FORBIDDEN, Some("JWT_JWKS_FETCH_FAILED")) => Self::JwtJwksFetchFailed,
-            (StatusCode::FORBIDDEN, Some("JWT_JWKS_HTTP_UNAVAILABLE")) => Self::JwtJwksHttpUnavailable,
+            (StatusCode::FORBIDDEN, Some("JWT_JWKS_HTTP_UNAVAILABLE")) => {
+                Self::JwtJwksHttpUnavailable
+            }
             (StatusCode::FORBIDDEN, Some("JWT_JWKS_INVALID")) => Self::JwtJwksInvalid,
             (StatusCode::FORBIDDEN, Some("JWT_KID_NOT_FOUND")) => Self::JwtKidNotFound,
             (StatusCode::FORBIDDEN, Some("JWT_KEY_IMPORT_FAILED")) => Self::JwtKeyImportFailed,
             (StatusCode::FORBIDDEN, Some("JWT_SIGNATURE_MALFORMED")) => Self::JwtSignatureMalformed,
-            (StatusCode::FORBIDDEN, Some("JWT_SIGNATURE_VERIFY_FAILED")) => Self::JwtSignatureVerifyFailed,
+            (StatusCode::FORBIDDEN, Some("JWT_SIGNATURE_VERIFY_FAILED")) => {
+                Self::JwtSignatureVerifyFailed
+            }
             (StatusCode::FORBIDDEN, Some("WORKER_CONFIG_UNPROVEN")) => Self::WorkerConfigUnproven,
             (StatusCode::FORBIDDEN, Some("GITHUB_APPROVAL_DENIED")) => Self::GithubApprovalDenied,
             (StatusCode::SERVICE_UNAVAILABLE, Some("GITHUB_DEPENDENCY_UNAVAILABLE")) => {
