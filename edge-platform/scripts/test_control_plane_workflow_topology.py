@@ -143,4 +143,35 @@ for retired_handler in (
 assert "mod host_native;" in agent_main
 assert Path("edge-platform/crates/edge-agent/src/host_native.rs").exists()
 
+# A closed Rust enum, not the human command text, is the sole mutation
+# dispatcher across the reusable VM workflow and native effect/report gates.
+assert "operation: ${{ needs.host.outputs.operation }}" in router
+assert "operation: ${{ needs.host_resume_receipt.outputs.operation }}" in router
+assert "operation:\n        required: true" in native
+assert native.count("HOST_OPERATION: ${{ inputs.operation }}") == 2
+assert "case \"${COMMAND_BODY}\" in" not in native
+assert "startsWith(env.COMMAND_BODY, '/host apply ')" not in native
+assert "startsWith(env.COMMAND_BODY, '/host recover ')" not in native
+assert native.count("env.HOST_OPERATION == 'APPLY_PREFLIGHT'") >= 3
+assert 'test "${HOST_OPERATION}" = APPLY_PREFLIGHT' in native
+assert '"${HOST_OPERATION}" = APPLY_PREFLIGHT ]]; then' in native
+assert "grep -Fxq false" not in router, "GitHub API bool must be decoded as JSON"
+assert "jq -e '(.errors == null)" in router
+assert "needs.host.outputs.operation == 'STATUS'" in router
+
+# Compile-time native modules are part of the same agent, not extra owners.
+for name in ("runtime_environment", "runtime_templates", "mesh_runtime_state", "legacy_runtime_effects"):
+    assert f"mod {name};" in agent_main
+    assert f"use {name}::*;" in agent_main
+    assert Path(f"edge-platform/crates/edge-agent/src/{name}.rs").is_file()
+assert agent_main.endswith("mod native_mutation_ingress_tests;\n")
+
+# The old direct Vultr CLI action/destroy/cleanup dispatchers are deleted as
+# compiled source, not masked by an alternate shell or a hidden CLI variant.
+assert "pub async fn run(args: Vec<String>" not in provider
+for retired in ("run_destroy_apply", "run_cleanup", "run_action", "run_substrate_apply",
+                "run_initial_vm_runtime", "run_runner_bootstrap", "run_apply"):
+    assert not re.search(rf"(?:async )?fn {retired}\(", provider), retired
+assert "VultrLifecycle" not in orchestrator_cli
+
 print("native_only_workflow_topology=PASS")

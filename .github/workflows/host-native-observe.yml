@@ -18,6 +18,9 @@ on:
       command_body:
         required: true
         type: string
+      operation:
+        required: true
+        type: string
       source_comment_id:
         required: true
         type: string
@@ -30,7 +33,7 @@ jobs:
     # the existing production lease group serializes upgrade and native BEGIN.
     # Status remains independent and read-only; Windows is not affected.
     concurrency:
-      group: ${{ (inputs.kind == 'VM' && startsWith(inputs.command_body, '/host apply ')) && 'vultr-control-plane-production' || format('host-readonly-{0}', inputs.source_comment_id) }}
+      group: ${{ (inputs.kind == 'VM' && inputs.operation == 'APPLY_PREFLIGHT') && 'vultr-control-plane-production' || format('host-readonly-{0}', inputs.source_comment_id) }}
       cancel-in-progress: false
     # Git selects a single owner from Rust's exact protobuf matrix.
     # This job NEVER holds issues:write, Docker socket or generic root.
@@ -44,6 +47,7 @@ jobs:
       TARGET_OWNER: ${{ inputs.owner }}
       TARGET_KIND: ${{ inputs.kind }}
       COMMAND_BODY: ${{ inputs.command_body }}
+      HOST_OPERATION: ${{ inputs.operation }}
     steps:
       - name: Verify installed Windows native owner and diagnose without mutation
         if: env.TARGET_KIND == 'WINDOWS'
@@ -126,13 +130,13 @@ jobs:
             fi
           done
           echo "host_runner_direct_mutation_authority=${vm_runner_mutate}"
-          if [[ "${COMMAND_BODY}" == "/host apply "* || "${COMMAND_BODY}" == "/host recover "* ]] &&
+          if [[ "${HOST_OPERATION}" == APPLY_PREFLIGHT ]] &&
              [[ "${vm_runner_mutate}" != ABSENT ]]; then
             echo 'HOST_VM_LEGACY_DIRECT_MUTATION_AUTHORITY_FORBIDDEN' >&2
             exit 1
           fi
-          if [[ "${COMMAND_BODY}" == *" --deep" || "${COMMAND_BODY}" == "/host recover "* ||
-                "${COMMAND_BODY}" == "/host apply "* ]]; then
+          if [[ "${COMMAND_BODY}" == *" --deep" || "${HOST_OPERATION}" == RECOVER_PREFLIGHT ||
+                "${HOST_OPERATION}" == APPLY_PREFLIGHT ]]; then
             sudo -n "${owner}" local diagnose
           else
             # Old installed sudoers may not yet grant --fast. Native deep
@@ -148,14 +152,14 @@ jobs:
 
 
       - name: Transfer exact same-run typed HostIntent with native Actions artifact
-        if: env.TARGET_KIND == 'VM' && (startsWith(env.COMMAND_BODY, '/host apply ') || startsWith(env.COMMAND_BODY, '/host recover '))
+        if: env.TARGET_KIND == 'VM' && env.HOST_OPERATION == 'APPLY_PREFLIGHT'
         uses: actions/download-artifact@v4
         with:
           name: host-intent-${{ inputs.source_comment_id }}
           path: ${{ runner.temp }}/host-operation
 
       - name: Refresh protected Git main release with existing native root owner
-        if: env.TARGET_KIND == 'VM' && startsWith(env.COMMAND_BODY, '/host apply ')
+        if: env.TARGET_KIND == 'VM' && env.HOST_OPERATION == 'APPLY_PREFLIGHT'
         shell: bash
         run: |
           set -euo pipefail
@@ -169,7 +173,7 @@ jobs:
           sudo -n "${owner}" local host-refresh
 
       - name: Dispatch one signed native VM host transaction
-        if: env.TARGET_KIND == 'VM' && (startsWith(env.COMMAND_BODY, '/host apply ') || startsWith(env.COMMAND_BODY, '/host recover '))
+        if: env.TARGET_KIND == 'VM' && env.HOST_OPERATION == 'APPLY_PREFLIGHT'
         shell: bash
         env:
           SOURCE_COMMENT_ID: ${{ inputs.source_comment_id }}
@@ -180,15 +184,8 @@ jobs:
           [[ "${TARGET_MACHINE}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]
           [[ "${SOURCE_COMMENT_ID}" =~ ^[1-9][0-9]*$ ]]
           test "${RUNNER_NAME}" = "sing-box-production-${TARGET_OWNER}"
-          case "${COMMAND_BODY}" in
-            "/host apply ${TARGET_MACHINE}"|"/host recover ${TARGET_MACHINE}") ;;
-            *)
-              if ! [[ "${COMMAND_BODY}" =~ ^/host[[:space:]]apply[[:space:]]${TARGET_MACHINE}[[:space:]]config/[A-Za-z0-9][A-Za-z0-9._-]{0,63}/(line1-gateway|line2-proxy)$ ]]; then
-                echo 'HOST_NATIVE_VM_COMMAND_SCOPE_MISMATCH' >&2
-                exit 1
-              fi
-              ;;
-          esac
+          # Native Rust decodes the only signed HostIntent and its exact scope.
+          test "${HOST_OPERATION}" = APPLY_PREFLIGHT
           owner=/usr/local/libexec/sing-box/edge-agent
           test -x "${owner}" && test ! -L "${owner}"
           # No generic sudo, no bundle-converge/rollback/credentials paths.
@@ -251,7 +248,7 @@ jobs:
           fi
 
       - name: Capture bounded VM per-container resource evidence
-        if: env.TARGET_KIND == 'VM' && (endsWith(env.COMMAND_BODY, ' --deep') || startsWith(env.COMMAND_BODY, '/host apply ') || startsWith(env.COMMAND_BODY, '/host recover '))
+        if: env.TARGET_KIND == 'VM' && (endsWith(env.COMMAND_BODY, ' --deep') || env.HOST_OPERATION == 'APPLY_PREFLIGHT' || env.HOST_OPERATION == 'RECOVER_PREFLIGHT')
         shell: bash
         run: |
           set -euo pipefail
@@ -301,6 +298,7 @@ jobs:
       SOURCE_COMMENT_ID: ${{ inputs.source_comment_id }}
       OBSERVED_RESULT: ${{ needs.observe.result }}
       COMMAND_BODY: ${{ inputs.command_body }}
+      HOST_OPERATION: ${{ inputs.operation }}
     steps:
       - name: Validate optional native protobuf with the exact Rust Fleet Orchestrator
         id: typed
@@ -368,10 +366,7 @@ jobs:
           result="${RUNNER_TEMP}/host-readback-result.txt"
           # One exact Rust parser also audits the native transaction result.
           # This is correlation, never authenticated SYSTEM/root attestation.
-          if [[ "${TARGET_KIND}" = VM &&
-                ( "${COMMAND_BODY}" = "/host apply ${TARGET_MACHINE}" ||
-                  "${COMMAND_BODY}" = "/host recover ${TARGET_MACHINE}" ||
-                  "${COMMAND_BODY}" =~ ^/host[[:space:]]apply[[:space:]]${TARGET_MACHINE}[[:space:]]config/[A-Za-z0-9][A-Za-z0-9._-]{0,63}/(line1-gateway|line2-proxy)$ ) &&
+          if [[ "${TARGET_KIND}" = VM && "${HOST_OPERATION}" = APPLY_PREFLIGHT &&
                 -s "${out}/host-operation/host-result.pb" ]]; then
             intent_dir="${RUNNER_TEMP}/host-readback-intent"
             install -d -m 0700 "${intent_dir}"
@@ -422,10 +417,7 @@ jobs:
             *) result=UNKNOWN_NOT_ACCEPTED ;;
           esac
           native_note='Native mutation authority: NONE. A read-only observation is not an authenticated owner receipt.'
-          if [[ "${TARGET_KIND}" = VM ]] && \
-             [[ "${COMMAND_BODY}" = "/host apply ${TARGET_MACHINE}" ||
-                "${COMMAND_BODY}" = "/host recover ${TARGET_MACHINE}" ||
-                "${COMMAND_BODY}" =~ ^/host[[:space:]]apply[[:space:]]${TARGET_MACHINE}[[:space:]]config/[A-Za-z0-9][A-Za-z0-9._-]{0,63}/(line1-gateway|line2-proxy)$ ]]; then
+          if [[ "${TARGET_KIND}" = VM && "${HOST_OPERATION}" = APPLY_PREFLIGHT ]]; then
             # Only the exact Rust Ed25519 verifier can upgrade this result.
             # A successful runner step or unsigned readback never can.
             native_note='Native VM transaction: remote authenticated receipt UNPROVEN.'

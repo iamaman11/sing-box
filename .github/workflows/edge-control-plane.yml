@@ -191,8 +191,7 @@ jobs:
        needs.host.outputs.operation != 'APPLY_PREFLIGHT' ||
        needs.host_worker_authorizer.result == 'success' &&
        needs.host_worker_authorizer.outputs.source_upgrade_required == 'false') &&
-      (github.event.comment.body == '/host status' ||
-       startsWith(github.event.comment.body, '/host status ') ||
+      (needs.host.outputs.operation == 'STATUS' ||
        needs.host.outputs.operation == 'APPLY_PREFLIGHT' ||
        needs.host.outputs.operation == 'RECOVER_PREFLIGHT')
     strategy:
@@ -208,6 +207,7 @@ jobs:
       owner: ${{ matrix.owner }}
       kind: ${{ matrix.kind }}
       runner_labels: ${{ toJSON(matrix.runner_labels) }}
+      operation: ${{ needs.host.outputs.operation }}
       command_body: ${{ github.event.comment.body }}
       source_comment_id: ${{ github.event.comment.id }}
 
@@ -218,8 +218,7 @@ jobs:
     if: >-
       github.run_attempt == 1 &&
       needs.host.result == 'success' &&
-      (github.event.comment.body == '/host status' ||
-       startsWith(github.event.comment.body, '/host status ') ||
+      (needs.host.outputs.operation == 'STATUS' ||
        needs.host.outputs.operation == 'APPLY_PREFLIGHT' ||
        needs.host.outputs.operation == 'RECOVER_PREFLIGHT' ||
        needs.host.outputs.operation == 'FIRST_USE_PREFLIGHT' ||
@@ -249,7 +248,8 @@ jobs:
             false)
               if [[ "${HOST_OPERATION}" == "WORKER_AUTHORIZER_PREFLIGHT" ]]; then
                 result=CANONICAL_VM_WORKER_AUTHORIZER_STAGE
-              elif [[ "${COMMAND_BODY}" == "/host apply "* ]]; then
+              elif [[ "${HOST_OPERATION}" == FIRST_USE_PREFLIGHT ||
+                       "${HOST_OPERATION}" == APPLY_PREFLIGHT ]]; then
                 result=FIRST_USE_GIT_RECEIPT_REGISTRATION_REQUIRED
               else
                 result=NO_NATIVE_TARGET_AVAILABLE
@@ -531,7 +531,7 @@ jobs:
           # read:org even though the scoped repository token owns this PR.
           # If readiness cannot be changed, leave the existing public-only
           # reservation in Draft; NEVER replay a completed provider write.
-          if ! gh api graphql -f 'query=mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{isDraft}}}' -f "id=${node}" --jq '.data.markPullRequestReadyForReview.pullRequest.isDraft' | grep -Fxq false; then
+          if ! gh api graphql -f 'query=mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{isDraft}}}' -f "id=${node}" | jq -e '(.errors == null) and (.data.markPullRequestReadyForReview.pullRequest.isDraft == false)' >/dev/null; then
             echo 'HOST_PUBLIC_GIT_PR_REMAINS_DRAFT_REVIEW_REQUIRED'
           fi
           echo 'host_vm_signer=AWAITING_PROTECTED_PUBLIC_GIT_MERGE'
@@ -922,7 +922,7 @@ jobs:
           # read:org even though the scoped repository token owns this PR.
           # If readiness cannot be changed, leave the existing public-only
           # reservation in Draft; NEVER replay a completed provider write.
-          if ! gh api graphql -f 'query=mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{isDraft}}}' -f "id=${node}" --jq '.data.markPullRequestReadyForReview.pullRequest.isDraft' | grep -Fxq false; then
+          if ! gh api graphql -f 'query=mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{isDraft}}}' -f "id=${node}" | jq -e '(.errors == null) and (.data.markPullRequestReadyForReview.pullRequest.isDraft == false)' >/dev/null; then
             echo 'HOST_PUBLIC_GIT_PR_REMAINS_DRAFT_REVIEW_REQUIRED'
           fi
           echo 'host_first_use=AWAITING_PROTECTED_GIT_PR_MERGE'
@@ -1101,5 +1101,6 @@ jobs:
       kind: VM
       owner: ${{ needs.host_resume_receipt.outputs.owner }}
       runner_labels: ${{ needs.host_resume_receipt.outputs.runner_labels }}
+      operation: ${{ needs.host_resume_receipt.outputs.operation }}
       command_body: ${{ format('/host apply {0}', needs.host_resume_receipt.outputs.machine_id) }}
       source_comment_id: ${{ needs.host_resume_receipt.outputs.comment_id }}

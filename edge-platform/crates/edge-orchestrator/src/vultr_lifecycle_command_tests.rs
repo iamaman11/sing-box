@@ -248,7 +248,6 @@ fn initial_native_host_attestation_never_targets_production_or_wrong_vm() {
     ] {
         assert!(require_disposable_initial_probe_target(spec, machine).is_err());
     }
-    assert!(usage().contains("vultr-lifecycle initial-host-probe"));
 }
 
 #[test]
@@ -660,14 +659,20 @@ fn runner_registration_token_validation_is_secret_safe_and_bounded() {
 }
 
 #[test]
-fn usage_is_closed_grammar() {
-    let text = usage();
-    assert!(text.contains("vultr-lifecycle plan"));
-    assert!(text.contains("vultr-lifecycle destroy-apply"));
-    assert!(text.contains("vultr-lifecycle transport-proof"));
-    assert!(text.contains("vultr-lifecycle runner-bootstrap"));
-    assert!(text.contains("vultr-lifecycle acquire-access"));
-    assert!(text.contains("vultr-lifecycle release-access"));
-    assert!(!text.contains("exec"));
-    assert!(!text.contains("shell"));
+fn retired_direct_vultr_mutation_cli_is_absent_from_compiled_source() {
+    let source = include_str!("vultr_lifecycle_command.rs");
+    assert!(!source.contains("pub async fn run(args: Vec<String>"));
+    for mutation in [
+        "run_destroy_apply(",
+        "run_cleanup(",
+        "run_action(",
+        "run_substrate_apply(",
+        "run_initial_vm_runtime(",
+        "run_runner_bootstrap(",
+    ] {
+        assert!(
+            !source.contains(mutation),
+            "retired direct mutation {mutation}"
+        );
+    }
 }
