@@ -3877,7 +3877,11 @@ function JWKS_FETCH_FAILURE(e){
  if(e?.name==="TypeError")return "JWT_JWKS_FETCH_TYPE_ERROR";
  return "JWT_JWKS_FETCH_FAILED";
 }
-let res;try{res=await fetch(iss+"/cdn-cgi/access/certs",{redirect:"error"})}catch(e){return JWKS_FETCH_FAILURE(e)}
+// Workers do not implement Fetch redirect:"error": it throws before any
+// JWKS subrequest. Use supported manual mode and reject ALL 3xx without
+// following Location, preserving the exact pinned issuer and key origin.
+let res;try{res=await fetch(iss+"/cdn-cgi/access/certs",{redirect:"manual"})}catch(e){return JWKS_FETCH_FAILURE(e)}
+if(res.status>=300&&res.status<400)return "JWT_JWKS_FETCH_REDIRECT_BLOCKED";
 if(!res.ok)return "JWT_JWKS_HTTP_UNAVAILABLE";
 let certs;try{certs=await res.json()}catch{return "JWT_JWKS_INVALID"}
 if(!certs||!Array.isArray(certs.keys))return "JWT_JWKS_INVALID";
