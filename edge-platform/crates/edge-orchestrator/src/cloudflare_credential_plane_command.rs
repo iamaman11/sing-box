@@ -3851,7 +3851,7 @@ const parts=t.split(".");if(parts.length!==3)return "JWT_MALFORMED";
 let h,c;try{h=JSON.parse(TD.decode(B64(parts[0])));c=JSON.parse(TD.decode(B64(parts[1])))}catch{return "JWT_MALFORMED"}
 if(!h||h.alg!=="RS256"||typeof h.kid!=="string"||!c)return "JWT_MALFORMED";
 if(c.iss!==iss)return "JWT_ISSUER_MISMATCH";
-if(!Array.isArray(c.aud)||!c.aud.includes(aud))return "JWT_AUDIENCE_MISMATCH";
+if(!(typeof c.aud==="string"?c.aud===aud:Array.isArray(c.aud)&&c.aud.length>0&&c.aud.every(x=>typeof x==="string")&&c.aud.includes(aud)))return "JWT_AUDIENCE_MISMATCH";
 const now=Math.floor(Date.now()/1000);
 if(!Number.isInteger(c.exp))return "JWT_MALFORMED";
 if(c.exp<=now)return "JWT_EXPIRED";

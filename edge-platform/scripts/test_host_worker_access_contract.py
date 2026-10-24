@@ -63,6 +63,12 @@ async function jwt(extra={}){
 const accessEnv={EDGE_HOST_ACCESS_ISSUER:iss,EDGE_HOST_ACCESS_AUD:aud};
 function assertion(t){return {headers:new Headers({'Cf-Access-Jwt-Assertion':t})}}
 assert.equal(await ACCESS(assertion(await jwt()),accessEnv),true,'signed JWT without optional nbf');
+assert.equal(await ACCESS(assertion(await jwt({aud})),accessEnv),true,'exact single-string JWT audience');
+assert.equal(await ACCESS(assertion(await jwt({aud:[aud,'other-app']})),accessEnv),true,'exact array JWT audience');
+assert.equal(await ACCESS(assertion(await jwt({aud:'other-app'})),accessEnv),false,'wrong single-string audience');
+assert.equal(await ACCESS(assertion(await jwt({aud:42})),accessEnv),false,'numeric audience is invalid');
+assert.equal(await ACCESS(assertion(await jwt({aud:[aud,42]})),accessEnv),false,'mixed-type array audience is invalid');
+assert.equal(await ACCESS(assertion(await jwt({aud:[]})),accessEnv),false,'empty audience array is invalid');
 assert.equal(await ACCESS(assertion(await jwt({nbf:now-10})),accessEnv),true,'valid nbf');
 assert.equal(await ACCESS(assertion(await jwt({nbf:now+3600})),accessEnv),false,'future nbf');
 assert.equal(await ACCESS(assertion(await jwt({nbf:'tomorrow'})),accessEnv),false,'malformed nbf');
