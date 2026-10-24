@@ -2613,6 +2613,56 @@ mod tests {
     use super::*;
 
     #[test]
+    fn vm_github_app_exact_inheritance_preserves_only_eight_allowed_bindings() {
+        let names = [
+            "EDGE_CREDENTIAL_BUNDLE_A",
+            "EDGE_CREDENTIAL_BUNDLE_B",
+            "EDGE_HOST_SIGNING_PKCS8_BASE64",
+            "EDGE_HOST_SIGNING_KEY_ID",
+            "EDGE_HOST_GITHUB_ACTOR_ID",
+            "EDGE_HOST_ACCESS_ISSUER",
+            "EDGE_HOST_ACCESS_AUD",
+            "EDGE_HOST_GITHUB_APP_PKCS8_BASE64",
+        ];
+        let bindings: Vec<_> = names
+            .iter()
+            .map(|name| CloudflareWorkerSecretBinding {
+                name: (*name).to_owned(),
+                binding_type: "secret_text".to_owned(),
+            })
+            .collect();
+        let metadata = exact_binding_inherit_metadata(
+            "fixed-version",
+            WorkerCodeBindingScope::VmHostSignerGitHubApp,
+            &bindings,
+        )
+        .unwrap();
+        let inherited = metadata["bindings"].as_array().unwrap();
+        assert_eq!(inherited.len(), 8);
+        assert!(inherited.iter().all(|binding| binding["type"] == "inherit"));
+        assert!(exact_binding_inherit_metadata(
+            "fixed-version",
+            WorkerCodeBindingScope::VmHostSigner,
+            &bindings,
+        )
+        .is_err());
+        assert!(exact_binding_inherit_metadata(
+            "fixed-version",
+            WorkerCodeBindingScope::VmHostSignerGitHubApp,
+            &bindings[..7],
+        )
+        .is_err());
+        let mut forged = bindings;
+        forged[7].name = "UNREVIEWED_SECRET".to_owned();
+        assert!(exact_binding_inherit_metadata(
+            "fixed-version",
+            WorkerCodeBindingScope::VmHostSignerGitHubApp,
+            &forged,
+        )
+        .is_err());
+    }
+
+    #[test]
     fn api_envelope_accepts_null_error_metadata_without_relaxing_result_shape() {
         let envelope: ApiEnvelope<Value> = serde_json::from_value(serde_json::json!({
             "success": true,
