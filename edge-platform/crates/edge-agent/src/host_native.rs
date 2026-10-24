@@ -63,25 +63,166 @@ pub(super) fn owner_operation_lock() -> Result<std::fs::File, String> {
     Ok(file)
 }
 
-/// One journal scanner for read-only diagnostics and root trust refresh.
-/// A pending scope is not a repair instruction: it is UNKNOWN_NO_REPLAY.
-pub(super) fn protected_journal_has_pending(journal: &Path) -> Result<bool, String> {
-    let entries = fs::read_dir(journal).map_err(|_| "HOST_NATIVE_JOURNAL_UNAVAILABLE")?;
-    for entry in entries {
+/// Metadata only: scanner results never authorize a native mutation or
+/// release a durable pending scope. Any malformed entry is preserved intact.
+#[derive(Debug, Clone)]
+struct NativeJournalEntryMetadata {
+    name: String,
+    kind: &'static str,
+    uid: u32,
+    gid: u32,
+    mode: u32,
+    size: u64,
+    modified_unix: i64,
+    pending: bool,
+    failure: &'static str,
+}
+
+#[derive(Debug, Default)]
+struct NativeJournalScan {
+    entries: usize,
+    pending: usize,
+    sample: Vec<NativeJournalEntryMetadata>,
+    first_invalid: Option<NativeJournalEntryMetadata>,
+}
+
+fn safe_journal_entry_name(name: &std::ffi::OsStr) -> String {
+    if let Some(value) = name.to_str()
+        && value.len() <= 128
+        && !value.is_empty()
+        && value
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'.' | b'-' | b'_'))
+    {
+        return value.to_owned();
+    }
+    // Never print attacker-supplied names, embedded newlines or path-like data.
+    use std::os::unix::ffi::OsStrExt;
+    let digest = ring::digest::digest(&ring::digest::SHA256, name.as_bytes());
+    let short = digest.as_ref()[..8]
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    format!("UNSAFE_NAME_SHA256_{short}")
+}
+
+fn scan_native_journal_metadata(
+    journal: &Path,
+    expected_uid: u32,
+) -> Result<NativeJournalScan, String> {
+    let mut scan = NativeJournalScan::default();
+    for entry in fs::read_dir(journal).map_err(|_| "HOST_NATIVE_JOURNAL_UNAVAILABLE")? {
         let entry = entry.map_err(|_| "HOST_NATIVE_JOURNAL_UNAVAILABLE")?;
         let meta =
             fs::symlink_metadata(entry.path()).map_err(|_| "HOST_NATIVE_JOURNAL_UNAVAILABLE")?;
-        if !meta.file_type().is_file() || meta.uid() != 0 || meta.permissions().mode() & 0o077 != 0
-        {
-            return Err("HOST_NATIVE_JOURNAL_FILE_UNTRUSTED".into());
+        let kind = if meta.file_type().is_file() {
+            "REGULAR"
+        } else if meta.file_type().is_symlink() {
+            "SYMLINK"
+        } else if meta.file_type().is_dir() {
+            "DIRECTORY"
+        } else {
+            "OTHER"
+        };
+        let mode = meta.permissions().mode() & 0o7777;
+        let failure = if !meta.file_type().is_file() {
+            "NONREGULAR"
+        } else if meta.uid() != expected_uid {
+            "OWNER_NOT_ROOT"
+        } else if mode & 0o077 != 0 {
+            "GROUP_OTHER_BITS_PRESENT"
+        } else {
+            "NONE"
+        };
+        let raw_name = entry.file_name();
+        let pending = raw_name
+            .to_str()
+            .is_some_and(|name| name.ends_with(".pending.pb"));
+        scan.entries += 1;
+        if pending {
+            scan.pending += 1;
         }
-        let name = entry.file_name();
-        let name = name.to_str().ok_or("HOST_NATIVE_JOURNAL_NAME_INVALID")?;
-        if name.ends_with(".pending.pb") {
-            return Ok(true);
+        let record = NativeJournalEntryMetadata {
+            name: safe_journal_entry_name(&raw_name),
+            kind,
+            uid: meta.uid(),
+            gid: meta.gid(),
+            mode,
+            size: meta.size(),
+            modified_unix: meta.mtime(),
+            pending,
+            failure,
+        };
+        if failure != "NONE" && scan.first_invalid.is_none() {
+            scan.first_invalid = Some(record.clone());
         }
+        if scan.sample.len() < 24 {
+            scan.sample.push(record);
+        }
+        // Never return on the first pending scope: a later forged entry
+        // must still reject the entire protected journal.
     }
-    Ok(false)
+    Ok(scan)
+}
+
+/// Full scan, including entries after pending. No permission normalization,
+/// journal clean-up, pending removal or unknown-operation replay.
+pub(super) fn protected_journal_has_pending(journal: &Path) -> Result<bool, String> {
+    let scan = scan_native_journal_metadata(journal, 0)?;
+    if scan.first_invalid.is_some() {
+        return Err("HOST_NATIVE_JOURNAL_FILE_UNTRUSTED".into());
+    }
+    Ok(scan.pending != 0)
+}
+
+/// Existing root-owned 'local diagnose' entrypoint. Output is deliberately
+/// tagged as runner-copied and has no authority for apply/recover.
+pub(super) fn print_native_journal_diagnostic() {
+    if unsafe { geteuid() } != 0 {
+        println!("host_native_journal_diagnostic=UNAVAILABLE_NONROOT");
+        return;
+    }
+    let journal = Path::new(JOURNAL_ROOT);
+    let meta = match fs::symlink_metadata(journal) {
+        Ok(m) if m.file_type().is_dir() && m.uid() == 0
+            && m.permissions().mode() & 0o077 == 0 => m,
+        _ => {
+            println!("host_native_journal_diagnostic=ROOT_UNPROVEN");
+            return;
+        }
+    };
+    let _ = meta;
+    let scan = match scan_native_journal_metadata(journal, 0) {
+        Ok(scan) => scan,
+        Err(_) => {
+            println!("host_native_journal_diagnostic=READ_ONLY_SCAN_UNAVAILABLE");
+            return;
+        }
+    };
+    println!("host_native_journal_origin=ROOT_LOCAL_METADATA_RUNNER_COPIED_UNAUTHENTICATED");
+    println!("host_native_journal_mutations=0");
+    println!("host_native_journal_entries={}", scan.entries);
+    println!("host_native_journal_pending_entries={}", scan.pending);
+    println!("host_native_journal_display_limit=24");
+    for item in &scan.sample {
+        print_native_journal_entry("host_native_journal_entry", item);
+    }
+    if let Some(invalid) = &scan.first_invalid {
+        print_native_journal_entry("host_native_journal_first_invalid", invalid);
+        println!("host_native_journal_diagnostic=BLOCKED_UNTRUSTED_ENTRY");
+    } else if scan.pending != 0 {
+        println!("host_native_journal_diagnostic=UNKNOWN_NO_REPLAY");
+    } else {
+        println!("host_native_journal_diagnostic=METADATA_ONLY_NO_PENDING");
+    }
+}
+
+fn print_native_journal_entry(label: &str, entry: &NativeJournalEntryMetadata) {
+    println!(
+        "{label}=name:{} kind:{} uid:{} gid:{} mode:{:04o} size:{} mtime:{} pending:{} failure:{}",
+        entry.name, entry.kind, entry.uid, entry.gid, entry.mode,
+        entry.size, entry.modified_unix, entry.pending, entry.failure
+    );
 }
 
 /// Canonical, typed local snapshot. This validates format and bounds only;
@@ -835,6 +976,30 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod native_host_path_tests {
     use super::*;
+
+    #[test]
+    fn native_journal_scans_past_pending_for_a_later_untrusted_file() {
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        let dir = std::env::temp_dir().join(format!(
+            "sing-box-journal-scan-{}", std::process::id()
+        ));
+        fs::create_dir(&dir).unwrap();
+        let pending = dir.join("resource-correct.pending.pb");
+        let invalid = dir.join("journal-bad.pb");
+        fs::write(&pending, b"pending").unwrap();
+        fs::write(&invalid, b"bad").unwrap();
+        fs::set_permissions(&pending, fs::Permissions::from_mode(0o600)).unwrap();
+        fs::set_permissions(&invalid, fs::Permissions::from_mode(0o644)).unwrap();
+        let uid = fs::metadata(&pending).unwrap().uid();
+        let scan = scan_native_journal_metadata(&dir, uid).unwrap();
+        assert_eq!(scan.entries, 2);
+        assert_eq!(scan.pending, 1);
+        let bad = scan.first_invalid.unwrap();
+        assert_eq!(bad.name, "journal-bad.pb");
+        assert_eq!(bad.failure, "GROUP_OTHER_BITS_PRESENT");
+        assert_eq!(bad.mode & 0o777, 0o644);
+        fs::remove_dir_all(dir).unwrap();
+    }
 
     #[test]
     fn native_install_diagnostics_preserve_only_known_typed_failure_classes() {
