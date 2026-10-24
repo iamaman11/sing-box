@@ -3861,7 +3861,23 @@ const now=Math.floor(Date.now()/1000);
 if(!Number.isInteger(c.exp))return "JWT_MALFORMED";
 if(c.exp<=now)return "JWT_EXPIRED";
 if(c.nbf!==undefined&&(!Number.isInteger(c.nbf)||c.nbf>now+60))return "JWT_NOT_YET_VALID";
-let res;try{res=await fetch(iss+"/cdn-cgi/access/certs",{redirect:"error"})}catch{return "JWT_JWKS_FETCH_FAILED"}
+// Do not expose exception strings, URLs, JWTs or key material. The bounded
+// reason separates denied Worker subrequests from transport failures and
+// redirect violations, without weakening the single pinned JWKS origin.
+function JWKS_FETCH_FAILURE(e){
+ const m=typeof e?.message==="string"?e.message:"";
+ if(/(?:^|[^0-9])1042(?:[^0-9]|$)|same.zone|another Worker on the same zone/i.test(m))return "JWT_JWKS_FETCH_SAME_ZONE_BLOCKED";
+ if(/(?:^|[^0-9])1024(?:[^0-9]|$)|Cloudflare.owned IP/i.test(m))return "JWT_JWKS_FETCH_CLOUDFLARE_IP_BLOCKED";
+ if(/(?:^|[^0-9])1021(?:[^0-9]|$)|host it cannot access/i.test(m))return "JWT_JWKS_FETCH_HOST_BLOCKED";
+ if(/redirect/i.test(m))return "JWT_JWKS_FETCH_REDIRECT_BLOCKED";
+ if(/timeout|timed out/i.test(m)||e?.name==="TimeoutError")return "JWT_JWKS_FETCH_TIMEOUT";
+ if(/dns|resolve|ENOTFOUND/i.test(m))return "JWT_JWKS_FETCH_DNS_FAILED";
+ if(/tls|certificate|ssl/i.test(m))return "JWT_JWKS_FETCH_TLS_FAILED";
+ if(/Illegal invocation/i.test(m))return "JWT_JWKS_FETCH_ILLEGAL_INVOCATION";
+ if(e?.name==="TypeError")return "JWT_JWKS_FETCH_TYPE_ERROR";
+ return "JWT_JWKS_FETCH_FAILED";
+}
+let res;try{res=await fetch(iss+"/cdn-cgi/access/certs",{redirect:"error"})}catch(e){return JWKS_FETCH_FAILURE(e)}
 if(!res.ok)return "JWT_JWKS_HTTP_UNAVAILABLE";
 let certs;try{certs=await res.json()}catch{return "JWT_JWKS_INVALID"}
 if(!certs||!Array.isArray(certs.keys))return "JWT_JWKS_INVALID";

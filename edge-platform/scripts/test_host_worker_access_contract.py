@@ -41,6 +41,15 @@ let jwksMode='valid';
 globalThis.fetch=async url=>{
  if(url===iss+'/cdn-cgi/access/certs'){
    if(jwksMode==='fetch_fail')throw Error('unavailable JWKS endpoint');
+   if(jwksMode==='same_zone')throw new TypeError('Cloudflare 1042 same-zone Worker fetch denied');
+   if(jwksMode==='cloudflare_ip')throw new TypeError('subrequest 1024 to Cloudflare-owned IP');
+   if(jwksMode==='host_denied')throw new TypeError('Error 1021 host it cannot access');
+   if(jwksMode==='redirect')throw new TypeError('Redirect mode is set to error');
+   if(jwksMode==='timeout')throw Object.assign(new Error('connection timed out'),{name:'TimeoutError'});
+   if(jwksMode==='dns')throw new Error('DNS lookup failed');
+   if(jwksMode==='tls')throw new Error('TLS certificate error');
+   if(jwksMode==='invocation')throw new TypeError('Illegal invocation');
+   if(jwksMode==='type_error')throw new TypeError('fetch failed');
    if(jwksMode==='http')return {ok:false,status:503};
    if(jwksMode==='invalid')return {ok:true,json:async()=>({})};
    if(jwksMode==='missing_kid')return {ok:true,json:async()=>({keys:[]})};
@@ -98,6 +107,15 @@ assert.equal(proof.status,403,'wrong audience GET proof must fail');
 assert.equal(proof.headers.get('X-Host-Authorization-Reason'),'JWT_AUDIENCE_MISMATCH');
 for(const [mode,reason] of [
  ['fetch_fail','JWT_JWKS_FETCH_FAILED'],
+ ['same_zone','JWT_JWKS_FETCH_SAME_ZONE_BLOCKED'],
+ ['cloudflare_ip','JWT_JWKS_FETCH_CLOUDFLARE_IP_BLOCKED'],
+ ['host_denied','JWT_JWKS_FETCH_HOST_BLOCKED'],
+ ['redirect','JWT_JWKS_FETCH_REDIRECT_BLOCKED'],
+ ['timeout','JWT_JWKS_FETCH_TIMEOUT'],
+ ['dns','JWT_JWKS_FETCH_DNS_FAILED'],
+ ['tls','JWT_JWKS_FETCH_TLS_FAILED'],
+ ['invocation','JWT_JWKS_FETCH_ILLEGAL_INVOCATION'],
+ ['type_error','JWT_JWKS_FETCH_TYPE_ERROR'],
  ['http','JWT_JWKS_HTTP_UNAVAILABLE'],
  ['invalid','JWT_JWKS_INVALID'],
  ['missing_kid','JWT_KID_NOT_FOUND'],
