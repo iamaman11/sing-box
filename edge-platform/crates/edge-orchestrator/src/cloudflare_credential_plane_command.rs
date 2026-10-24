@@ -3881,6 +3881,27 @@ function HOST_SIGNER_PKCS8(b){
   b.slice(seed.start,seed.end));
  return{v1,publicKey};
 }
+// Shared native-signature boundary used by AUTHORIZE and the offline workerd
+// contract test. Never emit secret bytes or exception details.
+async function HOST_SIGNER_SIGN(encoded,payload){
+ const pk=B64(encoded);
+ const signer=pk===null?null:HOST_SIGNER_PKCS8(pk);
+ if(!signer)return{reason:"HOST_SIGNER_KEY_INVALID"};
+ let key;try{key=await crypto.subtle.importKey("pkcs8",signer.v1,{name:"Ed25519"},false,["sign"])}
+ catch{return{reason:"HOST_SIGNER_IMPORT_FAILED"}}
+ let signature;try{signature=new Uint8Array(await crypto.subtle.sign("Ed25519",key,payload))}
+ catch{return{reason:"HOST_SIGNER_SIGN_FAILED"}}
+ if(signature.length!==64)return{reason:"HOST_SIGNER_SIGNATURE_INVALID"};
+ if(signer.publicKey!==null){
+  let matches=false;
+  try{
+   const verifyKey=await crypto.subtle.importKey("raw",signer.publicKey,{name:"Ed25519"},false,["verify"]);
+   matches=await crypto.subtle.verify("Ed25519",verifyKey,signature,payload);
+  }catch{}
+  if(!matches)return{reason:"HOST_SIGNER_KEY_MISMATCH"};
+ }
+ return{signature};
+}
 function U32(x){const b=new Uint8Array(4);new DataView(b.buffer).setUint32(0,x);return b}
 function U64(x){const b=new Uint8Array(8);new DataView(b.buffer).setBigUint64(0,BigInt(x));return b}
 function CAT(...xs){const n=xs.reduce((a,b)=>a+b.length,0),b=new Uint8Array(n);let p=0;for(const x of xs){b.set(x,p);p+=x.length}return b}
@@ -4161,26 +4182,10 @@ if(decision!=="APPROVED"){
 }
 const op=info.id;
 const issued=Math.floor(Date.now()/1000),expires=issued+120,kid=TE.encode(id),oid=TE.encode(op),pk=B64(k);
-// The production Rust ring signer produces RFC5958 v2, while workerd
-// imports canonical RFC8410 v1. Normalize only after full DER validation,
-// solely in memory; retain the exact mathematical key and Git pinned signer.
-const signer=pk===null?null:HOST_SIGNER_PKCS8(pk);
-if(!signer)return new Response(null,{status:503,headers:{...NO,"X-Host-Authorization-Reason":"HOST_SIGNER_KEY_INVALID"}});
 const payload=CAT(TE.encode("sing-box/native-host-authorization/v1:"),U32(raw.length),raw,U32(kid.length),kid,U32(oid.length),oid,U64(issued),U64(expires));
-let key;try{key=await crypto.subtle.importKey("pkcs8",signer.v1,{name:"Ed25519"},false,["sign"])}catch{
- return new Response(null,{status:503,headers:{...NO,"X-Host-Authorization-Reason":"HOST_SIGNER_IMPORT_FAILED"}})}
-let signature;try{signature=new Uint8Array(await crypto.subtle.sign("Ed25519",key,payload))}catch{
- return new Response(null,{status:503,headers:{...NO,"X-Host-Authorization-Reason":"HOST_SIGNER_SIGN_FAILED"}})}
-if(signature.length!==64)
- return new Response(null,{status:503,headers:{...NO,"X-Host-Authorization-Reason":"HOST_SIGNER_SIGNATURE_INVALID"}});
-if(signer.publicKey!==null){
- let matches=false;
- try{
-  const verifyKey=await crypto.subtle.importKey("raw",signer.publicKey,{name:"Ed25519"},false,["verify"]);
-  matches=await crypto.subtle.verify("Ed25519",verifyKey,signature,payload);
- }catch{}
- if(!matches)return new Response(null,{status:503,headers:{...NO,"X-Host-Authorization-Reason":"HOST_SIGNER_KEY_MISMATCH"}});
-}
+const signed=await HOST_SIGNER_SIGN(k,payload);
+if(signed.reason)return new Response(null,{status:503,headers:{...NO,"X-Host-Authorization-Reason":signed.reason}});
+const signature=signed.signature;
 const out=CAT(FNUM(1,1),FLD(2,kid),FLD(3,oid),FNUM(4,issued),FNUM(5,expires),FLD(6,signature));
 return new Response(out,{status:200,headers:{"Content-Type":"application/x-protobuf","Cache-Control":"no-store","X-Content-Type-Options":"nosniff"}})}
 export default{async fetch(q,e){const u=new URL(q.url);if(u.pathname==="/v1/host/authorize")return q.method==="GET"?HOST_AUTH_DIAGNOSTIC(q,e,u):AUTHORIZE(q,e,u);const x=u.searchParams.get("generation");
