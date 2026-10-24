@@ -146,6 +146,7 @@ assert Path("edge-platform/crates/edge-agent/src/host_native.rs").exists()
 # A closed Rust enum, not the human command text, is the sole mutation
 # dispatcher across the reusable VM workflow and native effect/report gates.
 assert "operation: ${{ needs.host.outputs.operation }}" in router
+assert "operation: ${{ needs.host_resume_receipt.outputs.operation }}" in router
 assert "operation:\n        required: true" in native
 assert native.count("HOST_OPERATION: ${{ inputs.operation }}") == 2
 assert "case \"${COMMAND_BODY}\" in" not in native
