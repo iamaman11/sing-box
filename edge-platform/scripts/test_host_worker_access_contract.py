@@ -35,7 +35,7 @@ jwk.kid='test-access-key';
 const now=Math.floor(Date.now()/1000);
 const iss='https://test.cloudflareaccess.com',aud='test-audience';
 const release='a'.repeat(64);
-const approvedAt=new Date((now-10)*1000).toISOString();
+let approvedAt=new Date((now-10)*1000).toISOString();
 let githubMode='approved';
 let jwksMode='valid';
 globalThis.fetch=async (url,init)=>{
@@ -58,7 +58,14 @@ globalThis.fetch=async (url,init)=>{
    if(jwksMode==='import_bad')return {ok:true,json:async()=>({keys:[{kid:jwk.kid,kty:'RSA',n:'invalid'}]})};
    return {ok:true,json:async()=>({keys:[jwk]})};
  }
+ const isGitHub=url.startsWith('https://api.github.com/repos/iamaman11/sing-box/');
+ if(isGitHub)assert.equal(init?.redirect,'manual','all GitHub Worker fetches must reject redirects without unsupported error mode');
  if(githubMode==='offline')throw Error('simulated GitHub outage');
+ if((githubMode==='redirect_comment'&&url.endsWith('/issues/comments/6346290327'))||
+    (githubMode==='redirect_release'&&url.endsWith('/releases/tags/edge-release-'+release))||
+    (githubMode==='redirect_main'&&url.endsWith('/git/ref/heads/main'))||
+    (githubMode==='redirect_pulls'&&url.includes('/pulls?per_page=20')))
+    return {ok:false,status:302,json:async()=>{throw Error('302 body must not be parsed')}};
  if(url.endsWith('/issues/comments/6346290327'))return {ok:true,json:async()=>({
    user:{id:githubMode==='denied'?123:44100369},
    issue_url:'https://api.github.com/repos/iamaman11/sing-box/issues/1',
@@ -69,6 +76,18 @@ globalThis.fetch=async (url,init)=>{
    tag_name:'edge-release-'+release,draft:false,prerelease:false,
    target_commitish:'b'.repeat(40)
  })};
+ if(url.endsWith('/git/ref/heads/main'))return {ok:true,status:200,json:async()=>({
+   object:{type:'commit',sha:'b'.repeat(40)}
+ })};
+ if(url.endsWith('/commits/'+'b'.repeat(40)+'/pulls?per_page=20'))return {
+   ok:true,status:200,json:async()=>([{
+    merged_at:new Date((now-30)*1000).toISOString(),draft:false,
+    base:{ref:'main'},head:{repo:{full_name:'iamaman11/sing-box'},
+    ref:'host-receipt-application-acceptance-2-6346290327'},
+    merge_commit_sha:'b'.repeat(40),
+    title:'host: register native receipt for application-acceptance-2'
+   }])
+ };
  throw Error('unexpected fixture fetch: '+url);
 };
 const header={alg:'RS256',kid:'test-access-key'};
@@ -138,6 +157,22 @@ githubMode='denied';
 assert.equal(await GITHUB(info,{EDGE_HOST_GITHUB_ACTOR_ID:'44100369'},now),'DENIED');
 githubMode='offline';
 assert.equal(await GITHUB(info,{EDGE_HOST_GITHUB_ACTOR_ID:'44100369'},now),'UNAVAILABLE');
+for(const mode of ['redirect_comment','redirect_release']){
+ githubMode=mode;
+ assert.equal(await GITHUB(info,{EDGE_HOST_GITHUB_ACTOR_ID:'44100369'},now),'DENIED',
+   mode+' 302 cannot approve a host intent');
+}
+// The existing post-first-use receipt path must also reject a 3xx from
+// Git refs or merged PR evidence without following Location.
+approvedAt=new Date((now-450)*1000).toISOString();
+githubMode='approved';
+assert.equal(await GITHUB(info,{EDGE_HOST_GITHUB_ACTOR_ID:'44100369'},now),'APPROVED');
+for(const mode of ['redirect_main','redirect_pulls']){
+ githubMode=mode;
+ assert.equal(await GITHUB(info,{EDGE_HOST_GITHUB_ACTOR_ID:'44100369'},now),'DENIED',
+   mode+' 302 cannot approve a late first-use');
+}
+approvedAt=new Date((now-10)*1000).toISOString();
 
 const ed=await crypto.subtle.generateKey({name:'Ed25519'},true,['sign','verify']);
 const pkcs8=await crypto.subtle.exportKey('pkcs8',ed.privateKey);
@@ -171,6 +206,10 @@ response=await AUTHORIZE(await req(await jwt({exp:now-1})),env,url);
 assert.equal(response.status,403);
 assert.equal(response.headers.get('X-Host-Authorization-Reason'),'JWT_EXPIRED');
 githubMode='denied';
+response=await AUTHORIZE(await req(await jwt()),env,url);
+assert.equal(response.status,403);
+assert.equal(response.headers.get('X-Host-Authorization-Reason'),'GITHUB_APPROVAL_DENIED');
+githubMode='redirect_release';
 response=await AUTHORIZE(await req(await jwt()),env,url);
 assert.equal(response.status,403);
 assert.equal(response.headers.get('X-Host-Authorization-Reason'),'GITHUB_APPROVAL_DENIED');
