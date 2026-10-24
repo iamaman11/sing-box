@@ -554,7 +554,10 @@ fn exact_worker_module_from_value(
         .pointer("/annotations/workers~1tag")
         .and_then(Value::as_str)
         .ok_or(error)?;
-    let bindings = value.get("bindings").and_then(Value::as_array).ok_or(error)?;
+    let bindings = value
+        .get("bindings")
+        .and_then(Value::as_array)
+        .ok_or(error)?;
     if bindings.len() != 8 {
         return Err(error.into());
     }
@@ -563,7 +566,10 @@ fn exact_worker_module_from_value(
         .map(worker_secret_binding_from_value)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| error.to_owned())?;
-    if secret_bindings.iter().any(|v| v.binding_type != "secret_text") {
+    if secret_bindings
+        .iter()
+        .any(|v| v.binding_type != "secret_text")
+    {
         return Err(error.into());
     }
     secret_bindings.sort_by(|a, b| a.name.cmp(&b.name));
@@ -3727,9 +3733,13 @@ mod tests {
     }
     #[test]
     fn exact_version_module_requires_version_bound_script_and_eight_secrets() {
-        let bindings: Vec<Value> = (0..8).map(|i| serde_json::json!({
-            "name": format!("SECRET_{i}"), "type": "secret_text"
-        })).collect();
+        let bindings: Vec<Value> = (0..8)
+            .map(|i| {
+                serde_json::json!({
+                    "name": format!("SECRET_{i}"), "type": "secret_text"
+                })
+            })
+            .collect();
         let original = serde_json::json!({
             "id":"exact-version",
             "created_on":"2026-10-24T21:22:15.946199Z",
@@ -3753,12 +3763,13 @@ mod tests {
         ] {
             let mut altered = original.clone();
             *altered.pointer_mut(pointer).unwrap() = replacement;
-            assert!(exact_worker_module_from_value(altered, "exact-version").is_err(),
-                "invalid exact module field {pointer} must fail closed");
+            assert!(
+                exact_worker_module_from_value(altered, "exact-version").is_err(),
+                "invalid exact module field {pointer} must fail closed"
+            );
         }
         let mut without_modules = original;
         without_modules["modules"] = serde_json::json!([]);
         assert!(exact_worker_module_from_value(without_modules, "exact-version").is_err());
     }
-
 }
