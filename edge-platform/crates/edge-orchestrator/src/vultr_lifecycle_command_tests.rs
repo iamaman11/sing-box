@@ -670,6 +670,9 @@ fn retired_direct_vultr_mutation_cli_is_absent_from_compiled_source() {
         "run_initial_vm_runtime(",
         "run_runner_bootstrap(",
     ] {
-        assert!(!source.contains(mutation), "retired direct mutation {mutation}");
+        assert!(
+            !source.contains(mutation),
+            "retired direct mutation {mutation}"
+        );
     }
 }
