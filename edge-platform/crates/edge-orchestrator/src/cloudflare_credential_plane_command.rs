@@ -1378,7 +1378,7 @@ fn verify_vm_worker_predecessor(
         || current.worker_active_version_ids.as_slice()
             != [current.worker_latest_version_id.as_deref().unwrap_or("")]
         || current.worker_active_deployment_id.is_none()
-        || current.worker_binding_count != Some(7)
+        || !matches!(current.worker_binding_count, Some(7 | 8))
     {
         return Err("HOST_VM_WORKER_PREDECESSOR_STATE_MISMATCH".to_owned());
     }
@@ -1500,8 +1500,12 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
     .await?;
     let actual_sha256 = sha256_hex(&raw);
     let state = if actual_sha256 == accepted_source.desired {
-        if projection_delivery_state(desired, &vm, &before)? != ProjectionDeliveryState::FixedAb {
-            return Err("HOST_VM_WORKER_DESIRED_SOURCE_METADATA_MISMATCH".to_owned());
+        if projection_delivery_state(desired, &vm, &before)? != ProjectionDeliveryState::FixedAb
+            || original.worker_binding_count != Some(8)
+        {
+            // New Worker bytes without the exact GitHub App secret cannot
+            // authorize GitHub; accepting this state would strand every /host apply.
+            return Err("HOST_VM_WORKER_GITHUB_APP_BINDING_REQUIRED".to_owned());
         }
         ProjectionDeliveryState::FixedAb
     } else {
@@ -1548,14 +1552,68 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
         println!("host_signed_install=NOT_AUTHORIZED");
         return Ok(());
     }
-    // This fixed scope comes from live GET names, after the credential
-    // projection's exact name/type guard has succeeded; never a free-form
-    // caller list or a guess about an opaque secret's value.
-    let bindings = match original.worker_secret_bindings.len() {
-        2 => cloudflare::WorkerCodeBindingScope::FixedAb,
-        7 => cloudflare::WorkerCodeBindingScope::VmHostSigner,
-        _ => return Err("HOST_VM_WORKER_BINDINGS_INCOMPLETE".to_owned()),
+    // Complete the 7-to-8 transition and code-only upgrade inside the
+    // SAME authorized /host apply owner, after the durable GitHub BEGIN.
+    // The Environment secret never enters HostIntent, logs or ReleaseSet.
+    let code_baseline = if original.worker_binding_count == Some(7) {
+        let secret = required_env("EDGE_HOST_GITHUB_APP_PKCS8_BASE64")?;
+        validate_host_github_app_private_key(&secret)?;
+        let predecessor_tag = format!(
+            "sing-box-phase6-ab-vm-{}",
+            &accepted_source.predecessor[..16]
+        );
+        let patched_version = cloudflare::patch_latest_worker_version_secrets(
+            &write_token,
+            &desired.target_account_id,
+            &vm.worker_name,
+            &predecessor_tag,
+            &[("EDGE_HOST_GITHUB_APP_PKCS8_BASE64", secret.as_str())],
+        )
+        .await
+        .map_err(|_| "HOST_VM_GITHUB_APP_SECRET_PATCH_UNCERTAIN_NO_REPLAY".to_owned())?;
+        let patched = observe(&read_token, desired)
+            .await
+            .map_err(|_| "HOST_VM_GITHUB_APP_PATCH_READBACK_UNCERTAIN_NO_REPLAY".to_owned())?;
+        validate_access_boundary(desired, &patched)?;
+        let patched_vm = projection_observation(&patched, "vm")?;
+        if projection_observation(&before, "windows")?
+            != projection_observation(&patched, "windows")?
+            || patched_version == original.worker_latest_version_id.as_deref().unwrap_or("")
+            || patched_vm.worker_latest_version_id.as_deref() != Some(patched_version.as_str())
+            || patched_vm.worker_active_version_ids != original.worker_active_version_ids
+            || patched_vm.worker_active_deployment_id != original.worker_active_deployment_id
+            || patched_vm.worker_id != original.worker_id
+            || patched_vm.worker_binding_count != Some(8)
+            || patched_vm.worker_secret_bindings.len() != 8
+            || patched_vm.worker_version_tag.as_deref() != Some(predecessor_tag.as_str())
+            || patched_vm.worker_latest_version_tag.as_deref() != Some(predecessor_tag.as_str())
+        {
+            return Err("HOST_VM_GITHUB_APP_PATCH_POSTSTATE_UNPROVEN_NO_REPLAY".to_owned());
+        }
+        require_exact_secret_bindings(&vm.worker_name, "vm", &patched_vm.worker_secret_bindings)?;
+        let source_after_patch = cloudflare::get_worker_active_module_bytes(
+            &read_token,
+            &desired.target_account_id,
+            &vm.worker_name,
+        )
+        .await
+        .map_err(|_| "HOST_VM_GITHUB_APP_PATCH_SOURCE_UNAVAILABLE_NO_REPLAY".to_owned())?;
+        if sha256_hex(&source_after_patch) != accepted_source.predecessor {
+            return Err("HOST_VM_GITHUB_APP_PATCH_ACTIVE_SOURCE_DRIFT_NO_REPLAY".to_owned());
+        }
+        patched
+    } else if original.worker_binding_count == Some(8) {
+        before.clone()
+    } else {
+        return Err("HOST_VM_WORKER_BINDINGS_INCOMPLETE".to_owned());
     };
+    // Code upload STRICTLY inherits all eight verified Worker secret names
+    // from the current latest version (including the pending secret patch).
+    let code_original = projection_observation(&code_baseline, "vm")?;
+    require_exact_secret_bindings(&vm.worker_name, "vm", &code_original.worker_secret_bindings)?;
+    if code_original.worker_binding_count != Some(8) {
+        return Err("HOST_VM_GITHUB_APP_BINDINGS_NOT_READY".to_owned());
+    }
     let source = material;
     let version_id = cloudflare::upload_worker_slot_proof_version(
         &write_token,
@@ -1563,8 +1621,8 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
         &vm.worker_name,
         &source.version_tag,
         &source.source,
-        bindings,
-        &original.worker_secret_bindings,
+        cloudflare::WorkerCodeBindingScope::VmHostSignerGitHubApp,
+        &code_original.worker_secret_bindings,
     )
     .await
     .map_err(|_| "HOST_VM_WORKER_UPLOAD_UNCERTAIN_STOP_NO_REPLAY".to_owned())?;
@@ -1576,7 +1634,7 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
         return Err("HOST_VM_WORKER_WINDOWS_CHANGED_AFTER_UPLOAD_STOP".to_owned());
     }
     let pending = projection_observation(&pending_observation, "vm")?;
-    verify_exact_pending_worker_version(original, pending, &version_id)?;
+    verify_exact_pending_worker_version(code_original, pending, &version_id)?;
     if pending.worker_latest_version_tag.as_deref() != Some(source.version_tag.as_str()) {
         return Err("HOST_VM_WORKER_PENDING_VERSION_TAG_MISMATCH".to_owned());
     }
@@ -1593,6 +1651,7 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
         || verify_exact_active_worker_version(projection_observation(&after, "vm")?, &version_id)
             .is_err()
         || projection_delivery_state(desired, &vm, &after)? != ProjectionDeliveryState::FixedAb
+        || projection_observation(&after, "vm")?.worker_binding_count != Some(8)
     {
         return Err("HOST_VM_WORKER_DEPLOYMENT_NOT_PROVEN_STOP_NO_REPLAY".to_owned());
     }
@@ -2178,6 +2237,7 @@ async fn initial_worker_proof_upgrade(
             old.worker_secret_bindings.len(),
         ) {
             ("vm", 7) => cloudflare::WorkerCodeBindingScope::VmHostSigner,
+            ("vm", 8) => cloudflare::WorkerCodeBindingScope::VmHostSignerGitHubApp,
             ("vm" | "windows", 2) => cloudflare::WorkerCodeBindingScope::FixedAb,
             _ => return Err("WORKER_CODE_BINDINGS_NOT_EXACT_PROJECTION_SCOPE".to_owned()),
         };
@@ -3152,7 +3212,7 @@ fn projection_delivery_state(
     // may additionally carry five independent Host signer guard secrets, with
     // no second worker or duplicate issuer. Windows never permits signer keys.
     let guarded_host_signer =
-        projection.projection == "vm" && current.worker_binding_count == Some(7);
+        projection.projection == "vm" && matches!(current.worker_binding_count, Some(7 | 8));
     if current.worker_binding_count == Some(2) || guarded_host_signer {
         require_exact_secret_bindings(
             &projection.worker_name,
@@ -3674,6 +3734,30 @@ fn workers_dev_hostname(
     )
 }
 
+// Never accept malformed or inadvertently overbroad key material as a
+// Cloudflare Worker secret. No key bytes or crypto errors leave this owner.
+fn validate_host_github_app_private_key(value: &str) -> Result<(), String> {
+    use base64::Engine as _;
+    if value.len() < 1000
+        || value.len() > 8192
+        || !value
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'_' | b'-'))
+    {
+        return Err("HOST_VM_GITHUB_APP_KEY_ENCODING_INVALID".to_owned());
+    }
+    let decoded = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(value)
+        .map_err(|_| "HOST_VM_GITHUB_APP_KEY_ENCODING_INVALID".to_owned())?;
+    if decoded.len() < 800
+        || decoded.len() > 4096
+        || ring::signature::RsaKeyPair::from_pkcs8(&decoded).is_err()
+    {
+        return Err("HOST_VM_GITHUB_APP_PKCS8_RSA_INVALID".to_owned());
+    }
+    Ok(())
+}
+
 fn require_exact_secret_bindings(
     worker_name: &str,
     projection: &str,
@@ -3685,7 +3769,7 @@ fn require_exact_secret_bindings(
         .collect::<Vec<_>>();
     observed.sort_unstable();
     let mut expected = vec![(SLOT_A, "secret_text"), (SLOT_B, "secret_text")];
-    if projection == "vm" && observed.len() == 7 {
+    if projection == "vm" && matches!(observed.len(), 7 | 8) {
         // Exactly one Worker may carry the host signing secret. No extra
         // implicit credentials, fallback secrets or caller-provided key.
         expected.extend_from_slice(&[
@@ -3695,6 +3779,9 @@ fn require_exact_secret_bindings(
             ("EDGE_HOST_ACCESS_ISSUER", "secret_text"),
             ("EDGE_HOST_ACCESS_AUD", "secret_text"),
         ]);
+    }
+    if projection == "vm" && observed.len() == 8 {
+        expected.push(("EDGE_HOST_GITHUB_APP_PKCS8_BASE64", "secret_text"));
     }
     expected.sort_unstable();
     if observed != expected {
@@ -3822,13 +3909,75 @@ function GHFAIL(stage,kind,r,e){
  }
  return out;
 }
+// Installation-scoped GitHub App, not OAuth or an operator PAT. One fresh,
+// short-lived token per authorization; no cache, log, body, or token exposure.
+// The immutable App/installation IDs are non-secret, pinned to this repository.
+const GITHUB_APP_ID="5456373",GITHUB_INSTALLATION_ID="174880562";
+function GITHUB_APP_ERROR(stage,kind,r,e){
+ return GHFAIL(stage,kind,r,e);
+}
+async function GITHUB_INSTALLATION_AUTH(e,now){
+ const raw=e.EDGE_HOST_GITHUB_APP_PKCS8_BASE64;
+ if(typeof raw!=="string"||!raw||raw.length>8192)
+  return{error:GITHUB_APP_ERROR("GITHUB_APP_JWT","CONFIG_MISSING",null)};
+ let key,jwt;
+ try{
+  const bytes=B64(raw);
+  if(!bytes||bytes.length<800||bytes.length>4096)throw new Error("invalid key size");
+  key=await crypto.subtle.importKey("pkcs8",bytes,
+   {name:"RSASSA-PKCS1-v1_5",hash:"SHA-256"},false,["sign"]);
+  const enc=ob=>{
+   const data=TE.encode(JSON.stringify(ob));
+   let binary="";for(const c of data)binary+=String.fromCharCode(c);
+   return btoa(binary).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+  };
+  const header=enc({alg:"RS256",typ:"JWT"});
+  const body=enc({iat:now-60,exp:now+540,iss:GITHUB_APP_ID});
+  const signing=header+"."+body;
+  const sig=new Uint8Array(await crypto.subtle.sign("RSASSA-PKCS1-v1_5",key,TE.encode(signing)));
+  let binary="";for(const c of sig)binary+=String.fromCharCode(c);
+  jwt=signing+"."+btoa(binary).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+ }catch(err){return{error:GITHUB_APP_ERROR("GITHUB_APP_JWT","SIGN_EXCEPTION",null,err)}}
+ const url="https://api.github.com/app/installations/"+GITHUB_INSTALLATION_ID+"/access_tokens";
+ let r;
+ try{
+  r=await fetch(url,{method:"POST",redirect:"manual",headers:{
+   "Accept":"application/vnd.github+json","Content-Type":"application/json",
+   "Authorization":"Bearer "+jwt,"User-Agent":"sing-box-host-authorizer"
+  },body:JSON.stringify({repositories:["sing-box"],
+   permissions:{contents:"read",issues:"read",pull_requests:"read"}})});
+ }catch(err){return{error:GITHUB_APP_ERROR("GITHUB_INSTALLATION_TOKEN","FETCH_EXCEPTION",null,err)}}
+ if(r.status>=300&&r.status<400)
+  return{error:GITHUB_APP_ERROR("GITHUB_INSTALLATION_TOKEN","REDIRECT",r)};
+ if(!r.ok)return{error:GITHUB_APP_ERROR("GITHUB_INSTALLATION_TOKEN","HTTP",r)};
+ let issued;
+ try{issued=await r.json()}
+ catch(err){return{error:GITHUB_APP_ERROR("GITHUB_INSTALLATION_TOKEN","RESPONSE_DECODE",r,err)}}
+ const permissions=issued?.permissions;
+ const expiry=Date.parse(issued?.expires_at)/1000;
+ const matching=Array.isArray(issued?.repositories)&&issued.repositories.length===1&&
+  issued.repositories[0]?.full_name==="iamaman11/sing-box"&&
+  issued.repositories[0]?.id===1221750822&&issued.repository_selection==="selected";
+ const allowed=permissions&&typeof permissions==="object"&&
+  ["contents","issues","pull_requests"].every(x=>permissions[x]==="read")&&
+  Object.entries(permissions).every(([k,v])=>
+   ["contents","issues","pull_requests","metadata"].includes(k)&&v==="read");
+ if(typeof issued?.token!=="string"||!/^[A-Za-z0-9_]{10,4096}$/.test(issued.token)||
+    !Number.isFinite(expiry)||expiry<=now+60||expiry>now+3660||
+    !matching||!allowed)
+  return{error:GITHUB_APP_ERROR("GITHUB_INSTALLATION_TOKEN","RESPONSE_INVALID",r)};
+ return{token:issued.token};
+}
 async function GITHUB(info,e,now){
  const actor=String(e.EDGE_HOST_GITHUB_ACTOR_ID||"");
  if(!/^[1-9][0-9]{0,19}$/.test(actor)||Math.abs(now-info.when)>300||
     !/^[0-9a-f]{64}$/.test(info.release))return "DENIED";
  const id=info.id.slice("issue1-comment-".length);
  const base="https://api.github.com/repos/iamaman11/sing-box";
- const headers={"Accept":"application/vnd.github+json","User-Agent":"sing-box-host-authorizer"};
+ const installation=await GITHUB_INSTALLATION_AUTH(e,now);
+ if(installation.error)return installation.error;
+ const headers={"Accept":"application/vnd.github+json","User-Agent":"sing-box-host-authorizer",
+  "Authorization":"Bearer "+installation.token};
  // Cloudflare Workers supports manual redirect; ALL GitHub 3xx are rejected.
  // Separate fetch, HTTP, and JSON decoding so an incident has one exact stage.
  async function GITHUB_GET(path,stage){

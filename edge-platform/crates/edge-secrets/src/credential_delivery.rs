@@ -628,6 +628,8 @@ fn github_worker_failure_detail(headers: &HeaderMap, operation_id: &str) -> Opti
         "GITHUB_RELEASE" => "GITHUB_RELEASE",
         "GITHUB_MAIN" => "GITHUB_MAIN",
         "GITHUB_PULLS" => "GITHUB_PULLS",
+        "GITHUB_APP_JWT" => "GITHUB_APP_JWT",
+        "GITHUB_INSTALLATION_TOKEN" => "GITHUB_INSTALLATION_TOKEN",
         _ => return None,
     };
     let kind = match read("X-Host-Github-Kind")? {
@@ -635,6 +637,9 @@ fn github_worker_failure_detail(headers: &HeaderMap, operation_id: &str) -> Opti
         "REDIRECT" => "REDIRECT",
         "FETCH_EXCEPTION" => "FETCH_EXCEPTION",
         "RESPONSE_DECODE" => "RESPONSE_DECODE",
+        "CONFIG_MISSING" => "CONFIG_MISSING",
+        "SIGN_EXCEPTION" => "SIGN_EXCEPTION",
+        "RESPONSE_INVALID" => "RESPONSE_INVALID",
         _ => return None,
     };
     let mut result = format!("stage={stage};kind={kind}");
