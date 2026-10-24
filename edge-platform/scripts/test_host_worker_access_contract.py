@@ -89,7 +89,7 @@ globalThis.fetch=async (url,init)=>{
   if(appMode==='decode')return{ok:true,status:201,json:async()=>{throw new SyntaxError('private token bytes')}};
   return{ok:true,status:201,json:async()=>({
    token:appMode==='legacy'?legacyToken:
-    appMode==='token_controls'?'ghs_BAD\\r\\nINJECTED':statelessToken,
+    appMode==='token_controls'?'ghs_BAD TOKEN':statelessToken,
    expires_at:new Date((now+1800)*1000).toISOString(),
    permissions:{metadata:'read',issues:'read',contents:'read',pull_requests:'read'},
    repository_selection:'selected',
