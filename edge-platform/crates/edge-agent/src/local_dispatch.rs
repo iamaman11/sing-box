@@ -75,7 +75,10 @@ pub(super) async fn run_local(command: cli::LocalCommand) -> Result<(), AgentErr
             // Read-only verification of the SAME Cloudflare Access JWT used
             // by signed INSTALL. No HostIntent, POST, or second owner.
             let worker_access = match vm_credential_access_identity_path(&stack_dir) {
-                Ok(path) => edge_secrets::diagnose_canonical_host_access(&path).await,
+                Ok(path) => match edge_secrets::diagnose_canonical_host_access(&path).await {
+                    Ok(()) => "HOST_WORKER_JWT_VERIFIED_READ_ONLY",
+                    Err(reason) => reason,
+                },
                 Err(_) => "HOST_WORKER_ACCESS_IDENTITY_UNAVAILABLE",
             };
             println!("host_worker_access_proof={worker_access}");
