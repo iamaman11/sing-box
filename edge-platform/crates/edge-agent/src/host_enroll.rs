@@ -190,6 +190,12 @@ fn receipt_public_key_hex(public_key: &[u8]) -> String {
 /// ReleaseSet and root owner lock remain mandatory. Mutation admission still
 /// performs the full fail-closed journal scan in host_native/host_journal;
 /// an upgrade NEVER releases pending, repairs entries or authorizes replay.
+/// A root-owned private directory is a prerequisite for safe owner upgrade;
+/// pending and malformed *entries* are deliberately not inspected here.
+fn private_journal_directory_metadata(is_directory: bool, uid: u32, mode: u32) -> bool {
+    is_directory && uid == 0 && mode & 0o077 == 0
+}
+
 fn validate_existing_trust_for_refresh(
     trusted: &Path,
     machine_id: &str,
@@ -204,10 +210,11 @@ fn validate_existing_trust_for_refresh(
     checked_root_directory(&journal)?;
     let meta = fs::symlink_metadata(&journal)
         .map_err(|_| "HOST_ENROLL_JOURNAL_DIRECTORY_UNAVAILABLE")?;
-    if !meta.file_type().is_dir()
-        || meta.uid() != 0
-        || meta.permissions().mode() & 0o077 != 0
-    {
+    if !private_journal_directory_metadata(
+        meta.file_type().is_dir(),
+        meta.uid(),
+        meta.permissions().mode(),
+    ) {
         return Err("HOST_ENROLL_JOURNAL_ROOT_NOT_PRIVATE".into());
     }
     // Do not touch any journal entry here. Only signed *resource mutations*
@@ -628,6 +635,15 @@ fn current_published_release_digest(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn refreshed_owner_still_requires_private_root_owned_journal_directory() {
+        assert!(private_journal_directory_metadata(true, 0, 0o40700));
+        assert!(!private_journal_directory_metadata(true, 0, 0o40755));
+        assert!(!private_journal_directory_metadata(true, 1000, 0o40700));
+        assert!(!private_journal_directory_metadata(false, 0, 0o100600));
+        assert!(!private_journal_directory_metadata(true, 0, 0o40770));
+    }
+
     #[test]
     fn native_refresh_accepts_only_exact_latest_main_release() {
         let sha = "a".repeat(40);
