@@ -170,7 +170,7 @@ assert agent_main.endswith("mod native_mutation_ingress_tests;\n")
 assert "pub async fn run(args: Vec<String>" not in provider
 for retired in ("run_destroy_apply", "run_cleanup", "run_action", "run_substrate_apply",
                 "run_initial_vm_runtime", "run_runner_bootstrap", "run_apply"):
-    assert not re.search(rf"(?:async )?fn {retired}\\(", provider), retired
+    assert not re.search(rf"(?:async )?fn {retired}\(", provider), retired
 assert "VultrLifecycle" not in orchestrator_cli
 
 print("native_only_workflow_topology=PASS")
