@@ -505,6 +505,126 @@ pub async fn get_worker_script_version_head(
     worker_version_head_from_values(versions.result, deployments.result)
 }
 
+/// Version-bound readback. /scripts/{script}/content/v2 refers to the mutable
+/// latest upload, NOT necessarily the active deployment. Never use it to prove
+/// an active or pending version when the deployment is split.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CloudflareWorkerExactModule {
+    pub id: String,
+    pub created_on: String,
+    pub version_tag: String,
+    pub content_base64: String,
+    pub secret_bindings: Vec<CloudflareWorkerSecretBinding>,
+}
+
+fn exact_worker_module_from_value(
+    value: Value,
+    worker_version_id: &str,
+) -> Result<CloudflareWorkerExactModule, String> {
+    let error = "WORKER_EXACT_VERSION_MODULE_UNPROVEN";
+    if value.get("id").and_then(Value::as_str) != Some(worker_version_id)
+        || value.get("main_module").and_then(Value::as_str) != Some("index.mjs")
+    {
+        return Err(error.into());
+    }
+    let modules = value
+        .get("modules")
+        .and_then(Value::as_array)
+        .ok_or(error)?;
+    if modules.len() != 1
+        || modules[0].get("name").and_then(Value::as_str) != Some("index.mjs")
+        || modules[0].get("content_type").and_then(Value::as_str)
+            != Some("application/javascript+module")
+    {
+        return Err(error.into());
+    }
+    let encoded = modules[0]
+        .get("content_base64")
+        .and_then(Value::as_str)
+        .ok_or(error)?;
+    if encoded.is_empty() || encoded.len() > 2_097_152 {
+        return Err(error.into());
+    }
+    let created_on = value
+        .get("created_on")
+        .and_then(Value::as_str)
+        .filter(|v| v.len() >= 20 && v.len() <= 40)
+        .ok_or(error)?;
+    let tag = value
+        .pointer("/annotations/workers~1tag")
+        .and_then(Value::as_str)
+        .ok_or(error)?;
+    let bindings = value.get("bindings").and_then(Value::as_array).ok_or(error)?;
+    if bindings.len() != 8 {
+        return Err(error.into());
+    }
+    let mut secret_bindings = bindings
+        .iter()
+        .map(worker_secret_binding_from_value)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|_| error.to_owned())?;
+    if secret_bindings.iter().any(|v| v.binding_type != "secret_text") {
+        return Err(error.into());
+    }
+    secret_bindings.sort_by(|a, b| a.name.cmp(&b.name));
+    secret_bindings.dedup_by(|a, b| a.name == b.name);
+    if secret_bindings.len() != 8 {
+        return Err(error.into());
+    }
+    Ok(CloudflareWorkerExactModule {
+        id: worker_version_id.to_owned(),
+        created_on: created_on.to_owned(),
+        version_tag: tag.to_owned(),
+        content_base64: encoded.to_owned(),
+        secret_bindings,
+    })
+}
+
+pub async fn get_worker_exact_version_module(
+    api_token: &str,
+    account_id: &str,
+    worker_id: &str,
+    version_id: &str,
+) -> Result<CloudflareWorkerExactModule, String> {
+    for (label, value) in [
+        ("account", account_id),
+        ("worker", worker_id),
+        ("version", version_id),
+    ] {
+        if value.is_empty()
+            || value.len() > 64
+            || !value.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-')
+        {
+            return Err(format!("WORKER_EXACT_VERSION_{label}_INVALID"));
+        }
+    }
+    let client = authorized_client(api_token)?;
+    let response = client
+        .get(format!(
+            "{API_ROOT}/accounts/{account_id}/workers/workers/{worker_id}/versions/{version_id}"
+        ))
+        .query(&[("include", "modules")])
+        .send()
+        .await
+        .map_err(|_| "WORKER_EXACT_VERSION_GET_UNAVAILABLE".to_owned())?;
+    if response.content_length().is_some_and(|n| n > 3_000_000) {
+        return Err("WORKER_EXACT_VERSION_RESPONSE_TOO_LARGE".into());
+    }
+    if !response.status().is_success() {
+        return Err("WORKER_EXACT_VERSION_GET_REJECTED".into());
+    }
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|_| "WORKER_EXACT_VERSION_BODY_UNAVAILABLE")?;
+    if bytes.is_empty() || bytes.len() > 3_000_000 {
+        return Err("WORKER_EXACT_VERSION_RESPONSE_TOO_LARGE".into());
+    }
+    let body: ApiEnvelope<Value> =
+        serde_json::from_slice(&bytes).map_err(|_| "WORKER_EXACT_VERSION_JSON_INVALID")?;
+    exact_worker_module_from_value(body.result, version_id)
+}
+
 pub async fn get_worker_version_tag(
     api_token: &str,
     account_id: &str,
