@@ -819,7 +819,10 @@ mod tests {
             HeaderValue::from_static("GITHUB_FOREIGN"),
         );
         assert!(github_worker_failure_detail(&headers, "issue1-comment-17").is_none());
-        headers.insert("X-Host-Github-Stage", HeaderValue::from_static("GITHUB_RELEASE"));
+        headers.insert(
+            "X-Host-Github-Stage",
+            HeaderValue::from_static("GITHUB_RELEASE"),
+        );
         headers.insert("X-Host-Github-Http-Status", HeaderValue::from_static("999"));
         headers.insert(
             "X-Host-Github-Request-Id",
