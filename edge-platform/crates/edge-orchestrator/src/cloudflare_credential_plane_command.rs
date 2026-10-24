@@ -3832,6 +3832,55 @@ function G(b){let p=0,z=null,g=null,r=null;while(p<b.length){const k=V(b,p);if(!
 // Reuses Cloudflare Access JWT identity rather than trusting a caller header.
 const TE=new TextEncoder(),TD=new TextDecoder("utf-8",{fatal:true}),NO={"Cache-Control":"no-store"};
 function B64(v){if(typeof v!=="string"||v.length>16384||!/^[A-Za-z0-9_-]+={0,2}$/.test(v))return null;try{const s=v.replace(/-/g,"+").replace(/_/g,"/");return Uint8Array.from(atob(s+"=".repeat((4-s.length%4)%4)),c=>c.charCodeAt(0))}catch{return null}}
+// Strict DER for the sole RFC 8410 Ed25519 PKCS#8 key boundary. Only
+// version 0 or 1, OID 1.3.101.112, 32-byte seed, and for version 1 a
+// 32-byte embedded public key are accepted. No trailing or alternate fields.
+function HOST_DER_TLV(b,pos,end){
+ if(pos+2>end)return null;
+ const tag=b[pos++];let n=b[pos++];
+ if(n>=128){
+  const bytes=n&127;if(bytes===0||bytes>2||pos+bytes>end||b[pos]===0)return null;
+  n=0;for(let i=0;i<bytes;i++)n=n*256+b[pos++];
+  if(n<128)return null;
+ }
+ if(pos+n>end)return null;
+ return{tag,start:pos,end:pos+n,next:pos+n};
+}
+function HOST_SIGNER_PKCS8(b){
+ if(!(b instanceof Uint8Array))return null;
+ const root=HOST_DER_TLV(b,0,b.length);
+ if(!root||root.tag!==0x30||root.next!==b.length)return null;
+ let v=HOST_DER_TLV(b,root.start,root.end);
+ if(!v||v.tag!==0x02||v.end-v.start!==1||(b[v.start]!==0&&b[v.start]!==1))return null;
+ const version=b[v.start];
+ const algorithm=HOST_DER_TLV(b,v.next,root.end);
+ if(!algorithm||algorithm.tag!==0x30)return null;
+ const oid=HOST_DER_TLV(b,algorithm.start,algorithm.end);
+ if(!oid||oid.tag!==0x06||oid.end-oid.start!==3||oid.next!==algorithm.end||
+  b[oid.start]!==0x2b||b[oid.start+1]!==0x65||b[oid.start+2]!==0x70)return null;
+ const wrapped=HOST_DER_TLV(b,algorithm.next,root.end);
+ if(!wrapped||wrapped.tag!==0x04)return null;
+ const seed=HOST_DER_TLV(b,wrapped.start,wrapped.end);
+ if(!seed||seed.tag!==0x04||seed.end-seed.start!==32||seed.next!==wrapped.end)return null;
+ let publicKey=null;
+ if(version===1){
+  const field=HOST_DER_TLV(b,wrapped.next,root.end);
+  if(!field)return null;
+  let bits;
+  if(field.tag===0x81){bits=field}
+  else if(field.tag===0xa1){
+   bits=HOST_DER_TLV(b,field.start,field.end);
+   if(!bits||bits.tag!==0x03||bits.next!==field.end)return null;
+  }else return null;
+  if(bits.end-bits.start!==33||b[bits.start]!==0||field.next!==root.end)return null;
+  publicKey=b.slice(bits.start+1,bits.end);
+ }else if(wrapped.next!==root.end)return null;
+ // Canonical RFC8410 v1 (version INTEGER 0); same seed / mathematical key.
+ const v1=CAT(Uint8Array.from([0x30,0x2e,0x02,0x01,0x00,0x30,0x05,
+  0x06,0x03,0x2b,0x65,0x70,0x04,0x22,0x04,0x20]),
+  b.slice(seed.start,seed.end));
+ return{v1,publicKey};
+}
 function U32(x){const b=new Uint8Array(4);new DataView(b.buffer).setUint32(0,x);return b}
 function U64(x){const b=new Uint8Array(8);new DataView(b.buffer).setBigUint64(0,BigInt(x));return b}
 function CAT(...xs){const n=xs.reduce((a,b)=>a+b.length,0),b=new Uint8Array(n);let p=0;for(const x of xs){b.set(x,p);p+=x.length}return b}
@@ -4112,15 +4161,26 @@ if(decision!=="APPROVED"){
 }
 const op=info.id;
 const issued=Math.floor(Date.now()/1000),expires=issued+120,kid=TE.encode(id),oid=TE.encode(op),pk=B64(k);
-// All signer-stage failures are typed, bounded, and fail closed. They never
-// expose private key material, exception details or signed payload bytes.
-if(pk===null||pk.length<40||pk.length>4096)
- return new Response(null,{status:503,headers:{...NO,"X-Host-Authorization-Reason":"HOST_SIGNER_KEY_INVALID"}});
+// The production Rust ring signer produces RFC5958 v2, while workerd
+// imports canonical RFC8410 v1. Normalize only after full DER validation,
+// solely in memory; retain the exact mathematical key and Git pinned signer.
+const signer=pk===null?null:HOST_SIGNER_PKCS8(pk);
+if(!signer)return new Response(null,{status:503,headers:{...NO,"X-Host-Authorization-Reason":"HOST_SIGNER_KEY_INVALID"}});
 const payload=CAT(TE.encode("sing-box/native-host-authorization/v1:"),U32(raw.length),raw,U32(kid.length),kid,U32(oid.length),oid,U64(issued),U64(expires));
-let signature;try{const key=await crypto.subtle.importKey("pkcs8",pk,{name:"Ed25519"},false,["sign"]);signature=new Uint8Array(await crypto.subtle.sign("Ed25519",key,payload))}catch{
- return new Response(null,{status:503,headers:{...NO,"X-Host-Authorization-Reason":"HOST_SIGNER_CRYPTO_FAILED"}})}
+let key;try{key=await crypto.subtle.importKey("pkcs8",signer.v1,{name:"Ed25519"},false,["sign"])}catch{
+ return new Response(null,{status:503,headers:{...NO,"X-Host-Authorization-Reason":"HOST_SIGNER_IMPORT_FAILED"}})}
+let signature;try{signature=new Uint8Array(await crypto.subtle.sign("Ed25519",key,payload))}catch{
+ return new Response(null,{status:503,headers:{...NO,"X-Host-Authorization-Reason":"HOST_SIGNER_SIGN_FAILED"}})}
 if(signature.length!==64)
  return new Response(null,{status:503,headers:{...NO,"X-Host-Authorization-Reason":"HOST_SIGNER_SIGNATURE_INVALID"}});
+if(signer.publicKey!==null){
+ let matches=false;
+ try{
+  const verifyKey=await crypto.subtle.importKey("raw",signer.publicKey,{name:"Ed25519"},false,["verify"]);
+  matches=await crypto.subtle.verify("Ed25519",verifyKey,signature,payload);
+ }catch{}
+ if(!matches)return new Response(null,{status:503,headers:{...NO,"X-Host-Authorization-Reason":"HOST_SIGNER_KEY_MISMATCH"}});
+}
 const out=CAT(FNUM(1,1),FLD(2,kid),FLD(3,oid),FNUM(4,issued),FNUM(5,expires),FLD(6,signature));
 return new Response(out,{status:200,headers:{"Content-Type":"application/x-protobuf","Cache-Control":"no-store","X-Content-Type-Options":"nosniff"}})}
 export default{async fetch(q,e){const u=new URL(q.url);if(u.pathname==="/v1/host/authorize")return q.method==="GET"?HOST_AUTH_DIAGNOSTIC(q,e,u):AUTHORIZE(q,e,u);const x=u.searchParams.get("generation");
