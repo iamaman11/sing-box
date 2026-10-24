@@ -55,6 +55,10 @@ jobs:
         shell: bash
         run: python3 edge-platform/scripts/test_resolve_release_dependencies.py
 
+      - name: Reject unaccepted Worker predecessor from PR history
+        shell: bash
+        run: python3 edge-platform/scripts/test_vm_worker_source_digest.py
+
       - name: Test VM runtime input identity
         shell: bash
         run: python3 edge-platform/scripts/test_runtime_input_digest.py
@@ -1490,6 +1494,7 @@ jobs:
         env:
           GHCR_TOKEN: ${{ github.token }}
           CANDIDATE_REVISION: ${{ github.event.pull_request.head.sha }}
+          ACCEPTED_BASE_REVISION: ${{ github.event.pull_request.base.sha }}
           RELEASE_INPUT_SHA256: ${{ needs.dependencies.outputs.release_input_sha256 }}
           BASE_MESH_IMAGE: ${{ needs.dependencies.outputs.base_mesh_image }}
         run: |
@@ -1506,10 +1511,12 @@ jobs:
           unzip -q "${windows}/edge-platform-windows.zip" -d "${unpacked}"
 
           # Resolve exact generated Worker source and its closest distinct
-          # first-parent predecessor using protected Git ancestry.
+          # predecessor from the protected PR base first-parent history only.
+          # Feature-branch intermediate commits are NOT accepted releases.
           git fetch --no-tags --unshallow origin "${CANDIDATE_REVISION}"
           worker_evidence="$(python3 edge-platform/scripts/vm_worker_source_digest.py \
-            --source edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs)"
+            --source edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs \
+            --accepted-baseline "${ACCEPTED_BASE_REVISION}")"
           vm_worker_source="$(sed -n 's/^vm_worker_source_sha256=//p' <<<"${worker_evidence}")"
           vm_worker_predecessor="$(sed -n 's/^vm_worker_predecessor_sha256=//p' <<<"${worker_evidence}")"
           vm_worker_predecessor_revision="$(sed -n 's/^vm_worker_predecessor_revision=//p' <<<"${worker_evidence}")"
@@ -1672,7 +1679,9 @@ jobs:
           accepted_commit="$(gh api "repos/${REPOSITORY}/git/commits/${ACCEPTED_REVISION}")"
           test "$(jq -er '.parents | length' <<<"${accepted_commit}")" = "2"
           candidate_revision="$(jq -er '.parents[1].sha' <<<"${accepted_commit}")"
+          accepted_base_revision="$(jq -er '.parents[0].sha' <<<"${accepted_commit}")"
           [[ "${candidate_revision}" =~ ^[0-9a-f]{40}$ ]]
+          [[ "${accepted_base_revision}" =~ ^[0-9a-f]{40}$ ]]
           accepted_tree="$(jq -er '.tree.sha' <<<"${accepted_commit}")"
           candidate_tree="$(gh api "repos/${REPOSITORY}/git/commits/${candidate_revision}" --jq '.tree.sha')"
           test "${accepted_tree}" = "${candidate_tree}"
@@ -1734,6 +1743,7 @@ jobs:
 
           printf 'accepted_revision=%s\n' "${ACCEPTED_REVISION}" >> "${GITHUB_OUTPUT}"
           printf 'candidate_revision=%s\n' "${candidate_revision}" >> "${GITHUB_OUTPUT}"
+          printf 'accepted_base_revision=%s\n' "${accepted_base_revision}" >> "${GITHUB_OUTPUT}"
           printf 'candidate_tree=%s\n' "${candidate_tree}" >> "${GITHUB_OUTPUT}"
           printf 'candidate_run_id=%s\n' "${candidate_run_id}" >> "${GITHUB_OUTPUT}"
 
@@ -1763,6 +1773,7 @@ jobs:
           GHCR_TOKEN: ${{ github.token }}
           ACCEPTED_REVISION: ${{ steps.locate.outputs.accepted_revision }}
           CANDIDATE_REVISION: ${{ steps.locate.outputs.candidate_revision }}
+          ACCEPTED_BASE_REVISION: ${{ steps.locate.outputs.accepted_base_revision }}
           CANDIDATE_TREE: ${{ steps.locate.outputs.candidate_tree }}
           CANDIDATE_RUN_ID: ${{ steps.locate.outputs.candidate_run_id }}
         run: |
@@ -1787,7 +1798,8 @@ jobs:
           test "$(git -C "${source_dir}" rev-parse 'HEAD^{tree}')" = "${CANDIDATE_TREE}"
           git -C "${source_dir}" fetch --no-tags --unshallow origin "${CANDIDATE_REVISION}"
           worker_evidence="$(cd "${source_dir}" && python3 edge-platform/scripts/vm_worker_source_digest.py \
-            --source edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs)"
+            --source edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs \
+            --accepted-baseline "${ACCEPTED_BASE_REVISION}")"
           vm_worker_source="$(sed -n 's/^vm_worker_source_sha256=//p' <<<"${worker_evidence}")"
           vm_worker_predecessor="$(sed -n 's/^vm_worker_predecessor_sha256=//p' <<<"${worker_evidence}")"
           vm_worker_predecessor_revision="$(sed -n 's/^vm_worker_predecessor_revision=//p' <<<"${worker_evidence}")"
