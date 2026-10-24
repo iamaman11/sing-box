@@ -208,8 +208,8 @@ fn validate_existing_trust_for_refresh(
     }
     let journal = trusted.join("journal");
     checked_root_directory(&journal)?;
-    let meta = fs::symlink_metadata(&journal)
-        .map_err(|_| "HOST_ENROLL_JOURNAL_DIRECTORY_UNAVAILABLE")?;
+    let meta =
+        fs::symlink_metadata(&journal).map_err(|_| "HOST_ENROLL_JOURNAL_DIRECTORY_UNAVAILABLE")?;
     if !private_journal_directory_metadata(
         meta.file_type().is_dir(),
         meta.uid(),
