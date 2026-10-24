@@ -1097,8 +1097,11 @@ mod tests {
             witness,
             "HOST_WORKER_SIGNER_CRYPTO_FAILED_NO_REPLAY:worker_http_status=503;authorization_reason=HOST_SIGNER_CRYPTO_FAILED;operation_id=issue1-comment-6388725669"
         );
-        let untrusted =
-            host_worker_rejection_witness(StatusCode::FORBIDDEN, &headers, "issue1-comment-6388725669");
+        let untrusted = host_worker_rejection_witness(
+            StatusCode::FORBIDDEN,
+            &headers,
+            "issue1-comment-6388725669",
+        );
         assert_eq!(
             untrusted,
             "HOST_WORKER_POLICY_DENIED:worker_http_status=403;operation_id=issue1-comment-6388725669"
@@ -1107,12 +1110,14 @@ mod tests {
             "X-Host-Authorization-Reason",
             HeaderValue::from_static("HOST_SIGNER_PRIVATE_KEY_SECRET"),
         );
-        assert!(!host_worker_rejection_witness(
-            StatusCode::SERVICE_UNAVAILABLE,
-            &headers,
-            "issue1-comment-6388725669"
-        )
-        .contains("PRIVATE_KEY_SECRET"));
+        assert!(
+            !host_worker_rejection_witness(
+                StatusCode::SERVICE_UNAVAILABLE,
+                &headers,
+                "issue1-comment-6388725669"
+            )
+            .contains("PRIVATE_KEY_SECRET")
+        );
     }
 
     #[test]
