@@ -3874,13 +3874,14 @@ async function GITHUB_INSTALLATION_AUTH(e,now){
  const permissions=issued?.permissions;
  const expiry=Date.parse(issued?.expires_at)/1000;
  const matching=Array.isArray(issued?.repositories)&&issued.repositories.length===1&&
-  issued.repositories[0]?.full_name==="iamaman11/sing-box";
+  issued.repositories[0]?.full_name==="iamaman11/sing-box"&&
+  issued.repositories[0]?.id===1221750822&&issued.repository_selection==="selected";
  const allowed=permissions&&typeof permissions==="object"&&
   ["contents","issues","pull_requests"].every(x=>permissions[x]==="read")&&
   Object.entries(permissions).every(([k,v])=>
    ["contents","issues","pull_requests","metadata"].includes(k)&&v==="read");
  if(typeof issued?.token!=="string"||!/^[A-Za-z0-9_]{10,4096}$/.test(issued.token)||
-    !Number.isFinite(expiry)||expiry<=now+60||expiry>now+3600||
+    !Number.isFinite(expiry)||expiry<=now+60||expiry>now+3660||
     !matching||!allowed)
   return{error:GITHUB_APP_ERROR("GITHUB_INSTALLATION_TOKEN","RESPONSE_INVALID",r)};
  return{token:issued.token};
