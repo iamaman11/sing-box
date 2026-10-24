@@ -37,8 +37,16 @@ const iss='https://test.cloudflareaccess.com',aud='test-audience';
 const release='a'.repeat(64);
 const approvedAt=new Date((now-10)*1000).toISOString();
 let githubMode='approved';
+let jwksMode='valid';
 globalThis.fetch=async url=>{
- if(url===iss+'/cdn-cgi/access/certs')return {ok:true,json:async()=>({keys:[jwk]})};
+ if(url===iss+'/cdn-cgi/access/certs'){
+   if(jwksMode==='fetch_fail')throw Error('unavailable JWKS endpoint');
+   if(jwksMode==='http')return {ok:false,status:503};
+   if(jwksMode==='invalid')return {ok:true,json:async()=>({})};
+   if(jwksMode==='missing_kid')return {ok:true,json:async()=>({keys:[]})};
+   if(jwksMode==='import_bad')return {ok:true,json:async()=>({keys:[{kid:jwk.kid,kty:'RSA',n:'invalid'}]})};
+   return {ok:true,json:async()=>({keys:[jwk]})};
+ }
  if(githubMode==='offline')throw Error('simulated GitHub outage');
  if(url.endsWith('/issues/comments/6346290327'))return {ok:true,json:async()=>({
    user:{id:githubMode==='denied'?123:44100369},
@@ -78,6 +86,29 @@ assert.equal(await ACCESS(assertion(await jwt({aud:['other']})),accessEnv),false
 const tampered=(await jwt()).split('.');
 tampered[2]=(tampered[2][0]==='A'?'B':'A')+tampered[2].slice(1);
 assert.equal(await ACCESS(assertion(tampered.join('.')),accessEnv),false,'invalid signature');
+// The real Worker offers one GET-only diagnostic on the EXISTING authorizer
+// route: it can validate JWT but must never mint HostAuthorization.
+const hostUrl=new URL('https://vm-worker.example/v1/host/authorize');
+const getProof=async claims=>HOST_AUTH_DIAGNOSTIC({method:'GET',...assertion(await jwt(claims))},accessEnv,hostUrl);
+let proof=await getProof();
+assert.equal(proof.status,204,'valid JWT GET proof');
+assert.equal(proof.headers.get('X-Host-Authorization-Scope'),'READ_ONLY_NO_MUTATION');
+proof=await getProof({aud:['wrong']});
+assert.equal(proof.status,403,'wrong audience GET proof must fail');
+assert.equal(proof.headers.get('X-Host-Authorization-Reason'),'JWT_AUDIENCE_MISMATCH');
+for(const [mode,reason] of [
+ ['fetch_fail','JWT_JWKS_FETCH_FAILED'],
+ ['http','JWT_JWKS_HTTP_UNAVAILABLE'],
+ ['invalid','JWT_JWKS_INVALID'],
+ ['missing_kid','JWT_KID_NOT_FOUND'],
+ ['import_bad','JWT_KEY_IMPORT_FAILED'],
+]){
+ jwksMode=mode;
+ proof=await getProof();
+ assert.equal(proof.status,403,mode+' must fail closed');
+ assert.equal(proof.headers.get('X-Host-Authorization-Reason'),reason,mode+' typed reason');
+}
+jwksMode='valid';
 
 const info={id:'issue1-comment-6346290327',m:'application-acceptance-2',kind:2,action:2,
  when:now,release,resource:'sing-box'};
