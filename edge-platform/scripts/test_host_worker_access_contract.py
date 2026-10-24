@@ -62,6 +62,20 @@ globalThis.fetch=async (url,init)=>{
  assert.ok(url.startsWith(api+'/'),'all approval reads stay on the pinned GitHub origin');
  assert.equal(init?.redirect,'manual','Cloudflare Workers does not support redirect:error');
  if(githubMode==='offline')throw Error('simulated GitHub outage');
+ const failureAt={http_comment:'/issues/comments/6346290327',
+  http_release:'/releases/tags/edge-release-'+release,
+  http_main:'/git/ref/heads/main',
+  http_pulls:'/commits/'+'b'.repeat(40)+'/pulls?per_page=20',
+  decode_comment:'/issues/comments/6346290327',
+  decode_release:'/releases/tags/edge-release-'+release,
+  decode_main:'/git/ref/heads/main',
+  decode_pulls:'/commits/'+'b'.repeat(40)+'/pulls?per_page=20'}[githubMode];
+ if(failureAt&&url===api+failureAt){
+  if(githubMode.startsWith('http_'))return{ok:false,status:429,
+   headers:new Headers({'X-RateLimit-Remaining':'0','X-RateLimit-Reset':'1780000000',
+    'Retry-After':'60','X-GitHub-Request-Id':'ABC-123'})};
+  return{ok:true,status:200,json:async()=>{throw new SyntaxError('private response bytes')}};
+ }
  const redirectAt={redirect_comment:'/issues/comments/6346290327',
   redirect_release:'/releases/tags/edge-release-'+release,
   redirect_main:'/git/ref/heads/main',
@@ -154,7 +168,11 @@ assert.equal(await GITHUB(info,{EDGE_HOST_GITHUB_ACTOR_ID:'44100369'},now),'APPR
 githubMode='denied';
 assert.equal(await GITHUB(info,{EDGE_HOST_GITHUB_ACTOR_ID:'44100369'},now),'DENIED');
 githubMode='offline';
-assert.equal(await GITHUB(info,{EDGE_HOST_GITHUB_ACTOR_ID:'44100369'},now),'UNAVAILABLE');
+let failure=await GITHUB(info,{EDGE_HOST_GITHUB_ACTOR_ID:'44100369'},now);
+assert.equal(failure.decision,'UNAVAILABLE');
+assert.equal(failure.stage,'GITHUB_COMMENT');
+assert.equal(failure.kind,'FETCH_EXCEPTION');
+assert.equal(failure.exception_class,'Error');
 // Cover all four exact GitHub reads, including old first-use receipt approval.
 // A 302 must stop at its original URL and never be followed.
 approvedAt=new Date((now-302)*1000).toISOString();
@@ -163,8 +181,33 @@ githubMode='approved';
 assert.equal(await GITHUB(oldInfo,{EDGE_HOST_GITHUB_ACTOR_ID:'44100369'},now),'APPROVED');
 for(const mode of ['redirect_comment','redirect_release','redirect_main','redirect_pulls']){
  githubMode=mode;
- assert.equal(await GITHUB(oldInfo,{EDGE_HOST_GITHUB_ACTOR_ID:'44100369'},now),'UNAVAILABLE',
-  mode+' must reject all GitHub 3xx without following Location');
+ failure=await GITHUB(oldInfo,{EDGE_HOST_GITHUB_ACTOR_ID:'44100369'},now);
+ assert.equal(failure.decision,'UNAVAILABLE',mode+' must fail closed');
+ assert.equal(failure.kind,'REDIRECT',mode+' must block all 3xx');
+ assert.equal(failure.http_status,302,mode+' does not follow Location');
+}
+// Each distinct GitHub subrequest must surface its stage and safe failure kind.
+for(const [mode,stage] of [
+ ['http_comment','GITHUB_COMMENT'],['http_release','GITHUB_RELEASE'],
+ ['http_main','GITHUB_MAIN'],['http_pulls','GITHUB_PULLS'],
+ ['decode_comment','GITHUB_COMMENT'],['decode_release','GITHUB_RELEASE'],
+ ['decode_main','GITHUB_MAIN'],['decode_pulls','GITHUB_PULLS']
+]){
+ githubMode=mode;
+ failure=await GITHUB(oldInfo,{EDGE_HOST_GITHUB_ACTOR_ID:'44100369'},now);
+ assert.equal(failure.decision,'UNAVAILABLE',mode);
+ assert.equal(failure.stage,stage,mode);
+ if(mode.startsWith('http_')){
+  assert.equal(failure.kind,'HTTP',mode);
+  assert.equal(failure.http_status,429,mode);
+  assert.equal(failure.rate_limit_remaining,'0',mode);
+  assert.equal(failure.retry_after,'60',mode);
+  assert.equal(failure.github_request_id,'ABC-123',mode);
+ }else{
+  assert.equal(failure.kind,'RESPONSE_DECODE',mode);
+  assert.equal(failure.exception_class,'SyntaxError',mode);
+  assert.equal(JSON.stringify(failure).includes('private response bytes'),false,mode+' redacts');
+ }
 }
 approvedAt=new Date((now-10)*1000).toISOString();
 
@@ -207,6 +250,20 @@ githubMode='offline';
 response=await AUTHORIZE(await req(await jwt()),env,url);
 assert.equal(response.status,503);
 assert.equal(response.headers.get('X-Host-Authorization-Reason'),'GITHUB_DEPENDENCY_UNAVAILABLE');
+assert.equal(response.headers.get('X-Host-Github-Stage'),'GITHUB_COMMENT');
+assert.equal(response.headers.get('X-Host-Github-Kind'),'FETCH_EXCEPTION');
+assert.equal(response.headers.get('X-Host-Github-Operation-Id'),info.id);
+assert.equal(response.headers.get('X-Host-Github-Exception-Class'),'Error');
+githubMode='http_release';
+response=await AUTHORIZE(await req(await jwt()),env,url);
+assert.equal(response.status,503);
+assert.equal(response.headers.get('X-Host-Github-Stage'),'GITHUB_RELEASE');
+assert.equal(response.headers.get('X-Host-Github-Kind'),'HTTP');
+assert.equal(response.headers.get('X-Host-Github-Http-Status'),'429');
+assert.equal(response.headers.get('X-Host-Github-Rate-Limit-Remaining'),'0');
+assert.equal(response.headers.get('X-Host-Github-Retry-After'),'60');
+assert.equal(response.headers.get('X-Host-Github-Request-Id'),'ABC-123');
+assert.equal(response.headers.get('Location'),null,'no redirect authority forwarded');
 console.log('host_worker_access_contract=PASS');
 """
 result=subprocess.run(["node","--input-type=module"],input=js+"\n"+fixture,

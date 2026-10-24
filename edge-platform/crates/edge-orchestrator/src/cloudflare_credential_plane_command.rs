@@ -3797,6 +3797,31 @@ function INFO(b){
     !Number.isSafeInteger(when)||when<=0)return null;
  return{id,m,kind,action,when,release,resource};
 }
+// Only fixed enums and bounded numeric GitHub metadata cross this boundary.
+// No URL, response body, exception message, JWT, Location or token is emitted.
+function GHFAIL(stage,kind,r,e){
+ const status=r?.status;
+ const decision=kind!=="HTTP"||[401,403,429].includes(status)||status>=500?"UNAVAILABLE":"DENIED";
+ const out={decision,stage,kind};
+ if(Number.isInteger(status)&&status>=100&&status<=599)out.http_status=status;
+ const h=r?.headers;
+ if(h&&typeof h.get==="function"){
+  for(const [source,target,max] of [["X-RateLimit-Remaining","rate_limit_remaining",10],
+    ["X-RateLimit-Reset","rate_limit_reset",12],["Retry-After","retry_after",8]]){
+   const value=h.get(source);
+   if(typeof value==="string"&&value.length>0&&value.length<=max&&/^[0-9]+$/.test(value))
+    out[target]=value;
+  }
+  const requestId=h.get("X-GitHub-Request-Id");
+  if(typeof requestId==="string"&&/^[A-Za-z0-9-]{1,64}$/.test(requestId))
+   out.github_request_id=requestId;
+ }
+ if(e){
+  out.exception_class=["TypeError","TimeoutError","SyntaxError","RangeError","Error"].includes(e?.name)?
+    e.name:"OTHER";
+ }
+ return out;
+}
 async function GITHUB(info,e,now){
  const actor=String(e.EDGE_HOST_GITHUB_ACTOR_ID||"");
  if(!/^[1-9][0-9]{0,19}$/.test(actor)||Math.abs(now-info.when)>300||
@@ -3804,56 +3829,53 @@ async function GITHUB(info,e,now){
  const id=info.id.slice("issue1-comment-".length);
  const base="https://api.github.com/repos/iamaman11/sing-box";
  const headers={"Accept":"application/vnd.github+json","User-Agent":"sing-box-host-authorizer"};
- // Workers rejects redirect:"error" before any HTTP request. Pin the
- // GitHub origin and never follow redirects to another authority.
- async function GITHUB_GET(path){
-  const r=await fetch(base+path,{redirect:"manual",headers});
-  return r.status>=300&&r.status<400?null:r;
+ // Cloudflare Workers supports manual redirect; ALL GitHub 3xx are rejected.
+ // Separate fetch, HTTP, and JSON decoding so an incident has one exact stage.
+ async function GITHUB_GET(path,stage){
+  let r;
+  try{r=await fetch(base+path,{redirect:"manual",headers})}
+  catch(e){return{error:GHFAIL(stage,"FETCH_EXCEPTION",null,e)}}
+  if(r.status>=300&&r.status<400)return{error:GHFAIL(stage,"REDIRECT",r)};
+  if(!r.ok)return{error:GHFAIL(stage,"HTTP",r)};
+  try{return{value:await r.json()}}
+  catch(e){return{error:GHFAIL(stage,"RESPONSE_DECODE",r,e)}}
  }
- try{
-  const comment=await GITHUB_GET("/issues/comments/"+id);
-  if(!comment)return "UNAVAILABLE";
-  if(!comment.ok)return [401,403,429].includes(comment.status)||comment.status>=500?"UNAVAILABLE":"DENIED";
-  const c=await comment.json(),stamp=Date.parse(c.created_at)/1000;
-  if(!c||String(c.user?.id)!==actor||c.issue_url!==base+"/issues/1"||
-     c.updated_at!==c.created_at||!Number.isFinite(stamp)||
-     stamp>now+30||info.when<stamp-30||
-     c.body!=="/host "+(info.action===2?"apply":"recover")+" "+info.m+
-        (info.resource==="sing-box"?"":" "+info.resource))return "DENIED";
-  // Exact immutable published ReleaseSet is required for every issuance.
-  const tag="edge-release-"+info.release;
-  const release=await GITHUB_GET("/releases/tags/"+tag);
-  if(!release)return "UNAVAILABLE";
-  if(!release.ok)return [401,403,429].includes(release.status)||release.status>=500?"UNAVAILABLE":"DENIED";
-  const value=await release.json();
-  if(value.tag_name!==tag||value.draft!==false||value.prerelease!==false||
-     !/^[0-9a-f]{40}$/.test(value.target_commitish))return "DENIED";
-  if(stamp>=now-300)return "APPROVED";
-  // Only the original VM first-use APPLY may survive the five-minute
-  // comment window, and ONLY after the matching protected receipt PR merge
-  // was accepted and the corresponding ReleaseSet published on main.
-  // Worker signs a fresh 120s intent; native root journal still blocks replay.
-  if(info.kind!==2||info.action!==2||info.resource!=="sing-box")return "DENIED";
-  const accepted=value.target_commitish;
-  const main=await GITHUB_GET("/git/ref/heads/main");
-  if(!main)return "UNAVAILABLE";
-  if(!main.ok)return [401,403,429].includes(main.status)||main.status>=500?"UNAVAILABLE":"DENIED";
-  const branch=await main.json();
-  if(branch.object?.type!=="commit"||branch.object?.sha!==accepted)return "DENIED";
-  const response=await GITHUB_GET("/commits/"+accepted+"/pulls?per_page=20");
-  if(!response)return "UNAVAILABLE";
-  if(!response.ok)return [401,403,429].includes(response.status)||response.status>=500?"UNAVAILABLE":"DENIED";
-  const prs=await response.json();
-  if(!Array.isArray(prs))return "DENIED";
-  const matched=prs.filter(pr=>pr.merged_at!=null&&pr.draft===false&&
-     pr.base?.ref==="main"&&pr.head?.repo?.full_name==="iamaman11/sing-box"&&
-     pr.merge_commit_sha===accepted&&
-     pr.head?.ref==="host-receipt-"+info.m+"-"+id&&
-     pr.title==="host: register native receipt for "+info.m);
-  if(matched.length!==1)return "DENIED";
-  const merged=Date.parse(matched[0].merged_at)/1000;
-  return Number.isFinite(merged)&&merged>=stamp&&merged<=now+30&&
-     now-merged<=86400?"APPROVED":"DENIED"; }catch{return "UNAVAILABLE"}
+ const commentResult=await GITHUB_GET("/issues/comments/"+id,"GITHUB_COMMENT");
+ if(commentResult.error)return commentResult.error;
+ const c=commentResult.value,stamp=Date.parse(c?.created_at)/1000;
+ if(!c||String(c.user?.id)!==actor||c.issue_url!==base+"/issues/1"||
+    c.updated_at!==c.created_at||!Number.isFinite(stamp)||
+    stamp>now+30||info.when<stamp-30||
+    c.body!=="/host "+(info.action===2?"apply":"recover")+" "+info.m+
+       (info.resource==="sing-box"?"":" "+info.resource))return "DENIED";
+ const tag="edge-release-"+info.release;
+ const releaseResult=await GITHUB_GET("/releases/tags/"+tag,"GITHUB_RELEASE");
+ if(releaseResult.error)return releaseResult.error;
+ const value=releaseResult.value;
+ if(!value||value.tag_name!==tag||value.draft!==false||value.prerelease!==false||
+    !/^[0-9a-f]{40}$/.test(value.target_commitish))return "DENIED";
+ if(stamp>=now-300)return "APPROVED";
+ // A stale comment is allowed ONLY after an exact accepted first-use
+ // receipt merge, with the original machine and operation still pinned.
+ if(info.kind!==2||info.action!==2||info.resource!=="sing-box")return "DENIED";
+ const accepted=value.target_commitish;
+ const mainResult=await GITHUB_GET("/git/ref/heads/main","GITHUB_MAIN");
+ if(mainResult.error)return mainResult.error;
+ const branch=mainResult.value;
+ if(branch?.object?.type!=="commit"||branch.object.sha!==accepted)return "DENIED";
+ const pullsResult=await GITHUB_GET("/commits/"+accepted+"/pulls?per_page=20","GITHUB_PULLS");
+ if(pullsResult.error)return pullsResult.error;
+ const prs=pullsResult.value;
+ if(!Array.isArray(prs))return "DENIED";
+ const matched=prs.filter(pr=>pr.merged_at!=null&&pr.draft===false&&
+    pr.base?.ref==="main"&&pr.head?.repo?.full_name==="iamaman11/sing-box"&&
+    pr.merge_commit_sha===accepted&&
+    pr.head?.ref==="host-receipt-"+info.m+"-"+id&&
+    pr.title==="host: register native receipt for "+info.m);
+ if(matched.length!==1)return "DENIED";
+ const merged=Date.parse(matched[0].merged_at)/1000;
+ return Number.isFinite(merged)&&merged>=stamp&&merged<=now+30&&
+    now-merged<=86400?"APPROVED":"DENIED";
 }
 async function ACCESS_REASON(q,e){
 const iss=e.EDGE_HOST_ACCESS_ISSUER,aud=e.EDGE_HOST_ACCESS_AUD;
@@ -3915,7 +3937,24 @@ if(!raw.length||raw.length>8192)return new Response(null,{status:413,headers:NO}
 // GitHub issue #1 is the ONLY operator command source. A valid Cloudflare
 // service-token by itself cannot authorize a machine, action or an old comment.
 const info=INFO(raw);if(!info)return new Response(null,{status:400,headers:NO});
-const approval=await GITHUB(info,e,Math.floor(Date.now()/1000));if(approval!=="APPROVED")return new Response(null,{status:approval==="UNAVAILABLE"?503:403,headers:{...NO,"X-Host-Authorization-Reason":approval==="UNAVAILABLE"?"GITHUB_DEPENDENCY_UNAVAILABLE":"GITHUB_APPROVAL_DENIED"}});
+const approval=await GITHUB(info,e,Math.floor(Date.now()/1000));
+const decision=typeof approval==="string"?approval:approval.decision;
+if(decision!=="APPROVED"){
+ const h={...NO,"X-Host-Authorization-Reason":decision==="UNAVAILABLE"?
+   "GITHUB_DEPENDENCY_UNAVAILABLE":"GITHUB_APPROVAL_DENIED"};
+ if(typeof approval==="object"&&approval!==null){
+  h["X-Host-Github-Stage"]=approval.stage;
+  h["X-Host-Github-Kind"]=approval.kind;
+  h["X-Host-Github-Operation-Id"]=info.id;
+  for(const [field,name] of [["http_status","Http-Status"],
+   ["exception_class","Exception-Class"],["rate_limit_remaining","Rate-Limit-Remaining"],
+   ["rate_limit_reset","Rate-Limit-Reset"],["retry_after","Retry-After"],
+   ["github_request_id","Request-Id"]]){
+   if(approval[field]!==undefined)h["X-Host-Github-"+name]=String(approval[field]);
+  }
+ }
+ return new Response(null,{status:decision==="UNAVAILABLE"?503:403,headers:h});
+}
 const op=info.id;
 const issued=Math.floor(Date.now()/1000),expires=issued+120,kid=TE.encode(id),oid=TE.encode(op),pk=B64(k);
 if(pk===null||pk.length<40||pk.length>4096)return new Response(null,{status:503,headers:NO});

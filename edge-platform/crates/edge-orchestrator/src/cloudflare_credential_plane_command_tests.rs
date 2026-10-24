@@ -176,7 +176,21 @@ fn host_authorization_is_closed_by_default_exact_and_access_bound() {
         }
         assert!(source.contains("GITHUB_APPROVAL_DENIED"));
         assert!(source.contains("GITHUB_DEPENDENCY_UNAVAILABLE"));
-        assert!(source.contains("approval===\"UNAVAILABLE\"?503:403"));
+        // A closed decision drives the response; diagnostic headers cannot
+        // authorize a signature or silently change fail-closed semantics.
+        assert!(source.contains("decision===\"UNAVAILABLE\"?503:403"));
+        assert!(source.contains("X-Host-Github-Operation-Id"));
+        for stage in [
+            "GITHUB_COMMENT",
+            "GITHUB_RELEASE",
+            "GITHUB_MAIN",
+            "GITHUB_PULLS",
+        ] {
+            assert!(source.contains(stage));
+        }
+        for kind in ["HTTP", "REDIRECT", "FETCH_EXCEPTION", "RESPONSE_DECODE"] {
+            assert!(source.contains(kind));
+        }
         assert!(source.contains("issued+120"));
         // Credential GET and dummy A/B proof route must remain in the
         // original Worker, never copied to a second privileged service.
