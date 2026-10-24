@@ -1101,5 +1101,6 @@ jobs:
       kind: VM
       owner: ${{ needs.host_resume_receipt.outputs.owner }}
       runner_labels: ${{ needs.host_resume_receipt.outputs.runner_labels }}
+      operation: ${{ needs.host_resume_receipt.outputs.operation }}
       command_body: ${{ format('/host apply {0}', needs.host_resume_receipt.outputs.machine_id) }}
       source_comment_id: ${{ needs.host_resume_receipt.outputs.comment_id }}
