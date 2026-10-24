@@ -472,6 +472,9 @@ enum HostWorkerAuthorizationRejection {
     GithubDependencyUnavailable,
     HostSignerKeyInvalid,
     HostSignerCryptoFailed,
+    HostSignerImportFailed,
+    HostSignerSignFailed,
+    HostSignerKeyMismatch,
     HostSignerSignatureInvalid,
     ForbiddenWithoutWorkerReason,
     UnclassifiedPolicyDenied,
@@ -536,6 +539,15 @@ impl HostWorkerAuthorizationRejection {
             (StatusCode::SERVICE_UNAVAILABLE, Some("HOST_SIGNER_CRYPTO_FAILED")) => {
                 Self::HostSignerCryptoFailed
             }
+            (StatusCode::SERVICE_UNAVAILABLE, Some("HOST_SIGNER_IMPORT_FAILED")) => {
+                Self::HostSignerImportFailed
+            }
+            (StatusCode::SERVICE_UNAVAILABLE, Some("HOST_SIGNER_SIGN_FAILED")) => {
+                Self::HostSignerSignFailed
+            }
+            (StatusCode::SERVICE_UNAVAILABLE, Some("HOST_SIGNER_KEY_MISMATCH")) => {
+                Self::HostSignerKeyMismatch
+            }
             (StatusCode::SERVICE_UNAVAILABLE, Some("HOST_SIGNER_SIGNATURE_INVALID")) => {
                 Self::HostSignerSignatureInvalid
             }
@@ -580,6 +592,9 @@ impl HostWorkerAuthorizationRejection {
             }
             Self::HostSignerKeyInvalid => "HOST_WORKER_SIGNER_KEY_INVALID_NO_REPLAY",
             Self::HostSignerCryptoFailed => "HOST_WORKER_SIGNER_CRYPTO_FAILED_NO_REPLAY",
+            Self::HostSignerImportFailed => "HOST_WORKER_SIGNER_IMPORT_FAILED_NO_REPLAY",
+            Self::HostSignerSignFailed => "HOST_WORKER_SIGNER_SIGN_FAILED_NO_REPLAY",
+            Self::HostSignerKeyMismatch => "HOST_WORKER_SIGNER_KEY_MISMATCH_NO_REPLAY",
             Self::HostSignerSignatureInvalid => "HOST_WORKER_SIGNER_SIGNATURE_INVALID_NO_REPLAY",
             Self::ForbiddenWithoutWorkerReason => "HOST_WORKER_FORBIDDEN_WITHOUT_WORKER_REASON",
             Self::UnclassifiedPolicyDenied => "HOST_WORKER_POLICY_DENIED",
@@ -958,6 +973,21 @@ mod tests {
                 StatusCode::SERVICE_UNAVAILABLE,
                 Some("HOST_SIGNER_CRYPTO_FAILED"),
                 "HOST_WORKER_SIGNER_CRYPTO_FAILED_NO_REPLAY",
+            ),
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Some("HOST_SIGNER_IMPORT_FAILED"),
+                "HOST_WORKER_SIGNER_IMPORT_FAILED_NO_REPLAY",
+            ),
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Some("HOST_SIGNER_SIGN_FAILED"),
+                "HOST_WORKER_SIGNER_SIGN_FAILED_NO_REPLAY",
+            ),
+            (
+                StatusCode::SERVICE_UNAVAILABLE,
+                Some("HOST_SIGNER_KEY_MISMATCH"),
+                "HOST_WORKER_SIGNER_KEY_MISMATCH_NO_REPLAY",
             ),
             (
                 StatusCode::SERVICE_UNAVAILABLE,

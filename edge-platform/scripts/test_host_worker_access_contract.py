@@ -307,8 +307,41 @@ assert.equal(await response.text(),'');
 response=await AUTHORIZE(await req(await jwt()),
  {...env,EDGE_HOST_SIGNING_PKCS8_BASE64:Buffer.alloc(80,1).toString('base64url')},url);
 assert.equal(response.status,503);
-assert.equal(response.headers.get('X-Host-Authorization-Reason'),'HOST_SIGNER_CRYPTO_FAILED');
+assert.equal(response.headers.get('X-Host-Authorization-Reason'),'HOST_SIGNER_KEY_INVALID');
 assert.equal(await response.text(),'');
+// Exercise RFC8410 v1 and both RFC5958 v2 public-key wrappers. This
+// test invokes the EXACT generated Worker source, never a duplicate parser.
+const edPublic=new Uint8Array(await crypto.subtle.exportKey('raw',ed.publicKey));
+const nodeV1=new Uint8Array(pkcs8);
+assert.deepEqual([...nodeV1.slice(0,16)],
+ [0x30,0x2e,0x02,0x01,0,0x30,0x05,0x06,0x03,0x2b,0x65,0x70,0x04,0x22,0x04,0x20]);
+const ringV2=CAT(Uint8Array.from([0x30,0x51,0x02,0x01,1]),
+ nodeV1.slice(5),Uint8Array.from([0x81,0x21,0]),
+ edPublic);
+const earlyRingV2=CAT(Uint8Array.from([0x30,0x53,0x02,0x01,1]),
+ nodeV1.slice(5),Uint8Array.from([0xa1,0x23,0x03,0x21,0]),
+ edPublic);
+for(const v2 of [ringV2,earlyRingV2]){
+ response=await AUTHORIZE(await req(await jwt()),
+  {...env,EDGE_HOST_SIGNING_PKCS8_BASE64:Buffer.from(v2).toString('base64url')},url);
+ assert.equal(response.status,200,'verified v2 must normalize to same v1 mathematical key');
+}
+const badPublic=new Uint8Array(ringV2);badPublic[badPublic.length-1]^=1;
+response=await AUTHORIZE(await req(await jwt()),
+ {...env,EDGE_HOST_SIGNING_PKCS8_BASE64:Buffer.from(badPublic).toString('base64url')},url);
+assert.equal(response.status,503,'v2 embedded public key mismatch must fail closed');
+assert.equal(response.headers.get('X-Host-Authorization-Reason'),'HOST_SIGNER_KEY_MISMATCH');
+for(const mutant of [
+ CAT(ringV2,Uint8Array.of(0)),
+ (()=>{const b=new Uint8Array(ringV2);b[0]=0x31;return b})(),
+ (()=>{const b=new Uint8Array(ringV2);b[10]=0x2c;return b})(),
+ (()=>{const b=new Uint8Array(ringV2);b[4]=0x00;return b})(),
+]){
+ response=await AUTHORIZE(await req(await jwt()),
+  {...env,EDGE_HOST_SIGNING_PKCS8_BASE64:Buffer.from(mutant).toString('base64url')},url);
+ assert.equal(response.status,503,'invalid ASN1 must fail closed');
+ assert.equal(response.headers.get('X-Host-Authorization-Reason'),'HOST_SIGNER_KEY_INVALID');
+}
 response=await AUTHORIZE(await req(await jwt({nbf:now+3600})),env,url);
 assert.equal(response.status,403);
 assert.equal(response.headers.get('X-Host-Authorization-Reason'),'JWT_NOT_YET_VALID');
