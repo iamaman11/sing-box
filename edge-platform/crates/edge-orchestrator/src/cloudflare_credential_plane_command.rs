@@ -3861,13 +3861,21 @@ const now=Math.floor(Date.now()/1000);
 if(!Number.isInteger(c.exp))return "JWT_MALFORMED";
 if(c.exp<=now)return "JWT_EXPIRED";
 if(c.nbf!==undefined&&(!Number.isInteger(c.nbf)||c.nbf>now+60))return "JWT_NOT_YET_VALID";
-try{const res=await fetch(iss+"/cdn-cgi/access/certs",{redirect:"error"});if(!res.ok)return "JWT_KEY_UNAVAILABLE";
-const certs=await res.json(),keys=Array.isArray(certs.keys)?certs.keys:[];
-const jwk=keys.find(k=>k.kid===h.kid&&k.kty==="RSA");
-if(!jwk)return "JWT_KEY_UNAVAILABLE";
-const key=await crypto.subtle.importKey("jwk",jwk,{name:"RSASSA-PKCS1-v1_5",hash:"SHA-256"},false,["verify"]);
-return await crypto.subtle.verify("RSASSA-PKCS1-v1_5",key,B64(parts[2]),TE.encode(parts[0]+"."+parts[1]))?"OK":"JWT_SIGNATURE_REJECTED"}catch{return "JWT_KEY_UNAVAILABLE"}}
+let res;try{res=await fetch(iss+"/cdn-cgi/access/certs",{redirect:"error"})}catch{return "JWT_JWKS_FETCH_FAILED"}
+if(!res.ok)return "JWT_JWKS_HTTP_UNAVAILABLE";
+let certs;try{certs=await res.json()}catch{return "JWT_JWKS_INVALID"}
+if(!certs||!Array.isArray(certs.keys))return "JWT_JWKS_INVALID";
+const jwk=certs.keys.find(k=>k&&k.kid===h.kid&&k.kty==="RSA");
+if(!jwk)return "JWT_KID_NOT_FOUND";
+let key;try{key=await crypto.subtle.importKey("jwk",jwk,{name:"RSASSA-PKCS1-v1_5",hash:"SHA-256"},false,["verify"])}catch{return "JWT_KEY_IMPORT_FAILED"}
+const sig=B64(parts[2]);if(!sig||sig.length===0)return "JWT_SIGNATURE_MALFORMED";
+try{return await crypto.subtle.verify("RSASSA-PKCS1-v1_5",key,sig,TE.encode(parts[0]+"."+parts[1]))?"OK":"JWT_SIGNATURE_REJECTED"}catch{return "JWT_SIGNATURE_VERIFY_FAILED"}}
 async function ACCESS(q,e){return await ACCESS_REASON(q,e)==="OK"}
+// GET is a strictly read-only proof of this same authenticated Access JWT.
+// It never parses HostIntent, calls GitHub approval or mints a signature.
+async function HOST_AUTH_DIAGNOSTIC(q,e,u){if(P!==__HOST_SIGNER_PROJECTION__||q.method!=="GET"||u.search)return new Response(null,{status:404,headers:NO});
+const reason=await ACCESS_REASON(q,e);
+return new Response(null,{status:reason==="OK"?204:403,headers:{...NO,"X-Host-Authorization-Reason":reason,"X-Host-Authorization-Scope":"READ_ONLY_NO_MUTATION"}})}
 async function AUTHORIZE(q,e,u){if(P!==__HOST_SIGNER_PROJECTION__)return new Response(null,{status:404,headers:NO});if(q.method!=="POST"||u.search||q.headers.get("Content-Type")!=="application/x-protobuf")return new Response(null,{status:404,headers:NO});
 const k=e.EDGE_HOST_SIGNING_PKCS8_BASE64,id=e.EDGE_HOST_SIGNING_KEY_ID,actor=String(e.EDGE_HOST_GITHUB_ACTOR_ID||"");
 if(typeof k!=="string"||typeof id!=="string"||!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id)||!/^[1-9][0-9]{0,19}$/.test(actor))return new Response(null,{status:404,headers:NO});
@@ -3887,7 +3895,7 @@ let signature;try{const key=await crypto.subtle.importKey("pkcs8",pk,{name:"Ed25
 if(signature.length!==64)return new Response(null,{status:503,headers:NO});
 const out=CAT(FNUM(1,1),FLD(2,kid),FLD(3,oid),FNUM(4,issued),FNUM(5,expires),FLD(6,signature));
 return new Response(out,{status:200,headers:{"Content-Type":"application/x-protobuf","Cache-Control":"no-store","X-Content-Type-Options":"nosniff"}})}
-export default{async fetch(q,e){const u=new URL(q.url);if(u.pathname==="/v1/host/authorize")return AUTHORIZE(q,e,u);const x=u.searchParams.get("generation");
+export default{async fetch(q,e){const u=new URL(q.url);if(u.pathname==="/v1/host/authorize")return q.method==="GET"?HOST_AUTH_DIAGNOSTIC(q,e,u):AUTHORIZE(q,e,u);const x=u.searchParams.get("generation");
 if(q.method==="GET"&&u.pathname==="/v1/proof-slot"){const k=u.searchParams.get("slot"),i=k==="a"?0:k==="b"?1:-1;if(u.searchParams.size!==2||i<0||x!==Q[i])return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}});const b=H(e[S[i]]);if(b===null)return new Response(null,{status:409,headers:{"Cache-Control":"no-store"}});const h=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",b))).map(x=>x.toString(16).padStart(2,"0")).join("");return new Response(null,{status:h===D[i]?204:409,headers:{"Cache-Control":"no-store"}})}
 if(q.method!=="GET"||u.pathname!=="/v1/credentials"||u.searchParams.size!==1||x===null||!/^(0|[1-9][0-9]*)$/.test(x))return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}});let n;try{n=BigInt(x)}catch{return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}})}const m=[];for(const s of S){const b=H(e[s]);if(b!==null&&G(b)===n)m.push(b)}if(m.length!==1)return new Response(null,{status:m.length?409:404,headers:{"Cache-Control":"no-store"}});return new Response(m[0],{status:200,headers:{"Content-Type":"application/x-protobuf","Cache-Control":"no-store"}})}};"#
         .replace("__PROJECTION__", &(projection_kind as i32).to_string())
