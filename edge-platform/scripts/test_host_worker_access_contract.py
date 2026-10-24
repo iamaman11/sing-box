@@ -35,7 +35,7 @@ jwk.kid='test-access-key';
 const now=Math.floor(Date.now()/1000);
 const iss='https://test.cloudflareaccess.com',aud='test-audience';
 const release='a'.repeat(64);
-const approvedAt=new Date((now-10)*1000).toISOString();
+let approvedAt=new Date((now-10)*1000).toISOString();
 let githubMode='approved';
 let jwksMode='valid';
 globalThis.fetch=async (url,init)=>{
@@ -58,7 +58,16 @@ globalThis.fetch=async (url,init)=>{
    if(jwksMode==='import_bad')return {ok:true,json:async()=>({keys:[{kid:jwk.kid,kty:'RSA',n:'invalid'}]})};
    return {ok:true,json:async()=>({keys:[jwk]})};
  }
+ const api='https://api.github.com/repos/iamaman11/sing-box';
+ assert.ok(url.startsWith(api+'/'),'all approval reads stay on the pinned GitHub origin');
+ assert.equal(init?.redirect,'manual','Cloudflare Workers does not support redirect:error');
  if(githubMode==='offline')throw Error('simulated GitHub outage');
+ const redirectAt={redirect_comment:'/issues/comments/6346290327',
+  redirect_release:'/releases/tags/edge-release-'+release,
+  redirect_main:'/git/ref/heads/main',
+  redirect_pulls:'/commits/'+'b'.repeat(40)+'/pulls?per_page=20'}[githubMode];
+ if(redirectAt&&url===api+redirectAt)return {ok:false,status:302,
+  json:async()=>{throw Error('forbidden redirected response was consumed')}};
  if(url.endsWith('/issues/comments/6346290327'))return {ok:true,json:async()=>({
    user:{id:githubMode==='denied'?123:44100369},
    issue_url:'https://api.github.com/repos/iamaman11/sing-box/issues/1',
@@ -69,6 +78,14 @@ globalThis.fetch=async (url,init)=>{
    tag_name:'edge-release-'+release,draft:false,prerelease:false,
    target_commitish:'b'.repeat(40)
  })};
+ if(url.endsWith('/git/ref/heads/main'))return {ok:true,
+  json:async()=>({object:{type:'commit',sha:'b'.repeat(40)}})};
+ if(url.endsWith('/commits/'+'b'.repeat(40)+'/pulls?per_page=20'))return {ok:true,
+  json:async()=>[{merged_at:new Date((now-120)*1000).toISOString(),draft:false,
+   base:{ref:'main'},head:{repo:{full_name:'iamaman11/sing-box'},
+     ref:'host-receipt-application-acceptance-2-6346290327'},
+   merge_commit_sha:'b'.repeat(40),
+   title:'host: register native receipt for application-acceptance-2'}]};
  throw Error('unexpected fixture fetch: '+url);
 };
 const header={alg:'RS256',kid:'test-access-key'};
@@ -138,6 +155,18 @@ githubMode='denied';
 assert.equal(await GITHUB(info,{EDGE_HOST_GITHUB_ACTOR_ID:'44100369'},now),'DENIED');
 githubMode='offline';
 assert.equal(await GITHUB(info,{EDGE_HOST_GITHUB_ACTOR_ID:'44100369'},now),'UNAVAILABLE');
+// Cover all four exact GitHub reads, including old first-use receipt approval.
+// A 302 must stop at its original URL and never be followed.
+approvedAt=new Date((now-302)*1000).toISOString();
+const oldInfo={...info,when:now-280};
+githubMode='approved';
+assert.equal(await GITHUB(oldInfo,{EDGE_HOST_GITHUB_ACTOR_ID:'44100369'},now),'APPROVED');
+for(const mode of ['redirect_comment','redirect_release','redirect_main','redirect_pulls']){
+ githubMode=mode;
+ assert.equal(await GITHUB(oldInfo,{EDGE_HOST_GITHUB_ACTOR_ID:'44100369'},now),'UNAVAILABLE',
+  mode+' must reject all GitHub 3xx without following Location');
+}
+approvedAt=new Date((now-10)*1000).toISOString();
 
 const ed=await crypto.subtle.generateKey({name:'Ed25519'},true,['sign','verify']);
 const pkcs8=await crypto.subtle.exportKey('pkcs8',ed.privateKey);
