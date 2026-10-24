@@ -531,43 +531,45 @@ impl HostWorkerAuthorizationRejection {
 /// A bounded GET-only proof of the same Access JWT that protects POST.
 /// No HostIntent, GitHub approval, signature, replay or native resource mutation.
 /// Return codes are safe to print from existing native read-only diagnostics.
-pub async fn diagnose_canonical_host_access(identity_path: &Path) -> &'static str {
+pub async fn diagnose_canonical_host_access(
+    identity_path: &Path,
+) -> Result<(), &'static str> {
     let identity = match read_access_service_identity(identity_path) {
         Ok(identity) => identity,
-        Err(_) => return "HOST_WORKER_ACCESS_IDENTITY_UNAVAILABLE",
+        Err(_) => return Err("HOST_WORKER_ACCESS_IDENTITY_UNAVAILABLE"),
     };
     let mut url = match canonical_credential_worker_url(CredentialProjectionKind::Vm, 1)
         .ok()
         .and_then(|url| reqwest::Url::parse(&url).ok())
     {
         Some(url) => url,
-        None => return "HOST_WORKER_CANONICAL_URL_INVALID",
+        None => return Err("HOST_WORKER_CANONICAL_URL_INVALID"),
     };
     url.set_path("/v1/host/authorize");
     url.set_query(None);
     let client = match credential_worker_client(&identity) {
         Ok(client) => client,
-        Err(_) => return "HOST_WORKER_ACCESS_CLIENT_UNAVAILABLE",
+        Err(_) => return Err("HOST_WORKER_ACCESS_CLIENT_UNAVAILABLE"),
     };
     let response = match client.get(url).send().await {
         Ok(response) => response,
-        Err(_) => return "HOST_WORKER_ACCESS_DIAGNOSTIC_GET_UNAVAILABLE",
+        Err(_) => return Err("HOST_WORKER_ACCESS_DIAGNOSTIC_GET_UNAVAILABLE"),
     };
     let scope = response
         .headers()
         .get("X-Host-Authorization-Scope")
         .and_then(|header| header.to_str().ok());
     if scope != Some("READ_ONLY_NO_MUTATION") {
-        return "HOST_WORKER_ACCESS_DIAGNOSTIC_UNTRUSTED_RESPONSE";
+        return Err("HOST_WORKER_ACCESS_DIAGNOSTIC_UNTRUSTED_RESPONSE");
     }
     if response.status() == StatusCode::NO_CONTENT {
-        return "HOST_WORKER_JWT_VERIFIED_READ_ONLY";
+        return Ok(());
     }
     let reason = response
         .headers()
         .get("X-Host-Authorization-Reason")
         .and_then(|header| header.to_str().ok());
-    HostWorkerAuthorizationRejection::from_response(response.status(), reason).code()
+    Err(HostWorkerAuthorizationRejection::from_response(response.status(), reason).code())
 }
 
 /// Ask the ONE existing VM credential Worker to issue its independent
