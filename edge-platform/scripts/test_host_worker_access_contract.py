@@ -85,7 +85,8 @@ globalThis.fetch=async (url,init)=>{
   return{ok:true,status:201,json:async()=>({
    token:'ghs_TESTTOKEN1234567890',expires_at:new Date((now+1800)*1000).toISOString(),
    permissions:{metadata:'read',issues:'read',contents:'read',pull_requests:'read'},
-   repositories:[{full_name:appMode==='scope'?'iamaman11/other':'iamaman11/sing-box'}]
+   repository_selection:'selected',
+   repositories:[{id:1221750822,full_name:appMode==='scope'?'iamaman11/other':'iamaman11/sing-box'}]
   })};
  }
  const api='https://api.github.com/repos/iamaman11/sing-box';
