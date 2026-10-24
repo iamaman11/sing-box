@@ -470,6 +470,9 @@ enum HostWorkerAuthorizationRejection {
     WorkerConfigUnproven,
     GithubApprovalDenied,
     GithubDependencyUnavailable,
+    HostSignerKeyInvalid,
+    HostSignerCryptoFailed,
+    HostSignerSignatureInvalid,
     ForbiddenWithoutWorkerReason,
     UnclassifiedPolicyDenied,
     UnclassifiedAuthorizationFailure,
@@ -527,6 +530,15 @@ impl HostWorkerAuthorizationRejection {
             (StatusCode::SERVICE_UNAVAILABLE, Some("GITHUB_DEPENDENCY_UNAVAILABLE")) => {
                 Self::GithubDependencyUnavailable
             }
+            (StatusCode::SERVICE_UNAVAILABLE, Some("HOST_SIGNER_KEY_INVALID")) => {
+                Self::HostSignerKeyInvalid
+            }
+            (StatusCode::SERVICE_UNAVAILABLE, Some("HOST_SIGNER_CRYPTO_FAILED")) => {
+                Self::HostSignerCryptoFailed
+            }
+            (StatusCode::SERVICE_UNAVAILABLE, Some("HOST_SIGNER_SIGNATURE_INVALID")) => {
+                Self::HostSignerSignatureInvalid
+            }
             (StatusCode::FORBIDDEN, None) => Self::ForbiddenWithoutWorkerReason,
             (StatusCode::FORBIDDEN, _) => Self::UnclassifiedPolicyDenied,
             _ => Self::UnclassifiedAuthorizationFailure,
@@ -566,6 +578,9 @@ impl HostWorkerAuthorizationRejection {
             Self::GithubDependencyUnavailable => {
                 "HOST_WORKER_GITHUB_DEPENDENCY_UNAVAILABLE_NO_REPLAY"
             }
+            Self::HostSignerKeyInvalid => "HOST_WORKER_SIGNER_KEY_INVALID_NO_REPLAY",
+            Self::HostSignerCryptoFailed => "HOST_WORKER_SIGNER_CRYPTO_FAILED_NO_REPLAY",
+            Self::HostSignerSignatureInvalid => "HOST_WORKER_SIGNER_SIGNATURE_INVALID_NO_REPLAY",
             Self::ForbiddenWithoutWorkerReason => "HOST_WORKER_FORBIDDEN_WITHOUT_WORKER_REASON",
             Self::UnclassifiedPolicyDenied => "HOST_WORKER_POLICY_DENIED",
             Self::UnclassifiedAuthorizationFailure => "HOST_WORKER_AUTHORIZATION_NOT_ACCEPTED",
