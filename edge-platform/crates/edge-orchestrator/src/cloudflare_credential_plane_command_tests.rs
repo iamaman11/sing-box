@@ -1,3 +1,47 @@
+#[test]
+fn host_github_app_private_key_validation_fails_closed_without_disclosure() {
+    for value in [
+        "",
+        "not_a_pkcs8_key",
+        "-----BEGIN PRIVATE KEY-----",
+        "BAD+STANDARD/BASE64==",
+        &"a".repeat(9000),
+    ] {
+        assert!(validate_host_github_app_private_key(value).is_err());
+    }
+}
+
+#[test]
+fn vm_github_app_binding_scope_requires_exact_eighth_secret() {
+    let mut seven = vec![
+        "EDGE_CREDENTIAL_BUNDLE_A",
+        "EDGE_CREDENTIAL_BUNDLE_B",
+        "EDGE_HOST_SIGNING_PKCS8_BASE64",
+        "EDGE_HOST_SIGNING_KEY_ID",
+        "EDGE_HOST_GITHUB_ACTOR_ID",
+        "EDGE_HOST_ACCESS_ISSUER",
+        "EDGE_HOST_ACCESS_AUD",
+    ]
+    .into_iter()
+    .map(|name| cloudflare::CloudflareWorkerSecretBinding {
+        name: name.to_owned(),
+        binding_type: "secret_text".to_owned(),
+    })
+    .collect::<Vec<_>>();
+    require_exact_secret_bindings("sing-box-credentials-vm", "vm", &seven).unwrap();
+    seven.push(cloudflare::CloudflareWorkerSecretBinding {
+        name: "EDGE_HOST_GITHUB_APP_PKCS8_BASE64".to_owned(),
+        binding_type: "secret_text".to_owned(),
+    });
+    require_exact_secret_bindings("sing-box-credentials-vm", "vm", &seven).unwrap();
+    assert!(require_exact_secret_bindings("sing-box-credentials-windows", "windows", &seven).is_err());
+    seven.push(cloudflare::CloudflareWorkerSecretBinding {
+        name: "AN_UNEXPECTED_SECRET".to_owned(),
+        binding_type: "secret_text".to_owned(),
+    });
+    assert!(require_exact_secret_bindings("sing-box-credentials-vm", "vm", &seven).is_err());
+}
+
 use super::*;
 
 #[test]
