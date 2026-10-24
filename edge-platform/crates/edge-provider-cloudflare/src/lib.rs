@@ -563,6 +563,7 @@ fn exact_worker_module_from_value(
     }
     let mut secret_bindings = bindings
         .iter()
+        .cloned()
         .map(worker_secret_binding_from_value)
         .collect::<Result<Vec<_>, _>>()
         .map_err(|_| error.to_owned())?;
