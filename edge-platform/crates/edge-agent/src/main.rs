@@ -1955,5 +1955,582 @@ fn prepare_mesh_runtime_state(stack_dir: &Path) -> Result<(), String> {
     set_private_directory_permissions(&state)
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+fn line2_certificate_container_paths(
+    runtime: &BTreeMap<String, String>,
+) -> Result<(String, String), String> {
+    if let Some(domain) = runtime.get("TUNNEL_DOMAIN") {
+        if !valid_certificate_domain(domain) {
+            return Err("TUNNEL_DOMAIN is invalid for Line 2 certificate paths".to_owned());
+        }
+        let provider = runtime
+            .get("ACME_PROVIDER")
+            .ok_or_else(|| "ACME_PROVIDER is required for Line 2 certificate paths".to_owned())?;
+        let directory = acme_certificate_directory(provider)?;
+        let base = format!("/var/lib/sing-box/acme/certificates/{directory}/{domain}");
+        return Ok((
+            format!("{base}/{domain}.crt"),
+            format!("{base}/{domain}.key"),
+        ));
+    }
+    Ok(("/certs/proxy.crt".to_owned(), "/certs/proxy.key".to_owned()))
+}
 
+fn prepare_base_proxy_certificate(
+    stack_dir: &Path,
+    runtime: &BTreeMap<String, String>,
+) -> Result<(), String> {
+    if runtime.contains_key("TUNNEL_DOMAIN") {
+        return Err(
+            "base certificate fallback is forbidden when tunnel policy is enabled".to_owned(),
+        );
+    }
+    let cert = stack_dir.join("certs/proxy.crt");
+    let key = stack_dir.join("certs/proxy.key");
+    match (cert.is_file(), key.is_file()) {
+        (true, true) => {
+            if certificate_is_valid(&cert, 300) {
+                return Ok(());
+            }
+            return Err("existing base fallback certificate is invalid or expired".to_owned());
+        }
+        (true, false) | (false, true) => {
+            return Err("base fallback certificate state is partial".to_owned());
+        }
+        (false, false) => {}
+    }
+
+    let common_name = runtime
+        .get("PROXY_CERT_CN")
+        .ok_or_else(|| "base certificate requires PROXY_CERT_CN".to_owned())?;
+    let args = vec![
+        "req".to_owned(),
+        "-x509".to_owned(),
+        "-nodes".to_owned(),
+        "-newkey".to_owned(),
+        "rsa:2048".to_owned(),
+        "-keyout".to_owned(),
+        key.display().to_string(),
+        "-out".to_owned(),
+        cert.display().to_string(),
+        "-days".to_owned(),
+        "3650".to_owned(),
+        "-subj".to_owned(),
+        format!("/CN={common_name}"),
+    ];
+    run_fixed_command(
+        stack_dir,
+        "openssl",
+        &args,
+        &BTreeMap::new(),
+        "generate base certificate",
+    )?;
+    set_bundle_file_permissions(&key, false, true)?;
+    set_bundle_file_permissions(&cert, false, false)?;
+    if !certificate_is_valid(&cert, 300) || !key.is_file() {
+        return Err("generated base fallback certificate failed validation".to_owned());
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone)]
+struct CertificateReadinessEvidence {
+    cert_present: bool,
+    key_present: bool,
+    key_nonempty: bool,
+    cert_valid: bool,
+    line1: Option<ContainerRuntimeEvidence>,
+    docker_observation_error: Option<String>,
+}
+
+impl CertificateReadinessEvidence {
+    fn ready(&self) -> bool {
+        self.cert_present && self.key_present && self.key_nonempty && self.cert_valid
+    }
+
+    fn summary(&self) -> String {
+        let line1 = self
+            .line1
+            .as_ref()
+            .map(ContainerRuntimeEvidence::summary)
+            .unwrap_or_else(|| "unavailable".to_owned());
+        let docker_error = self.docker_observation_error.as_deref().unwrap_or("none");
+        format!(
+            "certificate={{present:{} key_present:{} key_nonempty:{} valid:{}}} line1={{ {line1} }} docker_observation_error={docker_error}",
+            self.cert_present, self.key_present, self.key_nonempty, self.cert_valid
+        )
+    }
+}
+
+async fn observe_certificate_readiness(cert: &Path, key: &Path) -> CertificateReadinessEvidence {
+    let cert_present = cert.is_file();
+    let key_present = key.is_file();
+    let key_nonempty = key_present && fs::metadata(key).is_ok_and(|metadata| metadata.len() > 0);
+    let cert_valid = cert_present && certificate_is_valid(cert, 300);
+
+    match observe_container_runtime(LINE1_CONTAINER).await {
+        Ok(line1) => CertificateReadinessEvidence {
+            cert_present,
+            key_present,
+            key_nonempty,
+            cert_valid,
+            line1: Some(line1),
+            docker_observation_error: None,
+        },
+        Err(err) => CertificateReadinessEvidence {
+            cert_present,
+            key_present,
+            key_nonempty,
+            cert_valid,
+            line1: None,
+            docker_observation_error: Some(err),
+        },
+    }
+}
+
+async fn wait_for_owned_certificate(stack_dir: &Path) -> Result<(), String> {
+    let [cert, key] = expected_proxy_certificate_paths(stack_dir)?;
+    let mut consecutive_not_running = 0u8;
+    let mut last = observe_certificate_readiness(&cert, &key).await;
+
+    for _ in 0..90 {
+        if last.ready() {
+            return Ok(());
+        }
+
+        if let Some(line1) = last.line1.as_ref() {
+            if !line1.present || !line1.running {
+                consecutive_not_running = consecutive_not_running.saturating_add(1);
+            } else {
+                consecutive_not_running = 0;
+            }
+        } else {
+            consecutive_not_running = 0;
+        }
+
+        if consecutive_not_running >= 3 {
+            return Err(format!(
+                "Line 1 certificate owner is not running after three bounded observations; {}",
+                last.summary()
+            ));
+        }
+
+        tokio::time::sleep(Duration::from_secs(2)).await;
+        last = observe_certificate_readiness(&cert, &key).await;
+    }
+
+    Err(format!(
+        "Line 1 certificate owner did not publish a valid certificate within 180 seconds; {}",
+        last.summary()
+    ))
+}
+
+fn certificate_is_valid(path: &Path, minimum_validity_seconds: u64) -> bool {
+    let checkend = minimum_validity_seconds.to_string();
+    Command::new("openssl")
+        .args(["x509", "-checkend", &checkend, "-noout", "-in"])
+        .arg(path)
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn verify_bootstrap_post_state(
+    stack_dir: &Path,
+    mode: BootstrapMode,
+    post_state: &AgentState,
+) -> BootstrapVerification {
+    let mut warnings = Vec::new();
+
+    if !post_state.compose_file_present {
+        warnings.push("compose file was not observed after bootstrap".to_owned());
+    }
+    if !post_state.docker_reachable {
+        warnings.push("docker runtime is not reachable after bootstrap".to_owned());
+    }
+
+    let tunnel_expected = tunnel_runtime_enabled(stack_dir);
+    let line2_expected = line2_runtime_enabled(stack_dir);
+
+    let mut expected = vec!["vultr-warp-egress"];
+    if matches!(
+        mode,
+        BootstrapMode::BootstrapBase | BootstrapMode::BootstrapFull
+    ) && line2_expected
+    {
+        expected.push("vultr-line2-proxy");
+    }
+    if matches!(
+        mode,
+        BootstrapMode::BootstrapTunnel | BootstrapMode::BootstrapFull
+    ) && tunnel_expected
+    {
+        expected.push("vultr-line1-gateway");
+    }
+
+    for container in expected {
+        if !post_state
+            .running_containers
+            .iter()
+            .any(|running| running == container)
+        {
+            warnings.push(format!(
+                "expected container is not running after bootstrap: {container}"
+            ));
+        }
+    }
+
+    if matches!(
+        mode,
+        BootstrapMode::BootstrapTunnel | BootstrapMode::BootstrapFull
+    ) && !tunnel_expected
+    {
+        warnings.push(
+            "tunnel bootstrap requested but TUNNEL_DOMAIN/ACME_EMAIL are not configured".to_owned(),
+        );
+    }
+    if matches!(
+        mode,
+        BootstrapMode::BootstrapBase | BootstrapMode::BootstrapFull
+    ) && !line2_expected
+    {
+        warnings.push(
+            "Line 2 bootstrap requested but PROXY_USERNAME/PROXY_CERT_CN are not configured"
+                .to_owned(),
+        );
+    }
+    if post_state.direct_egress_ready != Some(true) {
+        warnings.push("direct egress datapath is not ready after bootstrap".to_owned());
+    }
+    if post_state.warp_egress_ready != Some(true) {
+        warnings.push("WARP egress datapath is not ready after bootstrap".to_owned());
+    }
+    // Line 3 Mesh owns an independent lifecycle. Its disabled or degraded
+    // state cannot reject a Line 1/Line 2 bootstrap or credential cutover.
+    BootstrapVerification {
+        success: warnings.is_empty(),
+        warnings,
+    }
+}
+
+fn parse_compose_port(value: &str) -> Option<PortMapping> {
+    let protocol = if value.ends_with("/udp") {
+        Protocol::Udp
+    } else {
+        Protocol::Tcp
+    };
+    let base = value.split('/').next()?;
+    let host_port = base.split(':').next()?.parse().ok()?;
+    Some(PortMapping {
+        host_port,
+        protocol,
+    })
+}
+
+fn join_ports(ports: &[u32]) -> String {
+    ports
+        .iter()
+        .map(u32::to_string)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
+fn write_bundle_file(
+    root: &Path,
+    file: &BundleFile,
+    written_paths: &mut Vec<String>,
+) -> Result<(), String> {
+    validate_bundle_relative_path(&file.relative_path)?;
+    let sensitive = file.sensitive || intrinsically_sensitive_bundle_path(&file.relative_path);
+    if file.executable && sensitive {
+        return Err(format!(
+            "bundle file {} cannot be both executable and sensitive",
+            file.relative_path
+        ));
+    }
+
+    let path = root.join(&file.relative_path);
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|err| format!("failed to create {}: {err}", parent.display()))?;
+    }
+    fs::write(&path, &file.content)
+        .map_err(|err| format!("failed to write {}: {err}", path.display()))?;
+    set_bundle_file_permissions(&path, file.executable, sensitive)?;
+    written_paths.push(path.display().to_string());
+    Ok(())
+}
+
+fn intrinsically_sensitive_bundle_path(value: &str) -> bool {
+    value == ".env.runtime"
+        || value == "deployment-summary.json"
+        || value.ends_with(".key")
+        || value.starts_with("tunnel-state/acme/")
+}
+
+fn validate_bundle_relative_path(value: &str) -> Result<(), String> {
+    if value.is_empty() || value.contains('\\') {
+        return Err(format!(
+            "bundle path must be a normalized relative path without traversal: {value}"
+        ));
+    }
+    let path = Path::new(value);
+    if path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(format!(
+            "bundle path must be a normalized relative path without traversal: {value}"
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn set_bundle_file_permissions(
+    path: &Path,
+    executable: bool,
+    sensitive: bool,
+) -> Result<(), String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let mode = if sensitive {
+        0o600
+    } else if executable {
+        0o755
+    } else {
+        0o644
+    };
+    fs::set_permissions(path, fs::Permissions::from_mode(mode))
+        .map_err(|err| format!("failed to set {} mode {mode:o}: {err}", path.display()))
+}
+
+#[cfg(not(unix))]
+fn set_bundle_file_permissions(
+    _path: &Path,
+    _executable: bool,
+    _sensitive: bool,
+) -> Result<(), String> {
+    Ok(())
+}
+
+fn collect_rendered_artifacts(stack_dir: &Path) -> Vec<FilePresence> {
+    let mut required = vec![
+        (
+            stack_dir.join("docker-compose.yml"),
+            FileCategory::RequiredRepoInput,
+        ),
+        (
+            stack_dir.join(RUNTIME_POLICY_FILE),
+            FileCategory::RequiredRepoInput,
+        ),
+        (
+            stack_dir.join(RUNTIME_ENV_FILE),
+            FileCategory::LocalOnlySensitive,
+        ),
+    ];
+    if line2_runtime_enabled(stack_dir) {
+        required.push((
+            stack_dir.join("rendered/line2-proxy.json"),
+            FileCategory::LocalOnlySensitive,
+        ));
+    }
+    if tunnel_runtime_enabled(stack_dir) {
+        required.push((
+            stack_dir.join("rendered/line1-gateway.json"),
+            FileCategory::LocalOnlySensitive,
+        ));
+    }
+    if let Ok(paths) = expected_proxy_certificate_paths(stack_dir) {
+        required.extend(
+            paths
+                .into_iter()
+                .map(|path| (path, FileCategory::LocalOnlySensitive)),
+        );
+    }
+
+    required
+        .into_iter()
+        .map(|(path, category)| FilePresence {
+            path: rendered_artifact_display_path(stack_dir, &path),
+            present: path.is_file(),
+            category: category as i32,
+        })
+        .collect()
+}
+
+fn rendered_artifact_display_path(stack_dir: &Path, path: &Path) -> String {
+    if let Ok(relative) = path.strip_prefix(stack_dir) {
+        return relative.to_string_lossy().replace('\\', "/");
+    }
+    if let Some(parent) = stack_dir.parent()
+        && let Ok(relative) = path.strip_prefix(parent)
+    {
+        return format!("../{}", relative.to_string_lossy().replace('\\', "/"));
+    }
+    path.display().to_string()
+}
+
+fn read_runtime_env(path: &Path) -> Option<std::collections::BTreeMap<String, String>> {
+    let raw = fs::read_to_string(path).ok()?;
+    let mut values = std::collections::BTreeMap::new();
+
+    for line in raw.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+
+        if let Some((key, value)) = trimmed.split_once('=') {
+            values.insert(key.trim().to_owned(), value.trim().to_owned());
+        }
+    }
+
+    Some(values)
+}
+
+fn env_flag_present(values: &std::collections::BTreeMap<String, String>, key: &str) -> bool {
+    values
+        .get(key)
+        .is_some_and(|value| !value.trim().is_empty())
+}
+
+fn line2_runtime_enabled(stack_dir: &Path) -> bool {
+    read_runtime_env(&stack_dir.join(".env.runtime")).is_some_and(|values| {
+        env_flag_present(&values, "PROXY_USERNAME") && env_flag_present(&values, "PROXY_CERT_CN")
+    })
+}
+
+fn tunnel_runtime_enabled(stack_dir: &Path) -> bool {
+    read_runtime_env(&stack_dir.join(".env.runtime")).is_some_and(|values| {
+        env_flag_present(&values, "TUNNEL_DOMAIN") && env_flag_present(&values, "ACME_EMAIL")
+    })
+}
+
+fn validate_acme_provider(value: &str) -> Result<(), String> {
+    acme_certificate_directory(value).map(|_| ())
+}
+
+fn acme_certificate_directory(value: &str) -> Result<&'static str, String> {
+    match value {
+        "letsencrypt" => Ok("acme-v02.api.letsencrypt.org-directory"),
+        "https://acme-staging-v02.api.letsencrypt.org/directory" => {
+            Ok("acme-staging-v02.api.letsencrypt.org-directory")
+        }
+        _ => Err(
+            "ACME_PROVIDER must be letsencrypt or the exact Let’s Encrypt staging directory"
+                .to_owned(),
+        ),
+    }
+}
+
+fn valid_certificate_domain(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 253
+        && value.split('.').all(|label| {
+            !label.is_empty()
+                && label.len() <= 63
+                && label
+                    .bytes()
+                    .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+                && !label.starts_with('-')
+                && !label.ends_with('-')
+        })
+}
+
+fn expected_proxy_certificate_paths(stack_dir: &Path) -> Result<[PathBuf; 2], String> {
+    let runtime = read_runtime_env(&stack_dir.join(".env.runtime")).ok_or_else(|| {
+        "runtime environment is unavailable for certificate observation".to_owned()
+    })?;
+    if env_flag_present(&runtime, "TUNNEL_DOMAIN") {
+        let domain = runtime
+            .get("TUNNEL_DOMAIN")
+            .map(String::as_str)
+            .unwrap_or_default();
+        if !valid_certificate_domain(domain) {
+            return Err("TUNNEL_DOMAIN is invalid for certificate owner state".to_owned());
+        }
+        let provider = runtime
+            .get("ACME_PROVIDER")
+            .ok_or_else(|| "ACME_PROVIDER is required for certificate owner state".to_owned())?;
+        let directory = acme_certificate_directory(provider)?;
+        let owner = stack_dir
+            .parent()
+            .ok_or_else(|| "application stack path has no certificate-state parent".to_owned())?
+            .join("certificate-state")
+            .join("acme")
+            .join("certificates")
+            .join(directory)
+            .join(domain);
+        return Ok([
+            owner.join(format!("{domain}.crt")),
+            owner.join(format!("{domain}.key")),
+        ]);
+    }
+
+    let certs = stack_dir.join("certs");
+    Ok([certs.join("proxy.crt"), certs.join("proxy.key")])
+}
+
+fn enabled_application_profiles(stack_dir: &Path) -> BTreeSet<String> {
+    let mut profiles = BTreeSet::new();
+    if tunnel_runtime_enabled(stack_dir) {
+        profiles.insert("tunnel".to_owned());
+    }
+    profiles
+}
+
+fn read_bundle_summary(path: &Path) -> Option<BundleSummary> {
+    let raw = fs::read_to_string(path).ok()?;
+    serde_json::from_str(&raw).ok()
+}
+
+#[derive(Debug)]
+struct BootstrapVerification {
+    success: bool,
+    warnings: Vec<String>,
+}
+
+#[derive(Debug)]
+struct ComposeObservation {
+    expected_containers: Vec<String>,
+    expected_tcp_ports: Vec<u32>,
+    expected_udp_ports: Vec<u32>,
+}
+
+#[derive(Debug)]
+struct PortMapping {
+    host_port: u32,
+    protocol: Protocol,
+}
+
+#[derive(Debug)]
+enum Protocol {
+    Tcp,
+    Udp,
+}
+
+#[derive(Debug, Deserialize)]
+struct ComposeFile {
+    services: std::collections::BTreeMap<String, ComposeService>,
+}
+
+#[derive(Debug, Deserialize)]
+struct ComposeService {
+    container_name: Option<String>,
+    #[serde(default)]
+    ports: Vec<String>,
+    #[serde(default)]
+    profiles: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct BundleSummary {
+    label: Option<String>,
+    instance_id: Option<String>,
+}
+
+#[cfg(test)]
+#[path = "main_native_mutation_ingress_tests.rs"]
+mod native_mutation_ingress_tests;
