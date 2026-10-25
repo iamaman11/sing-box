@@ -49,6 +49,8 @@ pub(crate) enum LocalCommand {
     HostApply,
     /// Read-only unprivileged native probe from a typed same-run request on stdin.
     HostProbe,
+    /// Independently Worker-authorized administrative request on stdin.
+    HostAdmin,
     /// Refresh the exact protected main release from the installed root
     /// owner; no caller-selected SHA/path and no SSH.
     HostRefresh,
@@ -78,6 +80,7 @@ impl LocalCommand {
             Self::HostResources => "local-host-resources",
             Self::HostApply => "local-host-apply",
             Self::HostProbe => "local-host-probe",
+            Self::HostAdmin => "local-host-admin",
             Self::HostRefresh => "local-host-refresh",
             Self::HostEnroll { .. } => "local-host-enroll",
             Self::QualityLine2 => "local-quality-line2",
@@ -105,6 +108,7 @@ mod tests {
             "host-resources",
             "host-apply",
             "host-probe",
+            "host-admin",
             "host-refresh",
             "quality-line2",
             "credential-public-endpoint",
