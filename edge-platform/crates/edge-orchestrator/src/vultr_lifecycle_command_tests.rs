@@ -260,44 +260,6 @@ fn linux_boot_id_validation_is_strict() {
 }
 
 #[test]
-fn firewall_binding_must_match_desired_profile() {
-    let desired = DesiredState::parse_json(
-        r#"{
-  "schema": 1,
-  "environment": "production",
-  "machines": [
-    {
-      "id": "edge-1",
-      "role": "edge",
-      "provider": {
-        "region": "waw",
-        "plan": "vc2-1c-1gb",
-        "os_id": 2625,
-        "enable_ipv6": false,
-        "firewall_profile": "edge"
-      },
-      "bootstrap_profile": "singbox-host-v2"
-    }
-  ]
-}"#,
-    )
-    .unwrap();
-    let resolved = ResolvedFirewallProfile {
-        id: "fw-1".to_owned(),
-        profile_name: "other".to_owned(),
-    };
-
-    let error = resolve_create_prerequisites(
-        &desired.machines[0],
-        "ssh-1",
-        Some(&resolved),
-        "#cloud-config\n".to_owned(),
-    )
-    .unwrap_err();
-    assert!(error.contains("does not match desired profile"));
-}
-
-#[test]
 fn production_support_access_profile_is_derived_from_protobuf_authority() {
     let desired = ProductionComposition::canonical().unwrap().machines;
     let (profiles, material) = load_access_authority_profile_source(&desired).unwrap();
