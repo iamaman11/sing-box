@@ -540,7 +540,17 @@ mod tests {
             assert!(Cli::try_parse_from(command).is_ok(), "{operation}");
         }
         let mut diagnostic = base.to_vec();
-        diagnostic.extend(["diagnose", "application-acceptance-4", "--", "ip", "-6", "route", "show", "table", "all"]);
+        diagnostic.extend([
+            "diagnose",
+            "application-acceptance-4",
+            "--",
+            "ip",
+            "-6",
+            "route",
+            "show",
+            "table",
+            "all",
+        ]);
         assert!(Cli::try_parse_from(diagnostic).is_ok());
         let mut scoped = base.to_vec();
         scoped.extend([
