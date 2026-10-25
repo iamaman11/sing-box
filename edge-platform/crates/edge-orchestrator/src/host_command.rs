@@ -558,7 +558,10 @@ pub(crate) fn run(
                 } else {
                     println!("host_vm_network_observation=UNAVAILABLE");
                 }
-                println!("host_vm_managed_docker_count={}", report.managed_docker.len());
+                println!(
+                    "host_vm_managed_docker_count={}",
+                    report.managed_docker.len()
+                );
                 println!("host_vm_managed_docker_origin=RUNNER_COPIED_UNAUTHENTICATED");
                 for managed in &report.managed_docker {
                     println!(
