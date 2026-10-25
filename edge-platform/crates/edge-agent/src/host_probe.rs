@@ -37,34 +37,51 @@ pub(super) fn run_host_probe() -> Result<(), String> {
     // This function contains NO privileged mutator or resource-repair capability.
     let executable = diagnostic_binary(&request.argv[0]).map_err(str::to_owned)?;
     let mut cmd = Command::new("/usr/bin/timeout");
-    cmd.args(["--kill-after=1s", "7s", "/usr/bin/setpriv",
-        "--reuid=65534", "--regid=65534", "--clear-groups", "--no-new-privs"])
-        .arg(executable)
-        .args(&request.argv[1..])
-        .env_clear()
-        .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
-        .env("LANG", "C")
-        .env("LC_ALL", "C")
-        .current_dir("/")
-        .stdin(Stdio::null())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
+    cmd.args([
+        "--kill-after=1s",
+        "7s",
+        "/usr/bin/setpriv",
+        "--reuid=65534",
+        "--regid=65534",
+        "--clear-groups",
+        "--no-new-privs",
+    ])
+    .arg(executable)
+    .args(&request.argv[1..])
+    .env_clear()
+    .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
+    .env("LANG", "C")
+    .env("LC_ALL", "C")
+    .current_dir("/")
+    .stdin(Stdio::null())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped());
     let mut child = cmd.spawn().map_err(|_| "HOST_DIAG_LAUNCHER_UNAVAILABLE")?;
     let stdout = child.stdout.take().ok_or("HOST_DIAG_STDOUT_UNAVAILABLE")?;
     let stderr = child.stderr.take().ok_or("HOST_DIAG_STDERR_UNAVAILABLE")?;
     // Do not let an untrusted subprocess allocate arbitrary amounts in the agent.
     let out_thread = std::thread::spawn(move || {
         let mut out = Vec::new();
-        stdout.take((MAX_DIAGNOSTIC_OUTPUT_BYTES + 1) as u64).read_to_end(&mut out).map(|_| out)
+        stdout
+            .take((MAX_DIAGNOSTIC_OUTPUT_BYTES + 1) as u64)
+            .read_to_end(&mut out)
+            .map(|_| out)
     });
     let err_thread = std::thread::spawn(move || {
         let mut err = Vec::new();
-        stderr.take((MAX_DIAGNOSTIC_OUTPUT_BYTES + 1) as u64).read_to_end(&mut err).map(|_| err)
+        stderr
+            .take((MAX_DIAGNOSTIC_OUTPUT_BYTES + 1) as u64)
+            .read_to_end(&mut err)
+            .map(|_| err)
     });
     let status = child.wait().map_err(|_| "HOST_DIAG_WAIT_UNAVAILABLE")?;
-    let stdout = out_thread.join().map_err(|_| "HOST_DIAG_STDOUT_THREAD_FAILED")?
+    let stdout = out_thread
+        .join()
+        .map_err(|_| "HOST_DIAG_STDOUT_THREAD_FAILED")?
         .map_err(|_| "HOST_DIAG_STDOUT_READ_FAILED")?;
-    let stderr = err_thread.join().map_err(|_| "HOST_DIAG_STDERR_THREAD_FAILED")?
+    let stderr = err_thread
+        .join()
+        .map_err(|_| "HOST_DIAG_STDERR_THREAD_FAILED")?
         .map_err(|_| "HOST_DIAG_STDERR_READ_FAILED")?;
     println!("host_diagnostic_source=RUNNER_COPIED_UNAUTHENTICATED");
     println!("host_diagnostic_machine={}", request.machine_id);
@@ -81,14 +98,22 @@ pub(super) fn run_host_probe() -> Result<(), String> {
     // No environment, proc command-lines, Docker inspect env or raw system logs.
     for (kind, value) in [("stdout", stdout), ("stderr", stderr)] {
         for (index, line) in String::from_utf8_lossy(&value).lines().take(60).enumerate() {
-            let printable = line.chars()
+            let printable = line
+                .chars()
                 .filter(|ch| ch.is_ascii_graphic() || *ch == ' ')
                 .take(160)
                 .collect::<String>();
             println!("host_diagnostic_{kind}_{index}={printable}");
         }
     }
-    println!("host_diagnostic_result={}", if status.success() { "COMMAND_OK" } else { "COMMAND_FAILED" });
+    println!(
+        "host_diagnostic_result={}",
+        if status.success() {
+            "COMMAND_OK"
+        } else {
+            "COMMAND_FAILED"
+        }
+    );
     Ok(())
 }
 
@@ -98,7 +123,15 @@ mod tests {
     #[test]
     fn only_absolute_non_shell_tools_are_addressable() {
         assert_eq!(diagnostic_binary("ip").unwrap(), "/usr/sbin/ip");
-        for x in ["sh", "bash", "/bin/bash", "docker", "sudo", "nft", "journalctl"] {
+        for x in [
+            "sh",
+            "bash",
+            "/bin/bash",
+            "docker",
+            "sudo",
+            "nft",
+            "journalctl",
+        ] {
             assert!(diagnostic_binary(x).is_err());
         }
     }
