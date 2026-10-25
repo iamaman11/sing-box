@@ -591,14 +591,20 @@ pub(crate) fn run(
                         .then_some(native_bundle_sha.as_slice()),
                     now,
                 )?;
-                let problems = resources.resources.iter().filter(|r| {
-                    !r.ownership_proven || !r.running_proven || !r.running
-                        || !matches!(
+                let problems = resources
+                    .resources
+                    .iter()
+                    .filter(|r| {
+                        !r.ownership_proven
+                            || !r.running_proven
+                            || !r.running
+                            || !matches!(
                             edge_shared_types::FleetVmObservedReason::try_from(r.observed_reason),
                             Ok(edge_shared_types::FleetVmObservedReason::Healthy
                                 | edge_shared_types::FleetVmObservedReason::RunningNoHealthcheck)
                         )
-                }).count()
+                    })
+                    .count()
                     + resources
                         .managed_docker
                         .iter()
