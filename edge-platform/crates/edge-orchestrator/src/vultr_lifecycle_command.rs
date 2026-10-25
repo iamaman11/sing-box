@@ -118,9 +118,6 @@ async fn apply_machine_value(
     let profiles = load_firewall_profiles(&desired)?;
     let substrate = host_substrate_versions_from_env()?;
     let policy = LifecycleExecutionPolicy::default();
-    let canonical_public_key = read_canonical_ssh_public_key()?;
-    let operator_private_key_path = operator_private_key_path_from_env()?;
-    verify_operator_key_matches(&operator_private_key_path, &canonical_public_key)?;
     let mut lifecycle_provider = lifecycle_provider_from_env()?;
     let mut support_provider = support_provider_from_env()?;
     let mut verified_firewalls =
@@ -139,6 +136,12 @@ async fn apply_machine_value(
         .cloned()
         .ok_or_else(|| format!("no lifecycle plan was produced for {machine_id}"))?;
     let initial_class = initial_plan.class;
+    // No general lifecycle path may silently provision the retired SSH
+    // host, even if the dedicated /host first-use preflight is bypassed.
+    // Observing/updating existing instances remains a separate operation.
+    if initial_class == PlanClass::Create {
+        return Err("HOST_VM_CREATE_REQUIRES_NATIVE_ONE_TIME_ENROLLMENT_NO_SSH".to_owned());
+    }
     let authorized = authorize_vultr_machine(&desired, &initial.inventory, initial_plan)?;
     let authority_digest = expected_authority
         .map(ToOwned::to_owned)
@@ -216,32 +219,9 @@ async fn apply_machine_value(
             .map_err(|err| err.to_string())?;
     }
 
-    let prerequisites = if after_support_class == PlanClass::Create {
-        validate_machine_catalog(&mut support_provider, machine).await?;
-        let ssh_key = resolve_managed_ssh_key(
-            &mut support_provider,
-            &desired.environment,
-            &canonical_public_key,
-            &policy,
-        )
-        .await?;
-        let base_cloud_init = read_base_cloud_init(machine)?;
-        let strict_bootstrap = prepare_strict_bootstrap(
-            &base_cloud_init,
-            &machine.id,
-            &operator_private_key_path,
-            &canonical_public_key,
-            &substrate,
-        )?;
-        resolve_create_prerequisites(
-            machine,
-            &ssh_key.id,
-            firewall.as_ref(),
-            strict_bootstrap.cloud_init,
-        )?
-    } else {
-        empty_create_prerequisites(machine)
-    };
+    // Native first-use is the only future CREATE owner; the old generic
+    // lifecycle is limited to already-proven existing machines.
+    let prerequisites = empty_create_prerequisites(machine);
 
     let support_reconciled =
         initial_class == PlanClass::UpdateInPlace && after_support_class == PlanClass::Noop;
