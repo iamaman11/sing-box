@@ -290,7 +290,7 @@ def observe(machine_id, desired_spec_path):
         "worker_active_deployment": "UNPROVEN",
         "worker_signing_public_key": "UNPROVEN_NO_NATIVE_ATTESTATION",
         "vm_access_service_identity": "UNPROVEN",
-        "operator_ssh_private_key": "UNPROVEN",
+        "bootstrap_transport": "SSH_RETIRED_CLOUD_INIT_REQUIRED",
         "provider_mutations": 0,
         "worker_mutations": 0,
         "github_mutations": 0,
@@ -359,8 +359,6 @@ def observe(machine_id, desired_spec_path):
             result["worker_host_route_get"] = observe_worker_host_get_route(
                 worker, subdomain, access_id, access_secret)
 
-    if os.environ.get("VULTR_SSH_PRIVATE_KEY"):
-        result["operator_ssh_private_key"] = "PRESENT_UNVERIFIED"
     return result
 
 

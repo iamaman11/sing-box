@@ -640,7 +640,6 @@ jobs:
           TARGET_MACHINE: ${{ needs.host.outputs.machine_id }}
           TARGET_DESIRED_SPEC: ${{ needs.host.outputs.desired_spec_path }}
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
-          VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}
           CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
           CLOUDFLARE_VM_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID }}
           CLOUDFLARE_VM_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET }}

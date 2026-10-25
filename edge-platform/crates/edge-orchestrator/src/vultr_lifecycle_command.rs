@@ -604,6 +604,16 @@ fn authorize_initial_runtime_job(job: &str, apply: bool) -> Result<(), String> {
 
 /// Fail-closed VM create admission: no ambiguous plan or existing owner
 /// can be downgraded to a fresh CREATE by the first-use workflow.
+/// The deployed first-use implementation still contains strict SSH/SCP.
+/// An operator must not accidentally turn a complete Worker/Git preflight
+/// into provider CREATE through that retired bootstrap. Replace this single
+/// code-owned admission only together with a proven one-time cloud-init
+/// enrollment and secure root-only credential delivery. No environment flag,
+/// Git field or caller option can override this invariant.
+fn admit_first_use_bootstrap_transport() -> Result<(), &'static str> {
+    Err("HOST_FIRST_USE_CLOUD_INIT_ENROLLMENT_NOT_IMPLEMENTED_NO_CREATE")
+}
+
 fn admit_vm_first_use_provider_plan(
     selected: Option<&PlanClass>,
     plan_count: usize,
@@ -627,6 +637,7 @@ pub(crate) async fn host_first_use_provider_preflight(
     context: &OrchestrationContext,
 ) -> Result<(), String> {
     let host = context.verified_vm_first_use_host(machine_id)?;
+    admit_first_use_bootstrap_transport().map_err(str::to_owned)?;
     edge_shared_types::host_lifecycle::verify_vm_first_use_git_prerequisites(&host)
         .map_err(str::to_owned)?;
     if !host.native_receipt_public_key.is_empty() {
@@ -702,6 +713,7 @@ pub(crate) async fn host_first_use(
         return Err("HOST_FIRST_USE_NO_AUTOMATIC_REPLAY".to_owned());
     }
     let git_host = context.verified_vm_first_use_host(machine_id)?;
+    admit_first_use_bootstrap_transport().map_err(str::to_owned)?;
     edge_shared_types::host_lifecycle::verify_vm_first_use_git_prerequisites(&git_host)
         .map_err(str::to_owned)?;
     if !git_host.native_receipt_public_key.is_empty() {
