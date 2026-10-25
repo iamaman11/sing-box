@@ -27,6 +27,21 @@ assert "sing-box-credential-existing-join-begin" not in capability
 assert "vm-credential-proof" not in capability
 assert "host_first_use:" in router and "host_resume_receipt:" in router
 assert "  workflow_call:" in native and "  workflow_call:" not in router
+# A deleted/offline VM can keep its self-hosted job queued forever.
+# VM-native serialization must be PER MACHINE, never the shared fleet lock
+# that also protects the hosted Worker authorizer and Vultr first-use owner.
+native_observe = native.split("  observe:\n", 1)[1].split("\n  report:", 1)[0]
+assert "format('host-native-vm-{0}', inputs.machine_id)" in native_observe
+assert "vultr-control-plane-production" not in native_observe
+assert "cancel-in-progress: false" in native_observe
+assert "format('host-readonly-{0}', inputs.source_comment_id)" in native_observe
+for job in ("host_worker_authorizer", "host_first_use", "host_resume_receipt"):
+    # Nested YAML field indentation differs from top-level job indentation.
+    following = router.split(f"  {job}:\n", 1)[1]
+    stop = re.search(r"(?m)^  [a-z][a-z_]*:\s*$", following)
+    section = following[:stop.start()] if stop else following
+    assert "group: vultr-control-plane-production" in section
+    assert "cancel-in-progress: false" in section
 assert "  pull_request:" in ci and "  push:" in ci
 assert all(name not in router for name in legacy)
 for p in root.glob("*.yml"):
