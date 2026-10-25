@@ -64,7 +64,9 @@ fn capture_stream_with_file(
         let retain = PREVIEW_LIMIT.saturating_sub(preview.len()).min(len);
         preview.extend_from_slice(&buffer[..retain]);
         if let Some(ref mut file) = spool {
-            let save = CAPTURE_LIMIT.saturating_sub(capture_bytes as usize).min(len);
+            let save = CAPTURE_LIMIT
+                .saturating_sub(capture_bytes as usize)
+                .min(len);
             if save > 0 {
                 file.write_all(&buffer[..save])?;
                 capture_bytes += save as u64;
@@ -217,8 +219,12 @@ pub(super) async fn execute() -> Result<(), String> {
     let stdout_capture = journal.join(format!("admin-{key}.stdout.bin"));
     let stderr_capture = journal.join(format!("admin-{key}.stderr.bin"));
     let open_capture = |path: &Path| {
-        OpenOptions::new().write(true).create_new(true).mode(0o600)
-            .open(path).map_err(|_| "HOST_ADMIN_OUTPUT_CAPTURE_UNAVAILABLE_NO_REPLAY")
+        OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(path)
+            .map_err(|_| "HOST_ADMIN_OUTPUT_CAPTURE_UNAVAILABLE_NO_REPLAY")
     };
     let stdout_spool = open_capture(&stdout_capture)?;
     let stderr_spool = open_capture(&stderr_capture)?;

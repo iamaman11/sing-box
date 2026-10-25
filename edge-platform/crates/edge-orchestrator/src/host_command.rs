@@ -1081,12 +1081,30 @@ pub(crate) fn run(
                 "host_admin_stderr_total_bytes={}",
                 receipt.stderr_total_bytes
             );
-            println!("host_admin_stdout_capture_path={}", receipt.stdout_capture_path);
-            println!("host_admin_stderr_capture_path={}", receipt.stderr_capture_path);
-            println!("host_admin_stdout_capture_bytes={}", receipt.stdout_capture_bytes);
-            println!("host_admin_stderr_capture_bytes={}", receipt.stderr_capture_bytes);
-            println!("host_admin_stdout_capture_complete={}", receipt.stdout_capture_complete);
-            println!("host_admin_stderr_capture_complete={}", receipt.stderr_capture_complete);
+            println!(
+                "host_admin_stdout_capture_path={}",
+                receipt.stdout_capture_path
+            );
+            println!(
+                "host_admin_stderr_capture_path={}",
+                receipt.stderr_capture_path
+            );
+            println!(
+                "host_admin_stdout_capture_bytes={}",
+                receipt.stdout_capture_bytes
+            );
+            println!(
+                "host_admin_stderr_capture_bytes={}",
+                receipt.stderr_capture_bytes
+            );
+            println!(
+                "host_admin_stdout_capture_complete={}",
+                receipt.stdout_capture_complete
+            );
+            println!(
+                "host_admin_stderr_capture_complete={}",
+                receipt.stderr_capture_complete
+            );
             println!("host_admin_stdout_truncated={}", receipt.stdout_truncated);
             println!("host_admin_stderr_truncated={}", receipt.stderr_truncated);
             println!(
