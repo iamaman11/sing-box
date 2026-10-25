@@ -846,56 +846,6 @@ pub async fn request_canonical_host_authorization(
     Ok(authorization)
 }
 
-/// Signed administrative authority is always minted by the existing Worker,
-/// NEVER by the self-hosted runner or the local caller. One POST, no retry.
-pub async fn request_canonical_admin_authorization(
-    request_bytes: &[u8],
-    identity_path: &Path,
-) -> Result<edge_shared_types::FleetHostAdministrativeAuthorization, String> {
-    use edge_shared_types::host_admin;
-    use edge_shared_types::FleetHostAdministrativeAuthorization;
-    use prost::Message;
-
-    let request = host_admin::decode(request_bytes).map_err(str::to_owned)?;
-    let identity = read_access_service_identity(identity_path)?;
-    let mut url = reqwest::Url::parse(&canonical_credential_worker_url(
-        CredentialProjectionKind::Vm, 1,
-    )?)
-    .map_err(|_| "HOST_ADMIN_WORKER_URL_INVALID".to_owned())?;
-    url.set_path("/v1/host/admin/authorize");
-    url.set_query(None);
-    let response = credential_worker_client(&identity)?
-        .post(url)
-        .header(CONTENT_TYPE, "application/x-protobuf")
-        .body(request_bytes.to_vec())
-        .send().await
-        .map_err(|_| "HOST_ADMIN_AUTHORIZATION_POST_UNKNOWN_NO_REPLAY".to_owned())?;
-    if response.status() != StatusCode::OK {
-        return Err(format!("HOST_ADMIN_WORKER_REJECTED_HTTP_{}", response.status().as_u16()));
-    }
-    if response.headers().get(CONTENT_TYPE).and_then(|v| v.to_str().ok())
-        != Some("application/x-protobuf")
-        || response.content_length().is_some_and(|n| n == 0 || n > 1024)
-    {
-        return Err("HOST_ADMIN_WORKER_AUTHORIZATION_INVALID_RESPONSE".to_owned());
-    }
-    let bytes = response.bytes().await
-        .map_err(|_| "HOST_ADMIN_AUTHORIZATION_ACK_UNKNOWN_NO_REPLAY")?;
-    if bytes.is_empty() || bytes.len() > 1024 {
-        return Err("HOST_ADMIN_AUTHORIZATION_SIZE_INVALID".to_owned());
-    }
-    let authorization = FleetHostAdministrativeAuthorization::decode(bytes.as_ref())
-        .map_err(|_| "HOST_ADMIN_AUTHORIZATION_PROTOBUF_INVALID")?;
-    if authorization.encode_to_vec().as_slice() != bytes.as_ref()
-        || authorization.operation_id != host_admin::operation_id(&request)
-    {
-        return Err("HOST_ADMIN_AUTHORIZATION_MISMATCH".to_owned());
-    }
-    // Native root still needs to authenticate the Ed25519 signature against
-    // its independent immutable Git-pinned Worker public key.
-    Ok(authorization)
-}
-
 pub async fn fetch_canonical_credential_bundle(
     projection: CredentialProjectionKind,
     generation: u64,
