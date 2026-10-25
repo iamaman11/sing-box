@@ -350,6 +350,7 @@ assert "host_first_use_receipt_register.sh" in router
 assert "host_first_use_receipt_register.sh" in router
 assert "bootstrap-proof-check" in router
 assert "HOST_FIRST_USE_RECOVERY=SIGNED_ROOT_PROOF_AND_SCRUB_PROVEN" in router
+assert 'export REPOSITORY="${GITHUB_REPOSITORY}"' in router
 assert 'export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"' in router
 assert "HOST_ABORT_FIREWALL_PREPOST_ERROR_NOT_PROVEN" in abort
 assert "DenyLogRedirect" in abort
