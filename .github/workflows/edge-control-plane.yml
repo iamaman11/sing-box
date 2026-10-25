@@ -610,9 +610,10 @@ jobs:
     # Not another public command or native mutation path. The same exact
     # authorized /host status --deep may observe existing protected secrets
     # and provider GET endpoints without reading or printing their values.
-    needs: host
+    needs: [host, host_report]
     if: >-
       needs.host.result == 'success' &&
+      needs.host_report.result == 'success' &&
       github.event_name == 'issue_comment' &&
       github.run_attempt == 1 &&
       github.event.comment.body == format('/host status {0} --deep', needs.host.outputs.machine_id) &&
@@ -626,6 +627,18 @@ jobs:
     timeout-minutes: 8
     permissions:
       contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      TARGET_MACHINE: ${{ needs.host.outputs.machine_id }}
+      REPORT_COMMENT_ID: ${{ needs.host_report.outputs.comment_id }}
+      OPERATION_ID: issue1-comment-${{ github.event.comment.id }}
+      GIT_PHASE: ${{ needs.host.outputs.diagnostic_git_phase }}
+      GIT_OWNER: ${{ needs.host.outputs.diagnostic_git_owner }}
+      GIT_REASON: ${{ needs.host.outputs.diagnostic_git_reason }}
+      GIT_LAST_PROVEN_STEP: ${{ needs.host.outputs.diagnostic_git_last_proven_step }}
+      GIT_NEXT_ACTION: ${{ needs.host.outputs.diagnostic_git_next_action }}
+      RELEASE_SET_SHA256: ${{ needs.host.outputs.diagnostic_release_set_sha256 }}
     steps:
       - name: Checkout exact protected main for bounded capability observation
         shell: bash
@@ -674,16 +687,12 @@ jobs:
           result="$(python3 edge-platform/scripts/host_capability_preflight.py "${TARGET_MACHINE}" "${TARGET_DESIRED_SPEC}")"
           # The probe returns closed enums, not provider payloads.
           python3 -c 'import json,sys; a=json.loads(sys.argv[1]); assert a["provider_mutations"] == a["worker_mutations"] == a["github_mutations"] == 0; assert a["scope"] == "READ_ONLY_PROTECTED_ENVIRONMENT"' "${result}"
-          {
-            echo '### Protected first-use capabilities (read-only; not signed admission)'
-            echo '~~~json'
-            printf '%s\n' "${result}"
-            echo '~~~'
-          } >> "${GITHUB_STEP_SUMMARY}"
-          printf '%s\n' "${result}"
+          # Ephemeral same-job evidence, never a second desired source.
+          printf '%s\n' "${result}" > "${RUNNER_TEMP}/host-capabilities.json"
           echo 'host_mutations=0'
 
       - name: Prove current Git-pinned VM credential through Worker Access GET only
+        id: vm_credential
         shell: bash
         env:
           TARGET_MACHINE: ${{ needs.host.outputs.machine_id }}
@@ -713,17 +722,50 @@ jobs:
             # All successful stdout values are public source identity only.
             cat "${RUNNER_TEMP}/vm-credential-readonly.out"
             echo host_vm_worker_live_source=GIT_PIN_EXACT_ACCESS_GET_PROVEN
+            echo 'status=GIT_PIN_EXACT_ACCESS_GET_PROVEN' >> "${GITHUB_OUTPUT}"
           else
             # Do not fail ordinary /host status, but never claim admission;
             # never disclose raw HTTP bodies or secret-bearing diagnostics.
             reason="$(tail -n 1 "${RUNNER_TEMP}/vm-credential-readonly.err" | tr -d '\r\n')"
             [[ "${reason}" =~ ^[A-Z][A-Z0-9_]{3,119}$ ]] || reason=UNCLASSIFIED_GET_FAILURE
             echo "host_vm_worker_live_source=BLOCKED"
+            echo 'status=BLOCKED' >> "${GITHUB_OUTPUT}"
             echo "host_vm_worker_live_reason=${reason}"
           fi
           echo host_worker_mutations=0
           echo host_provider_mutations=0
 
+
+      - name: Publish one correlated deep diagnosis to original /host report
+        shell: bash
+        env:
+          VM_BUNDLE_STATUS: ${{ steps.vm_credential.outputs.status }}
+        run: |
+          set -euo pipefail
+          [[ "${REPORT_COMMENT_ID}" =~ ^[1-9][0-9]{0,19}$ ]]
+          [[ "${OPERATION_ID}" =~ ^issue1-comment-[1-9][0-9]{0,19}$ ]]
+          case "${VM_BUNDLE_STATUS}" in
+            GIT_PIN_EXACT_ACCESS_GET_PROVEN|BLOCKED) ;;
+            *) echo HOST_DIAGNOSTIC_WORKER_PROOF_UNAVAILABLE >&2; exit 1 ;;
+          esac
+          diagnostic="$(python3 edge-platform/scripts/host_diagnostic_summary.py \
+            < "${RUNNER_TEMP}/host-capabilities.json")"
+          # Reject any accidental sensitive material or false acceptance.
+          python3 -c 'import json,sys; d=json.loads(sys.argv[1]); assert d["schema"] == "sing-box.host-diagnostic/v1"; assert d["mutation_authorized"] is False and d["physical_accepted"] is False and d["replay_allowed"] is False; assert d["provider_mutations"] == d["worker_mutations"] == d["github_mutations"] == 0' "${diagnostic}"
+          {
+            echo '### Unified deep host diagnosis (Git + provider GET + Worker + runner)'
+            echo '~~~json'
+            printf '%s\n' "${diagnostic}"
+            echo '~~~'
+          } >> "${GITHUB_STEP_SUMMARY}"
+          # Reuse the one immediate report comment; no second diagnostic
+          # thread, no duplicate state store and no new operator command.
+          original="$(gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${REPORT_COMMENT_ID}" --jq '.body')"
+          (( ${#original} > 0 && ${#original} < 16000 ))
+          appendix="$(printf '\n\n### Unified deep diagnosis — read only\n\n\`\`\`json\n%s\n\`\`\`\n\nSigned native receipt: **UNPROVEN** until the existing runner returns an independently verified root result.\n' "${diagnostic}")"
+          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${REPORT_COMMENT_ID}" \
+            -f "body=${original}${appendix}" >/dev/null
+          echo HOST_DIAGNOSTIC=CORRELATED_ONE_REPORT_NO_MUTATION
   host_first_use:
     # Sole hosted CREATE owner; no SSH, no new service or runner root rights.
     needs: [host, host_report]
