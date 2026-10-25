@@ -339,7 +339,7 @@ assert "host_first_use_abort.py" in abort_job
 assert abort_job.index("Prove exact absent VM through complete typed Vultr inventory") < abort_job.index("Retire only exact aborted GitHub first-use reservation")
 assert 'return "PROVEN_SKIPPED"' in abort
 assert "HOST_ABORT_CREATE_FAILURE_NOT_PROVEN_PREPOST" in abort
-assert "HOST_ABORT_ORIGINAL_PRECREATE_FAILURE_UNPROVEN" in abort
+assert 'return "PROVEN_NOT_ENTERED_PREPOST_FIREWALL"' in abort
 assert "HOST_ABORT_RESERVED_REF_CONTENT_DRIFT" in abort
 assert "HOST_ABORT_TERMINAL_EVIDENCE_AMBIGUOUS" in abort
 assert abort.index("verify_original_run(machine, origin, old_revision, run_id)") < abort.index('method="POST", form=marker')
