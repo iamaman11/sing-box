@@ -70,6 +70,46 @@ mod io_tests {
         assert_eq!(result.preview.len(), PREVIEW_LIMIT);
         assert_eq!(result.sha256, sha256(&bytes));
     }
+
+    #[test]
+    fn simultaneous_large_child_stdout_and_stderr_never_deadlock() {
+        // Feed two real OS pipes concurrently. A reader which stops at 64 KiB
+        // causes timeout(1) to return 124 rather than a successful exit.
+        let mut child = OsCommand::new("/usr/bin/timeout")
+            .args([
+                "8s", "/bin/sh", "-c",
+                "head -c 1048576 /dev/zero; head -c 1048576 /dev/zero >&2",
+            ])
+            .stdin(OsStdio::null())
+            .stdout(OsStdio::piped())
+            .stderr(OsStdio::piped())
+            .spawn()
+            .unwrap();
+        let out = child.stdout.take().unwrap();
+        let err = child.stderr.take().unwrap();
+        let out_thread = std::thread::spawn(move || capture_stream(out).unwrap());
+        let err_thread = std::thread::spawn(move || capture_stream(err).unwrap());
+        let status = child.wait().unwrap();
+        let out = out_thread.join().unwrap();
+        let err = err_thread.join().unwrap();
+        assert!(status.success(), "child stalled before draining both pipes");
+        assert_eq!(out.total_bytes, 1_048_576);
+        assert_eq!(err.total_bytes, 1_048_576);
+        assert_eq!(out.preview.len(), PREVIEW_LIMIT);
+        assert_eq!(err.preview.len(), PREVIEW_LIMIT);
+        let digest = sha256(&vec![0; 1_048_576]);
+        assert_eq!(out.sha256, digest);
+        assert_eq!(err.sha256, digest);
+    }
+
+    #[test]
+    fn actual_child_timeout_returns_terminal_nonzero_status() {
+        let status = OsCommand::new("/usr/bin/timeout")
+            .args(["--kill-after=1s", "1s", "/bin/sh", "-c", "sleep 5"])
+            .status()
+            .unwrap();
+        assert_eq!(status.code(), Some(124));
+    }
 }
 
 pub(super) async fn execute() -> Result<(), String> {
