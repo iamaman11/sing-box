@@ -719,24 +719,18 @@ pub(crate) async fn host_first_use(
         .parse::<u64>()
         .map_err(|_| "HOST_FIRST_USE_GITHUB_TOKEN_EXPIRY_INVALID")?;
     let release = context.release();
-    let runtime = release
-        .vm_runtime
-        .as_ref()
-        .ok_or("HOST_FIRST_USE_RELEASE_VM_OWNER_MISSING")?;
-    if runtime.edge_agent_sha256.len() != 32 {
+    let agent_sha = release.agent_sha256.as_str();
+    if agent_sha.len() != 64
+        || !agent_sha.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
         return Err("HOST_FIRST_USE_AGENT_DIGEST_INVALID".into());
     }
-    let agent_sha = runtime
-        .edge_agent_sha256
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
     let substrate = pinned_host_substrate_versions(context)?;
     let cloud_init = crate::vultr_host_bootstrap::render_native_first_use_with_runner(
         include_str!("../../../../win/vultr-waw/cloud-init.yaml"),
         machine_id,
         &release.release_set_sha256,
-        &agent_sha,
+        agent_sha,
         &substrate,
         &token,
         deadline,
