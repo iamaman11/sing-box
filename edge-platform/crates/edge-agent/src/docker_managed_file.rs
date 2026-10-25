@@ -2,6 +2,9 @@
 //! Executed only after Worker-signed HostIntent, owner lock and durable BEGIN.
 //! Never accepts a runner path or payload; no Docker exec, shell or SSH.
 use super::*;
+#[path = "docker_managed_object.rs"]
+mod managed_object;
+use managed_object::*;
 use std::io::Write;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
@@ -13,6 +16,7 @@ pub(crate) struct NativeVmManagedFilePlan {
     unchanged_sha256: Vec<(String, Vec<u8>)>,
     installed_graph: edge_shared_types::FleetVmDesiredGraph,
     pub(super) target_graph: edge_shared_types::FleetVmDesiredGraph,
+    docker: Option<PreparedManagedDocker>,
     release: edge_shared_types::ApplicationBundleReleaseState,
 }
 
@@ -88,7 +92,7 @@ fn checked_managed_existing_file(
     }
 }
 
-pub(crate) fn preflight_native_vm_managed_file(
+pub(crate) async fn preflight_native_vm_managed_file(
     stack_dir: &Path,
     host: &FleetHost,
     request: &ApplyBundleRequest,
@@ -175,7 +179,18 @@ pub(crate) fn preflight_native_vm_managed_file(
     if host.kind != edge_shared_types::FleetHostKind::Vm as i32 {
         return Err("HOST_VM_MANAGED_FILE_HOST_KIND_INVALID".into());
     }
+    let docker = if is_managed_docker_manifest(&path) {
+        Some(preflight_managed_docker_object(
+            host,
+            &path,
+            before.as_deref(),
+            after.as_deref(),
+        ).await?)
+    } else {
+        None
+    };
     Ok(NativeVmManagedFilePlan {
+        docker,
         path,
         before,
         after,
@@ -232,7 +247,7 @@ fn atomic_managed_file_change(
 }
 
 /// Called only under signed one-shot native transaction, after durable BEGIN.
-pub(crate) fn apply_native_vm_managed_file_once(
+pub(crate) async fn apply_native_vm_managed_file_once(
     stack_dir: &Path,
     host: &FleetHost,
     plan: NativeVmManagedFilePlan,
@@ -248,6 +263,11 @@ pub(crate) fn apply_native_vm_managed_file_once(
     }
     // Creating the private managed directory is itself an effect and occurs
     // only after journal BEGIN; failure leaves UNKNOWN_NO_REPLAY.
+    // The Docker effect is independently CAS-checked under the existing signed BEGIN.
+    // Any ambiguous Docker acknowledgement preserves UNKNOWN_NO_REPLAY.
+    if let Some(prepared) = plan.docker.as_ref() {
+        apply_managed_docker_object_once(prepared).await?;
+    }
     checked_managed_directory(stack_dir, plan.before.is_none() && plan.after.is_some())?;
     let path = stack_dir.join(&plan.path);
     atomic_managed_file_change(&path, plan.before.as_deref(), plan.after.as_deref(), 0)

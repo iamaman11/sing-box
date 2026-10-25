@@ -149,7 +149,7 @@ pub(super) async fn preflight_managed_docker_object(
     if prior == desired {
         return Err("HOST_VM_DOCKER_OPERATION_REQUIRES_STATE_CHANGE".into());
     }
-    let docker = super::docker_connection().await?;
+    let docker = super::super::docker_connection().await?;
     let physical = observe_managed_docker_object(&docker, spec, !desired).await?;
     if physical.is_some() != prior {
         return Err("HOST_VM_DOCKER_PRESTATE_NOT_CONVERGED".into());

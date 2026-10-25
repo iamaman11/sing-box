@@ -2704,6 +2704,7 @@ pub(crate) async fn preflight_native_vm_replace(
             .map(NativeVmReplacePlan::Config)?
     } else {
         preflight_native_vm_managed_file(stack_dir, host, request, &installed_graph, &target_graph)
+            .await
             .map(NativeVmReplacePlan::ManagedFile)?
     };
     let prepared_graph = match &plan {
@@ -2730,7 +2731,7 @@ pub(crate) async fn apply_native_vm_replace_once(
             apply_gateway_image_replace_once(stack_dir, host, plan).await
         }
         NativeVmReplacePlan::ManagedFile(plan) => {
-            apply_native_vm_managed_file_once(stack_dir, host, plan)
+            apply_native_vm_managed_file_once(stack_dir, host, plan).await
         }
     }
 }
