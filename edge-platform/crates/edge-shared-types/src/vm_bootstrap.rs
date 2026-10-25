@@ -6,10 +6,10 @@
 use crate::{FleetVmBootstrapAccessEnvelope, FleetVmBootstrapKeyProof};
 use prost::Message;
 use ring::aead::{self, Aad, LessSafeKey, Nonce, UnboundKey};
-use ring::digest::{digest, SHA256};
+use ring::digest::{SHA256, digest};
 use ring::hkdf;
 use ring::rand::{SecureRandom, SystemRandom};
-use ring::signature::{Ed25519KeyPair, KeyPair, UnparsedPublicKey, ED25519};
+use ring::signature::{ED25519, Ed25519KeyPair, KeyPair, UnparsedPublicKey};
 use x25519_dalek::{PublicKey, StaticSecret};
 
 const PURPOSE: &[u8] = b"sing-box/vm-first-use-access/v1";
@@ -55,7 +55,10 @@ fn validate_fields(p: &FleetVmBootstrapKeyProof) -> Result<(), &'static str> {
     if p.schema_version != 1
         || p.machine_id.is_empty()
         || p.machine_id.len() > 63
-        || !p.machine_id.bytes().all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
+        || !p
+            .machine_id
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'-')
         || p.machine_id.starts_with('-')
         || p.machine_id.ends_with('-')
         || p.release_set_sha256.len() != 32
@@ -80,7 +83,10 @@ pub fn verify_root_proof(proof: &FleetVmBootstrapKeyProof) -> Result<(), &'stati
         .map_err(|_| "BOOTSTRAP_ROOT_SIGNATURE_INVALID")
 }
 
-fn derived_key(shared: &[u8; 32], proof: &FleetVmBootstrapKeyProof) -> Result<LessSafeKey, &'static str> {
+fn derived_key(
+    shared: &[u8; 32],
+    proof: &FleetVmBootstrapKeyProof,
+) -> Result<LessSafeKey, &'static str> {
     if shared.iter().all(|byte| *byte == 0) {
         return Err("BOOTSTRAP_DH_INVALID");
     }
@@ -93,8 +99,8 @@ fn derived_key(shared: &[u8; 32], proof: &FleetVmBootstrapKeyProof) -> Result<Le
         .map_err(|_| "BOOTSTRAP_KDF_INVALID")?
         .fill(&mut bytes)
         .map_err(|_| "BOOTSTRAP_KDF_INVALID")?;
-    let key = UnboundKey::new(&aead::CHACHA20_POLY1305, &bytes)
-        .map_err(|_| "BOOTSTRAP_AEAD_INVALID")?;
+    let key =
+        UnboundKey::new(&aead::CHACHA20_POLY1305, &bytes).map_err(|_| "BOOTSTRAP_AEAD_INVALID")?;
     Ok(LessSafeKey::new(key))
 }
 
@@ -107,19 +113,26 @@ pub fn seal_for_native_root(
         return Err("BOOTSTRAP_IDENTITY_LENGTH_INVALID");
     }
     let (sender_private, sender_public) = fresh_recipient()?;
-    let recipient_public: [u8; 32] = proof.recipient_x25519_public_key.as_slice()
-        .try_into().map_err(|_| "BOOTSTRAP_RECIPIENT_SCOPE_INVALID")?;
+    let recipient_public: [u8; 32] = proof
+        .recipient_x25519_public_key
+        .as_slice()
+        .try_into()
+        .map_err(|_| "BOOTSTRAP_RECIPIENT_SCOPE_INVALID")?;
     let shared = StaticSecret::from(sender_private)
-        .diffie_hellman(&PublicKey::from(recipient_public)).to_bytes();
+        .diffie_hellman(&PublicKey::from(recipient_public))
+        .to_bytes();
     let key = derived_key(&shared, proof)?;
     let mut nonce = [0u8; 12];
-    SystemRandom::new().fill(&mut nonce).map_err(|_| "BOOTSTRAP_RANDOM_FAILED")?;
+    SystemRandom::new()
+        .fill(&mut nonce)
+        .map_err(|_| "BOOTSTRAP_RANDOM_FAILED")?;
     let mut ciphertext = secret_identity.to_vec();
     key.seal_in_place_append_tag(
         Nonce::assume_unique_for_key(nonce),
         Aad::from(proof.encode_to_vec()),
         &mut ciphertext,
-    ).map_err(|_| "BOOTSTRAP_ENCRYPT_FAILED")?;
+    )
+    .map_err(|_| "BOOTSTRAP_ENCRYPT_FAILED")?;
     Ok(FleetVmBootstrapAccessEnvelope {
         schema_version: 1,
         recipient: Some(proof.clone()),
@@ -133,32 +146,45 @@ pub fn open_for_native_root(
     envelope: &FleetVmBootstrapAccessEnvelope,
     recipient_secret: &[u8; 32],
 ) -> Result<Vec<u8>, &'static str> {
-    if envelope.schema_version != 1 || envelope.sender_x25519_public_key.len() != 32
+    if envelope.schema_version != 1
+        || envelope.sender_x25519_public_key.len() != 32
         || envelope.nonce.len() != 12
         || envelope.ciphertext.len() < 17
         || envelope.ciphertext.len() > MAX_IDENTITY_BYTES + 16
     {
         return Err("BOOTSTRAP_ENVELOPE_INVALID");
     }
-    let proof = envelope.recipient.as_ref().ok_or("BOOTSTRAP_RECIPIENT_MISSING")?;
+    let proof = envelope
+        .recipient
+        .as_ref()
+        .ok_or("BOOTSTRAP_RECIPIENT_MISSING")?;
     verify_root_proof(proof)?;
     let local_pub = PublicKey::from(&StaticSecret::from(*recipient_secret)).to_bytes();
     if proof.recipient_x25519_public_key != local_pub {
         return Err("BOOTSTRAP_RECIPIENT_MISMATCH");
     }
-    let sender_pub: [u8; 32] = envelope.sender_x25519_public_key.as_slice()
-        .try_into().map_err(|_| "BOOTSTRAP_ENVELOPE_INVALID")?;
+    let sender_pub: [u8; 32] = envelope
+        .sender_x25519_public_key
+        .as_slice()
+        .try_into()
+        .map_err(|_| "BOOTSTRAP_ENVELOPE_INVALID")?;
     let shared = StaticSecret::from(*recipient_secret)
-        .diffie_hellman(&PublicKey::from(sender_pub)).to_bytes();
+        .diffie_hellman(&PublicKey::from(sender_pub))
+        .to_bytes();
     let key = derived_key(&shared, proof)?;
-    let nonce_bytes: [u8; 12] = envelope.nonce.as_slice()
-        .try_into().map_err(|_| "BOOTSTRAP_ENVELOPE_INVALID")?;
+    let nonce_bytes: [u8; 12] = envelope
+        .nonce
+        .as_slice()
+        .try_into()
+        .map_err(|_| "BOOTSTRAP_ENVELOPE_INVALID")?;
     let mut ciphertext = envelope.ciphertext.clone();
-    let clear = key.open_in_place(
-        Nonce::assume_unique_for_key(nonce_bytes),
-        Aad::from(proof.encode_to_vec()),
-        &mut ciphertext,
-    ).map_err(|_| "BOOTSTRAP_AUTHENTICATION_FAILED")?;
+    let clear = key
+        .open_in_place(
+            Nonce::assume_unique_for_key(nonce_bytes),
+            Aad::from(proof.encode_to_vec()),
+            &mut ciphertext,
+        )
+        .map_err(|_| "BOOTSTRAP_AUTHENTICATION_FAILED")?;
     Ok(clear.to_vec())
 }
 
@@ -169,21 +195,41 @@ mod tests {
     fn encrypted_identity_only_opens_on_exact_signed_native_root() {
         let (private, public) = fresh_recipient().unwrap();
         let key = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
-        let proof = sign_root_proof("application-acceptance-5", &[7;32], &public, key.as_ref()).unwrap();
+        let proof =
+            sign_root_proof("application-acceptance-5", &[7; 32], &public, key.as_ref()).unwrap();
         verify_root_proof(&proof).unwrap();
-        let sealed = seal_for_native_root(&proof, b"CF_ACCESS_CLIENT_ID=x\nCF_ACCESS_CLIENT_SECRET=y\n").unwrap();
-        assert_ne!(sealed.ciphertext, b"CF_ACCESS_CLIENT_ID=x\nCF_ACCESS_CLIENT_SECRET=y\n");
-        assert_eq!(open_for_native_root(&sealed, &private).unwrap(), b"CF_ACCESS_CLIENT_ID=x\nCF_ACCESS_CLIENT_SECRET=y\n");
+        let sealed = seal_for_native_root(
+            &proof,
+            b"CF_ACCESS_CLIENT_ID=x\nCF_ACCESS_CLIENT_SECRET=y\n",
+        )
+        .unwrap();
+        assert_ne!(
+            sealed.ciphertext,
+            b"CF_ACCESS_CLIENT_ID=x\nCF_ACCESS_CLIENT_SECRET=y\n"
+        );
+        assert_eq!(
+            open_for_native_root(&sealed, &private).unwrap(),
+            b"CF_ACCESS_CLIENT_ID=x\nCF_ACCESS_CLIENT_SECRET=y\n"
+        );
         let (other, _) = fresh_recipient().unwrap();
-        assert_eq!(open_for_native_root(&sealed, &other).unwrap_err(), "BOOTSTRAP_RECIPIENT_MISMATCH");
+        assert_eq!(
+            open_for_native_root(&sealed, &other).unwrap_err(),
+            "BOOTSTRAP_RECIPIENT_MISMATCH"
+        );
         let mut altered = sealed.clone();
         altered.ciphertext[0] ^= 1;
         assert!(open_for_native_root(&altered, &private).is_err());
         altered = sealed.clone();
         altered.recipient.as_mut().unwrap().machine_id.push('x');
-        assert_eq!(open_for_native_root(&altered, &private).unwrap_err(), "BOOTSTRAP_ROOT_SIGNATURE_INVALID");
+        assert_eq!(
+            open_for_native_root(&altered, &private).unwrap_err(),
+            "BOOTSTRAP_ROOT_SIGNATURE_INVALID"
+        );
         altered = sealed;
         altered.nonce[0] ^= 1;
-        assert_eq!(open_for_native_root(&altered, &private).unwrap_err(), "BOOTSTRAP_AUTHENTICATION_FAILED");
+        assert_eq!(
+            open_for_native_root(&altered, &private).unwrap_err(),
+            "BOOTSTRAP_AUTHENTICATION_FAILED"
+        );
     }
 }
