@@ -1,9 +1,9 @@
-//! A root-owned entry point that only launches a closed read-only toolbox.
-//! The actual program is dropped to an unprivileged UID/GID with no extra groups.
-//! Runner has no access to shell, docker.sock or generic sudo.
+//! An installed root-owned entry point for a closed unprivileged diagnostic
+//! toolbox. The GitHub runner has no generic sudo or Docker socket access.
 use super::*;
 use edge_shared_types::host_diagnostics::{
     MAX_DIAGNOSTIC_OUTPUT_BYTES, MAX_DIAGNOSTIC_REQUEST_BYTES, decode_diagnostic_request,
+    diagnostic_commands,
 };
 use std::io::Read;
 use std::process::{Command, Stdio};
@@ -21,21 +21,10 @@ fn diagnostic_binary(tool: &str) -> Result<&'static str, &'static str> {
     }
 }
 
-pub(super) fn run_host_probe() -> Result<(), String> {
-    // The only request bytes arrive on stdin from a verified same-run GitHub artifact.
-    let mut bytes = Vec::new();
-    std::io::stdin()
-        .take((MAX_DIAGNOSTIC_REQUEST_BYTES + 1) as u64)
-        .read_to_end(&mut bytes)
-        .map_err(|_| "HOST_DIAG_STDIN_UNAVAILABLE")?;
-    let request = decode_diagnostic_request(&bytes).map_err(str::to_owned)?;
-    let host = host_native::registered_vm_host()?;
-    if request.machine_id != host.machine_id {
-        return Err("HOST_DIAG_NATIVE_MACHINE_MISMATCH".to_owned());
-    }
-    // Do not require resource-journal admission to inspect a broken system.
-    // This function contains NO privileged mutator or resource-repair capability.
-    let executable = diagnostic_binary(&request.argv[0]).map_err(str::to_owned)?;
+fn run_one_diagnostic(index: usize, argv: &[&str]) -> Result<bool, String> {
+    let executable = diagnostic_binary(argv[0]).map_err(str::to_owned)?;
+    // Root ownership is retained by the existing Agent process; the probed
+    // executable is launched with an unprivileged UID and no groups.
     let mut cmd = Command::new("/usr/bin/timeout");
     cmd.args([
         "--kill-after=1s",
@@ -47,7 +36,7 @@ pub(super) fn run_host_probe() -> Result<(), String> {
         "--no-new-privs",
     ])
     .arg(executable)
-    .args(&request.argv[1..])
+    .args(&argv[1..])
     .env_clear()
     .env("PATH", "/usr/sbin:/usr/bin:/sbin:/bin")
     .env("LANG", "C")
@@ -56,10 +45,10 @@ pub(super) fn run_host_probe() -> Result<(), String> {
     .stdin(Stdio::null())
     .stdout(Stdio::piped())
     .stderr(Stdio::piped());
+
     let mut child = cmd.spawn().map_err(|_| "HOST_DIAG_LAUNCHER_UNAVAILABLE")?;
     let stdout = child.stdout.take().ok_or("HOST_DIAG_STDOUT_UNAVAILABLE")?;
     let stderr = child.stderr.take().ok_or("HOST_DIAG_STDERR_UNAVAILABLE")?;
-    // Do not let an untrusted subprocess allocate arbitrary amounts in the agent.
     let out_thread = std::thread::spawn(move || {
         let mut out = Vec::new();
         stdout
@@ -83,35 +72,74 @@ pub(super) fn run_host_probe() -> Result<(), String> {
         .join()
         .map_err(|_| "HOST_DIAG_STDERR_THREAD_FAILED")?
         .map_err(|_| "HOST_DIAG_STDERR_READ_FAILED")?;
-    println!("host_diagnostic_source=RUNNER_COPIED_UNAUTHENTICATED");
-    println!("host_diagnostic_machine={}", request.machine_id);
-    println!("host_diagnostic_comment={}", request.source_comment_id);
-    println!("host_diagnostic_tool={}", request.argv[0]);
-    println!("host_diagnostic_privilege=UID_65534_GID_65534_CLEAR_GROUPS");
-    println!("host_diagnostic_resource_mutations=0");
-    println!("host_diagnostic_exit={}", status.code().unwrap_or(-1));
+
+    println!("host_diagnostic_{index}_tool={}", argv[0]);
+    println!(
+        "host_diagnostic_{index}_exit={}",
+        status.code().unwrap_or(-1)
+    );
     if stdout.len() > MAX_DIAGNOSTIC_OUTPUT_BYTES || stderr.len() > MAX_DIAGNOSTIC_OUTPUT_BYTES {
-        println!("host_diagnostic_result=OUTPUT_LIMIT");
-        return Ok(());
+        println!("host_diagnostic_{index}_result=OUTPUT_LIMIT");
+        return Ok(false);
     }
-    // Only the fixed, read-only toolbox's bounded printable output is public.
-    // No environment, proc command-lines, Docker inspect env or raw system logs.
+
+    // The fixed readonly grammar excludes raw journals, process args,
+    // unbounded file reads, Docker inspect-env and secret-bearing commands.
     for (kind, value) in [("stdout", stdout), ("stderr", stderr)] {
-        for (index, line) in String::from_utf8_lossy(&value).lines().take(60).enumerate() {
+        for (line_index, line) in String::from_utf8_lossy(&value).lines().take(60).enumerate() {
             let printable = line
                 .chars()
                 .filter(|ch| ch.is_ascii_graphic() || *ch == ' ')
                 .take(160)
                 .collect::<String>();
-            println!("host_diagnostic_{kind}_{index}={printable}");
+            println!("host_diagnostic_{index}_{kind}_{line_index}={printable}");
         }
     }
+    let success = status.success();
     println!(
-        "host_diagnostic_result={}",
-        if status.success() {
+        "host_diagnostic_{index}_result={}",
+        if success {
             "COMMAND_OK"
         } else {
             "COMMAND_FAILED"
+        }
+    );
+    Ok(success)
+}
+
+pub(super) fn run_host_probe() -> Result<(), String> {
+    let mut bytes = Vec::new();
+    std::io::stdin()
+        .take((MAX_DIAGNOSTIC_REQUEST_BYTES + 1) as u64)
+        .read_to_end(&mut bytes)
+        .map_err(|_| "HOST_DIAG_STDIN_UNAVAILABLE")?;
+    let request = decode_diagnostic_request(&bytes).map_err(str::to_owned)?;
+    let host = host_native::registered_vm_host()?;
+    if request.machine_id != host.machine_id {
+        return Err("HOST_DIAG_NATIVE_MACHINE_MISMATCH".to_owned());
+    }
+    // Validate ALL members first, including the last. Never execute part
+    // of an invalid batch. This path does not inspect or mutate the journal.
+    let commands = diagnostic_commands(&request).map_err(str::to_owned)?;
+    println!("host_diagnostic_source=RUNNER_COPIED_UNAUTHENTICATED");
+    println!("host_diagnostic_machine={}", request.machine_id);
+    println!("host_diagnostic_comment={}", request.source_comment_id);
+    println!("host_diagnostic_privilege=UID_65534_GID_65534_CLEAR_GROUPS");
+    println!("host_diagnostic_resource_mutations=0");
+    println!("host_diagnostic_commands={}", commands.len());
+    let mut failures = 0usize;
+    for (index, argv) in commands.iter().enumerate() {
+        if !run_one_diagnostic(index, argv)? {
+            failures += 1;
+        }
+    }
+    println!("host_diagnostic_command_failures={failures}");
+    println!(
+        "host_diagnostic_result={}",
+        if failures == 0 {
+            "COMMANDS_OK"
+        } else {
+            "PARTIAL_COMMAND_FAILURE"
         }
     );
     Ok(())
