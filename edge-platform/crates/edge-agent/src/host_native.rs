@@ -707,6 +707,14 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
     }
     // Held through Worker authorization, BEGIN, native operation and readback.
     let _resource_lock = owner_operation_lock()?;
+    // Resource admission is independent of the signed code-only refresh.
+    // A journal with ANY invalid entry or prior unfinished BEGIN must block
+    // mutation before credential access, Worker POST and native Docker effects.
+    // Only root's read-only diagnostic may inspect such entries.
+    let journal = Path::new(JOURNAL_ROOT);
+    if protected_journal_has_pending(journal)? {
+        return Err("HOST_NATIVE_RESOURCE_PENDING_UNKNOWN_NO_REPLAY".into());
+    }
     let trust_root = Path::new(TRUSTED_ROOT);
     let trust_meta =
         fs::symlink_metadata(trust_root).map_err(|_| "HOST_NATIVE_OWNER_ROOT_NOT_PROVISIONED")?;
@@ -824,7 +832,6 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
         .duration_since(UNIX_EPOCH)
         .map_err(|_| "HOST_CLOCK_UNAVAILABLE")?
         .as_secs();
-    let journal = Path::new(JOURNAL_ROOT);
     let handle = tokio::runtime::Handle::current();
     // One in-memory plan snapshot shared between pre-BEGIN admission and
     // the single native effector. No second durable state or retry loop.
