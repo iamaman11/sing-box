@@ -308,12 +308,8 @@ fn managed_docker_state_reason(
     if kind == Kind::Container as i32 {
         let running = fingerprint.split('|').nth(1);
         return match (desired, running) {
-            (state, Some("R")) if state == State::Present as i32 => {
-                ("DESIRED_RUNNING", true)
-            }
-            (state, Some("S")) if state == State::Stopped as i32 => {
-                ("DESIRED_STOPPED", true)
-            }
+            (state, Some("R")) if state == State::Present as i32 => ("DESIRED_RUNNING", true),
+            (state, Some("S")) if state == State::Stopped as i32 => ("DESIRED_STOPPED", true),
             _ => ("MANAGED_CONTAINER_STATE_MISMATCH", false),
         };
     }
@@ -341,7 +337,9 @@ pub(crate) async fn collect_native_managed_docker_readback(
     let mut names = Vec::new();
     for entry in entries {
         let Ok(entry) = entry else {
-            return vec![managed_readback_failure("MANAGED_DIRECTORY_ENTRY_UNREADABLE")];
+            return vec![managed_readback_failure(
+                "MANAGED_DIRECTORY_ENTRY_UNREADABLE",
+            )];
         };
         let Ok(name) = entry.file_name().into_string() else {
             return vec![managed_readback_failure("MANAGED_DIRECTORY_NAME_INVALID")];
@@ -383,8 +381,9 @@ pub(crate) async fn collect_native_managed_docker_readback(
         row.resource_name = spec.resource_name.clone();
         row.kind = spec.kind;
         row.desired_state = spec.desired_state;
-        row.manifest_sha256 =
-            ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref().to_vec();
+        row.manifest_sha256 = ring::digest::digest(&ring::digest::SHA256, &bytes)
+            .as_ref()
+            .to_vec();
         if let Some(docker) = docker {
             match managed_object::observe_managed_docker_object(docker, &spec, false).await {
                 Ok(fingerprint) => {
@@ -393,10 +392,14 @@ pub(crate) async fn collect_native_managed_docker_readback(
                     if let Some(ref raw) = fingerprint {
                         row.fingerprint_sha256 =
                             ring::digest::digest(&ring::digest::SHA256, raw.as_bytes())
-                                .as_ref().to_vec();
+                                .as_ref()
+                                .to_vec();
                     }
-                    let (reason, converged) =
-                        managed_docker_state_reason(spec.kind, spec.desired_state, fingerprint.as_deref());
+                    let (reason, converged) = managed_docker_state_reason(
+                        spec.kind,
+                        spec.desired_state,
+                        fingerprint.as_deref(),
+                    );
                     row.reason_code = reason.into();
                     row.converged = converged;
                 }
@@ -419,11 +422,7 @@ mod tests {
             FleetVmManagedDockerDesiredState as Desired, FleetVmManagedDockerKind as Kind,
         };
         assert_eq!(
-            managed_docker_state_reason(
-                Kind::LocalVolume as i32,
-                Desired::Absent as i32,
-                None
-            ),
+            managed_docker_state_reason(Kind::LocalVolume as i32, Desired::Absent as i32, None),
             ("DESIRED_ABSENT", true)
         );
         assert_eq!(
