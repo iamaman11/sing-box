@@ -88,13 +88,13 @@ assert "if: steps.plan.outputs.required == 'true'" in worker
 
 
 # Physical CREATE must never depend on a Git-only credential reference.
-# The same bounded native Worker GET checks the typed non-dummy payload at
-# preflight and again immediately before provider mutation.
+# Native preflight performs a bounded Worker GET; all first-use mutations
+# remain disabled until the native encrypted handoff is implemented.
 provider=Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_command.rs").read_text(encoding="utf-8")
 worker_src=Path("edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs").read_text(encoding="utf-8")
 vm_proof=Path("edge-platform/crates/edge-orchestrator/src/vm_credential_proof.rs").read_text(encoding="utf-8")
 gate="verify_current_vm_first_use_worker_source("
-assert provider.count(gate)==2, "missing actual Worker GET before first-use / CREATE"
+assert provider.count(gate)==1, "one read-only Worker GET must precede first-use admission"
 # Do not restore the retired SSH receipt refresh and old-owner compatibility
 # migration. The installed Root Agent already owns the signed in-place
 # host-refresh path; first-use SSH remains separately BLOCKED by #484.
@@ -103,7 +103,9 @@ assert "vm_owner_compatibility" not in provider and "vm_owner_upgrade" not in pr
 assert not Path("edge-platform/crates/edge-orchestrator/src/vm_owner_compatibility.rs").exists()
 assert not Path("edge-platform/crates/edge-orchestrator/src/vm_owner_upgrade.rs").exists()
 assert provider.index(gate) < provider.index('host_first_use_provider_plan=EXACT_CREATE_ONLY')
-assert provider.rindex(gate) < provider.index("acceptance_create_machine(provider_spec, machine_id).await?")
+assert "acceptance_create_machine(provider_spec, machine_id).await?" not in provider
+assert "bootstrap_production_runner(" not in provider
+assert "HOST_VM_CREATE_REQUIRES_NATIVE_ONE_TIME_ENROLLMENT_NO_SSH" in provider
 assert '#[path = "vm_credential_proof.rs"]' in worker_src
 assert "get_vm_credential_bundle_with_access(" in vm_proof
 # A GET-only capability probe must not request an SSH private key.
@@ -114,9 +116,20 @@ assert "VULTR_SSH_PRIVATE_KEY" not in capability_job
 capability_probe=Path("edge-platform/scripts/host_capability_preflight.py").read_text(encoding="utf-8")
 assert "operator_ssh_private_key" not in capability_probe
 assert '"bootstrap_transport": "SSH_RETIRED_CLOUD_INIT_REQUIRED"' in capability_probe
-assert 'admit_first_use_bootstrap_transport().map_err(str::to_owned)?;' in provider
-assert provider.count("admit_first_use_bootstrap_transport().map_err(str::to_owned)?;") == 2
+assert 'admit_first_use_bootstrap_transport().map_err(str::to_owned)' in provider
+assert provider.count("admit_first_use_bootstrap_transport().map_err(str::to_owned)") == 1
 assert 'HOST_FIRST_USE_CLOUD_INIT_ENROLLMENT_NOT_IMPLEMENTED_NO_CREATE' in provider
+# Only a read-only GH-hosted first-use preflight is reachable. The old SSH
+# installer, provider lease, registration-token POST and receipt draft
+# creation cannot silently reappear when a Rust gate is removed.
+firstuse_job=router.split("  host_first_use:\n",1)[1].split("  host_resume_receipt:\n",1)[0]
+assert "VULTR_SSH_PRIVATE_KEY" not in firstuse_job
+assert "EDGE_SSH_PRIVATE_KEY_PATH" not in firstuse_job
+assert "/actions/runners/registration-token" not in firstuse_job
+assert "git/refs" not in firstuse_job and "gh api -X POST" not in firstuse_job
+assert "first-use-preflight" in firstuse_job
+assert "HOST_FIRST_USE_NATIVE_HANDOFF_NOT_ACCEPTED_NO_CREATE" in firstuse_job
+assert "edge-agent.service" not in Path("win/vultr-waw/cloud-init.yaml").read_text(encoding="utf-8")
 
 # The SSH-free native bootstrap is a verified, secret-free component of the
 # existing Rust Vultr owner. It must not be used to bypass the first-use gate
@@ -131,7 +144,7 @@ assert "HOST_CLOUD_INIT_NATIVE_OWNER_ALREADY_PRESENT_NO_REPLAY" in native_init
 assert "NATIVE_ROOT_ENROLLED_AWAITING_ONE_TIME_CREDENTIAL_HANDOFF" in native_init
 assert "EDGE_RUNNER_REGISTRATION_TOKEN" not in native_init.split("const NATIVE_FIRST_USE:",1)[1].split('"#;',1)[0]
 assert "ssh_authorized_keys:" not in native_init.split("const NATIVE_FIRST_USE:",1)[1].split('"#;',1)[0]
-assert "admit_first_use_bootstrap_transport().map_err(str::to_owned)?;" in provider
+assert "admit_first_use_bootstrap_transport().map_err(str::to_owned)" in provider
 
 # Provider payload omits sshkey_id entirely for the native bootstrap profile.
 native_provider=Path("edge-platform/crates/edge-provider-vultr/src/lib.rs").read_text(encoding="utf-8")

@@ -9,27 +9,6 @@ packages:
   - openssl
   - tar
 write_files:
-  - path: /etc/systemd/system/edge-agent.service
-    permissions: "0644"
-    content: |
-      [Unit]
-      Description=Edge Agent
-      After=network-online.target docker.service
-      Wants=network-online.target
-      Requires=docker.service
-
-      [Service]
-      Type=simple
-      ExecStart=/opt/vultr-edge-stack/bin/edge-agent acceptance-serve
-      Restart=always
-      RestartSec=2
-      Environment=EDGE_AGENT_ADDR=127.0.0.1:50061
-      Environment=EDGE_STACK_DIR=/opt/vultr-edge-stack/stack
-      EnvironmentFile=-/opt/vultr-edge-stack/edge-agent.env
-      WorkingDirectory=/opt/vultr-edge-stack
-
-      [Install]
-      WantedBy=multi-user.target
   - path: /usr/local/sbin/install-docker.sh
     permissions: "0755"
     content: |
@@ -92,10 +71,7 @@ write_files:
       #!/usr/bin/env bash
       set -euo pipefail
       install -d -m 0755 /opt/vultr-edge-stack
-      install -d -m 0755 /opt/vultr-edge-stack/bin
       install -d -m 0755 /opt/vultr-edge-stack/stack
-      systemctl daemon-reload
-      systemctl enable edge-agent.service
 runcmd:
   - [bash, -lc, "/usr/local/sbin/install-docker.sh"]
   - [bash, -lc, "systemctl enable docker --now"]

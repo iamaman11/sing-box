@@ -1,10 +1,4 @@
 use crate::cloudflare_dns_lifecycle_command::acceptance_verify_noop as dns_verify_noop;
-use crate::vultr_lifecycle_command::{
-    acceptance_converge_substrate as substrate_converge, acceptance_lease_acquire as lease_acquire,
-    acceptance_lease_release as lease_release, bootstrap_production_runner,
-    production_converge_machine,
-};
-use crate::vultr_vpc_lifecycle_command::production_converge as vpc_converge;
 use edge_controller_core::production::{
     CANONICAL_PRODUCTION_AUTHORITY_PATH, ProductionComposition,
 };
@@ -37,51 +31,15 @@ pub(crate) async fn verify_dns_noop(release_context: &OrchestrationContext) -> R
     Ok(())
 }
 
+/// The former production first-use path provisioned SSH, installed the
+/// runner out of band and created another owner chain. It is retired.
+/// Only the Git-pinned /host native cloud-init enrollment may CREATE.
 pub(crate) async fn enroll_runtime(
-    release_context: &OrchestrationContext,
-    edge_agent_artifact_path: &Path,
-    runner_installer_path: &Path,
+    _release_context: &OrchestrationContext,
+    _edge_agent_artifact_path: &Path,
+    _runner_installer_path: &Path,
 ) -> Result<(), String> {
-    release_context.application_release_authority()?;
-    let composition = ProductionComposition::canonical().map_err(|err| err.to_string())?;
-    let spec = Path::new(CANONICAL_PRODUCTION_AUTHORITY_PATH);
-
-    production_converge_machine(spec, &composition.machine_id).await?;
-    lease_acquire(spec, &composition.machine_id).await?;
-
-    let operation = async {
-        substrate_converge(spec, &composition.machine_id).await?;
-        vpc_converge(spec).await?;
-        bootstrap_production_runner(
-            &composition.machines,
-            spec,
-            &composition.machine_id,
-            runner_installer_path,
-            edge_agent_artifact_path,
-            release_context,
-        )
-        .await
-    }
-    .await;
-
-    let release_result = lease_release(spec, &composition.machine_id).await;
-    match (operation, release_result) {
-        (Ok(()), Ok(())) => {
-            print_identity(release_context, &composition, "PASS");
-            println!("operation=ENROLL_RUNTIME");
-            println!("bootstrap_transport=STRICT_SSH");
-            println!("steady_state_transport=GITHUB_SELF_HOSTED_RUNNER");
-            println!("transient_support_access=ABSENT");
-            Ok(())
-        }
-        (Err(err), Ok(())) => Err(err),
-        (Ok(()), Err(release_err)) => Err(format!(
-            "production runtime enrollment passed but transient support-access cleanup failed: {release_err}"
-        )),
-        (Err(err), Err(release_err)) => Err(format!(
-            "{err}; transient support-access cleanup also failed: {release_err}"
-        )),
-    }
+    Err("PRODUCTION_ENROLL_SSH_RETIRED_USE_NATIVE_HOST_FIRST_USE".to_owned())
 }
 
 fn print_identity(

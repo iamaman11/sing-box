@@ -34,6 +34,23 @@ fn host_substrate_is_projected_from_one_validated_release_not_process_env() {
 }
 
 #[test]
+fn legacy_lifecycle_cannot_create_vm_via_ssh_bypass() {
+    use super::*;
+    assert_eq!(
+        deny_unregistered_native_vm_create(&PlanClass::Create),
+        Err("HOST_VM_CREATE_REQUIRES_NATIVE_ONE_TIME_ENROLLMENT_NO_SSH"),
+    );
+    for status in [
+        PlanClass::Noop,
+        PlanClass::UpdateInPlace,
+        PlanClass::BlockedAmbiguous,
+        PlanClass::BlockedDrift,
+    ] {
+        assert!(deny_unregistered_native_vm_create(&status).is_ok());
+    }
+}
+
+#[test]
 fn first_use_provider_plan_does_not_reserve_for_existing_or_ambiguous_vm() {
     use super::*;
     assert_eq!(
@@ -65,86 +82,6 @@ fn first_use_provider_plan_does_not_reserve_for_existing_or_ambiguous_vm() {
     );
 }
 
-#[test]
-fn native_first_use_owner_install_refuses_implicit_binary_replacement() {
-    let exact = "a".repeat(64);
-    assert_eq!(admit_native_first_use_owner("ABSENT", &exact), Ok(true));
-    assert_eq!(admit_native_first_use_owner(&exact, &exact), Ok(false));
-    assert_eq!(
-        admit_native_first_use_owner(&"b".repeat(64), &exact),
-        Err("HOST_BOOTSTRAP_NATIVE_OWNER_DRIFT_NO_SSH_REPLACE".to_owned())
-    );
-    assert!(admit_native_first_use_owner("UNPROVEN", &exact).is_err());
-    assert!(admit_native_first_use_owner("ABSENT", "invalid").is_err());
-}
-
-#[test]
-fn first_use_vm_enrollment_accepts_only_exact_native_public_evidence() {
-    let machine = "application-acceptance-1";
-    let release = "a".repeat(64);
-    let report = format!(
-        "host_enroll=PROTECTED_TRUST_STAGED\nhost_machine_id={machine}\nhost_release_set_sha256={release}\nhost_native_receipt_public_key_hex={}\nhost_native_receipt_registration=AWAITING_PROTECTED_GIT\nhost_worker_public_key_sha256={}\nhost_mutations=0",
-        "b".repeat(64),
-        "c".repeat(64),
-    );
-    let parsed = verified_native_enrollment_result(&report, machine, &release).unwrap();
-    assert_eq!(parsed.0, "b".repeat(64));
-    assert_eq!(parsed.1, "AWAITING_PROTECTED_GIT");
-    let current = report
-        .replace("PROTECTED_TRUST_STAGED", "PROTECTED_TRUST_CURRENT")
-        .replace("AWAITING_PROTECTED_GIT", "PINNED_GIT_MATCH");
-    let exact = verified_native_enrollment_result(&current, machine, &release).unwrap();
-    assert_eq!(exact.0, "b".repeat(64));
-    assert_eq!(exact.1, "PINNED_GIT_MATCH");
-    assert!(
-        verified_native_enrollment_result(
-            &current.replace("PINNED_GIT_MATCH", "MISMATCH"),
-            machine,
-            &release,
-        )
-        .is_err()
-    );
-    assert!(
-        verified_native_enrollment_result(
-            &report.replace("host_mutations=0", "host_mutations=1"),
-            machine,
-            &release,
-        )
-        .is_err()
-    );
-    assert!(
-        verified_native_enrollment_result(
-            &report.replace("PROTECTED_TRUST_STAGED", "UNVERIFIED"),
-            machine,
-            &release,
-        )
-        .is_err()
-    );
-    assert!(
-        verified_native_enrollment_result(
-            &report.replace(machine, "foreign-vm"),
-            machine,
-            &release,
-        )
-        .is_err()
-    );
-    assert!(
-        verified_native_enrollment_result(
-            &report.replace(&"b".repeat(64), &"0".repeat(64)),
-            machine,
-            &release,
-        )
-        .is_err()
-    );
-    assert!(
-        verified_native_enrollment_result(
-            &format!("{report}\nhost_mutations=0"),
-            machine,
-            &release,
-        )
-        .is_err()
-    );
-}
 #[test]
 fn initial_reboot_can_only_reobserve_not_reapply_credentials() {
     assert!(super::authorize_initial_runtime_job("initial_vm_runtime", true).is_ok());
@@ -320,44 +257,6 @@ fn linux_boot_id_validation_is_strict() {
     assert!(validate_linux_boot_id("").is_err());
     assert!(validate_linux_boot_id("same-boot").is_err());
     assert!(validate_linux_boot_id("930df168-8e6b-4dff-ba80-3c24ed12fd8z").is_err());
-}
-
-#[test]
-fn firewall_binding_must_match_desired_profile() {
-    let desired = DesiredState::parse_json(
-        r#"{
-  "schema": 1,
-  "environment": "production",
-  "machines": [
-    {
-      "id": "edge-1",
-      "role": "edge",
-      "provider": {
-        "region": "waw",
-        "plan": "vc2-1c-1gb",
-        "os_id": 2625,
-        "enable_ipv6": false,
-        "firewall_profile": "edge"
-      },
-      "bootstrap_profile": "singbox-host-v2"
-    }
-  ]
-}"#,
-    )
-    .unwrap();
-    let resolved = ResolvedFirewallProfile {
-        id: "fw-1".to_owned(),
-        profile_name: "other".to_owned(),
-    };
-
-    let error = resolve_create_prerequisites(
-        &desired.machines[0],
-        "ssh-1",
-        Some(&resolved),
-        "#cloud-config\n".to_owned(),
-    )
-    .unwrap_err();
-    assert!(error.contains("does not match desired profile"));
 }
 
 #[test]
