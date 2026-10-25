@@ -1,4 +1,5 @@
 use crate::cli::HostCommand;
+use base64::Engine as _;
 use edge_orchestrator::OrchestrationContext;
 use edge_shared_types::{
     FleetHostAction, FleetHostIntent, FleetHostMode, HostRegistry, ManagedHostKind,
@@ -207,7 +208,34 @@ pub(crate) fn run(
         return Err("host protobuf differs from protected Git inventory SHA-256".to_owned());
     }
     let desired = decode_host_registry(&bytes)?;
-    let (command, diagnostic) = match command {
+    let (command, diagnostic, admin) = match command {
+        HostCommand::Admin { machine_id, argv_b64 } => {
+            let source_id = source_comment_id.ok_or("HOST_ADMIN_SOURCE_ID_REQUIRED")?;
+            if argv_b64.is_empty() || argv_b64.len() > 6000
+                || !argv_b64.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+            {
+                return Err("HOST_ADMIN_PAYLOAD_INVALID".to_owned());
+            }
+            let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(argv_b64.as_bytes())
+                .map_err(|_| "HOST_ADMIN_PAYLOAD_ENCODING_INVALID")?;
+            let argv = serde_json::from_slice::<Vec<String>>(&bytes)
+                .map_err(|_| "HOST_ADMIN_ARGV_INVALID")?;
+            let comment_body = format!("/host admin {machine_id} {argv_b64}");
+            let request = edge_shared_types::FleetHostAdministrativeRequest {
+                schema_version: 1,
+                machine_id: machine_id.clone(),
+                source_comment_id: source_id,
+                argv,
+                release_set_sha256: exact_hex_sha256(&release.release().release_set_sha256)?.to_vec(),
+                requested_at_unix: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|_| "HOST_ADMIN_CLOCK_UNAVAILABLE")?.as_secs(),
+                comment_sha256: digest(&SHA256, comment_body.as_bytes()).as_ref().to_vec(),
+            };
+            edge_shared_types::host_admin::validate(&request).map_err(str::to_owned)?;
+            (HostCommand::Status { machine_id: Some(machine_id), deep: true }, None, Some(request))
+        }
         HostCommand::Diagnose { machine_id, argv } => {
             let source_id = source_comment_id.ok_or("HOST_DIAG_SOURCE_COMMENT_MISSING")?;
             let request = edge_shared_types::FleetHostDiagnosticRequest {
@@ -224,16 +252,19 @@ pub(crate) fn run(
                     deep: true,
                 },
                 Some(request),
+                None,
             )
         }
-        other => (other, None),
+        other => (other, None, None),
     };
     match command {
         HostCommand::Status { machine_id, deep } => {
             if let Some(path) = github_output {
                 append_action_output(
                     path,
-                    if diagnostic.is_some() {
+                    if admin.is_some() {
+                        HostWorkflowOperation::Admin
+                    } else if diagnostic.is_some() {
                         HostWorkflowOperation::Diagnose
                     } else {
                         HostWorkflowOperation::Status
@@ -250,6 +281,14 @@ pub(crate) fn run(
                 file.write_all(&request.encode_to_vec())
                     .and_then(|_| file.sync_all())
                     .map_err(|_| "HOST_DIAG_ARTIFACT_WRITE_FAILED")?;
+            }
+            if let Some(ref request) = admin {
+                let output = intent_output.ok_or("HOST_ADMIN_ARTIFACT_PATH_MISSING")?;
+                let mut file = OpenOptions::new().write(true).create_new(true).open(output)
+                    .map_err(|_| "HOST_ADMIN_ARTIFACT_EXISTS")?;
+                file.write_all(&request.encode_to_vec())
+                    .and_then(|_| file.sync_all())
+                    .map_err(|_| "HOST_ADMIN_ARTIFACT_WRITE_FAILED")?;
             }
             if deep && machine_id.is_none() {
                 return Err("HOST_DEEP_REQUIRES_EXACT_MACHINE".to_owned());
@@ -275,7 +314,7 @@ pub(crate) fn run(
             for host in selected {
                 let kind = ManagedHostKind::try_from(host.kind)
                     .map_err(|_| "HOST_KIND_INVALID".to_owned())?;
-                if diagnostic.is_some() && kind != ManagedHostKind::Vm {
+                if (diagnostic.is_some() || admin.is_some()) && kind != ManagedHostKind::Vm {
                     return Err("HOST_DIAG_VM_ONLY_UNTIL_WINDOWS_NATIVE_ACCEPTANCE".to_owned());
                 }
                 let owner = match host.owner.as_ref() {
@@ -1196,6 +1235,7 @@ pub(crate) fn run(
             Ok(())
         }
         HostCommand::Diagnose { .. } => Err("HOST_DIAG_DISPATCH_INVARIANT_FAILED".to_owned()),
+        HostCommand::Admin { .. } => Err("HOST_ADMIN_DISPATCH_INVARIANT_FAILED".to_owned()),
         HostCommand::VmWorkerAuthorizerUpgrade { .. } => {
             Err("HOST_VM_WORKER_UPGRADE_MUST_USE_PROTECTED_CREDENTIAL_OWNER".to_owned())
         }
@@ -1733,6 +1773,7 @@ fn exact_hex_sha256(value: &str) -> Result<Vec<u8>, String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HostWorkflowOperation {
     Status,
+    Admin,
     Diagnose,
     ApplyPreflight,
     RecoverPreflight,
@@ -1744,6 +1785,7 @@ impl HostWorkflowOperation {
     const fn as_str(self) -> &'static str {
         match self {
             Self::Status => "STATUS",
+            Self::Admin => "ADMIN",
             Self::Diagnose => "DIAGNOSE",
             Self::ApplyPreflight => "APPLY_PREFLIGHT",
             Self::RecoverPreflight => "RECOVER_PREFLIGHT",
