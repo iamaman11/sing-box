@@ -857,7 +857,8 @@ pub async fn request_canonical_native_admin_authorization(
     let request = host_admin::decode(bytes).map_err(str::to_owned)?;
     let identity = read_access_service_identity(identity_path)?;
     let mut url = reqwest::Url::parse(&canonical_credential_worker_url(
-        CredentialProjectionKind::Vm, 1,
+        CredentialProjectionKind::Vm,
+        1,
     )?)
     .map_err(|_| "HOST_ADMIN_WORKER_URL_INVALID")?;
     url.set_path("/v1/host/admin/authorize");
@@ -870,15 +871,25 @@ pub async fn request_canonical_native_admin_authorization(
         .await
         .map_err(|_| "HOST_ADMIN_AUTH_POST_UNKNOWN_NO_REPLAY")?;
     if result.status() != StatusCode::OK {
-        return Err(format!("HOST_ADMIN_AUTH_REJECTED_HTTP_{}", result.status().as_u16()));
+        return Err(format!(
+            "HOST_ADMIN_AUTH_REJECTED_HTTP_{}",
+            result.status().as_u16()
+        ));
     }
-    if result.content_length().is_some_and(|value| value == 0 || value > 1024)
-        || result.headers().get(CONTENT_TYPE).and_then(|value| value.to_str().ok())
+    if result
+        .content_length()
+        .is_some_and(|value| value == 0 || value > 1024)
+        || result
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
             != Some("application/x-protobuf")
     {
         return Err("HOST_ADMIN_AUTH_RESPONSE_FORMAT_INVALID".into());
     }
-    let response = result.bytes().await
+    let response = result
+        .bytes()
+        .await
         .map_err(|_| "HOST_ADMIN_AUTH_REPLY_UNKNOWN_NO_REPLAY")?;
     if response.is_empty() || response.len() > 1024 {
         return Err("HOST_ADMIN_AUTH_RESPONSE_SIZE_INVALID".into());
