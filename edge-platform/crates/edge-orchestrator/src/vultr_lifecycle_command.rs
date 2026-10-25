@@ -63,11 +63,6 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 use tonic::Request;
 
-#[path = "vm_owner_compatibility.rs"]
-mod vm_owner_compatibility;
-#[path = "vm_owner_upgrade.rs"]
-mod vm_owner_upgrade;
-
 // Historical acceptance-v1 preflight still guards internal, unreachable
 // old helpers. It is NOT a new CLI or VM first-use mutation authority.
 fn validate_disposable_acceptance(desired: &DesiredApplicationState) -> Result<(), String> {
@@ -604,91 +599,6 @@ fn authorize_initial_runtime_job(job: &str, apply: bool) -> Result<(), String> {
             "initial VM runtime refuses an unauthorized GitHub mutation or observation job"
                 .to_owned(),
         )
-    }
-}
-
-/// The only authorized bridge after a receipt-key-only protected Git merge:
-/// the EXISTING Vultr lease opens bounded SSH to the EXISTING root Agent.
-/// NO provider CREATE, Docker privileges for runner or journal replay.
-/// First prove and, if necessary, upgrade the exact existing native owner
-/// through its bounded durable transition before enrollment and receipt proof.
-pub(crate) async fn host_receipt_refresh(
-    machine_id: &str,
-    agent_path: &Path,
-    context: &OrchestrationContext,
-) -> Result<(), String> {
-    if env::var("GITHUB_RUN_ATTEMPT").as_deref() != Ok("1") {
-        return Err("HOST_RECEIPT_REFRESH_NO_AUTOMATIC_REPLAY".to_owned());
-    }
-    let git_host = context.verified_vm_first_use_host(machine_id)?;
-    edge_shared_types::host_lifecycle::verify_vm_first_use_git_prerequisites(&git_host)
-        .map_err(str::to_owned)?;
-    edge_shared_types::host_lifecycle::verify_vm_signed_git_prerequisites(&git_host)
-        .map_err(str::to_owned)?;
-    let expected_key = git_host
-        .native_receipt_public_key
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect::<String>();
-    let spec = Path::new(&git_host.vm_provider_spec_path);
-    let desired = load_desired_state(spec)?;
-    // All immutable ReleaseSet prerequisites are checked BEFORE any provider
-    // support-access mutation. A later SSH failure is not an input error.
-    let substrate = pinned_host_substrate_versions(context)?;
-    let key_path = operator_private_key_path_from_env()?;
-    let expected_ssh_key = read_canonical_ssh_public_key()?;
-    verify_operator_key_matches(&key_path, &expected_ssh_key)?;
-    // Existing means EXACT owned NOOP, not an unowned machine to adopt.
-    exact_existing_machine_observation(&desired, machine_id).await?;
-    acceptance_lease_acquire_with_substrate(spec, machine_id, &substrate).await?;
-    let outcome = async {
-        let observed = exact_existing_machine_observation(&desired, machine_id).await?;
-        let ip = observed.main_ip.as_deref()
-            .ok_or("HOST_RECEIPT_REFRESH_MACHINE_IPV4_UNPROVEN")?;
-        let key_path = operator_private_key_path_from_env()?;
-        let expected_ssh_key = read_canonical_ssh_public_key()?;
-        verify_operator_key_matches(&key_path, &expected_ssh_key)?;
-        let release_sha = context.release().release_set_sha256.as_str();
-        if release_sha.len() != 64
-            || !release_sha.bytes().all(|ch| ch.is_ascii_digit() || (b'a'..=b'f').contains(&ch))
-        {
-            return Err("HOST_RECEIPT_REFRESH_RELEASE_SHA_INVALID".to_owned());
-        }
-        // Installed owner compatibility is a typed dependency of trust refresh.
-        // The older agent MUST NOT decode a release newer than its schema.
-        let owner_transition = vm_owner_compatibility::reconcile_before_enrollment(
-            machine_id, context, agent_path, ip, &key_path, &expected_ssh_key,
-        ).await?;
-        let command = format!(
-            "sudo -n /usr/local/libexec/sing-box/edge-agent local host-enroll {machine_id} {release_sha}"
-        );
-        let evidence = strict_ssh_capture(
-            ip, machine_id, &key_path, &expected_ssh_key, &command,
-        )?;
-        let (public_key, registration) =
-            verified_native_enrollment_result(&evidence, machine_id, release_sha)?;
-        if public_key != expected_key || registration != "PINNED_GIT_MATCH" {
-            return Err("HOST_RECEIPT_REFRESH_GIT_PRIVATE_IDENTITY_MISMATCH".to_owned());
-        }
-        println!("host_receipt_refresh=ROOT_PROTECTED_GIT_PINNED");
-        println!("host_machine_id={machine_id}");
-        println!("host_owner_transition={}", match owner_transition {
-            vm_owner_compatibility::OwnerDecision::Upgrade => "UPGRADED_ONCE",
-            vm_owner_compatibility::OwnerDecision::Current => "NOOP_EXACT_OWNER",
-        });
-        println!("host_mutations={}", u8::from(owner_transition == vm_owner_compatibility::OwnerDecision::Upgrade));
-        Ok(())
-    }.await;
-    let cleanup = acceptance_lease_release(spec, machine_id).await;
-    match (outcome, cleanup) {
-        (Ok(()), Ok(())) => Ok(()),
-        (Err(error), Ok(())) => Err(error),
-        (Ok(()), Err(error)) => Err(format!(
-            "HOST_RECEIPT_REFRESH_ACCESS_CLEANUP_UNPROVEN: {error}"
-        )),
-        (Err(error), Err(cleanup)) => Err(format!(
-            "{error}; HOST_RECEIPT_REFRESH_ACCESS_CLEANUP_UNPROVEN: {cleanup}"
-        )),
     }
 }
 

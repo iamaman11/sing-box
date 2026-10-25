@@ -95,6 +95,13 @@ worker_src=Path("edge-platform/crates/edge-orchestrator/src/cloudflare_credentia
 vm_proof=Path("edge-platform/crates/edge-orchestrator/src/vm_credential_proof.rs").read_text(encoding="utf-8")
 gate="verify_current_vm_first_use_worker_source("
 assert provider.count(gate)==2, "missing actual Worker GET before first-use / CREATE"
+# Do not restore the retired SSH receipt refresh and old-owner compatibility
+# migration. The installed Root Agent already owns the signed in-place
+# host-refresh path; first-use SSH remains separately BLOCKED by #484.
+assert "host_receipt_refresh(" not in provider
+assert "vm_owner_compatibility" not in provider and "vm_owner_upgrade" not in provider
+assert not Path("edge-platform/crates/edge-orchestrator/src/vm_owner_compatibility.rs").exists()
+assert not Path("edge-platform/crates/edge-orchestrator/src/vm_owner_upgrade.rs").exists()
 assert provider.index(gate) < provider.index('host_first_use_provider_plan=EXACT_CREATE_ONLY')
 assert provider.rindex(gate) < provider.index("acceptance_create_machine(provider_spec, machine_id).await?")
 assert '#[path = "vm_credential_proof.rs"]' in worker_src
