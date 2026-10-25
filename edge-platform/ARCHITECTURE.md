@@ -39,7 +39,7 @@
 
 - `host status <id> [--deep]` — bounded read-only status/причина/предлагаемый шаг;
 - `host apply <id>` — подписанный одноразовый переход к Git desired и ReleaseSet;
-- `host recover <id>` — сейчас только read-only preflight и диагностика; будущая новая операция допускается лишь после реализации typed native handler и отдельной приёмки, никогда replay.
+- `host recover <id>` — VM: защищённый root `host-refresh` **только бинарник/trust текущего canonical ReleaseSet** + read-only post-refresh диагностика под прежним owner lock; не меняет resource journal, контейнеры или сеть и не снимает pending. Windows: пока read-only. Любой resource rollback/repair/replay — отдельный signed handler и приёмка, никогда неизвестный replay.
 
 **CLI:** исторические provider/application/credential mutation verbs удалены из публичного и скрытого Clap-парсера `edge-orchestrator`, а не просто заблокированы в dispatch. Старые VM local mutation verbs и listener удалены из `edge-agent` CLI. Только `host status|apply|recover` являются операторским API; внутренние read-only/release-build verbs остаются без права ресурсной мутации. Защищённый Git `main` — единственный desired. Новый root-owned `host-refresh` без аргументов выбирает только защищённый текущий main и обновляет trust/binary атомарно; `host-apply` остаётся единственным исполнителем ресурсов.
 

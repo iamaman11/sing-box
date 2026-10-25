@@ -635,7 +635,7 @@ pub(crate) fn run(
                         .map(|node| node.dependency_ids.join(","))
                         .unwrap_or_else(|| "UNPROVEN".to_owned());
                     println!(
-                        "host_vm_resource={} resource_id={} resource_kind=DOCKER_CONTAINER resource_owner=VM_ROOT_AGENT resource_parent=host/{} installed_policy_dependencies={} installed_policy_proven=false reason={} step={:?} plan_reason={} present={} owned={} running={} running_proven={} image={} health={} config_proof={:?} config_sha256={} restarts={}",
+                        "host_vm_resource={} resource_id={} resource_kind=DOCKER_CONTAINER resource_owner=VM_ROOT_AGENT resource_parent=host/{} installed_policy_dependencies={} installed_policy_proven=false reason={} step={:?} plan_reason={} present={} owned={} running={} running_proven={} image={} health={} config_proof={:?} config_sha256={} restarts={} exit_code={} oom={} docker_state_error={} failure_class={}",
                         identity.container_name,
                         resource_id,
                         selected.machine_id,
@@ -671,7 +671,25 @@ pub(crate) fn run(
                             resource.restart_count.to_string()
                         } else {
                             "UNPROVEN".to_owned()
-                        }
+                        },
+                        if resource.last_exit_code_proven {
+                            resource.last_exit_code.to_string()
+                        } else {
+                            "UNPROVEN".to_owned()
+                        },
+                        if resource.oom_killed_proven {
+                            resource.oom_killed.to_string()
+                        } else {
+                            "UNPROVEN".to_owned()
+                        },
+                        resource.docker_state_error_present,
+                        edge_shared_types::FleetVmRuntimeFailureClass::try_from(
+                            resource.runtime_failure_class
+                        )
+                        .map_err(|_| "HOST_VM_RUNTIME_FAILURE_CLASS_INVALID")?
+                        .as_str_name()
+                        .strip_prefix("FLEET_VM_RUNTIME_FAILURE_CLASS_")
+                        .ok_or("HOST_VM_RUNTIME_FAILURE_CLASS_INVALID")?,
                     );
                 }
                 println!("host_vm_resources_plan_scope=RUNTIME_ONLY_CONFIG_UNPROVEN");

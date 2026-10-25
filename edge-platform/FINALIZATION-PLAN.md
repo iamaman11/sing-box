@@ -34,11 +34,23 @@
 
 **Срез 1 закрыт только при полном VM physical PASS.** Промежуточный кодовый merge или 2/3 running — не завершение. Дефект Line2 классифицировать независимо от дефекта journal. Ни одна диагностическая операция не снимает durable pending gate.
 
+## Обязательный контур эксплуатации и наблюдаемости — измеряемая полнота, не root-shell
+
+Первое создание `application-acceptance-4`: GitHub Actions [#40146207282](https://github.com/iamaman11/sing-box/actions/runs/40146207282) завершил provider first-use и root enrollment, создан [PR #478](https://github.com/iamaman11/sing-box/pull/478) с публичным native receipt key. Это **не** финальная VM application acceptance: ключ должен быть слит с зелёным CI, а затем нужен независимый подписанный INSTALL/receipt + проверка 3/3 сетевых линий. Старая VM3 остаётся UNKNOWN_NO_REPLAY.
+
+Уточнённое правило полномочий: установленный `edge-agent` — root owner всей **Git-зарегистрированной VM-подсистемы**, но не произвольный root-shell. Для каждого управляемого ресурса должно существовать ровно одно из: `typed readback`, `typed signed apply`, `typed denied / unsupported`. Права root ≠ разрешение изменить чужой Docker/Network/Mesh, снять pending или обойти Worker signer.
+
+**Транспорт:** GitHub Actions и зарегистрированный self-hosted runner — один основной ingress. Операция всегда различает source/worker trust, online/busy/queued/timeout runner, native process invocation, typed readback и подписанный receipt. Отсутствие runner или ACK = `UNPROVEN/OFFLINE/UNKNOWN_NO_REPLAY`, не повтор и не «всё в порядке». Невозможно гарантировать 100% доступность внешнего GitHub/провайдера; штатная система обязана *диагностировать* потерю доставки без нового SSH/MCP-транспорта.
+
+**Контракт root-local diagnostics:** один bounded `/host status --deep` сообщает для **каждого зарегистрированного контейнера** (не только Line2) точный owner/resource identity, presence/running/health, restart count, exit code, OOM, Docker State.Error как закрытый enum, конфигурацию/image proof, journal root metadata/pending/first-invalid, сетевые DNS/routes/nft reads и credential readback. Только структурированные подтверждённые поля из Root Agent идут в Protobuf ResourceReport; логи/секреты не экспортировать. `UNPROVEN` — отдельное значение, не усреднённое `PASS`. Эти read-only snapshots не могут авторизовать mutation или подменять подписанный receipt. Сетевые внешние TLS/auth/DIRECT/WARP проверки обязательны отдельно.
+
+**Негативные тесты приёмки:** отсутствие root owner, stale ReleaseSet, offline runner, foreign Docker labels, untrusted file, concurrent intent, pending/unknown BEGIN, JSON/приватные значения в логах, Docker/OOM error, конфиг без bound PID должны возвращать конкретную причину без повторов и обходов. Только после независимого end-to-end прогона можно говорить об эксплуатационной надёжности.
+
 ## Срез 2 — эксплуатация, recovery и Windows
 
 После приёмки VM, не параллельным обходом:
 
-1. **Эксплуатационный цикл VM:** Scoped config-only Line1/Line2 без чужих изменений; exact ReplaceRelease/reinstall, offline runner, crash/unknown ACK, drift и typed `/host recover`. Сейчас `recover` — **только read-only preflight**. Mutating recover добавлять лишь в существующий native owner с typed handler, журналом и отдельной проверенной транзакцией. Отсутствующие handlers host DNS/firewall/routes остаются `UNSUPPORTED`, не shell/docker exec.
+1. **Эксплуатационный цикл VM:** Scoped config-only Line1/Line2 без чужих изменений; exact ReplaceRelease/reinstall, offline runner, crash/unknown ACK, drift и typed `/host recover`. Сейчас `recover` — VM **code-only root refresh плюс read-only diagnosis** (отдельно от resource mutation и NO_REPLAY); Windows пока read-only preflight. Mutating recover добавлять лишь в существующий native owner с typed handler, журналом и отдельной проверенной транзакцией. Отсутствующие handlers host DNS/firewall/routes остаются `UNSUPPORTED`, не shell/docker exec.
 2. **Windows:** защищённый SYSTEM Controller/SCM, ACL и точный release install/readback; безопасный ProxyOnly lifecycle, replace/reinstall/rollback/reboot с native receipt. Windows сейчас **STOPPED/PROXY_ONLY**, SYSTEM apply/TUN ещё не приняты. Managed TUN, DNS leak/IPv6, default routes и сосуществование с Cloudflare One — отдельная физическая матрица только после Git desired и разрешения; чужой адаптер/службу не изменять.
 3. **Архитектурный долг, только с доказанным потребителем:** заменить оставшиеся исполняемые `grep/sed` admission-проверки на закрытый Rust/Protobuf verifier в том же owner и убрать действительно нулевых потребителей старых mutating helpers. Не запускать самостоятельную бесконечную «очистку» файлов. Новая capability: `Protobuf → Rust DAG/planner → существующий native handler → typed readback → signed receipt → physical acceptance`.
 
