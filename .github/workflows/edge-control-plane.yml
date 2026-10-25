@@ -658,6 +658,47 @@ jobs:
           printf '%s\n' "${result}"
           echo 'host_mutations=0'
 
+      - name: Prove current Git-pinned VM credential through Worker Access GET only
+        shell: bash
+        env:
+          TARGET_MACHINE: ${{ needs.host.outputs.machine_id }}
+          HOST_ORIGINAL_COMMAND: ${{ github.event.comment.body }}
+          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID }}
+          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET }}
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/host-credential-readonly
+        run: |
+          set -euo pipefail
+          # The pinned, hidden Rust GET-only proof derives its candidate from
+          # the accepted Git registry, NOT shell literals or an SSH response.
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          bin="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          fleet="${OUTPUT_DIR}/fleet-registry.pb"
+          printf '%s  %s\n' "${EDGE_ORCHESTRATOR_SHA256}" "${bin}" | sha256sum --check --status
+          chmod 0755 "${bin}"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
+          if "${bin}" host --hosts-pb "${fleet}" \
+            --hosts-sha256 "$(sha256sum "${fleet}" | cut -d' ' -f1)" \
+            vm-credential-proof "${TARGET_MACHINE}" \
+            > "${RUNNER_TEMP}/vm-credential-readonly.out" \
+            2> "${RUNNER_TEMP}/vm-credential-readonly.err"; then
+            # All successful stdout values are public source identity only.
+            cat "${RUNNER_TEMP}/vm-credential-readonly.out"
+            echo host_vm_worker_live_source=GIT_PIN_EXACT_ACCESS_GET_PROVEN
+          else
+            # Do not fail ordinary /host status, but never claim admission;
+            # never disclose raw HTTP bodies or secret-bearing diagnostics.
+            reason="$(tail -n 1 "${RUNNER_TEMP}/vm-credential-readonly.err" | tr -d '\r\n')"
+            [[ "${reason}" =~ ^[A-Z][A-Z0-9_]{3,119}$ ]] || reason=UNCLASSIFIED_GET_FAILURE
+            echo "host_vm_worker_live_source=BLOCKED"
+            echo "host_vm_worker_live_reason=${reason}"
+          fi
+          echo host_worker_mutations=0
+          echo host_provider_mutations=0
+
   host_first_use:
     # Sole hosted CREATE owner; no SSH, no new service or runner root rights.
     needs: [host, host_report]
