@@ -584,7 +584,8 @@ fn validate_create_prerequisites(
         ));
     }
     match machine.bootstrap_profile.as_str() {
-        "singbox-host-v2" if !prerequisites.ssh_key_id.trim().is_empty() => {}
+        "singbox-host-v1" | "singbox-host-v2"
+            if !prerequisites.ssh_key_id.trim().is_empty() => {}
         "singbox-native-first-use-v1"
             if prerequisites.ssh_key_id.is_empty()
                 && prerequisites.cloud_init.starts_with("#cloud-config\n")
@@ -592,7 +593,7 @@ fn validate_create_prerequisites(
                 && prerequisites.cloud_init.contains("ssh_pwauth: false")
                 && prerequisites.cloud_init.contains("disable_root: true")
                 && !prerequisites.cloud_init.contains("ssh_authorized_keys:") => {}
-        "singbox-host-v2" => {
+        "singbox-host-v1" | "singbox-host-v2" => {
             return Err("CREATE requires a resolved Vultr SSH key object id".to_owned());
         }
         "singbox-native-first-use-v1" => {
@@ -755,6 +756,37 @@ mod tests {
             firewall_group_id: None,
             firewall_profile: None,
         }
+    }
+
+    #[test]
+    fn no_ssh_native_create_and_old_ssh_create_have_disjoint_admission() {
+        let mut machine = desired().machines.remove(0);
+        machine.bootstrap_profile = "singbox-native-first-use-v1".to_owned();
+        let mut prerequisites = CreatePrerequisites {
+            bootstrap_profile: machine.bootstrap_profile.clone(),
+            ssh_key_id: String::new(),
+            cloud_init: "#cloud-config\nssh_pwauth: false\ndisable_root: true\nwrite_files:\n  - path: /usr/local/sbin/singbox-native-first-use.sh\n".to_owned(),
+            firewall_group_id: None,
+            firewall_profile: None,
+        };
+        assert!(validate_create_prerequisites(&machine, &prerequisites).is_ok());
+        prerequisites.ssh_key_id = "unexpected-ssh-key".to_owned();
+        assert!(validate_create_prerequisites(&machine, &prerequisites).is_err());
+        prerequisites.ssh_key_id.clear();
+        for config in [
+            "#cloud-config\nssh_authorized_keys:\n  - key\nsingbox-native-first-use.sh\n",
+            "#cloud-config\ndisable_root: true\nsingbox-native-first-use.sh\n",
+            "#cloud-config\nssh_pwauth: false\nsingbox-native-first-use.sh\n",
+            "#cloud-config\nssh_pwauth: false\ndisable_root: true\n",
+        ] {
+            prerequisites.cloud_init = config.to_owned();
+            assert!(validate_create_prerequisites(&machine, &prerequisites).is_err());
+        }
+        machine.bootstrap_profile = "singbox-host-v2".to_owned();
+        prerequisites.bootstrap_profile = machine.bootstrap_profile.clone();
+        assert!(validate_create_prerequisites(&machine, &prerequisites).is_err());
+        prerequisites.ssh_key_id = "ssh-key-1".to_owned();
+        assert!(validate_create_prerequisites(&machine, &prerequisites).is_ok());
     }
 
     fn test_policy() -> LifecycleExecutionPolicy {
