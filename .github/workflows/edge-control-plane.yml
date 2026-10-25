@@ -283,6 +283,7 @@ jobs:
        needs.host.outputs.operation == 'DIAGNOSE' ||
        needs.host.outputs.operation == 'ADMIN' ||
        needs.host.outputs.operation == 'FIRST_USE_PREFLIGHT' ||
+       needs.host.outputs.operation == 'FIRST_USE_ABORT_PREFLIGHT' ||
        needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT')
     runs-on: ubuntu-24.04
     timeout-minutes: 3

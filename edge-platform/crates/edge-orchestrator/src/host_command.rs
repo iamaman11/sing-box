@@ -1876,6 +1876,39 @@ fn host_lifecycle_admission(
         println!("host_mutations=0");
         return Ok(());
     }
+    // Root absent: recovery may only reconcile a proven pre-CREATE abort.
+    // It never dispatches arbitrary native mutations or replays first-use.
+    if operation == HostLifecycleOperation::Recover
+        && kind == ManagedHostKind::Vm
+        && selected.native_receipt_public_key.is_empty()
+    {
+        if resource_id.is_some() {
+            return Err("HOST_FIRST_USE_ABORT_WHOLE_HOST_REQUIRED".to_owned());
+        }
+        edge_shared_types::host_lifecycle::verify_vm_first_use_git_prerequisites(selected)
+            .map_err(str::to_owned)?;
+        if selected.vm_first_use_credential.is_none() {
+            return Err("HOST_VM_FIRST_USE_CREDENTIAL_GIT_REQUIRED".to_owned());
+        }
+        let output = output.ok_or("HOST_PREFLIGHT_OUTPUT_REQUIRED")?;
+        let labels = runner_labels(kind, owner, &selected.windows_runner_label)?;
+        append_control_outputs(
+            output,
+            machine_id,
+            kind,
+            owner,
+            &labels,
+            &selected.windows_runner_label,
+            &selected.desired_spec_path,
+        )?;
+        append_action_output(output, HostWorkflowOperation::FirstUseAbortPreflight)?;
+        append_observation_matrix(output, &[])?;
+        println!("host_operation_id=issue1-comment-{comment_id}");
+        println!("host_machine_id={machine_id}");
+        println!("host_first_use_reconciliation=PROTECTED_PRECREATE_EVIDENCE_REQUIRED");
+        println!("host_mutations=0");
+        return Ok(());
+    }
     let intent_path = intent_output.ok_or("HOST_INTENT_OUTPUT_REQUIRED")?;
     // Read *the checked-out protected Git spec*, not an operator-supplied file.
     // This binds the intent to the exact desired bytes; JSON remains an
@@ -2074,6 +2107,7 @@ enum HostWorkflowOperation {
     ApplyPreflight,
     RecoverPreflight,
     FirstUsePreflight,
+    FirstUseAbortPreflight,
     WorkerAuthorizerPreflight,
 }
 
@@ -2086,6 +2120,7 @@ impl HostWorkflowOperation {
             Self::ApplyPreflight => "APPLY_PREFLIGHT",
             Self::RecoverPreflight => "RECOVER_PREFLIGHT",
             Self::FirstUsePreflight => "FIRST_USE_PREFLIGHT",
+            Self::FirstUseAbortPreflight => "FIRST_USE_ABORT_PREFLIGHT",
             Self::WorkerAuthorizerPreflight => "WORKER_AUTHORIZER_PREFLIGHT",
         }
     }

@@ -170,6 +170,9 @@ assert firstuse_job.index('first-use-scrub') < firstuse_job.index("Complete ONLY
 assert "host-receipt-${TARGET_MACHINE}-${SOURCE_COMMENT_ID}" in firstuse_job
 assert "HOST_FIRST_USE_DURABLE_BEGIN_RECORDED" in firstuse_job
 assert "HOST_FIRST_USE_CREATE_ONCE_NO_AUTOMATIC_REPLAY" in firstuse_job
+assert "FIRST_USE_ABORT_PREFLIGHT" in router
+assert "host_first_use_abort:" in router
+assert "edge-platform/scripts/host_first_use_abort.py" in router
 assert "HOST_FIRST_USE_NATIVE_HANDOFF_NOT_ACCEPTED_NO_CREATE" not in firstuse_job
 assert "edge-agent.service" not in Path("win/vultr-waw/cloud-init.yaml").read_text(encoding="utf-8")
 # One selected Git pointer (never shell-copied generation/digest) is
