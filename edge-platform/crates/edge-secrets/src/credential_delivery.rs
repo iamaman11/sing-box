@@ -846,6 +846,64 @@ pub async fn request_canonical_host_authorization(
     Ok(authorization)
 }
 
+/// The existing Cloudflare Worker independently authorizes the exact
+/// unrestricted native administration request. Never retry ambiguous POST.
+pub async fn request_canonical_native_admin_authorization(
+    bytes: &[u8],
+    identity_path: &Path,
+) -> Result<edge_shared_types::FleetNativeAdminAuthorization, String> {
+    use edge_shared_types::{FleetNativeAdminAuthorization, host_admin};
+    use prost::Message;
+    let request = host_admin::decode(bytes).map_err(str::to_owned)?;
+    let identity = read_access_service_identity(identity_path)?;
+    let mut url = reqwest::Url::parse(&canonical_credential_worker_url(
+        CredentialProjectionKind::Vm,
+        1,
+    )?)
+    .map_err(|_| "HOST_ADMIN_WORKER_URL_INVALID")?;
+    url.set_path("/v1/host/admin/authorize");
+    url.set_query(None);
+    let result = credential_worker_client(&identity)?
+        .post(url)
+        .header(CONTENT_TYPE, "application/x-protobuf")
+        .body(bytes.to_vec())
+        .send()
+        .await
+        .map_err(|_| "HOST_ADMIN_AUTH_POST_UNKNOWN_NO_REPLAY")?;
+    if result.status() != StatusCode::OK {
+        return Err(format!(
+            "HOST_ADMIN_AUTH_REJECTED_HTTP_{}",
+            result.status().as_u16()
+        ));
+    }
+    if result
+        .content_length()
+        .is_some_and(|value| value == 0 || value > 1024)
+        || result
+            .headers()
+            .get(CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            != Some("application/x-protobuf")
+    {
+        return Err("HOST_ADMIN_AUTH_RESPONSE_FORMAT_INVALID".into());
+    }
+    let response = result
+        .bytes()
+        .await
+        .map_err(|_| "HOST_ADMIN_AUTH_REPLY_UNKNOWN_NO_REPLAY")?;
+    if response.is_empty() || response.len() > 1024 {
+        return Err("HOST_ADMIN_AUTH_RESPONSE_SIZE_INVALID".into());
+    }
+    let signed = FleetNativeAdminAuthorization::decode(response.as_ref())
+        .map_err(|_| "HOST_ADMIN_AUTH_RESPONSE_PROTOBUF_INVALID")?;
+    if signed.encode_to_vec().as_slice() != response.as_ref()
+        || signed.operation_id != host_admin::operation_id(&request)
+    {
+        return Err("HOST_ADMIN_AUTH_RESPONSE_OPERATION_MISMATCH".into());
+    }
+    Ok(signed)
+}
+
 pub async fn fetch_canonical_credential_bundle(
     projection: CredentialProjectionKind,
     generation: u64,

@@ -462,6 +462,66 @@ message FleetHostDiagnosticRequest {
   repeated string argv = 4;
 }
 
+// Unlimited administrative COMMAND capability belongs only to native VM root.
+// An approved request carries exact argv (shell interpreters are not excluded),
+// optional cwd/env and stdin, but grants no authority without Worker signature.
+message FleetNativeAdminRequest {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  uint64 source_comment_id = 3;
+  repeated string argv = 4;
+  bytes release_set_sha256 = 5;
+  uint64 requested_at_unix = 6;
+  bytes comment_sha256 = 7;
+  string working_directory = 8;
+  repeated string environment = 9;
+  bytes stdin_bytes = 10;
+  uint32 timeout_seconds = 11;
+  // Explicit opt-in: previews can be visible to GitHub Actions readers.
+  bool publish_output = 12;
+}
+
+message FleetNativeAdminAuthorization {
+  uint32 schema_version = 1;
+  string key_id = 2;
+  string operation_id = 3;
+  uint64 issued_at_unix = 4;
+  uint64 expires_at_unix = 5;
+  bytes ed25519_signature = 6;
+}
+
+message FleetNativeAdminResult {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  string operation_id = 3;
+  bytes request_sha256 = 4;
+  uint64 observed_at_unix = 5;
+  int32 exit_code = 6;
+  bytes stdout_sha256 = 7;
+  bytes stderr_sha256 = 8;
+  bool process_exited = 9;
+  bytes root_signature = 10;
+  // Signed bounded output is released only for an explicit public-output request.
+  bytes stdout_preview = 11;
+  bytes stderr_preview = 12;
+  uint64 stdout_total_bytes = 13;
+  uint64 stderr_total_bytes = 14;
+  bool stdout_truncated = 15;
+  bool stderr_truncated = 16;
+  // Root-owned private bounded capture. Fetch chunks by a later exact
+  // Worker-authorized native admin request; never expose private bytes by default.
+  string stdout_capture_path = 17;
+  string stderr_capture_path = 18;
+  uint64 stdout_capture_bytes = 19;
+  uint64 stderr_capture_bytes = 20;
+  bool stdout_capture_complete = 21;
+  bool stderr_capture_complete = 22;
+  // Digest is complete only if the kernel delivered actual EOF.
+  // Otherwise descendants kept the pipe open beyond the bounded drain.
+  bool stdout_stream_eof = 23;
+  bool stderr_stream_eof = 24;
+}
+
 message FleetHostIntent {
   uint32 schema_version = 1;
   string machine_id = 2;

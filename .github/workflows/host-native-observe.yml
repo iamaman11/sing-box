@@ -33,12 +33,12 @@ jobs:
     # the existing production lease group serializes upgrade and native BEGIN.
     # Status remains independent and read-only; Windows is not affected.
     concurrency:
-      group: ${{ (inputs.kind == 'VM' && (inputs.operation == 'APPLY_PREFLIGHT' || inputs.operation == 'RECOVER_PREFLIGHT')) && 'vultr-control-plane-production' || format('host-readonly-{0}', inputs.source_comment_id) }}
+      group: ${{ (inputs.kind == 'VM' && (inputs.operation == 'APPLY_PREFLIGHT' || inputs.operation == 'RECOVER_PREFLIGHT' || inputs.operation == 'ADMIN')) && 'vultr-control-plane-production' || format('host-readonly-{0}', inputs.source_comment_id) }}
       cancel-in-progress: false
     # Git selects a single owner from Rust's exact protobuf matrix.
     # This job NEVER holds issues:write, Docker socket or generic root.
     runs-on: ${{ fromJSON(inputs.runner_labels) }}
-    timeout-minutes: 15
+    timeout-minutes: 75
     permissions:
       contents: read
       actions: read
@@ -49,6 +49,54 @@ jobs:
       COMMAND_BODY: ${{ inputs.command_body }}
       HOST_OPERATION: ${{ inputs.operation }}
     steps:
+      - name: Receive exact approved administrative request in existing runner
+        if: env.TARGET_KIND == 'VM' && env.HOST_OPERATION == 'ADMIN'
+        uses: actions/download-artifact@v4
+        with:
+          name: host-intent-${{ inputs.source_comment_id }}
+          path: ${{ runner.temp }}/host-admin
+
+      - name: Deliver signed native root administration without runner root rights
+        if: env.TARGET_KIND == 'VM' && env.HOST_OPERATION == 'ADMIN'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${RUNNER_NAME}" = "sing-box-production-${TARGET_OWNER}"
+          test "${TARGET_MACHINE}" = "${TARGET_OWNER}"
+          test "$(id -u)" != 0
+          owner=/usr/local/libexec/sing-box/edge-agent
+          test -x "${owner}" && test ! -L "${owner}"
+          for path in /usr /usr/local /usr/local/libexec /usr/local/libexec/sing-box "${owner}"; do
+            test ! -L "${path}"
+            test "$(stat -c '%u:%g:%a' "${path}")" = "0:0:755"
+          done
+          if sudo -n id -u >/dev/null 2>&1; then
+            echo 'HOST_ADMIN_RUNNER_GENERIC_SUDO_FORBIDDEN' >&2
+            exit 1
+          fi
+          test ! -r /var/run/docker.sock
+          request="${RUNNER_TEMP}/host-admin/host-intent.pb"
+          result="${RUNNER_TEMP}/host-admin/admin-result.pb"
+          test -f "${request}" && test ! -L "${request}"
+          test "$(stat -c '%s' "${request}")" -gt 0
+          test "$(stat -c '%s' "${request}")" -le 32768
+          sudo -n -l "${owner}" local host-admin >/dev/null
+          # Exact accepted root owner, independent Worker authorization,
+          # journal BEGIN, native signed result. The workflow NEVER runs
+          # argv, bash -c or Docker itself, and never logs raw root output.
+          sudo -n "${owner}" local host-admin < "${request}" > "${result}"
+          test -s "${result}" && test "$(stat -c '%s' "${result}")" -le 140000
+          echo 'host_admin_native_result=ROOT_SIGNED_PROOF_PENDING_INDEPENDENT_VERIFICATION'
+
+      - name: Preserve native signed administrative result even when command failed
+        if: (success() || failure()) && env.TARGET_KIND == 'VM' && env.HOST_OPERATION == 'ADMIN'
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-admin-result-${{ inputs.source_comment_id }}
+          path: ${{ runner.temp }}/host-admin/admin-result.pb
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Receive one same-run immutable diagnostic request
         if: env.TARGET_KIND == 'VM' && env.HOST_OPERATION == 'DIAGNOSE'
         uses: actions/download-artifact@v4
@@ -374,16 +422,17 @@ jobs:
           name="native-readback-${TARGET_MACHINE}-${SOURCE_COMMENT_ID}"
           out="${RUNNER_TEMP}/host-native-readback"
           mkdir -p "${out}"
-          # One native owner produces this artifact. A missing installed verb
-          # is UNAVAILABLE, never PASS or a request to install a new binary.
-          if ! gh run download "${GITHUB_RUN_ID}" -R "${GITHUB_REPOSITORY}" -n "${name}" -D "${out}" >/dev/null 2>&1; then
-            echo 'typed_verdict=UNAVAILABLE_INSTALLED_OWNER_VERSION' >> "${GITHUB_OUTPUT}"
-            exit 0
+          if [[ "${HOST_OPERATION}" != ADMIN ]]; then
+            # Native ADMIN has its own exact authenticated receipt.
+            if ! gh run download "${GITHUB_RUN_ID}" -R "${GITHUB_REPOSITORY}" -n "${name}" -D "${out}" >/dev/null 2>&1; then
+              echo 'typed_verdict=UNAVAILABLE_INSTALLED_OWNER_VERSION' >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+            observation="${out}/host-native-observation.pb"
+            test -f "${observation}" && test ! -L "${observation}"
+            test "$(stat -c '%s' "${observation}")" -gt 0
+            test "$(stat -c '%s' "${observation}")" -le 4096
           fi
-          observation="${out}/host-native-observation.pb"
-          test -f "${observation}" && test ! -L "${observation}"
-          test "$(stat -c '%s' "${observation}")" -gt 0
-          test "$(stat -c '%s' "${observation}")" -le 4096
           # Resolve the ONE accepted Git commit and exact immutable runtime,
           # matching the primary control-plane path. Never execute a
           # checkout-built or runner-supplied orchestrator.
@@ -415,6 +464,34 @@ jobs:
             --to "${RUNNER_TEMP}/host-readback-registry.pb#format=binpb")
           registry="${RUNNER_TEMP}/host-readback-registry.pb"
           test -s "${registry}"
+          if [[ "${TARGET_KIND}" = VM && "${HOST_OPERATION}" = ADMIN ]]; then
+            admin_name="host-admin-result-${SOURCE_COMMENT_ID}"
+            if ! gh run download "${GITHUB_RUN_ID}" -R "${GITHUB_REPOSITORY}" -n "${admin_name}" -D "${out}" >/dev/null 2>&1; then
+              echo 'typed_verdict=ADMIN_RECEIPT_MISSING_UNKNOWN_NO_REPLAY' >> "${GITHUB_OUTPUT}"
+              exit 0
+            fi
+            intent_dir="${RUNNER_TEMP}/host-admin-verified-intent"
+            mkdir -p "${intent_dir}"
+            gh run download "${GITHUB_RUN_ID}" -R "${GITHUB_REPOSITORY}" \
+              -n "host-intent-${SOURCE_COMMENT_ID}" -D "${intent_dir}"
+            request="${intent_dir}/host-intent.pb"
+            signed="${out}/admin-result.pb"
+            test -f "${request}" && test ! -L "${request}"
+            test -f "${signed}" && test ! -L "${signed}"
+            "${owner}" host --hosts-pb "${registry}" \
+              --hosts-sha256 "$(sha256sum "${registry}" | cut -d' ' -f1)" \
+              --github-output "${GITHUB_OUTPUT}" \
+              admin-result "${TARGET_MACHINE}" --request-path "${request}" \
+              --result-path "${signed}" > "${RUNNER_TEMP}/host-admin-audit.txt"
+            echo 'typed_verdict=ADMIN_RECEIPT_CRYPTO_VERIFIED' >> "${GITHUB_OUTPUT}"
+            {
+              echo '### Independent native admin receipt verification'
+              echo '~~~text'
+              cat "${RUNNER_TEMP}/host-admin-audit.txt"
+              echo '~~~'
+            } >> "${GITHUB_STEP_SUMMARY}"
+            exit 0
+          fi
           extra=()
           if [[ "${TARGET_KIND}" = VM && -s "${out}/host-native-resources.pb" ]]; then
             resource_report="${out}/host-native-resources.pb"
@@ -467,6 +544,7 @@ jobs:
           TYPED_OUTCOME: ${{ steps.typed.outcome }}
           TYPED_VERDICT: ${{ steps.typed.outputs.typed_verdict }}
           NATIVE_RECEIPT_PROOF: ${{ steps.typed.outputs.native_receipt_proof }}
+          ADMIN_RECEIPT_PROOF: ${{ steps.typed.outputs.admin_receipt_proof }}
         shell: bash
         run: |
           set -euo pipefail
@@ -489,6 +567,27 @@ jobs:
               result=ROOT_CODE_ONLY_REFRESH_COMPLETED_NO_RESOURCE_AUTHORITY
             else
               result=ROOT_CODE_ONLY_REFRESH_BLOCKED_NO_REPLAY
+            fi
+          fi
+          if [[ "${TARGET_KIND}" = VM && "${HOST_OPERATION}" = ADMIN ]]; then
+            native_note='Native ADMIN: no independent signed result established.'
+            if [[ "${TYPED_OUTCOME}" = success && "${ADMIN_RECEIPT_PROOF}" = VERIFIED_EXIT_ZERO ]]; then
+              result=ADMIN_SIGNED_EXIT_ZERO
+              native_note='Ed25519 native receipt verified against exact Git request; physical poststate requires independent observation.'
+            elif [[ "${TYPED_OUTCOME}" = success && "${ADMIN_RECEIPT_PROOF}" = VERIFIED_EXIT_NONZERO ]]; then
+              result=ADMIN_SIGNED_EXIT_NONZERO
+              native_note='Ed25519 native receipt verified; program returned a nonzero exit status.'
+            elif [[ "${TYPED_OUTCOME}" = success && "${ADMIN_RECEIPT_PROOF}" = VERIFIED_OUTPUT_INCOMPLETE_NO_REPLAY ]]; then
+              result=ADMIN_SIGNED_OUTPUT_INCOMPLETE_NO_REPLAY
+              native_note='Direct child exited but inherited output pipe did not reach EOF; signed partial output only, no replay.'
+            elif [[ "${TYPED_OUTCOME}" = success && "${ADMIN_RECEIPT_PROOF}" = VERIFIED_EXIT_124_OR_137_AMBIGUOUS ]]; then
+              result=ADMIN_SIGNED_EXIT_AMBIGUOUS
+              native_note='Ed25519 receipt verifies exit 124/137, not whether timeout or application supplied the code.'
+            elif [[ "${TYPED_OUTCOME}" = success && "${ADMIN_RECEIPT_PROOF}" = VERIFIED_NO_EXIT ]]; then
+              result=ADMIN_SIGNED_NO_EXIT
+              native_note='Signed result exists but normal child completion is not proved; no replay.'
+            else
+              result=ADMIN_UNVERIFIED_UNKNOWN_NO_REPLAY
             fi
           fi
           if [[ "${TARGET_KIND}" = VM && "${HOST_OPERATION}" = APPLY_PREFLIGHT ]]; then

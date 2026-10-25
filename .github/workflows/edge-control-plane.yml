@@ -29,7 +29,8 @@ jobs:
        startsWith(github.event.comment.body, '/host status ') ||
        startsWith(github.event.comment.body, '/host apply ') ||
        startsWith(github.event.comment.body, '/host recover ') ||
-       startsWith(github.event.comment.body, '/host diagnose '))
+       startsWith(github.event.comment.body, '/host diagnose ') ||
+       startsWith(github.event.comment.body, '/host admin '))
     outputs:
       kind: ${{ steps.observe.outputs.kind }}
       owner: ${{ steps.observe.outputs.owner }}
@@ -149,6 +150,8 @@ jobs:
             if [[ "${COMMAND_BODY}" == *" --deep" ]]; then command+=(--deep); fi
           elif [[ "${COMMAND_BODY}" =~ ^/host[[:space:]]apply[[:space:]]([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})[[:space:]](config/[A-Za-z0-9][A-Za-z0-9._-]{0,63}/(line1-gateway|line2-proxy))$ ]]; then
             command=(apply "${BASH_REMATCH[1]}" --resource-id "${BASH_REMATCH[2]}")
+          elif [[ "${COMMAND_BODY}" =~ ^/host[[:space:]]admin[[:space:]]([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})[[:space:]]([A-Za-z0-9_-]{1,24000})$ ]]; then
+            command=(admin "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")
           elif [[ "${COMMAND_BODY}" =~ ^/host[[:space:]]diagnose[[:space:]]([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})[[:space:]](.{1,480})$ ]]; then
             machine="${BASH_REMATCH[1]}"
             # Splitting into argv is ONLY transport. Rust coordinator and native
@@ -195,7 +198,7 @@ jobs:
 
       - name: Retain one typed intent and blocked/prepared receipt
         if: ${{ steps.observe.outputs.operation == 'APPLY_PREFLIGHT' || steps.observe.outputs.operation == 'RECOVER_PREFLIGHT' ||
-               steps.observe.outputs.operation == 'DIAGNOSE' }}
+               steps.observe.outputs.operation == 'DIAGNOSE' || steps.observe.outputs.operation == 'ADMIN' }}
         uses: actions/upload-artifact@v4
         with:
           name: host-intent-${{ github.event.comment.id }}
@@ -222,7 +225,8 @@ jobs:
       (needs.host.outputs.operation == 'STATUS' ||
        needs.host.outputs.operation == 'APPLY_PREFLIGHT' ||
        needs.host.outputs.operation == 'RECOVER_PREFLIGHT' ||
-       needs.host.outputs.operation == 'DIAGNOSE')
+       needs.host.outputs.operation == 'DIAGNOSE' ||
+       needs.host.outputs.operation == 'ADMIN')
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.host.outputs.host_matrix) }}
@@ -251,6 +255,7 @@ jobs:
        needs.host.outputs.operation == 'APPLY_PREFLIGHT' ||
        needs.host.outputs.operation == 'RECOVER_PREFLIGHT' ||
        needs.host.outputs.operation == 'DIAGNOSE' ||
+       needs.host.outputs.operation == 'ADMIN' ||
        needs.host.outputs.operation == 'FIRST_USE_PREFLIGHT' ||
        needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT')
     runs-on: ubuntu-24.04

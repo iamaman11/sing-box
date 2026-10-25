@@ -47,6 +47,8 @@ pub(crate) enum LocalCommand {
     HostResources,
     /// One native VM host transaction, with an exact protobuf intent on stdin.
     HostApply,
+    /// One explicitly approved arbitrary root administrative request.
+    HostAdmin,
     /// Read-only unprivileged native probe from a typed same-run request on stdin.
     HostProbe,
     /// Refresh the exact protected main release from the installed root
@@ -77,6 +79,7 @@ impl LocalCommand {
             Self::HostObserve => "local-host-observe",
             Self::HostResources => "local-host-resources",
             Self::HostApply => "local-host-apply",
+            Self::HostAdmin => "local-host-admin",
             Self::HostProbe => "local-host-probe",
             Self::HostRefresh => "local-host-refresh",
             Self::HostEnroll { .. } => "local-host-enroll",
@@ -96,7 +99,7 @@ mod tests {
     use clap::Parser;
 
     #[test]
-    fn only_native_owned_readonly_and_signed_lifecycle_cli_is_parseable() {
+    fn native_owner_exposes_signed_unrestricted_admin_without_runner_shell() {
         for op in [
             "status",
             "verify",
@@ -104,6 +107,7 @@ mod tests {
             "host-observe",
             "host-resources",
             "host-apply",
+            "host-admin",
             "host-probe",
             "host-refresh",
             "quality-line2",

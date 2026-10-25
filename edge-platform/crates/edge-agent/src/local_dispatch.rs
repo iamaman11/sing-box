@@ -91,6 +91,9 @@ pub(super) async fn run_local(command: cli::LocalCommand) -> Result<(), AgentErr
         cli::LocalCommand::HostApply => host_native::apply(&stack_dir)
             .await
             .map_err(AgentError::Command),
+        cli::LocalCommand::HostAdmin => host_admin_native::execute()
+            .await
+            .map_err(AgentError::Command),
         cli::LocalCommand::HostRefresh => host_enroll::refresh_current()
             .await
             .map_err(AgentError::Command),

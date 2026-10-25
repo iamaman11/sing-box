@@ -1,4 +1,5 @@
 use crate::cli::HostCommand;
+use base64::Engine as _;
 use edge_orchestrator::OrchestrationContext;
 use edge_shared_types::{
     FleetHostAction, FleetHostIntent, FleetHostMode, HostRegistry, ManagedHostKind,
@@ -19,6 +20,17 @@ use std::fs::{File, OpenOptions};
 use std::io::{Read, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdminOperatorPayload {
+    argv: Vec<String>,
+    cwd: String,
+    environment: Vec<String>,
+    stdin_base64: String,
+    timeout_seconds: u32,
+    publish_output: bool,
+}
 
 const MAX_INVENTORY_BYTES: u64 = 65_536;
 const MAX_RUNNER_BYTES: u64 = 1_048_576;
@@ -207,7 +219,58 @@ pub(crate) fn run(
         return Err("host protobuf differs from protected Git inventory SHA-256".to_owned());
     }
     let desired = decode_host_registry(&bytes)?;
-    let (command, diagnostic) = match command {
+    let (command, diagnostic, administrative) = match command {
+        HostCommand::Admin {
+            machine_id,
+            argv_base64,
+        } => {
+            let comment = source_comment_id.ok_or("HOST_ADMIN_SOURCE_COMMENT_REQUIRED")?;
+            if argv_base64.is_empty()
+                || argv_base64.len() > 24000
+                || !argv_base64
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            {
+                return Err("HOST_ADMIN_ARGUMENT_ENCODING_INVALID".into());
+            }
+            let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(argv_base64.as_bytes())
+                .map_err(|_| "HOST_ADMIN_ARGUMENT_DECODE_INVALID")?;
+            let operator: AdminOperatorPayload =
+                serde_json::from_slice(&bytes).map_err(|_| "HOST_ADMIN_ARGUMENT_JSON_INVALID")?;
+            let stdin_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(operator.stdin_base64.as_bytes())
+                .map_err(|_| "HOST_ADMIN_STDIN_ENCODING_INVALID")?;
+            let body = format!("/host admin {machine_id} {argv_base64}");
+            let request = edge_shared_types::FleetNativeAdminRequest {
+                schema_version: 1,
+                machine_id: machine_id.clone(),
+                source_comment_id: comment,
+                argv: operator.argv,
+                release_set_sha256: exact_hex_sha256(&release.release().release_set_sha256)?,
+                requested_at_unix: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|_| "HOST_ADMIN_CLOCK_UNAVAILABLE")?
+                    .as_secs(),
+                comment_sha256: ring::digest::digest(&SHA256, body.as_bytes())
+                    .as_ref()
+                    .to_vec(),
+                working_directory: operator.cwd,
+                environment: operator.environment,
+                stdin_bytes,
+                timeout_seconds: operator.timeout_seconds,
+                publish_output: operator.publish_output,
+            };
+            edge_shared_types::host_admin::validate(&request).map_err(str::to_owned)?;
+            (
+                HostCommand::Status {
+                    machine_id: Some(machine_id),
+                    deep: true,
+                },
+                None,
+                Some(request),
+            )
+        }
         HostCommand::Diagnose { machine_id, argv } => {
             let source_id = source_comment_id.ok_or("HOST_DIAG_SOURCE_COMMENT_MISSING")?;
             let request = edge_shared_types::FleetHostDiagnosticRequest {
@@ -224,16 +287,19 @@ pub(crate) fn run(
                     deep: true,
                 },
                 Some(request),
+                None,
             )
         }
-        other => (other, None),
+        other => (other, None, None),
     };
     match command {
         HostCommand::Status { machine_id, deep } => {
             if let Some(path) = github_output {
                 append_action_output(
                     path,
-                    if diagnostic.is_some() {
+                    if administrative.is_some() {
+                        HostWorkflowOperation::Admin
+                    } else if diagnostic.is_some() {
                         HostWorkflowOperation::Diagnose
                     } else {
                         HostWorkflowOperation::Status
@@ -250,6 +316,17 @@ pub(crate) fn run(
                 file.write_all(&request.encode_to_vec())
                     .and_then(|_| file.sync_all())
                     .map_err(|_| "HOST_DIAG_ARTIFACT_WRITE_FAILED")?;
+            }
+            if let Some(ref request) = administrative {
+                let target = intent_output.ok_or("HOST_ADMIN_ARTIFACT_PATH_MISSING")?;
+                let mut out = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(target)
+                    .map_err(|_| "HOST_ADMIN_ARTIFACT_EXISTS")?;
+                out.write_all(&request.encode_to_vec())
+                    .and_then(|_| out.sync_all())
+                    .map_err(|_| "HOST_ADMIN_ARTIFACT_WRITE_FAILED")?;
             }
             if deep && machine_id.is_none() {
                 return Err("HOST_DEEP_REQUIRES_EXACT_MACHINE".to_owned());
@@ -275,7 +352,8 @@ pub(crate) fn run(
             for host in selected {
                 let kind = ManagedHostKind::try_from(host.kind)
                     .map_err(|_| "HOST_KIND_INVALID".to_owned())?;
-                if diagnostic.is_some() && kind != ManagedHostKind::Vm {
+                if (diagnostic.is_some() || administrative.is_some()) && kind != ManagedHostKind::Vm
+                {
                     return Err("HOST_DIAG_VM_ONLY_UNTIL_WINDOWS_NATIVE_ACCEPTANCE".to_owned());
                 }
                 let owner = match host.owner.as_ref() {
@@ -937,6 +1015,132 @@ pub(crate) fn run(
             println!("host_mutations=0");
             Ok(())
         }
+        HostCommand::AdminResult {
+            machine_id,
+            request_path,
+            result_path,
+        } => {
+            use edge_shared_types::{FleetNativeAdminResult, host_admin};
+            let read_proof = |path: &Path, max: usize| -> Result<Vec<u8>, String> {
+                let meta =
+                    std::fs::symlink_metadata(path).map_err(|_| "HOST_ADMIN_PROOF_MISSING")?;
+                if !meta.is_file() || meta.len() == 0 || meta.len() > max as u64 {
+                    return Err("HOST_ADMIN_PROOF_INVALID".into());
+                }
+                let bytes = std::fs::read(path).map_err(|_| "HOST_ADMIN_PROOF_READ_FAILED")?;
+                if bytes.is_empty() || bytes.len() > max {
+                    return Err("HOST_ADMIN_PROOF_SIZE_INVALID".into());
+                }
+                Ok(bytes)
+            };
+            let request_bytes = read_proof(&request_path, host_admin::MAX_BYTES)?;
+            let request = host_admin::decode(&request_bytes).map_err(str::to_owned)?;
+            let receipt_bytes = read_proof(&result_path, 140_000)?;
+            let receipt = FleetNativeAdminResult::decode(receipt_bytes.as_slice())
+                .map_err(|_| "HOST_ADMIN_RECEIPT_PROTOBUF_INVALID")?;
+            if receipt.encode_to_vec() != receipt_bytes {
+                return Err("HOST_ADMIN_RECEIPT_NONCANONICAL".into());
+            }
+            let selected = desired
+                .hosts
+                .iter()
+                .find(|host| {
+                    host.machine_id == machine_id && host.kind == ManagedHostKind::Vm as i32
+                })
+                .ok_or("HOST_ADMIN_GIT_MACHINE_NOT_REGISTERED")?;
+            if request.machine_id != machine_id
+                || request.release_set_sha256
+                    != exact_hex_sha256(&release.release().release_set_sha256)?
+            {
+                return Err("HOST_ADMIN_GIT_IDENTITY_OR_RELEASE_MISMATCH".into());
+            }
+            host_admin::verify_receipt(&request, &receipt, &selected.native_receipt_public_key)
+                .map_err(str::to_owned)?;
+            let outcome = if !receipt.process_exited {
+                "VERIFIED_NO_EXIT"
+            } else if !receipt.stdout_stream_eof || !receipt.stderr_stream_eof {
+                "VERIFIED_OUTPUT_INCOMPLETE_NO_REPLAY"
+            } else if receipt.exit_code == 124 || receipt.exit_code == 137 {
+                // Both may be ordinary application exit codes, not timeout proof.
+                "VERIFIED_EXIT_124_OR_137_AMBIGUOUS"
+            } else if receipt.exit_code == 0 {
+                "VERIFIED_EXIT_ZERO"
+            } else {
+                "VERIFIED_EXIT_NONZERO"
+            };
+            if let Some(path) = github_output {
+                append_host_verifier_output(path, "admin_receipt_proof", outcome)?;
+            }
+            println!("host_admin_receipt_origin=GIT_PINNED_ED25519_NATIVE_OWNER");
+            println!("host_admin_receipt_verified=true");
+            println!("host_admin_execution_outcome={outcome}");
+            println!("host_admin_physical_poststate=UNPROVEN");
+            println!("host_admin_exit_code={}", receipt.exit_code);
+            println!(
+                "host_admin_stdout_total_bytes={}",
+                receipt.stdout_total_bytes
+            );
+            println!(
+                "host_admin_stderr_total_bytes={}",
+                receipt.stderr_total_bytes
+            );
+            println!(
+                "host_admin_stdout_capture_path={}",
+                receipt.stdout_capture_path
+            );
+            println!(
+                "host_admin_stderr_capture_path={}",
+                receipt.stderr_capture_path
+            );
+            println!(
+                "host_admin_stdout_capture_bytes={}",
+                receipt.stdout_capture_bytes
+            );
+            println!(
+                "host_admin_stderr_capture_bytes={}",
+                receipt.stderr_capture_bytes
+            );
+            println!(
+                "host_admin_stdout_capture_complete={}",
+                receipt.stdout_capture_complete
+            );
+            println!(
+                "host_admin_stderr_capture_complete={}",
+                receipt.stderr_capture_complete
+            );
+            println!("host_admin_stdout_stream_eof={}", receipt.stdout_stream_eof);
+            println!("host_admin_stderr_stream_eof={}", receipt.stderr_stream_eof);
+            println!("host_admin_stdout_truncated={}", receipt.stdout_truncated);
+            println!("host_admin_stderr_truncated={}", receipt.stderr_truncated);
+            println!(
+                "host_admin_stdout_sha256={}",
+                receipt
+                    .stdout_sha256
+                    .iter()
+                    .map(|v| format!("{v:02x}"))
+                    .collect::<String>()
+            );
+            println!(
+                "host_admin_stderr_sha256={}",
+                receipt
+                    .stderr_sha256
+                    .iter()
+                    .map(|v| format!("{v:02x}"))
+                    .collect::<String>()
+            );
+            if request.publish_output {
+                let base64 = base64::engine::general_purpose::STANDARD;
+                println!(
+                    "host_admin_stdout_preview_b64={}",
+                    base64.encode(&receipt.stdout_preview)
+                );
+                println!(
+                    "host_admin_stderr_preview_b64={}",
+                    base64.encode(&receipt.stderr_preview)
+                );
+            }
+            Ok(())
+        }
         HostCommand::NativeResult {
             machine_id,
             intent_path,
@@ -1196,6 +1400,7 @@ pub(crate) fn run(
             Ok(())
         }
         HostCommand::Diagnose { .. } => Err("HOST_DIAG_DISPATCH_INVARIANT_FAILED".to_owned()),
+        HostCommand::Admin { .. } => Err("HOST_ADMIN_DISPATCH_INVARIANT_FAILED".to_owned()),
         HostCommand::VmWorkerAuthorizerUpgrade { .. } => {
             Err("HOST_VM_WORKER_UPGRADE_MUST_USE_PROTECTED_CREDENTIAL_OWNER".to_owned())
         }
@@ -1733,6 +1938,7 @@ fn exact_hex_sha256(value: &str) -> Result<Vec<u8>, String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HostWorkflowOperation {
     Status,
+    Admin,
     Diagnose,
     ApplyPreflight,
     RecoverPreflight,
@@ -1744,6 +1950,7 @@ impl HostWorkflowOperation {
     const fn as_str(self) -> &'static str {
         match self {
             Self::Status => "STATUS",
+            Self::Admin => "ADMIN",
             Self::Diagnose => "DIAGNOSE",
             Self::ApplyPreflight => "APPLY_PREFLIGHT",
             Self::RecoverPreflight => "RECOVER_PREFLIGHT",
