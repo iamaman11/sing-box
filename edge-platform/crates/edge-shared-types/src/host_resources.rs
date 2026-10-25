@@ -909,21 +909,21 @@ pub fn validate_vm_dual_stack_network(
         if link.interface_index == 0
             || link.name.is_empty()
             || link.name.len() > 64
-            || !link.name.bytes().all(|b| {
-                b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-' | b':' | b'@')
-            })
+            || !link
+                .name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-' | b':' | b'@'))
             || !links.insert(link.interface_index)
         {
             return Err("VM_DUAL_STACK_LINK_INVALID");
         }
     }
-    let same_family = |family: i32, value: &str| {
-        match (Family::try_from(family), value.parse::<IpAddr>()) {
+    let same_family =
+        |family: i32, value: &str| match (Family::try_from(family), value.parse::<IpAddr>()) {
             (Ok(Family::V4), Ok(IpAddr::V4(_))) => true,
             (Ok(Family::V6), Ok(IpAddr::V6(_))) => true,
             _ => false,
-        }
-    };
+        };
     for address in &kernel.addresses {
         if !links.contains(&address.interface_index)
             || !same_family(address.family, &address.address)
@@ -940,8 +940,7 @@ pub fn validate_vm_dual_stack_network(
                 && !same_family(route.family, &route.preferred_source)
             || (route.family == Family::V4 as i32 && route.prefix_length > 32)
             || (route.family == Family::V6 as i32 && route.prefix_length > 128)
-            || route.output_interface_index != 0
-                && !links.contains(&route.output_interface_index)
+            || route.output_interface_index != 0 && !links.contains(&route.output_interface_index)
         {
             return Err("VM_DUAL_STACK_ROUTE_INVALID");
         }
