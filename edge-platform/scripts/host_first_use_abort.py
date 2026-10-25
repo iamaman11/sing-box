@@ -11,6 +11,9 @@ import re
 import subprocess
 import sys
 from pathlib import Path
+from urllib.error import HTTPError, URLError
+from urllib.parse import urlsplit
+from urllib.request import HTTPRedirectHandler, Request, build_opener, urlopen
 
 REPO = "iamaman11/sing-box"
 ACTOR = "44100369"
@@ -76,6 +79,59 @@ def exact_branch(machine):
     return ref.removeprefix("refs/heads/"), ref.removeprefix("refs/heads/" + prefix), sha
 
 
+class DenyLogRedirect(HTTPRedirectHandler):
+    def redirect_request(self, request, fp, code, msg, headers, newurl):
+        return None
+
+
+def read_job_log(job_id):
+    """Fetch GitHub's official 302 signed log URL without forwarding API token.
+
+    No raw log, JWT, registration token or download URL enters output.
+    """
+    require(isinstance(job_id, int) and job_id > 0, "HOST_ABORT_JOB_ID_INVALID")
+    secret = os.environ.get("GH_TOKEN", "")
+    require(bool(secret), "HOST_ABORT_GITHUB_IDENTITY_MISSING")
+    url = f"https://api.github.com/repos/{REPO}/actions/jobs/{job_id}/logs"
+    req = Request(url, headers={
+        "Authorization": "Bearer " + secret,
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "sing-box-read-only-diagnostic",
+    }, method="GET")
+    response = None
+    try:
+        response = build_opener(DenyLogRedirect()).open(req, timeout=35)
+        require(response.geturl() == url, "HOST_ABORT_JOB_LOG_ORIGIN_INVALID")
+        raw = response.read(2_000_001)
+    except HTTPError as error:
+        require(error.code == 302, "HOST_ABORT_JOB_LOG_REDIRECT_INVALID")
+        location = error.headers.get("Location", "")
+        parsed = urlsplit(location)
+        host = parsed.hostname or ""
+        require(parsed.scheme == "https" and parsed.username is None and
+                parsed.password is None and parsed.port in (None, 443) and
+                (host.endswith(".actions.githubusercontent.com") or
+                 host.endswith(".blob.core.windows.net")),
+                "HOST_ABORT_JOB_LOG_SIGNED_LOCATION_INVALID")
+        # Deliberately NO authorization headers on the redirected request.
+        # Never let urllib render a signed download URL in an exception.
+        try:
+            with urlopen(Request(location, headers={
+                    "User-Agent": "sing-box-read-only-diagnostic",
+                }, method="GET"), timeout=45) as downloaded:
+                raw = downloaded.read(2_000_001)
+        except (HTTPError, URLError, OSError, TimeoutError, ValueError):
+            raise Blocked("HOST_ABORT_ORIGINAL_JOB_LOG_UNAVAILABLE") from None
+    except (URLError, OSError, TimeoutError, ValueError):
+        raise Blocked("HOST_ABORT_ORIGINAL_JOB_LOG_UNAVAILABLE") from None
+    finally:
+        if response is not None:
+            response.close()
+    require(0 < len(raw) <= 2_000_000 and not raw.startswith(b"PK\x03\x04"),
+            "HOST_ABORT_ORIGINAL_JOB_LOG_UNPROVEN")
+    return raw.decode("utf-8", "replace")
+
+
 def verify_original_run(machine, comment, revision, run_id):
     source = github(f"repos/{REPO}/issues/comments/{comment}")
     require(source.get("body", "").strip() == f"/host apply {machine}" and
@@ -109,18 +165,7 @@ def verify_original_run(machine, comment, revision, run_id):
             concluded("Execute exactly one no-SSH native Vultr CREATE", "failure"),
             "HOST_ABORT_CREATE_FAILURE_NOT_PROVEN_PREPOST")
     job_id = matches[0].get("id")
-    require(isinstance(job_id, int) and job_id > 0, "HOST_ABORT_JOB_ID_INVALID")
-    try:
-        log = subprocess.run(
-            ["gh", "api", f"repos/{REPO}/actions/jobs/{job_id}/logs"],
-            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL, check=False, timeout=45,
-        )
-    except (OSError, subprocess.TimeoutExpired):
-        raise Blocked("HOST_ABORT_ORIGINAL_JOB_LOG_UNAVAILABLE") from None
-    require(log.returncode == 0 and 0 < len(log.stdout) <= 2_000_000,
-            "HOST_ABORT_ORIGINAL_JOB_LOG_UNPROVEN")
-    text = re.sub(r"\x1b\[[0-9;]*m", "", log.stdout.decode("utf-8", "replace"))
+    text = re.sub(r"\x1b\[[0-9;]*m", "", read_job_log(job_id))
     require(sum(line.rstrip().endswith("HOST_FIRST_USE_FIREWALL_BINDING_UNPROVEN")
                 for line in text.splitlines()) == 1 and
             "host_first_use_provider_plan=EXACT_CREATE_ONLY" in text and
