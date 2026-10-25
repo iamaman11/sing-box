@@ -477,6 +477,8 @@ message FleetNativeAdminRequest {
   repeated string environment = 9;
   bytes stdin_bytes = 10;
   uint32 timeout_seconds = 11;
+  // Explicit opt-in: previews can be visible to GitHub Actions readers.
+  bool publish_output = 12;
 }
 
 message FleetNativeAdminAuthorization {
@@ -499,6 +501,13 @@ message FleetNativeAdminResult {
   bytes stderr_sha256 = 8;
   bool process_exited = 9;
   bytes root_signature = 10;
+  // Signed bounded output is released only for an explicit public-output request.
+  bytes stdout_preview = 11;
+  bytes stderr_preview = 12;
+  uint64 stdout_total_bytes = 13;
+  uint64 stderr_total_bytes = 14;
+  bool stdout_truncated = 15;
+  bool stderr_truncated = 16;
 }
 
 message FleetHostIntent {

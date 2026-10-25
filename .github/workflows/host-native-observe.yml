@@ -38,7 +38,7 @@ jobs:
     # Git selects a single owner from Rust's exact protobuf matrix.
     # This job NEVER holds issues:write, Docker socket or generic root.
     runs-on: ${{ fromJSON(inputs.runner_labels) }}
-    timeout-minutes: 15
+    timeout-minutes: 75
     permissions:
       contents: read
       actions: read
@@ -85,16 +85,16 @@ jobs:
           # journal BEGIN, native signed result. The workflow NEVER runs
           # argv, bash -c or Docker itself, and never logs raw root output.
           sudo -n "${owner}" local host-admin < "${request}" > "${result}"
-          test -s "${result}" && test "$(stat -c '%s' "${result}")" -le 2048
+          test -s "${result}" && test "$(stat -c '%s' "${result}")" -le 140000
           echo 'host_admin_native_result=ROOT_SIGNED_PROOF_PENDING_INDEPENDENT_VERIFICATION'
 
-      - name: Preserve only native signed administrative result
-        if: env.TARGET_KIND == 'VM' && env.HOST_OPERATION == 'ADMIN'
+      - name: Preserve native signed administrative result even when command failed
+        if: (success() || failure()) && env.TARGET_KIND == 'VM' && env.HOST_OPERATION == 'ADMIN'
         uses: actions/upload-artifact@v4
         with:
           name: host-admin-result-${{ inputs.source_comment_id }}
           path: ${{ runner.temp }}/host-admin/admin-result.pb
-          if-no-files-found: error
+          if-no-files-found: warn
           retention-days: 7
 
       - name: Receive one same-run immutable diagnostic request

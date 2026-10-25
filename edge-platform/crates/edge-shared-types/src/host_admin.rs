@@ -108,6 +108,20 @@ pub fn verify_authorization(
         )
         .map_err(|_| "HOST_ADMIN_SIGNATURE_REJECTED")
 }
+fn preview_valid(request: &Request, result: &ResultReceipt) -> bool {
+    let max = 64 * 1024;
+    let a = result.stdout_preview.len();
+    let b = result.stderr_preview.len();
+    a <= max && b <= max
+        && (request.publish_output || (a == 0 && b == 0))
+        && a as u64 <= result.stdout_total_bytes
+        && b as u64 <= result.stderr_total_bytes
+        && result.stdout_truncated == (result.stdout_total_bytes > max as u64)
+        && result.stderr_truncated == (result.stderr_total_bytes > max as u64)
+        && (!request.publish_output
+            || (a as u64 == result.stdout_total_bytes.min(max as u64)
+                && b as u64 == result.stderr_total_bytes.min(max as u64)))
+}
 fn receipt_payload(request: &Request, result: &ResultReceipt) -> Vec<u8> {
     let mut unsigned = result.clone();
     unsigned.root_signature.clear();
@@ -132,6 +146,7 @@ pub fn sign_receipt(
         || receipt.request_sha256 != digest.as_ref()
         || receipt.stdout_sha256.len() != 32
         || receipt.stderr_sha256.len() != 32
+        || !preview_valid(request, receipt)
     {
         return Err("HOST_ADMIN_RECEIPT_IDENTITY_INVALID");
     }
@@ -155,6 +170,7 @@ pub fn verify_receipt(
         || receipt.request_sha256 != digest.as_ref()
         || pinned_owner_public_key.len() != 32
         || receipt.root_signature.len() != 64
+        || !preview_valid(request, receipt)
     {
         return Err("HOST_ADMIN_RECEIPT_INVALID");
     }
@@ -184,6 +200,7 @@ mod tests {
             environment: vec!["LANG=C".into()],
             stdin_bytes: Vec::new(),
             timeout_seconds: 60,
+            publish_output: false,
         }
     }
     #[test]

@@ -33,10 +33,43 @@ fn durable_create(path: &Path, data: &[u8]) -> Result<(), String> {
         .map_err(|_| "HOST_ADMIN_PARENT_SYNC_UNCERTAIN_NO_REPLAY")?;
     Ok(())
 }
-fn bounded(mut r: impl Read) -> std::io::Result<Vec<u8>> {
-    let mut data = Vec::new();
-    r.take(65537).read_to_end(&mut data)?;
-    Ok(data)
+// Never stop draining a pipe because the retained evidence is full.
+const PREVIEW_LIMIT: usize = 64 * 1024;
+struct CapturedStream {
+    sha256: Vec<u8>,
+    total_bytes: u64,
+    preview: Vec<u8>,
+}
+fn capture_stream(mut input: impl Read) -> std::io::Result<CapturedStream> {
+    let mut hash = ring::digest::Context::new(&ring::digest::SHA256);
+    let mut buffer = [0_u8; 16 * 1024];
+    let mut total_bytes = 0_u64;
+    let mut preview = Vec::new();
+    loop {
+        let len = input.read(&mut buffer)?;
+        if len == 0 { break; }
+        total_bytes = total_bytes.saturating_add(len as u64);
+        hash.update(&buffer[..len]);
+        let retain = PREVIEW_LIMIT.saturating_sub(preview.len()).min(len);
+        preview.extend_from_slice(&buffer[..retain]);
+    }
+    Ok(CapturedStream {
+        sha256: hash.finish().as_ref().to_vec(),
+        total_bytes,
+        preview,
+    })
+}
+#[cfg(test)]
+mod io_tests {
+    use super::*;
+    #[test]
+    fn long_stream_is_fully_drained_and_hashed() {
+        let bytes = vec![0x5a; 1024 * 1024];
+        let result = capture_stream(bytes.as_slice()).unwrap();
+        assert_eq!(result.total_bytes, bytes.len() as u64);
+        assert_eq!(result.preview.len(), PREVIEW_LIMIT);
+        assert_eq!(result.sha256, sha256(&bytes));
+    }
 }
 
 pub(super) async fn execute() -> Result<(), String> {
@@ -159,15 +192,21 @@ pub(super) async fn execute() -> Result<(), String> {
         .stderr
         .take()
         .ok_or("HOST_ADMIN_CHILD_STDERR_UNAVAILABLE")?;
-    let stdout_reader = std::thread::spawn(move || bounded(stdout));
-    let stderr_reader = std::thread::spawn(move || bounded(stderr));
+    let stdout_reader = std::thread::spawn(move || capture_stream(stdout));
+    let stderr_reader = std::thread::spawn(move || capture_stream(stderr));
     let exit = child
         .wait()
         .map_err(|_| "HOST_ADMIN_CHILD_WAIT_UNKNOWN_NO_REPLAY")?;
-    writer
+    // A child may exit without reading its entire stdin. BrokenPipe is then
+    // an ordinary child outcome, not proof of an unknown side effect.
+    let input_result = writer
         .join()
-        .map_err(|_| "HOST_ADMIN_STDIN_JOIN_UNKNOWN_NO_REPLAY")?
-        .map_err(|_| "HOST_ADMIN_STDIN_IO_UNKNOWN_NO_REPLAY")?;
+        .map_err(|_| "HOST_ADMIN_STDIN_JOIN_UNKNOWN_NO_REPLAY")?;
+    if let Err(error) = input_result {
+        if error.kind() != std::io::ErrorKind::BrokenPipe {
+            return Err("HOST_ADMIN_STDIN_IO_UNKNOWN_NO_REPLAY".into());
+        }
+    }
     let out = stdout_reader
         .join()
         .map_err(|_| "HOST_ADMIN_STDOUT_JOIN_UNKNOWN_NO_REPLAY")?
@@ -188,10 +227,16 @@ pub(super) async fn execute() -> Result<(), String> {
         request_sha256: sha256(&raw),
         observed_at_unix: observed_at,
         exit_code: exit.code().unwrap_or(-1),
-        stdout_sha256: sha256(&out),
-        stderr_sha256: sha256(&err),
-        process_exited: exit.code().is_some() && out.len() <= 65536 && err.len() <= 65536,
+        stdout_sha256: out.sha256,
+        stderr_sha256: err.sha256,
+        process_exited: exit.code().is_some(),
         root_signature: Vec::new(),
+        stdout_preview: if request.publish_output { out.preview } else { Vec::new() },
+        stderr_preview: if request.publish_output { err.preview } else { Vec::new() },
+        stdout_total_bytes: out.total_bytes,
+        stderr_total_bytes: err.total_bytes,
+        stdout_truncated: out.total_bytes > PREVIEW_LIMIT as u64,
+        stderr_truncated: err.total_bytes > PREVIEW_LIMIT as u64,
     };
     host_admin::sign_receipt(&request, &mut receipt, &key_bytes).map_err(str::to_owned)?;
     durable_create(&terminal, &receipt.encode_to_vec())?;
@@ -201,8 +246,8 @@ pub(super) async fn execute() -> Result<(), String> {
             .and_then(|f| f.sync_all())
             .map_err(|_| "HOST_ADMIN_TERMINAL_SYNC_UNKNOWN_NO_REPLAY")?;
     }
-    // Output is not copied to a public GitHub Issue; only attested
-    // execution metadata and hashes leave the native root process.
+    // Preview bytes are present only under the exact Worker-signed explicit
+    // publish_output opt-in. The default result carries hashes and counts.
     io::stdout()
         .write_all(&receipt.encode_to_vec())
         .map_err(|_| "HOST_ADMIN_SIGNED_RESULT_DELIVERY_UNAVAILABLE")?;

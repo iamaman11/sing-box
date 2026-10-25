@@ -4320,18 +4320,19 @@ return new Response(null,{status:reason==="OK"?204:403,headers:{...NO,"X-Host-Au
 // Administrative programs are not allowlisted. Approval is byte-exact,
 // GitHub actor-scoped and cryptographically separate from normal HostIntent.
 function ADMIN_INFO(b){
- let p=0,last=0,schema=0,m=null,cid=0,argv=[],release=null,when=0,comment=null,cwd="",env=[],input=null,timeout=0;
+ let p=0,last=0,schema=0,m=null,cid=0,argv=[],release=null,when=0,comment=null,cwd="",env=[],input=null,timeout=0,publish=false;
  let seen=new Set();
  while(p<b.length){
   const k=V(b,p);if(!k)return null;
   const f=Number(k[0]>>3n),w=Number(k[0]&7n);p=k[1];
-  if(f<last||(f===last&&f!==4&&f!==9)||f<1||f>11)return null;
+  if(f<last||(f===last&&f!==4&&f!==9)||f<1||f>12)return null;
   last=f;seen.add(f);
-  if(f===1||f===3||f===6||f===11){
+  if(f===1||f===3||f===6||f===11||f===12){
    if(w!==0)return null;
    const n=V(b,p);if(!n||n[0]>BigInt(Number.MAX_SAFE_INTEGER))return null;
    p=n[1];const v=Number(n[0]);
    if(f===1)schema=v;if(f===3)cid=v;if(f===6)when=v;if(f===11)timeout=v;
+   if(f===12){if(v!==1)return null;publish=true}
   }else{
    if(w!==2)return null;
    const n=V(b,p);if(!n||n[0]>BigInt(b.length))return null;
@@ -4355,10 +4356,10 @@ function ADMIN_INFO(b){
     !Number.isInteger(timeout)||timeout<1||timeout>3600||
     b.length>32768||[1,2,3,4,5,6,7,11].some(n=>!seen.has(n)))
   return null;
- return {m,cid,argv,release,when,comment,cwd,env,input,timeout,id:"issue1-comment-"+cid};
+ return {m,cid,argv,release,when,comment,cwd,env,input,timeout,publish,id:"issue1-comment-"+cid};
 }
-function ADMIN_ARGS_B64(argv){
- const bytes=TE.encode(JSON.stringify(argv));let s="";
+function ADMIN_ARGS_B64(payload){
+ const bytes=TE.encode(JSON.stringify(payload));let s="";
  for(const c of bytes)s+=String.fromCharCode(c);
  return btoa(s).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
 }
@@ -4381,11 +4382,15 @@ async function ADMIN_GITHUB(info,e,now){
  const res=await get("/issues/comments/"+info.cid,"ADMIN_COMMENT");
  if(res.error)return res.error;
  const c=res.value,stamp=Date.parse(c?.created_at)/1000;
- const body="/host admin "+info.m+" "+ADMIN_ARGS_B64(info.argv);
+ const stdin=info.input===null?"":btoa(Array.from(info.input,x=>String.fromCharCode(x)).join(""))
+    .replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
+ const payload={argv:info.argv,cwd:info.cwd,environment:info.env,stdin_base64:stdin,
+    timeout_seconds:info.timeout,publish_output:info.publish};
+ const body="/host admin "+info.m+" "+ADMIN_ARGS_B64(payload);
  if(!c||String(c.user?.id)!==actor||c.issue_url!==base+"/issues/1"||
    c.body!==body||c.updated_at!==c.created_at||!Number.isFinite(stamp)||
    stamp>now+30||now-stamp>300||info.when<stamp-30||
-   info.cwd!==""||info.env.length!==0||info.input!==null||info.timeout!==300)return "DENIED";
+   false)return "DENIED";
  const sha=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",TE.encode(body))),
    x=>x.toString(16).padStart(2,"0")).join("");
  if(sha!==info.comment)return "DENIED";

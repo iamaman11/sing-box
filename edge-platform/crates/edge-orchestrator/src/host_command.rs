@@ -21,6 +21,17 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct AdminOperatorPayload {
+    argv: Vec<String>,
+    cwd: String,
+    environment: Vec<String>,
+    stdin_base64: String,
+    timeout_seconds: u32,
+    publish_output: bool,
+}
+
 const MAX_INVENTORY_BYTES: u64 = 65_536;
 const MAX_RUNNER_BYTES: u64 = 1_048_576;
 
@@ -225,14 +236,17 @@ pub(crate) fn run(
             let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
                 .decode(argv_base64.as_bytes())
                 .map_err(|_| "HOST_ADMIN_ARGUMENT_DECODE_INVALID")?;
-            let argv = serde_json::from_slice::<Vec<String>>(&bytes)
+            let operator: AdminOperatorPayload = serde_json::from_slice(&bytes)
                 .map_err(|_| "HOST_ADMIN_ARGUMENT_JSON_INVALID")?;
+            let stdin_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(operator.stdin_base64.as_bytes())
+                .map_err(|_| "HOST_ADMIN_STDIN_ENCODING_INVALID")?;
             let body = format!("/host admin {machine_id} {argv_base64}");
             let request = edge_shared_types::FleetNativeAdminRequest {
                 schema_version: 1,
                 machine_id: machine_id.clone(),
                 source_comment_id: comment,
-                argv,
+                argv: operator.argv,
                 release_set_sha256: exact_hex_sha256(&release.release().release_set_sha256)?,
                 requested_at_unix: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -241,10 +255,11 @@ pub(crate) fn run(
                 comment_sha256: ring::digest::digest(&SHA256, body.as_bytes())
                     .as_ref()
                     .to_vec(),
-                working_directory: String::new(),
-                environment: Vec::new(),
-                stdin_bytes: Vec::new(),
-                timeout_seconds: 300,
+                working_directory: operator.cwd,
+                environment: operator.environment,
+                stdin_bytes,
+                timeout_seconds: operator.timeout_seconds,
+                publish_output: operator.publish_output,
             };
             edge_shared_types::host_admin::validate(&request).map_err(str::to_owned)?;
             (
