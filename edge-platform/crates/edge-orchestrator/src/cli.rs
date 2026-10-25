@@ -92,6 +92,11 @@ pub(crate) enum HostCommand {
         #[arg(last = true)]
         argv: Vec<String>,
     },
+    /// Exact GitHub-approved administrative request, encoded as bounded argv JSON.
+    Admin {
+        machine_id: String,
+        argv_b64: String,
+    },
     /// Internal read-only ingestion of a native protobuf observation.
     /// GitHub runner output is NOT independent proof of native owner identity.
     #[command(hide = true)]
