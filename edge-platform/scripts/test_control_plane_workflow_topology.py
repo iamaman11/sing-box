@@ -106,6 +106,17 @@ assert provider.index(gate) < provider.index('host_first_use_provider_plan=EXACT
 assert provider.rindex(gate) < provider.index("acceptance_create_machine(provider_spec, machine_id).await?")
 assert '#[path = "vm_credential_proof.rs"]' in worker_src
 assert "get_vm_credential_bundle_with_access(" in vm_proof
+# A GET-only capability probe must not request an SSH private key.
+# The old first-use implementation cannot reach provider CREATE until the
+# signed cloud-init enrollment plus root-only Access delivery is implemented.
+capability_job=router.split("  host_capabilities:", 1)[1].split("  host_first_use:", 1)[0]
+assert "VULTR_SSH_PRIVATE_KEY" not in capability_job
+capability_probe=Path("edge-platform/scripts/host_capability_preflight.py").read_text(encoding="utf-8")
+assert "operator_ssh_private_key" not in capability_probe
+assert '"bootstrap_transport": "SSH_RETIRED_CLOUD_INIT_REQUIRED"' in capability_probe
+assert 'admit_first_use_bootstrap_transport().map_err(str::to_owned)?;' in provider
+assert provider.count("admit_first_use_bootstrap_transport().map_err(str::to_owned)?;") == 2
+assert 'HOST_FIRST_USE_CLOUD_INIT_ENROLLMENT_NOT_IMPLEMENTED_NO_CREATE' in provider
 assert "attest_vm_first_use_credential_bytes(&bytes, generation, expected_sha256)?" in vm_proof
 assert "verify_vm_first_use_git_prerequisites(host)" in vm_proof
 assert "host_vm_create=NOT_AUTHORIZED" in vm_proof
