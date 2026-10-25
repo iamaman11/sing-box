@@ -74,7 +74,10 @@ fn run_one_diagnostic(index: usize, argv: &[&str]) -> Result<bool, String> {
         .map_err(|_| "HOST_DIAG_STDERR_READ_FAILED")?;
 
     println!("host_diagnostic_{index}_tool={}", argv[0]);
-    println!("host_diagnostic_{index}_exit={}", status.code().unwrap_or(-1));
+    println!(
+        "host_diagnostic_{index}_exit={}",
+        status.code().unwrap_or(-1)
+    );
     if stdout.len() > MAX_DIAGNOSTIC_OUTPUT_BYTES || stderr.len() > MAX_DIAGNOSTIC_OUTPUT_BYTES {
         println!("host_diagnostic_{index}_result=OUTPUT_LIMIT");
         return Ok(false);
@@ -95,7 +98,11 @@ fn run_one_diagnostic(index: usize, argv: &[&str]) -> Result<bool, String> {
     let success = status.success();
     println!(
         "host_diagnostic_{index}_result={}",
-        if success { "COMMAND_OK" } else { "COMMAND_FAILED" }
+        if success {
+            "COMMAND_OK"
+        } else {
+            "COMMAND_FAILED"
+        }
     );
     Ok(success)
 }
@@ -129,7 +136,11 @@ pub(super) fn run_host_probe() -> Result<(), String> {
     println!("host_diagnostic_command_failures={failures}");
     println!(
         "host_diagnostic_result={}",
-        if failures == 0 { "COMMANDS_OK" } else { "PARTIAL_COMMAND_FAILURE" }
+        if failures == 0 {
+            "COMMANDS_OK"
+        } else {
+            "PARTIAL_COMMAND_FAILURE"
+        }
     );
     Ok(())
 }
