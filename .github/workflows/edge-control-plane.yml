@@ -622,6 +622,11 @@ jobs:
       (startsWith(needs.host.outputs.desired_spec_path, 'infra/application/') ||
        startsWith(needs.host.outputs.desired_spec_path, 'infra/hosts/specs/'))
     runs-on: ubuntu-24.04
+    # Native and hosted evidence append to ONE operator comment. Serialize
+    # read-modify-PATCH across both existing GitHub workflow jobs, not VM ops.
+    concurrency:
+      group: host-deep-report-${{ github.event.comment.id }}
+      cancel-in-progress: false
     environment:
       name: production-vultr
       deployment: false
