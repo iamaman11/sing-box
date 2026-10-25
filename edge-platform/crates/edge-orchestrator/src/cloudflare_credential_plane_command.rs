@@ -1857,12 +1857,12 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
 // public lifecycle entry points and immutable provenance checks.
 #[path = "vm_credential_proof.rs"]
 mod vm_credential_proof;
-pub(crate) use vm_credential_proof::{
-    host_vm_credential_proof, verify_current_vm_first_use_worker_source,
-};
 #[cfg(test)]
 use vm_credential_proof::{
     attest_vm_first_use_credential_bytes, vm_worker_readonly_proof_git_state,
+};
+pub(crate) use vm_credential_proof::{
+    host_vm_credential_proof, verify_current_vm_first_use_worker_source,
 };
 
 /// One existing protected VM Worker authority, with no second signer service.
