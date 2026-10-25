@@ -106,6 +106,7 @@ hosts: {
     compose_project: "vultr-edge"
     compose_service: "warp-egress"
   }
+  worker_authority_public_key: "\xe7ۉ\x82W+\x80\\/7\x95\x03$\r=\xcf{\x9a\xd8E\x11zAbw8\x8f\x0bJ\xf8u\x8d"
   vm_provider_spec_path: "infra/hosts/specs/application-acceptance-5.textproto"
 }
 hosts: {
