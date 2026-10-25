@@ -1204,6 +1204,7 @@ jobs:
           git fetch -q --no-tags --depth=1 origin "${ORIGINAL_SHA}"
           git checkout -q --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "${ORIGINAL_SHA}"
+          export REPOSITORY="${GITHUB_REPOSITORY}"
           export ACCEPTED_REVISION="${ORIGINAL_SHA}"
           export OUTPUT_DIR="${RUNNER_TEMP}/host-original-release"
           bash edge-platform/scripts/resolve_durable_release.sh
