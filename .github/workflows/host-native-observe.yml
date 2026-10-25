@@ -29,11 +29,14 @@ permissions: {}
 
 jobs:
   observe:
-    # A VM signed apply MUST NOT overlap its own or another VM root upgrade:
-    # the existing production lease group serializes upgrade and native BEGIN.
-    # Status remains independent and read-only; Windows is not affected.
+    # Native root operations target ONE Git-pinned VM. Serialize mutating
+    # operations on that VM, not the entire provider fleet: a deleted VM with
+    # an offline self-hosted runner must not freeze Worker bootstrap or other
+    # live VMs. The protected GitHub-hosted Worker/Vultr mutation owner
+    # retains its independent fleet-wide concurrency lock.
+    # Status remains independent and read-only; Windows is unaffected.
     concurrency:
-      group: ${{ (inputs.kind == 'VM' && (inputs.operation == 'APPLY_PREFLIGHT' || inputs.operation == 'RECOVER_PREFLIGHT' || inputs.operation == 'ADMIN')) && 'vultr-control-plane-production' || format('host-readonly-{0}', inputs.source_comment_id) }}
+      group: ${{ (inputs.kind == 'VM' && (inputs.operation == 'APPLY_PREFLIGHT' || inputs.operation == 'RECOVER_PREFLIGHT' || inputs.operation == 'ADMIN')) && format('host-native-vm-{0}', inputs.machine_id) || format('host-readonly-{0}', inputs.source_comment_id) }}
       cancel-in-progress: false
     # Git selects a single owner from Rust's exact protobuf matrix.
     # This job NEVER holds issues:write, Docker socket or generic root.
