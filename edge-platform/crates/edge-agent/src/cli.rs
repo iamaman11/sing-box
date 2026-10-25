@@ -47,6 +47,8 @@ pub(crate) enum LocalCommand {
     HostResources,
     /// One native VM host transaction, with an exact protobuf intent on stdin.
     HostApply,
+    /// Read-only unprivileged native probe from a typed same-run request on stdin.
+    HostProbe,
     /// Refresh the exact protected main release from the installed root
     /// owner; no caller-selected SHA/path and no SSH.
     HostRefresh,
@@ -75,6 +77,7 @@ impl LocalCommand {
             Self::HostObserve => "local-host-observe",
             Self::HostResources => "local-host-resources",
             Self::HostApply => "local-host-apply",
+            Self::HostProbe => "local-host-probe",
             Self::HostRefresh => "local-host-refresh",
             Self::HostEnroll { .. } => "local-host-enroll",
             Self::QualityLine2 => "local-quality-line2",
@@ -101,6 +104,7 @@ mod tests {
             "host-observe",
             "host-resources",
             "host-apply",
+            "host-probe",
             "host-refresh",
             "quality-line2",
             "credential-public-endpoint",
