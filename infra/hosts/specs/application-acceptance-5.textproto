@@ -7,7 +7,7 @@ machine {
   region: "waw"
   plan: "vc2-1c-1gb"
   os_id: 2625
-  bootstrap_profile: "singbox-host-v2"
+  bootstrap_profile: "singbox-native-first-use-v1"
   application_profiles: "application-acceptance"
   tags: "disposable-application-acceptance-5"
 }
