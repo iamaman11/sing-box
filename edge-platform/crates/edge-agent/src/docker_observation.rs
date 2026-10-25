@@ -1,6 +1,9 @@
 #[path = "docker_native_gateway.rs"]
 mod native_gateway;
 use native_gateway::*;
+#[path = "docker_managed_file.rs"]
+mod managed_file;
+use managed_file::*;
 
 #[path = "docker_runtime_readback.rs"]
 mod runtime_readback;
@@ -2244,6 +2247,7 @@ struct NativeVmGatewayImageReplacePlan {
 pub(crate) enum NativeVmReplacePlan {
     Config(NativeVmScopedReplacePlan),
     GatewayImage(NativeVmGatewayImageReplacePlan),
+    ManagedFile(NativeVmManagedFilePlan),
 }
 
 impl NativeVmReplacePlan {
@@ -2673,30 +2677,39 @@ pub(crate) async fn preflight_native_vm_replace(
             .map(|resource| resource.compose_service.as_str())
             .collect::<BTreeSet<_>>()
             == BTreeSet::from(["line1-gateway", "line2-proxy"]);
-    if !config_only && !gateway_pair {
+    // A signed ReleaseSet may also mutate exactly one non-secret file
+    // inside root-owned stack/managed. Changes to network/container/Compose
+    // are never reinterpreted as file actions.
+    if !config_only && !gateway_pair && !changed.is_empty() {
         return Err("HOST_VM_RECONCILE_EFFECTOR_NOT_IMPLEMENTED".into());
     }
-    let images = request
-        .stack_files
-        .iter()
-        .find(|file| file.relative_path == ".images.env")
-        .ok_or("HOST_VM_REPLACE_IMAGE_ENV_MISSING")?;
-    let current = exact_vm_policy_file(stack_dir, ".images.env")?;
-    if (images.content != current) != gateway_pair {
-        return Err("HOST_VM_RECONCILE_IMAGE_SCOPE_CONFLICT".into());
+    if config_only || gateway_pair {
+        let images = request
+            .stack_files
+            .iter()
+            .find(|file| file.relative_path == ".images.env")
+            .ok_or("HOST_VM_REPLACE_IMAGE_ENV_MISSING")?;
+        let current = exact_vm_policy_file(stack_dir, ".images.env")?;
+        if (images.content != current) != gateway_pair {
+            return Err("HOST_VM_RECONCILE_IMAGE_SCOPE_CONFLICT".into());
+        }
     }
     let plan = if gateway_pair {
         preflight_gateway_image_replace(stack_dir, host, request)
             .await
             .map(NativeVmReplacePlan::GatewayImage)?
-    } else {
+    } else if config_only {
         preflight_native_vm_scoped_replace(stack_dir, host, request)
             .await
             .map(NativeVmReplacePlan::Config)?
+    } else {
+        preflight_native_vm_managed_file(stack_dir, host, request, &installed_graph, &target_graph)
+            .map(NativeVmReplacePlan::ManagedFile)?
     };
     let prepared_graph = match &plan {
         NativeVmReplacePlan::Config(value) => &value.target_graph,
         NativeVmReplacePlan::GatewayImage(value) => &value.target_graph,
+        NativeVmReplacePlan::ManagedFile(value) => &value.target_graph,
     };
     if prepared_graph != &target_graph {
         return Err("HOST_VM_RELEASE_TARGET_GRAPH_MISMATCH".into());
@@ -2715,6 +2728,9 @@ pub(crate) async fn apply_native_vm_replace_once(
         }
         NativeVmReplacePlan::GatewayImage(plan) => {
             apply_gateway_image_replace_once(stack_dir, host, plan).await
+        }
+        NativeVmReplacePlan::ManagedFile(plan) => {
+            apply_native_vm_managed_file_once(stack_dir, host, plan)
         }
     }
 }
