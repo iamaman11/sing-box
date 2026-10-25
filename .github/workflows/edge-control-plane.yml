@@ -659,9 +659,8 @@ jobs:
           echo 'host_mutations=0'
 
   host_first_use:
-    # A continuation of ONE issue /host apply, not another public ingress.
-    # First-use is a bounded GitHub-hosted provider/root bootstrap, never
-    # executed by the low-privilege VM runner or the legacy Vultr workflow.
+    # READ-ONLY admission; no SSH, provider CREATE or token reservation.
+    # The complete signed native handoff must replace this job atomically.
     needs: [host, host_report]
     if: >-
       needs.host.result == 'success' &&
@@ -676,16 +675,15 @@ jobs:
     concurrency:
       group: vultr-control-plane-production
       cancel-in-progress: false
-    timeout-minutes: 45
+    timeout-minutes: 15
     permissions:
       contents: read
       actions: read
     env:
       TARGET_MACHINE: ${{ needs.host.outputs.machine_id }}
-      SOURCE_COMMENT_ID: ${{ github.event.comment.id }}
       GH_TOKEN: ${{ github.token }}
     steps:
-      - name: Checkout exact accepted Git source
+      - name: Checkout exact protected Git source
         shell: bash
         run: |
           set -euo pipefail
@@ -695,13 +693,13 @@ jobs:
           git checkout --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
 
-      - name: Compile exact per-host first-use desired (protobuf, no JSON)
+      - name: Compile exact host registry
         shell: bash
         run: |
           set -euo pipefail
           bash edge-platform/scripts/compile_vm_host_desired.sh "${TARGET_MACHINE}"
 
-      - name: Resolve immutable published native owner and fleet
+      - name: Resolve exact published Root Agent and registry
         shell: bash
         env:
           REPOSITORY: ${{ github.repository }}
@@ -712,39 +710,11 @@ jobs:
           bash edge-platform/scripts/resolve_durable_release.sh
           source "${OUTPUT_DIR}/resolved.env"
           test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
-          [[ "${EDGE_FLEET_REGISTRY_SHA256}" =~ ^[0-9a-f]{64}$ ]]
           test "$(sha256sum "${OUTPUT_DIR}/fleet-registry.pb" | cut -d' ' -f1)" = "${EDGE_FLEET_REGISTRY_SHA256}"
           test "$(sha256sum "${OUTPUT_DIR}/edge-orchestrator-linux-amd64" | cut -d' ' -f1)" = "${EDGE_ORCHESTRATOR_SHA256}"
-          test "$(sha256sum "${OUTPUT_DIR}/edge-agent-linux-amd64" | cut -d' ' -f1)" = "${EDGE_AGENT_SHA256}"
           chmod 0755 "${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
-          for key in EDGE_DOCKER_ENGINE_VERSION EDGE_CONTAINERD_VERSION EDGE_COMPOSE_VERSION; do
-            echo "${key}=${!key}" >> "${GITHUB_ENV}"
-          done
-          echo "EDGE_RELEASE_CONTEXT_PATH=${OUTPUT_DIR}/resolved.env" >> "${GITHUB_ENV}"
 
-      - name: Materialize bounded operator key and egress identity
-        shell: bash
-        env:
-          VULTR_SSH_PRIVATE_KEY: ${{ secrets.VULTR_SSH_PRIVATE_KEY }}
-        run: |
-          set -euo pipefail
-          umask 077
-          key="${RUNNER_TEMP}/singbox-first-use-operator"
-          printf '%s\n' "${VULTR_SSH_PRIVATE_KEY}" > "${key}"
-          test -s "${key}"
-          chmod 0600 "${key}"
-          echo "EDGE_SSH_PRIVATE_KEY_PATH=${key}" >> "${GITHUB_ENV}"
-          ip="$(curl -4 --fail --silent --show-error --connect-timeout 10 --max-time 20 https://api.ipify.org)"
-          python3 - "${ip}" <<'PY'
-          import ipaddress
-          import sys
-          value = ipaddress.ip_address(sys.argv[1])
-          if value.version != 4 or not value.is_global:
-              raise SystemExit("HOST_FIRST_USE_EGRESS_INVALID")
-          PY
-          echo "EDGE_CONTROLLER_IPV4=${ip}" >> "${GITHUB_ENV}"
-
-      - name: Require exact absent VM before reserving protected Git receipt
+      - name: Prove exact Git Worker and Vultr CREATE candidates read only
         shell: bash
         env:
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
@@ -758,219 +728,10 @@ jobs:
           "${bin}" host \
             --hosts-pb "${registry}" \
             --hosts-sha256 "$(sha256sum "${registry}" | cut -d' ' -f1)" \
-            first-use-preflight "${TARGET_MACHINE}" \
-            | tee "${RUNNER_TEMP}/host-first-use-provider-preflight.txt"
-          # Exact Rust Result is the admission; printable diagnostics are not parsed.
-
-      - name: Obtain single ephemeral VM runner enrollment credential
-        shell: bash
-        env:
-          CONTROL_TOKEN: ${{ secrets.IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN }}
-        run: |
-          set -euo pipefail
-          test -n "${CONTROL_TOKEN}"
-          token="$(curl --fail --silent --show-error --request POST \
-            --header 'Accept: application/vnd.github+json' \
-            --header "Authorization: Bearer ${CONTROL_TOKEN}" \
-            --header 'X-GitHub-Api-Version: 2026-03-10' \
-            "https://api.github.com/repos/${GITHUB_REPOSITORY}/actions/runners/registration-token" | jq -er '.token')"
-          test -n "${token}"
-          echo "::add-mask::${token}"
-          echo "EDGE_RUNNER_REGISTRATION_TOKEN=${token}" >> "${GITHUB_ENV}"
-
-      - name: Reserve protected receipt registration before VM CREATE
-        shell: bash
-        env:
-          REGISTRATION_TOKEN: ${{ secrets.IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN }}
-        run: |
-          set -euo pipefail
-          test "${GITHUB_RUN_ATTEMPT}" = 1
-          [[ "${TARGET_MACHINE}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]
-          [[ "${SOURCE_COMMENT_ID}" =~ ^[1-9][0-9]*$ ]]
-          test -n "${REGISTRATION_TOKEN}"
-          export GH_TOKEN="${REGISTRATION_TOKEN}"
-          test "$(gh api "repos/${GITHUB_REPOSITORY}" --jq '.permissions.push')" = true
-          base="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
-          test "${base}" = "${GITHUB_SHA}"
-          branch="host-receipt-${TARGET_MACHINE}-${SOURCE_COMMENT_ID}"
-          # Historical MERGED receipt branches are durable proof of a
-          # completed older VM epoch; they are not active reservations.
-          # Provider EXACT_CREATE_ONLY and a fresh Git receipt scope were
-          # proven before this step. Unknown branches always block CREATE.
-          prefix="refs/heads/host-receipt-${TARGET_MACHINE}-"
-          prior_refs="$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/heads/host-receipt-${TARGET_MACHINE}-")"
-          jq -e --arg prefix "${prefix}" \
-            'type == "array" and length <= 32 and
-             all(.[]; (.ref | startswith($prefix)) and
-                 (.object.sha | test("^[0-9a-f]{40}$")))' \
-            <<< "${prior_refs}" >/dev/null || {
-              echo 'HOST_RECEIPT_RESERVATION_INVENTORY_UNPROVEN_NO_REPLAY' >&2
-              exit 1
-            }
-          while IFS=$'\t' read -r prior_ref prior_sha; do
-            test -n "${prior_ref}" || continue
-            old_id="${prior_ref#${prefix}}"
-            [[ "${old_id}" =~ ^[1-9][0-9]*$ ]] &&
-              (( old_id < SOURCE_COMMENT_ID )) &&
-              test "${prior_ref}" != "refs/heads/${branch}" || {
-                echo 'HOST_RECEIPT_PENDING_OR_SAME_OPERATION_NO_REPLAY' >&2
-                exit 1
-              }
-            prior_branch="${prior_ref#refs/heads/}"
-            matching="$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=all&head=iamaman11:${prior_branch}")"
-            merged_sha="$(jq -er \
-              --arg old "${prior_branch}" --arg sha "${prior_sha}" \
-              --arg repo "${GITHUB_REPOSITORY}" \
-              '[.[] | select(.head.ref == $old and .head.sha == $sha and
-                .head.repo.full_name == $repo and .base.ref == "main" and
-                .state == "closed" and .merged_at != null and
-                .draft == false and .merge_commit_sha != null)] |
-               if length == 1 then .[0].merge_commit_sha else empty end' \
-              <<< "${matching}")" || {
-                echo 'HOST_RECEIPT_PRIOR_EPOCH_NOT_MERGED_NO_REPLAY' >&2
-                exit 1
-              }
-            [[ "${merged_sha}" =~ ^[0-9a-f]{40}$ ]] || exit 1
-            merge_status="$(gh api \
-              "repos/${GITHUB_REPOSITORY}/compare/${merged_sha}...${GITHUB_SHA}" \
-              --jq '.status')"
-            case "${merge_status}" in
-              ahead|identical) ;;
-              *) echo 'HOST_RECEIPT_PRIOR_EPOCH_NOT_CANONICAL_NO_REPLAY' >&2; exit 1 ;;
-            esac
-          done < <(jq -r '.[] | [.ref, .object.sha] | @tsv' <<< "${prior_refs}")
-          # A branch already present means possible earlier/uncertain first-use.
-          # Never repeat VM CREATE based on GitHub workflow retries.
-          if gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}" >/dev/null 2>&1; then
-            echo 'HOST_RECEIPT_RESERVATION_EXISTS_NO_REPLAY' >&2
-            exit 1
-          fi
-          gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
-            -f "ref=refs/heads/${branch}" -f "sha=${base}" >/dev/null
-          original_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto?ref=${base}" --jq '.sha')"
-          python3 - "${TARGET_MACHINE}" "${SOURCE_COMMENT_ID}" <<'PY'
-          from pathlib import Path
-          import sys
-          source = Path("infra/hosts/hosts.textproto").read_bytes()
-          assert source.endswith(b"\n")
-          reservation = ("# native-receipt-registration-pending "
-                         + sys.argv[1] + " issue1-comment-" + sys.argv[2] + "\n").encode()
-          Path("receipt-registration-reserved.textproto").write_bytes(source + reservation)
-          PY
-          encoded="$(base64 -w0 < receipt-registration-reserved.textproto)"
-          gh api -X PUT "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto" \
-            -f "branch=${branch}" -f "sha=${original_sha}" \
-            -f "message=host: reserve native receipt registration for ${TARGET_MACHINE}" \
-            -f "content=${encoded}" >/dev/null
-          gh api -X POST "repos/${GITHUB_REPOSITORY}/pulls" \
-            -f "head=${branch}" -f "base=main" -F draft=true \
-            -f "title=host: register native receipt for ${TARGET_MACHINE}" \
-            -f "body=DRAFT RESERVATION ONLY. First-use /host apply from issue #1 comment ${SOURCE_COMMENT_ID} at protected revision ${GITHUB_SHA}. Root key is not enrolled or registered yet. Must remain draft until the exact root public identity is proven. No signed INSTALL is authorized." >/dev/null
-          pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=open&head=iamaman11:${branch}" |
-            jq -er --arg branch "${branch}" '[.[] | select(.head.ref == $branch and .base.ref == "main" and .head.repo.full_name == "iamaman11/sing-box")] | if length == 1 then .[0].number else error("HOST_PUBLIC_PR_NOT_EXACT") end')"
-          [[ "${pr}" =~ ^[1-9][0-9]*$ ]]
-          test "$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.draft')" = true
-          reservation_sha="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}" --jq '.object.sha')"
-          [[ "${reservation_sha}" =~ ^[0-9a-f]{40}$ ]]
-          echo "HOST_RECEIPT_RESERVATION_SHA=${reservation_sha}" >> "${GITHUB_ENV}"
-          echo 'host_receipt_registration=PROTECTED_DRAFT_RESERVED_BEFORE_CREATE'
-
-      - name: Run one typed provider CREATE and native root enrollment
-        id: first_use
-        shell: bash
-        env:
-          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
-          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID }}
-          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET }}
-        run: |
-          set -euo pipefail
-          test "${GITHUB_RUN_ATTEMPT}" = "1"
-          bin="${RUNNER_TEMP}/host-release/edge-orchestrator-linux-amd64"
-          "${bin}" host \
-            --hosts-pb "${RUNNER_TEMP}/host-release/fleet-registry.pb" \
-            --hosts-sha256 "$(sha256sum "${RUNNER_TEMP}/host-release/fleet-registry.pb" | cut -d' ' -f1)" \
-            first-use "${TARGET_MACHINE}" \
-            --installer-path edge-platform/scripts/install-vultr-production-runner.sh \
-            --agent-path "${RUNNER_TEMP}/host-release/edge-agent-linux-amd64" \
-            | tee "${RUNNER_TEMP}/host-first-use-evidence.txt"
-
-      - name: Stage root receipt identity through a protected Git pull request
-        shell: bash
-        env:
-          REGISTRATION_TOKEN: ${{ secrets.IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN }}
-        run: |
-          set -euo pipefail
-          # One-shot: never rerun CREATE/enrollment after an uncertain result.
-          test "${GITHUB_RUN_ATTEMPT}" = 1
-          [[ "${TARGET_MACHINE}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]
-          [[ "${SOURCE_COMMENT_ID}" =~ ^[1-9][0-9]*$ ]]
-          evidence="${RUNNER_TEMP}/host-first-use-evidence.txt"
-          test -f "${evidence}" && test ! -L "${evidence}"
-          # Rust emits the public key only after exact native enrollment.
-          public_key="${{ steps.first_use.outputs.receipt_public_key_hex }}"
-          [[ "${public_key}" =~ ^[0-9a-f]{64}$ ]]
-          bin="${RUNNER_TEMP}/host-release/edge-orchestrator-linux-amd64"
-          fleet="${RUNNER_TEMP}/host-release/fleet-registry.pb"
-          new_fleet="${RUNNER_TEMP}/host-receipt-candidate.pb"
-          "${bin}" host --hosts-pb "${fleet}" \
-            --hosts-sha256 "$(sha256sum "${fleet}" | cut -d' ' -f1)" \
-            register-receipt "${TARGET_MACHINE}" \
-            --receipt-public-key-hex "${public_key}" --output-path "${new_fleet}" \
-            | tee "${RUNNER_TEMP}/host-registration-proof.txt"
-          buf="${RUNNER_TEMP}/host-buf"
-          curl --fail --silent --show-error --location \
-            "https://github.com/bufbuild/buf/releases/download/v1.73.0/buf-Linux-x86_64" -o "${buf}"
-          echo "8f2986298ad08f0cc1bf999b9797b7c383adf32d7edf0f73d6f1e1a701baeac1  ${buf}" | sha256sum --check -
-          chmod 0755 "${buf}"
-          target="${RUNNER_TEMP}/receipt-hosts.textproto"
-          (cd edge-platform && "${buf}" convert proto/edge/platform/v1/fleet.proto \
-            --type edge.platform.v1.FleetDesiredState \
-            --from "${new_fleet}#format=binpb" --to "${target}#format=txtpb")
-          (cd edge-platform && "${buf}" convert proto/edge/platform/v1/fleet.proto \
-            --type edge.platform.v1.FleetDesiredState \
-            --from "${target}#format=txtpb" \
-            --to "${RUNNER_TEMP}/receipt-roundtrip.pb#format=binpb")
-          # Compare typed meaning, not Protobuf wire order: Buf and prost
-          # are conforming independent encoders.
-          "${bin}" host --hosts-pb "${fleet}" \
-            --hosts-sha256 "$(sha256sum "${fleet}" | cut -d' ' -f1)" \
-            verify-receipt "${TARGET_MACHINE}" \
-            --receipt-public-key-hex "${public_key}" \
-            --candidate-path "${RUNNER_TEMP}/receipt-roundtrip.pb" \
-            | tee "${RUNNER_TEMP}/host-receipt-verification.txt"
-          # The draft PR was created and proven writable BEFORE provider
-          # CREATE. Complete only that reserved ref; never create another.
-          test -n "${REGISTRATION_TOKEN}"
-          export GH_TOKEN="${REGISTRATION_TOKEN}"
-          branch="host-receipt-${TARGET_MACHINE}-${SOURCE_COMMENT_ID}"
-          pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=open&head=iamaman11:${branch}" |
-            jq -er --arg branch "${branch}" '[.[] | select(.head.ref == $branch and .base.ref == "main" and .head.repo.full_name == "iamaman11/sing-box")] | if length == 1 then .[0].number else error("HOST_PUBLIC_PR_NOT_EXACT") end')"
-          [[ "${pr}" =~ ^[1-9][0-9]*$ ]]
-          test "$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.draft')" = true
-          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')" = "${GITHUB_SHA}"
-          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/${branch}" --jq '.object.sha')" = "${HOST_RECEIPT_RESERVATION_SHA}"
-          original_sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto?ref=${branch}" --jq '.sha')"
-          encoded="$(base64 -w0 < "${target}")"
-          gh api -X PUT "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto" \
-            -f "branch=${branch}" -f "sha=${original_sha}" \
-            -f "message=host: register native receipt for ${TARGET_MACHINE}" \
-            -f "content=${encoded}" >/dev/null
-          # Verify EXACT committed public bytes before asking for merge.
-          gh api "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto?ref=${branch}" \
-            --jq '.content' | base64 --decode | cmp -s - "${target}"
-          gh api -X PATCH "repos/${GITHUB_REPOSITORY}/pulls/${pr}" \
-            -f "body=Native root enrollment completed for ${TARGET_MACHINE}. Original request: issue #1 comment ${SOURCE_COMMENT_ID}. Protected source ReleaseSet revision: ${GITHUB_SHA}. Registered public key SHA256: $(printf '%s' "${public_key}" | sha256sum | cut -d' ' -f1). Root private key remains on VM. Required CI and protected merge still gate signed INSTALL." >/dev/null
-          node="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.node_id')"
-          test -n "${node}"
-          # Minimal single-purpose mutation: gh pr ready/view may ask for
-          # read:org even though the scoped repository token owns this PR.
-          # If readiness cannot be changed, leave the existing public-only
-          # reservation in Draft; NEVER replay a completed provider write.
-          if ! gh api graphql -f 'query=mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{isDraft}}}' -f "id=${node}" | jq -e '(.errors == null) and (.data.markPullRequestReadyForReview.pullRequest.isDraft == false)' >/dev/null; then
-            echo 'HOST_PUBLIC_GIT_PR_REMAINS_DRAFT_REVIEW_REQUIRED'
-          fi
-          echo 'host_first_use=AWAITING_PROTECTED_GIT_PR_MERGE'
-          echo 'host_signed_install=NOT_YET_AUTHORIZED'
+            first-use-preflight "${TARGET_MACHINE}"
+          # Native Rust admission must block pending signed credential handoff.
+          echo 'HOST_FIRST_USE_NATIVE_HANDOFF_NOT_ACCEPTED_NO_CREATE' >&2
+          exit 1
 
   host_resume_receipt:
     # The prior /host apply may continue only after its exact registration PR
