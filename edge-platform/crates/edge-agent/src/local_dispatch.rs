@@ -88,6 +88,9 @@ pub(super) async fn run_local(command: cli::LocalCommand) -> Result<(), AgentErr
                 .map_err(|_| AgentError::Command("HOST_RESOURCE_REPORT_STDOUT_FAILED".into()))
         }
         cli::LocalCommand::HostProbe => host_probe::run_host_probe().map_err(AgentError::Command),
+        cli::LocalCommand::HostAdmin => host_admin_native::execute()
+            .await
+            .map_err(AgentError::Command),
         cli::LocalCommand::HostApply => host_native::apply(&stack_dir)
             .await
             .map_err(AgentError::Command),
