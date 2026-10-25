@@ -154,7 +154,7 @@ pub fn render_native_first_use_with_runner(
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| "HOST_NATIVE_RUNNER_HOST_CLOCK_INVALID")?
         .as_secs();
-    if registration_token.len() < 40
+    if registration_token.is_empty()
         || registration_token.len() > 512
         || !registration_token
             .bytes()
@@ -263,7 +263,8 @@ mod tests {
 
     #[test]
     fn first_use_runner_has_only_ephemeral_token_and_root_native_transport() {
-        let token = "A".repeat(128);
+        // GitHub REST documentation demonstrates a 29-byte opaque token.
+        let token = "LLBF3JGZDX3P5PMEXLND6TS6FCWO6".to_owned();
         let config = render_native_first_use_with_runner(
             fixture(),
             "application-acceptance-5",
@@ -300,10 +301,10 @@ mod tests {
             )
             .is_err()
         };
-        for bad in ["", "short", "bad token", "invalid\nsecret", "A&B", "äbc"] {
+        for bad in ["", "bad token", "invalid\nsecret", "A&B", "äbc"] {
             assert!(validate(bad, now() + 3_500));
         }
-        let accepted_token = "x".repeat(128);
+        let accepted_token = "LLBF3JGZDX3P5PMEXLND6TS6FCWO6";
         assert!(validate(&accepted_token, now() + 1_199));
         assert!(validate(&accepted_token, now() + 3_601));
         assert!(!validate(&accepted_token, now() + 3_500));
