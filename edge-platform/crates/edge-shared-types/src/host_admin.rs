@@ -124,6 +124,9 @@ fn preview_valid(request: &Request, result: &ResultReceipt) -> bool {
             == (result.stdout_capture_bytes == result.stdout_total_bytes)
         && result.stderr_capture_complete
             == (result.stderr_capture_bytes == result.stderr_total_bytes)
+        && result.stdin_bytes_written <= request.stdin_bytes.len() as u64
+        && result.stdin_input_complete
+            == (result.stdin_bytes_written == request.stdin_bytes.len() as u64)
         && (request.publish_output || (a == 0 && b == 0))
         && a as u64 <= result.stdout_total_bytes
         && b as u64 <= result.stderr_total_bytes
@@ -280,6 +283,8 @@ mod tests {
             stderr_capture_complete: true,
             stdout_stream_eof: true,
             stderr_stream_eof: true,
+            stdin_bytes_written: req.stdin_bytes.len() as u64,
+            stdin_input_complete: true,
         };
         sign_receipt(&req, &mut receipt, owner_key.as_ref()).unwrap();
         verify_receipt(&req, &receipt, owner.public_key().as_ref()).unwrap();
@@ -288,6 +293,9 @@ mod tests {
         assert!(verify_receipt(&req, &edited, owner.public_key().as_ref()).is_err());
         edited = receipt.clone();
         edited.stdout_preview[0] ^= 1;
+        assert!(verify_receipt(&req, &edited, owner.public_key().as_ref()).is_err());
+        edited = receipt.clone();
+        edited.stdin_bytes_written = 999;
         assert!(verify_receipt(&req, &edited, owner.public_key().as_ref()).is_err());
         edited = receipt.clone();
         edited.stdout_capture_bytes = 999;

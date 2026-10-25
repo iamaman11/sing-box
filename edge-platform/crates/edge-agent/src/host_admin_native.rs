@@ -3,7 +3,7 @@
 use super::*;
 use edge_shared_types::{FleetNativeAdminResult, ReleaseSet, host_admin};
 use std::fs::{File, OpenOptions};
-use std::io::Read;
+use std::io::{Read, Write};
 use std::os::fd::AsRawFd;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::process::{Command as OsCommand, Stdio as OsStdio};
@@ -97,8 +97,77 @@ struct PipePollFd {
 }
 unsafe extern "C" {
     fn poll(fds: *mut PipePollFd, nfds: usize, timeout_ms: i32) -> i32;
+    fn fcntl(fd: i32, command: i32, ...) -> i32;
 }
 const POST_EXIT_DRAIN: Duration = Duration::from_secs(2);
+const LINUX_F_GETFL: i32 = 3;
+const LINUX_F_SETFL: i32 = 4;
+const LINUX_O_NONBLOCK: i32 = 0o4000;
+const POLL_OUT: i16 = 4;
+
+/// A direct child may exit before consuming stdin while a descendant retains
+/// its read descriptor. Never let a blocking write hold the root lock forever.
+/// A partial write is evidence for no-replay, not an authorization to retry.
+fn write_stdin_bounded(
+    mut output: impl Write + AsRawFd,
+    input: &[u8],
+    child_exited: Arc<AtomicBool>,
+) -> std::io::Result<u64> {
+    if input.is_empty() {
+        return Ok(0);
+    }
+    let fd = output.as_raw_fd();
+    let flags = unsafe { fcntl(fd, LINUX_F_GETFL) };
+    if flags < 0 || unsafe { fcntl(fd, LINUX_F_SETFL, flags | LINUX_O_NONBLOCK) } < 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    let mut written = 0usize;
+    let mut post_exit_started = None;
+    while written < input.len() {
+        if child_exited.load(Ordering::Acquire) {
+            let since = *post_exit_started.get_or_insert_with(Instant::now);
+            if since.elapsed() >= POST_EXIT_DRAIN {
+                return Ok(written as u64);
+            }
+        }
+        let mut ready_fd = PipePollFd {
+            fd,
+            events: POLL_OUT,
+            revents: 0,
+        };
+        let ready = unsafe { poll(&mut ready_fd, 1, 100) };
+        if ready < 0 {
+            let err = std::io::Error::last_os_error();
+            if err.kind() == std::io::ErrorKind::Interrupted {
+                continue;
+            }
+            return Err(err);
+        }
+        if ready == 0 {
+            continue;
+        }
+        match output.write(&input[written..]) {
+            Ok(0) => return Err(std::io::ErrorKind::WriteZero.into()),
+            Ok(n) => written += n,
+            Err(err) if err.kind() == std::io::ErrorKind::Interrupted => continue,
+            Err(err) if err.kind() == std::io::ErrorKind::WouldBlock => continue,
+            Err(err) if err.kind() == std::io::ErrorKind::BrokenPipe => return Ok(written as u64),
+            Err(err) => return Err(err),
+        }
+    }
+    Ok(written as u64)
+}
+
+/// A terminal receipt may coexist with a pending marker: never clear pending
+/// when a child exits but input or a pipe remains observably incomplete.
+fn complete_execution(
+    process_exited: bool,
+    input_complete: bool,
+    stdout_eof: bool,
+    stderr_eof: bool,
+) -> bool {
+    process_exited && input_complete && stdout_eof && stderr_eof
+}
 
 struct ExitBoundedPipe<R> {
     inner: R,
@@ -222,6 +291,37 @@ mod io_tests {
         assert!(began.elapsed() < Duration::from_secs(7));
         assert!(!observed.load(Ordering::Acquire));
         assert_eq!(result.total_bytes, 0);
+    }
+
+    #[test]
+    fn inherited_stdin_reader_cannot_block_root_lock_indefinitely() {
+        use std::os::unix::net::UnixStream;
+        let (writer, inherited_reader) = UnixStream::pair().unwrap();
+        let direct_child_exited = Arc::new(AtomicBool::new(true));
+        let bytes = vec![0x41; 2 * 1024 * 1024];
+        let start = Instant::now();
+        let delivered = write_stdin_bounded(writer, &bytes, direct_child_exited).unwrap();
+        assert!(start.elapsed() < Duration::from_secs(7));
+        assert!(delivered < bytes.len() as u64);
+        assert!(!complete_execution(true, false, true, true));
+        drop(inherited_reader);
+    }
+
+    #[test]
+    fn complete_stdin_and_all_eof_permit_terminal_marker_cleanup() {
+        use std::os::unix::net::UnixStream;
+        let (writer, mut reader) = UnixStream::pair().unwrap();
+        let input = vec![0x42; 4096];
+        let delivered =
+            write_stdin_bounded(writer, &input, Arc::new(AtomicBool::new(false))).unwrap();
+        assert_eq!(delivered, input.len() as u64);
+        let mut actual = vec![0; input.len()];
+        reader.read_exact(&mut actual).unwrap();
+        assert_eq!(actual, input);
+        assert!(complete_execution(true, true, true, true));
+        assert!(!complete_execution(false, true, true, true));
+        assert!(!complete_execution(true, true, false, true));
+        assert!(!complete_execution(true, true, true, false));
     }
 
     #[test]
@@ -358,12 +458,14 @@ pub(super) async fn execute() -> Result<(), String> {
     let mut child = cmd
         .spawn()
         .map_err(|_| "HOST_ADMIN_PROCESS_START_UNKNOWN_NO_REPLAY")?;
-    let mut stdin = child
+    let stdin = child
         .stdin
         .take()
         .ok_or("HOST_ADMIN_CHILD_STDIN_UNAVAILABLE")?;
+    let child_exited = Arc::new(AtomicBool::new(false));
+    let stdin_child_exited = Arc::clone(&child_exited);
     let input = request.stdin_bytes.clone();
-    let writer = std::thread::spawn(move || stdin.write_all(&input));
+    let writer = std::thread::spawn(move || write_stdin_bounded(stdin, &input, stdin_child_exited));
     let stdout = child
         .stdout
         .take()
@@ -372,7 +474,6 @@ pub(super) async fn execute() -> Result<(), String> {
         .stderr
         .take()
         .ok_or("HOST_ADMIN_CHILD_STDERR_UNAVAILABLE")?;
-    let child_exited = Arc::new(AtomicBool::new(false));
     let stdout_eof = Arc::new(AtomicBool::new(false));
     let stderr_eof = Arc::new(AtomicBool::new(false));
     let stdout_source = ExitBoundedPipe {
@@ -395,16 +496,13 @@ pub(super) async fn execute() -> Result<(), String> {
         .wait()
         .map_err(|_| "HOST_ADMIN_CHILD_WAIT_UNKNOWN_NO_REPLAY")?;
     child_exited.store(true, Ordering::Release);
-    // A child may exit without reading its entire stdin. BrokenPipe is then
-    // an ordinary child outcome, not proof of an unknown side effect.
-    let input_result = writer
+    // A child can exit without reading stdin. Record exactly what was sent,
+    // rather than declaring an unknown EPIPE or retrying partial side effects.
+    let stdin_bytes_written = writer
         .join()
-        .map_err(|_| "HOST_ADMIN_STDIN_JOIN_UNKNOWN_NO_REPLAY")?;
-    if let Err(error) = input_result {
-        if error.kind() != std::io::ErrorKind::BrokenPipe {
-            return Err("HOST_ADMIN_STDIN_IO_UNKNOWN_NO_REPLAY".into());
-        }
-    }
+        .map_err(|_| "HOST_ADMIN_STDIN_JOIN_UNKNOWN_NO_REPLAY")?
+        .map_err(|_| "HOST_ADMIN_STDIN_IO_UNKNOWN_NO_REPLAY")?;
+    let stdin_input_complete = stdin_bytes_written == request.stdin_bytes.len() as u64;
     let out = stdout_reader
         .join()
         .map_err(|_| "HOST_ADMIN_STDOUT_JOIN_UNKNOWN_NO_REPLAY")?
@@ -451,10 +549,18 @@ pub(super) async fn execute() -> Result<(), String> {
         stderr_capture_complete: err.capture_bytes == err.total_bytes,
         stdout_stream_eof: stdout_eof.load(Ordering::Acquire),
         stderr_stream_eof: stderr_eof.load(Ordering::Acquire),
+        stdin_bytes_written,
+        stdin_input_complete,
     };
     host_admin::sign_receipt(&request, &mut receipt, &key_bytes).map_err(str::to_owned)?;
     durable_create(&terminal, &receipt.encode_to_vec())?;
-    if receipt.process_exited {
+    let complete = complete_execution(
+        receipt.process_exited,
+        receipt.stdin_input_complete,
+        receipt.stdout_stream_eof,
+        receipt.stderr_stream_eof,
+    );
+    if complete {
         fs::remove_file(&pending).map_err(|_| "HOST_ADMIN_PENDING_CLEAR_UNKNOWN_NO_REPLAY")?;
         File::open(&journal)
             .and_then(|f| f.sync_all())
@@ -465,9 +571,9 @@ pub(super) async fn execute() -> Result<(), String> {
     io::stdout()
         .write_all(&receipt.encode_to_vec())
         .map_err(|_| "HOST_ADMIN_SIGNED_RESULT_DELIVERY_UNAVAILABLE")?;
-    if receipt.process_exited {
+    if complete {
         Ok(())
     } else {
-        Err("HOST_ADMIN_COMPLETION_UNKNOWN_NO_REPLAY".into())
+        Err("HOST_ADMIN_COMPLETION_INCOMPLETE_NO_REPLAY".into())
     }
 }

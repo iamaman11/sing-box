@@ -1058,6 +1058,8 @@ pub(crate) fn run(
                 .map_err(str::to_owned)?;
             let outcome = if !receipt.process_exited {
                 "VERIFIED_NO_EXIT"
+            } else if !receipt.stdin_input_complete {
+                "VERIFIED_STDIN_INCOMPLETE_NO_REPLAY"
             } else if !receipt.stdout_stream_eof || !receipt.stderr_stream_eof {
                 "VERIFIED_OUTPUT_INCOMPLETE_NO_REPLAY"
             } else if receipt.exit_code == 124 || receipt.exit_code == 137 {
@@ -1108,6 +1110,8 @@ pub(crate) fn run(
                 "host_admin_stderr_capture_complete={}",
                 receipt.stderr_capture_complete
             );
+            println!("host_admin_stdin_bytes_written={}", receipt.stdin_bytes_written);
+            println!("host_admin_stdin_input_complete={}", receipt.stdin_input_complete);
             println!("host_admin_stdout_stream_eof={}", receipt.stdout_stream_eof);
             println!("host_admin_stderr_stream_eof={}", receipt.stderr_stream_eof);
             println!("host_admin_stdout_truncated={}", receipt.stdout_truncated);

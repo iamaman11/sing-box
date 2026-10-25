@@ -520,6 +520,9 @@ message FleetNativeAdminResult {
   // Otherwise descendants kept the pipe open beyond the bounded drain.
   bool stdout_stream_eof = 23;
   bool stderr_stream_eof = 24;
+  // Partial stdin must never be mistaken for an entirely executed request.
+  uint64 stdin_bytes_written = 25;
+  bool stdin_input_complete = 26;
 }
 
 message FleetHostIntent {
