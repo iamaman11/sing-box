@@ -106,6 +106,14 @@ pub(crate) enum HostCommand {
         #[arg(long)]
         result_path: PathBuf,
     },
+    /// Verify first-use public root proof before protected receipt merge.
+    /// This is a signed *self-attestation*, not independent provider proof.
+    #[command(hide = true)]
+    BootstrapProofCheck {
+        machine_id: String,
+        #[arg(long)]
+        proof_path: PathBuf,
+    },
     /// Internal hosted-only seal of Access secrets for an exact Git-pinned
     /// signed native recipient. Reads plaintext from stdin, writes only
     /// encrypted protobuf to the supplied private artifact path.
