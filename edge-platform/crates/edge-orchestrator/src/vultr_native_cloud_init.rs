@@ -131,9 +131,7 @@ pub fn render_native_first_use_cloud_init(
     Ok(rendered)
 }
 
-
-const RUNNER_INSTALLER: &str =
-    include_str!("../../../scripts/install-vultr-production-runner.sh");
+const RUNNER_INSTALLER: &str = include_str!("../../../scripts/install-vultr-production-runner.sh");
 const RUNNER_INSTALL_PATH: &str = "/usr/local/sbin/singbox-native-runner-install.sh";
 const RUNNER_BEGIN_PATH: &str = "/var/lib/singbox-lifecycle/runner-first-use.begin";
 const RUNNER_TOKEN_PATH: &str = "/run/singbox-native-runner-registration-token";
@@ -158,9 +156,9 @@ pub fn render_native_first_use_with_runner(
         .as_secs();
     if registration_token.len() < 40
         || registration_token.len() > 512
-        || !registration_token.bytes().all(|b| {
-            b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.'
-        })
+        || !registration_token
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.')
     {
         return Err("HOST_NATIVE_RUNNER_REGISTRATION_TOKEN_INVALID".to_owned());
     }
@@ -213,9 +211,7 @@ printf '%s\\n' RUNNER_REGISTERED_AWAITING_ROOT_ONLY_ACCESS_HANDOFF\n"
         super::cloud_init_file(RUNNER_TOKEN_PATH, "0600", registration_token),
     );
     rendered = rendered.replacen("write_files:\n", &format!("write_files:\n{additions}"), 1);
-    rendered.push_str(&format!(
-        "  - [bash, -lc, \"{RUNNER_WRAP_PATH}\"]\n"
-    ));
+    rendered.push_str(&format!("  - [bash, -lc, \"{RUNNER_WRAP_PATH}\"]\n"));
     // A root-only, expired ephemeral registration token is not the VM Access
     // identity. The acceptance owner must prove Vultr user-data scrub and
     // native receipt before any signed INSTALL.
@@ -269,9 +265,15 @@ mod tests {
     fn first_use_runner_has_only_ephemeral_token_and_root_native_transport() {
         let token = "A".repeat(128);
         let config = render_native_first_use_with_runner(
-            fixture(), "application-acceptance-5", &"a".repeat(64),
-            &"b".repeat(64), &substrate(), &token, now() + 3_500,
-        ).unwrap();
+            fixture(),
+            "application-acceptance-5",
+            &"a".repeat(64),
+            &"b".repeat(64),
+            &substrate(),
+            &token,
+            now() + 3_500,
+        )
+        .unwrap();
         assert_eq!(config.matches(&token).count(), 1);
         assert!(config.contains("runner-first-use.begin"));
         assert!(config.contains("FIRST_USE_BEGIN_NO_REPLAY"));
@@ -288,9 +290,15 @@ mod tests {
     fn first_use_runner_rejects_unsafe_token_or_deadline() {
         let validate = |token: &str, expiry: u64| {
             render_native_first_use_with_runner(
-                fixture(), "application-acceptance-5", &"a".repeat(64),
-                &"b".repeat(64), &substrate(), token, expiry,
-            ).is_err()
+                fixture(),
+                "application-acceptance-5",
+                &"a".repeat(64),
+                &"b".repeat(64),
+                &substrate(),
+                token,
+                expiry,
+            )
+            .is_err()
         };
         for bad in ["", "short", "bad token", "invalid\nsecret", "A&B", "äbc"] {
             assert!(validate(bad, now() + 3_500));
