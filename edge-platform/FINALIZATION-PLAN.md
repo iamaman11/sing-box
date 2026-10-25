@@ -54,7 +54,13 @@
 2. **Windows:** защищённый SYSTEM Controller/SCM, ACL и точный release install/readback; безопасный ProxyOnly lifecycle, replace/reinstall/rollback/reboot с native receipt. Windows сейчас **STOPPED/PROXY_ONLY**, SYSTEM apply/TUN ещё не приняты. Managed TUN, DNS leak/IPv6, default routes и сосуществование с Cloudflare One — отдельная физическая матрица только после Git desired и разрешения; чужой адаптер/службу не изменять.
 3. **Архитектурный долг, только с доказанным потребителем:** заменить оставшиеся исполняемые `grep/sed` admission-проверки на закрытый Rust/Protobuf verifier в том же owner и убрать действительно нулевых потребителей старых mutating helpers. Не запускать самостоятельную бесконечную «очистку» файлов. Новая capability: `Protobuf → Rust DAG/planner → существующий native handler → typed readback → signed receipt → physical acceptance`.
 
-**Конечный PASS:** две платформы устанавливаются, диагностируются, ограниченно перенастраиваются, обновляются и восстанавливаются **исключительно** тремя `/host` командами, с единым Git/Worker/root|SYSTEM owner chain, без произвольных команд, повторов UNKNOWN, лишних transport/secret registries, скрытых rollback. Независимо приняты network/TLS/auth/egress и негативные тесты. До этого проект `NOT_ACCEPTED_10_10`.
+**Конечный PASS:** две платформы устанавливаются, диагностируются, ограниченно перенастраиваются, обновляются и восстанавливаются **исключительно** четырьмя `/host` командами, с единым Git/Worker/root|SYSTEM owner chain, без произвольных команд, повторов UNKNOWN, лишних transport/secret registries, скрытых rollback. Независимо приняты network/TLS/auth/egress и негативные тесты. До этого проект `NOT_ACCEPTED_10_10`.
+
+## Дополнение к принятому интерфейсу: GH-runner native diagnostics (#484)
+
+В составе PR #485 реализуется четвёртый операторский ввод `/host diagnose <machine> <approved argv>` через существующий Issue #1, точную Git-регистрацию и self-hosted runner. Команда несёт закрытый Protobuf request и исполняет только наблюдение с uid/gid 65534, ограниченным argv/time/output в существующем Root Agent. Новый сервис, MCP, SSH или shell-доступ runner не создаются. Результат `RUNNER_COPIED_UNAUTHENTICATED` — не подписанная физическая квитанция и не разрешение изменять ресурсы.
+
+До отдельно проверенной установки точного нового Root Agent и sudoers и до физической доставки runner статус остаётся `NOT_ACCEPTED`. Любой прежний pending `UNKNOWN_NO_REPLAY` сохраняется без повторного INSTALL. Полное административное выполнение root и FULL_CONTROL из #484/#480 **не являются реализованными** одной диагностикой.
 
 ## Постоянные правила
 

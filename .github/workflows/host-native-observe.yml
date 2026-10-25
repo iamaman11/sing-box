@@ -49,6 +49,45 @@ jobs:
       COMMAND_BODY: ${{ inputs.command_body }}
       HOST_OPERATION: ${{ inputs.operation }}
     steps:
+      - name: Receive one same-run immutable diagnostic request
+        if: env.TARGET_KIND == 'VM' && env.HOST_OPERATION == 'DIAGNOSE'
+        uses: actions/download-artifact@v4
+        with:
+          name: host-intent-${{ inputs.source_comment_id }}
+          path: ${{ runner.temp }}/host-diagnostic
+
+      - name: Run one native unprivileged VM diagnostic through existing Root Agent
+        if: env.TARGET_KIND == 'VM' && env.HOST_OPERATION == 'DIAGNOSE'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${RUNNER_NAME}" = "sing-box-production-${TARGET_OWNER}"
+          test "${TARGET_MACHINE}" = "${TARGET_OWNER}"
+          test "$(id -u)" != 0
+          owner=/usr/local/libexec/sing-box/edge-agent
+          test -x "${owner}" && test ! -L "${owner}"
+          for path in /usr /usr/local /usr/local/libexec /usr/local/libexec/sing-box "${owner}"; do
+            test ! -L "${path}"
+            test "$(stat -c '%u:%g:%a' "${path}")" = "0:0:755"
+          done
+          if sudo -n id -u >/dev/null 2>&1; then
+            echo 'HOST_VM_GENERIC_ROOT_AUTHORITY_FORBIDDEN' >&2
+            exit 1
+          fi
+          test ! -r /var/run/docker.sock
+          request="${RUNNER_TEMP}/host-diagnostic/host-intent.pb"
+          test -f "${request}" && test ! -L "${request}"
+          test "$(stat -c '%s' "${request}")" -gt 0
+          test "$(stat -c '%s' "${request}")" -le 4096
+          if ! sudo -n -l "${owner}" local host-probe >/dev/null 2>&1; then
+            echo 'HOST_DIAG_INSTALLED_NATIVE_VERB_UNAVAILABLE' >&2
+            exit 1
+          fi
+          # One read-only request; local root owner drops privileges before
+          # launching any system binary. No shell argv or sudo via runner.
+          sudo -n "${owner}" local host-probe < "${request}"
+          echo 'host_diagnostic_native_proof=RUNNER_COPIED_NOT_SIGNED_RECEIPT'
+
       - name: Verify installed Windows native owner and diagnose without mutation
         if: env.TARGET_KIND == 'WINDOWS'
         shell: pwsh
@@ -83,7 +122,7 @@ jobs:
           }
 
       - name: Verify installed VM native owner and diagnose without mutation
-        if: env.TARGET_KIND == 'VM'
+        if: env.TARGET_KIND == 'VM' && env.HOST_OPERATION != 'DIAGNOSE'
         shell: bash
         run: |
           set -euo pipefail

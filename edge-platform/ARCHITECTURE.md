@@ -35,11 +35,14 @@
 
 Единственный `FleetDesiredState` задаёт `FleetHostTarget`: `STOPPED|RUNNING`, для Windows `PROXY_ONLY|MANAGED_TUN`. Отсутствие target → только OBSERVE, не запуск. Сейчас Windows намеренно `STOPPED/ProxyOnly`: SYSTEM SCM не запускать, TUN не включать. Cloudflare One независимо владеет собственным туннелем/DNS; Mesh другого проекта не трогать.
 
-Только три внешние операции:
+Только четыре внешние операции (три lifecycle и одна read-only диагностическая):
 
+- `host diagnose <id> <approved read-only argv>` — VM only: Rust/Protobuf validated fixed unprivileged OS tools over existing GitHub runner; does not authorize native mutations or attest signed physical receipt;
 - `host status <id> [--deep]` — bounded read-only status/причина/предлагаемый шаг;
 - `host apply <id>` — подписанный одноразовый переход к Git desired и ReleaseSet;
 - `host recover <id>` — VM: защищённый root `host-refresh` **только бинарник/trust текущего canonical ReleaseSet** + read-only post-refresh диагностика под прежним owner lock; не меняет resource journal, контейнеры или сеть и не снимает pending. Windows: пока read-only. Любой resource rollback/repair/replay — отдельный signed handler и приёмка, никогда неизвестный replay.
+
+**Диагностический транспорт (#484):** один `/host diagnose` — отдельный read-only инструмент того же GitHub/runner/native owner, не MCP, SSH или root shell. Новый установленный бинарник и точное узкое sudoers разрешение `local host-probe` должны быть физически доказаны; source CI не означает deployed. Подписание mutating `HostIntent` этим маршрутом невозможно.
 
 **CLI:** исторические provider/application/credential mutation verbs удалены из публичного и скрытого Clap-парсера `edge-orchestrator`, а не просто заблокированы в dispatch. Старые VM local mutation verbs и listener удалены из `edge-agent` CLI. Только `host status|apply|recover` являются операторским API; внутренние read-only/release-build verbs остаются без права ресурсной мутации. Защищённый Git `main` — единственный desired. Новый root-owned `host-refresh` без аргументов выбирает только защищённый текущий main и обновляет trust/binary атомарно; `host-apply` остаётся единственным исполнителем ресурсов.
 

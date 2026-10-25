@@ -207,10 +207,49 @@ pub(crate) fn run(
         return Err("host protobuf differs from protected Git inventory SHA-256".to_owned());
     }
     let desired = decode_host_registry(&bytes)?;
+    let (command, diagnostic) = match command {
+        HostCommand::Diagnose { machine_id, argv } => {
+            let source_id = source_comment_id.ok_or("HOST_DIAG_SOURCE_COMMENT_MISSING")?;
+            let request = edge_shared_types::FleetHostDiagnosticRequest {
+                schema_version: 1,
+                machine_id: machine_id.clone(),
+                source_comment_id: source_id,
+                argv,
+            };
+            edge_shared_types::host_diagnostics::validate_diagnostic_request(&request)
+                .map_err(str::to_owned)?;
+            (
+                HostCommand::Status {
+                    machine_id: Some(machine_id),
+                    deep: true,
+                },
+                Some(request),
+            )
+        }
+        other => (other, None),
+    };
     match command {
         HostCommand::Status { machine_id, deep } => {
             if let Some(path) = github_output {
-                append_action_output(path, HostWorkflowOperation::Status)?;
+                append_action_output(
+                    path,
+                    if diagnostic.is_some() {
+                        HostWorkflowOperation::Diagnose
+                    } else {
+                        HostWorkflowOperation::Status
+                    },
+                )?;
+            }
+            if let Some(ref request) = diagnostic {
+                let output = intent_output.ok_or("HOST_DIAG_ARTIFACT_PATH_MISSING")?;
+                let mut file = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(output)
+                    .map_err(|_| "HOST_DIAG_ARTIFACT_CREATE_FAILED")?;
+                file.write_all(&request.encode_to_vec())
+                    .and_then(|_| file.sync_all())
+                    .map_err(|_| "HOST_DIAG_ARTIFACT_WRITE_FAILED")?;
             }
             if deep && machine_id.is_none() {
                 return Err("HOST_DEEP_REQUIRES_EXACT_MACHINE".to_owned());
@@ -236,6 +275,9 @@ pub(crate) fn run(
             for host in selected {
                 let kind = ManagedHostKind::try_from(host.kind)
                     .map_err(|_| "HOST_KIND_INVALID".to_owned())?;
+                if diagnostic.is_some() && kind != ManagedHostKind::Vm {
+                    return Err("HOST_DIAG_VM_ONLY_UNTIL_WINDOWS_NATIVE_ACCEPTANCE".to_owned());
+                }
                 let owner = match host.owner.as_ref() {
                     Some(managed_host::Owner::WindowsRunnerName(name)) => name,
                     Some(managed_host::Owner::VmMachineId(name)) => name,
@@ -1153,6 +1195,7 @@ pub(crate) fn run(
             println!("host_mutations=0");
             Ok(())
         }
+        HostCommand::Diagnose { .. } => Err("HOST_DIAG_DISPATCH_INVARIANT_FAILED".to_owned()),
         HostCommand::VmWorkerAuthorizerUpgrade { .. } => {
             Err("HOST_VM_WORKER_UPGRADE_MUST_USE_PROTECTED_CREDENTIAL_OWNER".to_owned())
         }
@@ -1690,6 +1733,7 @@ fn exact_hex_sha256(value: &str) -> Result<Vec<u8>, String> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HostWorkflowOperation {
     Status,
+    Diagnose,
     ApplyPreflight,
     RecoverPreflight,
     FirstUsePreflight,
@@ -1700,6 +1744,7 @@ impl HostWorkflowOperation {
     const fn as_str(self) -> &'static str {
         match self {
             Self::Status => "STATUS",
+            Self::Diagnose => "DIAGNOSE",
             Self::ApplyPreflight => "APPLY_PREFLIGHT",
             Self::RecoverPreflight => "RECOVER_PREFLIGHT",
             Self::FirstUsePreflight => "FIRST_USE_PREFLIGHT",

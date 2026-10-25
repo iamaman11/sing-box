@@ -64,7 +64,7 @@ mv -f "${identity_stage}" "${CREDENTIAL_IDENTITY_FILE}"
 unset credential_access_client_id credential_access_client_secret
 
 cat > "${SUDOERS_FILE}" <<EOF
-Cmnd_Alias SING_BOX_RUNTIME_READ = ${LOCAL_OWNER} local status --fast, ${LOCAL_OWNER} local status, ${LOCAL_OWNER} local host-observe, ${LOCAL_OWNER} local host-resources, ${LOCAL_OWNER} local verify, ${LOCAL_OWNER} local diagnose, ${LOCAL_OWNER} local quality-line2, ${LOCAL_OWNER} local credential-initial-probe, ${LOCAL_OWNER} local bundle-verify, ${LOCAL_OWNER} local mesh-verify, ${LOCAL_OWNER} local credential-state
+Cmnd_Alias SING_BOX_RUNTIME_READ = ${LOCAL_OWNER} local status --fast, ${LOCAL_OWNER} local status, ${LOCAL_OWNER} local host-observe, ${LOCAL_OWNER} local host-resources, ${LOCAL_OWNER} local host-probe, ${LOCAL_OWNER} local verify, ${LOCAL_OWNER} local diagnose, ${LOCAL_OWNER} local quality-line2, ${LOCAL_OWNER} local credential-initial-probe, ${LOCAL_OWNER} local bundle-verify, ${LOCAL_OWNER} local mesh-verify, ${LOCAL_OWNER} local credential-state
 Cmnd_Alias SING_BOX_NATIVE_HOST_TRANSACTION = ${LOCAL_OWNER} local host-apply
 Cmnd_Alias SING_BOX_NATIVE_HOST_TRUST = ${LOCAL_OWNER} local host-refresh
 # The runner may transport only the exact host operation to the installed
