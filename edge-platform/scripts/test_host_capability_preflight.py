@@ -195,6 +195,7 @@ class TestUnifiedHostDiagnosis(TestCase):
             "last_proven_step": "GIT_FIRST_USE_DIGEST_PINNED_NOT_WORKER_ATTESTED",
             "next_action": "VERIFY_WORKER_ACCESS_AND_PROVIDER_PREFLIGHT",
         }
+        self.bundle_status = "GIT_PIN_EXACT_ACCESS_GET_PROVEN"
         self.observed = {
             "scope": "READ_ONLY_PROTECTED_ENVIRONMENT",
             "machine_id": "application-acceptance-5",
@@ -210,7 +211,8 @@ class TestUnifiedHostDiagnosis(TestCase):
         return summary.fuse(
             self.observed, self.git, machine_id="application-acceptance-5",
             operation_id="issue1-comment-6390000111",
-            source_digest="a" * 40, release_set_sha256="b" * 64)
+            source_digest="a" * 40, release_set_sha256="b" * 64,
+            worker_bundle_status=self.bundle_status)
 
     def test_unproven_worker_denial_is_addressable_and_no_replay(self):
         output = self.diagnose()
@@ -261,6 +263,14 @@ class TestUnifiedHostDiagnosis(TestCase):
             self.assertFalse(result["replay_allowed"])
             self.assertEqual(result["sources"]["cloud_init"],
                              "UNPROVEN_NO_NATIVE_OR_PROVIDER_BOOT_JOURNAL")
+
+    def test_worker_access_alone_is_not_exact_bundle_proof(self):
+        self.observed["worker_host_route_get"] = "GET_204_WORKER_JWT_VERIFIED_NOT_SIGNING_PROOF"
+        self.bundle_status = "BLOCKED"
+        result = self.diagnose()
+        self.assertEqual(result["phase"], "WORKER_SOURCE")
+        self.assertEqual(result["owner"], "CLOUDFLARE_WORKER_SOURCE")
+        self.assertFalse(result["mutation_authorized"])
 
     def test_provider_unknown_and_invalid_source_fails_closed(self):
         self.observed["worker_host_route_get"] = "GET_204_WORKER_JWT_VERIFIED_NOT_SIGNING_PROOF"
