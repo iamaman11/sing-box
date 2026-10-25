@@ -85,6 +85,40 @@ message Ipv4NetworkObservation {
   repeated Ipv4RouteObservation routes = 3;
 }
 
+// Root kernel routing namespace: IPv4 and IPv6, including non-main tables.
+// Source is raw rtnetlink, not Docker network state or an external egress PASS.
+enum FleetVmIpFamily {
+  FLEET_VM_IP_FAMILY_UNSPECIFIED = 0;
+  FLEET_VM_IP_FAMILY_V4 = 1;
+  FLEET_VM_IP_FAMILY_V6 = 2;
+}
+message FleetVmKernelAddress {
+  uint32 interface_index = 1;
+  FleetVmIpFamily family = 2;
+  string address = 3;
+  uint32 prefix_length = 4;
+  bool global_scope = 5;
+}
+message FleetVmKernelRoute {
+  FleetVmIpFamily family = 1;
+  string destination = 2;
+  uint32 prefix_length = 3;
+  uint32 output_interface_index = 4;
+  string gateway = 5;
+  string preferred_source = 6;
+  uint32 table_id = 7;
+  uint32 metric = 8;
+  bool kernel_protocol = 9;
+  bool link_scope = 10;
+}
+message FleetVmDualStackNetwork {
+  repeated Ipv4LinkObservation links = 1;
+  repeated FleetVmKernelAddress addresses = 2;
+  repeated FleetVmKernelRoute routes = 3;
+  bool ipv4_route_dump_complete = 4;
+  bool ipv6_route_dump_complete = 5;
+}
+
 message AgentVersion {
   string name = 1;
   string version = 2;
