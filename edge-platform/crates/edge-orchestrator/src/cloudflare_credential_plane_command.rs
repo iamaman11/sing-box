@@ -4351,7 +4351,7 @@ function HOST_ADMIN_INFO(b){
    !Number.isSafeInteger(when)||when<=0||argv.length<1||argv.length>64||
    typeof m!=="string"||!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(m)||
    !argv[0].startsWith("/")||argv[0].includes("..")||
-   argv.some(x=>x.length>4096||x.includes("\\u0000"))||
+   argv.some(x=>x.length>4096||x.includes(String.fromCharCode(0)))||
    !/^[0-9a-f]{64}$/.test(release||"")||
    !/^[0-9a-f]{64}$/.test(comment||"")||
    [1,2,3,4,5,6,7].some(x=>!seen.has(x)))return null;
@@ -4360,7 +4360,7 @@ function HOST_ADMIN_INFO(b){
 function HOST_ADMIN_ENCODE_ARGV(argv){
  const b=TE.encode(JSON.stringify(argv));
  let s="";for(const x of b)s+=String.fromCharCode(x);
- return btoa(s).replace(/\\+/g,"-").replace(/\\//g,"_").replace(/=+$/,"");
+ return btoa(s).replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
 }
 async function HOST_ADMIN_GITHUB(info,e,now){
  const actor=String(e.EDGE_HOST_GITHUB_ACTOR_ID||"");
