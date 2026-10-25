@@ -37,6 +37,7 @@ const iss='https://test.cloudflareaccess.com',aud='test-audience';
 const release='a'.repeat(64);
 let approvedAt=new Date((now-10)*1000).toISOString();
 let githubMode='approved';
+let adminComment=null;
 let appMode='valid';
 let jwksMode='valid';
 // October 2026 ghs_APPID_JWT is ~520 chars and contains dots.
@@ -127,7 +128,7 @@ globalThis.fetch=async (url,init)=>{
    user:{id:githubMode==='denied'?123:44100369},
    issue_url:'https://api.github.com/repos/iamaman11/sing-box/issues/1',
    created_at:approvedAt,updated_at:approvedAt,
-   body:'/host apply application-acceptance-2'
+   body:adminComment||'/host apply application-acceptance-2'
  })};
  if(url.endsWith('/releases/tags/edge-release-'+release))return {ok:true,json:async()=>({
    tag_name:'edge-release-'+release,draft:false,prerelease:false,
@@ -379,6 +380,33 @@ assert.equal(response.headers.get('X-Host-Github-Rate-Limit-Remaining'),'0');
 assert.equal(response.headers.get('X-Host-Github-Retry-After'),'60');
 assert.equal(response.headers.get('X-Host-Github-Request-Id'),'ABC-123');
 assert.equal(response.headers.get('Location'),null,'no redirect authority forwarded');
+
+githubMode='approved';appMode='valid';jwksMode='valid';
+approvedAt=new Date((now-10)*1000).toISOString();
+const nativeArgv=['/bin/sh','-c','id'];
+adminComment='/host admin application-acceptance-2 '+ADMIN_ARGS_B64(nativeArgv);
+const commentHash=new Uint8Array(await crypto.subtle.digest('SHA-256',TE.encode(adminComment)));
+const nativeBytes=CAT(FNUM(1,1),FLD(2,TE.encode('application-acceptance-2')),
+  FNUM(3,6346290327),...nativeArgv.map(arg=>FLD(4,TE.encode(arg))),
+  FLD(5,new Uint8Array(32).fill(0xaa)),FNUM(6,now),FLD(7,commentHash),FNUM(11,300));
+assert.ok(ADMIN_INFO(nativeBytes),'no functional program allowlist in native contract');
+assert.deepEqual(ADMIN_INFO(nativeBytes).argv,nativeArgv);
+const adminUrl=new URL('https://vm-worker.example/v1/host/admin/authorize');
+const nativeReq=async (jwtValue,data)=>new Request(adminUrl,{
+  method:'POST',headers:{'Cf-Access-Jwt-Assertion':jwtValue,
+    'Content-Type':'application/x-protobuf'},body:data});
+let adminResponse=await ADMIN_AUTHORIZE(await nativeReq(await jwt(),nativeBytes),env,adminUrl);
+assert.equal(adminResponse.status,200,'exact approved administrator gets detached Worker signature');
+assert.equal((await adminResponse.arrayBuffer()).byteLength>64,true,'nonempty signed protobuf');
+let mutatedArgs=CAT(FNUM(1,1),FLD(2,TE.encode('application-acceptance-2')),
+  FNUM(3,6346290327),FLD(4,TE.encode('/usr/bin/env')),FLD(4,TE.encode('sh')),
+  FLD(5,new Uint8Array(32).fill(0xaa)),FNUM(6,now),FLD(7,commentHash),FNUM(11,300));
+adminResponse=await ADMIN_AUTHORIZE(await nativeReq(await jwt(),mutatedArgs),env,adminUrl);
+assert.equal(adminResponse.status,403,'admin source comment binds exact argv');
+githubMode='denied';
+adminResponse=await ADMIN_AUTHORIZE(await nativeReq(await jwt(),nativeBytes),env,adminUrl);
+assert.equal(adminResponse.status,403,'unapproved GitHub actor cannot authorize root');
+adminComment=null;githubMode='approved';
 console.log('host_worker_access_contract=PASS');
 """
 result=subprocess.run(["node","--input-type=module"],input=js+"\n"+fixture,
