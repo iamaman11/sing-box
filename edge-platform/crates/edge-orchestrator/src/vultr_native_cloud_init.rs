@@ -219,7 +219,7 @@ printf '%s\\n' RUNNER_REGISTERED_AWAITING_ROOT_ONLY_ACCESS_HANDOFF\n"
     // A root-only, expired ephemeral registration token is not the VM Access
     // identity. The acceptance owner must prove Vultr user-data scrub and
     // native receipt before any signed INSTALL.
-    if rendered.contains("CF_ACCESS_CLIENT_SECRET=")
+    if rendered.contains("CLOUDFLARE_VM_ACCESS_CLIENT_SECRET")
         || rendered.contains("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET")
         || rendered.contains("VULTR_SSH_PRIVATE_KEY")
         || rendered.contains("NOPASSWD:ALL")
@@ -270,7 +270,7 @@ mod tests {
         let token = "A".repeat(128);
         let config = render_native_first_use_with_runner(
             fixture(), "application-acceptance-5", &"a".repeat(64),
-            &"b".repeat(64), &substrate(), &token, 3_500, 0,
+            &"b".repeat(64), &substrate(), &token, now() + 3_500,
         ).unwrap();
         assert_eq!(config.matches(&token).count(), 1);
         assert!(config.contains("runner-first-use.begin"));
@@ -279,7 +279,7 @@ mod tests {
         assert!(config.contains("singbox-native-runner-enroll.sh"));
         assert!(config.contains("RUNNER_REGISTERED_AWAITING_ROOT_ONLY_ACCESS_HANDOFF"));
         assert!(config.contains("owner=/usr/local/libexec/sing-box/edge-agent"));
-        assert!(!config.contains("CF_ACCESS_CLIENT_SECRET="));
+        assert!(!config.contains("CLOUDFLARE_VM_ACCESS_CLIENT_SECRET"));
         assert!(!config.contains("ssh_authorized_keys:"));
         assert!(!config.contains("NOPASSWD:ALL"));
     }
@@ -289,7 +289,7 @@ mod tests {
         let validate = |token: &str, expiry: u64| {
             render_native_first_use_with_runner(
                 fixture(), "application-acceptance-5", &"a".repeat(64),
-                &"b".repeat(64), &substrate(), token, expiry, 0,
+                &"b".repeat(64), &substrate(), token, expiry,
             ).is_err()
         };
         for bad in ["", "short", "bad token", "invalid\nsecret", "A&B", "äbc"] {
