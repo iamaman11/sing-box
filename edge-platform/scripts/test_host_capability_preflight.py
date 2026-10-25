@@ -32,6 +32,7 @@ class TestHostCapabilitySelector(TestCase):
     def test_host_worker_get_probe_is_never_a_signing_admission(self):
         class Response:
             status = 200
+            headers = {}
             def __enter__(self):
                 return self
             def __exit__(self, *_args):
@@ -58,7 +59,19 @@ class TestHostCapabilitySelector(TestCase):
             (HTTPError(url, 404, "not found", {}, None),
              "GET_404_WORKER_OR_EDGE_NOT_POST_PROOF"),
             (HTTPError(url, 403, "forbidden", {}, None),
-             "GET_403_ACCESS_OR_EDGE_DENIED"),
+             "GET_403_EDGE_OR_UNVERIFIED_WORKER_DENIED"),
+            (HTTPError(url, 403, "forbidden", {
+                "X-Host-Authorization-Scope": "READ_ONLY_NO_MUTATION",
+                "X-Host-Authorization-Reason": "JWT_MISSING",
+            }, None), "GET_403_WORKER_JWT_MISSING"),
+            (HTTPError(url, 403, "forbidden", {
+                "X-Host-Authorization-Scope": "READ_ONLY_NO_MUTATION",
+                "X-Host-Authorization-Reason": "JWT_JWKS_FETCH_SAME_ZONE_BLOCKED",
+            }, None), "GET_403_WORKER_JWT_JWKS_FETCH_SAME_ZONE_BLOCKED"),
+            (HTTPError(url, 403, "forbidden", {
+                "X-Host-Authorization-Scope": "READ_ONLY_NO_MUTATION",
+                "X-Host-Authorization-Reason": "DANGEROUS_SECRET_PAYLOAD",
+            }, None), "GET_403_EDGE_OR_UNVERIFIED_WORKER_DENIED"),
             (HTTPError(url, 401, "unauthorized", {}, None),
              "GET_401_ACCESS_UNPROVEN"),
             (URLError("offline"), "GET_TRANSPORT_UNPROVEN"),
@@ -78,6 +91,18 @@ class TestHostCapabilitySelector(TestCase):
         self.assertEqual(capability.observe_worker_host_get_route(
             "sing-box-credentials-vm", "sing-box-test", "", ""),
             "ACCESS_SERVICE_IDENTITY_UNAVAILABLE")
+
+    def test_active_deployment_metadata_never_claims_git_source(self):
+        doc = {"success": True, "result": {"deployments": [{"versions": [
+            {"version_id": "12286a19-8130-4d31-bb1d-5c7831016cdb", "percentage": 100},
+        ]}]}}
+        self.assertEqual(capability.active_worker_deployment(doc),
+                         "SINGLE_VERSION_100_PERCENT_SOURCE_UNVERIFIED")
+        doc["result"]["deployments"][0]["versions"][0]["percentage"] = 150
+        self.assertEqual(capability.active_worker_deployment(doc),
+                         "UNPROVEN_ACTIVE_DEPLOYMENT")
+        self.assertEqual(capability.active_worker_deployment({"success": False}),
+                         "UNPROVEN_DEPLOYMENTS_RESPONSE")
 
     def test_exact_runner_readback_uses_complete_pages_and_exposes_no_names(self):
         name = "sing-box-production-application-acceptance-4"
