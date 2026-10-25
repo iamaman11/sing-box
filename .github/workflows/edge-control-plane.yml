@@ -41,6 +41,7 @@ jobs:
       admitted_at_unix: ${{ steps.observe.outputs.admitted_at_unix }}
       host_matrix: ${{ steps.observe.outputs.host_matrix }}
       host_targets_present: ${{ steps.observe.outputs.host_targets_present }}
+      runner_inventory_state: ${{ steps.runner_inventory.outputs.state }}
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     permissions:
@@ -100,9 +101,11 @@ jobs:
           echo "HOSTS_SHA256=$(sha256sum "${RUNNER_TEMP}/hosts.binpb" | cut -d' ' -f1)" >> "${GITHUB_ENV}"
 
       - name: Read official runner registration for host routing
+        id: runner_inventory
         shell: bash
         run: |
           set -euo pipefail
+          inventory_state=RUNNER_API_FETCHED_UNVERIFIED
           if ! gh api --paginate --slurp -H 'Accept: application/vnd.github+json' \
             "repos/${GITHUB_REPOSITORY}/actions/runners?per_page=100" \
             > "${RUNNER_TEMP}/host-runners.json"; then
@@ -116,17 +119,22 @@ jobs:
             http_response="$(gh api -i -H 'Accept: application/vnd.github+json' "repos/${GITHUB_REPOSITORY}/actions/runners?per_page=1" 2>/dev/null || true)"
             http_status="$(printf '%s\n' "${http_response}" | grep -E '^HTTP/[0-9.]+ [0-9]{3}' | tail -n 1 | awk '{print $2}' || true)"
             case "${http_status}" in
-              401|403) echo "RUNNER_API_PERMISSION_DENIED_HTTP_${http_status}" >&2 ;;
-              429) echo 'RUNNER_API_RATE_LIMIT_HTTP_429' >&2 ;;
-              5??) echo "RUNNER_API_SERVER_ERROR_HTTP_${http_status}" >&2 ;;
-              4??) echo "RUNNER_API_REJECTED_HTTP_${http_status}" >&2 ;;
-              *) echo 'RUNNER_API_TRANSPORT_OR_PARSE_UNAVAILABLE' >&2 ;;
+              401|403) inventory_state="RUNNER_API_PERMISSION_DENIED_HTTP_${http_status}" ;;
+              429) inventory_state=RUNNER_API_RATE_LIMIT_HTTP_429 ;;
+              5??) inventory_state="RUNNER_API_SERVER_ERROR_HTTP_${http_status}" ;;
+              4??) inventory_state="RUNNER_API_REJECTED_HTTP_${http_status}" ;;
+              *) inventory_state=RUNNER_API_TRANSPORT_OR_PARSE_UNAVAILABLE ;;
             esac
             echo 'RUNNER_REGISTRATION_UNPROVEN_NATIVE_OWNER_MUST_VERIFY' >&2
           fi
           if [[ -e "${RUNNER_TEMP}/host-runners.json" ]]; then
             test -s "${RUNNER_TEMP}/host-runners.json" || exit 1
           fi
+          # This closed enum records API transport, not online native proof.
+          # The Rust owner still parses exact registration and label evidence.
+          [[ "${inventory_state}" =~ ^RUNNER_API_[A-Z0-9_]+$ ]]
+          echo "state=${inventory_state}" >> "${GITHUB_OUTPUT}"
+          echo "host_runner_inventory_state=${inventory_state}" >> "${GITHUB_STEP_SUMMARY}"
 
       - name: Show one typed native host status or read-only lifecycle preflight
         id: observe
@@ -258,6 +266,7 @@ jobs:
       COMMAND_BODY: ${{ github.event.comment.body }}
       TARGETS_PRESENT: ${{ needs.host.outputs.host_targets_present }}
       HOST_OPERATION: ${{ needs.host.outputs.operation }}
+      RUNNER_INVENTORY_STATE: ${{ needs.host.outputs.runner_inventory_state }}
     steps:
       - name: Publish one read-only observation pointer immediately
         id: publish
@@ -265,6 +274,7 @@ jobs:
         run: |
           set -euo pipefail
           [[ "${SOURCE_COMMENT_ID}" =~ ^[0-9]+$ ]]
+          [[ "${RUNNER_INVENTORY_STATE}" =~ ^RUNNER_API_[A-Z0-9_]+$ ]]
           case "${TARGETS_PRESENT}" in
             true) result=PER_HOST_NATIVE_REPORTS_INDEPENDENT ;;
             false)
@@ -284,8 +294,8 @@ jobs:
           if [[ "${HOST_OPERATION}" == RECOVER_PREFLIGHT ]]; then
             report_kind='Host code-only recovery report'
           fi
-          body="$(printf '%s for operator command #%s\n\nOperation: `%s`\nResult: `%s`\nPhysical dispatch selected: `%s`\nCI evidence: %s\n\nResults arrive as separate correlated replies. Unresponsive runners remain UNPROVEN. For VM /host recover, the installed root owner may refresh only its exact protected binary/trust and diagnose; this never authorizes resource replay, Docker/network changes or a signed INSTALL.\n' \
-            "${report_kind}" "${SOURCE_COMMENT_ID}" "${COMMAND_BODY}" "${result}" "${TARGETS_PRESENT}" "${run_url}")"
+          body="$(printf '%s for operator command #%s\n\nOperation: `%s`\nResult: `%s`\nPhysical dispatch selected: `%s`\nRunner inventory API: `%s` (not physical proof)\nCI evidence: %s\n\nResults arrive as separate correlated replies. Unresponsive runners remain UNPROVEN. For VM /host recover, the installed root owner may refresh only its exact protected binary/trust and diagnose; this never authorizes resource replay, Docker/network changes or a signed INSTALL.\n' \
+            "${report_kind}" "${SOURCE_COMMENT_ID}" "${COMMAND_BODY}" "${result}" "${TARGETS_PRESENT}" "${RUNNER_INVENTORY_STATE}" "${run_url}")"
           comment_id="$(gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/1/comments" -f "body=${body}" --jq '.id')"
           [[ "${comment_id}" =~ ^[0-9]+$ ]]
           echo "comment_id=${comment_id}" >> "${GITHUB_OUTPUT}"

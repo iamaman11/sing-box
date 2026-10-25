@@ -157,6 +157,69 @@ def provider_inventory(doc, machine_id):
     return "LABEL_ABSENT_SINGLE_PAGE_NOT_CREATE_AUTHORITY"
 
 
+
+def registered_vm_runner(repository, token, machine_id):
+    """Read exactly all runner pages with the EXISTING protected read token.
+
+    This reports only a closed enum, not runner IDs, names, IPs, tokens or
+    private API responses. A queued job or a partial page is never proof of
+    OFFLINE, ONLINE or ABSENT.
+    """
+    if repository != "iamaman11/sing-box":
+        return "UNPROVEN_GITHUB_REPOSITORY"
+    root = f"https://api.github.com/repos/{repository}/actions/runners"
+    first = observe_json(root + "?per_page=100&page=1", token, "api.github.com")
+    if not isinstance(first, dict):
+        return "UNPROVEN_RUNNER_API"
+    count = first.get("total_count")
+    entries = first.get("runners")
+    if type(count) is not int or count < 0 or count > 1000 or not isinstance(entries, list):
+        return "UNPROVEN_RUNNER_INVENTORY"
+    pages = max(1, (count + 99) // 100)
+    all_runners = []
+    for page in range(1, pages + 1):
+        if page == 1:
+            batch = first
+        else:
+            batch = observe_json(root + f"?per_page=100&page={page}",
+                                 token, "api.github.com")
+        if not isinstance(batch, dict) or batch.get("total_count") != count:
+            return "UNPROVEN_RUNNER_INVENTORY"
+        items = batch.get("runners")
+        if not isinstance(items, list) or len(items) > 100:
+            return "UNPROVEN_RUNNER_INVENTORY"
+        all_runners.extend(items)
+    if len(all_runners) != count or not all(isinstance(x, dict) for x in all_runners):
+        return "UNPROVEN_RUNNER_INVENTORY"
+    ids = [x.get("id") for x in all_runners]
+    names = [x.get("name") for x in all_runners]
+    if (any(type(x) is not int or x <= 0 for x in ids)
+            or any(not isinstance(x, str) or not x for x in names)
+            or len(set(ids)) != count or len(set(names)) != count):
+        return "UNPROVEN_RUNNER_DUPLICATE_IDENTITY"
+    exact = "sing-box-production-" + machine_id
+    selected = [x for x in all_runners if x["name"] == exact]
+    if not selected:
+        return "RUNNER_UNREGISTERED"
+    runner = selected[0]
+    labels = runner.get("labels")
+    if not isinstance(labels, list) or not all(
+            isinstance(x, dict) and isinstance(x.get("name"), str) for x in labels):
+        return "UNPROVEN_RUNNER_LABELS"
+    required = {"self-hosted", "Linux", "X64", "sing-box-production-vm", machine_id}
+    if not required <= {x["name"] for x in labels}:
+        return "RUNNER_LABEL_MISMATCH"
+    if runner.get("status") == "offline":
+        return "RUNNER_OFFLINE"
+    if runner.get("status") != "online":
+        return "UNPROVEN_RUNNER_STATUS"
+    if type(runner.get("busy")) is not bool:
+        return "UNPROVEN_RUNNER_STATUS"
+    if runner["busy"]:
+        return "RUNNER_BUSY"
+    return "RUNNER_ONLINE_IDLE_NOT_NATIVE_PROOF"
+
+
 def worker_bindings(doc):
     if not isinstance(doc, dict) or doc.get("success") is not True:
         return "UNPROVEN_WORKER_SECRETS_API"
@@ -181,6 +244,7 @@ def observe(machine_id, desired_spec_path):
         "vultr_machine": "UNPROVEN",
         "github_control_token": "UNPROVEN",
         "github_runner_visibility": "UNPROVEN",
+        "github_runner_state": "UNPROVEN",
         "cloudflare_api": "UNPROVEN",
         "worker_host_signing_bindings": "UNPROVEN",
         "worker_host_route_get": "UNPROVEN",
@@ -215,9 +279,9 @@ def observe(machine_id, desired_spec_path):
             result["github_control_token"] = (
                 "REPOSITORY_PUSH_VISIBLE" if isinstance(permissions, dict)
                 and permissions.get("push") is True else "READABLE_WRITE_UNPROVEN")
-        runners = observe_json(f"https://api.github.com/repos/{repository}/actions/runners?per_page=1",
-                               gh, "api.github.com")
-        if isinstance(runners, dict) and isinstance(runners.get("runners"), list):
+        runner_state = registered_vm_runner(repository, gh, machine_id)
+        result["github_runner_state"] = runner_state
+        if not runner_state.startswith("UNPROVEN"):
             result["github_runner_visibility"] = "READABLE"
 
     # The existing accepted VM Worker owner uses this scoped read principal.

@@ -573,6 +573,9 @@ jobs:
           key: cargo-source-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-${{ github.event.pull_request.head.sha }}
           restore-keys: |
             cargo-source-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-
+            # Accepted default-branch cache is readable by new PR refs;
+            # a cache written inside a different PR ref is not.
+            cargo-linux-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-
 
       - name: Check formatting
         working-directory: edge-platform
@@ -1903,3 +1906,112 @@ jobs:
           if-no-files-found: error
           retention-days: 30
 
+
+  # Cache warming is deliberately outside promotion authority: candidate
+  # artifacts MUST still come from reviewed exact PR SHA and be verified by
+  # ReleaseSet. These compilations only seed disposable Cargo cache on main.
+  # Cross-PR caches are isolated by GitHub; a cache populated on protected
+  # main is readable by future PRs. Failure never changes release provenance.
+  warm_linux_cache:
+    name: Warm accepted Linux compiler cache (non-release)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.promote.result == 'success'
+    needs: promote
+    continue-on-error: true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 25
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact accepted main
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote add origin "https://github.com/${REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${REVISION}"
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${REVISION}"
+      - name: Install pinned Rust
+        shell: bash
+        run: |
+          set -euo pipefail
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+      - name: Restore and seed accepted main Cargo Linux cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            edge-platform/target
+          key: cargo-linux-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            cargo-linux-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-
+      - name: Seed tested debug and native release objects only
+        shell: bash
+        working-directory: edge-platform
+        run: |
+          set -euo pipefail
+          cargo test --workspace --locked --no-run
+          cargo build --locked --release \
+            -p edge-controller --bin edge-controller \
+            -p edge-orchestrator --bin edge-orchestrator \
+            -p edge-agent --bin edge-agent \
+            -p edge-shared-types --bin edge-release-set
+          echo 'cargo_cache_role=NON_AUTHORITATIVE_ACCEPTED_MAIN_SEED' >> "${GITHUB_STEP_SUMMARY}"
+          echo 'cargo_cache_does_not_publish_release=true' >> "${GITHUB_STEP_SUMMARY}"
+
+  warm_windows_cache:
+    name: Warm accepted Windows compiler cache (non-release)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main' && needs.promote.result == 'success'
+    needs: promote
+    continue-on-error: true
+    runs-on: windows-2025
+    timeout-minutes: 30
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact accepted main
+        shell: pwsh
+        env:
+          REPOSITORY: ${{ github.repository }}
+          REVISION: ${{ github.sha }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          git init -q .
+          git remote add origin "https://github.com/$env:REPOSITORY.git"
+          git fetch --no-tags --depth=1 origin $env:REVISION
+          git checkout -q --detach FETCH_HEAD
+          if ((git rev-parse HEAD).Trim() -ne $env:REVISION) { throw 'Cache seed is not accepted main' }
+      - name: Install pinned Rust
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          rustup toolchain install 1.95.0 --profile minimal
+          rustup default 1.95.0
+      - name: Restore and seed accepted main Cargo Windows cache
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            edge-platform/target
+          key: cargo-windows-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-${{ github.sha }}
+          restore-keys: |
+            cargo-windows-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-
+      - name: Seed native Windows objects, no artifact publication
+        shell: pwsh
+        working-directory: edge-platform
+        run: |
+          $ErrorActionPreference = 'Stop'
+          cargo test --locked --no-run -p edge-local-runtime -p edge-controller -p edge-console -p edge-diagnostic
+          if ($LASTEXITCODE -ne 0) { throw 'Windows accepted cache debug compilation failed' }
+          cargo build --locked --release -p edge-shared-types --bin edge-release-set
+          if ($LASTEXITCODE -ne 0) { throw 'Windows accepted cache manifest compilation failed' }
+          cargo build --locked --release -p edge-controller --bin edge-controller -p edge-console --bin edge-console -p edge-diagnostic --bin edge-diagnostic
+          if ($LASTEXITCODE -ne 0) { throw 'Windows accepted cache production compilation failed' }
+          'cargo_cache_role=NON_AUTHORITATIVE_ACCEPTED_MAIN_SEED' >> $env:GITHUB_STEP_SUMMARY
+          'cargo_cache_does_not_publish_release=true' >> $env:GITHUB_STEP_SUMMARY
