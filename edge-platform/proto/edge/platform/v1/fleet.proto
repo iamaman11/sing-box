@@ -486,6 +486,18 @@ message FleetHostDiagnosticRequest {
   repeated string argv = 4;
 }
 
+// Domain-separated Ed25519 signed, read-only snapshot from the existing Root Agent.
+// This is evidence only, NEVER a HostIntent, execution receipt or mutation authority.
+message FleetNativeDiagnosticSnapshot {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  string operation_id = 3;
+  bytes release_set_sha256 = 4;
+  FleetNativeObservation observation = 5;
+  FleetVmResourceReport resources = 6;
+  bytes ed25519_signature = 7;
+}
+
 // Unlimited administrative COMMAND capability belongs only to native VM root.
 // An approved request carries exact argv (shell interpreters are not excluded),
 // optional cwd/env and stdin, but grants no authority without Worker signature.

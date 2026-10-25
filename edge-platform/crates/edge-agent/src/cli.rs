@@ -45,6 +45,8 @@ pub(crate) enum LocalCommand {
     HostObserve,
     /// Read-only typed per-container Docker evidence from protected Git trust.
     HostResources,
+    /// One Git-correlated, Ed25519 signed, read-only root snapshot on stdout.
+    HostSnapshot,
     /// One native VM host transaction, with an exact protobuf intent on stdin.
     HostApply,
     /// One explicitly approved arbitrary root administrative request.
@@ -82,6 +84,7 @@ impl LocalCommand {
             Self::Diagnose => "local-diagnose",
             Self::HostObserve => "local-host-observe",
             Self::HostResources => "local-host-resources",
+            Self::HostSnapshot => "local-host-snapshot",
             Self::HostApply => "local-host-apply",
             Self::HostAdmin => "local-host-admin",
             Self::HostBootstrapProof => "local-host-bootstrap-proof",
@@ -112,6 +115,7 @@ mod tests {
             "diagnose",
             "host-observe",
             "host-resources",
+            "host-snapshot",
             "host-apply",
             "host-admin",
             "host-bootstrap-proof",
