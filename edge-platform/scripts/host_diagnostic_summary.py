@@ -92,7 +92,7 @@ def fuse(observation, git, *, machine_id, operation_id, source_digest,
     elif sources["worker_access"] != "GET_204_WORKER_JWT_VERIFIED_NOT_SIGNING_PROOF":
         status, owner, reason, last, next_action, current_phase = (
             "BLOCKED", "CLOUDFLARE_ACCESS",
-            sources["worker_access"], "GIT_FIRST_USE_REFERENCE_ONLY",
+            sources["worker_access"], "WORKER_BUNDLE_EXACT_GET_PROVEN" if sources["worker_bundle"] == "GIT_PIN_EXACT_ACCESS_GET_PROVEN" else "GIT_FIRST_USE_REFERENCE_ONLY",
             "VERIFY_ACCESS_POLICY_AND_WORKER_ROUTE", "WORKER_ACCESS",
         )
     elif sources["worker_bundle"] != "GIT_PIN_EXACT_ACCESS_GET_PROVEN":
@@ -135,7 +135,43 @@ def fuse(observation, git, *, machine_id, operation_id, source_digest,
     ))
 
 
-if __name__ == "__main__":
+def attach_verified_native(original, comment_id):
+    """Only Rust-verified native evidence may upgrade the existing issue JSON."""
+    marker = "### Unified deep diagnosis — read only\n\n" + chr(96) * 3 + "json\n"
+    if original.count(marker) != 1:
+        raise ValueError("HOST_DIAGNOSTIC_REPORT_MISSING")
+    before, remaining = original.split(marker, 1)
+    raw, suffix = remaining.split("\n" + chr(96) * 3, 1)
+    data = json.loads(raw)
+    if (data.get("schema") != "sing-box.host-diagnostic/v1"
+            or data.get("operation_id") != "issue1-comment-" + comment_id
+            or data.get("physical_accepted") is not False
+            or data.get("replay_allowed") is not False
+            or data.get("mutation_authorized") is not False
+            or not isinstance(data.get("sources"), dict)):
+        raise ValueError("HOST_DIAGNOSTIC_NATIVE_CORRELATION_INVALID")
+    data["sources"]["root_agent"] = "VERIFIED_ROOT_SIGNED_READ_ONLY"
+    data["sources"]["native_snapshot"] = "VERIFIED_ROOT_SIGNED_READ_ONLY"
+    data["sources"]["signed_receipt"] = "UNPROVEN_NO_MUTATION_RECEIPT"
+    data["native_observation_authenticated"] = True
+    data["last_proven_step"] = "ROOT_SIGNED_READ_ONLY_SNAPSHOT"
+    return before + marker + json.dumps(data, sort_keys=True, separators=(",", ":")) + "\n" + chr(96) * 3 + suffix
+
+
+if __name__ == "__main__" and sys.argv[1:] == ["--attach-native"]:
+    try:
+        if os.environ["NATIVE_SNAPSHOT_PROOF"] != "VERIFIED_ROOT_SIGNED_READ_ONLY":
+            raise ValueError("HOST_DIAGNOSTIC_NATIVE_PROOF_NOT_VERIFIED")
+        comment = os.environ["SOURCE_COMMENT_ID"]
+        if not comment.isdigit() or int(comment) == 0:
+            raise ValueError("HOST_DIAGNOSTIC_COMMENT_INVALID")
+        original = sys.stdin.read(25001)
+        if len(original) > 25000:
+            raise ValueError("HOST_DIAGNOSTIC_REPORT_OVERSIZED")
+        print(attach_verified_native(original, comment), end="")
+    except (ValueError, KeyError, json.JSONDecodeError):
+        raise SystemExit("HOST_DIAGNOSTIC_NATIVE_REPORT_REJECTED")
+elif __name__ == "__main__":
     raw = sys.stdin.read(8193)
     if len(raw) > 8192:
         raise SystemExit("HOST_DIAGNOSTIC_INPUT_TOO_LARGE")

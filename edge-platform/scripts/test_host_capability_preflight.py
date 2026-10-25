@@ -219,12 +219,27 @@ class TestUnifiedHostDiagnosis(TestCase):
         self.assertEqual(output["phase"], "WORKER_ACCESS")
         self.assertEqual(output["owner"], "CLOUDFLARE_ACCESS")
         self.assertEqual(output["reason"], "GET_403_EDGE_OR_UNVERIFIED_WORKER_DENIED")
-        self.assertEqual(output["last_proven_step"], "GIT_FIRST_USE_REFERENCE_ONLY")
+        self.assertEqual(output["last_proven_step"], "WORKER_BUNDLE_EXACT_GET_PROVEN")
         self.assertFalse(output["physical_accepted"])
         self.assertFalse(output["replay_allowed"])
         self.assertEqual(output["sources"]["root_agent"],
                          "UNPROVEN_NO_SIGNED_NATIVE_OBSERVATION")
         self.assertNotIn("CF_ACCESS", json.dumps(output))
+
+    def test_signed_native_report_updates_only_exact_matching_operation(self):
+        output = self.diagnose()
+        marker = "### Unified deep diagnosis — read only\\n\\n" + chr(96) * 3 + "json\\n"
+        text = marker + json.dumps(output) + "\\n" + chr(96) * 3
+        good = summary.attach_verified_native(text, "6390000111")
+        found = json.loads(good.split(marker, 1)[1].split("\\n" + chr(96) * 3, 1)[0])
+        self.assertEqual(found["sources"]["root_agent"], "VERIFIED_ROOT_SIGNED_READ_ONLY")
+        self.assertEqual(found["status"], "BLOCKED")
+        self.assertFalse(found["physical_accepted"])
+        self.assertFalse(found["mutation_authorized"])
+        with self.assertRaises(ValueError):
+            summary.attach_verified_native(text, "6390000112")
+        with self.assertRaises(ValueError):
+            summary.attach_verified_native(text.replace("false", "true"), "6390000111")
 
     def test_git_only_blocked_has_priority_over_unverified_get(self):
         self.git.update(phase="BLOCKED", owner="FIRST_USE_CREDENTIAL_OWNER",
