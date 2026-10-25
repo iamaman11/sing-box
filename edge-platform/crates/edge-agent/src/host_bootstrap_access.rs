@@ -54,30 +54,14 @@ pub(crate) fn public_proof() -> Result<(), String> {
 }
 
 fn validate_plain_identity(plaintext: &[u8]) -> Result<(), String> {
+    if plaintext.is_empty() || plaintext.len() > 1024 {
+        return Err("BOOTSTRAP_ACCESS_IDENTITY_INVALID".into());
+    }
     let text = std::str::from_utf8(plaintext).map_err(|_| "BOOTSTRAP_ACCESS_UTF8_INVALID")?;
-    if plaintext.len() < 70
-        || plaintext.len() > 1024
-        || text.as_bytes().contains(&0)
-        || text.contains('\r')
-    {
-        return Err("BOOTSTRAP_ACCESS_IDENTITY_INVALID".into());
-    }
-    let mut lines = text.lines();
-    for prefix in ["CF_ACCESS_CLIENT_ID=", "CF_ACCESS_CLIENT_SECRET="] {
-        let line = lines.next().ok_or("BOOTSTRAP_ACCESS_IDENTITY_INVALID")?;
-        let value = line
-            .strip_prefix(prefix)
-            .ok_or("BOOTSTRAP_ACCESS_IDENTITY_INVALID")?;
-        if value.len() < 16
-            || value.len() > 512
-            || !value.bytes().all(|c| c.is_ascii_graphic() && c != b'=')
-        {
-            return Err("BOOTSTRAP_ACCESS_IDENTITY_INVALID".into());
-        }
-    }
-    if lines.next().is_some() || !text.ends_with('\n') {
-        return Err("BOOTSTRAP_ACCESS_IDENTITY_INVALID".into());
-    }
+    // Reuse the ONE production parser, including support for base64 values
+    // containing '='. Never maintain another interpretation of Access keys.
+    edge_secrets::AccessServiceIdentity::parse_env(text)
+        .map_err(|_| "BOOTSTRAP_ACCESS_IDENTITY_INVALID")?;
     Ok(())
 }
 
