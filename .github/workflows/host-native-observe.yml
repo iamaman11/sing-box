@@ -33,7 +33,7 @@ jobs:
     # the existing production lease group serializes upgrade and native BEGIN.
     # Status remains independent and read-only; Windows is not affected.
     concurrency:
-      group: ${{ (inputs.kind == 'VM' && (inputs.operation == 'APPLY_PREFLIGHT' || inputs.operation == 'RECOVER_PREFLIGHT')) && 'vultr-control-plane-production' || format('host-readonly-{0}', inputs.source_comment_id) }}
+      group: ${{ (inputs.kind == 'VM' && (inputs.operation == 'APPLY_PREFLIGHT' || inputs.operation == 'RECOVER_PREFLIGHT' || inputs.operation == 'ADMIN')) && 'vultr-control-plane-production' || format('host-readonly-{0}', inputs.source_comment_id) }}
       cancel-in-progress: false
     # Git selects a single owner from Rust's exact protobuf matrix.
     # This job NEVER holds issues:write, Docker socket or generic root.
@@ -49,6 +49,54 @@ jobs:
       COMMAND_BODY: ${{ inputs.command_body }}
       HOST_OPERATION: ${{ inputs.operation }}
     steps:
+      - name: Receive exact approved administrative request in existing runner
+        if: env.TARGET_KIND == 'VM' && env.HOST_OPERATION == 'ADMIN'
+        uses: actions/download-artifact@v4
+        with:
+          name: host-intent-${{ inputs.source_comment_id }}
+          path: ${{ runner.temp }}/host-admin
+
+      - name: Deliver signed native root administration without runner root rights
+        if: env.TARGET_KIND == 'VM' && env.HOST_OPERATION == 'ADMIN'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${RUNNER_NAME}" = "sing-box-production-${TARGET_OWNER}"
+          test "${TARGET_MACHINE}" = "${TARGET_OWNER}"
+          test "$(id -u)" != 0
+          owner=/usr/local/libexec/sing-box/edge-agent
+          test -x "${owner}" && test ! -L "${owner}"
+          for path in /usr /usr/local /usr/local/libexec /usr/local/libexec/sing-box "${owner}"; do
+            test ! -L "${path}"
+            test "$(stat -c '%u:%g:%a' "${path}")" = "0:0:755"
+          done
+          if sudo -n id -u >/dev/null 2>&1; then
+            echo 'HOST_ADMIN_RUNNER_GENERIC_SUDO_FORBIDDEN' >&2
+            exit 1
+          fi
+          test ! -r /var/run/docker.sock
+          request="${RUNNER_TEMP}/host-admin/host-intent.pb"
+          result="${RUNNER_TEMP}/host-admin/admin-result.pb"
+          test -f "${request}" && test ! -L "${request}"
+          test "$(stat -c '%s' "${request}")" -gt 0
+          test "$(stat -c '%s' "${request}")" -le 32768
+          sudo -n -l "${owner}" local host-admin >/dev/null
+          # Exact accepted root owner, independent Worker authorization,
+          # journal BEGIN, native signed result. The workflow NEVER runs
+          # argv, bash -c or Docker itself, and never logs raw root output.
+          sudo -n "${owner}" local host-admin < "${request}" > "${result}"
+          test -s "${result}" && test "$(stat -c '%s' "${result}")" -le 2048
+          echo 'host_admin_native_result=ROOT_SIGNED_PROOF_PENDING_INDEPENDENT_VERIFICATION'
+
+      - name: Preserve only native signed administrative result
+        if: env.TARGET_KIND == 'VM' && env.HOST_OPERATION == 'ADMIN'
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-admin-result-${{ inputs.source_comment_id }}
+          path: ${{ runner.temp }}/host-admin/admin-result.pb
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Receive one same-run immutable diagnostic request
         if: env.TARGET_KIND == 'VM' && env.HOST_OPERATION == 'DIAGNOSE'
         uses: actions/download-artifact@v4
