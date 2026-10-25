@@ -94,12 +94,40 @@ def verify_original_run(machine, comment, revision, run_id):
     require(len(matches) == 1 and matches[0].get("conclusion") == "failure",
             "HOST_ABORT_ORIGINAL_FIRST_USE_UNPROVEN")
     steps = matches[0].get("steps", [])
-    require(sum(s.get("name") == "Execute exactly one no-SSH native Vultr CREATE" and
-                s.get("conclusion") == "skipped" for s in steps) == 1,
-            "HOST_ABORT_ORIGINAL_CREATE_NOT_PROVEN_SKIPPED")
-    require(sum(s.get("name") == "Get one short-lived GitHub runner registration capability"
-                and s.get("conclusion") == "failure" for s in steps) == 1,
-            "HOST_ABORT_ORIGINAL_PRECREATE_FAILURE_UNPROVEN")
+    def concluded(name, state):
+        return sum(s.get("name") == name and s.get("conclusion") == state
+                   for s in steps) == 1
+    if (concluded("Execute exactly one no-SSH native Vultr CREATE", "skipped")
+            and concluded("Get one short-lived GitHub runner registration capability", "failure")):
+        return "PROVEN_SKIPPED"
+    # One exact historical source-bound defect: the firewall binding lookup
+    # occurs before the first provider POST in this accepted Rust revision.
+    # Require BOTH matching step disposition and its actual unredacted job
+    # error code from the immutable original GitHub Actions job log.
+    require(revision == "43892f4c527b94b2d0cc07ff5bd95eaa56711115" and
+            concluded("Get one short-lived GitHub runner registration capability", "success") and
+            concluded("Execute exactly one no-SSH native Vultr CREATE", "failure"),
+            "HOST_ABORT_CREATE_FAILURE_NOT_PROVEN_PREPOST")
+    job_id = matches[0].get("id")
+    require(isinstance(job_id, int) and job_id > 0, "HOST_ABORT_JOB_ID_INVALID")
+    try:
+        log = subprocess.run(
+            ["gh", "api", f"repos/{REPO}/actions/jobs/{job_id}/logs"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL, check=False, timeout=45,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        raise Blocked("HOST_ABORT_ORIGINAL_JOB_LOG_UNAVAILABLE") from None
+    require(log.returncode == 0 and 0 < len(log.stdout) <= 2_000_000,
+            "HOST_ABORT_ORIGINAL_JOB_LOG_UNPROVEN")
+    text = re.sub(r"\\x1b\\[[0-9;]*m", "", log.stdout.decode("utf-8", "replace"))
+    require(sum(line.rstrip().endswith("HOST_FIRST_USE_FIREWALL_BINDING_UNPROVEN")
+                for line in text.splitlines()) == 1 and
+            "host_first_use_provider_plan=EXACT_CREATE_ONLY" in text and
+            "host_first_use_preflight=PROVIDER_AND_WORKER_GET_PROVEN" in text and
+            "host_first_use_provider_create=EXACT_NATIVE_CLOUD_INIT_ACCEPTED" not in text,
+            "HOST_ABORT_FIREWALL_PREPOST_ERROR_NOT_PROVEN")
+    return "PROVEN_NOT_ENTERED_PREPOST_FIREWALL"
 
 
 def verify_reservation(machine, comment, sha, revision):
@@ -176,7 +204,7 @@ def reconcile():
     require(len(begins) == 1, "HOST_ABORT_DURABLE_BEGIN_NOT_UNIQUE")
     begin_id, old_revision, run_id = begins[0]
     require(old_revision != revision, "HOST_ABORT_NOT_A_NEW_RELEASE")
-    verify_original_run(machine, origin, old_revision, run_id)
+    create_phase = verify_original_run(machine, origin, old_revision, run_id)
     verify_reservation(machine, origin, sha, old_revision)
     verify_runner_absent(machine)
     # Full provider inventory+exact CREATE plan was checked by the accepted
@@ -184,7 +212,7 @@ def reconcile():
     marker = (f"{NO_REPLAY} machine={machine} origin_comment={origin} "
               f"origin_run={run_id} begin={begin_id} branch={branch} "
               f"ref_sha={sha} revision={revision} "
-              f"create=PROVEN_SKIPPED provider=ABSENT_FULL_TYPED_PREFLIGHT "
+              f"create={create_phase} provider=ABSENT_FULL_TYPED_PREFLIGHT "
               f"runner=ABSENT_FULL_INVENTORY no_replay=true")
     matches = [x for x in entries if x.get("body", "").strip() == marker]
     require(len(matches) <= 1, "HOST_ABORT_TERMINAL_EVIDENCE_AMBIGUOUS")
