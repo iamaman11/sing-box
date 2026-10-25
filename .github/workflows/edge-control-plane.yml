@@ -1103,12 +1103,144 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  host_resume_native:
-    # Existing reusable root runner is transport only. Fresh Worker signature
-    # and the native root journal still gate mutation after the protected merge.
+  host_resume_native_bootstrap:
+    # First receive the protected public receipt, then refresh the exact
+    # root trust snapshot WITHOUT resource replay and return fresh proof.
     needs: host_resume_receipt
     if: >-
       needs.host_resume_receipt.result == 'success' &&
+      needs.host_resume_receipt.outputs.operation == 'APPLY_PREFLIGHT' &&
+      needs.host_resume_receipt.outputs.kind == 'VM'
+    runs-on: ${{ fromJSON(needs.host_resume_receipt.outputs.runner_labels) }}
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: write
+    env:
+      TARGET_MACHINE: ${{ needs.host_resume_receipt.outputs.machine_id }}
+    steps:
+      - name: Refresh only native code/trust and sign fresh public recipient
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${RUNNER_NAME}" = "sing-box-production-${TARGET_MACHINE}"
+          owner=/usr/local/libexec/sing-box/edge-agent
+          sudo -n "${owner}" local host-refresh
+          sudo -n "${owner}" local host-bootstrap-proof > "${RUNNER_TEMP}/bootstrap-root-proof.pb"
+          size="$(stat -c '%s' "${RUNNER_TEMP}/bootstrap-root-proof.pb")"
+          ((size > 64 && size <= 512))
+          echo BOOTSTRAP_PROOF=ROOT_SIGNED_PUBLIC_ONLY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-enrolled-proof-${{ github.run_id }}
+          path: ${{ runner.temp }}/bootstrap-root-proof.pb
+          if-no-files-found: error
+          retention-days: 3
+
+  host_resume_seal:
+    # Plaintext Access identity exists only in this GitHub-hosted protected
+    # job and in the VM Root Agent after decryption. Never in runner secrets,
+    # Vultr user-data, Git, issue comments or logs.
+    needs: [host_resume_receipt, host_resume_native_bootstrap]
+    if: needs.host_resume_native_bootstrap.result == 'success'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    env:
+      TARGET_MACHINE: ${{ needs.host_resume_receipt.outputs.machine_id }}
+      ACCESS_ID: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID }}
+      ACCESS_SECRET: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-enrolled-proof-${{ github.run_id }}
+          path: ${{ runner.temp }}/native-root-proof
+
+      - name: Encrypt exact Git-pinned Worker Access identity for native Root Agent
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.event.workflow_run.head_sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/host-release
+        run: |
+          set -euo pipefail
+          test -n "${ACCESS_ID}" && test -n "${ACCESS_SECRET}"
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --no-tags --depth=1 origin "${ACCEPTED_REVISION}"
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${ACCEPTED_REVISION}"
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${ACCEPTED_REVISION}"
+          bin="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          printf '%s  %s\n' "${EDGE_ORCHESTRATOR_SHA256}" "${bin}" | sha256sum --check --status
+          chmod 0755 "${bin}"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
+          fleet="${OUTPUT_DIR}/fleet-registry.pb"
+          # Shell builtin printf writes directly to hosted orchestrator stdin.
+          # No GH artifact or runner environment ever contains clear bytes.
+          printf 'CF_ACCESS_CLIENT_ID=%s\nCF_ACCESS_CLIENT_SECRET=%s\n' \
+            "${ACCESS_ID}" "${ACCESS_SECRET}" | \
+            "${bin}" host --hosts-pb "${fleet}" \
+              --hosts-sha256 "$(sha256sum "${fleet}" | cut -d' ' -f1)" \
+              bootstrap-seal "${TARGET_MACHINE}" \
+              --proof-path "${RUNNER_TEMP}/native-root-proof/bootstrap-root-proof.pb" \
+              --output-path "${RUNNER_TEMP}/native-access-encrypted.pb"
+          test -s "${RUNNER_TEMP}/native-access-encrypted.pb"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-sealed-access-${{ github.run_id }}
+          path: ${{ runner.temp }}/native-access-encrypted.pb
+          if-no-files-found: error
+          retention-days: 1
+
+  host_resume_native_access:
+    needs: [host_resume_receipt, host_resume_seal]
+    if: needs.host_resume_seal.result == 'success'
+    runs-on: ${{ fromJSON(needs.host_resume_receipt.outputs.runner_labels) }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    env:
+      TARGET_MACHINE: ${{ needs.host_resume_receipt.outputs.machine_id }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-sealed-access-${{ github.run_id }}
+          path: ${{ runner.temp }}/native-sealed-access
+
+      - name: Root-only decrypt, real Cloudflare Access GET, one-shot commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${RUNNER_NAME}" = "sing-box-production-${TARGET_MACHINE}"
+          owner=/usr/local/libexec/sing-box/edge-agent
+          envelope="${RUNNER_TEMP}/native-sealed-access/native-access-encrypted.pb"
+          test -f "${envelope}" && test ! -L "${envelope}"
+          size="$(stat -c '%s' "${envelope}")"
+          ((size > 80 && size <= 4096))
+          sudo -n "${owner}" local host-bootstrap-access < "${envelope}" \
+            > "${RUNNER_TEMP}/bootstrap-access-result.txt"
+          grep -Fxq 'bootstrap_access=ROOT_ONLY_INSTALLED_WORKER_GET_PROVEN' "${RUNNER_TEMP}/bootstrap-access-result.txt"
+          grep -Fxq 'bootstrap_replay_allowed=false' "${RUNNER_TEMP}/bootstrap-access-result.txt"
+          echo BOOTSTRAP_ACCESS=ROOT_LOCAL_GET_PROVEN_SIGNED_INSTALL_PENDING
+
+  host_resume_native:
+    # Existing reusable root runner is transport only. Fresh Worker signature
+    # and the native root journal still gate mutation after the protected merge.
+    needs: [host_resume_receipt, host_resume_native_access]
+    if: >-
+      needs.host_resume_receipt.result == 'success' &&
+      needs.host_resume_native_access.result == 'success' &&
       needs.host_resume_receipt.outputs.operation == 'APPLY_PREFLIGHT' &&
       needs.host_resume_receipt.outputs.kind == 'VM'
     permissions:
