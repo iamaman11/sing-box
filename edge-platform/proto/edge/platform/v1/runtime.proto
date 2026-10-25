@@ -111,12 +111,24 @@ message FleetVmKernelRoute {
   bool kernel_protocol = 9;
   bool link_scope = 10;
 }
+// Kernel routing policy database: a selector for custom IPv4/IPv6 tables.
+// Full match conditions are not inferred from this bounded readback.
+message FleetVmKernelPolicyRule {
+  FleetVmIpFamily family = 1;
+  uint32 table_id = 2;
+  uint32 priority = 3;
+  uint32 fw_mark = 4;
+  bool fw_mark_present = 5;
+}
 message FleetVmDualStackNetwork {
   repeated Ipv4LinkObservation links = 1;
   repeated FleetVmKernelAddress addresses = 2;
   repeated FleetVmKernelRoute routes = 3;
   bool ipv4_route_dump_complete = 4;
   bool ipv6_route_dump_complete = 5;
+  repeated FleetVmKernelPolicyRule policy_rules = 6;
+  bool ipv4_rule_dump_complete = 7;
+  bool ipv6_rule_dump_complete = 8;
 }
 
 message AgentVersion {
