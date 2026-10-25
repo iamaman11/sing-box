@@ -30,6 +30,10 @@ assert "host_vm_worker_live_source=BLOCKED" in capability
 assert "host_worker_mutations=0" in capability
 assert "host_provider_mutations=0" in capability
 assert "host_diagnostic_summary.py" in capability
+assert "report_comment_id: ${{ needs.host_report.outputs.comment_id }}" in router
+assert "report_comment_id:" in native
+assert "Native observation — same operation, independent runner" in native
+assert "issues/comments/${REPORT_COMMENT_ID}" in native
 assert "HOST_DIAGNOSTIC=CORRELATED_ONE_REPORT_NO_MUTATION" in capability
 assert "RELEASE_SET_SHA256:" in capability
 assert "REPORT_COMMENT_ID:" in capability
