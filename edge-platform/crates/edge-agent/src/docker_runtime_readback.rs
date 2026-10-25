@@ -420,6 +420,7 @@ pub(crate) async fn observe_vm_resource_report(
         credential: Some(credential),
         bootstrap_phase: bootstrap_phase as i32,
         processes: Some(collect_native_process_snapshot()),
+        managed_docker: collect_native_managed_docker_readback(stack_dir, host, docker.as_ref()).await,
     };
     edge_shared_types::host_resources::validate_vm_resource_report(&report, host)
         .map_err(str::to_owned)?;
