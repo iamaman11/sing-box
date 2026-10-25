@@ -1110,8 +1110,14 @@ pub(crate) fn run(
                 "host_admin_stderr_capture_complete={}",
                 receipt.stderr_capture_complete
             );
-            println!("host_admin_stdin_bytes_written={}", receipt.stdin_bytes_written);
-            println!("host_admin_stdin_input_complete={}", receipt.stdin_input_complete);
+            println!(
+                "host_admin_stdin_bytes_written={}",
+                receipt.stdin_bytes_written
+            );
+            println!(
+                "host_admin_stdin_input_complete={}",
+                receipt.stdin_input_complete
+            );
             println!("host_admin_stdout_stream_eof={}", receipt.stdout_stream_eof);
             println!("host_admin_stderr_stream_eof={}", receipt.stderr_stream_eof);
             println!("host_admin_stdout_truncated={}", receipt.stdout_truncated);

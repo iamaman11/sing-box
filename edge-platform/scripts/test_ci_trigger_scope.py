@@ -38,24 +38,23 @@ def main() -> None:
     assert "  candidate_complete:\n" in ci
     assert "  promote:\n" in ci
     assert "accepted_tree" in ci and "candidate_tree" in ci
-    # Accepted-main caches are disposable compiler accelerators, not
-    # candidate authority. They can be restored by new PR branches, whereas
-    # a cache saved in another PR's merge ref is isolated by GitHub Actions.
-    assert "  warm_linux_cache:\n" in ci and "  warm_windows_cache:\n" in ci
-    for name in ("warm_linux_cache", "warm_windows_cache"):
-        segment = ci.split(f"  {name}:\n", 1)[1]
-        segment = segment.split("\n  warm_", 1)[0]
-        assert "needs: promote" in segment
-        assert "needs.promote.result == 'success'" in segment
-        assert "continue-on-error: true" in segment
-        assert "github.sha" in segment
-        assert "actions/upload-artifact" not in segment
-        assert "gh release" not in segment
+    # No second Linux/Windows compilation after promotion: accepted binaries
+    # are EXACT candidate artifacts already checked on the PR, not cache seeds.
+    assert "  warm_linux_cache:\n" not in ci
+    assert "  warm_windows_cache:\n" not in ci
+    # Cheap format failure MUST happen before restoring 1+ GiB Cargo objects.
+    source = ci.split("  verify:\n", 1)[1].split("\n  dependencies:", 1)[0]
+    fmt_step = source.index("      - name: Check formatting\n")
+    cache_step = source.index("      - name: Restore disposable Cargo source cache\n")
+    test_step = source.index("      - name: Test workspace\n")
+    assert fmt_step < cache_step < test_step
+    # The candidate builds may use disposable read caches; none are an
+    # authority for promotion, which only verifies and publishes exact bytes.
     assert "cargo-linux-${{ runner.os }}" in ci
     assert "cargo-windows-${{ runner.os }}" in ci
     assert "needs: [verify, dependencies, windows, linux_candidate, release_authority]" in ci
     # Candidate merge remains guarded by five mandatory success assertions;
-    # an optional post-promotion cache warm never enters the release DAG.
+    # protected-main promotion does not rebuild a second release.
     for key in (
         "SOURCE_RESULT", "DEPENDENCIES_RESULT", "WINDOWS_RESULT",
         "LINUX_RESULT", "RELEASE_AUTHORITY_RESULT",
