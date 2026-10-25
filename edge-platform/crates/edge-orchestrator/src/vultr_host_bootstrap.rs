@@ -10,6 +10,10 @@ use std::process::{Child, Command, Stdio};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
 
+#[path = "vultr_native_cloud_init.rs"]
+mod native_cloud_init;
+pub use native_cloud_init::render_native_first_use_cloud_init;
+
 pub const DEFAULT_OPS_USER: &str = "singbox-ops";
 pub const CONTROL_TRANSPORT_USER: &str = "edge-control";
 const EDGE_AGENT_LOOPBACK: &str = "127.0.0.1:50061";
