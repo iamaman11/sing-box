@@ -109,15 +109,20 @@ assert "HOST_VM_CREATE_REQUIRES_NATIVE_ONE_TIME_ENROLLMENT_NO_SSH" in provider
 assert '#[path = "vm_credential_proof.rs"]' in worker_src
 assert "get_vm_credential_bundle_with_access(" in vm_proof
 # A GET-only capability probe must not request an SSH private key.
-# The old first-use implementation cannot reach provider CREATE until the
-# signed cloud-init enrollment plus root-only Access delivery is implemented.
+# The published first-use workflow remains fail-closed. The typed Rust
+# CREATE is reachable only through its protected GitHub admission and must
+# never be activated by a generic provider lifecycle or SSH fallback.
 capability_job=router.split("  host_capabilities:", 1)[1].split("  host_first_use:", 1)[0]
 assert "VULTR_SSH_PRIVATE_KEY" not in capability_job
 capability_probe=Path("edge-platform/scripts/host_capability_preflight.py").read_text(encoding="utf-8")
 assert "operator_ssh_private_key" not in capability_probe
 assert '"bootstrap_transport": "SSH_RETIRED_CLOUD_INIT_REQUIRED"' in capability_probe
-assert 'admit_first_use_bootstrap_transport().map_err(str::to_owned)' in provider
-assert provider.count("admit_first_use_bootstrap_transport().map_err(str::to_owned)") == 1
+assert 'admit_first_use_bootstrap_transport().map_err(str::to_owned)' not in provider
+assert 'HOST_FIRST_USE_PROTECTED_GITHUB_DURABLE_BEGIN_REQUIRED' in provider
+assert 'singbox-native-first-use-v1' in provider
+assert 'render_native_first_use_with_runner(' in provider
+assert 'host_first_use_scrub(' in provider
+assert provider.count("HOST_FIRST_USE_PROTECTED_GITHUB_DURABLE_BEGIN_REQUIRED") == 1
 assert 'HOST_FIRST_USE_CLOUD_INIT_ENROLLMENT_NOT_IMPLEMENTED_NO_CREATE' in provider
 # Only a read-only GH-hosted first-use preflight is reachable. The old SSH
 # installer, provider lease, registration-token POST and receipt draft
@@ -131,9 +136,9 @@ assert "first-use-preflight" in firstuse_job
 assert "HOST_FIRST_USE_NATIVE_HANDOFF_NOT_ACCEPTED_NO_CREATE" in firstuse_job
 assert "edge-agent.service" not in Path("win/vultr-waw/cloud-init.yaml").read_text(encoding="utf-8")
 
-# The SSH-free native bootstrap is a verified, secret-free component of the
-# existing Rust Vultr owner. It must not be used to bypass the first-use gate
-# until the one-shot Worker Access/runner handoff is implemented.
+# Rust native cloud-init is a separately verified contract. The hosted
+# first-use job remains an explicit no-CREATE workflow until owner attestation,
+# protected Git receipt roundtrip and provider user-data scrub are complete.
 bootstrap=Path("edge-platform/crates/edge-orchestrator/src/vultr_host_bootstrap.rs").read_text(encoding="utf-8")
 native_init=Path("edge-platform/crates/edge-orchestrator/src/vultr_native_cloud_init.rs").read_text(encoding="utf-8")
 assert '#[path = "vultr_native_cloud_init.rs"]' in bootstrap
