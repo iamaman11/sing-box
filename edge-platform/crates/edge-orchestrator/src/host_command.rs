@@ -518,6 +518,42 @@ pub(crate) fn run(
                     })
                     .count();
                 if let Some(network) = report.network.as_ref() {
+                    println!(
+                        "host_vm_dual_stack_kernel_observed={}",
+                        network.dual_stack.is_some()
+                    );
+                    if let Some(kernel) = network.dual_stack.as_ref() {
+                        println!("host_vm_ipv4_route_dump_complete={}", kernel.ipv4_route_dump_complete);
+                        println!("host_vm_ipv6_route_dump_complete={}", kernel.ipv6_route_dump_complete);
+                        println!("host_vm_kernel_interfaces={}", kernel.links.len());
+                        println!("host_vm_kernel_ipv4_addresses={}", kernel.addresses.iter().filter(|a| {
+                            a.family == edge_shared_types::FleetVmIpFamily::V4 as i32
+                        }).count());
+                        println!("host_vm_kernel_ipv6_addresses={}", kernel.addresses.iter().filter(|a| {
+                            a.family == edge_shared_types::FleetVmIpFamily::V6 as i32
+                        }).count());
+                        println!("host_vm_kernel_ipv4_routes={}", kernel.routes.iter().filter(|r| {
+                            r.family == edge_shared_types::FleetVmIpFamily::V4 as i32
+                        }).count());
+                        println!("host_vm_kernel_ipv6_routes={}", kernel.routes.iter().filter(|r| {
+                            r.family == edge_shared_types::FleetVmIpFamily::V6 as i32
+                        }).count());
+                        let tables = kernel.routes.iter()
+                            .map(|r| format!("{}:{}", r.family, r.table_id))
+                            .collect::<BTreeSet<_>>();
+                        println!("host_vm_kernel_route_tables={}", tables.into_iter().collect::<Vec<_>>().join(","));
+                        println!("host_vm_ipv6_default_route_present={}", kernel.routes.iter().any(|r| {
+                            r.family == edge_shared_types::FleetVmIpFamily::V6 as i32
+                                && r.destination == "::" && r.prefix_length == 0
+                        }));
+                    } else {
+                        println!("host_vm_dual_stack_error_code={}", if network.dual_stack_error_code.is_empty() {
+                            "NOT_COLLECTED" 
+                        } else { network.dual_stack_error_code.as_str() });
+                    }
+                    println!("host_vm_kernel_ip_rule_policy_proven=false");
+                    println!("host_vm_ipv6_firewall_converged=false");
+                    println!("host_vm_ipv6_internet_reachable_proven=false");
                     println!("host_vm_network_kernel_observed={}", network.ipv4.is_some());
                     if let Some(ipv4) = &network.ipv4 {
                         println!("host_vm_network_ipv4_links={}", ipv4.links.len());
