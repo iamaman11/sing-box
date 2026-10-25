@@ -50,7 +50,11 @@ pub(super) fn print_git_readiness(host: &FleetHost) -> Result<(), &'static str> 
     if !matches!(signer, 0 | 32) || !matches!(receipt, 0 | 32) {
         return Err("HOST_VM_GIT_KEY_LENGTH_INVALID");
     }
-    let stage = git_stage(signer == 32, host.vm_first_use_credential.is_some(), receipt == 32);
+    let stage = git_stage(
+        signer == 32,
+        host.vm_first_use_credential.is_some(),
+        receipt == 32,
+    );
     println!("host_first_use_evidence_scope=GIT_ONLY_NOT_PHYSICAL");
     println!("host_first_use_phase={}", stage.phase);
     println!("host_first_use_owner={}", stage.owner);
@@ -68,8 +72,14 @@ mod tests {
 
     #[test]
     fn stages_never_confuse_git_with_signed_physical_proof() {
-        assert_eq!(git_stage(false, false, false).reason, "HOST_VM_GIT_WORKER_SIGNER_REQUIRED");
-        assert_eq!(git_stage(true, false, false).owner, "FIRST_USE_CREDENTIAL_OWNER");
+        assert_eq!(
+            git_stage(false, false, false).reason,
+            "HOST_VM_GIT_WORKER_SIGNER_REQUIRED"
+        );
+        assert_eq!(
+            git_stage(true, false, false).owner,
+            "FIRST_USE_CREDENTIAL_OWNER"
+        );
         assert_eq!(git_stage(true, true, false).phase, "PREPARED_GIT_ONLY");
         assert_eq!(git_stage(true, true, true).phase, "ENROLLED_GIT_ONLY");
         for signer in [false, true] {
