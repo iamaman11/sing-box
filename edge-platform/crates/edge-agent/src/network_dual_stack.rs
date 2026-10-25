@@ -6,6 +6,7 @@ use edge_shared_types::{
 };
 use prost::Message;
 use std::net::Ipv6Addr;
+use rtnetlink::{IpVersion, packet_route::rule::{RuleAttribute, RuleMessage}};
 
 fn normalize_dual_address(message: &AddressMessage) -> Option<FleetVmKernelAddress> {
     let family = match message.header.family {
@@ -130,6 +131,33 @@ fn normalize_dual_route(message: &RouteMessage) -> Option<FleetVmKernelRoute> {
     })
 }
 
+fn normalize_policy_rule(rule: &RuleMessage) -> Option<edge_shared_types::FleetVmKernelPolicyRule> {
+    let family = match rule.header.family {
+        AddressFamily::Inet => FleetVmIpFamily::V4,
+        AddressFamily::Inet6 => FleetVmIpFamily::V6,
+        _ => return None,
+    };
+    let table_id = rule.attributes.iter().find_map(|attribute| match attribute {
+        RuleAttribute::Table(id) => Some(*id),
+        _ => None,
+    }).unwrap_or(u32::from(rule.header.table));
+    let priority = rule.attributes.iter().find_map(|attribute| match attribute {
+        RuleAttribute::Priority(value) => Some(*value),
+        _ => None,
+    }).unwrap_or_default();
+    let fw_mark = rule.attributes.iter().find_map(|attribute| match attribute {
+        RuleAttribute::FwMark(value) => Some(*value),
+        _ => None,
+    });
+    Some(edge_shared_types::FleetVmKernelPolicyRule {
+        family: family as i32,
+        table_id,
+        priority,
+        fw_mark: fw_mark.unwrap_or_default(),
+        fw_mark_present: fw_mark.is_some(),
+    })
+}
+
 fn sorted_dual_stack(mut result: FleetVmDualStackNetwork) -> FleetVmDualStackNetwork {
     result
         .links
@@ -161,6 +189,10 @@ fn sorted_dual_stack(mut result: FleetVmDualStackNetwork) -> FleetVmDualStackNet
                 &b.gateway,
                 b.metric,
             ))
+    });
+    result.policy_rules.sort_by(|a, b| {
+        (a.family, a.priority, a.table_id, a.fw_mark)
+            .cmp(&(b.family, b.priority, b.table_id, b.fw_mark))
     });
     result
 }
@@ -227,6 +259,26 @@ pub(crate) async fn observe_dual_stack() -> Result<FleetVmDualStackNetwork, &'st
         }
     }
     result.ipv6_route_dump_complete = true;
+    let mut rules4 = handle.rule().get(IpVersion::V4).execute();
+    while let Some(rule) = rules4.try_next().await.map_err(|_| "IPV4_RULE_DUMP_FAILED")? {
+        if let Some(value) = normalize_policy_rule(&rule) {
+            result.policy_rules.push(value);
+            if result.policy_rules.len() > 256 {
+                return Err("IP_POLICY_RULE_COUNT_EXCEEDED");
+            }
+        }
+    }
+    result.ipv4_rule_dump_complete = true;
+    let mut rules6 = handle.rule().get(IpVersion::V6).execute();
+    while let Some(rule) = rules6.try_next().await.map_err(|_| "IPV6_RULE_DUMP_FAILED")? {
+        if let Some(value) = normalize_policy_rule(&rule) {
+            result.policy_rules.push(value);
+            if result.policy_rules.len() > 256 {
+                return Err("IP_POLICY_RULE_COUNT_EXCEEDED");
+            }
+        }
+    }
+    result.ipv6_rule_dump_complete = true;
     result = sorted_dual_stack(result);
     if result.encode_to_vec().len() > 24_576 {
         return Err("DUAL_STACK_REPORT_TOO_LARGE");
@@ -238,6 +290,21 @@ pub(crate) async fn observe_dual_stack() -> Result<FleetVmDualStackNetwork, &'st
 mod tests {
     use super::*;
     use rtnetlink::AddressMessageBuilder;
+
+    #[test]
+    fn policy_rule_table_and_mark_are_explicit() {
+        let mut rule = RuleMessage::default();
+        rule.header.family = AddressFamily::Inet6;
+        rule.attributes.push(RuleAttribute::Table(10001));
+        rule.attributes.push(RuleAttribute::Priority(1200));
+        rule.attributes.push(RuleAttribute::FwMark(80));
+        let result = normalize_policy_rule(&rule).unwrap();
+        assert_eq!(result.family, FleetVmIpFamily::V6 as i32);
+        assert_eq!(result.table_id, 10001);
+        assert_eq!(result.priority, 1200);
+        assert_eq!(result.fw_mark, 80);
+        assert!(result.fw_mark_present);
+    }
 
     #[test]
     fn ipv4_ipv6_address_and_route_dump_include_non_main_tables() {
