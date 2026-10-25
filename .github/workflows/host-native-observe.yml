@@ -290,7 +290,6 @@ jobs:
         shell: bash
         env:
           SOURCE_COMMENT_ID: ${{ inputs.source_comment_id }}
-      REPORT_COMMENT_ID: ${{ inputs.report_comment_id }}
         run: |
           set -euo pipefail
           # The runner is a transport ONLY. All authority comes from the
@@ -414,6 +413,7 @@ jobs:
       TARGET_MACHINE: ${{ inputs.machine_id }}
       TARGET_KIND: ${{ inputs.kind }}
       SOURCE_COMMENT_ID: ${{ inputs.source_comment_id }}
+      REPORT_COMMENT_ID: ${{ inputs.report_comment_id }}
       OBSERVED_RESULT: ${{ needs.observe.result }}
       COMMAND_BODY: ${{ inputs.command_body }}
       HOST_OPERATION: ${{ inputs.operation }}
