@@ -99,7 +99,7 @@ mod tests {
     use clap::Parser;
 
     #[test]
-    fn only_native_owned_readonly_and_signed_lifecycle_cli_is_parseable() {
+    fn native_owner_exposes_signed_unrestricted_admin_without_runner_shell() {
         for op in [
             "status",
             "verify",
