@@ -132,6 +132,19 @@ assert "NATIVE_ROOT_ENROLLED_AWAITING_ONE_TIME_CREDENTIAL_HANDOFF" in native_ini
 assert "EDGE_RUNNER_REGISTRATION_TOKEN" not in native_init.split("const NATIVE_FIRST_USE:",1)[1].split('"#;',1)[0]
 assert "ssh_authorized_keys:" not in native_init.split("const NATIVE_FIRST_USE:",1)[1].split('"#;',1)[0]
 assert "admit_first_use_bootstrap_transport().map_err(str::to_owned)?;" in provider
+
+# Provider payload omits sshkey_id entirely for the native bootstrap profile.
+native_provider=Path("edge-platform/crates/edge-provider-vultr/src/lib.rs").read_text(encoding="utf-8")
+lifecycle_service=Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_service.rs").read_text(encoding="utf-8")
+assert 'ssh_key_id: Option<&' in native_provider
+assert '#[serde(skip_serializing_if = "Vec::is_empty")]\n    sshkey_id:' in native_provider
+assert "singbox-native-first-use-v1" in lifecycle_service
+assert "HOST_NATIVE_CREATE_MUST_HAVE_NO_SSH_AND_PINNED_CLOUD_INIT" in lifecycle_service
+assert "--runner-only" in vm_installer
+assert "runner-only first-use refuses a previously registered owner" in vm_installer
+assert "RUNNER_REGISTERED_AWAITING_ROOT_ONLY_ACCESS_HANDOFF" in native_init
+assert "fn render_native_first_use_with_runner(" in native_init
+
 assert "attest_vm_first_use_credential_bytes(&bytes, generation, expected_sha256)?" in vm_proof
 assert "verify_vm_first_use_git_prerequisites(host)" in vm_proof
 assert "host_vm_create=NOT_AUTHORIZED" in vm_proof
