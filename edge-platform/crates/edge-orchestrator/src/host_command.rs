@@ -21,6 +21,9 @@ use std::io::{Read, Write};
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+#[path = "host_first_use_status.rs"]
+mod host_first_use_status;
+
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 struct AdminOperatorPayload {
@@ -365,6 +368,9 @@ pub(crate) fn run(
                 println!("host_desired_spec_path={}", host.desired_spec_path);
                 print_host_target(host)?;
                 if kind == ManagedHostKind::Vm {
+                    // Git readiness is explicitly NOT Worker activation,
+                    // provider CREATE or a signed native receipt.
+                    host_first_use_status::print_git_readiness(host).map_err(str::to_owned)?;
                     // Proven only by the canonical Git registry; these flags
                     // never claim Worker activation or installed root trust.
                     println!(
