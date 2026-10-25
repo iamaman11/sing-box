@@ -895,7 +895,16 @@ pub fn validate_vm_dual_stack_network(
     kernel: &crate::FleetVmDualStackNetwork,
 ) -> Result<(), &'static str> {
     use crate::FleetVmIpFamily as Family;
-    if !kernel.ipv4_route_dump_complete
+    if !kernel.ipv4_rule_dump_complete
+        || !kernel.ipv6_rule_dump_complete
+        || kernel.policy_rules.len() > 256
+        || kernel.policy_rules.iter().any(|rule| {
+            !matches!(
+                crate::FleetVmIpFamily::try_from(rule.family),
+                Ok(crate::FleetVmIpFamily::V4 | crate::FleetVmIpFamily::V6)
+            ) || (!rule.fw_mark_present && rule.fw_mark != 0)
+        })
+        || !kernel.ipv4_route_dump_complete
         || !kernel.ipv6_route_dump_complete
         || kernel.links.len() > 128
         || kernel.addresses.len() > 256
