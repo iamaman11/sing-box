@@ -129,7 +129,7 @@ assert 'HOST_FIRST_USE_PROVIDER_NOT_EXACT_CREATE_NO_REPLAY' in provider
 # Git BEGIN + absence/runner checks MUST precede issuing a short-lived token
 # and the one permitted provider CREATE. Signed native proof must precede
 # provider user-data scrub GET and public receipt PR finalization.
-firstuse_job=router.split("  host_first_use:\\n",1)[1].split("  host_resume_receipt:\\n",1)[0]
+firstuse_job=router.split("  host_first_use:",1)[1].split("  host_resume_receipt:",1)[0]
 assert "VULTR_SSH_PRIVATE_KEY" not in firstuse_job
 assert "EDGE_SSH_PRIVATE_KEY_PATH" not in firstuse_job
 assert "first-use-preflight" in firstuse_job
