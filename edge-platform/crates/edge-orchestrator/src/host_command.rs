@@ -531,14 +531,34 @@ pub(crate) fn run(
                             "host_vm_ipv6_route_dump_complete={}",
                             kernel.ipv6_route_dump_complete
                         );
-                        println!("host_vm_ipv4_rule_dump_complete={}", kernel.ipv4_rule_dump_complete);
-                        println!("host_vm_ipv6_rule_dump_complete={}", kernel.ipv6_rule_dump_complete);
-                        println!("host_vm_kernel_ipv4_policy_rules={}", kernel.policy_rules.iter().filter(|r| {
-                            r.family == edge_shared_types::FleetVmIpFamily::V4 as i32
-                        }).count());
-                        println!("host_vm_kernel_ipv6_policy_rules={}", kernel.policy_rules.iter().filter(|r| {
-                            r.family == edge_shared_types::FleetVmIpFamily::V6 as i32
-                        }).count());
+                        println!(
+                            "host_vm_ipv4_rule_dump_complete={}",
+                            kernel.ipv4_rule_dump_complete
+                        );
+                        println!(
+                            "host_vm_ipv6_rule_dump_complete={}",
+                            kernel.ipv6_rule_dump_complete
+                        );
+                        println!(
+                            "host_vm_kernel_ipv4_policy_rules={}",
+                            kernel
+                                .policy_rules
+                                .iter()
+                                .filter(|r| {
+                                    r.family == edge_shared_types::FleetVmIpFamily::V4 as i32
+                                })
+                                .count()
+                        );
+                        println!(
+                            "host_vm_kernel_ipv6_policy_rules={}",
+                            kernel
+                                .policy_rules
+                                .iter()
+                                .filter(|r| {
+                                    r.family == edge_shared_types::FleetVmIpFamily::V6 as i32
+                                })
+                                .count()
+                        );
                         println!("host_vm_kernel_interfaces={}", kernel.links.len());
                         println!(
                             "host_vm_kernel_ipv4_addresses={}",
