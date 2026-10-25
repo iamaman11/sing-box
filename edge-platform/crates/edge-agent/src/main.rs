@@ -4,7 +4,6 @@ mod error;
 mod host_diagnostics;
 mod host_enroll;
 mod host_native;
-mod host_admin_native;
 mod host_probe;
 mod line2_quality;
 mod local_dispatch;
