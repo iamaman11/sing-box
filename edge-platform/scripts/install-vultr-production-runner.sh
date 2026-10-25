@@ -62,11 +62,12 @@ Cmnd_Alias SING_BOX_RUNTIME_READ = ${LOCAL_OWNER} local status --fast, ${LOCAL_O
 Cmnd_Alias SING_BOX_NATIVE_HOST_TRANSACTION = ${LOCAL_OWNER} local host-apply
 Cmnd_Alias SING_BOX_NATIVE_HOST_TRUST = ${LOCAL_OWNER} local host-refresh
 Cmnd_Alias SING_BOX_NATIVE_ADMIN = ${LOCAL_OWNER} local host-admin
+Cmnd_Alias SING_BOX_NATIVE_BOOTSTRAP = ${LOCAL_OWNER} local host-bootstrap-proof, ${LOCAL_OWNER} local host-bootstrap-access
 # The runner may transport only the exact host operation to the installed
 # root Agent, which independently validates Worker signature, Git provenance,
 # machine identity, protected journal and physical readback. No generic sudo,
 # direct Docker, bundle/credential mutation, rollback or Mesh cleanup.
-${RUNNER_USER} ALL=(root) NOPASSWD: SING_BOX_RUNTIME_READ, SING_BOX_NATIVE_HOST_TRANSACTION, SING_BOX_NATIVE_HOST_TRUST, SING_BOX_NATIVE_ADMIN
+${RUNNER_USER} ALL=(root) NOPASSWD: SING_BOX_RUNTIME_READ, SING_BOX_NATIVE_HOST_TRANSACTION, SING_BOX_NATIVE_HOST_TRUST, SING_BOX_NATIVE_ADMIN, SING_BOX_NATIVE_BOOTSTRAP
 EOF
 chmod 0440 "${SUDOERS_FILE}"
 visudo -cf "${SUDOERS_FILE}" >/dev/null
