@@ -16,8 +16,9 @@ branch="${ORIGINAL_BRANCH}"
 pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=open&head=iamaman11:${branch}" |
   jq -er --arg branch "${branch}" '[.[] | select(.head.ref == $branch and .base.ref == "main" and .head.repo.full_name == "iamaman11/sing-box" and .draft == true)] | if length == 1 then .[0].number else empty end')"
 [[ "${pr}" =~ ^[1-9][0-9]*$ ]]
-bin="${RUNNER_TEMP}/host-release/edge-orchestrator-linux-amd64"
-fleet="${RUNNER_TEMP}/host-release/fleet-registry.pb"
+receipt_dir="${HOST_RECEIPT_RELEASE_DIR:-${RUNNER_TEMP}/host-release}"
+bin="${receipt_dir}/edge-orchestrator-linux-amd64"
+fleet="${receipt_dir}/fleet-registry.pb"
 candidate="${RUNNER_TEMP}/native-receipt-registration.pb"
 "${bin}" host --hosts-pb "${fleet}" \
   --hosts-sha256 "$(sha256sum "${fleet}" | cut -d' ' -f1)" \

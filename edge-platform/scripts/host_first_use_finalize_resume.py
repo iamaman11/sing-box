@@ -11,7 +11,7 @@ import sys
 from pathlib import Path
 from host_first_use_abort import (
     ACTOR, REPO, Blocked, exact_branch, github, pages, read_job_log, require,
-  )
+)
 
 RE_HEX = re.compile(r"^[0-9a-f]{40}$")
 RE_COMMENT = re.compile(r"^[1-9][0-9]{0,19}$")

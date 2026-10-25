@@ -1245,7 +1245,7 @@ jobs:
           fleet="${RUNNER_TEMP}/host-original-release/fleet-registry.pb"
           export EDGE_RELEASE_CONTEXT_PATH="${RUNNER_TEMP}/host-original-release/resolved.env"
           export SOURCE_COMMENT_ID="${ORIGINAL_COMMENT}"
-          export PUBLIC_ROOT_KEY_HEX
+          export HOST_RECEIPT_RELEASE_DIR="${RUNNER_TEMP}/host-original-release"
           bash "${RUNNER_TEMP}/host-recovery-register-receipt.sh"
 
   host_resume_receipt:
