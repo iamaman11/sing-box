@@ -15,6 +15,8 @@ from urllib.parse import urlparse
 from urllib.request import HTTPRedirectHandler, Request, build_opener
 
 TIMEOUT = 12
+# Truthful app identity: Cloudflare Error 1010 rejects urllib default signature.
+WORKER_DIAGNOSTIC_USER_AGENT = "sing-box-read-only-diagnostic"
 WORKER_BINDINGS = frozenset({
     "EDGE_HOST_SIGNING_PKCS8_BASE64",
     "EDGE_HOST_SIGNING_KEY_ID",
@@ -112,6 +114,7 @@ def observe_worker_host_get_route(worker, subdomain, client_id, client_secret):
     request = Request(url, headers={
         "CF-Access-Client-Id": client_id,
         "CF-Access-Client-Secret": client_secret,
+        "User-Agent": WORKER_DIAGNOSTIC_USER_AGENT,
     }, method="GET")
     try:
         with build_opener(DenyRedirect()).open(request, timeout=TIMEOUT) as response:
@@ -131,6 +134,11 @@ def observe_worker_host_get_route(worker, subdomain, client_id, client_secret):
             reason = error.headers.get("X-Host-Authorization-Reason", "")
             if scope == "READ_ONLY_NO_MUTATION" and reason in WORKER_ACCESS_DENIAL_REASONS:
                 return "GET_403_WORKER_" + reason
+            # A bounded error fragment distinguishes Cloudflare Edge 1010
+            # from an unproven generic 403; never publish its raw contents.
+            body = error.read(8192) if error.fp is not None else b""
+            if b"Error 1010" in body or b'cf-error-code">1010<' in body:
+                return "GET_403_CLOUDFLARE_EDGE_CLIENT_SIGNATURE_1010"
             return "GET_403_EDGE_OR_UNVERIFIED_WORKER_DENIED"
         if error.code == 401:
             return "GET_401_ACCESS_UNPROVEN"

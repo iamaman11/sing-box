@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 from unittest import TestCase, main
 from unittest.mock import patch
 from urllib.error import HTTPError, URLError
+from io import BytesIO
 
 import host_capability_preflight as capability
 import host_diagnostic_summary as summary
@@ -51,6 +52,7 @@ class TestHostCapabilitySelector(TestCase):
                 assert request.get_method() == "GET"
                 assert request.get_header("Cf-access-client-id") == "opaque-id"
                 assert request.get_header("Cf-access-client-secret") == "opaque-secret"
+                assert request.get_header("User-agent") == "sing-box-read-only-diagnostic"
                 if isinstance(self.code, BaseException):
                     raise self.code
                 return Response()
@@ -60,6 +62,13 @@ class TestHostCapabilitySelector(TestCase):
             (HTTPError(url, 404, "not found", {}, None),
              "GET_404_WORKER_OR_EDGE_NOT_POST_PROOF"),
             (HTTPError(url, 403, "forbidden", {}, None),
+             "GET_403_EDGE_OR_UNVERIFIED_WORKER_DENIED"),
+            (HTTPError(url, 403, "edge 1010", {}, BytesIO(
+                b'<span class="cf-error-code">1010</span>')),
+             "GET_403_CLOUDFLARE_EDGE_CLIENT_SIGNATURE_1010"),
+            (HTTPError(url, 403, "edge 1010", {}, BytesIO(b"<h1>Error 1010</h1>")),
+             "GET_403_CLOUDFLARE_EDGE_CLIENT_SIGNATURE_1010"),
+            (HTTPError(url, 403, "other", {}, BytesIO(b"Error 1020")),
              "GET_403_EDGE_OR_UNVERIFIED_WORKER_DENIED"),
             (HTTPError(url, 403, "forbidden", {
                 "X-Host-Authorization-Scope": "READ_ONLY_NO_MUTATION",
