@@ -4,7 +4,6 @@ pub use credential_delivery::{
     canonical_credential_worker_url, diagnose_canonical_host_access,
     fetch_canonical_credential_bundle, observe_canonical_credential_bundle,
     read_access_service_identity, request_canonical_host_authorization,
-    request_canonical_admin_authorization,
     verify_canonical_dummy_ab_slots, verify_initial_selected_dummy_slot,
     write_access_service_identity,
 };
