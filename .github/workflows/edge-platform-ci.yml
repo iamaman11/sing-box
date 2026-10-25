@@ -941,7 +941,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             edge-platform/target
-          key: cargo-windows-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-${{ github.event.pull_request.head.sha }}
+          key: cargo-windows-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-${{ needs.dependencies.outputs.windows_input_sha256 }}
           restore-keys: |
             cargo-windows-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-
 
@@ -1213,7 +1213,7 @@ jobs:
             ~/.cargo/registry
             ~/.cargo/git
             edge-platform/target
-          key: cargo-linux-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-${{ github.event.pull_request.head.sha }}
+          key: cargo-linux-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-${{ needs.dependencies.outputs.runtime_input_sha256 }}
           restore-keys: |
             cargo-linux-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-
 
