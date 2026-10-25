@@ -218,7 +218,13 @@ pub(crate) fn run(
             };
             edge_shared_types::host_diagnostics::validate_diagnostic_request(&request)
                 .map_err(str::to_owned)?;
-            (HostCommand::Status { machine_id: Some(machine_id), deep: true }, Some(request))
+            (
+                HostCommand::Status {
+                    machine_id: Some(machine_id),
+                    deep: true,
+                },
+                Some(request),
+            )
         }
         other => (other, None),
     };
