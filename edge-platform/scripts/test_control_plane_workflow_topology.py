@@ -24,9 +24,35 @@ assert "Refresh protected Git main release" in native
 capability = router.split("  host_capabilities:", 1)[1].split("  host_first_use:", 1)[0]
 assert "issues/26/comments" not in capability, "historical journal must not gate read-only status"
 assert "sing-box-credential-existing-join-begin" not in capability
-assert "vm-credential-proof" not in capability
+assert 'vm-credential-proof "${TARGET_MACHINE}"' in capability
+assert "host_vm_worker_live_source=GIT_PIN_EXACT_ACCESS_GET_PROVEN" in capability
+assert "host_vm_worker_live_source=BLOCKED" in capability
+assert "host_worker_mutations=0" in capability
+assert "host_provider_mutations=0" in capability
+assert "host_diagnostic_summary.py" in capability
+assert "report_comment_id: ${{ needs.host_report.outputs.comment_id }}" in router
+assert "report_comment_id:" in native
+assert "Native observation — same operation, independent runner" in native
+assert "group: host-deep-report-${{ github.event.comment.id }}" in capability
+assert "group: host-deep-report-${{ inputs.source_comment_id }}" in native
+assert "cancel-in-progress: false" in capability
+assert "cancel-in-progress: false" in native
+assert "issues/comments/${REPORT_COMMENT_ID}" in native
+assert "HOST_DIAGNOSTIC=CORRELATED_ONE_REPORT_NO_MUTATION" in capability
+assert "RELEASE_SET_SHA256:" in capability
+assert "REPORT_COMMENT_ID:" in capability
+assert "issues/comments/${REPORT_COMMENT_ID}" in capability
+assert "native-sealed-access" not in capability
+assert "  host_capabilities:" in router
 assert "host_first_use:" in router and "host_resume_receipt:" in router
 assert "  workflow_call:" in native and "  workflow_call:" not in router
+# One shared Git readback is passed to existing protected hosted capability
+# checks; neither a second runner nor a second desired source is added.
+assert "diagnostic_git_phase:" in router
+assert "diagnostic_git_reason:" in router
+assert "host_first_use_last_proven_step=" not in router
+assert 'host_first_use_${field}=' in router
+assert "diagnostic_release_set_sha256" in router
 # A deleted/offline VM can keep its self-hosted job queued forever.
 # VM-native serialization must be PER MACHINE, never the shared fleet lock
 # that also protects the hosted Worker authorizer and Vultr first-use owner.
@@ -143,6 +169,19 @@ assert "HOST_FIRST_USE_DURABLE_BEGIN_RECORDED" in firstuse_job
 assert "HOST_FIRST_USE_CREATE_ONCE_NO_AUTOMATIC_REPLAY" in firstuse_job
 assert "HOST_FIRST_USE_NATIVE_HANDOFF_NOT_ACCEPTED_NO_CREATE" not in firstuse_job
 assert "edge-agent.service" not in Path("win/vultr-waw/cloud-init.yaml").read_text(encoding="utf-8")
+# One selected Git pointer (never shell-copied generation/digest) is
+# verified by the existing hidden Rust Worker Access GET during deep status.
+# No user-specified bundle identity or worker mutation is admitted.
+capabilities=router.split("  host_capabilities:",1)[1].split("\n  host_",1)[0]
+assert 'vm-credential-proof "${TARGET_MACHINE}"' in capabilities
+assert 'host_vm_worker_live_source=GIT_PIN_EXACT_ACCESS_GET_PROVEN' in capabilities
+assert 'host_vm_worker_live_source=BLOCKED' in capabilities
+assert 'host_worker_mutations=0' in capabilities
+assert 'HOST_ORIGINAL_COMMAND:' in capabilities
+assert 'EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET:' in capabilities
+assert 'first-use "' not in capabilities
+
+
 
 # Rust native cloud-init is the only accepted CREATE renderer; the hosted
 # flow must prove the independent one-use receipt and user-data scrub.

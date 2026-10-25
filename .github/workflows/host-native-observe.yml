@@ -24,6 +24,10 @@ on:
       source_comment_id:
         required: true
         type: string
+      report_comment_id:
+        required: false
+        type: string
+        default: ''
 
 permissions: {}
 
@@ -399,6 +403,11 @@ jobs:
     needs: observe
     if: always()
     runs-on: ubuntu-24.04
+    # The hosted GET-only diagnosis and this native readback update the
+    # same comment. GitHub-native concurrency prevents lost PATCH updates.
+    concurrency:
+      group: host-deep-report-${{ inputs.source_comment_id }}
+      cancel-in-progress: false
     timeout-minutes: 3
     permissions:
       contents: read
@@ -409,6 +418,7 @@ jobs:
       TARGET_MACHINE: ${{ inputs.machine_id }}
       TARGET_KIND: ${{ inputs.kind }}
       SOURCE_COMMENT_ID: ${{ inputs.source_comment_id }}
+      REPORT_COMMENT_ID: ${{ inputs.report_comment_id }}
       OBSERVED_RESULT: ${{ needs.observe.result }}
       COMMAND_BODY: ${{ inputs.command_body }}
       HOST_OPERATION: ${{ inputs.operation }}
@@ -637,7 +647,19 @@ jobs:
               body="${body}$(printf '\nVM containers: UNPROVEN — no accepted installed-owner resource report.\n')"
             fi
           fi
-          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/1/comments" -f "body=${body}" >/dev/null
+          if [[ "${COMMAND_BODY}" == "/host status ${TARGET_MACHINE} --deep" &&
+                "${REPORT_COMMENT_ID}" =~ ^[1-9][0-9]{0,19}$ ]]; then
+            # Reuse the original correlation, not a second diagnostics
+            # thread. The native payload stays explicitly UNAUTHENTICATED
+            # unless the existing Rust verifier proves a signed receipt.
+            original="$(gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${REPORT_COMMENT_ID}" --jq '.body')"
+            (( ${#original} > 0 && ${#original} < 20000 ))
+            appendix="$(printf '\n\n### Native observation — same operation, independent runner\n\n%s\n' "${body}")"
+            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${REPORT_COMMENT_ID}" \
+              -f "body=${original}${appendix}" >/dev/null
+          else
+            gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/1/comments" -f "body=${body}" >/dev/null
+          fi
           if [[ "${TYPED_OUTCOME}" = failure ]]; then
             echo 'HOST_TYPED_READBACK_REJECTED' >&2
             exit 1

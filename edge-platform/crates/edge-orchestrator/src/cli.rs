@@ -188,10 +188,12 @@ pub(crate) enum HostCommand {
     #[command(hide = true)]
     VmCredentialProof {
         machine_id: String,
+        /// Optional explicit candidate for a first-read; otherwise the
+        /// exact public pointer comes from the accepted Git host registry.
         #[arg(long)]
-        generation: u64,
+        generation: Option<u64>,
         #[arg(long)]
-        bundle_sha256: String,
+        bundle_sha256: Option<String>,
     },
     /// Internal continuation of one authenticated /host apply: update only
     /// the existing VM Worker code, inheriting all existing secret bindings.

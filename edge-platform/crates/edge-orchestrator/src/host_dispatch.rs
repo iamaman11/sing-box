@@ -29,11 +29,26 @@ pub(super) async fn run(
             generation,
             bundle_sha256,
         } => {
+            // Normal GET-only deep status uses the single Git-protected
+            // pointer. Explicit values are retained solely for a candidate
+            // read before Git pin; neither path authorizes CREATE.
+            let (generation, sha256) = match (generation, bundle_sha256) {
+                (None, None) => {
+                    let host = release_context.verified_vm_first_use_host(&machine_id)?;
+                    let pin = host
+                        .vm_first_use_credential
+                        .as_ref()
+                        .ok_or("HOST_VM_FIRST_USE_CREDENTIAL_GIT_REQUIRED")?;
+                    (pin.generation, pin.bundle_sha256.clone())
+                }
+                (Some(generation), Some(sha256)) => (generation, sha256),
+                _ => return Err("HOST_VM_CREDENTIAL_PROOF_CANDIDATE_PAIR_REQUIRED".into()),
+            };
             cloudflare_credential_plane_command::host_vm_credential_proof(
                 &machine_id,
                 release_context,
                 generation,
-                &bundle_sha256,
+                &sha256,
             )
             .await
         }

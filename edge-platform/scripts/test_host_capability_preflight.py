@@ -9,6 +9,7 @@ from unittest.mock import patch
 from urllib.error import HTTPError, URLError
 
 import host_capability_preflight as capability
+import host_diagnostic_summary as summary
 
 
 class TestHostCapabilitySelector(TestCase):
@@ -181,6 +182,107 @@ class TestHostCapabilitySelector(TestCase):
                 self.assertFalse(capability.target_machine(str(app), "acceptance-2"))
             finally:
                 os.chdir(previous)
+
+
+class TestUnifiedHostDiagnosis(TestCase):
+    """Physical acceptance must never be inferred from a Git or GET probe."""
+
+    def setUp(self):
+        self.git = {
+            "phase": "PREPARED_GIT_ONLY",
+            "owner": "VULTR_FIRST_USE_OWNER",
+            "reason": "PROVIDER_AND_WORKER_PREFLIGHT_REQUIRED",
+            "last_proven_step": "GIT_FIRST_USE_DIGEST_PINNED_NOT_WORKER_ATTESTED",
+            "next_action": "VERIFY_WORKER_ACCESS_AND_PROVIDER_PREFLIGHT",
+        }
+        self.bundle_status = "GIT_PIN_EXACT_ACCESS_GET_PROVEN"
+        self.observed = {
+            "scope": "READ_ONLY_PROTECTED_ENVIRONMENT",
+            "machine_id": "application-acceptance-5",
+            "provider_mutations": 0, "worker_mutations": 0, "github_mutations": 0,
+            "vultr_machine": "LABEL_ABSENT_SINGLE_PAGE_NOT_CREATE_AUTHORITY",
+            "worker_host_route_get": "GET_403_EDGE_OR_UNVERIFIED_WORKER_DENIED",
+            "worker_active_deployment": "SINGLE_VERSION_100_PERCENT_SOURCE_UNVERIFIED",
+            "worker_host_signing_bindings": "PRESENT_NAMES_ONLY_NOT_SIGNING_PROOF",
+            "github_runner_state": "RUNNER_UNREGISTERED",
+        }
+
+    def diagnose(self):
+        return summary.fuse(
+            self.observed, self.git, machine_id="application-acceptance-5",
+            operation_id="issue1-comment-6390000111",
+            source_digest="a" * 40, release_set_sha256="b" * 64,
+            worker_bundle_status=self.bundle_status)
+
+    def test_unproven_worker_denial_is_addressable_and_no_replay(self):
+        output = self.diagnose()
+        self.assertEqual(output["phase"], "WORKER_ACCESS")
+        self.assertEqual(output["owner"], "CLOUDFLARE_ACCESS")
+        self.assertEqual(output["reason"], "GET_403_EDGE_OR_UNVERIFIED_WORKER_DENIED")
+        self.assertEqual(output["last_proven_step"], "GIT_FIRST_USE_REFERENCE_ONLY")
+        self.assertFalse(output["physical_accepted"])
+        self.assertFalse(output["replay_allowed"])
+        self.assertEqual(output["sources"]["root_agent"],
+                         "UNPROVEN_NO_SIGNED_NATIVE_OBSERVATION")
+        self.assertNotIn("CF_ACCESS", json.dumps(output))
+
+    def test_git_only_blocked_has_priority_over_unverified_get(self):
+        self.git.update(phase="BLOCKED", owner="FIRST_USE_CREDENTIAL_OWNER",
+                        reason="HOST_VM_FIRST_USE_CREDENTIAL_GIT_REQUIRED")
+        output = self.diagnose()
+        self.assertEqual(output["phase"], "GIT_READINESS")
+        self.assertEqual(output["reason"], "HOST_VM_FIRST_USE_CREDENTIAL_GIT_REQUIRED")
+
+    def test_absent_vm_is_not_success_or_create_admission(self):
+        self.observed["worker_host_route_get"] = "GET_204_WORKER_JWT_VERIFIED_NOT_SIGNING_PROOF"
+        output = self.diagnose()
+        self.assertEqual(output["phase"], "BEFORE_VM_CREATE")
+        self.assertEqual(output["status"], "UNPROVEN")
+        self.assertFalse(output["mutation_authorized"])
+        self.assertFalse(output["physical_accepted"])
+        self.assertEqual(output["reason"], "HOST_VM_ABSENT_FIRST_USE_NOT_EXECUTED")
+
+    def test_runner_online_does_not_attest_native_owner(self):
+        self.observed["worker_host_route_get"] = "GET_204_WORKER_JWT_VERIFIED_NOT_SIGNING_PROOF"
+        self.observed["vultr_machine"] = "EXACT_LABEL_PRESENT_NO_CREATE"
+        self.observed["github_runner_state"] = "RUNNER_ONLINE_IDLE_NOT_NATIVE_PROOF"
+        output = self.diagnose()
+        self.assertEqual(output["phase"], "NATIVE_OBSERVATION")
+        self.assertEqual(output["status"], "UNPROVEN")
+        self.assertFalse(output["physical_accepted"])
+        self.assertEqual(output["sources"]["signed_receipt"],
+                         "UNPROVEN_GIT_PIN_IS_NOT_PHYSICAL_RECEIPT")
+
+    def test_offline_or_unknown_runner_never_authorizes_recovery(self):
+        self.observed["worker_host_route_get"] = "GET_204_WORKER_JWT_VERIFIED_NOT_SIGNING_PROOF"
+        self.observed["vultr_machine"] = "EXACT_LABEL_PRESENT_NO_CREATE"
+        for runner in ("RUNNER_OFFLINE", "UNPROVEN_RUNNER_API", "RUNNER_UNREGISTERED"):
+            self.observed["github_runner_state"] = runner
+            result = self.diagnose()
+            self.assertEqual(result["phase"], "BOOTSTRAP_OR_RUNNER")
+            self.assertFalse(result["replay_allowed"])
+            self.assertEqual(result["sources"]["cloud_init"],
+                             "UNPROVEN_NO_NATIVE_OR_PROVIDER_BOOT_JOURNAL")
+
+    def test_worker_access_alone_is_not_exact_bundle_proof(self):
+        self.observed["worker_host_route_get"] = "GET_204_WORKER_JWT_VERIFIED_NOT_SIGNING_PROOF"
+        self.bundle_status = "BLOCKED"
+        result = self.diagnose()
+        self.assertEqual(result["phase"], "WORKER_SOURCE")
+        self.assertEqual(result["owner"], "CLOUDFLARE_WORKER_SOURCE")
+        self.assertFalse(result["mutation_authorized"])
+
+    def test_provider_unknown_and_invalid_source_fails_closed(self):
+        self.observed["worker_host_route_get"] = "GET_204_WORKER_JWT_VERIFIED_NOT_SIGNING_PROOF"
+        self.observed["vultr_machine"] = "UNPROVEN_PAGINATED_OR_MISSING_META"
+        self.assertEqual(self.diagnose()["phase"], "VULTR_INVENTORY")
+        self.observed["provider_mutations"] = 1
+        with self.assertRaises(ValueError):
+            self.diagnose()
+        self.observed["provider_mutations"] = 0
+        self.observed["machine_id"] = "wrong-machine"
+        with self.assertRaises(ValueError):
+            self.diagnose()
 
 
 if __name__ == "__main__":
