@@ -209,10 +209,16 @@ pub(crate) fn run(
     }
     let desired = decode_host_registry(&bytes)?;
     let (command, diagnostic, administrative) = match command {
-        HostCommand::Admin { machine_id, argv_base64 } => {
+        HostCommand::Admin {
+            machine_id,
+            argv_base64,
+        } => {
             let comment = source_comment_id.ok_or("HOST_ADMIN_SOURCE_COMMENT_REQUIRED")?;
-            if argv_base64.is_empty() || argv_base64.len() > 24000
-                || !argv_base64.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+            if argv_base64.is_empty()
+                || argv_base64.len() > 24000
+                || !argv_base64
+                    .bytes()
+                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
             {
                 return Err("HOST_ADMIN_ARGUMENT_ENCODING_INVALID".into());
             }
@@ -228,16 +234,27 @@ pub(crate) fn run(
                 source_comment_id: comment,
                 argv,
                 release_set_sha256: exact_hex_sha256(&release.release().release_set_sha256)?,
-                requested_at_unix: SystemTime::now().duration_since(UNIX_EPOCH)
-                    .map_err(|_| "HOST_ADMIN_CLOCK_UNAVAILABLE")?.as_secs(),
-                comment_sha256: ring::digest::digest(&SHA256, body.as_bytes()).as_ref().to_vec(),
+                requested_at_unix: SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|_| "HOST_ADMIN_CLOCK_UNAVAILABLE")?
+                    .as_secs(),
+                comment_sha256: ring::digest::digest(&SHA256, body.as_bytes())
+                    .as_ref()
+                    .to_vec(),
                 working_directory: String::new(),
                 environment: Vec::new(),
                 stdin_bytes: Vec::new(),
                 timeout_seconds: 300,
             };
             edge_shared_types::host_admin::validate(&request).map_err(str::to_owned)?;
-            (HostCommand::Status {machine_id:Some(machine_id),deep:true},None,Some(request))
+            (
+                HostCommand::Status {
+                    machine_id: Some(machine_id),
+                    deep: true,
+                },
+                None,
+                Some(request),
+            )
         }
         HostCommand::Diagnose { machine_id, argv } => {
             let source_id = source_comment_id.ok_or("HOST_DIAG_SOURCE_COMMENT_MISSING")?;
@@ -287,8 +304,11 @@ pub(crate) fn run(
             }
             if let Some(ref request) = administrative {
                 let target = intent_output.ok_or("HOST_ADMIN_ARTIFACT_PATH_MISSING")?;
-                let mut out = OpenOptions::new().write(true).create_new(true)
-                    .open(target).map_err(|_| "HOST_ADMIN_ARTIFACT_EXISTS")?;
+                let mut out = OpenOptions::new()
+                    .write(true)
+                    .create_new(true)
+                    .open(target)
+                    .map_err(|_| "HOST_ADMIN_ARTIFACT_EXISTS")?;
                 out.write_all(&request.encode_to_vec())
                     .and_then(|_| out.sync_all())
                     .map_err(|_| "HOST_ADMIN_ARTIFACT_WRITE_FAILED")?;
@@ -317,7 +337,8 @@ pub(crate) fn run(
             for host in selected {
                 let kind = ManagedHostKind::try_from(host.kind)
                     .map_err(|_| "HOST_KIND_INVALID".to_owned())?;
-                if (diagnostic.is_some() || administrative.is_some()) && kind != ManagedHostKind::Vm {
+                if (diagnostic.is_some() || administrative.is_some()) && kind != ManagedHostKind::Vm
+                {
                     return Err("HOST_DIAG_VM_ONLY_UNTIL_WINDOWS_NATIVE_ACCEPTANCE".to_owned());
                 }
                 let owner = match host.owner.as_ref() {
