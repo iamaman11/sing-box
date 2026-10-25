@@ -2047,6 +2047,35 @@ fn protected_signer_path(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// The VM Worker code upgrade already requires eight bindings: two fixed
+/// A/B slots, five Host signer settings, and one GitHub App installer key.
+/// Never regress to the legacy two-only guard after the exact upgrade.
+/// Protect all eight names AND the active accepted module bytes before any
+/// new signer key is generated or any secret rotation is attempted.
+fn verify_exact_vm_signer_source(
+    desired: &ProductionCredentialPlaneOwnership,
+    before: &CredentialPlaneObservation,
+    release_module_sha256: &str,
+    active_module_bytes: &[u8],
+) -> Result<(), String> {
+    let vm = projection_desired(desired, "vm")?;
+    let source = projection_observation(before, "vm")?;
+    if projection_delivery_state(desired, &vm, before)? != ProjectionDeliveryState::FixedAb
+        || source.worker_secret_bindings.len() != 8
+        || source.worker_binding_count != Some(8)
+        || source.worker_latest_version_id.as_deref()
+            != source.worker_active_version_ids.first().map(String::as_str)
+        || source.worker_active_version_ids.len() != 1
+    {
+        return Err("HOST_SIGNER_VM_WORKER_NOT_EXACT_EIGHT_ACTIVE".to_owned());
+    }
+    require_exact_secret_bindings(&vm.worker_name, "vm", &source.worker_secret_bindings)?;
+    if sha256_hex(active_module_bytes) != release_module_sha256 {
+        return Err("HOST_SIGNER_VM_WORKER_SOURCE_NOT_ACCEPTED_RELEASE".to_owned());
+    }
+    Ok(())
+}
+
 async fn checked_host_signer_vm(
     machine_id: &str,
     release: &edge_orchestrator::OrchestrationContext,
@@ -2068,17 +2097,14 @@ async fn checked_host_signer_vm(
     let read = required_env("CLOUDFLARE_CONTROL_TOKEN")?;
     let before = observe(&read, desired).await?;
     validate_access_boundary(desired, &before)?;
-    let vm = projection_desired(desired, "vm")?;
-    let source = projection_observation(&before, "vm")?;
-    if projection_delivery_state(desired, &vm, &before)? != ProjectionDeliveryState::FixedAb
-        || source.worker_secret_bindings.len() != 2
-        || source.worker_binding_count != Some(2)
-        || source.worker_latest_version_id.as_deref()
-            != source.worker_active_version_ids.first().map(String::as_str)
-        || source.worker_active_version_ids.len() != 1
-    {
-        return Err("HOST_SIGNER_VM_WORKER_NOT_EXACT_AB_ACTIVE".to_owned());
-    }
+    let accepted = accepted_vm_worker_source(release)?;
+    let module = cloudflare::get_worker_active_module_bytes(
+        &read,
+        &desired.target_account_id,
+        &desired.vm_worker_name,
+    )
+    .await?;
+    verify_exact_vm_signer_source(desired, &before, &accepted.desired, &module)?;
     Ok((production, before))
 }
 
@@ -2202,7 +2228,8 @@ pub(crate) async fn host_vm_signer_commit(
     let private_b64 = encode_worker_host_signer_pkcs8(&bytes);
     let actor = "44100369";
     // Five fixed secret names. Cloudflare merge-patches the currently
-    // accepted version, preserving opaque A/B values; never POST credentials.
+    // accepted EIGHT-binding version: preserve opaque A/B and GitHub App,
+    // replacing only this VM's five Host signer keys. Never POST credentials.
     let bindings = [
         ("EDGE_HOST_SIGNING_PKCS8_BASE64", private_b64.as_str()),
         ("EDGE_HOST_SIGNING_KEY_ID", key_id.as_str()),
@@ -2227,8 +2254,8 @@ pub(crate) async fn host_vm_signer_commit(
     if projection_observation(&before, "windows")?
         != projection_observation(&after_patch, "windows")?
         || vm_after.worker_latest_version_id.as_deref() != Some(version.as_str())
-        || vm_after.worker_secret_bindings.len() != 7
-        || vm_after.worker_binding_count != Some(7)
+        || vm_after.worker_secret_bindings.len() != 8
+        || vm_after.worker_binding_count != Some(8)
     {
         return Err("HOST_SIGNER_POST_WRITE_DRIFT_NO_REPLAY".to_owned());
     }
@@ -2255,7 +2282,7 @@ pub(crate) async fn host_vm_signer_commit(
         != projection_observation(&final_read, "windows")?
         || final_vm.worker_latest_version_id.as_deref() != Some(version.as_str())
         || final_vm.worker_active_version_ids != vec![version.clone()]
-        || final_vm.worker_binding_count != Some(7)
+        || final_vm.worker_binding_count != Some(8)
         || projection_delivery_state(desired, &projection_desired(desired, "vm")?, &final_read)?
             != ProjectionDeliveryState::FixedAb
     {
