@@ -584,12 +584,13 @@ fn validate_create_prerequisites(
         ));
     }
     match machine.bootstrap_profile.as_str() {
-        "singbox-host-v1" | "singbox-host-v2"
-            if !prerequisites.ssh_key_id.trim().is_empty() => {}
+        "singbox-host-v1" | "singbox-host-v2" if !prerequisites.ssh_key_id.trim().is_empty() => {}
         "singbox-native-first-use-v1"
             if prerequisites.ssh_key_id.is_empty()
                 && prerequisites.cloud_init.starts_with("#cloud-config\n")
-                && prerequisites.cloud_init.contains("singbox-native-first-use.sh")
+                && prerequisites
+                    .cloud_init
+                    .contains("singbox-native-first-use.sh")
                 && prerequisites.cloud_init.contains("ssh_pwauth: false")
                 && prerequisites.cloud_init.contains("disable_root: true")
                 && !prerequisites.cloud_init.contains("ssh_authorized_keys:") => {}
