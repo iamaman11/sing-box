@@ -1023,7 +1023,6 @@ pub(crate) fn run(
         }
         HostCommand::BootstrapSeal { machine_id, proof_path, output_path } => {
             use edge_shared_types::{FleetVmBootstrapKeyProof, vm_bootstrap};
-            use std::os::unix::fs::OpenOptionsExt;
             let selected = desired.hosts.iter()
                 .find(|host| host.machine_id == machine_id
                     && host.kind == ManagedHostKind::Vm as i32)
@@ -1052,7 +1051,7 @@ pub(crate) fn run(
             // pass it as an argv, log, workflow artifact, runner env or Git
             // field. Only the AEAD ciphertext leaves this trusted process.
             let mut identity = Vec::new();
-            io::stdin().take(1025).read_to_end(&mut identity)
+            std::io::stdin().take(1025).read_to_end(&mut identity)
                 .map_err(|_| "BOOTSTRAP_ACCESS_INPUT_UNAVAILABLE")?;
             if identity.is_empty() || identity.len() > 1024 {
                 return Err("BOOTSTRAP_ACCESS_INPUT_INVALID".into());
@@ -1060,9 +1059,14 @@ pub(crate) fn run(
             let sealed = vm_bootstrap::seal_for_native_root(&proof, &identity)
                 .map_err(str::to_owned)?;
             let bytes = sealed.encode_to_vec();
-            let mut file = std::fs::OpenOptions::new()
-                .write(true).create_new(true).mode(0o600)
-                .open(&output_path)
+            let mut options = std::fs::OpenOptions::new();
+            options.write(true).create_new(true);
+            #[cfg(unix)]
+            {
+                use std::os::unix::fs::OpenOptionsExt;
+                options.mode(0o600);
+            }
+            let mut file = options.open(&output_path)
                 .map_err(|_| "BOOTSTRAP_ENVELOPE_OUTPUT_EXISTS_OR_UNAVAILABLE")?;
             file.write_all(&bytes).and_then(|_| file.sync_all())
                 .map_err(|_| "BOOTSTRAP_ENVELOPE_OUTPUT_UNCERTAIN")?;
