@@ -117,6 +117,21 @@ assert '"bootstrap_transport": "SSH_RETIRED_CLOUD_INIT_REQUIRED"' in capability_
 assert 'admit_first_use_bootstrap_transport().map_err(str::to_owned)?;' in provider
 assert provider.count("admit_first_use_bootstrap_transport().map_err(str::to_owned)?;") == 2
 assert 'HOST_FIRST_USE_CLOUD_INIT_ENROLLMENT_NOT_IMPLEMENTED_NO_CREATE' in provider
+
+# The SSH-free native bootstrap is a verified, secret-free component of the
+# existing Rust Vultr owner. It must not be used to bypass the first-use gate
+# until the one-shot Worker Access/runner handoff is implemented.
+bootstrap=Path("edge-platform/crates/edge-orchestrator/src/vultr_host_bootstrap.rs").read_text(encoding="utf-8")
+native_init=Path("edge-platform/crates/edge-orchestrator/src/vultr_native_cloud_init.rs").read_text(encoding="utf-8")
+assert '#[path = "vultr_native_cloud_init.rs"]' in bootstrap
+assert "render_native_first_use_cloud_init" in bootstrap
+assert "sha256sum --check --status" in native_init
+assert "local host-enroll" in native_init
+assert "HOST_CLOUD_INIT_NATIVE_OWNER_ALREADY_PRESENT_NO_REPLAY" in native_init
+assert "NATIVE_ROOT_ENROLLED_AWAITING_ONE_TIME_CREDENTIAL_HANDOFF" in native_init
+assert "EDGE_RUNNER_REGISTRATION_TOKEN" not in native_init.split("const NATIVE_FIRST_USE:",1)[1].split('"#;',1)[0]
+assert "ssh_authorized_keys:" not in native_init.split("const NATIVE_FIRST_USE:",1)[1].split('"#;',1)[0]
+assert "admit_first_use_bootstrap_transport().map_err(str::to_owned)?;" in provider
 assert "attest_vm_first_use_credential_bytes(&bytes, generation, expected_sha256)?" in vm_proof
 assert "verify_vm_first_use_git_prerequisites(host)" in vm_proof
 assert "host_vm_create=NOT_AUTHORIZED" in vm_proof
