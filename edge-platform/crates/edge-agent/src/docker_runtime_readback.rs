@@ -108,7 +108,14 @@ pub(super) async fn observe_native_vm_network_readback() -> edge_shared_types::F
         .filter(|value| value.encode_to_vec().len() <= 24_576);
     let dns = observe_native_dns_configuration().ok();
     let nft = observe_native_nft_ruleset().await;
+    let (dual_stack, dual_stack_error_code) =
+        match super::super::network_observation::observe_dual_stack().await {
+            Ok(value) => (Some(value), String::new()),
+            Err(code) => (None, code.to_owned()),
+        };
     edge_shared_types::FleetVmNetworkReadback {
+        dual_stack,
+        dual_stack_error_code,
         ipv4,
         dns_nameservers: dns.clone().unwrap_or_default(),
         dns_configuration_observed: dns.is_some(),
