@@ -353,10 +353,10 @@ mod tests {
         assert!(rendered.contains("sha256sum --check --status"));
         assert!(!rendered.contains("edge-agent.service"));
         assert!(!rendered.contains("acceptance-serve"));
-        assert_eq!(rendered.matches("write_files:\\n").count(), 1);
-        assert_eq!(rendered.matches("runcmd:\\n").count(), 1);
+        assert_eq!(rendered.matches("write_files:\n").count(), 1);
+        assert_eq!(rendered.matches("runcmd:\n").count(), 1);
         assert!(rendered.ends_with(
-            "  - [bash, -lc, \\"/usr/local/sbin/singbox-native-first-use.sh\\"]\\n"
+            "  - [bash, -lc, \"/usr/local/sbin/singbox-native-first-use.sh\"]\n"
         ));
     }
 
