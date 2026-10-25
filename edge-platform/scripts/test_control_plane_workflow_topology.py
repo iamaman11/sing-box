@@ -123,7 +123,8 @@ assert 'singbox-native-first-use-v1' in provider
 assert 'render_native_first_use_with_runner(' in provider
 assert 'host_first_use_scrub(' in provider
 assert provider.count("HOST_FIRST_USE_PROTECTED_GITHUB_DURABLE_BEGIN_REQUIRED") == 1
-assert 'HOST_FIRST_USE_CLOUD_INIT_ENROLLMENT_NOT_IMPLEMENTED_NO_CREATE' in provider
+assert 'host_first_use_provider_preflight(machine_id, context).await?' in provider
+assert 'HOST_FIRST_USE_PROVIDER_NOT_EXACT_CREATE_NO_REPLAY' in provider
 # Only a read-only GH-hosted first-use preflight is reachable. The old SSH
 # installer, provider lease, registration-token POST and receipt draft
 # creation cannot silently reappear when a Rust gate is removed.
