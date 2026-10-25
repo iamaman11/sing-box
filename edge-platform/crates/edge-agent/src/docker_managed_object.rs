@@ -73,13 +73,20 @@ fn resource_path_expected(
                     && !image.is_empty()
                     && !image.contains("..")
                     && !image.contains("//")
-                    && image.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit()
-                        || matches!(b, b'.' | b'-' | b'_' | b'/'))
+                    && image.bytes().all(|b| {
+                        b.is_ascii_lowercase()
+                            || b.is_ascii_digit()
+                            || matches!(b, b'.' | b'-' | b'_' | b'/')
+                    })
                     && digest.len() == 64
-                    && digest.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
-                    && (spec.network_name.is_empty() ||
-                        (spec.network_name.starts_with(&format!("sb-{}-", host.machine_id))
-                        && spec.network_name.len() <= 112))
+                    && digest
+                        .bytes()
+                        .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    && (spec.network_name.is_empty()
+                        || (spec
+                            .network_name
+                            .starts_with(&format!("sb-{}-", host.machine_id))
+                            && spec.network_name.len() <= 112))
             }
             Ok(Kind::LocalVolume | Kind::BridgeNetwork) => {
                 spec.image_ref.is_empty()
@@ -180,9 +187,13 @@ async fn observe_managed_docker_object(
         },
         Ok(Kind::Container) => match docker.inspect_container(&spec.resource_name, None).await {
             Ok(container) => {
-                let config = container.config.as_ref()
+                let config = container
+                    .config
+                    .as_ref()
                     .ok_or("HOST_VM_DOCKER_CONTAINER_CONFIG_UNPROVEN")?;
-                let host_config = container.host_config.as_ref()
+                let host_config = container
+                    .host_config
+                    .as_ref()
                     .ok_or("HOST_VM_DOCKER_CONTAINER_HOSTCONFIG_UNPROVEN")?;
                 let expected_net = if spec.network_name.is_empty() {
                     "none"
@@ -191,31 +202,54 @@ async fn observe_managed_docker_object(
                 };
                 if container.name.as_deref() != Some(format!("/{}", spec.resource_name).as_str())
                     || config.image.as_deref() != Some(spec.image_ref.as_str())
-                    || config.labels.as_ref().and_then(|labels| labels.get(LABEL_OWNER)) != Some(&spec.machine_id)
-                    || config.labels.as_ref().and_then(|labels| labels.get(LABEL_RESOURCE)) != Some(&spec.resource_name)
+                    || config
+                        .labels
+                        .as_ref()
+                        .and_then(|labels| labels.get(LABEL_OWNER))
+                        != Some(&spec.machine_id)
+                    || config
+                        .labels
+                        .as_ref()
+                        .and_then(|labels| labels.get(LABEL_RESOURCE))
+                        != Some(&spec.resource_name)
                     || config.user.as_deref() != Some("65534:65534")
                     || host_config.privileged != Some(false)
                     || host_config.readonly_rootfs != Some(true)
                     || host_config.network_mode.as_deref() != Some(expected_net)
-                    || host_config.cap_drop.as_ref().is_none_or(|caps| !caps.iter().any(|cap| cap == "ALL"))
-                    || container.mounts.as_ref().is_some_and(|mounts| !mounts.is_empty())
+                    || host_config
+                        .cap_drop
+                        .as_ref()
+                        .is_none_or(|caps| !caps.iter().any(|cap| cap == "ALL"))
+                    || container
+                        .mounts
+                        .as_ref()
+                        .is_some_and(|mounts| !mounts.is_empty())
                 {
                     return Err("HOST_VM_DOCKER_CONTAINER_FOREIGN_OR_CONFIG_DRIFT".into());
                 }
-                let state = container.state.as_ref()
+                let state = container
+                    .state
+                    .as_ref()
                     .ok_or("HOST_VM_DOCKER_CONTAINER_STATE_UNPROVEN")?;
-                let running = state.running
+                let running = state
+                    .running
                     .ok_or("HOST_VM_DOCKER_CONTAINER_RUNNING_UNPROVEN")?;
-                let id = container.id
+                let id = container
+                    .id
                     .filter(|id| id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()))
                     .ok_or("HOST_VM_DOCKER_CONTAINER_ID_UNPROVEN")?;
                 let started = state.started_at.as_deref().unwrap_or("UNPROVEN");
                 if running && started == "UNPROVEN" {
                     return Err("HOST_VM_DOCKER_CONTAINER_STARTED_AT_UNPROVEN".into());
                 }
-                Ok(Some(format!("{id}|{}|{started}", if running { "R" } else { "S" })))
+                Ok(Some(format!(
+                    "{id}|{}|{started}",
+                    if running { "R" } else { "S" }
+                )))
             }
-            Err(DockerError::DockerResponseServerError { status_code: 404, .. }) => Ok(None),
+            Err(DockerError::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(None),
             Err(_) => Err("HOST_VM_DOCKER_CONTAINER_READBACK_UNAVAILABLE".into()),
         },
         _ => Err("HOST_VM_DOCKER_RESOURCE_KIND_UNSUPPORTED".into()),
@@ -224,8 +258,7 @@ async fn observe_managed_docker_object(
 
 fn present(spec: &FleetVmManagedDockerResource) -> bool {
     spec.desired_state == Desired::Present as i32
-        || (spec.kind == Kind::Container as i32
-            && spec.desired_state == Desired::Stopped as i32)
+        || (spec.kind == Kind::Container as i32 && spec.desired_state == Desired::Stopped as i32)
 }
 
 fn plan_effect(
@@ -277,9 +310,15 @@ pub(super) async fn preflight_managed_docker_object(
     before: Option<&[u8]>,
     after: Option<&[u8]>,
 ) -> Result<PreparedManagedDocker, String> {
-    let previous = before.map(|b| decode_exact_spec(host, path, b)).transpose()?;
-    let next = after.map(|b| decode_exact_spec(host, path, b)).transpose()?;
-    let spec = next.as_ref().or(previous.as_ref())
+    let previous = before
+        .map(|b| decode_exact_spec(host, path, b))
+        .transpose()?;
+    let next = after
+        .map(|b| decode_exact_spec(host, path, b))
+        .transpose()?;
+    let spec = next
+        .as_ref()
+        .or(previous.as_ref())
         .ok_or("HOST_VM_DOCKER_RESOURCE_SCOPE_EMPTY")?;
     if let (Some(a), Some(b)) = (&previous, &next) {
         if a.machine_id != b.machine_id || a.resource_name != b.resource_name || a.kind != b.kind {
@@ -290,21 +329,30 @@ pub(super) async fn preflight_managed_docker_object(
     let expected_pre = previous.as_ref().is_some_and(present);
     let docker = super::super::docker_connection().await?;
     let old_spec = previous.as_ref().filter(|_| expected_pre).unwrap_or(spec);
-    let physical = observe_managed_docker_object(
-        &docker, old_spec, effect == ManagedDockerEffect::Delete,
-    ).await?;
+    let physical =
+        observe_managed_docker_object(&docker, old_spec, effect == ManagedDockerEffect::Delete)
+            .await?;
     if physical.is_some() != expected_pre {
         return Err("HOST_VM_DOCKER_PRESTATE_NOT_CONVERGED".into());
     }
     if let (Some(old), Some(fingerprint)) = (previous.as_ref(), physical.as_deref()) {
         if old.kind == Kind::Container as i32 {
             let running = fingerprint.split('|').nth(1);
-            if running != Some(if old.desired_state == Desired::Present as i32 { "R" } else { "S" }) {
+            if running
+                != Some(if old.desired_state == Desired::Present as i32 {
+                    "R"
+                } else {
+                    "S"
+                })
+            {
                 return Err("HOST_VM_DOCKER_CONTAINER_PRESTATE_RUNNING_DRIFT".into());
             }
         }
     }
-    if let Some(target) = next.as_ref().filter(|s| s.kind == Kind::Container as i32 && present(s)) {
+    if let Some(target) = next
+        .as_ref()
+        .filter(|s| s.kind == Kind::Container as i32 && present(s))
+    {
         if !target.network_name.is_empty() {
             let network_spec = FleetVmManagedDockerResource {
                 schema_version: 1,
@@ -314,7 +362,10 @@ pub(super) async fn preflight_managed_docker_object(
                 desired_state: Desired::Present as i32,
                 ..Default::default()
             };
-            if observe_managed_docker_object(&docker, &network_spec, false).await?.is_none() {
+            if observe_managed_docker_object(&docker, &network_spec, false)
+                .await?
+                .is_none()
+            {
                 return Err("HOST_VM_DOCKER_CONTAINER_NETWORK_NOT_OWNED".into());
             }
         }
@@ -358,16 +409,25 @@ async fn create_managed_container(
         }),
         ..Default::default()
     };
-    docker.create_container(
-        Some(bollard::query_parameters::CreateContainerOptionsBuilder::default()
-            .name(&spec.resource_name).build()),
-        config,
-    ).await.map_err(|_| "HOST_VM_DOCKER_CONTAINER_CREATE_UNCERTAIN_NO_REPLAY")?;
+    docker
+        .create_container(
+            Some(
+                bollard::query_parameters::CreateContainerOptionsBuilder::default()
+                    .name(&spec.resource_name)
+                    .build(),
+            ),
+            config,
+        )
+        .await
+        .map_err(|_| "HOST_VM_DOCKER_CONTAINER_CREATE_UNCERTAIN_NO_REPLAY")?;
     if spec.desired_state == Desired::Present as i32 {
-        docker.start_container(
-            &spec.resource_name,
-            None::<bollard::query_parameters::StartContainerOptions>,
-        ).await.map_err(|_| "HOST_VM_DOCKER_CONTAINER_START_UNCERTAIN_NO_REPLAY")?;
+        docker
+            .start_container(
+                &spec.resource_name,
+                None::<bollard::query_parameters::StartContainerOptions>,
+            )
+            .await
+            .map_err(|_| "HOST_VM_DOCKER_CONTAINER_START_UNCERTAIN_NO_REPLAY")?;
     }
     Ok(())
 }
@@ -376,21 +436,34 @@ async fn stop_managed_container(
     docker: &bollard::Docker,
     spec: &FleetVmManagedDockerResource,
 ) -> Result<(), String> {
-    docker.stop_container(
-        &spec.resource_name,
-        Some(bollard::query_parameters::StopContainerOptionsBuilder::default()
-            .t(20).build()),
-    ).await.map_err(|_| "HOST_VM_DOCKER_CONTAINER_STOP_UNCERTAIN_NO_REPLAY")
+    docker
+        .stop_container(
+            &spec.resource_name,
+            Some(
+                bollard::query_parameters::StopContainerOptionsBuilder::default()
+                    .t(20)
+                    .build(),
+            ),
+        )
+        .await
+        .map_err(|_| "HOST_VM_DOCKER_CONTAINER_STOP_UNCERTAIN_NO_REPLAY")
 }
 
 pub(super) async fn apply_managed_docker_object_once(
     plan: &PreparedManagedDocker,
 ) -> Result<(), String> {
     let docker = super::super::docker_connection().await?;
-    let old_spec = plan.previous.as_ref().filter(|s| present(s)).unwrap_or(&plan.spec);
+    let old_spec = plan
+        .previous
+        .as_ref()
+        .filter(|s| present(s))
+        .unwrap_or(&plan.spec);
     let actual = observe_managed_docker_object(
-        &docker, old_spec, plan.effect == ManagedDockerEffect::Delete,
-    ).await?;
+        &docker,
+        old_spec,
+        plan.effect == ManagedDockerEffect::Delete,
+    )
+    .await?;
     if actual != plan.original_fingerprint {
         return Err("HOST_VM_DOCKER_OBJECT_CAS_CHANGED_NO_REPLAY".into());
     }
@@ -400,17 +473,28 @@ pub(super) async fn apply_managed_docker_object_once(
             let labels = expected_labels(&plan.spec);
             match Kind::try_from(plan.spec.kind) {
                 Ok(Kind::LocalVolume) => {
-                    docker.create_volume(bollard::models::VolumeCreateRequest {
-                        name: Some(name.clone()), driver: Some("local".to_owned()),
-                        labels: Some(labels), ..Default::default()
-                    }).await.map_err(|_| "HOST_VM_DOCKER_VOLUME_CREATE_UNCERTAIN_NO_REPLAY")?;
+                    docker
+                        .create_volume(bollard::models::VolumeCreateRequest {
+                            name: Some(name.clone()),
+                            driver: Some("local".to_owned()),
+                            labels: Some(labels),
+                            ..Default::default()
+                        })
+                        .await
+                        .map_err(|_| "HOST_VM_DOCKER_VOLUME_CREATE_UNCERTAIN_NO_REPLAY")?;
                 }
                 Ok(Kind::BridgeNetwork) => {
-                    docker.create_network(bollard::models::NetworkCreateRequest {
-                        name: name.clone(), driver: Some("bridge".to_owned()),
-                        internal: Some(true), attachable: Some(false),
-                        labels: Some(labels), ..Default::default()
-                    }).await.map_err(|_| "HOST_VM_DOCKER_NETWORK_CREATE_UNCERTAIN_NO_REPLAY")?;
+                    docker
+                        .create_network(bollard::models::NetworkCreateRequest {
+                            name: name.clone(),
+                            driver: Some("bridge".to_owned()),
+                            internal: Some(true),
+                            attachable: Some(false),
+                            labels: Some(labels),
+                            ..Default::default()
+                        })
+                        .await
+                        .map_err(|_| "HOST_VM_DOCKER_NETWORK_CREATE_UNCERTAIN_NO_REPLAY")?;
                 }
                 Ok(Kind::Container) => create_managed_container(&docker, &plan.spec).await?,
                 _ => return Err("HOST_VM_DOCKER_KIND_NOT_EXECUTABLE".into()),
@@ -418,11 +502,15 @@ pub(super) async fn apply_managed_docker_object_once(
         }
         ManagedDockerEffect::Delete => match Kind::try_from(plan.spec.kind) {
             Ok(Kind::LocalVolume) => {
-                docker.remove_volume(name, None::<bollard::query_parameters::RemoveVolumeOptions>)
-                    .await.map_err(|_| "HOST_VM_DOCKER_VOLUME_DELETE_UNCERTAIN_NO_REPLAY")?;
+                docker
+                    .remove_volume(name, None::<bollard::query_parameters::RemoveVolumeOptions>)
+                    .await
+                    .map_err(|_| "HOST_VM_DOCKER_VOLUME_DELETE_UNCERTAIN_NO_REPLAY")?;
             }
             Ok(Kind::BridgeNetwork) => {
-                docker.remove_network(name).await
+                docker
+                    .remove_network(name)
+                    .await
                     .map_err(|_| "HOST_VM_DOCKER_NETWORK_DELETE_UNCERTAIN_NO_REPLAY")?;
             }
             Ok(Kind::Container) => {
@@ -431,23 +519,38 @@ pub(super) async fn apply_managed_docker_object_once(
                 {
                     stop_managed_container(&docker, old).await?;
                 }
-                docker.remove_container(name,
-                    None::<bollard::query_parameters::RemoveContainerOptions>)
-                    .await.map_err(|_| "HOST_VM_DOCKER_CONTAINER_DELETE_UNCERTAIN_NO_REPLAY")?;
+                docker
+                    .remove_container(
+                        name,
+                        None::<bollard::query_parameters::RemoveContainerOptions>,
+                    )
+                    .await
+                    .map_err(|_| "HOST_VM_DOCKER_CONTAINER_DELETE_UNCERTAIN_NO_REPLAY")?;
             }
             _ => return Err("HOST_VM_DOCKER_KIND_NOT_EXECUTABLE".into()),
         },
         ManagedDockerEffect::Start => {
-            docker.start_container(name,
-                None::<bollard::query_parameters::StartContainerOptions>)
-                .await.map_err(|_| "HOST_VM_DOCKER_CONTAINER_START_UNCERTAIN_NO_REPLAY")?;
+            docker
+                .start_container(
+                    name,
+                    None::<bollard::query_parameters::StartContainerOptions>,
+                )
+                .await
+                .map_err(|_| "HOST_VM_DOCKER_CONTAINER_START_UNCERTAIN_NO_REPLAY")?;
         }
         ManagedDockerEffect::Stop => stop_managed_container(&docker, &plan.spec).await?,
         ManagedDockerEffect::Restart => {
-            docker.restart_container(name,
-                Some(bollard::query_parameters::RestartContainerOptionsBuilder::default()
-                    .t(20).build()))
-                .await.map_err(|_| "HOST_VM_DOCKER_CONTAINER_RESTART_UNCERTAIN_NO_REPLAY")?;
+            docker
+                .restart_container(
+                    name,
+                    Some(
+                        bollard::query_parameters::RestartContainerOptionsBuilder::default()
+                            .t(20)
+                            .build(),
+                    ),
+                )
+                .await
+                .map_err(|_| "HOST_VM_DOCKER_CONTAINER_RESTART_UNCERTAIN_NO_REPLAY")?;
         }
         ManagedDockerEffect::Replace => {
             if let Some(old) = plan.previous.as_ref()
@@ -455,9 +558,13 @@ pub(super) async fn apply_managed_docker_object_once(
             {
                 stop_managed_container(&docker, old).await?;
             }
-            docker.remove_container(name,
-                None::<bollard::query_parameters::RemoveContainerOptions>)
-                .await.map_err(|_| "HOST_VM_DOCKER_CONTAINER_REPLACE_DELETE_UNCERTAIN_NO_REPLAY")?;
+            docker
+                .remove_container(
+                    name,
+                    None::<bollard::query_parameters::RemoveContainerOptions>,
+                )
+                .await
+                .map_err(|_| "HOST_VM_DOCKER_CONTAINER_REPLACE_DELETE_UNCERTAIN_NO_REPLAY")?;
             create_managed_container(&docker, &plan.spec).await?;
         }
     }
@@ -472,14 +579,22 @@ pub(super) async fn apply_managed_docker_object_once(
         return Err("HOST_VM_DOCKER_POSTSTATE_UNPROVEN_NO_REPLAY".into());
     }
     if plan.spec.kind == Kind::Container as i32 && should_exist {
-        let fingerprint = now.as_deref().ok_or("HOST_VM_DOCKER_CONTAINER_POSTSTATE_MISSING")?;
+        let fingerprint = now
+            .as_deref()
+            .ok_or("HOST_VM_DOCKER_CONTAINER_POSTSTATE_MISSING")?;
         let running = fingerprint.split('|').nth(1);
-        let expected = if plan.spec.desired_state == Desired::Present as i32 { "R" } else { "S" };
+        let expected = if plan.spec.desired_state == Desired::Present as i32 {
+            "R"
+        } else {
+            "S"
+        };
         if running != Some(expected) {
             return Err("HOST_VM_DOCKER_CONTAINER_RUNNING_POSTSTATE_UNPROVEN_NO_REPLAY".into());
         }
-        if matches!(plan.effect, ManagedDockerEffect::Create | ManagedDockerEffect::Replace)
-            && now == plan.original_fingerprint
+        if matches!(
+            plan.effect,
+            ManagedDockerEffect::Create | ManagedDockerEffect::Replace
+        ) && now == plan.original_fingerprint
         {
             return Err("HOST_VM_DOCKER_CONTAINER_NOT_RECREATED_NO_REPLAY".into());
         }
@@ -502,16 +617,28 @@ mod tests {
             image_ref: "ghcr.io/iamaman11/test@sha256:".to_owned() + &"a".repeat(64),
             ..Default::default()
         };
-        assert_eq!(plan_effect(None, Some(&old)).unwrap(), ManagedDockerEffect::Create);
+        assert_eq!(
+            plan_effect(None, Some(&old)).unwrap(),
+            ManagedDockerEffect::Create
+        );
         let mut next = old.clone();
         next.desired_state = Desired::Stopped as i32;
-        assert_eq!(plan_effect(Some(&old), Some(&next)).unwrap(), ManagedDockerEffect::Stop);
+        assert_eq!(
+            plan_effect(Some(&old), Some(&next)).unwrap(),
+            ManagedDockerEffect::Stop
+        );
         next.desired_state = Desired::Present as i32;
         next.restart_generation = 1;
-        assert_eq!(plan_effect(Some(&old), Some(&next)).unwrap(), ManagedDockerEffect::Restart);
+        assert_eq!(
+            plan_effect(Some(&old), Some(&next)).unwrap(),
+            ManagedDockerEffect::Restart
+        );
         old.restart_generation = 2;
         assert!(plan_effect(Some(&old), Some(&next)).is_err());
-        assert_eq!(plan_effect(Some(&old), None).unwrap(), ManagedDockerEffect::Delete);
+        assert_eq!(
+            plan_effect(Some(&old), None).unwrap(),
+            ManagedDockerEffect::Delete
+        );
     }
 
     #[test]
