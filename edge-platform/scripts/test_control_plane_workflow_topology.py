@@ -336,7 +336,7 @@ assert "group: vultr-control-plane-production" in abort_job
 assert "first-use-preflight" in abort_job
 assert 'host-abort-preflight.txt' in abort_job
 assert "host_first_use_abort.py" in abort_job
-assert abort_job.index("Prove exact absent VM through complete typed Vultr inventory") < abort_job.index("Retire only exact aborted GitHub first-use reservation")
+assert abort_job.index("Classify pre-CREATE abort or existing VM, without mutation") < abort_job.index("Retire only exact aborted GitHub first-use reservation")
 assert 'return "PROVEN_SKIPPED"' in abort
 assert "HOST_ABORT_CREATE_FAILURE_NOT_PROVEN_PREPOST" in abort
 assert 'return "PROVEN_NOT_ENTERED_PREPOST_FIREWALL"' in abort
@@ -345,7 +345,21 @@ assert "HOST_ABORT_TERMINAL_EVIDENCE_AMBIGUOUS" in abort
 assert abort.index("verify_original_run(machine, origin, old_revision, run_id)") < abort.index('method="POST", form=marker')
 assert abort.index('method="POST", form=marker') < abort.index('method="DELETE"')
 assert "HOST_ABORT_RUNNER_INVENTORY_INCOMPLETE" in abort
+assert "host_first_use_finalize_resume.py" in router
+assert "host_first_use_receipt_register.sh" in router
+assert "host_first_use_receipt_register.sh" in router
+assert "bootstrap-proof-check" in router
+assert "HOST_FIRST_USE_RECOVERY=SIGNED_ROOT_PROOF_AND_SCRUB_PROVEN" in router
+assert 'export REPOSITORY="${GITHUB_REPOSITORY}"' in router
+assert 'export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"' in router
 assert "HOST_ABORT_FIREWALL_PREPOST_ERROR_NOT_PROVEN" in abort
+# The initial Root proof is bound to the ORIGINAL release, but the receipt
+# modifies current protected Git and must use CURRENT release provenance.
+assert 'host-current-receipt-release' in router
+assert router.count('GITHUB_SHA="${ORIGINAL_SHA}" "${bin}" host --hosts-pb "${fleet}"') >= 2
+assert 'export ACCEPTED_REVISION="${GITHUB_SHA}"' in router
+assert 'export HOST_RECEIPT_RELEASE_DIR="${OUTPUT_DIR}"' in router
+assert 'export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"' in router
 assert "DenyLogRedirect" in abort
 assert "read_job_log(job_id)" in abort
 assert '"Authorization": "Bearer " + secret' in abort
