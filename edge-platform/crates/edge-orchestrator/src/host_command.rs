@@ -207,6 +207,21 @@ pub(crate) fn run(
         return Err("host protobuf differs from protected Git inventory SHA-256".to_owned());
     }
     let desired = decode_host_registry(&bytes)?;
+    let (command, diagnostic) = match command {
+        HostCommand::Diagnose { machine_id, argv } => {
+            let source_id = source_comment_id.ok_or("HOST_DIAG_SOURCE_COMMENT_MISSING")?;
+            let request = edge_shared_types::FleetHostDiagnosticRequest {
+                schema_version: 1,
+                machine_id: machine_id.clone(),
+                source_comment_id: source_id,
+                argv,
+            };
+            edge_shared_types::host_diagnostics::validate_diagnostic_request(&request)
+                .map_err(str::to_owned)?;
+            (HostCommand::Status { machine_id: Some(machine_id), deep: true }, Some(request))
+        }
+        other => (other, None),
+    };
     match command {
         HostCommand::Status { machine_id, deep } => {
             if let Some(path) = github_output {
