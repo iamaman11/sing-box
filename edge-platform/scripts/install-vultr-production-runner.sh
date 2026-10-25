@@ -67,11 +67,12 @@ cat > "${SUDOERS_FILE}" <<EOF
 Cmnd_Alias SING_BOX_RUNTIME_READ = ${LOCAL_OWNER} local status --fast, ${LOCAL_OWNER} local status, ${LOCAL_OWNER} local host-observe, ${LOCAL_OWNER} local host-resources, ${LOCAL_OWNER} local host-probe, ${LOCAL_OWNER} local verify, ${LOCAL_OWNER} local diagnose, ${LOCAL_OWNER} local quality-line2, ${LOCAL_OWNER} local credential-initial-probe, ${LOCAL_OWNER} local bundle-verify, ${LOCAL_OWNER} local mesh-verify, ${LOCAL_OWNER} local credential-state
 Cmnd_Alias SING_BOX_NATIVE_HOST_TRANSACTION = ${LOCAL_OWNER} local host-apply
 Cmnd_Alias SING_BOX_NATIVE_HOST_TRUST = ${LOCAL_OWNER} local host-refresh
+Cmnd_Alias SING_BOX_NATIVE_ADMIN = ${LOCAL_OWNER} local host-admin
 # The runner may transport only the exact host operation to the installed
 # root Agent, which independently validates Worker signature, Git provenance,
 # machine identity, protected journal and physical readback. No generic sudo,
 # direct Docker, bundle/credential mutation, rollback or Mesh cleanup.
-${RUNNER_USER} ALL=(root) NOPASSWD: SING_BOX_RUNTIME_READ, SING_BOX_NATIVE_HOST_TRANSACTION, SING_BOX_NATIVE_HOST_TRUST
+${RUNNER_USER} ALL=(root) NOPASSWD: SING_BOX_RUNTIME_READ, SING_BOX_NATIVE_HOST_TRANSACTION, SING_BOX_NATIVE_HOST_TRUST, SING_BOX_NATIVE_ADMIN
 EOF
 chmod 0440 "${SUDOERS_FILE}"
 visudo -cf "${SUDOERS_FILE}" >/dev/null
