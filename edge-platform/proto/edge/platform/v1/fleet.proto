@@ -462,6 +462,45 @@ message FleetHostDiagnosticRequest {
   repeated string argv = 4;
 }
 
+// Unlimited administrative COMMAND capability belongs only to native VM root.
+// An approved request carries exact argv (shell interpreters are not excluded),
+// optional cwd/env and stdin, but grants no authority without Worker signature.
+message FleetNativeAdminRequest {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  uint64 source_comment_id = 3;
+  repeated string argv = 4;
+  bytes release_set_sha256 = 5;
+  uint64 requested_at_unix = 6;
+  bytes comment_sha256 = 7;
+  string working_directory = 8;
+  repeated string environment = 9;
+  bytes stdin_bytes = 10;
+  uint32 timeout_seconds = 11;
+}
+
+message FleetNativeAdminAuthorization {
+  uint32 schema_version = 1;
+  string key_id = 2;
+  string operation_id = 3;
+  uint64 issued_at_unix = 4;
+  uint64 expires_at_unix = 5;
+  bytes ed25519_signature = 6;
+}
+
+message FleetNativeAdminResult {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  string operation_id = 3;
+  bytes request_sha256 = 4;
+  uint64 observed_at_unix = 5;
+  int32 exit_code = 6;
+  bytes stdout_sha256 = 7;
+  bytes stderr_sha256 = 8;
+  bool process_exited = 9;
+  bytes root_signature = 10;
+}
+
 message FleetHostIntent {
   uint32 schema_version = 1;
   string machine_id = 2;
