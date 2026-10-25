@@ -471,6 +471,8 @@ message FleetNativeAdministrativeRequest {
   string operation_id = 3;
   uint64 source_comment_id = 4;
   repeated string argv = 5;
+  bytes comment_sha256 = 6;
+  bytes release_set_sha256 = 7;
 }
 
 message FleetNativeAdministrativeAuthorization {
