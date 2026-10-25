@@ -414,6 +414,53 @@ pub(crate) async fn collect_native_managed_docker_readback(
 mod tests {
     use super::*;
     #[test]
+    fn docker_readback_absent_running_and_drift_are_distinct() {
+        use edge_shared_types::{
+            FleetVmManagedDockerDesiredState as Desired, FleetVmManagedDockerKind as Kind,
+        };
+        assert_eq!(
+            managed_docker_state_reason(
+                Kind::LocalVolume as i32,
+                Desired::Absent as i32,
+                None
+            ),
+            ("DESIRED_ABSENT", true)
+        );
+        assert_eq!(
+            managed_docker_state_reason(
+                Kind::Container as i32,
+                Desired::Present as i32,
+                Some("opaque|R|timestamp")
+            ),
+            ("DESIRED_RUNNING", true)
+        );
+        assert_eq!(
+            managed_docker_state_reason(
+                Kind::Container as i32,
+                Desired::Present as i32,
+                Some("opaque|S|timestamp")
+            ),
+            ("MANAGED_CONTAINER_STATE_MISMATCH", false)
+        );
+        assert_eq!(
+            managed_docker_state_reason(
+                Kind::BridgeNetwork as i32,
+                Desired::Absent as i32,
+                Some("opaque")
+            ),
+            ("UNEXPECTED_PRESENT", false)
+        );
+        assert_eq!(
+            managed_docker_state_reason(
+                Kind::Container as i32,
+                Desired::Stopped as i32,
+                Some("opaque|S|timestamp")
+            ),
+            ("DESIRED_STOPPED", true)
+        );
+    }
+
+    #[test]
     fn managed_file_scope_rejects_foreign_and_path_traversal() {
         for invalid in [
             "/etc/resolv.conf",
