@@ -558,6 +558,28 @@ pub(crate) fn run(
                 } else {
                     println!("host_vm_network_observation=UNAVAILABLE");
                 }
+                println!("host_vm_managed_docker_count={}", report.managed_docker.len());
+                println!("host_vm_managed_docker_origin=RUNNER_COPIED_UNAUTHENTICATED");
+                for managed in &report.managed_docker {
+                    println!(
+                        "host_vm_managed_docker={} kind={:?} desired={:?} present={} owner={} converged={} reason={}",
+                        if managed.resource_name.is_empty() {
+                            "UNPROVEN"
+                        } else {
+                            managed.resource_name.as_str()
+                        },
+                        edge_shared_types::FleetVmManagedDockerKind::try_from(managed.kind)
+                            .map_err(|_| "HOST_VM_MANAGED_DOCKER_KIND_INVALID")?,
+                        edge_shared_types::FleetVmManagedDockerDesiredState::try_from(
+                            managed.desired_state
+                        )
+                        .map_err(|_| "HOST_VM_MANAGED_DOCKER_STATE_INVALID")?,
+                        managed.present,
+                        managed.ownership_proven,
+                        managed.converged,
+                        managed.reason_code,
+                    );
+                }
                 println!("host_vm_resources_schema=1");
                 println!(
                     "host_vm_installed_policy_hierarchy_origin={}",
