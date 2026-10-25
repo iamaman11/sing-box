@@ -84,6 +84,31 @@ hosts: {
   vm_provider_spec_path: "infra/hosts/specs/application-acceptance-4.textproto"
 }
 hosts: {
+  machine_id: "application-acceptance-5"
+  kind: FLEET_HOST_KIND_VM
+  vm_machine_id: "application-acceptance-5"
+  desired_spec_path: "infra/hosts/specs/application-acceptance-5.textproto"
+  target: {
+    run_state: FLEET_HOST_RUN_STATE_RUNNING
+  }
+  vm_containers: {
+    container_name: "vultr-line1-gateway"
+    compose_project: "vultr-edge"
+    compose_service: "line1-gateway"
+  }
+  vm_containers: {
+    container_name: "vultr-line2-proxy"
+    compose_project: "vultr-edge"
+    compose_service: "line2-proxy"
+  }
+  vm_containers: {
+    container_name: "vultr-warp-egress"
+    compose_project: "vultr-edge"
+    compose_service: "warp-egress"
+  }
+  vm_provider_spec_path: "infra/hosts/specs/application-acceptance-5.textproto"
+}
+hosts: {
   machine_id: "production-1"
   kind: FLEET_HOST_KIND_VM
   vm_machine_id: "production-1"

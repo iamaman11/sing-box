@@ -24,6 +24,36 @@ WORKER_BINDINGS = frozenset({
 })
 
 
+# Only Git-accepted Worker reason codes; never echo arbitrary response headers.
+WORKER_ACCESS_DENIAL_REASONS = frozenset({"WORKER_CONFIG_UNPROVEN", "JWT_MISSING", "JWT_MALFORMED", "JWT_ISSUER_MISMATCH", "JWT_AUDIENCE_MISMATCH", "JWT_EXPIRED", "JWT_NOT_YET_VALID", "JWT_JWKS_FETCH_SAME_ZONE_BLOCKED", "JWT_JWKS_FETCH_CLOUDFLARE_IP_BLOCKED", "JWT_JWKS_FETCH_HOST_BLOCKED", "JWT_JWKS_FETCH_REDIRECT_BLOCKED", "JWT_JWKS_FETCH_TIMEOUT", "JWT_JWKS_FETCH_DNS_FAILED", "JWT_JWKS_FETCH_TLS_FAILED", "JWT_JWKS_FETCH_ILLEGAL_INVOCATION", "JWT_JWKS_FETCH_TYPE_ERROR", "JWT_JWKS_FETCH_FAILED", "JWT_JWKS_HTTP_UNAVAILABLE", "JWT_JWKS_INVALID", "JWT_KID_NOT_FOUND", "JWT_KEY_IMPORT_FAILED", "JWT_SIGNATURE_MALFORMED", "JWT_SIGNATURE_REJECTED", "JWT_SIGNATURE_VERIFY_FAILED"})
+
+
+def active_worker_deployment(doc):
+    """Deployment metadata is not source or signing proof."""
+    if not isinstance(doc, dict) or doc.get("success") is not True:
+        return "UNPROVEN_DEPLOYMENTS_RESPONSE"
+    result = doc.get("result")
+    active = result.get("deployments") if isinstance(result, dict) else None
+    if not isinstance(active, list):
+        return "UNPROVEN_DEPLOYMENTS_SCHEMA"
+    if not active:
+        return "NO_ACTIVE_DEPLOYMENT"
+    versions = active[0].get("versions") if isinstance(active[0], dict) else None
+    if not isinstance(versions, list) or not versions:
+        return "UNPROVEN_ACTIVE_DEPLOYMENT"
+    if not all(isinstance(x, dict) and isinstance(x.get("version_id"), str)
+               and re.fullmatch(r"[0-9a-fA-F-]{36}", x["version_id"])
+               and isinstance(x.get("percentage"), (int, float))
+               and not isinstance(x["percentage"], bool)
+               and 0 < x["percentage"] <= 100 for x in versions):
+        return "UNPROVEN_ACTIVE_DEPLOYMENT"
+    if len(versions) == 1 and versions[0]["percentage"] == 100:
+        return "SINGLE_VERSION_100_PERCENT_SOURCE_UNVERIFIED"
+    if abs(sum(x["percentage"] for x in versions) - 100) < 0.00001:
+        return "SPLIT_TRAFFIC_SOURCE_UNVERIFIED"
+    return "UNPROVEN_ACTIVE_DEPLOYMENT"
+
+
 class DenyRedirect(HTTPRedirectHandler):
     def redirect_request(self, request, fp, code, msg, headers, newurl):
         return None
@@ -70,8 +100,8 @@ def exact_production_worker():
 def observe_worker_host_get_route(worker, subdomain, client_id, client_secret):
     """Bounded GET-only Access/route witness, never signed POST admission.
 
-    Worker returns 404 for this GET, but an upstream 404 is ambiguous.
-    Neither status can authorize host operations or retry a failed POST.
+    A 403 can originate at Access or Worker: only known Worker-owned
+    reason and scope headers can distinguish them, not authorize POST.
     """
     if not re.fullmatch(r"[a-z0-9-]{1,96}", worker) or not re.fullmatch(
             r"[a-z0-9-]{1,96}", subdomain):
@@ -86,13 +116,22 @@ def observe_worker_host_get_route(worker, subdomain, client_id, client_secret):
     try:
         with build_opener(DenyRedirect()).open(request, timeout=TIMEOUT) as response:
             # No response body or credential material enters diagnostic output.
+            if (response.status == 204
+                    and response.headers.get("X-Host-Authorization-Reason") == "OK"
+                    and response.headers.get("X-Host-Authorization-Scope")
+                    == "READ_ONLY_NO_MUTATION"):
+                return "GET_204_WORKER_JWT_VERIFIED_NOT_SIGNING_PROOF"
             return ("UNEXPECTED_GET_SUCCESS_NOT_SIGNING_PROOF"
                     if response.status == 200 else "GET_RESPONSE_NOT_SIGNING_PROOF")
     except HTTPError as error:
         if error.code == 404:
             return "GET_404_WORKER_OR_EDGE_NOT_POST_PROOF"
         if error.code == 403:
-            return "GET_403_ACCESS_OR_EDGE_DENIED"
+            scope = error.headers.get("X-Host-Authorization-Scope", "")
+            reason = error.headers.get("X-Host-Authorization-Reason", "")
+            if scope == "READ_ONLY_NO_MUTATION" and reason in WORKER_ACCESS_DENIAL_REASONS:
+                return "GET_403_WORKER_" + reason
+            return "GET_403_EDGE_OR_UNVERIFIED_WORKER_DENIED"
         if error.code == 401:
             return "GET_401_ACCESS_UNPROVEN"
         if error.code in (301, 302, 303, 307, 308):
@@ -248,6 +287,7 @@ def observe(machine_id, desired_spec_path):
         "cloudflare_api": "UNPROVEN",
         "worker_host_signing_bindings": "UNPROVEN",
         "worker_host_route_get": "UNPROVEN",
+        "worker_active_deployment": "UNPROVEN",
         "worker_signing_public_key": "UNPROVEN_NO_NATIVE_ATTESTATION",
         "vm_access_service_identity": "UNPROVEN",
         "operator_ssh_private_key": "UNPROVEN",
@@ -302,6 +342,13 @@ def observe(machine_id, desired_spec_path):
             result["worker_host_signing_bindings"] = (
                 worker_bindings(secrets) if secrets is not None else
                 "UNPROVEN_WORKER_SECRETS_" + (failure[0] if failure else "UNKNOWN"))
+            failures = []
+            deployments = observe_json(
+                f"https://api.cloudflare.com/client/v4/accounts/{account}/workers/scripts/{worker}/deployments?per_page=1",
+                api, "api.cloudflare.com", failure=failures)
+            result["worker_active_deployment"] = (
+                active_worker_deployment(deployments) if deployments is not None
+                else "UNPROVEN_DEPLOYMENTS_" + (failures[0] if failures else "UNKNOWN"))
 
     access_id = os.environ.get("CLOUDFLARE_VM_ACCESS_CLIENT_ID", "")
     access_secret = os.environ.get("CLOUDFLARE_VM_ACCESS_CLIENT_SECRET", "")
