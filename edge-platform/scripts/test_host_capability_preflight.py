@@ -79,6 +79,63 @@ class TestHostCapabilitySelector(TestCase):
             "sing-box-credentials-vm", "sing-box-test", "", ""),
             "ACCESS_SERVICE_IDENTITY_UNAVAILABLE")
 
+    def test_exact_runner_readback_uses_complete_pages_and_exposes_no_names(self):
+        name = "sing-box-production-application-acceptance-4"
+        required = ["self-hosted", "Linux", "X64",
+                    "sing-box-production-vm", "application-acceptance-4"]
+        first = {"total_count": 101, "runners": [
+            {"id": i + 1, "name": f"unrelated-{i}", "status": "online",
+             "busy": False, "labels": []} for i in range(100)
+        ]}
+        target = {"id": 101, "name": name, "status": "offline",
+                  "busy": False, "labels": [{"name": x} for x in required]}
+        responses = {
+            "https://api.github.com/repos/iamaman11/sing-box/actions/runners?per_page=100&page=1": first,
+            "https://api.github.com/repos/iamaman11/sing-box/actions/runners?per_page=100&page=2": {
+                "total_count": 101, "runners": [target],
+            },
+        }
+        def exact_get(url, token, host):
+            self.assertEqual(token, "opaque-token")
+            self.assertEqual(host, "api.github.com")
+            return responses[url]
+        with patch.object(capability, "observe_json", side_effect=exact_get):
+            self.assertEqual(capability.registered_vm_runner(
+                "iamaman11/sing-box", "opaque-token", "application-acceptance-4"),
+                "RUNNER_OFFLINE")
+            target["status"] = "online"
+            self.assertEqual(capability.registered_vm_runner(
+                "iamaman11/sing-box", "opaque-token", "application-acceptance-4"),
+                "RUNNER_ONLINE_IDLE_NOT_NATIVE_PROOF")
+            target["busy"] = True
+            self.assertEqual(capability.registered_vm_runner(
+                "iamaman11/sing-box", "opaque-token", "application-acceptance-4"),
+                "RUNNER_BUSY")
+            target["busy"] = False
+            target["labels"] = []
+            self.assertEqual(capability.registered_vm_runner(
+                "iamaman11/sing-box", "opaque-token", "application-acceptance-4"),
+                "RUNNER_LABEL_MISMATCH")
+            target["labels"] = [{"name": x} for x in required]
+            responses.pop("https://api.github.com/repos/iamaman11/sing-box/actions/runners?per_page=100&page=2")
+            self.assertEqual(capability.registered_vm_runner(
+                "iamaman11/sing-box", "opaque-token", "application-acceptance-4"),
+                "UNPROVEN_RUNNER_INVENTORY")
+
+    def test_runner_absence_requires_complete_inventory_not_a_queued_job(self):
+        with patch.object(capability, "observe_json", return_value={
+            "total_count": 0, "runners": [],
+        }):
+            self.assertEqual(capability.registered_vm_runner(
+                "iamaman11/sing-box", "opaque-token", "application-acceptance-4"),
+                "RUNNER_UNREGISTERED")
+        with patch.object(capability, "observe_json", return_value={
+            "total_count": 101, "runners": [],
+        }):
+            self.assertEqual(capability.registered_vm_runner(
+                "iamaman11/sing-box", "opaque-token", "application-acceptance-4"),
+                "UNPROVEN_RUNNER_INVENTORY")
+
     def test_legacy_json_retains_read_only_provider_scope(self):
         with TemporaryDirectory() as root:
             previous = Path.cwd()
