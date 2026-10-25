@@ -49,6 +49,10 @@ pub(crate) enum LocalCommand {
     HostApply,
     /// One explicitly approved arbitrary root administrative request.
     HostAdmin,
+    /// Signed public-only bootstrap recipient proof, no secret or mutation.
+    HostBootstrapProof,
+    /// One-shot root-only Access install from an encrypted protobuf on stdin.
+    HostBootstrapAccess,
     /// Read-only unprivileged native probe from a typed same-run request on stdin.
     HostProbe,
     /// Refresh the exact protected main release from the installed root
@@ -80,6 +84,8 @@ impl LocalCommand {
             Self::HostResources => "local-host-resources",
             Self::HostApply => "local-host-apply",
             Self::HostAdmin => "local-host-admin",
+            Self::HostBootstrapProof => "local-host-bootstrap-proof",
+            Self::HostBootstrapAccess => "local-host-bootstrap-access",
             Self::HostProbe => "local-host-probe",
             Self::HostRefresh => "local-host-refresh",
             Self::HostEnroll { .. } => "local-host-enroll",
@@ -108,6 +114,8 @@ mod tests {
             "host-resources",
             "host-apply",
             "host-admin",
+            "host-bootstrap-proof",
+            "host-bootstrap-access",
             "host-probe",
             "host-refresh",
             "quality-line2",

@@ -23,6 +23,7 @@ prost-types = "0.14.3"
 tonic = "0.14.5"
 tonic-prost = "0.14.5"
 ring = "0.17.14"
+x25519-dalek = { version = "2.0.1", features = ["static_secrets"] }
 
 [target.'cfg(windows)'.dependencies]
 windows-sys = { version = "0.61.2", features = [

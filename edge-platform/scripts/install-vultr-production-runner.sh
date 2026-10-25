@@ -15,38 +15,23 @@ CREDENTIAL_IDENTITY_DIR="/opt/vultr-edge-stack/runtime-secrets"
 CREDENTIAL_IDENTITY_FILE="${CREDENTIAL_IDENTITY_DIR}/credential-access-v1.env"
 
 machine_id="${1:-}"
-# --runner-only bootstraps transport before a protected root-only encrypted
-# Access handoff. The GitHub registration token is ephemeral; it is never a
-# durable credential and must never be written to provider desired state.
-case "${2:-}" in
-  "") initial_identity=true ;;
-  --runner-only) initial_identity=false ;;
-  *) echo "unknown runner bootstrap mode" >&2; exit 2 ;;
-esac
+# One installer mode: transient GitHub registration capability only.
+# Permanent Cloudflare Access credentials are committed by Root Agent from a
+# sealed native protobuf AFTER protected Git receipt registration.
+if [[ "${2:-}" != "--runner-only" ]]; then
+  echo "runner bootstrap must use --runner-only" >&2
+  exit 2
+fi
 if [[ ! "${machine_id}" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]]; then
   echo "invalid machine id" >&2
   exit 2
 fi
-
 IFS= read -r registration_token || true
-if [[ "${initial_identity}" == true ]]; then
-  IFS= read -r credential_access_client_id || true
-  IFS= read -r credential_access_client_secret || true
-fi
 if [[ -z "${registration_token}" || "${registration_token}" == *[[:space:]]* ]]; then
   echo "runner registration token is empty or malformed" >&2
   exit 3
 fi
-if [[ "${initial_identity}" == true ]]; then
-if [[ -z "${credential_access_client_id}" || "${credential_access_client_id}" == *[[:space:]]* ]]; then
-  echo "credential Access client id is empty or malformed" >&2
-  exit 3
-fi
-if [[ -z "${credential_access_client_secret}" || "${credential_access_client_secret}" == *[[:space:]]* ]]; then
-  echo "credential Access client secret is empty or malformed" >&2
-  exit 3
-fi
-fi
+
 if [[ "$(id -u)" != "0" ]]; then
   echo "production runner bootstrap requires root" >&2
   exit 4
@@ -65,34 +50,24 @@ if ! id "${RUNNER_USER}" >/dev/null 2>&1; then
 fi
 install -d -o "${RUNNER_USER}" -g "${RUNNER_USER}" -m 0750 "${RUNNER_HOME}"
 install -d -o root -g root -m 0755 /etc/sudoers.d
-if [[ "${initial_identity}" == true ]]; then
-install -d -o root -g root -m 0700 "${CREDENTIAL_IDENTITY_DIR}"
-identity_stage="${CREDENTIAL_IDENTITY_FILE}.new"
-umask 077
-printf 'CF_ACCESS_CLIENT_ID=%s\nCF_ACCESS_CLIENT_SECRET=%s\n' \
-  "${credential_access_client_id}" "${credential_access_client_secret}" > "${identity_stage}"
-chown root:root "${identity_stage}"
-chmod 0600 "${identity_stage}"
-mv -f "${identity_stage}" "${CREDENTIAL_IDENTITY_FILE}"
-unset credential_access_client_id credential_access_client_secret
-else
-  # Runner-only stage MUST NOT create or replace permanent Access identity.
-  test ! -e "${CREDENTIAL_IDENTITY_FILE}" && test ! -L "${CREDENTIAL_IDENTITY_FILE}" || {
-    echo "unexpected preexisting Access identity in runner-only bootstrap" >&2
-    exit 12
-  }
-fi
+# A fresh VM must not already contain the root Access identity. The
+# installer never writes that credential or exposes it to the runner.
+test ! -e "${CREDENTIAL_IDENTITY_FILE}" && test ! -L "${CREDENTIAL_IDENTITY_FILE}" || {
+  echo "preexisting VM Access identity at first runner registration" >&2
+  exit 12
+}
 
 cat > "${SUDOERS_FILE}" <<EOF
 Cmnd_Alias SING_BOX_RUNTIME_READ = ${LOCAL_OWNER} local status --fast, ${LOCAL_OWNER} local status, ${LOCAL_OWNER} local host-observe, ${LOCAL_OWNER} local host-resources, ${LOCAL_OWNER} local host-probe, ${LOCAL_OWNER} local verify, ${LOCAL_OWNER} local diagnose, ${LOCAL_OWNER} local quality-line2, ${LOCAL_OWNER} local credential-initial-probe, ${LOCAL_OWNER} local bundle-verify, ${LOCAL_OWNER} local mesh-verify, ${LOCAL_OWNER} local credential-state
 Cmnd_Alias SING_BOX_NATIVE_HOST_TRANSACTION = ${LOCAL_OWNER} local host-apply
 Cmnd_Alias SING_BOX_NATIVE_HOST_TRUST = ${LOCAL_OWNER} local host-refresh
 Cmnd_Alias SING_BOX_NATIVE_ADMIN = ${LOCAL_OWNER} local host-admin
+Cmnd_Alias SING_BOX_NATIVE_BOOTSTRAP = ${LOCAL_OWNER} local host-bootstrap-proof, ${LOCAL_OWNER} local host-bootstrap-access
 # The runner may transport only the exact host operation to the installed
 # root Agent, which independently validates Worker signature, Git provenance,
 # machine identity, protected journal and physical readback. No generic sudo,
 # direct Docker, bundle/credential mutation, rollback or Mesh cleanup.
-${RUNNER_USER} ALL=(root) NOPASSWD: SING_BOX_RUNTIME_READ, SING_BOX_NATIVE_HOST_TRANSACTION, SING_BOX_NATIVE_HOST_TRUST, SING_BOX_NATIVE_ADMIN
+${RUNNER_USER} ALL=(root) NOPASSWD: SING_BOX_RUNTIME_READ, SING_BOX_NATIVE_HOST_TRANSACTION, SING_BOX_NATIVE_HOST_TRUST, SING_BOX_NATIVE_ADMIN, SING_BOX_NATIVE_BOOTSTRAP
 EOF
 chmod 0440 "${SUDOERS_FILE}"
 visudo -cf "${SUDOERS_FILE}" >/dev/null
@@ -155,22 +130,15 @@ cd "${RUNNER_DIR}"
 
 runner_name="sing-box-production-${machine_id}"
 runner_labels="sing-box-production-vm,${machine_id}"
-# Enrollment cannot adopt or replace an earlier runner in the no-SSH epoch.
-if [[ "${initial_identity}" == false && -e .runner ]]; then
-  echo "runner-only first-use refuses a previously registered owner" >&2
+# An existing registration is an unknown first-use state, not adoption.
+if [[ -e .runner || -L .runner ]]; then
+  echo "runner first-use already registered; no replay" >&2
   exit 13
 fi
-if [[ ! -f .runner ]]; then
-  runner_replace=()
-  if [[ "${initial_identity}" == true ]]; then
-    runner_replace=(--replace)
-  fi
-  sudo -u "${RUNNER_USER}" ./config.sh \
-    --unattended --url "${RUNNER_REPOSITORY_URL}" \
-    --token "${registration_token}" --name "${runner_name}" \
-    --labels "${runner_labels}" --work "_work" \
-    "${runner_replace[@]}" >/dev/null
-fi
+sudo -u "${RUNNER_USER}" ./config.sh \
+  --unattended --url "${RUNNER_REPOSITORY_URL}" \
+  --token "${registration_token}" --name "${runner_name}" \
+  --labels "${runner_labels}" --work "_work" >/dev/null
 unset registration_token
 
 if [[ ! -f .service ]]; then
@@ -189,5 +157,5 @@ echo "acceptance_rpc_service_enabled=false"
 echo "tcp_50061_listener=false"
 echo "local_owner=${LOCAL_OWNER}"
 echo "registration_token_persisted=false"
-echo "credential_access_identity_installed=${initial_identity}"
+echo "credential_access_identity_installed=false"
 echo "runner_credential_access=false"

@@ -659,14 +659,14 @@ jobs:
           echo 'host_mutations=0'
 
   host_first_use:
-    # READ-ONLY admission; no SSH, provider CREATE or token reservation.
-    # The complete signed native handoff must replace this job atomically.
+    # Sole hosted CREATE owner; no SSH, no new service or runner root rights.
     needs: [host, host_report]
     if: >-
       needs.host.result == 'success' &&
       needs.host_report.result == 'success' &&
       needs.host.outputs.operation == 'FIRST_USE_PREFLIGHT' &&
       needs.host.outputs.kind == 'VM' &&
+      github.event_name == 'issue_comment' &&
       github.run_attempt == 1
     runs-on: ubuntu-24.04
     environment:
@@ -675,31 +675,16 @@ jobs:
     concurrency:
       group: vultr-control-plane-production
       cancel-in-progress: false
-    timeout-minutes: 15
+    timeout-minutes: 45
     permissions:
       contents: read
       actions: read
     env:
       TARGET_MACHINE: ${{ needs.host.outputs.machine_id }}
-      GH_TOKEN: ${{ github.token }}
+      SOURCE_COMMENT_ID: ${{ github.event.comment.id }}
+      GH_TOKEN: ${{ secrets.IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN }}
     steps:
-      - name: Checkout exact protected Git source
-        shell: bash
-        run: |
-          set -euo pipefail
-          git init .
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch --no-tags --depth=1 origin "${GITHUB_SHA}"
-          git checkout --detach FETCH_HEAD
-          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
-
-      - name: Compile exact host registry
-        shell: bash
-        run: |
-          set -euo pipefail
-          bash edge-platform/scripts/compile_vm_host_desired.sh "${TARGET_MACHINE}"
-
-      - name: Resolve exact published Root Agent and registry
+      - name: Fetch exact accepted Git and native release
         shell: bash
         env:
           REPOSITORY: ${{ github.repository }}
@@ -707,14 +692,24 @@ jobs:
           OUTPUT_DIR: ${{ runner.temp }}/host-release
         run: |
           set -euo pipefail
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --no-tags --depth=1 origin "${GITHUB_SHA}"
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          bash edge-platform/scripts/compile_vm_host_desired.sh "${TARGET_MACHINE}"
           bash edge-platform/scripts/resolve_durable_release.sh
           source "${OUTPUT_DIR}/resolved.env"
           test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
-          test "$(sha256sum "${OUTPUT_DIR}/fleet-registry.pb" | cut -d' ' -f1)" = "${EDGE_FLEET_REGISTRY_SHA256}"
-          test "$(sha256sum "${OUTPUT_DIR}/edge-orchestrator-linux-amd64" | cut -d' ' -f1)" = "${EDGE_ORCHESTRATOR_SHA256}"
+          for part in fleet-registry.pb edge-orchestrator-linux-amd64 edge-agent-linux-amd64; do
+            test -s "${OUTPUT_DIR}/${part}"
+          done
+          echo "${EDGE_ORCHESTRATOR_SHA256}  ${OUTPUT_DIR}/edge-orchestrator-linux-amd64" | sha256sum --check --status
+          echo "${EDGE_AGENT_SHA256}  ${OUTPUT_DIR}/edge-agent-linux-amd64" | sha256sum --check --status
           chmod 0755 "${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          echo "EDGE_RELEASE_CONTEXT_PATH=${OUTPUT_DIR}/resolved.env" >> "${GITHUB_ENV}"
 
-      - name: Prove exact Git Worker and Vultr CREATE candidates read only
+      - name: Prove one empty VM, pinned Worker signer and Access GET without mutations
         shell: bash
         env:
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
@@ -722,16 +717,236 @@ jobs:
           EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET }}
         run: |
           set -euo pipefail
-          test "${GITHUB_RUN_ATTEMPT}" = 1
           bin="${RUNNER_TEMP}/host-release/edge-orchestrator-linux-amd64"
-          registry="${RUNNER_TEMP}/host-release/fleet-registry.pb"
-          "${bin}" host \
-            --hosts-pb "${registry}" \
-            --hosts-sha256 "$(sha256sum "${registry}" | cut -d' ' -f1)" \
+          fleet="${RUNNER_TEMP}/host-release/fleet-registry.pb"
+          "${bin}" host --hosts-pb "${fleet}" \
+            --hosts-sha256 "$(sha256sum "${fleet}" | cut -d' ' -f1)" \
             first-use-preflight "${TARGET_MACHINE}"
-          # Native Rust admission must block pending signed credential handoff.
-          echo 'HOST_FIRST_USE_NATIVE_HANDOFF_NOT_ACCEPTED_NO_CREATE' >&2
-          exit 1
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')" = "${GITHUB_SHA}"
+          test "${GITHUB_RUN_ATTEMPT}" = 1
+
+      - name: Reserve unique Git receipt PR and durable BEGIN BEFORE VM CREATE
+        id: begin
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${SOURCE_COMMENT_ID}" =~ ^[1-9][0-9]*$ ]]
+          [[ "${TARGET_MACHINE}" =~ ^[a-z0-9][a-z0-9-]{0,62}$ ]]
+          test -n "${GH_TOKEN}"
+          main="$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')"
+          test "${main}" = "${GITHUB_SHA}"
+          # No previous receipt branch may represent an unknown earlier
+          # first-use for the SAME VM epoch.
+          previous="$(gh api "repos/${GITHUB_REPOSITORY}/git/matching-refs/heads/host-receipt-${TARGET_MACHINE}-")"
+          test "$(jq 'length' <<< "${previous}")" = 0 || {
+            echo HOST_FIRST_USE_PREVIOUS_BRANCH_NO_REPLAY >&2
+            exit 1
+          }
+          name="sing-box-production-${TARGET_MACHINE}"
+          runners="$(gh api "repos/${GITHUB_REPOSITORY}/actions/runners?per_page=100")"
+          jq -e --arg name "${name}" '(.total_count <= 100) and all(.runners[]; .name != $name)' <<< "${runners}" >/dev/null || {
+            echo HOST_FIRST_USE_RUNNER_NAME_ALREADY_REGISTERED_NO_REPLAY >&2
+            exit 1
+          }
+          branch="host-receipt-${TARGET_MACHINE}-${SOURCE_COMMENT_ID}"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/git/refs" \
+            -f "ref=refs/heads/${branch}" -f "sha=${main}" >/dev/null
+          old="$(gh api "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto?ref=${main}" --jq '.sha')"
+          printf '\n# native-receipt-registration-pending %s issue1-comment-%s\n' "${TARGET_MACHINE}" "${SOURCE_COMMENT_ID}" > "${RUNNER_TEMP}/receipt-reservation.txt"
+          cat infra/hosts/hosts.textproto "${RUNNER_TEMP}/receipt-reservation.txt" > "${RUNNER_TEMP}/receipt-reserved.textproto"
+          gh api -X PUT "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto" \
+            -f "branch=${branch}" -f "sha=${old}" \
+            -f "message=host: reserve native receipt for ${TARGET_MACHINE}" \
+            -f "content=$(base64 -w0 < "${RUNNER_TEMP}/receipt-reserved.textproto")" >/dev/null
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/pulls" \
+            -f "head=${branch}" -f base=main -F draft=true \
+            -f "title=host: register native receipt for ${TARGET_MACHINE}" \
+            -f "body=ONE-TIME BEGIN. Original authorized issue #1 comment ${SOURCE_COMMENT_ID}; accepted source ${main}. UNKNOWN_NO_REPLAY after provider request. First-use public root key and user-data scrub not yet proven." >/dev/null
+          begin="$(gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/26/comments" \
+            -f "body=HOST_NATIVE_FIRST_USE_BEGIN_V1 machine=${TARGET_MACHINE} issue1_comment=${SOURCE_COMMENT_ID} revision=${main} run=${GITHUB_RUN_ID} attempt=1 no_replay=true" --jq '.id')"
+          [[ "${begin}" =~ ^[1-9][0-9]*$ ]]
+          echo "EDGE_HOST_BEGIN_COMMENT_ID=${begin}" >> "${GITHUB_ENV}"
+          echo "begin_id=${begin}" >> "${GITHUB_OUTPUT}"
+          echo HOST_FIRST_USE_DURABLE_BEGIN_RECORDED
+
+      - name: Get one short-lived GitHub runner registration capability
+        shell: bash
+        run: |
+          set -euo pipefail
+          result="$(gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runners/registration-token")"
+          token="$(jq -er '.token' <<< "${result}")"
+          expiry="$(jq -er '.expires_at' <<< "${result}")"
+          deadline="$(date -u -d "${expiry}" +%s)"
+          now="$(date -u +%s)"
+          ((deadline >= now + 1200 && deadline <= now + 3600)) || {
+            echo HOST_FIRST_USE_RUNNER_TOKEN_TTL_INVALID_NO_REPLAY >&2
+            exit 1
+          }
+          [[ "${token}" =~ ^[A-Za-z0-9._-]{40,512}$ ]]
+          echo "::add-mask::${token}"
+          echo "EDGE_HOST_RUNNER_REGISTRATION_TOKEN=${token}" >> "${GITHUB_ENV}"
+          echo "EDGE_HOST_RUNNER_TOKEN_EXPIRY_UNIX=${deadline}" >> "${GITHUB_ENV}"
+
+      - name: Execute exactly one no-SSH native Vultr CREATE
+        shell: bash
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID }}
+          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          bin="${RUNNER_TEMP}/host-release/edge-orchestrator-linux-amd64"
+          fleet="${RUNNER_TEMP}/host-release/fleet-registry.pb"
+          "${bin}" host --hosts-pb "${fleet}" \
+            --hosts-sha256 "$(sha256sum "${fleet}" | cut -d' ' -f1)" \
+            first-use "${TARGET_MACHINE}" \
+            --installer-path edge-platform/scripts/install-vultr-production-runner.sh \
+            --agent-path "${RUNNER_TEMP}/host-release/edge-agent-linux-amd64"
+          echo HOST_FIRST_USE_CREATE_ONCE_NO_AUTOMATIC_REPLAY
+
+  host_first_use_native_proof:
+    needs: [host, host_first_use]
+    if: needs.host_first_use.result == 'success'
+    runs-on: ${{ fromJSON(needs.host.outputs.runner_labels) }}
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: write
+    env:
+      TARGET_MACHINE: ${{ needs.host.outputs.machine_id }}
+    steps:
+      - name: Collect signed public-only proof from exact new VM Root Agent
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${RUNNER_NAME}" = "sing-box-production-${TARGET_MACHINE}"
+          owner=/usr/local/libexec/sing-box/edge-agent
+          test "$(stat -c '%u:%g:%a' "${owner}")" = '0:0:755'
+          sudo -n "${owner}" local host-bootstrap-proof > "${RUNNER_TEMP}/bootstrap-root-proof.pb"
+          size="$(stat -c '%s' "${RUNNER_TEMP}/bootstrap-root-proof.pb")"
+          ((size > 64 && size <= 512))
+          echo HOST_FIRST_USE_NATIVE_PROOF=SIGNED_PUBLIC_ONLY_NOT_PROVIDER_ATTESTATION
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-first-use-proof-${{ github.run_id }}
+          path: ${{ runner.temp }}/bootstrap-root-proof.pb
+          if-no-files-found: error
+          retention-days: 3
+
+  host_first_use_finalize:
+    needs: [host, host_first_use, host_first_use_native_proof]
+    if: needs.host_first_use_native_proof.result == 'success'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    concurrency:
+      group: vultr-control-plane-production
+      cancel-in-progress: false
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    env:
+      TARGET_MACHINE: ${{ needs.host.outputs.machine_id }}
+      SOURCE_COMMENT_ID: ${{ github.event.comment.id }}
+      GH_TOKEN: ${{ secrets.IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN }}
+      VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-first-use-proof-${{ github.run_id }}
+          path: ${{ runner.temp }}/native-public-proof
+
+      - name: Verify signed root proof and scrub provider user-data with GET
+        id: proof
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/host-release
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --no-tags --depth=1 origin "${GITHUB_SHA}"
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          echo "${EDGE_ORCHESTRATOR_SHA256}  ${OUTPUT_DIR}/edge-orchestrator-linux-amd64" | sha256sum --check --status
+          chmod 0755 "${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          echo "EDGE_RELEASE_CONTEXT_PATH=${OUTPUT_DIR}/resolved.env" >> "${GITHUB_ENV}"
+          fleet="${OUTPUT_DIR}/fleet-registry.pb"
+          bin="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          "${bin}" host --hosts-pb "${fleet}" \
+            --hosts-sha256 "$(sha256sum "${fleet}" | cut -d' ' -f1)" \
+            bootstrap-proof-check "${TARGET_MACHINE}" \
+            --proof-path "${RUNNER_TEMP}/native-public-proof/bootstrap-root-proof.pb" \
+            > "${RUNNER_TEMP}/public-proof-check.txt"
+          cat "${RUNNER_TEMP}/public-proof-check.txt"
+          public="$(sed -n 's/^bootstrap_native_receipt_public_key_hex=//p' "${RUNNER_TEMP}/public-proof-check.txt")"
+          [[ "${public}" =~ ^[0-9a-f]{64}$ ]]
+          echo "PUBLIC_ROOT_KEY_HEX=${public}" >> "${GITHUB_ENV}"
+          # The private runner token was stored at the provider. A verified
+          # GET/PATCH/GET scrub is mandatory before publishing the receipt PR.
+          "${bin}" host --hosts-pb "${fleet}" \
+            --hosts-sha256 "$(sha256sum "${fleet}" | cut -d' ' -f1)" \
+            first-use-scrub "${TARGET_MACHINE}"
+
+      - name: Complete ONLY the reserved protected public receipt PR
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')" = "${GITHUB_SHA}"
+          [[ "${SOURCE_COMMENT_ID}" =~ ^[1-9][0-9]*$ ]]
+          branch="host-receipt-${TARGET_MACHINE}-${SOURCE_COMMENT_ID}"
+          pr="$(gh api "repos/${GITHUB_REPOSITORY}/pulls?state=open&head=iamaman11:${branch}" |
+            jq -er --arg branch "${branch}" '[.[] | select(.head.ref == $branch and .base.ref == "main" and .head.repo.full_name == "iamaman11/sing-box" and .draft == true)] | if length == 1 then .[0].number else empty end')"
+          [[ "${pr}" =~ ^[1-9][0-9]*$ ]]
+          bin="${RUNNER_TEMP}/host-release/edge-orchestrator-linux-amd64"
+          fleet="${RUNNER_TEMP}/host-release/fleet-registry.pb"
+          candidate="${RUNNER_TEMP}/native-receipt-registration.pb"
+          "${bin}" host --hosts-pb "${fleet}" \
+            --hosts-sha256 "$(sha256sum "${fleet}" | cut -d' ' -f1)" \
+            register-receipt "${TARGET_MACHINE}" \
+            --receipt-public-key-hex "${PUBLIC_ROOT_KEY_HEX}" \
+            --output-path "${candidate}"
+          buf="${RUNNER_TEMP}/buf"
+          curl --fail --silent --show-error --location \
+            "https://github.com/bufbuild/buf/releases/download/v1.73.0/buf-Linux-x86_64" -o "${buf}"
+          printf '%s  %s\n' '8f2986298ad08f0cc1bf999b9797b7c383adf32d7edf0f73d6f1e1a701baeac1' "${buf}" | sha256sum --check --status
+          chmod 0755 "${buf}"
+          target="${RUNNER_TEMP}/native-registered-hosts.textproto"
+          (cd edge-platform && "${buf}" convert proto/edge/platform/v1/fleet.proto \
+            --type edge.platform.v1.FleetDesiredState \
+            --from "${candidate}#format=binpb" --to "${target}#format=txtpb")
+          (cd edge-platform && "${buf}" convert proto/edge/platform/v1/fleet.proto \
+            --type edge.platform.v1.FleetDesiredState \
+            --from "${target}#format=txtpb" \
+            --to "${RUNNER_TEMP}/registered-roundtrip.pb#format=binpb")
+          "${bin}" host --hosts-pb "${fleet}" \
+            --hosts-sha256 "$(sha256sum "${fleet}" | cut -d' ' -f1)" \
+            verify-receipt "${TARGET_MACHINE}" \
+            --receipt-public-key-hex "${PUBLIC_ROOT_KEY_HEX}" \
+            --candidate-path "${RUNNER_TEMP}/registered-roundtrip.pb"
+          sha="$(gh api "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto?ref=${branch}" --jq '.sha')"
+          gh api -X PUT "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto" \
+            -f "branch=${branch}" -f "sha=${sha}" \
+            -f "message=host: register native receipt for ${TARGET_MACHINE}" \
+            -f "content=$(base64 -w0 < "${target}")" >/dev/null
+          gh api "repos/${GITHUB_REPOSITORY}/contents/infra/hosts/hosts.textproto?ref=${branch}" \
+            --jq '.content' | base64 --decode | cmp -s - "${target}"
+          node="$(gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr}" --jq '.node_id')"
+          test -n "${node}"
+          if ! gh api graphql -f 'query=mutation($id:ID!){markPullRequestReadyForReview(input:{pullRequestId:$id}){pullRequest{isDraft}}}' -f "id=${node}" |
+              jq -e '(.errors == null) and (.data.markPullRequestReadyForReview.pullRequest.isDraft == false)' >/dev/null; then
+            echo HOST_NATIVE_RECEIPT_DRAFT_REVIEW_REQUIRED
+          fi
+          echo "HOST_FIRST_USE=AWAITING_PROTECTED_PUBLIC_RECEIPT_MERGE"
+          echo "HOST_SIGNED_INSTALL=NOT_YET_AUTHORIZED"
 
   host_resume_receipt:
     # The prior /host apply may continue only after its exact registration PR
@@ -888,12 +1103,144 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
-  host_resume_native:
-    # Existing reusable root runner is transport only. Fresh Worker signature
-    # and the native root journal still gate mutation after the protected merge.
+  host_resume_native_bootstrap:
+    # First receive the protected public receipt, then refresh the exact
+    # root trust snapshot WITHOUT resource replay and return fresh proof.
     needs: host_resume_receipt
     if: >-
       needs.host_resume_receipt.result == 'success' &&
+      needs.host_resume_receipt.outputs.operation == 'APPLY_PREFLIGHT' &&
+      needs.host_resume_receipt.outputs.kind == 'VM'
+    runs-on: ${{ fromJSON(needs.host_resume_receipt.outputs.runner_labels) }}
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: write
+    env:
+      TARGET_MACHINE: ${{ needs.host_resume_receipt.outputs.machine_id }}
+    steps:
+      - name: Refresh only native code/trust and sign fresh public recipient
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${RUNNER_NAME}" = "sing-box-production-${TARGET_MACHINE}"
+          owner=/usr/local/libexec/sing-box/edge-agent
+          sudo -n "${owner}" local host-refresh
+          sudo -n "${owner}" local host-bootstrap-proof > "${RUNNER_TEMP}/bootstrap-root-proof.pb"
+          size="$(stat -c '%s' "${RUNNER_TEMP}/bootstrap-root-proof.pb")"
+          ((size > 64 && size <= 512))
+          echo BOOTSTRAP_PROOF=ROOT_SIGNED_PUBLIC_ONLY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-enrolled-proof-${{ github.run_id }}
+          path: ${{ runner.temp }}/bootstrap-root-proof.pb
+          if-no-files-found: error
+          retention-days: 3
+
+  host_resume_seal:
+    # Plaintext Access identity exists only in this GitHub-hosted protected
+    # job and in the VM Root Agent after decryption. Never in runner secrets,
+    # Vultr user-data, Git, issue comments or logs.
+    needs: [host_resume_receipt, host_resume_native_bootstrap]
+    if: needs.host_resume_native_bootstrap.result == 'success'
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      actions: read
+    env:
+      TARGET_MACHINE: ${{ needs.host_resume_receipt.outputs.machine_id }}
+      ACCESS_ID: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID }}
+      ACCESS_SECRET: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-enrolled-proof-${{ github.run_id }}
+          path: ${{ runner.temp }}/native-root-proof
+
+      - name: Encrypt exact Git-pinned Worker Access identity for native Root Agent
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.event.workflow_run.head_sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/host-release
+        run: |
+          set -euo pipefail
+          test -n "${ACCESS_ID}" && test -n "${ACCESS_SECRET}"
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --no-tags --depth=1 origin "${ACCEPTED_REVISION}"
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${ACCEPTED_REVISION}"
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${ACCEPTED_REVISION}"
+          bin="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          printf '%s  %s\n' "${EDGE_ORCHESTRATOR_SHA256}" "${bin}" | sha256sum --check --status
+          chmod 0755 "${bin}"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
+          fleet="${OUTPUT_DIR}/fleet-registry.pb"
+          # Shell builtin printf writes directly to hosted orchestrator stdin.
+          # No GH artifact or runner environment ever contains clear bytes.
+          printf 'CF_ACCESS_CLIENT_ID=%s\nCF_ACCESS_CLIENT_SECRET=%s\n' \
+            "${ACCESS_ID}" "${ACCESS_SECRET}" | \
+            "${bin}" host --hosts-pb "${fleet}" \
+              --hosts-sha256 "$(sha256sum "${fleet}" | cut -d' ' -f1)" \
+              bootstrap-seal "${TARGET_MACHINE}" \
+              --proof-path "${RUNNER_TEMP}/native-root-proof/bootstrap-root-proof.pb" \
+              --output-path "${RUNNER_TEMP}/native-access-encrypted.pb"
+          test -s "${RUNNER_TEMP}/native-access-encrypted.pb"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: native-sealed-access-${{ github.run_id }}
+          path: ${{ runner.temp }}/native-access-encrypted.pb
+          if-no-files-found: error
+          retention-days: 1
+
+  host_resume_native_access:
+    needs: [host_resume_receipt, host_resume_seal]
+    if: needs.host_resume_seal.result == 'success'
+    runs-on: ${{ fromJSON(needs.host_resume_receipt.outputs.runner_labels) }}
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+    env:
+      TARGET_MACHINE: ${{ needs.host_resume_receipt.outputs.machine_id }}
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: native-sealed-access-${{ github.run_id }}
+          path: ${{ runner.temp }}/native-sealed-access
+
+      - name: Root-only decrypt, real Cloudflare Access GET, one-shot commit
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${RUNNER_NAME}" = "sing-box-production-${TARGET_MACHINE}"
+          owner=/usr/local/libexec/sing-box/edge-agent
+          envelope="${RUNNER_TEMP}/native-sealed-access/native-access-encrypted.pb"
+          test -f "${envelope}" && test ! -L "${envelope}"
+          size="$(stat -c '%s' "${envelope}")"
+          ((size > 80 && size <= 4096))
+          sudo -n "${owner}" local host-bootstrap-access < "${envelope}" \
+            > "${RUNNER_TEMP}/bootstrap-access-result.txt"
+          grep -Fxq 'bootstrap_access=ROOT_ONLY_INSTALLED_WORKER_GET_PROVEN' "${RUNNER_TEMP}/bootstrap-access-result.txt"
+          grep -Fxq 'bootstrap_replay_allowed=false' "${RUNNER_TEMP}/bootstrap-access-result.txt"
+          echo BOOTSTRAP_ACCESS=ROOT_LOCAL_GET_PROVEN_SIGNED_INSTALL_PENDING
+
+  host_resume_native:
+    # Existing reusable root runner is transport only. Fresh Worker signature
+    # and the native root journal still gate mutation after the protected merge.
+    needs: [host_resume_receipt, host_resume_native_access]
+    if: >-
+      needs.host_resume_receipt.result == 'success' &&
+      needs.host_resume_native_access.result == 'success' &&
       needs.host_resume_receipt.outputs.operation == 'APPLY_PREFLIGHT' &&
       needs.host_resume_receipt.outputs.kind == 'VM'
     permissions:

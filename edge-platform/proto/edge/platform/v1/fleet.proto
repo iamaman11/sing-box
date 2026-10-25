@@ -59,6 +59,30 @@ message FleetHost {
   string vm_provider_spec_path = 12;
 }
 
+// One-time VM root key attestation. This is public-only, signed using the
+// already enrolled native Ed25519 receipt key. It MUST be independently
+// correlated to the provider CREATE and the runner's Git registration before
+// the signer is accepted into protected Git.
+message FleetVmBootstrapKeyProof {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  bytes release_set_sha256 = 3;
+  bytes native_receipt_public_key = 4;
+  bytes recipient_x25519_public_key = 5;
+  bytes native_signature = 6;
+}
+
+// A short bounded envelope for the existing GH-runner-to-native-root channel.
+// The runner only forwards ciphertext, never accesses the secret, recipient
+// private key or Worker control credentials. No new daemon, secret API or SSH.
+message FleetVmBootstrapAccessEnvelope {
+  uint32 schema_version = 1;
+  FleetVmBootstrapKeyProof recipient = 2;
+  bytes sender_x25519_public_key = 3;
+  bytes nonce = 4;
+  bytes ciphertext = 5;
+}
+
 // Source bytes are published by the existing Worker-v2 plane first; Git
 // binds their exact generation and digest into the signed HostIntent. This
 // MUST NOT contain any secret material or an arbitrary URL.

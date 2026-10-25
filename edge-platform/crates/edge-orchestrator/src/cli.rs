@@ -106,6 +106,25 @@ pub(crate) enum HostCommand {
         #[arg(long)]
         result_path: PathBuf,
     },
+    /// Verify first-use public root proof before protected receipt merge.
+    /// This is a signed *self-attestation*, not independent provider proof.
+    #[command(hide = true)]
+    BootstrapProofCheck {
+        machine_id: String,
+        #[arg(long)]
+        proof_path: PathBuf,
+    },
+    /// Internal hosted-only seal of Access secrets for an exact Git-pinned
+    /// signed native recipient. Reads plaintext from stdin, writes only
+    /// encrypted protobuf to the supplied private artifact path.
+    #[command(hide = true)]
+    BootstrapSeal {
+        machine_id: String,
+        #[arg(long)]
+        proof_path: PathBuf,
+        #[arg(long)]
+        output_path: PathBuf,
+    },
     /// Internal read-only ingestion of a native protobuf observation.
     /// GitHub runner output is NOT independent proof of native owner identity.
     #[command(hide = true)]
@@ -228,6 +247,9 @@ pub(crate) enum HostCommand {
     /// No VM/provider mutation and no alternate accepted desired.
     #[command(hide = true)]
     FirstUsePreflight { machine_id: String },
+    /// Internal provider GET-proven user-data cleanup after native runner proof.
+    #[command(hide = true)]
+    FirstUseScrub { machine_id: String },
     /// Internal GitHub-hosted first-use of a new, absent VM. This shares
     /// the host ingress and existing Rust Vultr owner, never a legacy workflow.
     #[command(hide = true)]

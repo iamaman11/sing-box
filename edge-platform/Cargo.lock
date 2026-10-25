@@ -321,6 +321,7 @@ dependencies = [
  "serde_json",
  "serde_yaml",
  "tokio",
+ "x25519-dalek",
 ]
 
 [[package]]
@@ -508,6 +509,7 @@ dependencies = [
  "tonic-prost",
  "tonic-prost-build",
  "windows-sys 0.61.2",
+ "x25519-dalek",
 ]
 
 [[package]]

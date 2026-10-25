@@ -588,18 +588,10 @@ fn authorize_initial_runtime_job(job: &str, apply: bool) -> Result<(), String> {
     }
 }
 
-/// Fail-closed VM create admission: no ambiguous plan or existing owner
-/// can be downgraded to a fresh CREATE by the first-use workflow.
-/// The deployed first-use implementation still contains strict SSH/SCP.
-/// An operator must not accidentally turn a complete Worker/Git preflight
-/// into provider CREATE through that retired bootstrap. Replace this single
-/// code-owned admission only together with a proven one-time cloud-init
-/// enrollment and secure root-only credential delivery. No environment flag,
-/// Git field or caller option can override this invariant.
-fn admit_first_use_bootstrap_transport() -> Result<(), &'static str> {
-    Err("HOST_FIRST_USE_CLOUD_INIT_ENROLLMENT_NOT_IMPLEMENTED_NO_CREATE")
-}
-
+/// A fresh VM is accepted only when the protected Git/Worker/Vultr
+/// evidence selects exactly one CREATE and there is no prior owned VM.
+// The irreversible operation additionally requires one issue-scoped,
+// durable GitHub BEGIN, a short-lived runner identity and native cloud-init.
 fn admit_vm_first_use_provider_plan(
     selected: Option<&PlanClass>,
     plan_count: usize,
@@ -682,28 +674,187 @@ pub(crate) async fn host_first_use_provider_preflight(
     println!("host_first_use_provider_plan=EXACT_CREATE_ONLY");
     println!("host_receipt_registration=NOT_YET_RESERVED");
     println!("host_mutations=0");
-    // Exact read-only Git, Worker GET and provider observations completed.
-    // Native cloud-init identity/receipt and root-only handoff remain blocked;
-    // no GH runner token, receipt reservation or Vultr CREATE may follow.
-    admit_first_use_bootstrap_transport().map_err(str::to_owned)
+    println!("host_first_use_preflight=PROVIDER_AND_WORKER_GET_PROVEN");
+    Ok(())
 }
 
-/// Read-only first-use admission. Historical SSH/SCP CREATE and root
-/// bootstrap have been deleted; the existing cloud-init renderer is the
-/// only future install path, and cannot be executed until the signed
-/// one-use root handoff and receipt propagation are completed.
+/// The single new-VM CREATE owner. All Git, Worker and Vultr preconditions
+/// are GET-only before this signed/authorized GitHub-hosted invocation.
+/// The GitHub job must persist an exact one-time BEGIN before it supplies
+/// the ephemeral runner token. An unknown CREATE outcome is NEVER replayed.
 pub(crate) async fn host_first_use(
     machine_id: &str,
     _installer: &Path,
     _agent: &Path,
     context: &OrchestrationContext,
 ) -> Result<(), String> {
-    if env::var("GITHUB_RUN_ATTEMPT").as_deref() != Ok("1") {
-        return Err("HOST_FIRST_USE_NO_AUTOMATIC_REPLAY".to_owned());
+    if env::var("GITHUB_RUN_ATTEMPT").as_deref() != Ok("1")
+        || env::var("GITHUB_REPOSITORY").as_deref() != Ok("iamaman11/sing-box")
+        || env::var("GITHUB_EVENT_NAME").as_deref() != Ok("issue_comment")
+        || env::var("EDGE_HOST_BEGIN_COMMENT_ID")
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
+            .is_none_or(|value| value == 0)
+    {
+        return Err("HOST_FIRST_USE_PROTECTED_GITHUB_DURABLE_BEGIN_REQUIRED".into());
     }
     host_first_use_provider_preflight(machine_id, context).await?;
-    // Fail closed even if future preflight conditions change.
-    Err("HOST_FIRST_USE_NATIVE_RECEIPT_AND_ACCESS_HANDOFF_REQUIRED_NO_CREATE".to_owned())
+    let host = context.verified_vm_first_use_host(machine_id)?;
+    let provider_spec = Path::new(&host.vm_provider_spec_path);
+    let desired = load_desired_state(provider_spec)?;
+    let machine = desired
+        .machines
+        .first()
+        .ok_or("HOST_FIRST_USE_MACHINE_MISSING")?;
+    if desired.machines.len() != 1
+        || machine.id != machine_id
+        || machine.bootstrap_profile != "singbox-native-first-use-v1"
+    {
+        return Err("HOST_FIRST_USE_ONLY_NATIVE_SSH_FREE_PROFILE".into());
+    }
+    let token = env::var("EDGE_HOST_RUNNER_REGISTRATION_TOKEN")
+        .map_err(|_| "HOST_FIRST_USE_EPHEMERAL_GITHUB_TOKEN_MISSING")?;
+    let deadline = env::var("EDGE_HOST_RUNNER_TOKEN_EXPIRY_UNIX")
+        .map_err(|_| "HOST_FIRST_USE_GITHUB_TOKEN_EXPIRY_MISSING")?
+        .parse::<u64>()
+        .map_err(|_| "HOST_FIRST_USE_GITHUB_TOKEN_EXPIRY_INVALID")?;
+    let release = context.release();
+    let agent_sha = release.agent_sha256.as_str();
+    if agent_sha.len() != 64
+        || !agent_sha
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err("HOST_FIRST_USE_AGENT_DIGEST_INVALID".into());
+    }
+    let substrate = pinned_host_substrate_versions(context)?;
+    let cloud_init = crate::vultr_host_bootstrap::render_native_first_use_with_runner(
+        include_str!("../../../../win/vultr-waw/cloud-init.yaml"),
+        machine_id,
+        &release.release_set_sha256,
+        agent_sha,
+        &substrate,
+        &token,
+        deadline,
+    )?;
+    // Old SSH key/certificate must not enter the provider CREATE payload.
+    if cloud_init.contains("ssh_authorized_keys:") || cloud_init.contains("ssh_host_ed25519_key") {
+        return Err("HOST_FIRST_USE_CLOUD_INIT_SSH_REGRESSION".into());
+    }
+    let profiles = load_firewall_profiles(&desired)?;
+    let mut provider = lifecycle_provider_from_env()?;
+    let mut support = support_provider_from_env()?;
+    validate_machine_catalog(&mut support, machine).await?;
+    let bindings = verified_firewall_bindings(&mut support, &desired, profiles.as_ref()).await?;
+    let binding = match machine.provider.firewall_profile.as_deref() {
+        None => None,
+        Some(name) => Some(
+            bindings
+                .iter()
+                .find(|(_, observed)| observed.as_str() == name)
+                .map(|(id, _)| id.clone())
+                .ok_or("HOST_FIRST_USE_FIREWALL_BINDING_UNPROVEN")?,
+        ),
+    };
+    let prerequisites = CreatePrerequisites {
+        bootstrap_profile: machine.bootstrap_profile.clone(),
+        ssh_key_id: String::new(),
+        cloud_init,
+        firewall_group_id: binding,
+        firewall_profile: machine.provider.firewall_profile.clone(),
+    };
+    let observation = plan_desired_state_with_firewall_profiles(
+        &mut provider,
+        &desired,
+        Some(machine_id),
+        &bindings,
+    )
+    .await?;
+    admit_vm_first_use_provider_plan(
+        observation.plans.first().map(|plan| &plan.class),
+        observation.plans.len(),
+        observation
+            .inventory
+            .resources
+            .iter()
+            .any(|resource| resource.ownership.logical_id.as_deref() == Some(machine_id)),
+    )
+    .map_err(str::to_owned)?;
+    let plan = observation
+        .plans
+        .first()
+        .ok_or("HOST_FIRST_USE_CREATE_PLAN_MISSING")?
+        .clone();
+    let authorized = authorize_vultr_machine(&desired, &observation.inventory, plan)?;
+    // This is the FIRST irreversible step: the GitHub issue BEGIN and
+    // external concurrency owner must already have committed to no-replay.
+    let report = apply_machine_with_firewall_profiles(
+        &mut provider,
+        &desired,
+        machine_id,
+        &authorized.authority.authority_digest,
+        &prerequisites,
+        &LifecycleExecutionPolicy::default(),
+        &bindings,
+    )
+    .await?;
+    if report.action != ApplyAction::Created {
+        return Err("HOST_FIRST_USE_PROVIDER_CREATE_NOT_PROVEN_NO_REPLAY".into());
+    }
+    println!("host_machine_id={machine_id}");
+    println!("host_provider_id={}", report.provider_id);
+    println!("host_first_use_provider_create=EXACT_NATIVE_CLOUD_INIT_ACCEPTED");
+    println!("host_first_use_bootstrap_transport=GITHUB_EPHEMERAL_RUNNER_NO_SSH");
+    println!("host_first_use_signed_native_receipt=AWAITING_PROTECTED_GIT");
+    println!("host_first_use_user_data_scrub=REQUIRED_AFTER_RUNNER_PROOF");
+    Ok(())
+}
+
+/// Complete the provider-side first-use secret scrub only after the caller
+/// proved the exact fresh runner is registered and returned native proof.
+/// Instance ID comes from canonical Vultr readback, NEVER caller input.
+pub(crate) async fn host_first_use_scrub(
+    machine_id: &str,
+    context: &OrchestrationContext,
+) -> Result<(), String> {
+    let host = context.verified_vm_first_use_host(machine_id)?;
+    let desired = load_desired_state(Path::new(&host.vm_provider_spec_path))?;
+    if desired.machines.len() != 1
+        || desired.machines[0].id != machine_id
+        || desired.machines[0].bootstrap_profile != "singbox-native-first-use-v1"
+    {
+        return Err("HOST_FIRST_USE_SCRUB_WRONG_MACHINE_OR_PROFILE".into());
+    }
+    let profiles = load_firewall_profiles(&desired)?;
+    let mut provider = lifecycle_provider_from_env()?;
+    let mut support = support_provider_from_env()?;
+    let bindings = verified_firewall_bindings(&mut support, &desired, profiles.as_ref()).await?;
+    let report = plan_desired_state_with_firewall_profiles(
+        &mut provider,
+        &desired,
+        Some(machine_id),
+        &bindings,
+    )
+    .await?;
+    if report.plans.len() != 1 || report.plans[0].class != PlanClass::Noop {
+        return Err("HOST_FIRST_USE_SCRUB_PROVIDER_OWNERSHIP_OR_STATE_UNPROVEN".into());
+    }
+    let instance_id = report.plans[0]
+        .provider_id
+        .as_deref()
+        .ok_or("HOST_FIRST_USE_SCRUB_PROVIDER_ID_MISSING")?;
+    let mut operational = operational_provider_from_env()?;
+    crate::vultr_host_bootstrap::scrub_user_data(
+        &mut operational,
+        instance_id,
+        2,
+        Duration::from_secs(3),
+    )
+    .await?;
+    crate::vultr_host_bootstrap::verify_user_data_scrubbed(&mut operational, instance_id).await?;
+    println!("host_first_use_user_data=PROVIDER_GET_PROVED_SCRUBBED");
+    println!("host_first_use_token_present_in_provider=false");
+    Ok(())
 }
 
 fn validate_bootstrap_secret(label: &str, value: &str) -> Result<(), String> {

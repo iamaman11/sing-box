@@ -63,6 +63,9 @@ pub(super) async fn run(
             )
             .await
         }
+        cli::HostCommand::FirstUseScrub { machine_id } => {
+            vultr_lifecycle_command::host_first_use_scrub(&machine_id, release_context).await
+        }
         cli::HostCommand::FirstUsePreflight { machine_id } => {
             vultr_lifecycle_command::host_first_use_provider_preflight(&machine_id, release_context)
                 .await

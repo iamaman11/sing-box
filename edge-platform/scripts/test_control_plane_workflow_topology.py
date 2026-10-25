@@ -109,31 +109,43 @@ assert "HOST_VM_CREATE_REQUIRES_NATIVE_ONE_TIME_ENROLLMENT_NO_SSH" in provider
 assert '#[path = "vm_credential_proof.rs"]' in worker_src
 assert "get_vm_credential_bundle_with_access(" in vm_proof
 # A GET-only capability probe must not request an SSH private key.
-# The old first-use implementation cannot reach provider CREATE until the
-# signed cloud-init enrollment plus root-only Access delivery is implemented.
+# The published first-use workflow remains fail-closed. The typed Rust
+# CREATE is reachable only through its protected GitHub admission and must
+# never be activated by a generic provider lifecycle or SSH fallback.
 capability_job=router.split("  host_capabilities:", 1)[1].split("  host_first_use:", 1)[0]
 assert "VULTR_SSH_PRIVATE_KEY" not in capability_job
 capability_probe=Path("edge-platform/scripts/host_capability_preflight.py").read_text(encoding="utf-8")
 assert "operator_ssh_private_key" not in capability_probe
 assert '"bootstrap_transport": "SSH_RETIRED_CLOUD_INIT_REQUIRED"' in capability_probe
-assert 'admit_first_use_bootstrap_transport().map_err(str::to_owned)' in provider
-assert provider.count("admit_first_use_bootstrap_transport().map_err(str::to_owned)") == 1
-assert 'HOST_FIRST_USE_CLOUD_INIT_ENROLLMENT_NOT_IMPLEMENTED_NO_CREATE' in provider
-# Only a read-only GH-hosted first-use preflight is reachable. The old SSH
-# installer, provider lease, registration-token POST and receipt draft
-# creation cannot silently reappear when a Rust gate is removed.
-firstuse_job=router.split("  host_first_use:\n",1)[1].split("  host_resume_receipt:\n",1)[0]
+assert 'admit_first_use_bootstrap_transport().map_err(str::to_owned)' not in provider
+assert 'HOST_FIRST_USE_PROTECTED_GITHUB_DURABLE_BEGIN_REQUIRED' in provider
+assert 'singbox-native-first-use-v1' in provider
+assert 'render_native_first_use_with_runner(' in provider
+assert 'host_first_use_scrub(' in provider
+assert provider.count("HOST_FIRST_USE_PROTECTED_GITHUB_DURABLE_BEGIN_REQUIRED") == 1
+assert 'host_first_use_provider_preflight(machine_id, context).await?' in provider
+assert 'HOST_FIRST_USE_PROVIDER_NOT_EXACT_CREATE_NO_REPLAY' in provider
+# The existing hosted job is now the only first-use CREATE owner. Durable
+# Git BEGIN + absence/runner checks MUST precede issuing a short-lived token
+# and the one permitted provider CREATE. Signed native proof must precede
+# provider user-data scrub GET and public receipt PR finalization.
+firstuse_job=router.split("  host_first_use:",1)[1].split("  host_resume_receipt:",1)[0]
 assert "VULTR_SSH_PRIVATE_KEY" not in firstuse_job
 assert "EDGE_SSH_PRIVATE_KEY_PATH" not in firstuse_job
-assert "/actions/runners/registration-token" not in firstuse_job
-assert "git/refs" not in firstuse_job and "gh api -X POST" not in firstuse_job
 assert "first-use-preflight" in firstuse_job
-assert "HOST_FIRST_USE_NATIVE_HANDOFF_NOT_ACCEPTED_NO_CREATE" in firstuse_job
+assert firstuse_job.index("Reserve unique Git receipt PR and durable BEGIN BEFORE VM CREATE") < firstuse_job.index("/actions/runners/registration-token")
+assert firstuse_job.index("/actions/runners/registration-token") < firstuse_job.index("Execute exactly one no-SSH native Vultr CREATE")
+assert firstuse_job.index("Execute exactly one no-SSH native Vultr CREATE") < firstuse_job.index("Collect signed public-only proof")
+assert firstuse_job.index("bootstrap-proof-check") < firstuse_job.index('first-use-scrub')
+assert firstuse_job.index('first-use-scrub') < firstuse_job.index("Complete ONLY the reserved protected public receipt PR")
+assert "host-receipt-${TARGET_MACHINE}-${SOURCE_COMMENT_ID}" in firstuse_job
+assert "HOST_FIRST_USE_DURABLE_BEGIN_RECORDED" in firstuse_job
+assert "HOST_FIRST_USE_CREATE_ONCE_NO_AUTOMATIC_REPLAY" in firstuse_job
+assert "HOST_FIRST_USE_NATIVE_HANDOFF_NOT_ACCEPTED_NO_CREATE" not in firstuse_job
 assert "edge-agent.service" not in Path("win/vultr-waw/cloud-init.yaml").read_text(encoding="utf-8")
 
-# The SSH-free native bootstrap is a verified, secret-free component of the
-# existing Rust Vultr owner. It must not be used to bypass the first-use gate
-# until the one-shot Worker Access/runner handoff is implemented.
+# Rust native cloud-init is the only accepted CREATE renderer; the hosted
+# flow must prove the independent one-use receipt and user-data scrub.
 bootstrap=Path("edge-platform/crates/edge-orchestrator/src/vultr_host_bootstrap.rs").read_text(encoding="utf-8")
 native_init=Path("edge-platform/crates/edge-orchestrator/src/vultr_native_cloud_init.rs").read_text(encoding="utf-8")
 assert '#[path = "vultr_native_cloud_init.rs"]' in bootstrap
@@ -144,7 +156,9 @@ assert "HOST_CLOUD_INIT_NATIVE_OWNER_ALREADY_PRESENT_NO_REPLAY" in native_init
 assert "NATIVE_ROOT_ENROLLED_AWAITING_ONE_TIME_CREDENTIAL_HANDOFF" in native_init
 assert "EDGE_RUNNER_REGISTRATION_TOKEN" not in native_init.split("const NATIVE_FIRST_USE:",1)[1].split('"#;',1)[0]
 assert "ssh_authorized_keys:" not in native_init.split("const NATIVE_FIRST_USE:",1)[1].split('"#;',1)[0]
-assert "admit_first_use_bootstrap_transport().map_err(str::to_owned)" in provider
+assert "render_native_first_use_with_runner(" in provider
+assert "host_first_use_scrub(" in provider
+assert "HOST_FIRST_USE_PROTECTED_GITHUB_DURABLE_BEGIN_REQUIRED" in provider
 
 # Provider payload omits sshkey_id entirely for the native bootstrap profile.
 native_provider=Path("edge-platform/crates/edge-provider-vultr/src/lib.rs").read_text(encoding="utf-8")
@@ -154,7 +168,19 @@ assert '#[serde(skip_serializing_if = "Vec::is_empty")]\n    sshkey_id:' in nati
 assert "singbox-native-first-use-v1" in lifecycle_service
 assert "HOST_NATIVE_CREATE_MUST_HAVE_NO_SSH_AND_PINNED_CLOUD_INIT" in lifecycle_service
 assert "--runner-only" in vm_installer
-assert "runner-only first-use refuses a previously registered owner" in vm_installer
+assert "runner first-use already registered; no replay" in vm_installer
+assert "runner bootstrap must use --runner-only" in vm_installer
+assert 'CF_ACCESS_CLIENT_ID=%s' not in vm_installer
+assert 'CF_ACCESS_CLIENT_SECRET=%s' not in vm_installer
+assert "SING_BOX_NATIVE_BOOTSTRAP" in vm_installer
+native_bootstrap = Path("edge-platform/crates/edge-agent/src/host_bootstrap_access.rs").read_text(encoding="utf-8")
+native_enroll = Path("edge-platform/crates/edge-agent/src/host_enroll.rs").read_text(encoding="utf-8")
+assert 'bootstrap-x25519.secret' in native_bootstrap and 'bootstrap-x25519.secret' in native_enroll
+assert 'local host-bootstrap-access' in vm_installer
+assert 'diagnose_canonical_host_access(&staged)' in native_bootstrap
+assert 'BOOTSTRAP_ACCESS_ALREADY_BEGUN_NO_REPLAY' in native_bootstrap
+assert 'FleetVmBootstrapAccessEnvelope' in Path("edge-platform/proto/edge/platform/v1/fleet.proto").read_text(encoding="utf-8")
+
 assert "RUNNER_REGISTERED_AWAITING_ROOT_ONLY_ACCESS_HANDOFF" in native_init
 assert "fn render_native_first_use_with_runner(" in native_init
 
