@@ -356,6 +356,7 @@ assert "HOST_ABORT_FIREWALL_PREPOST_ERROR_NOT_PROVEN" in abort
 # The initial Root proof is bound to the ORIGINAL release, but the receipt
 # modifies current protected Git and must use CURRENT release provenance.
 assert 'host-current-receipt-release' in router
+assert router.count('GITHUB_SHA="${ORIGINAL_SHA}" "${bin}" host --hosts-pb "${fleet}"') >= 2
 assert 'export ACCEPTED_REVISION="${GITHUB_SHA}"' in router
 assert 'export HOST_RECEIPT_RELEASE_DIR="${OUTPUT_DIR}"' in router
 assert 'export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"' in router
