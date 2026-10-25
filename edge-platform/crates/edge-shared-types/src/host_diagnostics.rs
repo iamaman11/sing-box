@@ -6,19 +6,31 @@ use prost::Message;
 pub const MAX_DIAGNOSTIC_REQUEST_BYTES: usize = 4096;
 pub const MAX_DIAGNOSTIC_OUTPUT_BYTES: usize = 8192;
 
-pub fn validate_diagnostic_request(request: &FleetHostDiagnosticRequest) -> Result<(), &'static str> {
+pub fn validate_diagnostic_request(
+    request: &FleetHostDiagnosticRequest,
+) -> Result<(), &'static str> {
     if request.schema_version != 1 || request.source_comment_id == 0 {
         return Err("HOST_DIAG_REQUEST_IDENTITY_INVALID");
     }
     if request.machine_id.is_empty()
         || request.machine_id.len() > 64
-        || !request.machine_id.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
+        || !request
+            .machine_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.'))
     {
         return Err("HOST_DIAG_MACHINE_INVALID");
     }
-    if request.argv.is_empty() || request.argv.len() > 8
-        || request.argv.iter().any(|arg| arg.is_empty() || arg.len() > 80
-            || !arg.bytes().all(|b| b.is_ascii_alphanumeric() || matches!(b, b'-' | b'_' | b'.' | b',' | b'/' | b':' )))
+    if request.argv.is_empty()
+        || request.argv.len() > 8
+        || request.argv.iter().any(|arg| {
+            arg.is_empty()
+                || arg.len() > 80
+                || !arg.bytes().all(|b| {
+                    b.is_ascii_alphanumeric()
+                        || matches!(b, b'-' | b'_' | b'.' | b',' | b'/' | b':')
+                })
+        })
     {
         return Err("HOST_DIAG_ARGV_INVALID");
     }
@@ -28,14 +40,16 @@ pub fn validate_diagnostic_request(request: &FleetHostDiagnosticRequest) -> Resu
         | ["ip", "link", "show"]
         | ["ip", "-4" | "-6", "rule", "show"]
         | ["ip", "-4" | "-6", "route", "show", "table", "all"]
-        | ["ss", "-tuna"] | ["ss", "-tln"]
+        | ["ss", "-tuna"]
+        | ["ss", "-tln"]
         | ["ps", "-eo", "pid,ppid,stat,comm"]
         | ["uname", "-r"]
         | ["uptime"]
         | ["resolvectl", "status"]
         | ["systemctl", "--failed", "--no-pager"] => true,
-        ["ip", "-4" | "-6", "route", "show", "table", id] =>
-            id.parse::<u32>().is_ok_and(|value| value > 0),
+        ["ip", "-4" | "-6", "route", "show", "table", id] => {
+            id.parse::<u32>().is_ok_and(|value| value > 0)
+        }
         _ => false,
     };
     if !allowed {
@@ -103,7 +117,10 @@ mod tests {
             vec!["docker", "inspect", "secret"],
             vec!["journalctl", "-u", "root"],
         ] {
-            assert!(validate_diagnostic_request(&request(&args)).is_err(), "{args:?}");
+            assert!(
+                validate_diagnostic_request(&request(&args)).is_err(),
+                "{args:?}"
+            );
         }
     }
 }
