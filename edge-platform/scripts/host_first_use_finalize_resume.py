@@ -11,8 +11,7 @@ import sys
 from pathlib import Path
 from host_first_use_abort import (
     ACTOR, REPO, Blocked, exact_branch, github, pages, read_job_log, require,
-    verify_reservation as _unused_abort_only,
-)
+  )
 
 RE_HEX = re.compile(r"^[0-9a-f]{40}$")
 RE_COMMENT = re.compile(r"^[1-9][0-9]{0,19}$")
@@ -81,7 +80,7 @@ def verify():
     proof = one_job("host_first_use_native_proof", "success")
     failed = one_job("host_first_use_finalize", "failure")
     require(exactly_step(created, "Execute exactly one no-SSH native Vultr CREATE", "success") and
-            exactly_step(proof, "Collect exact installed Root Agent public proof", "success"),
+            exactly_step(proof, "Collect signed public-only proof from exact new VM Root Agent", "success"),
             "HOST_RESUME_NATIVE_FIRST_USE_NOT_PROVEN")
     require(exactly_step(failed, "Verify signed root proof and scrub provider user-data with GET",
                          "failure") and

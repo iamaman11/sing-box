@@ -1172,8 +1172,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          python3 -B edge-platform/scripts/host_first_use_finalize_resume.py \
-            --preflight --github-output "${GITHUB_OUTPUT}"
+          python3 -B edge-platform/scripts/host_first_use_finalize_resume.py
 
       - name: Download ONLY original native root proof
         if: steps.original.outputs.original_run != ''
