@@ -1021,6 +1021,10 @@ pub(crate) fn run(
             println!("host_mutations=0");
             Ok(())
         }
+        // Provider mutations are executed only by the typed host dispatcher.
+        HostCommand::FirstUseScrub { .. } => {
+            Err("HOST_FIRST_USE_SCRUB_REQUIRES_PROTECTED_DISPATCH".into())
+        }
         HostCommand::BootstrapProofCheck {
             machine_id,
             proof_path,
