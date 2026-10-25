@@ -136,6 +136,20 @@ mod io_tests {
             .unwrap();
         assert_eq!(status.code(), Some(124));
     }
+    #[test]
+    fn fsynced_begin_cannot_be_replayed_after_lost_ack() {
+        let dir = std::env::temp_dir().join(format!("sing-box-admin-proof-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let marker = dir.join("one.pending.pb");
+        if marker.exists() {
+            std::fs::remove_file(&marker).unwrap();
+        }
+        durable_create(&marker, b"original").unwrap();
+        assert!(durable_create(&marker, b"retry").is_err());
+        assert_eq!(std::fs::read(&marker).unwrap(), b"original");
+        std::fs::remove_file(marker).unwrap();
+        std::fs::remove_dir(dir).unwrap();
+    }
 }
 
 pub(super) async fn execute() -> Result<(), String> {

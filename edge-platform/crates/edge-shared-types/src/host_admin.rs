@@ -241,4 +241,60 @@ mod tests {
         changed.release_set_sha256[0] = 5;
         assert!(verify_authorization(&changed, &auth, signer.public_key().as_ref(), 150).is_err());
     }
+    #[test]
+    fn receipt_binds_exact_output_request_and_owner() {
+        let owner_key = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+        let owner = Ed25519KeyPair::from_pkcs8(owner_key.as_ref()).unwrap();
+        let mut req = request();
+        req.publish_output = true;
+        req.stdin_bytes = b"payload".to_vec();
+        let out = b"hello";
+        let mut receipt = ResultReceipt {
+            schema_version: 1,
+            machine_id: req.machine_id.clone(),
+            operation_id: operation_id(&req),
+            request_sha256: ring::digest::digest(&ring::digest::SHA256, &req.encode_to_vec())
+                .as_ref()
+                .to_vec(),
+            observed_at_unix: 101,
+            exit_code: 0,
+            stdout_sha256: ring::digest::digest(&ring::digest::SHA256, out)
+                .as_ref()
+                .to_vec(),
+            stderr_sha256: ring::digest::digest(&ring::digest::SHA256, b"")
+                .as_ref()
+                .to_vec(),
+            process_exited: true,
+            root_signature: Vec::new(),
+            stdout_preview: out.to_vec(),
+            stderr_preview: Vec::new(),
+            stdout_total_bytes: out.len() as u64,
+            stderr_total_bytes: 0,
+            stdout_truncated: false,
+            stderr_truncated: false,
+            stdout_capture_path: "/root/journal/admin-42.stdout.bin".into(),
+            stderr_capture_path: "/root/journal/admin-42.stderr.bin".into(),
+            stdout_capture_bytes: out.len() as u64,
+            stderr_capture_bytes: 0,
+            stdout_capture_complete: true,
+            stderr_capture_complete: true,
+        };
+        sign_receipt(&req, &mut receipt, owner_key.as_ref()).unwrap();
+        verify_receipt(&req, &receipt, owner.public_key().as_ref()).unwrap();
+        let mut edited = receipt.clone();
+        edited.stdout_preview[0] ^= 1;
+        assert!(verify_receipt(&req, &edited, owner.public_key().as_ref()).is_err());
+        edited = receipt.clone();
+        edited.stdout_capture_bytes = 999;
+        assert!(verify_receipt(&req, &edited, owner.public_key().as_ref()).is_err());
+        let mut altered_request = req.clone();
+        altered_request.environment.push("A=B".into());
+        assert!(verify_receipt(&altered_request, &receipt, owner.public_key().as_ref()).is_err());
+        altered_request = req.clone();
+        altered_request.timeout_seconds += 1;
+        assert!(verify_receipt(&altered_request, &receipt, owner.public_key().as_ref()).is_err());
+        let wrong = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+        let wrong_owner = Ed25519KeyPair::from_pkcs8(wrong.as_ref()).unwrap();
+        assert!(verify_receipt(&req, &receipt, wrong_owner.public_key().as_ref()).is_err());
+    }
 }
