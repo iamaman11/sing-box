@@ -346,6 +346,10 @@ assert abort.index("verify_original_run(machine, origin, old_revision, run_id)")
 assert abort.index('method="POST", form=marker') < abort.index('method="DELETE"')
 assert "HOST_ABORT_RUNNER_INVENTORY_INCOMPLETE" in abort
 assert "HOST_ABORT_FIREWALL_PREPOST_ERROR_NOT_PROVEN" in abort
+assert "DenyLogRedirect" in abort
+assert "read_job_log(job_id)" in abort
+assert '"Authorization": "Bearer " + secret' in abort
+assert "HOST_ABORT_JOB_LOG_SIGNED_LOCATION_INVALID" in abort
 assert '43892f4c527b94b2d0cc07ff5bd95eaa56711115' in abort
 assert 'create={create_phase}' in abort
 first_use_source = provider.split("pub(crate) async fn host_first_use(", 1)[1].split("pub(crate) async fn host_first_use_scrub(", 1)[0]
