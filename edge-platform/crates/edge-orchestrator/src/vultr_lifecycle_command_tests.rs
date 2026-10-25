@@ -34,6 +34,23 @@ fn host_substrate_is_projected_from_one_validated_release_not_process_env() {
 }
 
 #[test]
+fn legacy_lifecycle_cannot_create_vm_via_ssh_bypass() {
+    use super::*;
+    assert_eq!(
+        deny_unregistered_native_vm_create(&PlanClass::Create),
+        Err("HOST_VM_CREATE_REQUIRES_NATIVE_ONE_TIME_ENROLLMENT_NO_SSH"),
+    );
+    for status in [
+        PlanClass::Noop,
+        PlanClass::UpdateInPlace,
+        PlanClass::BlockedAmbiguous,
+        PlanClass::BlockedDrift,
+    ] {
+        assert!(deny_unregistered_native_vm_create(&status).is_ok());
+    }
+}
+
+#[test]
 fn first_use_provider_plan_does_not_reserve_for_existing_or_ambiguous_vm() {
     use super::*;
     assert_eq!(
