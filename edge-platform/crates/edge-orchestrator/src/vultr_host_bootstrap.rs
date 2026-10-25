@@ -12,7 +12,9 @@ use tokio::time::sleep;
 
 #[path = "vultr_native_cloud_init.rs"]
 mod native_cloud_init;
-pub use native_cloud_init::render_native_first_use_cloud_init;
+pub use native_cloud_init::{
+    render_native_first_use_cloud_init, render_native_first_use_with_runner,
+};
 
 pub const DEFAULT_OPS_USER: &str = "singbox-ops";
 pub const CONTROL_TRANSPORT_USER: &str = "edge-control";
