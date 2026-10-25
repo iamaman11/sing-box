@@ -114,6 +114,8 @@ mod tests {
             "host-resources",
             "host-apply",
             "host-admin",
+            "host-bootstrap-proof",
+            "host-bootstrap-access",
             "host-probe",
             "host-refresh",
             "quality-line2",
