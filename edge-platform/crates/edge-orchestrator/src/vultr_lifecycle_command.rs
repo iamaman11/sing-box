@@ -721,7 +721,9 @@ pub(crate) async fn host_first_use(
     let release = context.release();
     let agent_sha = release.agent_sha256.as_str();
     if agent_sha.len() != 64
-        || !agent_sha.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        || !agent_sha
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     {
         return Err("HOST_FIRST_USE_AGENT_DIGEST_INVALID".into());
     }
