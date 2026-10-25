@@ -120,7 +120,7 @@ def verify_original_run(machine, comment, revision, run_id):
         raise Blocked("HOST_ABORT_ORIGINAL_JOB_LOG_UNAVAILABLE") from None
     require(log.returncode == 0 and 0 < len(log.stdout) <= 2_000_000,
             "HOST_ABORT_ORIGINAL_JOB_LOG_UNPROVEN")
-    text = re.sub(r"\\x1b\\[[0-9;]*m", "", log.stdout.decode("utf-8", "replace"))
+    text = re.sub(r"\x1b\[[0-9;]*m", "", log.stdout.decode("utf-8", "replace"))
     require(sum(line.rstrip().endswith("HOST_FIRST_USE_FIREWALL_BINDING_UNPROVEN")
                 for line in text.splitlines()) == 1 and
             "host_first_use_provider_plan=EXACT_CREATE_ONLY" in text and

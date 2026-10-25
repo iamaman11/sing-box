@@ -344,6 +344,12 @@ assert "HOST_ABORT_TERMINAL_EVIDENCE_AMBIGUOUS" in abort
 assert abort.index("verify_original_run(machine, origin, old_revision, run_id)") < abort.index('method="POST", form=marker')
 assert abort.index('method="POST", form=marker') < abort.index('method="DELETE"')
 assert "HOST_ABORT_RUNNER_INVENTORY_INCOMPLETE" in abort
+assert "HOST_ABORT_FIREWALL_PREPOST_ERROR_NOT_PROVEN" in abort
+assert '43892f4c527b94b2d0cc07ff5bd95eaa56711115' in abort
+assert 'create={create_phase}' in abort
+first_use_source = provider.split("pub(crate) async fn host_first_use(", 1)[1].split("pub(crate) async fn host_first_use_scrub(", 1)[0]
+assert "HOST_FIRST_USE_FIREWALL_BINDING_UNPROVEN" not in first_use_source
+assert first_use_source.index("ensure_persistent_firewall_profile(") < first_use_source.index("apply_machine_with_firewall_profiles(")
 assert 'host_replay_allowed=false' in abort
 
 print("native_only_workflow_topology=PASS")
