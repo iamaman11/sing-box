@@ -52,6 +52,13 @@ def main() -> None:
     # authority for promotion, which only verifies and publishes exact bytes.
     assert "cargo-linux-${{ runner.os }}" in ci
     assert "cargo-windows-${{ runner.os }}" in ci
+    # Cache keys are performance hints, never release provenance. An
+    # unrelated registry-only PR should restore the same compiler objects
+    # when the independently verified build inputs did not change.
+    assert "cargo-linux-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-${{ needs.dependencies.outputs.runtime_input_sha256 }}" in ci
+    assert "cargo-windows-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-${{ needs.dependencies.outputs.windows_input_sha256 }}" in ci
+    assert "cargo-linux-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-${{ github.event.pull_request.head.sha }}" not in ci
+    assert "cargo-windows-${{ runner.os }}-${{ runner.arch }}-rust-1.95.0-${{ hashFiles('edge-platform/Cargo.lock') }}-${{ github.event.pull_request.head.sha }}" not in ci
     assert "needs: [verify, dependencies, windows, linux_candidate, release_authority]" in ci
     # Candidate merge remains guarded by five mandatory success assertions;
     # protected-main promotion does not rebuild a second release.
