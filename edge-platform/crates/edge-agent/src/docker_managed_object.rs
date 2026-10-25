@@ -446,7 +446,7 @@ async fn stop_managed_container(
             ),
         )
         .await
-        .map_err(|_| "HOST_VM_DOCKER_CONTAINER_STOP_UNCERTAIN_NO_REPLAY")
+        .map_err(|_| "HOST_VM_DOCKER_CONTAINER_STOP_UNCERTAIN_NO_REPLAY".to_owned())
 }
 
 pub(super) async fn apply_managed_docker_object_once(
@@ -653,6 +653,7 @@ mod tests {
             resource_name: "sb-application-test-net1".into(),
             kind: Kind::BridgeNetwork as i32,
             desired_state: Desired::Present as i32,
+            ..Default::default()
         };
         assert!(resource_path_expected(
             &host,
