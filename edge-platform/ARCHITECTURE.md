@@ -16,6 +16,14 @@
 | Передача запроса/кандидата | GitHub Actions runner: **только транспорт**, не mutation authority |
 | Итог | Durable journal + native physical readback + authenticated receipt (целевой контракт) |
 
+## Инвариант полномочий Root Agent (решение владельца, issue #484)
+
+**Полный нативный системный исполнитель — только установленный VM `edge-agent` под root.** Его *архитектурные возможности* не должны зависеть от закрытого списка Linux-команд: будущие разрешённые задачи могут затрагивать процессы и службы, файлы, пакеты, образы/контейнеры/тома/Docker networks, IPv4/IPv6 и все routing tables и `ip rule`, DNS, nftables/firewall, sing-box, WARP и ранее не предусмотренные системные инструменты. **Отсутствие заранее написанного Rust handler для конкретного диагностического вопроса не должно требовать новый релиз.**
+
+При этом **полные права root владельца не являются полномочием произвольного GitHub job или непроверенного комментария**. GitHub self-hosted runner — только низкопривилегированный transport (никакого общего `sudo`, Docker socket, remote SSH или второго owner); корневой владелец проверяет точную авторизацию с привязкой к operator, `machine_id`, operation ID, digest payload, сроку действия и принятому ReleaseSet, а затем применяет native owner lock/журнал/receipt. Запросы, которые могут изменять состояние, отделены от безопасной диагностики; неизвестный результат не повторяется. Публичные GitHub logs, issues и artifacts не могут получать произвольные raw секреты и приватный вывод. Постоянное состояние — только Git desired.
+
+**Статус исполнения:** контракт полностью **НЕ РЕАЛИЗОВАН**. PR #485 поставляет лишь ограниченный read-only диагностический вызов. Универсальный, точно авторизуемый административный исполнитель требует отдельной интеграции с проверкой подписи, защищённым журналом и отрицательными тестами до физического принятия. Включать обходной root-shell через runner ради выполнения этого требования **запрещено**. План/критерии — [issue #484](https://github.com/iamaman11/sing-box/issues/484); предметный resource CRUD — [issue #480](https://github.com/iamaman11/sing-box/issues/480).
+
 ## Неизменяемый контракт иерархии ресурсов
 
 Одна сквозная цепь: `MachineId → ResourceKind/ResourceId → Parent/Dependencies → Owner → ImmutableDesired → NativeObserved → TypedReason → PlannedStep → SignedHostIntent → NativeEffect → PhysicalReadback → Receipt`.
