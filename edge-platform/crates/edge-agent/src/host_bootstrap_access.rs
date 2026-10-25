@@ -58,7 +58,9 @@ fn validate_plain_identity(plaintext: &[u8]) -> Result<(), String> {
         return Err("BOOTSTRAP_ACCESS_IDENTITY_INVALID".into());
     }
     let text = std::str::from_utf8(plaintext).map_err(|_| "BOOTSTRAP_ACCESS_UTF8_INVALID")?;
-    if text.contains('\r') || text.as_bytes().contains(&0) { return Err("BOOTSTRAP_ACCESS_IDENTITY_INVALID".into()); }
+    if text.contains('\r') || text.as_bytes().contains(&0) {
+        return Err("BOOTSTRAP_ACCESS_IDENTITY_INVALID".into());
+    }
     // Reuse the ONE production parser, including support for base64 values
     // containing '='. Never maintain another interpretation of Access keys.
     edge_secrets::AccessServiceIdentity::parse_env(text)
@@ -179,7 +181,10 @@ mod tests {
             "y".repeat(64)
         );
         assert!(validate_plain_identity(valid.as_bytes()).is_ok());
-        assert!(validate_plain_identity(b"CF_ACCESS_CLIENT_ID=x=\nCF_ACCESS_CLIENT_SECRET=y==\n").is_ok());
+        assert!(
+            validate_plain_identity(b"CF_ACCESS_CLIENT_ID=x=\nCF_ACCESS_CLIENT_SECRET=y==\n")
+                .is_ok()
+        );
         for invalid in [
             "",
             "CF_ACCESS_CLIENT_ID=x\n",
