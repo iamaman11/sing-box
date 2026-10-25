@@ -299,6 +299,53 @@ enum FleetVmBootstrapPhase {
   FLEET_VM_BOOTSTRAP_PHASE_FIRST_USE_WORKER_SOURCE_MISMATCH = 10;
   FLEET_VM_BOOTSTRAP_PHASE_FIRST_USE_WORKER_SOURCE_UNAVAILABLE = 11;
 }
+// Signed desired object from the SAME Git application bundle, not a runner
+// request or mutable second registry. An owned Docker object is addressable
+// only by an exact host-derived name and a private managed manifest path.
+enum FleetVmManagedDockerKind {
+  FLEET_VM_MANAGED_DOCKER_KIND_UNSPECIFIED = 0;
+  FLEET_VM_MANAGED_DOCKER_KIND_LOCAL_VOLUME = 1;
+  FLEET_VM_MANAGED_DOCKER_KIND_BRIDGE_NETWORK = 2;
+  FLEET_VM_MANAGED_DOCKER_KIND_CONTAINER = 3;
+}
+enum FleetVmManagedDockerDesiredState {
+  FLEET_VM_MANAGED_DOCKER_DESIRED_STATE_UNSPECIFIED = 0;
+  FLEET_VM_MANAGED_DOCKER_DESIRED_STATE_PRESENT = 1;
+  FLEET_VM_MANAGED_DOCKER_DESIRED_STATE_ABSENT = 2;
+  FLEET_VM_MANAGED_DOCKER_DESIRED_STATE_STOPPED = 3;
+}
+message FleetVmManagedDockerResource {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  string resource_name = 3;
+  FleetVmManagedDockerKind kind = 4;
+  FleetVmManagedDockerDesiredState desired_state = 5;
+  // Exact OCI manifest digest; required only for CONTAINER.
+  string image_ref = 6;
+  // Optional exact application-owned private bridge network, never host mode.
+  string network_name = 7;
+  // A monotonic signed revision requests one explicit restart without replay.
+  uint64 restart_generation = 8;
+}
+
+// Non-secret process snapshot from root-local /proc. It reports live kernel
+// processes only; an exited process has no /proc entry and cannot be
+// reconstructed from this snapshot. Runner copy is never an attestation.
+message FleetVmProcessEvidence {
+  uint32 pid = 1;
+  uint32 parent_pid = 2;
+  uint32 real_uid = 3;
+  string state_code = 4;
+  bytes command_name_sha256 = 5;
+  string read_error_code = 6;
+}
+message FleetVmProcessSnapshot {
+  uint32 observed_count = 1;
+  bool truncated = 2;
+  repeated FleetVmProcessEvidence processes = 3;
+  bool procfs_readable = 4;
+  uint32 read_error_count = 5;
+}
 message FleetVmResourceReport {
   uint32 schema_version = 1;
   string machine_id = 2;
@@ -322,6 +369,9 @@ message FleetVmResourceReport {
   // identity, permanent no-replay journal and the SAME local ACTIVE store as
   // INSTALL. A runner copy stays UNAUTHENTICATED even when locally ready.
   FleetVmBootstrapPhase bootstrap_phase = 11;
+  // Scoped read-only process metadata. No command lines, environment,
+  // process names, raw errors or kernel stack content are transported.
+  FleetVmProcessSnapshot processes = 12;
 }
 
 enum FleetHostRunState {
