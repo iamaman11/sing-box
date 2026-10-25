@@ -161,6 +161,9 @@ assert "EDGE_SSH_PRIVATE_KEY_PATH" not in firstuse_job
 assert "first-use-preflight" in firstuse_job
 assert firstuse_job.index("Reserve unique Git receipt PR and durable BEGIN BEFORE VM CREATE") < firstuse_job.index("/actions/runners/registration-token")
 assert firstuse_job.index("/actions/runners/registration-token") < firstuse_job.index("Execute exactly one no-SSH native Vultr CREATE")
+assert '{40,512}' not in firstuse_job, "GitHub opaque runner tokens may be 29 chars"
+assert 'HOST_FIRST_USE_RUNNER_TOKEN_UNSAFE_SYNTAX_NO_CREATE' in firstuse_job
+assert 'HOST_FIRST_USE_RUNNER_REGISTRATION_API_DENIED_NO_CREATE' in firstuse_job
 assert firstuse_job.index("Execute exactly one no-SSH native Vultr CREATE") < firstuse_job.index("Collect signed public-only proof")
 assert firstuse_job.index("bootstrap-proof-check") < firstuse_job.index('first-use-scrub')
 assert firstuse_job.index('first-use-scrub') < firstuse_job.index("Complete ONLY the reserved protected public receipt PR")

@@ -890,17 +890,28 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          result="$(gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runners/registration-token")"
-          token="$(jq -er '.token' <<< "${result}")"
-          expiry="$(jq -er '.expires_at' <<< "${result}")"
+          if ! result="$(gh api -X POST "repos/${GITHUB_REPOSITORY}/actions/runners/registration-token" 2>/dev/null)"; then
+            echo HOST_FIRST_USE_RUNNER_REGISTRATION_API_DENIED_NO_CREATE >&2
+            exit 1
+          fi
+          if ! token="$(jq -er '.token | select(type=="string")' <<< "${result}")" ||
+             ! expiry="$(jq -er '.expires_at | select(type=="string")' <<< "${result}")"; then
+            echo HOST_FIRST_USE_RUNNER_REGISTRATION_SCHEMA_INVALID_NO_CREATE >&2
+            exit 1
+          fi
+          echo "::add-mask::${token}"
           deadline="$(date -u -d "${expiry}" +%s)"
           now="$(date -u +%s)"
           ((deadline >= now + 1200 && deadline <= now + 3600)) || {
             echo HOST_FIRST_USE_RUNNER_TOKEN_TTL_INVALID_NO_REPLAY >&2
             exit 1
           }
-          [[ "${token}" =~ ^[A-Za-z0-9._-]{40,512}$ ]]
-          echo "::add-mask::${token}"
+          # GitHub registration tokens are opaque; the official REST example
+          # has 29 characters. Never invent a minimum token length.
+          [[ "${token}" =~ ^[A-Za-z0-9._-]{1,512}$ ]] || {
+            echo HOST_FIRST_USE_RUNNER_TOKEN_UNSAFE_SYNTAX_NO_CREATE >&2
+            exit 1
+          }
           echo "EDGE_HOST_RUNNER_REGISTRATION_TOKEN=${token}" >> "${GITHUB_ENV}"
           echo "EDGE_HOST_RUNNER_TOKEN_EXPIRY_UNIX=${deadline}" >> "${GITHUB_ENV}"
 
