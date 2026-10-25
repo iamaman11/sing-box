@@ -114,6 +114,14 @@ fn preview_valid(request: &Request, result: &ResultReceipt) -> bool {
     let b = result.stderr_preview.len();
     a <= max
         && b <= max
+        && result.stdout_capture_path.ends_with(".stdout.bin")
+        && result.stderr_capture_path.ends_with(".stderr.bin")
+        && result.stdout_capture_path.len() <= 512
+        && result.stderr_capture_path.len() <= 512
+        && result.stdout_capture_bytes == result.stdout_total_bytes.min((16 * 1024 * 1024) as u64)
+        && result.stderr_capture_bytes == result.stderr_total_bytes.min((16 * 1024 * 1024) as u64)
+        && result.stdout_capture_complete == (result.stdout_capture_bytes == result.stdout_total_bytes)
+        && result.stderr_capture_complete == (result.stderr_capture_bytes == result.stderr_total_bytes)
         && (request.publish_output || (a == 0 && b == 0))
         && a as u64 <= result.stdout_total_bytes
         && b as u64 <= result.stderr_total_bytes

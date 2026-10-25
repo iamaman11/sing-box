@@ -508,6 +508,14 @@ message FleetNativeAdminResult {
   uint64 stderr_total_bytes = 14;
   bool stdout_truncated = 15;
   bool stderr_truncated = 16;
+  // Root-owned private bounded capture. Fetch chunks by a later exact
+  // Worker-authorized native admin request; never expose private bytes by default.
+  string stdout_capture_path = 17;
+  string stderr_capture_path = 18;
+  uint64 stdout_capture_bytes = 19;
+  uint64 stderr_capture_bytes = 20;
+  bool stdout_capture_complete = 21;
+  bool stderr_capture_complete = 22;
 }
 
 message FleetHostIntent {

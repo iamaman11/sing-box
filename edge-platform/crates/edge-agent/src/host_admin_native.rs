@@ -35,16 +35,25 @@ fn durable_create(path: &Path, data: &[u8]) -> Result<(), String> {
 }
 // Never stop draining a pipe because the retained evidence is full.
 const PREVIEW_LIMIT: usize = 64 * 1024;
+const CAPTURE_LIMIT: usize = 16 * 1024 * 1024;
 struct CapturedStream {
     sha256: Vec<u8>,
     total_bytes: u64,
     preview: Vec<u8>,
+    capture_bytes: u64,
 }
-fn capture_stream(mut input: impl Read) -> std::io::Result<CapturedStream> {
+fn capture_stream(input: impl Read) -> std::io::Result<CapturedStream> {
+    capture_stream_with_file(input, None)
+}
+fn capture_stream_with_file(
+    mut input: impl Read,
+    mut spool: Option<File>,
+) -> std::io::Result<CapturedStream> {
     let mut hash = ring::digest::Context::new(&ring::digest::SHA256);
     let mut buffer = [0_u8; 16 * 1024];
     let mut total_bytes = 0_u64;
     let mut preview = Vec::new();
+    let mut capture_bytes = 0_u64;
     loop {
         let len = input.read(&mut buffer)?;
         if len == 0 {
@@ -54,11 +63,22 @@ fn capture_stream(mut input: impl Read) -> std::io::Result<CapturedStream> {
         hash.update(&buffer[..len]);
         let retain = PREVIEW_LIMIT.saturating_sub(preview.len()).min(len);
         preview.extend_from_slice(&buffer[..retain]);
+        if let Some(ref mut file) = spool {
+            let save = CAPTURE_LIMIT.saturating_sub(capture_bytes as usize).min(len);
+            if save > 0 {
+                file.write_all(&buffer[..save])?;
+                capture_bytes += save as u64;
+            }
+        }
+    }
+    if let Some(file) = spool {
+        file.sync_all()?;
     }
     Ok(CapturedStream {
         sha256: hash.finish().as_ref().to_vec(),
         total_bytes,
         preview,
+        capture_bytes,
     })
 }
 #[cfg(test)]
@@ -194,6 +214,14 @@ pub(super) async fn execute() -> Result<(), String> {
         return Err("HOST_ADMIN_TERMINAL_ALREADY_EXISTS_NO_REPLAY".into());
     }
     durable_create(&pending, &raw)?;
+    let stdout_capture = journal.join(format!("admin-{key}.stdout.bin"));
+    let stderr_capture = journal.join(format!("admin-{key}.stderr.bin"));
+    let open_capture = |path: &Path| {
+        OpenOptions::new().write(true).create_new(true).mode(0o600)
+            .open(path).map_err(|_| "HOST_ADMIN_OUTPUT_CAPTURE_UNAVAILABLE_NO_REPLAY")
+    };
+    let stdout_spool = open_capture(&stdout_capture)?;
+    let stderr_spool = open_capture(&stderr_capture)?;
 
     // FULL native root capability: no executable/interpreter/argv/cwd allowlist.
     // A script interpreter may be selected by the authenticated request.
@@ -236,8 +264,10 @@ pub(super) async fn execute() -> Result<(), String> {
         .stderr
         .take()
         .ok_or("HOST_ADMIN_CHILD_STDERR_UNAVAILABLE")?;
-    let stdout_reader = std::thread::spawn(move || capture_stream(stdout));
-    let stderr_reader = std::thread::spawn(move || capture_stream(stderr));
+    let stdout_reader =
+        std::thread::spawn(move || capture_stream_with_file(stdout, Some(stdout_spool)));
+    let stderr_reader =
+        std::thread::spawn(move || capture_stream_with_file(stderr, Some(stderr_spool)));
     let exit = child
         .wait()
         .map_err(|_| "HOST_ADMIN_CHILD_WAIT_UNKNOWN_NO_REPLAY")?;
@@ -289,6 +319,12 @@ pub(super) async fn execute() -> Result<(), String> {
         stderr_total_bytes: err.total_bytes,
         stdout_truncated: out.total_bytes > PREVIEW_LIMIT as u64,
         stderr_truncated: err.total_bytes > PREVIEW_LIMIT as u64,
+        stdout_capture_path: stdout_capture.to_string_lossy().into_owned(),
+        stderr_capture_path: stderr_capture.to_string_lossy().into_owned(),
+        stdout_capture_bytes: out.capture_bytes,
+        stderr_capture_bytes: err.capture_bytes,
+        stdout_capture_complete: out.capture_bytes == out.total_bytes,
+        stderr_capture_complete: err.capture_bytes == err.total_bytes,
     };
     host_admin::sign_receipt(&request, &mut receipt, &key_bytes).map_err(str::to_owned)?;
     durable_create(&terminal, &receipt.encode_to_vec())?;
