@@ -4,6 +4,7 @@
 
 | Синтаксис | Поддерживаемый смысл и предел |
 | --- | --- |
+| `/host diagnose <machine-id> <read-only argv>` | VM only. Protobuf-validated, bounded unprivileged native `ip/ss/ps/uname/uptime/resolvectl/systemctl` observations via exact existing self-hosted runner and installed Root Agent. Example: `/host diagnose application-acceptance-4 ip -6 route show table all`. Never a shell/mutation; `RUNNER_COPIED_UNAUTHENTICATED` is NOT signed physical receipt. |
 | `/host status [machine-id] [--deep]` | Только read-only: Git/ReleaseSet, runner, native owner и bounded ресурсы, DNS/network readback, reason/owner/scope; `UNPROVEN` не означает healthy |
 | `/host apply <machine-id>` | Единственный типизированный однократный маршрут Git/ReleaseSet → owner-gated Worker/signature → VM root Agent / Windows SYSTEM Controller, журнал и signed native receipt. Может завершиться только кодовым Worker upgrade/first-use или `BLOCKED`: не утверждать, что VM установлена, пока это не доказано |
 | `/host apply <machine-id> config/vultr-edge/line1-gateway` | Узкий signed config-only scope Line1; соседние ресурсы не изменять |
