@@ -150,12 +150,30 @@ mod tests {
     #[test]
     fn one_request_contains_several_independent_native_probes() {
         let r = request(&[
-            "ip", "-4", "route", "show", "table", "all",
-            "--next", "ip", "-6", "rule", "show",
-            "--next", "ss", "-tln",
-            "--next", "systemctl", "--failed", "--no-pager",
-            "--next", "ps", "-eo", "pid,ppid,stat,comm",
-            "--next", "uptime",
+            "ip",
+            "-4",
+            "route",
+            "show",
+            "table",
+            "all",
+            "--next",
+            "ip",
+            "-6",
+            "rule",
+            "show",
+            "--next",
+            "ss",
+            "-tln",
+            "--next",
+            "systemctl",
+            "--failed",
+            "--no-pager",
+            "--next",
+            "ps",
+            "-eo",
+            "pid,ppid,stat,comm",
+            "--next",
+            "uptime",
         ]);
         let commands = diagnostic_commands(&r).unwrap();
         assert_eq!(commands.len(), MAX_DIAGNOSTIC_BATCH_COMMANDS);
@@ -179,12 +197,14 @@ mod tests {
             vec!["ip", "-6", "route", "show", "table", "all;id"],
             vec!["journalctl", "-u", "root"],
         ] {
-            assert!(validate_diagnostic_request(&request(&args)).is_err(), "{args:?}");
+            assert!(
+                validate_diagnostic_request(&request(&args)).is_err(),
+                "{args:?}"
+            );
         }
         let r = request(&[
+            "uptime", "--next", "uptime", "--next", "uptime", "--next", "uptime", "--next",
             "uptime", "--next", "uptime", "--next", "uptime",
-            "--next", "uptime", "--next", "uptime", "--next", "uptime",
-            "--next", "uptime",
         ]);
         assert!(validate_diagnostic_request(&r).is_err());
     }
