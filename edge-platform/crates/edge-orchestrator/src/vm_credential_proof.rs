@@ -148,4 +148,3 @@ pub(crate) async fn host_vm_credential_proof(
     println!("host_mutations=0");
     Ok(())
 }
-
