@@ -137,7 +137,7 @@ assert "admit_first_use_bootstrap_transport().map_err(str::to_owned)?;" in provi
 native_provider=Path("edge-platform/crates/edge-provider-vultr/src/lib.rs").read_text(encoding="utf-8")
 lifecycle_service=Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_service.rs").read_text(encoding="utf-8")
 assert 'ssh_key_id: Option<&' in native_provider
-assert '#[serde(skip_serializing_if = "Vec::is_empty")]\\n    sshkey_id:' in native_provider
+assert '#[serde(skip_serializing_if = "Vec::is_empty")]\n    sshkey_id:' in native_provider
 assert "singbox-native-first-use-v1" in lifecycle_service
 assert "HOST_NATIVE_CREATE_MUST_HAVE_NO_SSH_AND_PINNED_CLOUD_INIT" in lifecycle_service
 assert "--runner-only" in vm_installer
