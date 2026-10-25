@@ -1,3 +1,7 @@
+#[path = "network_dual_stack.rs"]
+mod dual_stack;
+pub(crate) use dual_stack::observe_dual_stack;
+
 use std::net::{IpAddr, Ipv4Addr};
 
 use edge_shared_types::{
