@@ -106,6 +106,17 @@ pub(crate) enum HostCommand {
         #[arg(long)]
         result_path: PathBuf,
     },
+    /// Internal hosted-only seal of Access secrets for an exact Git-pinned
+    /// signed native recipient. Reads plaintext from stdin, writes only
+    /// encrypted protobuf to the supplied private artifact path.
+    #[command(hide = true)]
+    BootstrapSeal {
+        machine_id: String,
+        #[arg(long)]
+        proof_path: PathBuf,
+        #[arg(long)]
+        output_path: PathBuf,
+    },
     /// Internal read-only ingestion of a native protobuf observation.
     /// GitHub runner output is NOT independent proof of native owner identity.
     #[command(hide = true)]
