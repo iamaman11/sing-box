@@ -86,6 +86,12 @@ pub(crate) enum HostCommand {
         #[arg(long)]
         deep: bool,
     },
+    /// Bounded VM diagnostic, validated by Rust on both ends.
+    Diagnose {
+        machine_id: String,
+        #[arg(last = true)]
+        argv: Vec<String>,
+    },
     /// Internal read-only ingestion of a native protobuf observation.
     /// GitHub runner output is NOT independent proof of native owner identity.
     #[command(hide = true)]
@@ -533,6 +539,9 @@ mod tests {
             command.push("application-acceptance-3");
             assert!(Cli::try_parse_from(command).is_ok(), "{operation}");
         }
+        let mut diagnostic = base.to_vec();
+        diagnostic.extend(["diagnose", "application-acceptance-4", "--", "ip", "-6", "route", "show", "table", "all"]);
+        assert!(Cli::try_parse_from(diagnostic).is_ok());
         let mut scoped = base.to_vec();
         scoped.extend([
             "apply",
