@@ -110,7 +110,19 @@ jobs:
             # Read-only host diagnostics still dispatch to the exact
             # Git-owned runner label. The physical owner independently
             # validates its immutable RUNNER_NAME before any diagnostic.
-            echo 'RUNNER_API_UNAVAILABLE_NATIVE_OWNER_AND_FRESHNESS_WILL_VERIFY' >&2
+            # This token may lack repository Administration:read. Observe
+            # the actual HTTP status in a separate GET; never infer OFFLINE
+            # from missing GitHub inventory, or publish the response body.
+            http_response="$(gh api -i -H 'Accept: application/vnd.github+json' "repos/${GITHUB_REPOSITORY}/actions/runners?per_page=1" 2>/dev/null || true)"
+            http_status="$(printf '%s\n' "${http_response}" | grep -E '^HTTP/[0-9.]+ [0-9]{3}' | tail -n 1 | awk '{print $2}' || true)"
+            case "${http_status}" in
+              401|403) echo "RUNNER_API_PERMISSION_DENIED_HTTP_${http_status}" >&2 ;;
+              429) echo 'RUNNER_API_RATE_LIMIT_HTTP_429' >&2 ;;
+              5??) echo "RUNNER_API_SERVER_ERROR_HTTP_${http_status}" >&2 ;;
+              4??) echo "RUNNER_API_REJECTED_HTTP_${http_status}" >&2 ;;
+              *) echo 'RUNNER_API_TRANSPORT_OR_PARSE_UNAVAILABLE' >&2 ;;
+            esac
+            echo 'RUNNER_REGISTRATION_UNPROVEN_NATIVE_OWNER_MUST_VERIFY' >&2
           fi
           if [[ -e "${RUNNER_TEMP}/host-runners.json" ]]; then
             test -s "${RUNNER_TEMP}/host-runners.json" || exit 1
