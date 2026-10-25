@@ -345,6 +345,11 @@ assert "HOST_ABORT_TERMINAL_EVIDENCE_AMBIGUOUS" in abort
 assert abort.index("verify_original_run(machine, origin, old_revision, run_id)") < abort.index('method="POST", form=marker')
 assert abort.index('method="POST", form=marker') < abort.index('method="DELETE"')
 assert "HOST_ABORT_RUNNER_INVENTORY_INCOMPLETE" in abort
+assert "host_first_use_finalize_resume.py" in router
+assert "host_first_use_receipt_register.sh" in router
+assert "bootstrap-proof-check" in router
+assert "HOST_FIRST_USE_RECOVERY=SIGNED_ROOT_PROOF_AND_SCRUB_PROVEN" in router
+assert 'export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"' in router
 assert "HOST_ABORT_FIREWALL_PREPOST_ERROR_NOT_PROVEN" in abort
 assert "DenyLogRedirect" in abort
 assert "read_job_log(job_id)" in abort
