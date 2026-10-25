@@ -403,6 +403,11 @@ jobs:
     needs: observe
     if: always()
     runs-on: ubuntu-24.04
+    # The hosted GET-only diagnosis and this native readback update the
+    # same comment. GitHub-native concurrency prevents lost PATCH updates.
+    concurrency:
+      group: host-deep-report-${{ inputs.source_comment_id }}
+      cancel-in-progress: false
     timeout-minutes: 3
     permissions:
       contents: read
