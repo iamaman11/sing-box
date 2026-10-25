@@ -4317,6 +4317,122 @@ async function ACCESS(q,e){return await ACCESS_REASON(q,e)==="OK"}
 async function HOST_AUTH_DIAGNOSTIC(q,e,u){if(P!==__HOST_SIGNER_PROJECTION__||q.method!=="GET"||u.search)return new Response(null,{status:404,headers:NO});
 const reason=await ACCESS_REASON(q,e);
 return new Response(null,{status:reason==="OK"?204:403,headers:{...NO,"X-Host-Authorization-Reason":reason,"X-Host-Authorization-Scope":"READ_ONLY_NO_MUTATION"}})}
+// Administrative scope is cryptographically separate from HostIntent APPLY.
+// The Worker authenticates an EXACT fresh GitHub issue #1 comment; the
+// self-hosted runner can never authorize or choose the root operation.
+function HOST_ADMIN_INFO(b){
+ let p=0,last=0,schema=null,m=null,cid=null,argv=[],release=null,when=null,comment=null;
+ const seen=new Set();
+ while(p<b.length){
+  const key=V(b,p);if(!key)return null;
+  const f=Number(key[0]>>3n),w=Number(key[0]&7n);p=key[1];
+  if(f<last||(f===last&&f!==4)||f<1||f>7)return null;last=f;seen.add(f);
+  if(f===1||f===3||f===6){
+   if(w!==0||seen.has(f)&&last===f&&false)return null;
+   const n=V(b,p);if(!n||n[0]>BigInt(Number.MAX_SAFE_INTEGER))return null;p=n[1];
+   const v=Number(n[0]);if(f===1)schema=v;else if(f===3)cid=v;else when=v;
+  }else{
+   if(w!==2)return null;
+   const n=V(b,p);if(!n||n[0]>BigInt(b.length))return null;p=n[1];
+   const length=Number(n[0]);if(length>b.length-p)return null;
+   const data=b.slice(p,p+length);p+=length;
+   if(f===5||f===7){
+    if(length!==32)return null;
+    const hex=Array.from(data,x=>x.toString(16).padStart(2,"0")).join("");
+    if(f===5)release=hex;else comment=hex;
+   }else{
+    if(length===0||length>4096)return null;
+    let value;try{value=TD.decode(data)}catch{return null}
+    if(f===2)m=value;else if(f===4)argv.push(value);else return null;
+   }
+  }
+ }
+ if(schema!==1||!Number.isSafeInteger(cid)||cid<=0||
+   !Number.isSafeInteger(when)||when<=0||argv.length<1||argv.length>64||
+   typeof m!=="string"||!/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(m)||
+   !argv[0].startsWith("/")||argv[0].includes("..")||
+   argv.some(x=>x.length>4096||x.includes("\\u0000"))||
+   !/^[0-9a-f]{64}$/.test(release||"")||
+   !/^[0-9a-f]{64}$/.test(comment||"")||
+   [1,2,3,4,5,6,7].some(x=>!seen.has(x)))return null;
+ return{m,cid,argv,release,when,comment,id:"issue1-comment-"+cid};
+}
+function HOST_ADMIN_ENCODE_ARGV(argv){
+ const b=TE.encode(JSON.stringify(argv));
+ let s="";for(const x of b)s+=String.fromCharCode(x);
+ return btoa(s).replace(/\\+/g,"-").replace(/\\//g,"_").replace(/=+$/,"");
+}
+async function HOST_ADMIN_GITHUB(info,e,now){
+ const actor=String(e.EDGE_HOST_GITHUB_ACTOR_ID||"");
+ if(!/^[1-9][0-9]{0,19}$/.test(actor)||Math.abs(now-info.when)>300)return "DENIED";
+ const installation=await GITHUB_INSTALLATION_AUTH(e,now);
+ if(installation.error)return installation.error;
+ const base="https://api.github.com/repos/iamaman11/sing-box";
+ const headers={"Accept":"application/vnd.github+json",
+   "User-Agent":"sing-box-host-authorizer",
+   "Authorization":"Bearer "+installation.token};
+ async function get(path,stage){
+  let r;try{r=await fetch(base+path,{redirect:"manual",headers})}
+  catch(err){return{error:GHFAIL(stage,"FETCH_EXCEPTION",null,err)}}
+  if(r.status>=300&&r.status<400)return{error:GHFAIL(stage,"REDIRECT",r)};
+  if(!r.ok)return{error:GHFAIL(stage,"HTTP",r)};
+  try{return{value:await r.json()}}
+  catch(err){return{error:GHFAIL(stage,"RESPONSE_DECODE",r,err)}}
+ }
+ const cResult=await get("/issues/comments/"+info.cid,"ADMIN_GITHUB_COMMENT");
+ if(cResult.error)return cResult.error;
+ const c=cResult.value;
+ const body="/host admin "+info.m+" "+HOST_ADMIN_ENCODE_ARGV(info.argv);
+ const stamp=Date.parse(c?.created_at)/1000;
+ if(!c||c.body!==body||c.issue_url!==base+"/issues/1"||
+   String(c.user?.id)!==actor||c.updated_at!==c.created_at||
+   !Number.isFinite(stamp)||stamp>now+30||now-stamp>300||
+   info.when<stamp-30)return "DENIED";
+ const checksum=Array.from(new Uint8Array(await crypto.subtle.digest(
+   "SHA-256",TE.encode(body))),x=>x.toString(16).padStart(2,"0")).join("");
+ if(checksum!==info.comment)return "DENIED";
+ const release=await get("/releases/tags/edge-release-"+info.release,"ADMIN_GITHUB_RELEASE");
+ if(release.error)return release.error;
+ if(!release.value||release.value.tag_name!=="edge-release-"+info.release||
+   release.value.draft!==false||release.value.prerelease!==false||
+   !/^[0-9a-f]{40}$/.test(release.value.target_commitish||""))return "DENIED";
+ const main=await get("/git/ref/heads/main","ADMIN_GITHUB_MAIN");
+ if(main.error)return main.error;
+ if(main.value?.object?.type!=="commit"||
+   main.value.object.sha!==release.value.target_commitish)return "DENIED";
+ return "APPROVED";
+}
+async function ADMIN_AUTHORIZE(q,e,u){
+ if(P!==__HOST_SIGNER_PROJECTION__||q.method!=="POST"||u.search||
+   q.headers.get("Content-Type")!=="application/x-protobuf")return new Response(null,{status:404,headers:NO});
+ const k=e.EDGE_HOST_SIGNING_PKCS8_BASE64,id=e.EDGE_HOST_SIGNING_KEY_ID;
+ if(typeof k!=="string"||typeof id!=="string"||
+   !/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id))
+  return new Response(null,{status:404,headers:NO});
+ const access=await ACCESS_REASON(q,e);
+ if(access!=="OK")return new Response(null,{status:403,headers:{...NO,"X-Host-Authorization-Reason":access}});
+ if(Number(q.headers.get("Content-Length"))>8192)return new Response(null,{status:413,headers:NO});
+ let raw;try{raw=new Uint8Array(await q.arrayBuffer())}
+ catch{return new Response(null,{status:400,headers:NO})}
+ if(!raw.length||raw.length>8192)return new Response(null,{status:413,headers:NO});
+ const info=HOST_ADMIN_INFO(raw);
+ if(!info)return new Response(null,{status:400,headers:NO});
+ const now=Math.floor(Date.now()/1000);
+ const decision=await HOST_ADMIN_GITHUB(info,e,now);
+ if(decision!=="APPROVED"){
+  const reason=typeof decision==="string"?decision:decision.decision;
+  return new Response(null,{status:reason==="UNAVAILABLE"?503:403,headers:{
+   ...NO,"X-Host-Authorization-Reason":reason==="UNAVAILABLE"?"GITHUB_DEPENDENCY_UNAVAILABLE":"GITHUB_APPROVAL_DENIED"}});
+ }
+ const issued=now,expires=now+120,kid=TE.encode(id),oid=TE.encode(info.id);
+ const payload=CAT(TE.encode("sing-box/native-admin-authorization/v1:"),
+  U32(raw.length),raw,U32(kid.length),kid,U32(oid.length),oid,U64(issued),U64(expires));
+ const signed=await HOST_SIGNER_SIGN(k,payload);
+ if(signed.reason)return new Response(null,{status:503,headers:{...NO,"X-Host-Authorization-Reason":signed.reason}});
+ const out=CAT(FNUM(1,1),FLD(2,kid),FLD(3,oid),FNUM(4,issued),FNUM(5,expires),FLD(6,signed.signature));
+ return new Response(out,{status:200,headers:{"Content-Type":"application/x-protobuf",
+  "Cache-Control":"no-store","X-Content-Type-Options":"nosniff"}});
+}
 async function AUTHORIZE(q,e,u){if(P!==__HOST_SIGNER_PROJECTION__)return new Response(null,{status:404,headers:NO});if(q.method!=="POST"||u.search||q.headers.get("Content-Type")!=="application/x-protobuf")return new Response(null,{status:404,headers:NO});
 const k=e.EDGE_HOST_SIGNING_PKCS8_BASE64,id=e.EDGE_HOST_SIGNING_KEY_ID,actor=String(e.EDGE_HOST_GITHUB_ACTOR_ID||"");
 if(typeof k!=="string"||typeof id!=="string"||!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id)||!/^[1-9][0-9]{0,19}$/.test(actor))return new Response(null,{status:404,headers:NO});
@@ -4353,7 +4469,7 @@ if(signed.reason)return new Response(null,{status:503,headers:{...NO,"X-Host-Aut
 const signature=signed.signature;
 const out=CAT(FNUM(1,1),FLD(2,kid),FLD(3,oid),FNUM(4,issued),FNUM(5,expires),FLD(6,signature));
 return new Response(out,{status:200,headers:{"Content-Type":"application/x-protobuf","Cache-Control":"no-store","X-Content-Type-Options":"nosniff"}})}
-export default{async fetch(q,e){const u=new URL(q.url);if(u.pathname==="/v1/host/authorize")return q.method==="GET"?HOST_AUTH_DIAGNOSTIC(q,e,u):AUTHORIZE(q,e,u);const x=u.searchParams.get("generation");
+export default{async fetch(q,e){const u=new URL(q.url);if(u.pathname==="/v1/host/admin/authorize")return ADMIN_AUTHORIZE(q,e,u);if(u.pathname==="/v1/host/authorize")return q.method==="GET"?HOST_AUTH_DIAGNOSTIC(q,e,u):AUTHORIZE(q,e,u);const x=u.searchParams.get("generation");
 if(q.method==="GET"&&u.pathname==="/v1/proof-slot"){const k=u.searchParams.get("slot"),i=k==="a"?0:k==="b"?1:-1;if(u.searchParams.size!==2||i<0||x!==Q[i])return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}});const b=H(e[S[i]]);if(b===null)return new Response(null,{status:409,headers:{"Cache-Control":"no-store"}});const h=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",b))).map(x=>x.toString(16).padStart(2,"0")).join("");return new Response(null,{status:h===D[i]?204:409,headers:{"Cache-Control":"no-store"}})}
 if(q.method!=="GET"||u.pathname!=="/v1/credentials"||u.searchParams.size!==1||x===null||!/^(0|[1-9][0-9]*)$/.test(x))return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}});let n;try{n=BigInt(x)}catch{return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}})}const m=[];for(const s of S){const b=H(e[s]);if(b!==null&&G(b)===n)m.push(b)}if(m.length!==1)return new Response(null,{status:m.length?409:404,headers:{"Cache-Control":"no-store"}});return new Response(m[0],{status:200,headers:{"Content-Type":"application/x-protobuf","Cache-Control":"no-store"}})}};"#
         .replace("__PROJECTION__", &(projection_kind as i32).to_string())
