@@ -692,7 +692,8 @@ pub(crate) async fn host_first_use(
         || env::var("GITHUB_REPOSITORY").as_deref() != Ok("iamaman11/sing-box")
         || env::var("GITHUB_EVENT_NAME").as_deref() != Ok("issue_comment")
         || env::var("EDGE_HOST_BEGIN_COMMENT_ID")
-            .ok().and_then(|value| value.parse::<u64>().ok())
+            .ok()
+            .and_then(|value| value.parse::<u64>().ok())
             .is_none_or(|value| value == 0)
     {
         return Err("HOST_FIRST_USE_PROTECTED_GITHUB_DURABLE_BEGIN_REQUIRED".into());
@@ -701,8 +702,12 @@ pub(crate) async fn host_first_use(
     let host = context.verified_vm_first_use_host(machine_id)?;
     let provider_spec = Path::new(&host.vm_provider_spec_path);
     let desired = load_desired_state(provider_spec)?;
-    let machine = desired.machines.first().ok_or("HOST_FIRST_USE_MACHINE_MISSING")?;
-    if desired.machines.len() != 1 || machine.id != machine_id
+    let machine = desired
+        .machines
+        .first()
+        .ok_or("HOST_FIRST_USE_MACHINE_MISSING")?;
+    if desired.machines.len() != 1
+        || machine.id != machine_id
         || machine.bootstrap_profile != "singbox-native-first-use-v1"
     {
         return Err("HOST_FIRST_USE_ONLY_NATIVE_SSH_FREE_PROFILE".into());
@@ -714,12 +719,18 @@ pub(crate) async fn host_first_use(
         .parse::<u64>()
         .map_err(|_| "HOST_FIRST_USE_GITHUB_TOKEN_EXPIRY_INVALID")?;
     let release = context.release();
-    let runtime = release.vm_runtime.as_ref().ok_or("HOST_FIRST_USE_RELEASE_VM_OWNER_MISSING")?;
+    let runtime = release
+        .vm_runtime
+        .as_ref()
+        .ok_or("HOST_FIRST_USE_RELEASE_VM_OWNER_MISSING")?;
     if runtime.edge_agent_sha256.len() != 32 {
         return Err("HOST_FIRST_USE_AGENT_DIGEST_INVALID".into());
     }
-    let agent_sha = runtime.edge_agent_sha256.iter()
-        .map(|byte| format!("{byte:02x}")).collect::<String>();
+    let agent_sha = runtime
+        .edge_agent_sha256
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     let substrate = pinned_host_substrate_versions(context)?;
     let cloud_init = crate::vultr_host_bootstrap::render_native_first_use_with_runner(
         include_str!("../../../../win/vultr-waw/cloud-init.yaml"),
@@ -742,7 +753,9 @@ pub(crate) async fn host_first_use(
     let binding = match machine.provider.firewall_profile.as_deref() {
         None => None,
         Some(name) => Some(
-            bindings.iter().find(|(_, observed)| observed.as_str() == name)
+            bindings
+                .iter()
+                .find(|(_, observed)| observed.as_str() == name)
                 .map(|(id, _)| id.clone())
                 .ok_or("HOST_FIRST_USE_FIREWALL_BINDING_UNPROVEN")?,
         ),
@@ -755,15 +768,27 @@ pub(crate) async fn host_first_use(
         firewall_profile: machine.provider.firewall_profile.clone(),
     };
     let observation = plan_desired_state_with_firewall_profiles(
-        &mut provider, &desired, Some(machine_id), &bindings,
-    ).await?;
+        &mut provider,
+        &desired,
+        Some(machine_id),
+        &bindings,
+    )
+    .await?;
     admit_vm_first_use_provider_plan(
         observation.plans.first().map(|plan| &plan.class),
         observation.plans.len(),
-        observation.inventory.resources.iter().any(|resource|
-            resource.ownership.logical_id.as_deref() == Some(machine_id)),
-    ).map_err(str::to_owned)?;
-    let plan = observation.plans.first().ok_or("HOST_FIRST_USE_CREATE_PLAN_MISSING")?.clone();
+        observation
+            .inventory
+            .resources
+            .iter()
+            .any(|resource| resource.ownership.logical_id.as_deref() == Some(machine_id)),
+    )
+    .map_err(str::to_owned)?;
+    let plan = observation
+        .plans
+        .first()
+        .ok_or("HOST_FIRST_USE_CREATE_PLAN_MISSING")?
+        .clone();
     let authorized = authorize_vultr_machine(&desired, &observation.inventory, plan)?;
     // This is the FIRST irreversible step: the GitHub issue BEGIN and
     // external concurrency owner must already have committed to no-replay.
@@ -775,7 +800,8 @@ pub(crate) async fn host_first_use(
         &prerequisites,
         &LifecycleExecutionPolicy::default(),
         &bindings,
-    ).await?;
+    )
+    .await?;
     if report.action != ApplyAction::Created {
         return Err("HOST_FIRST_USE_PROVIDER_CREATE_NOT_PROVEN_NO_REPLAY".into());
     }
@@ -797,7 +823,8 @@ pub(crate) async fn host_first_use_scrub(
 ) -> Result<(), String> {
     let host = context.verified_vm_first_use_host(machine_id)?;
     let desired = load_desired_state(Path::new(&host.vm_provider_spec_path))?;
-    if desired.machines.len() != 1 || desired.machines[0].id != machine_id
+    if desired.machines.len() != 1
+        || desired.machines[0].id != machine_id
         || desired.machines[0].bootstrap_profile != "singbox-native-first-use-v1"
     {
         return Err("HOST_FIRST_USE_SCRUB_WRONG_MACHINE_OR_PROFILE".into());
@@ -807,20 +834,28 @@ pub(crate) async fn host_first_use_scrub(
     let mut support = support_provider_from_env()?;
     let bindings = verified_firewall_bindings(&mut support, &desired, profiles.as_ref()).await?;
     let report = plan_desired_state_with_firewall_profiles(
-        &mut provider, &desired, Some(machine_id), &bindings,
-    ).await?;
+        &mut provider,
+        &desired,
+        Some(machine_id),
+        &bindings,
+    )
+    .await?;
     if report.plans.len() != 1 || report.plans[0].class != PlanClass::Noop {
         return Err("HOST_FIRST_USE_SCRUB_PROVIDER_OWNERSHIP_OR_STATE_UNPROVEN".into());
     }
-    let instance_id = report.plans[0].provider_id.as_deref()
+    let instance_id = report.plans[0]
+        .provider_id
+        .as_deref()
         .ok_or("HOST_FIRST_USE_SCRUB_PROVIDER_ID_MISSING")?;
     let mut operational = operational_provider_from_env()?;
     crate::vultr_host_bootstrap::scrub_user_data(
-        &mut operational, instance_id, 2, Duration::from_secs(3),
-    ).await?;
-    crate::vultr_host_bootstrap::verify_user_data_scrubbed(
-        &mut operational, instance_id,
-    ).await?;
+        &mut operational,
+        instance_id,
+        2,
+        Duration::from_secs(3),
+    )
+    .await?;
+    crate::vultr_host_bootstrap::verify_user_data_scrubbed(&mut operational, instance_id).await?;
     println!("host_first_use_user_data=PROVIDER_GET_PROVED_SCRUBBED");
     println!("host_first_use_token_present_in_provider=false");
     Ok(())
