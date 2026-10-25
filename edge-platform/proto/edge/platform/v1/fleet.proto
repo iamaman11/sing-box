@@ -462,6 +462,19 @@ message FleetHostDiagnosticRequest {
   repeated string argv = 4;
 }
 
+// A future extensible administrative request must bind a selected host,
+// operator approval, exact payload and native single-use result. These bytes
+// carry no authority without verification against the pinned Worker signer.
+message FleetNativeAdministrativeRequest {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  string operation_id = 3;
+  bytes payload_sha256 = 4;
+  uint64 issued_at_unix = 5;
+  uint64 expires_at_unix = 6;
+  bytes authorization_signature = 7;
+}
+
 message FleetHostIntent {
   uint32 schema_version = 1;
   string machine_id = 2;
