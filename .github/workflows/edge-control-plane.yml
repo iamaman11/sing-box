@@ -1242,11 +1242,24 @@ jobs:
           # require the reserved ORIGINAL branch, not this recovery comment.
           test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')" = "${GITHUB_SHA}"
           test "${ORIGINAL_BRANCH}" = "host-receipt-${TARGET_MACHINE}-${ORIGINAL_COMMENT}"
-          bin="${RUNNER_TEMP}/host-original-release/edge-orchestrator-linux-amd64"
-          fleet="${RUNNER_TEMP}/host-original-release/fleet-registry.pb"
-          export EDGE_RELEASE_CONTEXT_PATH="${RUNNER_TEMP}/host-original-release/resolved.env"
+          # Original proof was verified with the ORIGINAL ReleaseSet above.
+          # Receipt registration changes only canonical Git and must use
+          # the CURRENT protected main ReleaseSet, not the original VM one.
+          git fetch -q --no-tags --depth=1 origin "${GITHUB_SHA}"
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          export REPOSITORY="${GITHUB_REPOSITORY}"
+          export ACCEPTED_REVISION="${GITHUB_SHA}"
+          export OUTPUT_DIR="${RUNNER_TEMP}/host-current-receipt-release"
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          bin="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          echo "${EDGE_ORCHESTRATOR_SHA256}  ${bin}" | sha256sum --check --status
+          chmod 0755 "${bin}"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
           export SOURCE_COMMENT_ID="${ORIGINAL_COMMENT}"
-          export HOST_RECEIPT_RELEASE_DIR="${RUNNER_TEMP}/host-original-release"
+          export HOST_RECEIPT_RELEASE_DIR="${OUTPUT_DIR}"
           bash "${RUNNER_TEMP}/host-recovery-register-receipt.sh"
 
   host_resume_receipt:

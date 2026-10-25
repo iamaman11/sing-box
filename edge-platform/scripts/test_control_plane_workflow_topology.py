@@ -353,6 +353,12 @@ assert "HOST_FIRST_USE_RECOVERY=SIGNED_ROOT_PROOF_AND_SCRUB_PROVEN" in router
 assert 'export REPOSITORY="${GITHUB_REPOSITORY}"' in router
 assert 'export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"' in router
 assert "HOST_ABORT_FIREWALL_PREPOST_ERROR_NOT_PROVEN" in abort
+# The initial Root proof is bound to the ORIGINAL release, but the receipt
+# modifies current protected Git and must use CURRENT release provenance.
+assert 'host-current-receipt-release' in router
+assert 'export ACCEPTED_REVISION="${GITHUB_SHA}"' in router
+assert 'export HOST_RECEIPT_RELEASE_DIR="${OUTPUT_DIR}"' in router
+assert 'export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"' in router
 assert "DenyLogRedirect" in abort
 assert "read_job_log(job_id)" in abort
 assert '"Authorization": "Bearer " + secret' in abort
