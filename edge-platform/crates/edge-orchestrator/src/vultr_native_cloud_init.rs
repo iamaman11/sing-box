@@ -355,9 +355,10 @@ mod tests {
         assert!(!rendered.contains("acceptance-serve"));
         assert_eq!(rendered.matches("write_files:\n").count(), 1);
         assert_eq!(rendered.matches("runcmd:\n").count(), 1);
-        assert!(rendered.ends_with(
-            "  - [bash, -lc, \"/usr/local/sbin/singbox-native-first-use.sh\"]\n"
-        ));
+        assert!(
+            rendered
+                .ends_with("  - [bash, -lc, \"/usr/local/sbin/singbox-native-first-use.sh\"]\n")
+        );
     }
 
     #[test]
