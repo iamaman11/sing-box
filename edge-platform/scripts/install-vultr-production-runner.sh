@@ -155,8 +155,21 @@ cd "${RUNNER_DIR}"
 
 runner_name="sing-box-production-${machine_id}"
 runner_labels="sing-box-production-vm,${machine_id}"
+# Enrollment cannot adopt or replace an earlier runner in the no-SSH epoch.
+if [[ "${initial_identity}" == false && -e .runner ]]; then
+  echo "runner-only first-use refuses a previously registered owner" >&2
+  exit 13
+fi
 if [[ ! -f .runner ]]; then
-  sudo -u "${RUNNER_USER}" ./config.sh     --unattended     --url "${RUNNER_REPOSITORY_URL}"     --token "${registration_token}"     --name "${runner_name}"     --labels "${runner_labels}"     --work "_work"     --replace >/dev/null
+  runner_replace=()
+  if [[ "${initial_identity}" == true ]]; then
+    runner_replace=(--replace)
+  fi
+  sudo -u "${RUNNER_USER}" ./config.sh \
+    --unattended --url "${RUNNER_REPOSITORY_URL}" \
+    --token "${registration_token}" --name "${runner_name}" \
+    --labels "${runner_labels}" --work "_work" \
+    "${runner_replace[@]}" >/dev/null
 fi
 unset registration_token
 
