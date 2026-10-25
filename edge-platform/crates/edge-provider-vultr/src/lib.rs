@@ -209,7 +209,8 @@ pub struct CreateInstanceRequest<'a> {
     pub os_id: Option<u32>,
     pub snapshot_id: Option<&'a str>,
     pub label: &'a str,
-    pub ssh_key_id: &'a str,
+    /// None means a VM created with cloud-init only: no provider SSH key.
+    pub ssh_key_id: Option<&'a str>,
     pub cloud_init: &'a str,
     pub firewall_group_id: Option<&'a str>,
     pub tags: Vec<&'a str>,
@@ -1332,6 +1333,16 @@ fn build_create_instance_payload(
         });
     }
 
+    if request.ssh_key_id.is_some_and(|id| id.trim().is_empty()) {
+        return Err(VultrError {
+            operation: "build Vultr create request",
+            kind: VultrErrorKind::Configuration,
+            status: None,
+            retry_after_secs: None,
+            detail: "empty SSH key id is not an absent SSH key".to_owned(),
+        });
+    }
+
     Ok(CreateInstancePayload {
         region: request.region.to_owned(),
         plan: request.plan.to_owned(),
@@ -1340,7 +1351,7 @@ fn build_create_instance_payload(
         label: request.label.to_owned(),
         hostname: request.label.to_owned(),
         enable_ipv6: request.enable_ipv6,
-        sshkey_id: vec![request.ssh_key_id.to_owned()],
+        sshkey_id: request.ssh_key_id.map(str::to_owned).into_iter().collect(),
         user_data: STANDARD.encode(request.cloud_init.as_bytes()),
         firewall_group_id: request.firewall_group_id.map(ToOwned::to_owned),
         tags: request
@@ -1479,6 +1490,7 @@ struct CreateInstancePayload {
     label: String,
     hostname: String,
     enable_ipv6: bool,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
     sshkey_id: Vec<String>,
     user_data: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1800,7 +1812,7 @@ mod tests {
             os_id: Some(2625),
             snapshot_id: None,
             label: "edge-1",
-            ssh_key_id: "ssh-key-1",
+            ssh_key_id: Some("ssh-key-1"),
             cloud_init: "#cloud-config\npackages: []\n",
             firewall_group_id: Some("firewall-1"),
             tags: vec!["managed-by-sing-box", "logical-edge-1"],
@@ -1943,7 +1955,7 @@ mod tests {
             os_id: None,
             snapshot_id: Some("61605612-d7a2-47b1-85ef-aef90f5083df"),
             label: "edge-1",
-            ssh_key_id: "ssh-key-1",
+            ssh_key_id: Some("ssh-key-1"),
             cloud_init: "#cloud-config\npackages: []\n",
             firewall_group_id: None,
             tags: Vec::new(),
@@ -1956,6 +1968,24 @@ mod tests {
     }
 
     #[test]
+    fn secret_free_no_ssh_cloud_init_create_omits_sshkey_field() {
+        let mut request = request();
+        request.ssh_key_id = None;
+        request.cloud_init = "#cloud-config\nssh_pwauth: false\ndisable_root: true\n";
+        let payload = build_create_instance_payload(&request).unwrap();
+        let wire = serde_json::to_value(payload).unwrap();
+        assert!(wire.get("sshkey_id").is_none());
+        assert!(wire.get("user_data").is_some());
+    }
+
+    #[test]
+    fn malformed_ssh_empty_id_is_not_silently_emitted_as_provider_key() {
+        let mut request = request();
+        request.ssh_key_id = Some("");
+        assert!(build_create_instance_payload(&request).is_err());
+    }
+
+    #[test]
     fn rejects_create_payload_with_both_image_authorities() {
         let request = CreateInstanceRequest {
             region: "waw",
@@ -1963,7 +1993,7 @@ mod tests {
             os_id: Some(2625),
             snapshot_id: Some("snapshot-1"),
             label: "edge-1",
-            ssh_key_id: "ssh-key-1",
+            ssh_key_id: Some("ssh-key-1"),
             cloud_init: "#cloud-config\n",
             firewall_group_id: None,
             tags: Vec::new(),
