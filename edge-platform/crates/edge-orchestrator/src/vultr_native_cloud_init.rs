@@ -22,8 +22,6 @@ fi
 install -d -o root -g root -m 0755 /usr/local/libexec/sing-box
 install -d -o root -g root -m 0755 /opt/vultr-edge-stack
 install -d -o root -g root -m 0755 /var/lib/singbox-lifecycle
-# The old acceptance RPC service is not a second native owner.
-systemctl disable --now edge-agent.service >/dev/null 2>&1 || true
 curl --fail --silent --show-error --location --proto '=https' \
   --proto-redir '=https' --connect-timeout 10 --max-time 180 \
   --output "$stage" \
@@ -92,6 +90,8 @@ pub fn render_native_first_use_cloud_init(
         || rendered.matches("\nruncmd:\n").count() != 1
         || rendered.contains("ssh_authorized_keys:")
         || rendered.contains("ssh_host_ed25519_key")
+        || rendered.contains("edge-agent.service")
+        || rendered.contains("acceptance-serve")
         || rendered.contains("@@RELEASE@@")
         || rendered.contains("@@AGENT_SHA@@")
     {
@@ -319,7 +319,8 @@ mod tests {
         assert!(config.contains("edge-release-"));
         assert!(config.contains("NATIVE_ROOT_ENROLLED_AWAITING_ONE_TIME_CREDENTIAL_HANDOFF"));
         assert!(config.contains("HOST_CLOUD_INIT_NATIVE_OWNER_ALREADY_PRESENT_NO_REPLAY"));
-        assert!(config.contains("systemctl disable --now edge-agent.service"));
+        assert!(!config.contains("edge-agent.service"));
+        assert!(!config.contains("acceptance-serve"));
         assert!(!config.contains("ssh_authorized_keys"));
         assert!(!config.contains("ssh-keygen"));
         assert!(!config.contains("NOPASSWD:ALL"));
@@ -329,6 +330,34 @@ mod tests {
         assert!(
             config.ends_with("  - [bash, -lc, \"/usr/local/sbin/singbox-native-first-use.sh\"]\n")
         );
+    }
+
+    #[test]
+    fn real_cloud_init_installs_exact_substrate_then_one_native_root_owner() {
+        let base = include_str!("../../../../win/vultr-waw/cloud-init.yaml");
+        assert!(!base.contains("edge-agent.service"));
+        assert!(!base.contains("acceptance-serve"));
+        let rendered = render_native_first_use_cloud_init(
+            base,
+            "application-acceptance-5",
+            &"a".repeat(64),
+            &"b".repeat(64),
+            &substrate(),
+        )
+        .unwrap();
+        assert!(rendered.contains("docker-ce="));
+        assert!(!rendered.contains("@@DOCKER_ENGINE_VERSION@@"));
+        assert!(!rendered.contains("@@CONTAINERD_VERSION@@"));
+        assert!(!rendered.contains("@@COMPOSE_VERSION@@"));
+        assert!(rendered.contains("host-enroll 'application-acceptance-5'"));
+        assert!(rendered.contains("sha256sum --check --status"));
+        assert!(!rendered.contains("edge-agent.service"));
+        assert!(!rendered.contains("acceptance-serve"));
+        assert_eq!(rendered.matches("write_files:\\n").count(), 1);
+        assert_eq!(rendered.matches("runcmd:\\n").count(), 1);
+        assert!(rendered.ends_with(
+            "  - [bash, -lc, \\"/usr/local/sbin/singbox-native-first-use.sh\\"]\\n"
+        ));
     }
 
     #[test]
