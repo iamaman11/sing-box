@@ -1015,6 +1015,77 @@ pub(crate) fn run(
             println!("host_mutations=0");
             Ok(())
         }
+        HostCommand::AdminResult {
+            machine_id,
+            request_path,
+            result_path,
+        } => {
+            use edge_shared_types::{FleetNativeAdminResult, host_admin};
+            let read_proof = |path: &Path, max: usize| -> Result<Vec<u8>, String> {
+                let meta = std::fs::symlink_metadata(path)
+                    .map_err(|_| "HOST_ADMIN_PROOF_MISSING")?;
+                if !meta.is_file() || meta.len() == 0 || meta.len() > max as u64 {
+                    return Err("HOST_ADMIN_PROOF_INVALID".into());
+                }
+                let bytes = std::fs::read(path).map_err(|_| "HOST_ADMIN_PROOF_READ_FAILED")?;
+                if bytes.is_empty() || bytes.len() > max {
+                    return Err("HOST_ADMIN_PROOF_SIZE_INVALID".into());
+                }
+                Ok(bytes)
+            };
+            let request_bytes = read_proof(&request_path, host_admin::MAX_BYTES)?;
+            let request = host_admin::decode(&request_bytes).map_err(str::to_owned)?;
+            let receipt_bytes = read_proof(&result_path, 140_000)?;
+            let receipt = FleetNativeAdminResult::decode(receipt_bytes.as_slice())
+                .map_err(|_| "HOST_ADMIN_RECEIPT_PROTOBUF_INVALID")?;
+            if receipt.encode_to_vec() != receipt_bytes {
+                return Err("HOST_ADMIN_RECEIPT_NONCANONICAL".into());
+            }
+            let selected = desired.hosts.iter()
+                .find(|host| host.machine_id == machine_id
+                    && host.kind == ManagedHostKind::Vm as i32)
+                .ok_or("HOST_ADMIN_GIT_MACHINE_NOT_REGISTERED")?;
+            if request.machine_id != machine_id
+                || request.release_set_sha256
+                    != exact_hex_sha256(&release.release().release_set_sha256)?
+            {
+                return Err("HOST_ADMIN_GIT_IDENTITY_OR_RELEASE_MISMATCH".into());
+            }
+            host_admin::verify_receipt(
+                &request, &receipt, &selected.native_receipt_public_key,
+            ).map_err(str::to_owned)?;
+            let outcome = if !receipt.process_exited {
+                "VERIFIED_NO_EXIT"
+            } else if receipt.exit_code == 124 || receipt.exit_code == 137 {
+                "VERIFIED_TIMEOUT_OR_KILLED"
+            } else if receipt.exit_code == 0 {
+                "VERIFIED_EXIT_ZERO"
+            } else {
+                "VERIFIED_EXIT_NONZERO"
+            };
+            if let Some(path) = github_output {
+                append_host_verifier_output(path, "admin_receipt_proof", outcome)?;
+            }
+            println!("host_admin_receipt_origin=GIT_PINNED_ED25519_NATIVE_OWNER");
+            println!("host_admin_receipt_verified=true");
+            println!("host_admin_execution_outcome={outcome}");
+            println!("host_admin_physical_poststate=UNPROVEN");
+            println!("host_admin_exit_code={}", receipt.exit_code);
+            println!("host_admin_stdout_total_bytes={}", receipt.stdout_total_bytes);
+            println!("host_admin_stderr_total_bytes={}", receipt.stderr_total_bytes);
+            println!("host_admin_stdout_truncated={}", receipt.stdout_truncated);
+            println!("host_admin_stderr_truncated={}", receipt.stderr_truncated);
+            println!("host_admin_stdout_sha256={}", receipt.stdout_sha256
+                .iter().map(|v| format!("{v:02x}")).collect::<String>());
+            println!("host_admin_stderr_sha256={}", receipt.stderr_sha256
+                .iter().map(|v| format!("{v:02x}")).collect::<String>());
+            if request.publish_output {
+                let base64 = base64::engine::general_purpose::STANDARD;
+                println!("host_admin_stdout_preview_b64={}", base64.encode(&receipt.stdout_preview));
+                println!("host_admin_stderr_preview_b64={}", base64.encode(&receipt.stderr_preview));
+            }
+            Ok(())
+        }
         HostCommand::NativeResult {
             machine_id,
             intent_path,

@@ -97,6 +97,15 @@ pub(crate) enum HostCommand {
         machine_id: String,
         argv_base64: String,
     },
+    /// Hosted verification of an exact root-signed administrative receipt.
+    #[command(hide = true)]
+    AdminResult {
+        machine_id: String,
+        #[arg(long)]
+        request_path: PathBuf,
+        #[arg(long)]
+        result_path: PathBuf,
+    },
     /// Internal read-only ingestion of a native protobuf observation.
     /// GitHub runner output is NOT independent proof of native owner identity.
     #[command(hide = true)]
