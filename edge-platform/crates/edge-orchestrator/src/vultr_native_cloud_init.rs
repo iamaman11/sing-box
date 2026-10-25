@@ -131,6 +131,102 @@ pub fn render_native_first_use_cloud_init(
     Ok(rendered)
 }
 
+
+const RUNNER_INSTALLER: &str =
+    include_str!("../../../scripts/install-vultr-production-runner.sh");
+const RUNNER_INSTALL_PATH: &str = "/usr/local/sbin/singbox-native-runner-install.sh";
+const RUNNER_BEGIN_PATH: &str = "/var/lib/singbox-lifecycle/runner-first-use.begin";
+const RUNNER_TOKEN_PATH: &str = "/run/singbox-native-runner-registration-token";
+const RUNNER_WRAP_PATH: &str = "/usr/local/sbin/singbox-native-runner-enroll.sh";
+
+/// The only secret allowed in provider user-data is one short-lived GitHub
+/// registration capability. Its provider copy must be scrubbed and observed
+/// before physical acceptance. A permanent Worker Access identity MUST travel
+/// separately through the protected Root Agent; it is never in user-data.
+pub fn render_native_first_use_with_runner(
+    base: &str,
+    machine_id: &str,
+    release_sha256: &str,
+    agent_sha256: &str,
+    substrate: &HostSubstrateVersions,
+    registration_token: &str,
+    expires_at_unix: u64,
+    now_unix: u64,
+) -> Result<String, String> {
+    if registration_token.len() < 40
+        || registration_token.len() > 512
+        || !registration_token.bytes().all(|b| {
+            b.is_ascii_alphanumeric() || b == b'-' || b == b'_' || b == b'.'
+        })
+    {
+        return Err("HOST_NATIVE_RUNNER_REGISTRATION_TOKEN_INVALID".to_owned());
+    }
+    if expires_at_unix < now_unix.saturating_add(1200)
+        || expires_at_unix > now_unix.saturating_add(3600)
+    {
+        return Err("HOST_NATIVE_RUNNER_REGISTRATION_EXPIRY_UNSAFE".to_owned());
+    }
+    let mut rendered = render_native_first_use_cloud_init(
+        base,
+        machine_id,
+        release_sha256,
+        agent_sha256,
+        substrate,
+    )?;
+    if !RUNNER_INSTALLER.starts_with("#!/usr/bin/env bash\n")
+        || !RUNNER_INSTALLER.contains("--runner-only")
+        || !RUNNER_INSTALLER.contains("runner_native_mutation_authority=EXACT_HOST_INTENT_ONLY")
+    {
+        return Err("HOST_NATIVE_RUNNER_INSTALLER_NOT_ACCEPTED".to_owned());
+    }
+    let script = format!(
+        "#!/usr/bin/env bash\n\
+set -euo pipefail\n\
+umask 077\n\
+begin='{RUNNER_BEGIN_PATH}'\n\
+token='{RUNNER_TOKEN_PATH}'\n\
+if test -e \"$begin\" || test -L \"$begin\"; then\n\
+  echo HOST_NATIVE_RUNNER_BEGIN_ALREADY_EXISTS_NO_REPLAY >&2\n\
+  exit 74\n\
+fi\n\
+test \"$(date -u +%s)\" -lt '{expires_at_unix}' || {{\n\
+  echo HOST_NATIVE_RUNNER_TOKEN_EXPIRED_NO_REPLAY >&2\n\
+  exit 75\n\
+}}\n\
+test \"$(stat -c '%u:%g:%a' \"$token\")\" = '0:0:600'\n\
+test \"$(stat -c '%u:%g:%a' /opt/vultr-edge-stack/native-first-use.receipt)\" = '0:0:600'\n\
+grep -Fxq 'host_enroll=PROTECTED_TRUST_STAGED' /opt/vultr-edge-stack/native-first-use.receipt\n\
+# Persist BEGIN before invoking GitHub's one-time runner registration.\n\
+( set -C; printf '%s\\n' FIRST_USE_BEGIN_NO_REPLAY > \"$begin\" )\n\
+sync -f \"$begin\"\n\
+trap 'rm -f \"$token\"' EXIT\n\
+{{ cat \"$token\"; printf '\\n'; }} | '{RUNNER_INSTALL_PATH}' '{machine_id}' --runner-only\n\
+printf '%s\\n' RUNNER_REGISTERED_AWAITING_ROOT_ONLY_ACCESS_HANDOFF\n"
+    );
+    let additions = format!(
+        "{}{}{}",
+        super::cloud_init_file(RUNNER_INSTALL_PATH, "0700", RUNNER_INSTALLER),
+        super::cloud_init_file(RUNNER_WRAP_PATH, "0700", &script),
+        super::cloud_init_file(RUNNER_TOKEN_PATH, "0600", registration_token),
+    );
+    rendered = rendered.replacen("write_files:\n", &format!("write_files:\n{additions}"), 1);
+    rendered.push_str(&format!(
+        "  - [bash, -lc, \"{RUNNER_WRAP_PATH}\"]\n"
+    ));
+    // A root-only, expired ephemeral registration token is not the VM Access
+    // identity. The acceptance owner must prove Vultr user-data scrub and
+    // native receipt before any signed INSTALL.
+    if rendered.contains("CF_ACCESS_CLIENT_SECRET=")
+        || rendered.contains("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET")
+        || rendered.contains("VULTR_SSH_PRIVATE_KEY")
+        || rendered.contains("NOPASSWD:ALL")
+        || rendered.contains("ssh_authorized_keys:")
+    {
+        return Err("HOST_NATIVE_RUNNER_USER_DATA_CONTAINS_DURABLE_SECRET".to_owned());
+    }
+    Ok(rendered)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -157,6 +253,42 @@ mod tests {
             &substrate(),
         )
         .unwrap()
+    }
+
+    #[test]
+    fn first_use_runner_has_only_ephemeral_token_and_root_native_transport() {
+        let token = "A".repeat(128);
+        let config = render_native_first_use_with_runner(
+            fixture(), "application-acceptance-5", &"a".repeat(64),
+            &"b".repeat(64), &substrate(), &token, 3_500, 0,
+        ).unwrap();
+        assert_eq!(config.matches(&token).count(), 1);
+        assert!(config.contains("runner-first-use.begin"));
+        assert!(config.contains("FIRST_USE_BEGIN_NO_REPLAY"));
+        assert!(config.contains("--runner-only"));
+        assert!(config.contains("singbox-native-runner-enroll.sh"));
+        assert!(config.contains("RUNNER_REGISTERED_AWAITING_ROOT_ONLY_ACCESS_HANDOFF"));
+        assert!(config.contains("owner=/usr/local/libexec/sing-box/edge-agent"));
+        assert!(!config.contains("CF_ACCESS_CLIENT_SECRET="));
+        assert!(!config.contains("ssh_authorized_keys:"));
+        assert!(!config.contains("NOPASSWD:ALL"));
+    }
+
+    #[test]
+    fn first_use_runner_rejects_unsafe_token_or_deadline() {
+        let validate = |token: &str, expiry: u64| {
+            render_native_first_use_with_runner(
+                fixture(), "application-acceptance-5", &"a".repeat(64),
+                &"b".repeat(64), &substrate(), token, expiry, 0,
+            ).is_err()
+        };
+        for bad in ["", "short", "bad token", "invalid\nsecret", "A&B", "äbc"] {
+            assert!(validate(bad, 3_500));
+        }
+        let accepted_token = "x".repeat(128);
+        assert!(validate(&accepted_token, 1_199));
+        assert!(validate(&accepted_token, 3_601));
+        assert!(!validate(&accepted_token, 3_500));
     }
 
     #[test]
