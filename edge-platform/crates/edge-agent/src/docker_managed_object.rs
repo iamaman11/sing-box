@@ -3,8 +3,8 @@
 //! A runner cannot choose an ID, name, driver, labels or Docker operation.
 use super::*;
 use edge_shared_types::{
-    FleetHost, FleetVmManagedDockerDesiredState as Desired,
-    FleetVmManagedDockerKind as Kind, FleetVmManagedDockerResource,
+    FleetHost, FleetVmManagedDockerDesiredState as Desired, FleetVmManagedDockerKind as Kind,
+    FleetVmManagedDockerResource,
 };
 use prost::Message;
 use std::collections::HashMap;
@@ -29,13 +29,21 @@ fn resource_path_expected(
         Ok(Kind::BridgeNetwork) => "managed/docker-network-",
         _ => return false,
     };
-    let Some(suffix) = path.strip_prefix(kind_prefix).and_then(|s| s.strip_suffix(".pb")) else {
+    let Some(suffix) = path
+        .strip_prefix(kind_prefix)
+        .and_then(|s| s.strip_suffix(".pb"))
+    else {
         return false;
     };
     !suffix.is_empty()
         && suffix.len() <= 40
-        && suffix.bytes().next().is_some_and(|b| b.is_ascii_alphanumeric())
-        && suffix.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+        && suffix
+            .bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_alphanumeric())
+        && suffix
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-')
         && spec.resource_name == format!("sb-{}-{suffix}", host.machine_id)
         && spec.resource_name.len() <= 112
         && spec.machine_id == host.machine_id
@@ -94,12 +102,15 @@ async fn observe_managed_docker_object(
                 }
                 // Volume names have no stable daemon ID: creation timestamp
                 // is the CAS guard; without it a deletion must fail closed.
-                let created = volume.created_at
+                let created = volume
+                    .created_at
                     .filter(|time| !time.is_empty())
                     .ok_or("HOST_VM_DOCKER_VOLUME_IDENTITY_UNPROVEN")?;
                 Ok(Some(created))
             }
-            Err(DockerError::DockerResponseServerError { status_code: 404, .. }) => Ok(None),
+            Err(DockerError::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(None),
             Err(_) => Err("HOST_VM_DOCKER_VOLUME_READBACK_UNAVAILABLE".into()),
         },
         Ok(Kind::BridgeNetwork) => match docker.inspect_network(&spec.resource_name, None).await {
@@ -107,20 +118,25 @@ async fn observe_managed_docker_object(
                 if network.name.as_deref() != Some(spec.resource_name.as_str())
                     || network.driver.as_deref() != Some("bridge")
                     || network.internal != Some(true)
-                    || network.labels.as_ref().and_then(|l| l.get(LABEL_OWNER)) != Some(&spec.machine_id)
-                    || network.labels.as_ref().and_then(|l| l.get(LABEL_RESOURCE)) != Some(&spec.resource_name)
+                    || network.labels.as_ref().and_then(|l| l.get(LABEL_OWNER))
+                        != Some(&spec.machine_id)
+                    || network.labels.as_ref().and_then(|l| l.get(LABEL_RESOURCE))
+                        != Some(&spec.resource_name)
                 {
                     return Err("HOST_VM_DOCKER_NETWORK_FOREIGN_OR_DRIVER_DRIFT".into());
                 }
                 if for_delete && !network.containers.as_ref().is_some_and(HashMap::is_empty) {
                     return Err("HOST_VM_DOCKER_NETWORK_ATTACHED_OR_UNPROVEN".into());
                 }
-                let id = network.id
+                let id = network
+                    .id
                     .filter(|id| id.len() == 64 && id.bytes().all(|b| b.is_ascii_hexdigit()))
                     .ok_or("HOST_VM_DOCKER_NETWORK_IDENTITY_UNPROVEN")?;
                 Ok(Some(id))
             }
-            Err(DockerError::DockerResponseServerError { status_code: 404, .. }) => Ok(None),
+            Err(DockerError::DockerResponseServerError {
+                status_code: 404, ..
+            }) => Ok(None),
             Err(_) => Err("HOST_VM_DOCKER_NETWORK_READBACK_UNAVAILABLE".into()),
         },
         _ => Err("HOST_VM_DOCKER_RESOURCE_KIND_UNSUPPORTED".into()),
@@ -133,18 +149,26 @@ pub(super) async fn preflight_managed_docker_object(
     before: Option<&[u8]>,
     after: Option<&[u8]>,
 ) -> Result<PreparedManagedDocker, String> {
-    let previous = before.map(|b| decode_exact_spec(host, path, b)).transpose()?;
-    let next = after.map(|b| decode_exact_spec(host, path, b)).transpose()?;
-    let spec = next.as_ref().or(previous.as_ref())
+    let previous = before
+        .map(|b| decode_exact_spec(host, path, b))
+        .transpose()?;
+    let next = after
+        .map(|b| decode_exact_spec(host, path, b))
+        .transpose()?;
+    let spec = next
+        .as_ref()
+        .or(previous.as_ref())
         .ok_or("HOST_VM_DOCKER_RESOURCE_SCOPE_EMPTY")?;
     if let (Some(a), Some(b)) = (&previous, &next) {
         if a.machine_id != b.machine_id || a.resource_name != b.resource_name || a.kind != b.kind {
             return Err("HOST_VM_DOCKER_RESOURCE_IDENTITY_CHANGE_UNSUPPORTED".into());
         }
     }
-    let prior = previous.as_ref()
+    let prior = previous
+        .as_ref()
         .is_some_and(|s| s.desired_state == Desired::Present as i32);
-    let desired = next.as_ref()
+    let desired = next
+        .as_ref()
         .is_some_and(|s| s.desired_state == Desired::Present as i32);
     if prior == desired {
         return Err("HOST_VM_DOCKER_OPERATION_REQUIRES_STATE_CHANGE".into());
@@ -155,7 +179,9 @@ pub(super) async fn preflight_managed_docker_object(
         return Err("HOST_VM_DOCKER_PRESTATE_NOT_CONVERGED".into());
     }
     Ok(PreparedManagedDocker {
-        spec: spec.clone(), original_fingerprint: physical, create: desired,
+        spec: spec.clone(),
+        original_fingerprint: physical,
+        create: desired,
     })
 }
 
@@ -174,42 +200,50 @@ pub(super) async fn apply_managed_docker_object_once(
         let labels = expected_labels(&plan.spec);
         match Kind::try_from(plan.spec.kind) {
             Ok(Kind::LocalVolume) => {
-                docker.create_volume(bollard::models::VolumeCreateRequest {
-                    name: Some(name.clone()),
-                    driver: Some("local".to_owned()),
-                    labels: Some(labels),
-                    ..Default::default()
-                }).await.map_err(|_| "HOST_VM_DOCKER_VOLUME_CREATE_UNCERTAIN_NO_REPLAY")?;
+                docker
+                    .create_volume(bollard::models::VolumeCreateRequest {
+                        name: Some(name.clone()),
+                        driver: Some("local".to_owned()),
+                        labels: Some(labels),
+                        ..Default::default()
+                    })
+                    .await
+                    .map_err(|_| "HOST_VM_DOCKER_VOLUME_CREATE_UNCERTAIN_NO_REPLAY")?;
             }
             Ok(Kind::BridgeNetwork) => {
-                docker.create_network(bollard::models::NetworkCreateRequest {
-                    name: name.clone(),
-                    driver: Some("bridge".to_owned()),
-                    internal: Some(true),
-                    attachable: Some(false),
-                    labels: Some(labels),
-                    ..Default::default()
-                }).await.map_err(|_| "HOST_VM_DOCKER_NETWORK_CREATE_UNCERTAIN_NO_REPLAY")?;
+                docker
+                    .create_network(bollard::models::NetworkCreateRequest {
+                        name: name.clone(),
+                        driver: Some("bridge".to_owned()),
+                        internal: Some(true),
+                        attachable: Some(false),
+                        labels: Some(labels),
+                        ..Default::default()
+                    })
+                    .await
+                    .map_err(|_| "HOST_VM_DOCKER_NETWORK_CREATE_UNCERTAIN_NO_REPLAY")?;
             }
             _ => return Err("HOST_VM_DOCKER_KIND_NOT_EXECUTABLE".into()),
         }
     } else {
         match Kind::try_from(plan.spec.kind) {
             Ok(Kind::LocalVolume) => {
-                docker.remove_volume(name, None::<bollard::query_parameters::RemoveVolumeOptions>)
-                    .await.map_err(|_| "HOST_VM_DOCKER_VOLUME_DELETE_UNCERTAIN_NO_REPLAY")?;
+                docker
+                    .remove_volume(name, None::<bollard::query_parameters::RemoveVolumeOptions>)
+                    .await
+                    .map_err(|_| "HOST_VM_DOCKER_VOLUME_DELETE_UNCERTAIN_NO_REPLAY")?;
             }
             Ok(Kind::BridgeNetwork) => {
-                docker.remove_network(name)
-                    .await.map_err(|_| "HOST_VM_DOCKER_NETWORK_DELETE_UNCERTAIN_NO_REPLAY")?;
+                docker
+                    .remove_network(name)
+                    .await
+                    .map_err(|_| "HOST_VM_DOCKER_NETWORK_DELETE_UNCERTAIN_NO_REPLAY")?;
             }
             _ => return Err("HOST_VM_DOCKER_KIND_NOT_EXECUTABLE".into()),
         }
     }
     let now = observe_managed_docker_object(&docker, &plan.spec, false).await?;
-    if now.is_some() != plan.create
-        || plan.create && now == plan.original_fingerprint
-    {
+    if now.is_some() != plan.create || plan.create && now == plan.original_fingerprint {
         return Err("HOST_VM_DOCKER_POSTSTATE_UNPROVEN_NO_REPLAY".into());
     }
     Ok(())
@@ -221,7 +255,8 @@ mod tests {
     #[test]
     fn exact_managed_docker_scope_rejects_foreign_names() {
         let host = FleetHost {
-            machine_id: "application-test".into(), ..Default::default()
+            machine_id: "application-test".into(),
+            ..Default::default()
         };
         let correct = FleetVmManagedDockerResource {
             schema_version: 1,
@@ -230,8 +265,19 @@ mod tests {
             kind: Kind::BridgeNetwork as i32,
             desired_state: Desired::Present as i32,
         };
-        assert!(resource_path_expected(&host, "managed/docker-network-net1.pb", &correct));
-        assert!(decode_exact_spec(&host, "managed/docker-network-net1.pb", &correct.encode_to_vec()).is_ok());
+        assert!(resource_path_expected(
+            &host,
+            "managed/docker-network-net1.pb",
+            &correct
+        ));
+        assert!(
+            decode_exact_spec(
+                &host,
+                "managed/docker-network-net1.pb",
+                &correct.encode_to_vec()
+            )
+            .is_ok()
+        );
         for foreign in [
             "managed/docker-volume-net1.pb",
             "managed/docker-network-../net1.pb",
@@ -242,9 +288,17 @@ mod tests {
         }
         let mut tampered = correct.clone();
         tampered.resource_name = "other-project-net1".to_owned();
-        assert!(!resource_path_expected(&host, "managed/docker-network-net1.pb", &tampered));
+        assert!(!resource_path_expected(
+            &host,
+            "managed/docker-network-net1.pb",
+            &tampered
+        ));
         tampered = correct.clone();
         tampered.desired_state = 0;
-        assert!(!resource_path_expected(&host, "managed/docker-network-net1.pb", &tampered));
+        assert!(!resource_path_expected(
+            &host,
+            "managed/docker-network-net1.pb",
+            &tampered
+        ));
     }
 }

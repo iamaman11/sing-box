@@ -180,12 +180,10 @@ pub(crate) async fn preflight_native_vm_managed_file(
         return Err("HOST_VM_MANAGED_FILE_HOST_KIND_INVALID".into());
     }
     let docker = if is_managed_docker_manifest(&path) {
-        Some(preflight_managed_docker_object(
-            host,
-            &path,
-            before.as_deref(),
-            after.as_deref(),
-        ).await?)
+        Some(
+            preflight_managed_docker_object(host, &path, before.as_deref(), after.as_deref())
+                .await?,
+        )
     } else {
         None
     };
