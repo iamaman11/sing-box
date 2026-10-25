@@ -516,6 +516,10 @@ message FleetNativeAdminResult {
   uint64 stderr_capture_bytes = 20;
   bool stdout_capture_complete = 21;
   bool stderr_capture_complete = 22;
+  // Digest is complete only if the kernel delivered actual EOF.
+  // Otherwise descendants kept the pipe open beyond the bounded drain.
+  bool stdout_stream_eof = 23;
+  bool stderr_stream_eof = 24;
 }
 
 message FleetHostIntent {

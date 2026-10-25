@@ -577,9 +577,12 @@ jobs:
             elif [[ "${TYPED_OUTCOME}" = success && "${ADMIN_RECEIPT_PROOF}" = VERIFIED_EXIT_NONZERO ]]; then
               result=ADMIN_SIGNED_EXIT_NONZERO
               native_note='Ed25519 native receipt verified; program returned a nonzero exit status.'
-            elif [[ "${TYPED_OUTCOME}" = success && "${ADMIN_RECEIPT_PROOF}" = VERIFIED_TIMEOUT_OR_KILLED ]]; then
-              result=ADMIN_SIGNED_TIMEOUT_OR_KILLED
-              native_note='Ed25519 native receipt verified; command timed out or was killed.'
+            elif [[ "${TYPED_OUTCOME}" = success && "${ADMIN_RECEIPT_PROOF}" = VERIFIED_OUTPUT_INCOMPLETE_NO_REPLAY ]]; then
+              result=ADMIN_SIGNED_OUTPUT_INCOMPLETE_NO_REPLAY
+              native_note='Direct child exited but inherited output pipe did not reach EOF; signed partial output only, no replay.'
+            elif [[ "${TYPED_OUTCOME}" = success && "${ADMIN_RECEIPT_PROOF}" = VERIFIED_EXIT_124_OR_137_AMBIGUOUS ]]; then
+              result=ADMIN_SIGNED_EXIT_AMBIGUOUS
+              native_note='Ed25519 receipt verifies exit 124/137, not whether timeout or application supplied the code.'
             elif [[ "${TYPED_OUTCOME}" = success && "${ADMIN_RECEIPT_PROOF}" = VERIFIED_NO_EXIT ]]; then
               result=ADMIN_SIGNED_NO_EXIT
               native_note='Signed result exists but normal child completion is not proved; no replay.'

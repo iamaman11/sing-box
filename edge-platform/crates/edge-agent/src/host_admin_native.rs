@@ -4,6 +4,10 @@ use super::*;
 use edge_shared_types::{FleetNativeAdminResult, ReleaseSet, host_admin};
 use std::fs::{File, OpenOptions};
 use std::io::Read;
+use std::os::fd::AsRawFd;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
+use std::time::{Duration, Instant};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::process::{Command as OsCommand, Stdio as OsStdio};
 
@@ -83,6 +87,63 @@ fn capture_stream_with_file(
         capture_bytes,
     })
 }
+// Bounded Linux poll: a background process may inherit pipes after its
+// authorized direct child exits. Never confuse a synthetic end with EOF.
+#[repr(C)]
+struct PipePollFd {
+    fd: i32,
+    events: i16,
+    revents: i16,
+}
+unsafe extern "C" {
+    fn poll(fds: *mut PipePollFd, nfds: usize, timeout_ms: i32) -> i32;
+}
+const POST_EXIT_DRAIN: Duration = Duration::from_secs(2);
+
+struct ExitBoundedPipe<R> {
+    inner: R,
+    child_exited: Arc<AtomicBool>,
+    observed_eof: Arc<AtomicBool>,
+    post_exit_started: Option<Instant>,
+}
+impl<R: Read + AsRawFd> Read for ExitBoundedPipe<R> {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        if buffer.is_empty() {
+            return Ok(0);
+        }
+        loop {
+            if self.child_exited.load(Ordering::Acquire) {
+                let start = *self.post_exit_started.get_or_insert_with(Instant::now);
+                if start.elapsed() >= POST_EXIT_DRAIN {
+                    // Bounded stream ended without kernel EOF: mark incomplete.
+                    return Ok(0);
+                }
+            }
+            let mut fd = PipePollFd {
+                fd: self.inner.as_raw_fd(),
+                events: 1,
+                revents: 0,
+            };
+            let ready = unsafe { poll(&mut fd, 1, 100) };
+            if ready < 0 {
+                let error = std::io::Error::last_os_error();
+                if error.kind() == std::io::ErrorKind::Interrupted {
+                    continue;
+                }
+                return Err(error);
+            }
+            if ready == 0 {
+                continue;
+            }
+            let n = self.inner.read(buffer)?;
+            if n == 0 {
+                self.observed_eof.store(true, Ordering::Release);
+            }
+            return Ok(n);
+        }
+    }
+}
+
 #[cfg(test)]
 mod io_tests {
     use super::*;
@@ -136,6 +197,33 @@ mod io_tests {
             .unwrap();
         assert_eq!(status.code(), Some(124));
     }
+    #[test]
+    fn inherited_background_pipe_is_bounded_and_marked_incomplete() {
+        let mut child = OsCommand::new("/bin/sh")
+            .args(["-c", "sleep 10 & exit 0"])
+            .stdin(OsStdio::null())
+            .stdout(OsStdio::piped())
+            .stderr(OsStdio::piped())
+            .spawn()
+            .unwrap();
+        let done = Arc::new(AtomicBool::new(false));
+        let observed = Arc::new(AtomicBool::new(false));
+        let source = ExitBoundedPipe {
+            inner: child.stdout.take().unwrap(),
+            child_exited: Arc::clone(&done),
+            observed_eof: Arc::clone(&observed),
+            post_exit_started: None,
+        };
+        let worker = std::thread::spawn(move || capture_stream(source).unwrap());
+        let began = Instant::now();
+        assert!(child.wait().unwrap().success());
+        done.store(true, Ordering::Release);
+        let result = worker.join().unwrap();
+        assert!(began.elapsed() < Duration::from_secs(7));
+        assert!(!observed.load(Ordering::Acquire));
+        assert_eq!(result.total_bytes, 0);
+    }
+
     #[test]
     fn fsynced_begin_cannot_be_replayed_after_lost_ack() {
         let dir = std::env::temp_dir().join(format!("sing-box-admin-proof-{}", std::process::id()));
@@ -284,13 +372,29 @@ pub(super) async fn execute() -> Result<(), String> {
         .stderr
         .take()
         .ok_or("HOST_ADMIN_CHILD_STDERR_UNAVAILABLE")?;
+    let child_exited = Arc::new(AtomicBool::new(false));
+    let stdout_eof = Arc::new(AtomicBool::new(false));
+    let stderr_eof = Arc::new(AtomicBool::new(false));
+    let stdout_source = ExitBoundedPipe {
+        inner: stdout,
+        child_exited: Arc::clone(&child_exited),
+        observed_eof: Arc::clone(&stdout_eof),
+        post_exit_started: None,
+    };
+    let stderr_source = ExitBoundedPipe {
+        inner: stderr,
+        child_exited: Arc::clone(&child_exited),
+        observed_eof: Arc::clone(&stderr_eof),
+        post_exit_started: None,
+    };
     let stdout_reader =
-        std::thread::spawn(move || capture_stream_with_file(stdout, Some(stdout_spool)));
+        std::thread::spawn(move || capture_stream_with_file(stdout_source, Some(stdout_spool)));
     let stderr_reader =
-        std::thread::spawn(move || capture_stream_with_file(stderr, Some(stderr_spool)));
+        std::thread::spawn(move || capture_stream_with_file(stderr_source, Some(stderr_spool)));
     let exit = child
         .wait()
         .map_err(|_| "HOST_ADMIN_CHILD_WAIT_UNKNOWN_NO_REPLAY")?;
+    child_exited.store(true, Ordering::Release);
     // A child may exit without reading its entire stdin. BrokenPipe is then
     // an ordinary child outcome, not proof of an unknown side effect.
     let input_result = writer
@@ -345,6 +449,8 @@ pub(super) async fn execute() -> Result<(), String> {
         stderr_capture_bytes: err.capture_bytes,
         stdout_capture_complete: out.capture_bytes == out.total_bytes,
         stderr_capture_complete: err.capture_bytes == err.total_bytes,
+        stdout_stream_eof: stdout_eof.load(Ordering::Acquire),
+        stderr_stream_eof: stderr_eof.load(Ordering::Acquire),
     };
     host_admin::sign_receipt(&request, &mut receipt, &key_bytes).map_err(str::to_owned)?;
     durable_create(&terminal, &receipt.encode_to_vec())?;

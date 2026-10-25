@@ -278,10 +278,15 @@ mod tests {
             stderr_capture_bytes: 0,
             stdout_capture_complete: true,
             stderr_capture_complete: true,
+            stdout_stream_eof: true,
+            stderr_stream_eof: true,
         };
         sign_receipt(&req, &mut receipt, owner_key.as_ref()).unwrap();
         verify_receipt(&req, &receipt, owner.public_key().as_ref()).unwrap();
         let mut edited = receipt.clone();
+        edited.stdout_stream_eof = false;
+        assert!(verify_receipt(&req, &edited, owner.public_key().as_ref()).is_err());
+        edited = receipt.clone();
         edited.stdout_preview[0] ^= 1;
         assert!(verify_receipt(&req, &edited, owner.public_key().as_ref()).is_err());
         edited = receipt.clone();

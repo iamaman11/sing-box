@@ -1058,8 +1058,11 @@ pub(crate) fn run(
                 .map_err(str::to_owned)?;
             let outcome = if !receipt.process_exited {
                 "VERIFIED_NO_EXIT"
+            } else if !receipt.stdout_stream_eof || !receipt.stderr_stream_eof {
+                "VERIFIED_OUTPUT_INCOMPLETE_NO_REPLAY"
             } else if receipt.exit_code == 124 || receipt.exit_code == 137 {
-                "VERIFIED_TIMEOUT_OR_KILLED"
+                // Both may be ordinary application exit codes, not timeout proof.
+                "VERIFIED_EXIT_124_OR_137_AMBIGUOUS"
             } else if receipt.exit_code == 0 {
                 "VERIFIED_EXIT_ZERO"
             } else {
@@ -1105,6 +1108,8 @@ pub(crate) fn run(
                 "host_admin_stderr_capture_complete={}",
                 receipt.stderr_capture_complete
             );
+            println!("host_admin_stdout_stream_eof={}", receipt.stdout_stream_eof);
+            println!("host_admin_stderr_stream_eof={}", receipt.stderr_stream_eof);
             println!("host_admin_stdout_truncated={}", receipt.stdout_truncated);
             println!("host_admin_stderr_truncated={}", receipt.stderr_truncated);
             println!(
