@@ -151,8 +151,11 @@ pub fn render_native_first_use_with_runner(
     substrate: &HostSubstrateVersions,
     registration_token: &str,
     expires_at_unix: u64,
-    now_unix: u64,
 ) -> Result<String, String> {
+    let now_unix = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "HOST_NATIVE_RUNNER_HOST_CLOCK_INVALID")?
+        .as_secs();
     if registration_token.len() < 40
         || registration_token.len() > 512
         || !registration_token.bytes().all(|b| {
@@ -255,6 +258,13 @@ mod tests {
         .unwrap()
     }
 
+    fn now() -> u64 {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_secs()
+    }
+
     #[test]
     fn first_use_runner_has_only_ephemeral_token_and_root_native_transport() {
         let token = "A".repeat(128);
@@ -283,12 +293,12 @@ mod tests {
             ).is_err()
         };
         for bad in ["", "short", "bad token", "invalid\nsecret", "A&B", "äbc"] {
-            assert!(validate(bad, 3_500));
+            assert!(validate(bad, now() + 3_500));
         }
         let accepted_token = "x".repeat(128);
-        assert!(validate(&accepted_token, 1_199));
-        assert!(validate(&accepted_token, 3_601));
-        assert!(!validate(&accepted_token, 3_500));
+        assert!(validate(&accepted_token, now() + 1_199));
+        assert!(validate(&accepted_token, now() + 3_601));
+        assert!(!validate(&accepted_token, now() + 3_500));
     }
 
     #[test]
