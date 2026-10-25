@@ -159,6 +159,14 @@ assert "runner bootstrap must use --runner-only" in vm_installer
 assert 'CF_ACCESS_CLIENT_ID=%s' not in vm_installer
 assert 'CF_ACCESS_CLIENT_SECRET=%s' not in vm_installer
 assert "SING_BOX_NATIVE_BOOTSTRAP" in vm_installer
+native_bootstrap = Path("edge-platform/crates/edge-agent/src/host_bootstrap_access.rs").read_text(encoding="utf-8")
+native_enroll = Path("edge-platform/crates/edge-agent/src/host_enroll.rs").read_text(encoding="utf-8")
+assert 'bootstrap-x25519.secret' in native_bootstrap and 'bootstrap-x25519.secret' in native_enroll
+assert 'local host-bootstrap-access' in vm_installer
+assert 'diagnose_canonical_host_access(&staged)' in native_bootstrap
+assert 'BOOTSTRAP_ACCESS_ALREADY_BEGUN_NO_REPLAY' in native_bootstrap
+assert 'FleetVmBootstrapAccessEnvelope' in Path("edge-platform/proto/edge/platform/v1/fleet.proto").read_text(encoding="utf-8")
+
 assert "RUNNER_REGISTERED_AWAITING_ROOT_ONLY_ACCESS_HANDOFF" in native_init
 assert "fn render_native_first_use_with_runner(" in native_init
 
