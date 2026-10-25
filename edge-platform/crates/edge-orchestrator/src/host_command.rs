@@ -551,45 +551,76 @@ pub(crate) fn run(
                     .ok_or("HOST_SNAPSHOT_COMMENT_REQUIRED")?;
                 let meta = std::fs::symlink_metadata(path)
                     .map_err(|_| "HOST_SNAPSHOT_ARTIFACT_UNAVAILABLE")?;
-                if !meta.file_type().is_file() || meta.len() == 0
-                    || meta.len() > edge_shared_types::host_diagnostic_snapshot::MAX_SNAPSHOT_BYTES as u64
+                if !meta.file_type().is_file()
+                    || meta.len() == 0
+                    || meta.len()
+                        > edge_shared_types::host_diagnostic_snapshot::MAX_SNAPSHOT_BYTES as u64
                 {
                     return Err("HOST_SNAPSHOT_ARTIFACT_INVALID".into());
                 }
                 let mut signed = Vec::new();
-                File::open(path).map_err(|_| "HOST_SNAPSHOT_ARTIFACT_UNREADABLE")?
-                    .take(edge_shared_types::host_diagnostic_snapshot::MAX_SNAPSHOT_BYTES as u64 + 1)
+                File::open(path)
+                    .map_err(|_| "HOST_SNAPSHOT_ARTIFACT_UNREADABLE")?
+                    .take(
+                        edge_shared_types::host_diagnostic_snapshot::MAX_SNAPSHOT_BYTES as u64 + 1,
+                    )
                     .read_to_end(&mut signed)
                     .map_err(|_| "HOST_SNAPSHOT_ARTIFACT_UNREADABLE")?;
                 let identity = format!("issue1-comment-{comment}");
                 let accepted = edge_shared_types::host_diagnostic_snapshot::verify(
-                    &signed, selected, &identity, &release_sha, now,
-                ).map_err(str::to_owned)?;
-                let attested_observed = accepted.observation.as_ref()
+                    &signed,
+                    selected,
+                    &identity,
+                    &release_sha,
+                    now,
+                )
+                .map_err(str::to_owned)?;
+                let attested_observed = accepted
+                    .observation
+                    .as_ref()
                     .ok_or("HOST_SNAPSHOT_OBSERVATION_MISSING")?;
-                let resources = accepted.resources.as_ref()
+                let resources = accepted
+                    .resources
+                    .as_ref()
                     .ok_or("HOST_SNAPSHOT_RESOURCES_MISSING")?;
                 let verdict = validate_readback_scope(
-                    selected, attested_observed,
+                    selected,
+                    attested_observed,
                     &release.release().release_set_sha256,
                     (selected.kind == ManagedHostKind::Vm as i32)
-                        .then_some(native_bundle_sha.as_slice()), now,
+                        .then_some(native_bundle_sha.as_slice()),
+                    now,
                 )?;
                 let problems = resources.resources.iter().filter(|r| !r.converged).count()
-                    + resources.managed_docker.iter().filter(|r| !r.converged).count();
+                    + resources
+                        .managed_docker
+                        .iter()
+                        .filter(|r| !r.converged)
+                        .count();
                 println!("host_native_snapshot_proof=VERIFIED_ROOT_SIGNED_READ_ONLY");
                 println!("host_native_snapshot_operation_id={identity}");
-                println!("host_native_snapshot_observed_at_unix={}", attested_observed.observed_at_unix);
-                println!("host_native_snapshot_runtime_ready={}",
-                    attested_observed.runtime_ready && attested_observed.runtime_ready_proven);
-                println!("host_native_snapshot_resources_count={}",
-                    resources.resources.len() + resources.managed_docker.len());
+                println!(
+                    "host_native_snapshot_observed_at_unix={}",
+                    attested_observed.observed_at_unix
+                );
+                println!(
+                    "host_native_snapshot_runtime_ready={}",
+                    attested_observed.runtime_ready && attested_observed.runtime_ready_proven
+                );
+                println!(
+                    "host_native_snapshot_resources_count={}",
+                    resources.resources.len() + resources.managed_docker.len()
+                );
                 println!("host_native_snapshot_problem_count={problems}");
                 println!("host_native_snapshot_readback_verdict={verdict}");
                 println!("host_native_snapshot_authorizes_mutation=false");
                 println!("host_native_snapshot_physical_accepted=false");
                 if let Some(path) = github_output {
-                    append_host_verifier_output(path, "native_snapshot_proof", "VERIFIED_ROOT_SIGNED_READ_ONLY")?;
+                    append_host_verifier_output(
+                        path,
+                        "native_snapshot_proof",
+                        "VERIFIED_ROOT_SIGNED_READ_ONLY",
+                    )?;
                 }
             } else if snapshot_comment_id.is_some() {
                 return Err("HOST_SNAPSHOT_PATH_REQUIRED".into());

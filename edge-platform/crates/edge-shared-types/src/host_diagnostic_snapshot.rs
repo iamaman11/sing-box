@@ -1,8 +1,8 @@
 //! One signed, read-only native snapshot. A transport copy alone proves nothing.
 //! Domain separation forbids reusing this signature as a mutation receipt.
-use crate::{FleetHost, FleetHostKind, FleetNativeDiagnosticSnapshot};
-use crate::host_resources::validate_vm_resource_report;
 use crate::host_receipt::check_native_receipt_key;
+use crate::host_resources::validate_vm_resource_report;
+use crate::{FleetHost, FleetHostKind, FleetNativeDiagnosticSnapshot};
 use prost::Message;
 use ring::signature::{ED25519, Ed25519KeyPair, UnparsedPublicKey};
 
@@ -35,8 +35,14 @@ fn validate_scope(
     {
         return Err("HOST_SNAPSHOT_CORRELATION_OR_RELEASE_INVALID");
     }
-    let observation = snapshot.observation.as_ref().ok_or("HOST_SNAPSHOT_OBSERVATION_MISSING")?;
-    let resources = snapshot.resources.as_ref().ok_or("HOST_SNAPSHOT_RESOURCES_MISSING")?;
+    let observation = snapshot
+        .observation
+        .as_ref()
+        .ok_or("HOST_SNAPSHOT_OBSERVATION_MISSING")?;
+    let resources = snapshot
+        .resources
+        .as_ref()
+        .ok_or("HOST_SNAPSHOT_RESOURCES_MISSING")?;
     if observation.schema_version != 1
         || observation.host_kind != host.kind
         || observation.observed_at_unix == 0
@@ -44,7 +50,10 @@ fn validate_scope(
         || now.saturating_sub(observation.observed_at_unix) > 300
         || resources.observed_at_unix > now.saturating_add(60)
         || now.saturating_sub(resources.observed_at_unix) > 300
-        || observation.observed_at_unix.abs_diff(resources.observed_at_unix) > 90
+        || observation
+            .observed_at_unix
+            .abs_diff(resources.observed_at_unix)
+            > 90
     {
         return Err("HOST_SNAPSHOT_STALE_OR_SCOPE_INVALID");
     }
@@ -86,9 +95,10 @@ pub fn verify(
     if bytes.is_empty() || bytes.len() > MAX_SNAPSHOT_BYTES {
         return Err("HOST_SNAPSHOT_SIZE_INVALID");
     }
-    let snapshot = FleetNativeDiagnosticSnapshot::decode(bytes)
-        .map_err(|_| "HOST_SNAPSHOT_PROTO_INVALID")?;
-    if snapshot.encode_to_vec() != bytes || snapshot.ed25519_signature.len() != 64
+    let snapshot =
+        FleetNativeDiagnosticSnapshot::decode(bytes).map_err(|_| "HOST_SNAPSHOT_PROTO_INVALID")?;
+    if snapshot.encode_to_vec() != bytes
+        || snapshot.ed25519_signature.len() != 64
         || host.native_receipt_public_key.len() != 32
         || host.native_receipt_public_key.iter().all(|b| *b == 0)
     {
@@ -109,19 +119,40 @@ mod tests {
     fn snapshot_requires_full_signed_scope() {
         let key = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
         let pair = Ed25519KeyPair::from_pkcs8(key.as_ref()).unwrap();
-        let host = FleetHost { machine_id: "vm5".into(),
+        let host = FleetHost {
+            machine_id: "vm5".into(),
             kind: FleetHostKind::Vm as i32,
             native_receipt_public_key: pair.public_key().as_ref().to_vec(),
-            ..Default::default() };
+            ..Default::default()
+        };
         // Missing native resources must never be authenticated as healthy.
         let mut snapshot = FleetNativeDiagnosticSnapshot {
-            schema_version: 1, machine_id: "vm5".into(),
+            schema_version: 1,
+            machine_id: "vm5".into(),
             operation_id: "issue1-comment-42".into(),
             release_set_sha256: vec![4; 32],
             ..Default::default()
         };
         assert!(sign(&mut snapshot, &host, key.as_ref(), 100).is_err());
-        assert!(verify(&snapshot.encode_to_vec(), &host, "issue1-comment-42", &[4;32], 100).is_err());
-        assert!(verify(&snapshot.encode_to_vec(), &host, "issue1-comment-43", &[4;32], 100).is_err());
+        assert!(
+            verify(
+                &snapshot.encode_to_vec(),
+                &host,
+                "issue1-comment-42",
+                &[4; 32],
+                100
+            )
+            .is_err()
+        );
+        assert!(
+            verify(
+                &snapshot.encode_to_vec(),
+                &host,
+                "issue1-comment-43",
+                &[4; 32],
+                100
+            )
+            .is_err()
+        );
     }
 }
