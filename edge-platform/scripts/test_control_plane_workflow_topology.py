@@ -154,7 +154,11 @@ assert '#[serde(skip_serializing_if = "Vec::is_empty")]\n    sshkey_id:' in nati
 assert "singbox-native-first-use-v1" in lifecycle_service
 assert "HOST_NATIVE_CREATE_MUST_HAVE_NO_SSH_AND_PINNED_CLOUD_INIT" in lifecycle_service
 assert "--runner-only" in vm_installer
-assert "runner-only first-use refuses a previously registered owner" in vm_installer
+assert "runner first-use already registered; no replay" in vm_installer
+assert "runner bootstrap must use --runner-only" in vm_installer
+assert 'CF_ACCESS_CLIENT_ID=%s' not in vm_installer
+assert 'CF_ACCESS_CLIENT_SECRET=%s' not in vm_installer
+assert "SING_BOX_NATIVE_BOOTSTRAP" in vm_installer
 assert "RUNNER_REGISTERED_AWAITING_ROOT_ONLY_ACCESS_HANDOFF" in native_init
 assert "fn render_native_first_use_with_runner(" in native_init
 
