@@ -337,13 +337,20 @@ assert "first-use-preflight" in abort_job
 assert 'host-abort-preflight.txt' in abort_job
 assert "host_first_use_abort.py" in abort_job
 assert abort_job.index("Prove exact absent VM through complete typed Vultr inventory") < abort_job.index("Retire only exact aborted GitHub first-use reservation")
-assert "HOST_ABORT_ORIGINAL_CREATE_NOT_PROVEN_SKIPPED" in abort
-assert "HOST_ABORT_ORIGINAL_PRECREATE_FAILURE_UNPROVEN" in abort
+assert 'return "PROVEN_SKIPPED"' in abort
+assert "HOST_ABORT_CREATE_FAILURE_NOT_PROVEN_PREPOST" in abort
+assert 'return "PROVEN_NOT_ENTERED_PREPOST_FIREWALL"' in abort
 assert "HOST_ABORT_RESERVED_REF_CONTENT_DRIFT" in abort
 assert "HOST_ABORT_TERMINAL_EVIDENCE_AMBIGUOUS" in abort
 assert abort.index("verify_original_run(machine, origin, old_revision, run_id)") < abort.index('method="POST", form=marker')
 assert abort.index('method="POST", form=marker') < abort.index('method="DELETE"')
 assert "HOST_ABORT_RUNNER_INVENTORY_INCOMPLETE" in abort
+assert "HOST_ABORT_FIREWALL_PREPOST_ERROR_NOT_PROVEN" in abort
+assert '43892f4c527b94b2d0cc07ff5bd95eaa56711115' in abort
+assert 'create={create_phase}' in abort
+first_use_source = provider.split("pub(crate) async fn host_first_use(", 1)[1].split("pub(crate) async fn host_first_use_scrub(", 1)[0]
+assert "HOST_FIRST_USE_FIREWALL_BINDING_UNPROVEN" not in first_use_source
+assert first_use_source.index("ensure_persistent_firewall_profile(") < first_use_source.index("apply_machine_with_firewall_profiles(")
 assert 'host_replay_allowed=false' in abort
 
 print("native_only_workflow_topology=PASS")

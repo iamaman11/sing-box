@@ -745,16 +745,38 @@ pub(crate) async fn host_first_use(
     let mut provider = lifecycle_provider_from_env()?;
     let mut support = support_provider_from_env()?;
     validate_machine_catalog(&mut support, machine).await?;
-    let bindings = verified_firewall_bindings(&mut support, &desired, profiles.as_ref()).await?;
+    // First-use may legitimately start without a provider-owned firewall
+    // group. Provision the *existing exact Git profile* through the native
+    // support owner under this already-durable BEGIN, before VM CREATE.
+    // No SSH ingress is granted: persistent firewall rules deliberately
+    // exclude the retired @controller-ipv4 SSH template.
+    let mut bindings =
+        verified_firewall_bindings(&mut support, &desired, profiles.as_ref()).await?;
     let binding = match machine.provider.firewall_profile.as_deref() {
         None => None,
-        Some(name) => Some(
-            bindings
+        Some(name) => {
+            if let Some(existing) = bindings
                 .iter()
                 .find(|(_, observed)| observed.as_str() == name)
                 .map(|(id, _)| id.clone())
-                .ok_or("HOST_FIRST_USE_FIREWALL_BINDING_UNPROVEN")?,
-        ),
+            {
+                Some(existing)
+            } else {
+                let profile = profiles
+                    .as_ref()
+                    .ok_or("HOST_FIRST_USE_FIREWALL_PROFILES_REQUIRED")?
+                    .profile(name)?;
+                let resolved = ensure_persistent_firewall_profile(
+                    &mut support,
+                    &desired.environment,
+                    profile,
+                    &LifecycleExecutionPolicy::default(),
+                )
+                .await?;
+                bindings.insert(resolved.id.clone(), resolved.profile_name.clone());
+                Some(resolved.id)
+            }
+        }
     };
     let prerequisites = CreatePrerequisites {
         bootstrap_profile: machine.bootstrap_profile.clone(),
