@@ -306,11 +306,13 @@ enum FleetVmManagedDockerKind {
   FLEET_VM_MANAGED_DOCKER_KIND_UNSPECIFIED = 0;
   FLEET_VM_MANAGED_DOCKER_KIND_LOCAL_VOLUME = 1;
   FLEET_VM_MANAGED_DOCKER_KIND_BRIDGE_NETWORK = 2;
+  FLEET_VM_MANAGED_DOCKER_KIND_CONTAINER = 3;
 }
 enum FleetVmManagedDockerDesiredState {
   FLEET_VM_MANAGED_DOCKER_DESIRED_STATE_UNSPECIFIED = 0;
   FLEET_VM_MANAGED_DOCKER_DESIRED_STATE_PRESENT = 1;
   FLEET_VM_MANAGED_DOCKER_DESIRED_STATE_ABSENT = 2;
+  FLEET_VM_MANAGED_DOCKER_DESIRED_STATE_STOPPED = 3;
 }
 message FleetVmManagedDockerResource {
   uint32 schema_version = 1;
@@ -318,6 +320,12 @@ message FleetVmManagedDockerResource {
   string resource_name = 3;
   FleetVmManagedDockerKind kind = 4;
   FleetVmManagedDockerDesiredState desired_state = 5;
+  // Exact OCI manifest digest; required only for CONTAINER.
+  string image_ref = 6;
+  // Optional exact application-owned private bridge network, never host mode.
+  string network_name = 7;
+  // A monotonic signed revision requests one explicit restart without replay.
+  uint64 restart_generation = 8;
 }
 
 // Non-secret process snapshot from root-local /proc. It reports live kernel
