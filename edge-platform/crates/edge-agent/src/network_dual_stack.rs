@@ -5,8 +5,11 @@ use edge_shared_types::{
     FleetVmDualStackNetwork, FleetVmIpFamily, FleetVmKernelAddress, FleetVmKernelRoute,
 };
 use prost::Message;
+use rtnetlink::{
+    IpVersion,
+    packet_route::rule::{RuleAttribute, RuleMessage},
+};
 use std::net::Ipv6Addr;
-use rtnetlink::{IpVersion, packet_route::rule::{RuleAttribute, RuleMessage}};
 
 fn normalize_dual_address(message: &AddressMessage) -> Option<FleetVmKernelAddress> {
     let family = match message.header.family {
@@ -137,18 +140,29 @@ fn normalize_policy_rule(rule: &RuleMessage) -> Option<edge_shared_types::FleetV
         AddressFamily::Inet6 => FleetVmIpFamily::V6,
         _ => return None,
     };
-    let table_id = rule.attributes.iter().find_map(|attribute| match attribute {
-        RuleAttribute::Table(id) => Some(*id),
-        _ => None,
-    }).unwrap_or(u32::from(rule.header.table));
-    let priority = rule.attributes.iter().find_map(|attribute| match attribute {
-        RuleAttribute::Priority(value) => Some(*value),
-        _ => None,
-    }).unwrap_or_default();
-    let fw_mark = rule.attributes.iter().find_map(|attribute| match attribute {
-        RuleAttribute::FwMark(value) => Some(*value),
-        _ => None,
-    });
+    let table_id = rule
+        .attributes
+        .iter()
+        .find_map(|attribute| match attribute {
+            RuleAttribute::Table(id) => Some(*id),
+            _ => None,
+        })
+        .unwrap_or(u32::from(rule.header.table));
+    let priority = rule
+        .attributes
+        .iter()
+        .find_map(|attribute| match attribute {
+            RuleAttribute::Priority(value) => Some(*value),
+            _ => None,
+        })
+        .unwrap_or_default();
+    let fw_mark = rule
+        .attributes
+        .iter()
+        .find_map(|attribute| match attribute {
+            RuleAttribute::FwMark(value) => Some(*value),
+            _ => None,
+        });
     Some(edge_shared_types::FleetVmKernelPolicyRule {
         family: family as i32,
         table_id,
@@ -260,7 +274,11 @@ pub(crate) async fn observe_dual_stack() -> Result<FleetVmDualStackNetwork, &'st
     }
     result.ipv6_route_dump_complete = true;
     let mut rules4 = handle.rule().get(IpVersion::V4).execute();
-    while let Some(rule) = rules4.try_next().await.map_err(|_| "IPV4_RULE_DUMP_FAILED")? {
+    while let Some(rule) = rules4
+        .try_next()
+        .await
+        .map_err(|_| "IPV4_RULE_DUMP_FAILED")?
+    {
         if let Some(value) = normalize_policy_rule(&rule) {
             result.policy_rules.push(value);
             if result.policy_rules.len() > 256 {
@@ -270,7 +288,11 @@ pub(crate) async fn observe_dual_stack() -> Result<FleetVmDualStackNetwork, &'st
     }
     result.ipv4_rule_dump_complete = true;
     let mut rules6 = handle.rule().get(IpVersion::V6).execute();
-    while let Some(rule) = rules6.try_next().await.map_err(|_| "IPV6_RULE_DUMP_FAILED")? {
+    while let Some(rule) = rules6
+        .try_next()
+        .await
+        .map_err(|_| "IPV6_RULE_DUMP_FAILED")?
+    {
         if let Some(value) = normalize_policy_rule(&rule) {
             result.policy_rules.push(value);
             if result.policy_rules.len() > 256 {
