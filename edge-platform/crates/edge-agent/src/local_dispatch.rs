@@ -1,34 +1,66 @@
 use super::*;
 
-/// Strictly bounded classification, not an authority or a diagnosis of cause.
-/// The log contents may be attacker controlled; print no raw lines.
-fn local_line2_log_hint(lines: &[String]) -> &'static str {
-    for line in lines.iter().take(40) {
-        let normalized = line.to_ascii_lowercase();
+/// Closed, secret-free failure classification shared by every registered VM
+/// container. Docker State.Error and stdout/stderr are untrusted, potentially
+/// secret-bearing strings; never copy a byte of either into operator reports.
+fn classify_native_container_failure(
+    runtime_error: Option<&str>,
+    lines: &[String],
+) -> &'static str {
+    for source in runtime_error
+        .into_iter()
+        .chain(lines.iter().rev().take(40).map(String::as_str))
+    {
+        let normalized = source
+            .chars()
+            .take(4096)
+            .collect::<String>()
+            .to_ascii_lowercase();
         if normalized.contains("invalid config")
             || normalized.contains("failed to parse")
             || normalized.contains("config parse")
             || normalized.contains("json:")
+            || normalized.contains("unknown field")
         {
-            return "CONFIG_PARSE_LOG_HINT";
+            return "CONFIG_PARSE_HINT";
         }
-        if normalized.contains("permission denied") {
-            return "PERMISSION_LOG_HINT";
+        if normalized.contains("permission denied") || normalized.contains("access denied") {
+            return "PERMISSION_HINT";
         }
-        if normalized.contains("address already in use") {
-            return "LISTENER_BIND_LOG_HINT";
+        if normalized.contains("address already in use") || normalized.contains("bind:") {
+            return "LISTENER_BIND_HINT";
         }
-        if normalized.contains("no such host") {
-            return "DNS_LOG_HINT";
+        if normalized.contains("no such host") || normalized.contains("dns lookup") {
+            return "DNS_HINT";
         }
         if normalized.contains("connection refused") {
-            return "UPSTREAM_LOG_HINT";
+            return "UPSTREAM_REFUSED_HINT";
         }
-        if normalized.contains("panic") {
-            return "PANIC_LOG_HINT";
+        if normalized.contains("tls:") || normalized.contains("certificate") {
+            return "TLS_HINT";
+        }
+        if normalized.contains("panic") || normalized.contains("segmentation fault") {
+            return "PROCESS_CRASH_HINT";
+        }
+        if normalized.contains("no such file or directory") {
+            return "FILE_MISSING_HINT";
         }
     }
-    "UNCLASSIFIED_OR_NO_LOG"
+    if runtime_error.is_some_and(|reason| !reason.is_empty()) {
+        "UNCLASSIFIED_DOCKER_STATE_ERROR"
+    } else {
+        "UNCLASSIFIED_OR_NO_LOG"
+    }
+}
+
+fn native_container_health_class(health: Option<&str>) -> &'static str {
+    match health {
+        None => "NO_HEALTHCHECK",
+        Some("Healthy" | "healthy") => "HEALTHY",
+        Some("Unhealthy" | "unhealthy") => "UNHEALTHY",
+        Some("Starting" | "starting") => "STARTING",
+        Some(_) => "UNKNOWN_HEALTH_STATE",
+    }
 }
 
 pub(super) async fn run_local(command: cli::LocalCommand) -> Result<(), AgentError> {
@@ -147,52 +179,72 @@ pub(super) async fn run_local(command: cli::LocalCommand) -> Result<(), AgentErr
                 }
                 Err(_) => println!("host_native_poststate_snapshot=UNAVAILABLE_READ_ONLY"),
             }
-            // The existing root Agent may inspect its own Git-owned Line2.
-            // Never export raw Docker error text or even redacted log lines
-            // through GitHub. A hint is not a physical root-cause proof.
-            if let Ok(host) = host_native::registered_vm_host()
-                && host
-                    .vm_containers
-                    .iter()
-                    .any(|c| c.container_name == "vultr-line2-proxy")
-            {
-                match observe_container_runtime("vultr-line2-proxy").await {
-                    Ok(line2) => {
-                        println!("host_vm_line2_metadata_origin=ROOT_DOCKER_INSPECT_RUNNER_COPIED");
-                        println!("host_vm_line2_present={}", line2.present);
-                        println!("host_vm_line2_running={}", line2.running);
-                        println!(
-                            "host_vm_line2_exit_code={}",
-                            line2
-                                .exit_code
-                                .map(|value| value.to_string())
-                                .unwrap_or("UNPROVEN".into())
-                        );
-                        println!(
-                            "host_vm_line2_restart_count={}",
-                            line2
-                                .restart_count
-                                .map(|value| value.to_string())
-                                .unwrap_or("UNPROVEN".into())
-                        );
-                        println!(
-                            "host_vm_line2_oom_killed={}",
-                            line2
-                                .oom_killed
-                                .map(|value| value.to_string())
-                                .unwrap_or("UNPROVEN".into())
-                        );
-                        println!(
-                            "host_vm_line2_runtime_error_present={}",
-                            line2.runtime_error.is_some()
-                        );
-                        println!(
-                            "host_vm_line2_log_hint={}",
-                            local_line2_log_hint(&line2.log_tail)
-                        );
+            // Every exact Git-owned VM container has bounded root-local
+            // diagnostics, independent of Docker healthchecks. No arbitrary
+            // container selector arrives from the runner, no raw Docker logs.
+            // Transport is explicitly UNAUTHENTICATED runner copy; signed
+            // native receipts remain separate from read-only observations.
+            match host_native::registered_vm_host() {
+                Ok(host) => {
+                    println!("host_vm_diagnostic_origin=ROOT_LOCAL_RUNNER_COPIED_UNAUTHENTICATED");
+                    println!("host_vm_diagnostic_scope=REGISTERED_VM_CONTAINERS_ONLY");
+                    println!("host_vm_diagnostic_count={}", host.vm_containers.len());
+                    for container in host.vm_containers.iter().take(16) {
+                        let name = &container.container_name;
+                        if name.len() > 96
+                            || name.is_empty()
+                            || !name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-')
+                        {
+                            println!("host_vm_container_diagnostic=UNSAFE_REGISTERED_NAME");
+                            continue;
+                        }
+                        match observe_container_runtime(name).await {
+                            Ok(state) => {
+                                let hint = classify_native_container_failure(
+                                    state.runtime_error.as_deref(),
+                                    &state.log_tail,
+                                );
+                                println!(
+                                    "host_vm_container_diagnostic={} present={} running={} exit_code={} restarts={} oom={} health={} state_error={} failure_hint={} network_count={} published_port_count={} mount_count={}",
+                                    name,
+                                    state.present,
+                                    state.running,
+                                    state
+                                        .exit_code
+                                        .map(|n| n.to_string())
+                                        .unwrap_or("UNPROVEN".into()),
+                                    state
+                                        .restart_count
+                                        .map(|n| n.to_string())
+                                        .unwrap_or("UNPROVEN".into()),
+                                    state
+                                        .oom_killed
+                                        .map(|v| v.to_string())
+                                        .unwrap_or("UNPROVEN".into()),
+                                    native_container_health_class(state.health.as_deref()),
+                                    state
+                                        .runtime_error
+                                        .as_ref()
+                                        .is_some_and(|error| !error.is_empty()),
+                                    hint,
+                                    state.networks.len(),
+                                    state.published_ports.len(),
+                                    state.mounts.len(),
+                                );
+                            }
+                            Err(_) => {
+                                println!(
+                                    "host_vm_container_diagnostic={} state=UNPROVEN_DOCKER_READBACK",
+                                    name,
+                                );
+                            }
+                        }
                     }
-                    Err(_) => println!("host_vm_line2_metadata=UNPROVEN_DOCKER_READBACK"),
+                    if host.vm_containers.len() > 16 {
+                        println!("host_vm_container_diagnostic=TRUNCATED_LIMIT_16");
+                    }
                 }
+                Err(_) => println!("host_vm_diagnostic_scope=UNPROVEN_GIT_REGISTERED_OWNER"),
             }
             // Read-only verification of the SAME Cloudflare Access JWT used
             // by signed INSTALL. No HostIntent, POST, or second owner.
@@ -391,7 +443,22 @@ mod native_read_only_diagnostics_tests {
     #[test]
     fn line2_log_classification_never_returns_raw_content() {
         let lines = vec!["FATAL invalid config with credential=secret".to_owned()];
-        assert_eq!(local_line2_log_hint(&lines), "CONFIG_PARSE_LOG_HINT");
-        assert_eq!(local_line2_log_hint(&[]), "UNCLASSIFIED_OR_NO_LOG");
+        assert_eq!(
+            classify_native_container_failure(None, &lines),
+            "CONFIG_PARSE_HINT"
+        );
+        assert_eq!(
+            classify_native_container_failure(None, &[]),
+            "UNCLASSIFIED_OR_NO_LOG"
+        );
+        assert_eq!(
+            classify_native_container_failure(Some("permission denied with token=secret"), &[]),
+            "PERMISSION_HINT"
+        );
+        assert_eq!(native_container_health_class(None), "NO_HEALTHCHECK");
+        assert_eq!(
+            native_container_health_class(Some("unhealthy")),
+            "UNHEALTHY"
+        );
     }
 }

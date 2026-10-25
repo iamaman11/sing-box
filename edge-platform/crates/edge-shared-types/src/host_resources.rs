@@ -680,6 +680,18 @@ pub fn validate_vm_resource_report(
             || (row.ownership_proven && !valid_container_id(&row.container_id))
             || (!row.ownership_proven && !row.container_id.is_empty())
             || (row.restart_count != 0 && !row.restart_count_proven)
+            || (!row.last_exit_code_proven && row.last_exit_code != 0)
+            || (!row.oom_killed_proven && row.oom_killed)
+            || (!row.ownership_proven
+                && (row.last_exit_code_proven
+                    || row.oom_killed_proven
+                    || row.docker_state_error_present
+                    || row.runtime_failure_class
+                        != crate::FleetVmRuntimeFailureClass::Unproven as i32))
+            || (crate::FleetVmRuntimeFailureClass::try_from(row.runtime_failure_class).is_err())
+            || (row.docker_state_error_present
+                != (row.runtime_failure_class
+                    != crate::FleetVmRuntimeFailureClass::Unproven as i32))
             || !config_proof_consistent(row, expected)
             || !reason_consistent(row)
         {
@@ -913,6 +925,40 @@ mod tests {
         };
         (host, report)
     }
+    #[test]
+    fn container_exit_oom_and_failure_class_are_validated_as_closed_evidence() {
+        use crate::FleetVmRuntimeFailureClass as Failure;
+        let (host, mut report) = fixture();
+        let row = &mut report.resources[0];
+        row.last_exit_code = 137;
+        assert_eq!(
+            validate_vm_resource_report(&report, &host),
+            Err("VM_RESOURCE_REPORT_EVIDENCE_INVALID")
+        );
+        let row = &mut report.resources[0];
+        row.last_exit_code_proven = true;
+        row.oom_killed = true;
+        assert_eq!(
+            validate_vm_resource_report(&report, &host),
+            Err("VM_RESOURCE_REPORT_EVIDENCE_INVALID")
+        );
+        let row = &mut report.resources[0];
+        row.oom_killed_proven = true;
+        row.docker_state_error_present = true;
+        row.runtime_failure_class = Failure::Permission as i32;
+        assert!(validate_vm_resource_report(&report, &host).is_ok());
+        report.resources[0].runtime_failure_class = 8888;
+        assert_eq!(
+            validate_vm_resource_report(&report, &host),
+            Err("VM_RESOURCE_REPORT_EVIDENCE_INVALID")
+        );
+        report.resources[0].runtime_failure_class = Failure::Unproven as i32;
+        assert_eq!(
+            validate_vm_resource_report(&report, &host),
+            Err("VM_RESOURCE_REPORT_EVIDENCE_INVALID")
+        );
+    }
+
     #[test]
     fn bootstrap_gate_is_typed_read_only_and_consistent_with_git_and_worker() {
         use crate::FleetVmBootstrapPhase as Phase;

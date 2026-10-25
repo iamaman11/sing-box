@@ -258,8 +258,12 @@ jobs:
             *) exit 1 ;;
           esac
           run_url="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          body="$(printf 'Host read-only report for operator command #%s\n\nOperation: `%s`\nResult: `%s`\nPhysical dispatch selected: `%s`\nCI evidence: %s\n\nIndividual host outcomes arrive as separate correlated replies. Unresponsive runners remain UNPROVEN. This coordinator does not mutate; an eligible VM root owner may execute one signed HostIntent.\n' \
-            "${SOURCE_COMMENT_ID}" "${COMMAND_BODY}" "${result}" "${TARGETS_PRESENT}" "${run_url}")"
+          report_kind='Host read-only report'
+          if [[ "${HOST_OPERATION}" == RECOVER_PREFLIGHT ]]; then
+            report_kind='Host code-only recovery report'
+          fi
+          body="$(printf '%s for operator command #%s\n\nOperation: `%s`\nResult: `%s`\nPhysical dispatch selected: `%s`\nCI evidence: %s\n\nResults arrive as separate correlated replies. Unresponsive runners remain UNPROVEN. For VM /host recover, the installed root owner may refresh only its exact protected binary/trust and diagnose; this never authorizes resource replay, Docker/network changes or a signed INSTALL.\n' \
+            "${report_kind}" "${SOURCE_COMMENT_ID}" "${COMMAND_BODY}" "${result}" "${TARGETS_PRESENT}" "${run_url}")"
           comment_id="$(gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/1/comments" -f "body=${body}" --jq '.id')"
           [[ "${comment_id}" =~ ^[0-9]+$ ]]
           echo "comment_id=${comment_id}" >> "${GITHUB_OUTPUT}"

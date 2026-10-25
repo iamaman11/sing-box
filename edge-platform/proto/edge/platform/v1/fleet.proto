@@ -209,6 +209,28 @@ message FleetVmResourceReadback {
   // namespace. Never emit the file contents or credential values.
   bytes config_sha256 = 13;
   FleetVmObservedReason observed_reason = 14;
+  // Pure read-only Docker inspect metadata; each proof bit distinguishes an
+  // observed false/zero from an unavailable field. Never grants mutation.
+  int64 last_exit_code = 15;
+  bool last_exit_code_proven = 16;
+  bool oom_killed = 17;
+  bool oom_killed_proven = 18;
+  bool docker_state_error_present = 19;
+  FleetVmRuntimeFailureClass runtime_failure_class = 20;
+  // No log contents, environment, credential values or operator free text.
+}
+
+enum FleetVmRuntimeFailureClass {
+  FLEET_VM_RUNTIME_FAILURE_CLASS_UNPROVEN = 0;
+  FLEET_VM_RUNTIME_FAILURE_CLASS_STATE_ERROR_OTHER = 1;
+  FLEET_VM_RUNTIME_FAILURE_CLASS_CONFIG_PARSE = 2;
+  FLEET_VM_RUNTIME_FAILURE_CLASS_PERMISSION = 3;
+  FLEET_VM_RUNTIME_FAILURE_CLASS_PORT_BIND = 4;
+  FLEET_VM_RUNTIME_FAILURE_CLASS_DNS = 5;
+  FLEET_VM_RUNTIME_FAILURE_CLASS_UPSTREAM_REFUSED = 6;
+  FLEET_VM_RUNTIME_FAILURE_CLASS_TLS = 7;
+  FLEET_VM_RUNTIME_FAILURE_CLASS_PROCESS_CRASH = 8;
+  FLEET_VM_RUNTIME_FAILURE_CLASS_FILE_MISSING = 9;
 }
 
 // Native ROOT-namespace observation, not a DNS resolution test, working

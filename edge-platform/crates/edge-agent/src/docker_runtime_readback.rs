@@ -201,6 +201,44 @@ pub(super) fn observe_native_vm_credential_readback(
     make(State::Unproven, 0, 0)
 }
 
+/// Typed bounded Docker State.Error classifier. This input may contain
+/// secrets; never persist or print it. UNKNOWN remains UNPROVEN, not healthy.
+pub(super) fn native_vm_docker_failure_class(
+    reason: &str,
+) -> edge_shared_types::FleetVmRuntimeFailureClass {
+    use edge_shared_types::FleetVmRuntimeFailureClass as Class;
+    let reason = reason
+        .chars()
+        .take(4096)
+        .collect::<String>()
+        .to_ascii_lowercase();
+    if reason.is_empty() {
+        Class::Unproven
+    } else if reason.contains("invalid config")
+        || reason.contains("failed to parse")
+        || reason.contains("config parse")
+        || reason.contains("json:")
+    {
+        Class::ConfigParse
+    } else if reason.contains("permission denied") || reason.contains("access denied") {
+        Class::Permission
+    } else if reason.contains("address already in use") || reason.contains("bind:") {
+        Class::PortBind
+    } else if reason.contains("no such host") || reason.contains("dns lookup") {
+        Class::Dns
+    } else if reason.contains("connection refused") {
+        Class::UpstreamRefused
+    } else if reason.contains("certificate") || reason.contains("tls:") {
+        Class::Tls
+    } else if reason.contains("panic") || reason.contains("segmentation fault") {
+        Class::ProcessCrash
+    } else if reason.contains("no such file or directory") {
+        Class::FileMissing
+    } else {
+        Class::StateErrorOther
+    }
+}
+
 /// Read-only, per-resource Docker evidence. Each entry is inspected once:
 /// labels, immutable ID and state come from the SAME inspect response.
 /// Never read or emit environment, credentials, mount contents or Docker logs.
@@ -281,6 +319,21 @@ pub(crate) async fn observe_vm_resource_report(
                         }
                         set_vm_observed_reason(&mut row, Reason::StateUnproven);
                         if let Some(state) = &inspect.state {
+                            if let Some(exit_code) = state.exit_code {
+                                row.last_exit_code = exit_code;
+                                row.last_exit_code_proven = true;
+                            }
+                            if let Some(oom) = state.oom_killed {
+                                row.oom_killed = oom;
+                                row.oom_killed_proven = true;
+                            }
+                            if let Some(error) =
+                                state.error.as_deref().filter(|value| !value.is_empty())
+                            {
+                                row.docker_state_error_present = true;
+                                row.runtime_failure_class =
+                                    native_vm_docker_failure_class(error) as i32;
+                            }
                             if let Ok(running) = require_known_native_container_state(state) {
                                 row.running_proven = true;
                                 row.running = running;

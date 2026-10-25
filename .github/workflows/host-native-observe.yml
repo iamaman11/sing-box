@@ -33,7 +33,7 @@ jobs:
     # the existing production lease group serializes upgrade and native BEGIN.
     # Status remains independent and read-only; Windows is not affected.
     concurrency:
-      group: ${{ (inputs.kind == 'VM' && inputs.operation == 'APPLY_PREFLIGHT') && 'vultr-control-plane-production' || format('host-readonly-{0}', inputs.source_comment_id) }}
+      group: ${{ (inputs.kind == 'VM' && (inputs.operation == 'APPLY_PREFLIGHT' || inputs.operation == 'RECOVER_PREFLIGHT')) && 'vultr-control-plane-production' || format('host-readonly-{0}', inputs.source_comment_id) }}
       cancel-in-progress: false
     # Git selects a single owner from Rust's exact protobuf matrix.
     # This job NEVER holds issues:write, Docker socket or generic root.
@@ -130,7 +130,7 @@ jobs:
             fi
           done
           echo "host_runner_direct_mutation_authority=${vm_runner_mutate}"
-          if [[ "${HOST_OPERATION}" == APPLY_PREFLIGHT ]] &&
+          if [[ "${HOST_OPERATION}" == APPLY_PREFLIGHT || "${HOST_OPERATION}" == RECOVER_PREFLIGHT ]] &&
              [[ "${vm_runner_mutate}" != ABSENT ]]; then
             echo 'HOST_VM_LEGACY_DIRECT_MUTATION_AUTHORITY_FORBIDDEN' >&2
             exit 1
@@ -150,6 +150,25 @@ jobs:
             fi
           fi
 
+
+      - name: Refresh exact root owner for code-only recover, without resource replay
+        # /host recover VM is explicit operator authorization for a protected
+        # code/trust refresh only. Root verifies latest protected main itself.
+        # It never changes Docker, the journal, credentials or network.
+        # There is NO signed host-apply in this operation.
+        if: env.TARGET_KIND == 'VM' && env.HOST_OPERATION == 'RECOVER_PREFLIGHT'
+        shell: bash
+        run: |
+          set -euo pipefail
+          test "${RUNNER_NAME}" = "sing-box-production-${TARGET_OWNER}"
+          owner=/usr/local/libexec/sing-box/edge-agent
+          test -x "${owner}" && test ! -L "${owner}"
+          sudo -n -l "${owner}" local host-refresh >/dev/null
+          sudo -n "${owner}" local host-refresh
+          echo 'host_recover_effect=CODE_ONLY_REFRESH_NO_RESOURCE_MUTATION'
+          echo 'host_recover_resource_replay_authorized=false'
+          # Re-observe using the newly installed code in the same owner job.
+          sudo -n "${owner}" local diagnose
 
       - name: Transfer exact same-run typed HostIntent with native Actions artifact
         if: env.TARGET_KIND == 'VM' && env.HOST_OPERATION == 'APPLY_PREFLIGHT'
@@ -231,7 +250,9 @@ jobs:
           }
 
       - name: Capture exact installed VM typed readback when permitted
-        if: env.TARGET_KIND == 'VM'
+        # On a failed native transaction retain a read-only postmortem.
+        # A failure cannot authorize replay and may have physical effects.
+        if: (success() || failure()) && env.TARGET_KIND == 'VM'
         shell: bash
         run: |
           set -euo pipefail
@@ -248,7 +269,7 @@ jobs:
           fi
 
       - name: Capture bounded VM per-container resource evidence
-        if: env.TARGET_KIND == 'VM' && (endsWith(env.COMMAND_BODY, ' --deep') || env.HOST_OPERATION == 'APPLY_PREFLIGHT' || env.HOST_OPERATION == 'RECOVER_PREFLIGHT')
+        if: (success() || failure()) && env.TARGET_KIND == 'VM' && (endsWith(env.COMMAND_BODY, ' --deep') || env.HOST_OPERATION == 'APPLY_PREFLIGHT' || env.HOST_OPERATION == 'RECOVER_PREFLIGHT')
         shell: bash
         run: |
           set -euo pipefail
@@ -269,7 +290,9 @@ jobs:
           fi
 
       - name: Retain native bounded protobuf as transport evidence
-        if: success()
+        # Preserve diagnostic bytes even if host-apply failed after BEGIN.
+        # Never export local journal contents, Docker logs or credentials.
+        if: success() || failure()
         uses: actions/upload-artifact@v4
         with:
           name: native-readback-${{ inputs.machine_id }}-${{ inputs.source_comment_id }}
@@ -278,7 +301,7 @@ jobs:
             ${{ runner.temp }}/host-native-resources.pb
             ${{ runner.temp }}/host-operation/host-result.pb
           if-no-files-found: ignore
-          retention-days: 7
+          retention-days: 30
 
   report:
     # An unavailable third runner must not hold the reports for healthy peers.
@@ -302,7 +325,9 @@ jobs:
     steps:
       - name: Validate optional native protobuf with the exact Rust Fleet Orchestrator
         id: typed
-        if: env.OBSERVED_RESULT == 'success'
+        # Failed first-party native runs may still contain valid read-only
+        # artifacts; validate them without upgrading to a signed receipt.
+        if: env.OBSERVED_RESULT == 'success' || env.OBSERVED_RESULT == 'failure'
         shell: bash
         run: |
           set -euo pipefail
@@ -417,6 +442,16 @@ jobs:
             *) result=UNKNOWN_NOT_ACCEPTED ;;
           esac
           native_note='Native mutation authority: NONE. A read-only observation is not an authenticated owner receipt.'
+          if [[ "${TARGET_KIND}" = VM && "${HOST_OPERATION}" = RECOVER_PREFLIGHT ]]; then
+            # Operator requested a code/trust-only refresh; the same root owner
+            # chose exact main, without any resource effect or journal replay.
+            native_note='VM code/trust owner refresh attempted under root lock. No Docker, journal, DNS, firewall or credential resource mutation. Runner-copied diagnosis is UNAUTHENTICATED and never lifts pending/NO_REPLAY.'
+            if [[ "${OBSERVED_RESULT}" = success ]]; then
+              result=ROOT_CODE_ONLY_REFRESH_COMPLETED_NO_RESOURCE_AUTHORITY
+            else
+              result=ROOT_CODE_ONLY_REFRESH_BLOCKED_NO_REPLAY
+            fi
+          fi
           if [[ "${TARGET_KIND}" = VM && "${HOST_OPERATION}" = APPLY_PREFLIGHT ]]; then
             # Only the exact Rust Ed25519 verifier can upgrade this result.
             # A successful runner step or unsigned readback never can.
@@ -445,14 +480,15 @@ jobs:
           # Summarize only Rust-validated, bounded, structurally correlated
           # per-container evidence. Never parse arbitrary runner protobuf.
           if [[ "${TYPED_OUTCOME}" = success && "${TARGET_KIND}" = VM &&
-                "${COMMAND_BODY}" = "/host status ${TARGET_MACHINE} --deep" ]]; then
+                ( "${COMMAND_BODY}" = "/host status ${TARGET_MACHINE} --deep" ||
+                  "${HOST_OPERATION}" = APPLY_PREFLIGHT ) ]]; then
             report="${RUNNER_TEMP}/host-readback-result.txt"
             if [[ -f "${report}" && ! -L "${report}" ]] &&
                grep -q '^host_vm_resources_count=' "${report}" &&
                grep -Fxq 'host_vm_resources_origin=RUNNER_COPIED_UNAUTHENTICATED' "${report}"; then
               per_resource="$(awk '/^host_vm_resource=/{print; if (++n == 24) exit}' "${report}")"
               counts="$(grep -E '^host_vm_resources_(count|problem_count)=' "${report}")"
-              body="${body}$(printf '\nVM containers (Rust-validated; runner copy UNAUTHENTICATED; no mutation authority):\n~~~text\n%s\n%s\n~~~\n' "${counts}" "${per_resource}")"
+              body="${body}$(printf '\nVM containers / post-failure evidence (Rust-validated; runner copy UNAUTHENTICATED; no mutation authority):\n~~~text\n%s\n%s\n~~~\n' "${counts}" "${per_resource}")"
             else
               body="${body}$(printf '\nVM containers: UNPROVEN — no accepted installed-owner resource report.\n')"
             fi

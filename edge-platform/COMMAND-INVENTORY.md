@@ -8,7 +8,7 @@
 | `/host apply <machine-id>` | Единственный типизированный однократный маршрут Git/ReleaseSet → owner-gated Worker/signature → VM root Agent / Windows SYSTEM Controller, журнал и signed native receipt. Может завершиться только кодовым Worker upgrade/first-use или `BLOCKED`: не утверждать, что VM установлена, пока это не доказано |
 | `/host apply <machine-id> config/vultr-edge/line1-gateway` | Узкий signed config-only scope Line1; соседние ресурсы не изменять |
 | `/host apply <machine-id> config/vultr-edge/line2-proxy` | Узкий signed config-only scope Line2 |
-| `/host recover <machine-id>` | Сейчас **только read-only preflight**; никакой повтор UNKNOWN, переустановка или rollback без отдельно принятого native handler |
+| `/host recover <machine-id>` | **VM: однократное code-only обновление действующего Root Agent/trust из exact protected Git ReleaseSet через штатный `host-refresh`, затем read-only диагностика.** Кодовое обновление меняет бинарник/trust, но не контейнеры, DNS, firewall, credentials и не снимает pending. Любой resource recovery, replay, reinstall и rollback остаётся **BLOCKED/UNSUPPORTED** без отдельного подписанного native handler. Windows пока read-only preflight |
 
 Нет других пользовательских `/vm`, `/windows`, `/vultr`, `/production`, `/credentials` команд. Внутренние Rust build/read-only/first-use verbs и typed `HostWorkflowOperation → GitHub Actions operation` не создают новых операторских ingress. `HostIntent`, desired, result и receipt — Protobuf; JSON допускается на необходимых внешних API/renderer границах, не как второй dispatcher.
 
