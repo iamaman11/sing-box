@@ -106,6 +106,12 @@ hosts: {
     compose_project: "vultr-edge"
     compose_service: "warp-egress"
   }
+  # Existing canonical VM Worker bundle candidate, shared with VM3/VM4.
+  # This Git pointer alone is NOT a Worker GET or provider CREATE proof.
+  vm_first_use_credential: {
+    generation: 38503639351
+    bundle_sha256: "d85524a08e90c12e959b4af642e76f126e835b5630b771aae0474d6d61e94644"
+  }
   worker_authority_public_key: "\xe7ۉ\x82W+\x80\\/7\x95\x03$\r=\xcf{\x9a\xd8E\x11zAbw8\x8f\x0bJ\xf8u\x8d"
   vm_provider_spec_path: "infra/hosts/specs/application-acceptance-5.textproto"
 }
