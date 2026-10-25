@@ -833,6 +833,20 @@ pub fn validate_vm_network_readback(network: &FleetVmNetworkReadback) -> Result<
     {
         return Err("VM_NETWORK_DNS_DUPLICATE");
     }
+    if let Some(kernel) = network.dual_stack.as_ref() {
+        if !network.dual_stack_error_code.is_empty() {
+            return Err("VM_DUAL_STACK_CONTRADICTORY_EVIDENCE");
+        }
+        validate_vm_dual_stack_network(kernel)?;
+    } else if !network.dual_stack_error_code.is_empty()
+        && (network.dual_stack_error_code.len() > 96
+            || !network
+                .dual_stack_error_code
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_'))
+    {
+        return Err("VM_DUAL_STACK_ERROR_CODE_INVALID");
+    }
     if let Some(ipv4) = &network.ipv4 {
         if ipv4.links.len() > 128
             || ipv4.addresses.len() > 256
@@ -870,6 +884,74 @@ pub fn validate_vm_network_readback(network: &FleetVmNetworkReadback) -> Result<
             || ipv4.encode_to_vec().len() > 24_576
         {
             return Err("VM_NETWORK_KERNEL_EVIDENCE_INVALID");
+        }
+    }
+    Ok(())
+}
+
+/// Strict structural validator of untrusted runner-copied kernel data.
+/// Real kernel provenance still requires a native signed owner receipt.
+pub fn validate_vm_dual_stack_network(
+    kernel: &crate::FleetVmDualStackNetwork,
+) -> Result<(), &'static str> {
+    use crate::FleetVmIpFamily as Family;
+    if !kernel.ipv4_rule_dump_complete
+        || !kernel.ipv6_rule_dump_complete
+        || kernel.policy_rules.len() > 256
+        || kernel.policy_rules.iter().any(|rule| {
+            !matches!(
+                crate::FleetVmIpFamily::try_from(rule.family),
+                Ok(crate::FleetVmIpFamily::V4 | crate::FleetVmIpFamily::V6)
+            ) || (!rule.fw_mark_present && rule.fw_mark != 0)
+        })
+        || !kernel.ipv4_route_dump_complete
+        || !kernel.ipv6_route_dump_complete
+        || kernel.links.len() > 128
+        || kernel.addresses.len() > 256
+        || kernel.routes.len() > 512
+        || kernel.encode_to_vec().len() > 24_576
+    {
+        return Err("VM_DUAL_STACK_DUMP_INCOMPLETE_OR_OVERSIZE");
+    }
+    let mut links = std::collections::BTreeSet::new();
+    for link in &kernel.links {
+        if link.interface_index == 0
+            || link.name.is_empty()
+            || link.name.len() > 64
+            || !link
+                .name
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'.' | b'-' | b':' | b'@'))
+            || !links.insert(link.interface_index)
+        {
+            return Err("VM_DUAL_STACK_LINK_INVALID");
+        }
+    }
+    let same_family =
+        |family: i32, value: &str| match (Family::try_from(family), value.parse::<IpAddr>()) {
+            (Ok(Family::V4), Ok(IpAddr::V4(_))) => true,
+            (Ok(Family::V6), Ok(IpAddr::V6(_))) => true,
+            _ => false,
+        };
+    for address in &kernel.addresses {
+        if !links.contains(&address.interface_index)
+            || !same_family(address.family, &address.address)
+            || (address.family == Family::V4 as i32 && address.prefix_length > 32)
+            || (address.family == Family::V6 as i32 && address.prefix_length > 128)
+        {
+            return Err("VM_DUAL_STACK_ADDRESS_INVALID");
+        }
+    }
+    for route in &kernel.routes {
+        if !same_family(route.family, &route.destination)
+            || !route.gateway.is_empty() && !same_family(route.family, &route.gateway)
+            || !route.preferred_source.is_empty()
+                && !same_family(route.family, &route.preferred_source)
+            || (route.family == Family::V4 as i32 && route.prefix_length > 32)
+            || (route.family == Family::V6 as i32 && route.prefix_length > 128)
+            || route.output_interface_index != 0 && !links.contains(&route.output_interface_index)
+        {
+            return Err("VM_DUAL_STACK_ROUTE_INVALID");
         }
     }
     Ok(())
@@ -1267,6 +1349,8 @@ mod tests {
             nft_rule_count: 2,
             nft_ruleset_observed: true,
             nft_ruleset_sha256: vec![42; 32],
+            dual_stack: None,
+            dual_stack_error_code: String::new(),
         };
         assert!(validate_vm_network_readback(&network).is_ok());
         let mut forged = network.clone();
