@@ -5,11 +5,11 @@ use edge_shared_types::{FleetNativeAdminResult, ReleaseSet, host_admin};
 use std::fs::{File, OpenOptions};
 use std::io::Read;
 use std::os::fd::AsRawFd;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
-use std::time::{Duration, Instant};
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::process::{Command as OsCommand, Stdio as OsStdio};
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{Duration, Instant};
 
 fn sha256(bytes: &[u8]) -> Vec<u8> {
     ring::digest::digest(&ring::digest::SHA256, bytes)
