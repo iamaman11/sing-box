@@ -28,7 +28,8 @@ jobs:
       (github.event.comment.body == '/host status' ||
        startsWith(github.event.comment.body, '/host status ') ||
        startsWith(github.event.comment.body, '/host apply ') ||
-       startsWith(github.event.comment.body, '/host recover '))
+       startsWith(github.event.comment.body, '/host recover ') ||
+       startsWith(github.event.comment.body, '/host diagnose '))
     outputs:
       kind: ${{ steps.observe.outputs.kind }}
       owner: ${{ steps.observe.outputs.owner }}
@@ -128,6 +129,12 @@ jobs:
             if [[ "${COMMAND_BODY}" == *" --deep" ]]; then command+=(--deep); fi
           elif [[ "${COMMAND_BODY}" =~ ^/host[[:space:]]apply[[:space:]]([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})[[:space:]](config/[A-Za-z0-9][A-Za-z0-9._-]{0,63}/(line1-gateway|line2-proxy))$ ]]; then
             command=(apply "${BASH_REMATCH[1]}" --resource-id "${BASH_REMATCH[2]}")
+          elif [[ "${COMMAND_BODY}" =~ ^/host[[:space:]]diagnose[[:space:]]([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})[[:space:]](.{1,480})$ ]]; then
+            machine="${BASH_REMATCH[1]}"
+            # Splitting into argv is ONLY transport. Rust coordinator and native
+            # root owner independently validate the closed read-only grammar.
+            read -r -a probe_argv <<< "${BASH_REMATCH[2]}"
+            command=(diagnose "${machine}" -- "${probe_argv[@]}")
           elif [[ "${COMMAND_BODY}" =~ ^/host[[:space:]](apply|recover)[[:space:]]([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})$ ]]; then
             command=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")
           else
@@ -167,7 +174,8 @@ jobs:
 
 
       - name: Retain one typed intent and blocked/prepared receipt
-        if: ${{ steps.observe.outputs.operation == 'APPLY_PREFLIGHT' || steps.observe.outputs.operation == 'RECOVER_PREFLIGHT' }}
+        if: ${{ steps.observe.outputs.operation == 'APPLY_PREFLIGHT' || steps.observe.outputs.operation == 'RECOVER_PREFLIGHT' ||
+               steps.observe.outputs.operation == 'DIAGNOSE' }}
         uses: actions/upload-artifact@v4
         with:
           name: host-intent-${{ github.event.comment.id }}
@@ -193,7 +201,8 @@ jobs:
        needs.host_worker_authorizer.outputs.source_upgrade_required == 'false') &&
       (needs.host.outputs.operation == 'STATUS' ||
        needs.host.outputs.operation == 'APPLY_PREFLIGHT' ||
-       needs.host.outputs.operation == 'RECOVER_PREFLIGHT')
+       needs.host.outputs.operation == 'RECOVER_PREFLIGHT' ||
+       needs.host.outputs.operation == 'DIAGNOSE')
     strategy:
       fail-fast: false
       matrix: ${{ fromJSON(needs.host.outputs.host_matrix) }}
@@ -221,6 +230,7 @@ jobs:
       (needs.host.outputs.operation == 'STATUS' ||
        needs.host.outputs.operation == 'APPLY_PREFLIGHT' ||
        needs.host.outputs.operation == 'RECOVER_PREFLIGHT' ||
+       needs.host.outputs.operation == 'DIAGNOSE' ||
        needs.host.outputs.operation == 'FIRST_USE_PREFLIGHT' ||
        needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT')
     runs-on: ubuntu-24.04
