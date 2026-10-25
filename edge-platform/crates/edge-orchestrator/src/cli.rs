@@ -247,6 +247,9 @@ pub(crate) enum HostCommand {
     /// No VM/provider mutation and no alternate accepted desired.
     #[command(hide = true)]
     FirstUsePreflight { machine_id: String },
+    /// Internal provider GET-proven user-data cleanup after native runner proof.
+    #[command(hide = true)]
+    FirstUseScrub { machine_id: String },
     /// Internal GitHub-hosted first-use of a new, absent VM. This shares
     /// the host ingress and existing Rust Vultr owner, never a legacy workflow.
     #[command(hide = true)]
