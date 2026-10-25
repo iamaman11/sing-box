@@ -487,6 +487,7 @@ version = "0.1.0"
 dependencies = [
  "base64",
  "edge-shared-types",
+ "prost",
  "rand_core 0.6.4",
  "reqwest",
  "tokio",
