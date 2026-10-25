@@ -1007,6 +1007,7 @@ jobs:
           test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
           echo "${EDGE_ORCHESTRATOR_SHA256}  ${OUTPUT_DIR}/edge-orchestrator-linux-amd64" | sha256sum --check --status
           chmod 0755 "${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
           echo "EDGE_RELEASE_CONTEXT_PATH=${OUTPUT_DIR}/resolved.env" >> "${GITHUB_ENV}"
           fleet="${OUTPUT_DIR}/fleet-registry.pb"
           bin="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
@@ -1129,7 +1130,8 @@ jobs:
           chmod 0755 "${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
           echo "EDGE_RELEASE_CONTEXT_PATH=${OUTPUT_DIR}/resolved.env" >> "${GITHUB_ENV}"
 
-      - name: Prove exact absent VM through complete typed Vultr inventory
+      - name: Classify pre-CREATE abort or existing VM, without mutation
+        id: phase
         shell: bash
         env:
           VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
@@ -1140,20 +1142,111 @@ jobs:
           bin="${RUNNER_TEMP}/host-release/edge-orchestrator-linux-amd64"
           fleet="${RUNNER_TEMP}/host-release/fleet-registry.pb"
           bin_proof="${RUNNER_TEMP}/host-abort-preflight.txt"
-          "${bin}" host --hosts-pb "${fleet}" \
+          if "${bin}" host --hosts-pb "${fleet}" \
             --hosts-sha256 "$(sha256sum "${fleet}" | cut -d' ' -f1)" \
-            first-use-preflight "${TARGET_MACHINE}" > "${bin_proof}"
-          grep -Fxq 'host_first_use_provider_plan=EXACT_CREATE_ONLY' "${bin_proof}"
-          grep -Fxq 'host_first_use_preflight=PROVIDER_AND_WORKER_GET_PROVEN' "${bin_proof}"
-          echo "HOST_ABORT_PROVIDER_PROOF=COMPLETE_TYPED_CREATE_PLAN_NO_MUTATION"
+            first-use-preflight "${TARGET_MACHINE}" > "${bin_proof}" 2>/dev/null; then
+            grep -Fxq 'host_first_use_provider_plan=EXACT_CREATE_ONLY' "${bin_proof}"
+            grep -Fxq 'host_first_use_preflight=PROVIDER_AND_WORKER_GET_PROVEN' "${bin_proof}"
+            echo 'phase=PRECREATE' >> "${GITHUB_OUTPUT}"
+            echo "HOST_ABORT_PROVIDER_PROOF=COMPLETE_TYPED_CREATE_PLAN_NO_MUTATION"
+          else
+            # This is NOT evidence of a VM: exact completed original CREATE,
+            # runner proof and provider ownership must be independently proven
+            # before the POST-CREATE branch can take ANY action.
+            echo 'phase=POSTCREATE_UNPROVEN' >> "${GITHUB_OUTPUT}"
+            echo 'HOST_FIRST_USE_POSTCREATE_PROOF_REQUIRED'
+          fi
 
       - name: Retire only exact aborted GitHub first-use reservation
+        if: steps.phase.outputs.phase == 'PRECREATE'
         shell: bash
         env:
           PROVIDER_PREFLIGHT_PROOF: ${{ runner.temp }}/host-abort-preflight.txt
         run: |
           set -euo pipefail
           python3 -B edge-platform/scripts/host_first_use_abort.py
+
+      - name: Verify exact original first-use proof producer and reserved PR
+        id: original
+        if: steps.phase.outputs.phase == 'POSTCREATE_UNPROVEN'
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 -B edge-platform/scripts/host_first_use_finalize_resume.py
+
+      - name: Download ONLY original native root proof
+        if: steps.original.outputs.original_run != ''
+        uses: actions/download-artifact@v4
+        with:
+          run-id: ${{ steps.original.outputs.original_run }}
+          name: native-first-use-proof-${{ steps.original.outputs.original_run }}
+          repository: ${{ github.repository }}
+          github-token: ${{ secrets.IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN }}
+          path: ${{ runner.temp }}/native-public-proof
+
+      - name: Verify original release-bound root proof and scrub only owned VM
+        if: steps.original.outputs.original_run != ''
+        shell: bash
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+          ORIGINAL_SHA: ${{ steps.original.outputs.original_sha }}
+          ORIGINAL_COMMENT: ${{ steps.original.outputs.original_comment }}
+        run: |
+          set -euo pipefail
+          proof="${RUNNER_TEMP}/native-public-proof/bootstrap-root-proof.pb"
+          test -f "${proof}" && test ! -L "${proof}"
+          (( $(stat -c %s "${proof}") > 64 && $(stat -c %s "${proof}") <= 512 ))
+          test "${ORIGINAL_SHA}" != "${GITHUB_SHA}"
+          # Bind the immutable original Root proof to its ORIGINAL ReleaseSet,
+          # not the newer main that introduced this recovery workflow.
+          cp edge-platform/scripts/host_first_use_receipt_register.sh \
+            "${RUNNER_TEMP}/host-recovery-register-receipt.sh"
+          git fetch -q --no-tags --depth=1 origin "${ORIGINAL_SHA}"
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${ORIGINAL_SHA}"
+          export ACCEPTED_REVISION="${ORIGINAL_SHA}"
+          export OUTPUT_DIR="${RUNNER_TEMP}/host-original-release"
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${ORIGINAL_SHA}"
+          bin="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          fleet="${OUTPUT_DIR}/fleet-registry.pb"
+          echo "${EDGE_ORCHESTRATOR_SHA256}  ${bin}" | sha256sum --check --status
+          chmod 0755 "${bin}"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
+          "${bin}" host --hosts-pb "${fleet}" \
+            --hosts-sha256 "$(sha256sum "${fleet}" | cut -d' ' -f1)" \
+            bootstrap-proof-check "${TARGET_MACHINE}" \
+            --proof-path "${proof}" > "${RUNNER_TEMP}/public-proof-check.txt"
+          grep -Fxq 'bootstrap_proof=SELF_SIGNED_NOT_PROVIDER_ATTESTATION' "${RUNNER_TEMP}/public-proof-check.txt"
+          public="$(sed -n 's/^bootstrap_native_receipt_public_key_hex=//p' "${RUNNER_TEMP}/public-proof-check.txt")"
+          [[ "${public}" =~ ^[0-9a-f]{64}$ ]]
+          echo "PUBLIC_ROOT_KEY_HEX=${public}" >> "${GITHUB_ENV}"
+          # Native typed GET/PATCH/GET must prove exactly one owned instance
+          # and its user-data scrub. No CREATE, SSH, retries or bypass.
+          "${bin}" host --hosts-pb "${fleet}" \
+            --hosts-sha256 "$(sha256sum "${fleet}" | cut -d' ' -f1)" \
+            first-use-scrub "${TARGET_MACHINE}"
+          echo 'HOST_FIRST_USE_RECOVERY=SIGNED_ROOT_PROOF_AND_SCRUB_PROVEN'
+
+      - name: Resume ONLY original protected receipt registration
+        if: steps.original.outputs.original_run != ''
+        shell: bash
+        env:
+          ORIGINAL_COMMENT: ${{ steps.original.outputs.original_comment }}
+          ORIGINAL_BRANCH: ${{ steps.original.outputs.original_branch }}
+        run: |
+          set -euo pipefail
+          # Reuse the existing exact receipt registration algorithm, but
+          # require the reserved ORIGINAL branch, not this recovery comment.
+          test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')" = "${GITHUB_SHA}"
+          test "${ORIGINAL_BRANCH}" = "host-receipt-${TARGET_MACHINE}-${ORIGINAL_COMMENT}"
+          bin="${RUNNER_TEMP}/host-original-release/edge-orchestrator-linux-amd64"
+          fleet="${RUNNER_TEMP}/host-original-release/fleet-registry.pb"
+          export EDGE_RELEASE_CONTEXT_PATH="${RUNNER_TEMP}/host-original-release/resolved.env"
+          export SOURCE_COMMENT_ID="${ORIGINAL_COMMENT}"
+          export HOST_RECEIPT_RELEASE_DIR="${RUNNER_TEMP}/host-original-release"
+          bash "${RUNNER_TEMP}/host-recovery-register-receipt.sh"
 
   host_resume_receipt:
     # The prior /host apply may continue only after its exact registration PR
