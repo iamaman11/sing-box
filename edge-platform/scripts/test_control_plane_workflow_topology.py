@@ -336,7 +336,7 @@ assert "group: vultr-control-plane-production" in abort_job
 assert "first-use-preflight" in abort_job
 assert 'host-abort-preflight.txt' in abort_job
 assert "host_first_use_abort.py" in abort_job
-assert abort_job.index("Prove exact absent VM through complete typed Vultr inventory") < abort_job.index("Retire only exact aborted GitHub first-use reservation")
+assert abort_job.index("Classify pre-CREATE abort or existing VM, without mutation") < abort_job.index("Retire only exact aborted GitHub first-use reservation")
 assert 'return "PROVEN_SKIPPED"' in abort
 assert "HOST_ABORT_CREATE_FAILURE_NOT_PROVEN_PREPOST" in abort
 assert 'return "PROVEN_NOT_ENTERED_PREPOST_FIREWALL"' in abort
