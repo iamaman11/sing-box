@@ -693,6 +693,9 @@ jobs:
 
       - name: Prove current Git-pinned VM credential through Worker Access GET only
         id: vm_credential
+        # Any unavailable exact release or Worker route is a visible
+        # UNPROVEN diagnostic, NEVER silent admission or CREATE.
+        continue-on-error: true
         shell: bash
         env:
           TARGET_MACHINE: ${{ needs.host.outputs.machine_id }}
@@ -739,14 +742,14 @@ jobs:
       - name: Publish one correlated deep diagnosis to original /host report
         shell: bash
         env:
-          VM_BUNDLE_STATUS: ${{ steps.vm_credential.outputs.status }}
+          VM_BUNDLE_STATUS: ${{ steps.vm_credential.outputs.status || 'UNPROVEN_WORKER_PROOF_STEP_FAILED' }}
         run: |
           set -euo pipefail
           [[ "${REPORT_COMMENT_ID}" =~ ^[1-9][0-9]{0,19}$ ]]
           [[ "${OPERATION_ID}" =~ ^issue1-comment-[1-9][0-9]{0,19}$ ]]
           case "${VM_BUNDLE_STATUS}" in
-            GIT_PIN_EXACT_ACCESS_GET_PROVEN|BLOCKED) ;;
-            *) echo HOST_DIAGNOSTIC_WORKER_PROOF_UNAVAILABLE >&2; exit 1 ;;
+            GIT_PIN_EXACT_ACCESS_GET_PROVEN|BLOCKED|UNPROVEN_WORKER_PROOF_STEP_FAILED) ;;
+            *) echo HOST_DIAGNOSTIC_WORKER_PROOF_INVALID >&2; exit 1 ;;
           esac
           diagnostic="$(python3 edge-platform/scripts/host_diagnostic_summary.py \
             < "${RUNNER_TEMP}/host-capabilities.json")"
@@ -762,7 +765,7 @@ jobs:
           # thread, no duplicate state store and no new operator command.
           original="$(gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${REPORT_COMMENT_ID}" --jq '.body')"
           (( ${#original} > 0 && ${#original} < 16000 ))
-          appendix="$(printf '\n\n### Unified deep diagnosis — read only\n\n\`\`\`json\n%s\n\`\`\`\n\nSigned native receipt: **UNPROVEN** until the existing runner returns an independently verified root result.\n' "${diagnostic}")"
+          appendix="$(printf '\n\n### Unified deep diagnosis — read only\n\n```json\n%s\n```\n\nSigned native receipt: **UNPROVEN** until the existing runner returns an independently verified root result.\n' "${diagnostic}")"
           gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${REPORT_COMMENT_ID}" \
             -f "body=${original}${appendix}" >/dev/null
           echo HOST_DIAGNOSTIC=CORRELATED_ONE_REPORT_NO_MUTATION
