@@ -92,12 +92,17 @@ assert "if: steps.plan.outputs.required == 'true'" in worker
 # preflight and again immediately before provider mutation.
 provider=Path("edge-platform/crates/edge-orchestrator/src/vultr_lifecycle_command.rs").read_text(encoding="utf-8")
 worker_src=Path("edge-platform/crates/edge-orchestrator/src/cloudflare_credential_plane_command.rs").read_text(encoding="utf-8")
+vm_proof=Path("edge-platform/crates/edge-orchestrator/src/vm_credential_proof.rs").read_text(encoding="utf-8")
 gate="verify_current_vm_first_use_worker_source("
 assert provider.count(gate)==2, "missing actual Worker GET before first-use / CREATE"
 assert provider.index(gate) < provider.index('host_first_use_provider_plan=EXACT_CREATE_ONLY')
 assert provider.rindex(gate) < provider.index("acceptance_create_machine(provider_spec, machine_id).await?")
-assert "get_vm_credential_bundle_with_access(" in worker_src
-assert "attest_vm_first_use_credential_bytes(&bytes, generation, expected_sha256)?" in worker_src
+assert '#[path = "vm_credential_proof.rs"]' in worker_src
+assert "get_vm_credential_bundle_with_access(" in vm_proof
+assert "attest_vm_first_use_credential_bytes(&bytes, generation, expected_sha256)?" in vm_proof
+assert "verify_vm_first_use_git_prerequisites(host)" in vm_proof
+assert "host_vm_create=NOT_AUTHORIZED" in vm_proof
+assert "deploy_worker_version(" not in vm_proof and "patch_worker" not in vm_proof
 
 # GitHub needs only a scalar for job/step routing.
 # All structured desired/intent/result/receipt stays Protobuf.
