@@ -452,6 +452,16 @@ enum FleetHostResultState {
   FLEET_HOST_RESULT_STATE_UNKNOWN_NO_REPLAY = 6;
 }
 
+
+// One authenticated GitHub-runner-delivered read-only request. Native execution
+// remains an unprivileged diagnostic; this is NEVER a signed HostIntent.
+message FleetHostDiagnosticRequest {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  uint64 source_comment_id = 3;
+  repeated string argv = 4;
+}
+
 message FleetHostIntent {
   uint32 schema_version = 1;
   string machine_id = 2;
