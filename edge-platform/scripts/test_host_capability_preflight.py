@@ -228,10 +228,10 @@ class TestUnifiedHostDiagnosis(TestCase):
 
     def test_signed_native_report_updates_only_exact_matching_operation(self):
         output = self.diagnose()
-        marker = "### Unified deep diagnosis — read only\\n\\n" + chr(96) * 3 + "json\\n"
-        text = marker + json.dumps(output) + "\\n" + chr(96) * 3
+        marker = "### Unified deep diagnosis — read only\n\n" + chr(96) * 3 + "json\n"
+        text = marker + json.dumps(output) + "\n" + chr(96) * 3
         good = summary.attach_verified_native(text, "6390000111")
-        found = json.loads(good.split(marker, 1)[1].split("\\n" + chr(96) * 3, 1)[0])
+        found = json.loads(good.split(marker, 1)[1].split("\n" + chr(96) * 3, 1)[0])
         self.assertEqual(found["sources"]["root_agent"], "VERIFIED_ROOT_SIGNED_READ_ONLY")
         self.assertEqual(found["status"], "BLOCKED")
         self.assertFalse(found["physical_accepted"])
