@@ -106,8 +106,7 @@ hosts: {
     compose_project: "vultr-edge"
     compose_service: "warp-egress"
   }
-  # Existing canonical VM Worker bundle candidate, shared with VM3/VM4.
-  # This Git pointer alone is NOT a Worker GET or provider CREATE proof.
+  native_receipt_public_key: "\xb9\x9f\xeb \x18\xc6\xf4\xe5\xa7Y>o/\xe2\x87QY\xf4ӞrK\xf6\x90s\xa8\xfd\x06\xab\x95\xe6L"
   vm_first_use_credential: {
     generation: 38503639351
     bundle_sha256: "d85524a08e90c12e959b4af642e76f126e835b5630b771aae0474d6d61e94644"
@@ -147,5 +146,3 @@ hosts: {
     windows_mode: FLEET_HOST_MODE_PROXY_ONLY
   }
 }
-
-# native-receipt-registration-pending application-acceptance-5 issue1-comment-6404328346
