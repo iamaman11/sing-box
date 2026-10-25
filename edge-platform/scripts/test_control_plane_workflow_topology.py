@@ -143,6 +143,19 @@ assert "HOST_FIRST_USE_DURABLE_BEGIN_RECORDED" in firstuse_job
 assert "HOST_FIRST_USE_CREATE_ONCE_NO_AUTOMATIC_REPLAY" in firstuse_job
 assert "HOST_FIRST_USE_NATIVE_HANDOFF_NOT_ACCEPTED_NO_CREATE" not in firstuse_job
 assert "edge-agent.service" not in Path("win/vultr-waw/cloud-init.yaml").read_text(encoding="utf-8")
+# One selected Git pointer (never shell-copied generation/digest) is
+# verified by the existing hidden Rust Worker Access GET during deep status.
+# No user-specified bundle identity or worker mutation is admitted.
+capabilities=router.split("  host_capabilities:",1)[1].split("\n  host_",1)[0]
+assert 'vm-credential-proof "${TARGET_MACHINE}"' in capabilities
+assert 'host_vm_worker_live_source=GIT_PIN_EXACT_ACCESS_GET_PROVEN' in capabilities
+assert 'host_vm_worker_live_source=BLOCKED' in capabilities
+assert 'host_worker_mutations=0' in capabilities
+assert 'HOST_ORIGINAL_COMMAND:' in capabilities
+assert 'EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET:' in capabilities
+assert 'first-use "' not in capabilities
+
+
 
 # Rust native cloud-init is the only accepted CREATE renderer; the hosted
 # flow must prove the independent one-use receipt and user-data scrub.
