@@ -125,21 +125,27 @@ assert 'host_first_use_scrub(' in provider
 assert provider.count("HOST_FIRST_USE_PROTECTED_GITHUB_DURABLE_BEGIN_REQUIRED") == 1
 assert 'host_first_use_provider_preflight(machine_id, context).await?' in provider
 assert 'HOST_FIRST_USE_PROVIDER_NOT_EXACT_CREATE_NO_REPLAY' in provider
-# Only a read-only GH-hosted first-use preflight is reachable. The old SSH
-# installer, provider lease, registration-token POST and receipt draft
-# creation cannot silently reappear when a Rust gate is removed.
-firstuse_job=router.split("  host_first_use:\n",1)[1].split("  host_resume_receipt:\n",1)[0]
+# The existing hosted job is now the only first-use CREATE owner. Durable
+# Git BEGIN + absence/runner checks MUST precede issuing a short-lived token
+# and the one permitted provider CREATE. Signed native proof must precede
+# provider user-data scrub GET and public receipt PR finalization.
+firstuse_job=router.split("  host_first_use:\\n",1)[1].split("  host_resume_receipt:\\n",1)[0]
 assert "VULTR_SSH_PRIVATE_KEY" not in firstuse_job
 assert "EDGE_SSH_PRIVATE_KEY_PATH" not in firstuse_job
-assert "/actions/runners/registration-token" not in firstuse_job
-assert "git/refs" not in firstuse_job and "gh api -X POST" not in firstuse_job
 assert "first-use-preflight" in firstuse_job
-assert "HOST_FIRST_USE_NATIVE_HANDOFF_NOT_ACCEPTED_NO_CREATE" in firstuse_job
+assert firstuse_job.index("Reserve unique Git receipt PR and durable BEGIN BEFORE VM CREATE") < firstuse_job.index("/actions/runners/registration-token")
+assert firstuse_job.index("/actions/runners/registration-token") < firstuse_job.index("Execute exactly one no-SSH native Vultr CREATE")
+assert firstuse_job.index("Execute exactly one no-SSH native Vultr CREATE") < firstuse_job.index("Collect signed public-only proof")
+assert firstuse_job.index("bootstrap-proof-check") < firstuse_job.index('first-use-scrub')
+assert firstuse_job.index('first-use-scrub') < firstuse_job.index("Complete ONLY the reserved protected public receipt PR")
+assert "host-receipt-${TARGET_MACHINE}-${SOURCE_COMMENT_ID}" in firstuse_job
+assert "HOST_FIRST_USE_DURABLE_BEGIN_RECORDED" in firstuse_job
+assert "HOST_FIRST_USE_CREATE_ONCE_NO_AUTOMATIC_REPLAY" in firstuse_job
+assert "HOST_FIRST_USE_NATIVE_HANDOFF_NOT_ACCEPTED_NO_CREATE" not in firstuse_job
 assert "edge-agent.service" not in Path("win/vultr-waw/cloud-init.yaml").read_text(encoding="utf-8")
 
-# Rust native cloud-init is a separately verified contract. The hosted
-# first-use job remains an explicit no-CREATE workflow until owner attestation,
-# protected Git receipt roundtrip and provider user-data scrub are complete.
+# Rust native cloud-init is the only accepted CREATE renderer; the hosted
+# flow must prove the independent one-use receipt and user-data scrub.
 bootstrap=Path("edge-platform/crates/edge-orchestrator/src/vultr_host_bootstrap.rs").read_text(encoding="utf-8")
 native_init=Path("edge-platform/crates/edge-orchestrator/src/vultr_native_cloud_init.rs").read_text(encoding="utf-8")
 assert '#[path = "vultr_native_cloud_init.rs"]' in bootstrap
