@@ -47,7 +47,9 @@ fn capture_stream(mut input: impl Read) -> std::io::Result<CapturedStream> {
     let mut preview = Vec::new();
     loop {
         let len = input.read(&mut buffer)?;
-        if len == 0 { break; }
+        if len == 0 {
+            break;
+        }
         total_bytes = total_bytes.saturating_add(len as u64);
         hash.update(&buffer[..len]);
         let retain = PREVIEW_LIMIT.saturating_sub(preview.len()).min(len);
@@ -77,7 +79,9 @@ mod io_tests {
         // causes timeout(1) to return 124 rather than a successful exit.
         let mut child = OsCommand::new("/usr/bin/timeout")
             .args([
-                "8s", "/bin/sh", "-c",
+                "8s",
+                "/bin/sh",
+                "-c",
                 "head -c 1048576 /dev/zero; head -c 1048576 /dev/zero >&2",
             ])
             .stdin(OsStdio::null())
@@ -271,8 +275,16 @@ pub(super) async fn execute() -> Result<(), String> {
         stderr_sha256: err.sha256,
         process_exited: exit.code().is_some(),
         root_signature: Vec::new(),
-        stdout_preview: if request.publish_output { out.preview } else { Vec::new() },
-        stderr_preview: if request.publish_output { err.preview } else { Vec::new() },
+        stdout_preview: if request.publish_output {
+            out.preview
+        } else {
+            Vec::new()
+        },
+        stderr_preview: if request.publish_output {
+            err.preview
+        } else {
+            Vec::new()
+        },
         stdout_total_bytes: out.total_bytes,
         stderr_total_bytes: err.total_bytes,
         stdout_truncated: out.total_bytes > PREVIEW_LIMIT as u64,

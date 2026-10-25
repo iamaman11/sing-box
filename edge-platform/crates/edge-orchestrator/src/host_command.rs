@@ -236,8 +236,8 @@ pub(crate) fn run(
             let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
                 .decode(argv_base64.as_bytes())
                 .map_err(|_| "HOST_ADMIN_ARGUMENT_DECODE_INVALID")?;
-            let operator: AdminOperatorPayload = serde_json::from_slice(&bytes)
-                .map_err(|_| "HOST_ADMIN_ARGUMENT_JSON_INVALID")?;
+            let operator: AdminOperatorPayload =
+                serde_json::from_slice(&bytes).map_err(|_| "HOST_ADMIN_ARGUMENT_JSON_INVALID")?;
             let stdin_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
                 .decode(operator.stdin_base64.as_bytes())
                 .map_err(|_| "HOST_ADMIN_STDIN_ENCODING_INVALID")?;
@@ -1022,8 +1022,8 @@ pub(crate) fn run(
         } => {
             use edge_shared_types::{FleetNativeAdminResult, host_admin};
             let read_proof = |path: &Path, max: usize| -> Result<Vec<u8>, String> {
-                let meta = std::fs::symlink_metadata(path)
-                    .map_err(|_| "HOST_ADMIN_PROOF_MISSING")?;
+                let meta =
+                    std::fs::symlink_metadata(path).map_err(|_| "HOST_ADMIN_PROOF_MISSING")?;
                 if !meta.is_file() || meta.len() == 0 || meta.len() > max as u64 {
                     return Err("HOST_ADMIN_PROOF_INVALID".into());
                 }
@@ -1041,9 +1041,12 @@ pub(crate) fn run(
             if receipt.encode_to_vec() != receipt_bytes {
                 return Err("HOST_ADMIN_RECEIPT_NONCANONICAL".into());
             }
-            let selected = desired.hosts.iter()
-                .find(|host| host.machine_id == machine_id
-                    && host.kind == ManagedHostKind::Vm as i32)
+            let selected = desired
+                .hosts
+                .iter()
+                .find(|host| {
+                    host.machine_id == machine_id && host.kind == ManagedHostKind::Vm as i32
+                })
                 .ok_or("HOST_ADMIN_GIT_MACHINE_NOT_REGISTERED")?;
             if request.machine_id != machine_id
                 || request.release_set_sha256
@@ -1051,9 +1054,8 @@ pub(crate) fn run(
             {
                 return Err("HOST_ADMIN_GIT_IDENTITY_OR_RELEASE_MISMATCH".into());
             }
-            host_admin::verify_receipt(
-                &request, &receipt, &selected.native_receipt_public_key,
-            ).map_err(str::to_owned)?;
+            host_admin::verify_receipt(&request, &receipt, &selected.native_receipt_public_key)
+                .map_err(str::to_owned)?;
             let outcome = if !receipt.process_exited {
                 "VERIFIED_NO_EXIT"
             } else if receipt.exit_code == 124 || receipt.exit_code == 137 {
@@ -1071,18 +1073,42 @@ pub(crate) fn run(
             println!("host_admin_execution_outcome={outcome}");
             println!("host_admin_physical_poststate=UNPROVEN");
             println!("host_admin_exit_code={}", receipt.exit_code);
-            println!("host_admin_stdout_total_bytes={}", receipt.stdout_total_bytes);
-            println!("host_admin_stderr_total_bytes={}", receipt.stderr_total_bytes);
+            println!(
+                "host_admin_stdout_total_bytes={}",
+                receipt.stdout_total_bytes
+            );
+            println!(
+                "host_admin_stderr_total_bytes={}",
+                receipt.stderr_total_bytes
+            );
             println!("host_admin_stdout_truncated={}", receipt.stdout_truncated);
             println!("host_admin_stderr_truncated={}", receipt.stderr_truncated);
-            println!("host_admin_stdout_sha256={}", receipt.stdout_sha256
-                .iter().map(|v| format!("{v:02x}")).collect::<String>());
-            println!("host_admin_stderr_sha256={}", receipt.stderr_sha256
-                .iter().map(|v| format!("{v:02x}")).collect::<String>());
+            println!(
+                "host_admin_stdout_sha256={}",
+                receipt
+                    .stdout_sha256
+                    .iter()
+                    .map(|v| format!("{v:02x}"))
+                    .collect::<String>()
+            );
+            println!(
+                "host_admin_stderr_sha256={}",
+                receipt
+                    .stderr_sha256
+                    .iter()
+                    .map(|v| format!("{v:02x}"))
+                    .collect::<String>()
+            );
             if request.publish_output {
                 let base64 = base64::engine::general_purpose::STANDARD;
-                println!("host_admin_stdout_preview_b64={}", base64.encode(&receipt.stdout_preview));
-                println!("host_admin_stderr_preview_b64={}", base64.encode(&receipt.stderr_preview));
+                println!(
+                    "host_admin_stdout_preview_b64={}",
+                    base64.encode(&receipt.stdout_preview)
+                );
+                println!(
+                    "host_admin_stderr_preview_b64={}",
+                    base64.encode(&receipt.stderr_preview)
+                );
             }
             Ok(())
         }

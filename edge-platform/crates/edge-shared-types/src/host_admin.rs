@@ -112,7 +112,8 @@ fn preview_valid(request: &Request, result: &ResultReceipt) -> bool {
     let max = 64 * 1024;
     let a = result.stdout_preview.len();
     let b = result.stderr_preview.len();
-    a <= max && b <= max
+    a <= max
+        && b <= max
         && (request.publish_output || (a == 0 && b == 0))
         && a as u64 <= result.stdout_total_bytes
         && b as u64 <= result.stderr_total_bytes
