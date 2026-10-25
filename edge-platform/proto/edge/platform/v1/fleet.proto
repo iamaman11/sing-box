@@ -299,6 +299,27 @@ enum FleetVmBootstrapPhase {
   FLEET_VM_BOOTSTRAP_PHASE_FIRST_USE_WORKER_SOURCE_MISMATCH = 10;
   FLEET_VM_BOOTSTRAP_PHASE_FIRST_USE_WORKER_SOURCE_UNAVAILABLE = 11;
 }
+// Signed desired object from the SAME Git application bundle, not a runner
+// request or mutable second registry. An owned Docker object is addressable
+// only by an exact host-derived name and a private managed manifest path.
+enum FleetVmManagedDockerKind {
+  FLEET_VM_MANAGED_DOCKER_KIND_UNSPECIFIED = 0;
+  FLEET_VM_MANAGED_DOCKER_KIND_LOCAL_VOLUME = 1;
+  FLEET_VM_MANAGED_DOCKER_KIND_BRIDGE_NETWORK = 2;
+}
+enum FleetVmManagedDockerDesiredState {
+  FLEET_VM_MANAGED_DOCKER_DESIRED_STATE_UNSPECIFIED = 0;
+  FLEET_VM_MANAGED_DOCKER_DESIRED_STATE_PRESENT = 1;
+  FLEET_VM_MANAGED_DOCKER_DESIRED_STATE_ABSENT = 2;
+}
+message FleetVmManagedDockerResource {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  string resource_name = 3;
+  FleetVmManagedDockerKind kind = 4;
+  FleetVmManagedDockerDesiredState desired_state = 5;
+}
+
 // Non-secret process snapshot from root-local /proc. It reports live kernel
 // processes only; an exited process has no /proc entry and cannot be
 // reconstructed from this snapshot. Runner copy is never an attestation.
