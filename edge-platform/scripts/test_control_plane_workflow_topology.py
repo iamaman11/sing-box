@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Verify native-only GitHub ingress after the hard cut (no legacy dispatch)."""
 from pathlib import Path
+import ast
 import re
 
 root=Path(".github/workflows")
@@ -170,6 +171,9 @@ assert firstuse_job.index('first-use-scrub') < firstuse_job.index("Complete ONLY
 assert "host-receipt-${TARGET_MACHINE}-${SOURCE_COMMENT_ID}" in firstuse_job
 assert "HOST_FIRST_USE_DURABLE_BEGIN_RECORDED" in firstuse_job
 assert "HOST_FIRST_USE_CREATE_ONCE_NO_AUTOMATIC_REPLAY" in firstuse_job
+assert "FIRST_USE_ABORT_PREFLIGHT" in router
+assert "host_first_use_abort:" in router
+assert "edge-platform/scripts/host_first_use_abort.py" in router
 assert "HOST_FIRST_USE_NATIVE_HANDOFF_NOT_ACCEPTED_NO_CREATE" not in firstuse_job
 assert "edge-agent.service" not in Path("win/vultr-waw/cloud-init.yaml").read_text(encoding="utf-8")
 # One selected Git pointer (never shell-copied generation/digest) is
@@ -320,5 +324,26 @@ for retired in ("run_destroy_apply", "run_cleanup", "run_action", "run_substrate
                 "run_initial_vm_runtime", "run_runner_bootstrap", "run_apply"):
     assert not re.search(rf"(?:async )?fn {retired}\(", provider), retired
 assert "VultrLifecycle" not in orchestrator_cli
+
+
+# Reconciliation runs within the existing protected ingress and has no root
+# executor, separate transport, or speculative CREATE/replay capability.
+abort = Path("edge-platform/scripts/host_first_use_abort.py").read_text(encoding="utf-8")
+ast.parse(abort, filename="host_first_use_abort.py")
+abort_job = router.split("  host_first_use_abort:\n", 1)[1].split("\n  host_resume_receipt:", 1)[0]
+assert "needs.host.outputs.operation == 'FIRST_USE_ABORT_PREFLIGHT'" in abort_job
+assert "group: vultr-control-plane-production" in abort_job
+assert "first-use-preflight" in abort_job
+assert 'host-abort-preflight.txt' in abort_job
+assert "host_first_use_abort.py" in abort_job
+assert abort_job.index("Prove exact absent VM through complete typed Vultr inventory") < abort_job.index("Retire only exact aborted GitHub first-use reservation")
+assert "HOST_ABORT_ORIGINAL_CREATE_NOT_PROVEN_SKIPPED" in abort
+assert "HOST_ABORT_ORIGINAL_PRECREATE_FAILURE_UNPROVEN" in abort
+assert "HOST_ABORT_RESERVED_REF_CONTENT_DRIFT" in abort
+assert "HOST_ABORT_TERMINAL_EVIDENCE_AMBIGUOUS" in abort
+assert abort.index("verify_original_run(machine, origin, old_revision, run_id)") < abort.index('method="POST", form=marker')
+assert abort.index('method="POST", form=marker') < abort.index('method="DELETE"')
+assert "HOST_ABORT_RUNNER_INVENTORY_INCOMPLETE" in abort
+assert 'host_replay_allowed=false' in abort
 
 print("native_only_workflow_topology=PASS")

@@ -283,6 +283,7 @@ jobs:
        needs.host.outputs.operation == 'DIAGNOSE' ||
        needs.host.outputs.operation == 'ADMIN' ||
        needs.host.outputs.operation == 'FIRST_USE_PREFLIGHT' ||
+       needs.host.outputs.operation == 'FIRST_USE_ABORT_PREFLIGHT' ||
        needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT')
     runs-on: ubuntu-24.04
     timeout-minutes: 3
@@ -1075,6 +1076,84 @@ jobs:
           fi
           echo "HOST_FIRST_USE=AWAITING_PROTECTED_PUBLIC_RECEIPT_MERGE"
           echo "HOST_SIGNED_INSTALL=NOT_YET_AUTHORIZED"
+
+  host_first_use_abort:
+    # The existing /host recover may retire ONLY a proven PRE-CREATE
+    # failed reservation. It never retries first-use or touches Vultr.
+    needs: [host, host_report]
+    if: >-
+      needs.host.result == 'success' &&
+      needs.host_report.result == 'success' &&
+      needs.host.outputs.kind == 'VM' &&
+      needs.host.outputs.operation == 'FIRST_USE_ABORT_PREFLIGHT' &&
+      github.event_name == 'issue_comment' &&
+      github.repository == 'iamaman11/sing-box' &&
+      github.actor_id == '44100369' &&
+      github.run_attempt == 1
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    concurrency:
+      group: vultr-control-plane-production
+      cancel-in-progress: false
+    timeout-minutes: 18
+    permissions:
+      contents: read
+      actions: read
+      issues: read
+    env:
+      TARGET_MACHINE: ${{ needs.host.outputs.machine_id }}
+      SOURCE_COMMENT_ID: ${{ github.event.comment.id }}
+      GITHUB_ACTOR_ID: ${{ github.actor_id }}
+      GH_TOKEN: ${{ secrets.IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN }}
+    steps:
+      - name: Resolve exact protected main and immutable native provider
+        shell: bash
+        env:
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/host-release
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --no-tags --depth=1 origin "${GITHUB_SHA}"
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          bash edge-platform/scripts/compile_vm_host_desired.sh "${TARGET_MACHINE}"
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          echo "${EDGE_ORCHESTRATOR_SHA256}  ${OUTPUT_DIR}/edge-orchestrator-linux-amd64" | sha256sum --check --status
+          chmod 0755 "${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          echo "EDGE_RELEASE_CONTEXT_PATH=${OUTPUT_DIR}/resolved.env" >> "${GITHUB_ENV}"
+
+      - name: Prove exact absent VM through complete typed Vultr inventory
+        shell: bash
+        env:
+          VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID }}
+          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET }}
+        run: |
+          set -euo pipefail
+          bin="${RUNNER_TEMP}/host-release/edge-orchestrator-linux-amd64"
+          fleet="${RUNNER_TEMP}/host-release/fleet-registry.pb"
+          bin_proof="${RUNNER_TEMP}/host-abort-preflight.txt"
+          "${bin}" host --hosts-pb "${fleet}" \
+            --hosts-sha256 "$(sha256sum "${fleet}" | cut -d' ' -f1)" \
+            first-use-preflight "${TARGET_MACHINE}" > "${bin_proof}"
+          grep -Fxq 'host_first_use_provider_plan=EXACT_CREATE_ONLY' "${bin_proof}"
+          grep -Fxq 'host_first_use_preflight=PROVIDER_AND_WORKER_GET_PROVEN' "${bin_proof}"
+          echo "HOST_ABORT_PROVIDER_PROOF=COMPLETE_TYPED_CREATE_PLAN_NO_MUTATION"
+
+      - name: Retire only exact aborted GitHub first-use reservation
+        shell: bash
+        env:
+          PROVIDER_PREFLIGHT_PROOF: ${{ runner.temp }}/host-abort-preflight.txt
+        run: |
+          set -euo pipefail
+          python3 -B edge-platform/scripts/host_first_use_abort.py
 
   host_resume_receipt:
     # The prior /host apply may continue only after its exact registration PR
