@@ -47,7 +47,8 @@ def token(value):
     return value if isinstance(value, str) and TOKEN.fullmatch(value) else "UNPROVEN_INVALID_SOURCE_CODE"
 
 
-def fuse(observation, git, *, machine_id, operation_id, source_digest, release_set_sha256):
+def fuse(observation, git, *, machine_id, operation_id, source_digest,
+         release_set_sha256, worker_bundle_status="UNPROVEN_GIT_PIN_ONLY"):
     if not (MACHINE.fullmatch(machine_id) and OP.fullmatch(operation_id)
             and SHA.fullmatch(source_digest) and DIGEST.fullmatch(release_set_sha256)):
         raise ValueError("HOST_DIAGNOSTIC_CORRELATION_INVALID")
@@ -68,6 +69,7 @@ def fuse(observation, git, *, machine_id, operation_id, source_digest, release_s
         "git": git["reason"],
         "vultr": observation.get("vultr_machine"),
         "worker_access": observation.get("worker_host_route_get"),
+        "worker_bundle": worker_bundle_status,
         "worker_source": observation.get("worker_active_deployment"),
         "worker_signer": observation.get("worker_host_signing_bindings"),
         "runner": observation.get("github_runner_state"),
@@ -92,6 +94,12 @@ def fuse(observation, git, *, machine_id, operation_id, source_digest, release_s
             "BLOCKED", "CLOUDFLARE_ACCESS",
             sources["worker_access"], "GIT_FIRST_USE_REFERENCE_ONLY",
             "VERIFY_ACCESS_POLICY_AND_WORKER_ROUTE", "WORKER_ACCESS",
+        )
+    elif sources["worker_bundle"] != "GIT_PIN_EXACT_ACCESS_GET_PROVEN":
+        status, owner, reason, last, next_action, current_phase = (
+            "BLOCKED", "CLOUDFLARE_WORKER_SOURCE",
+            sources["worker_bundle"], "WORKER_ACCESS_GET_ONLY",
+            "VERIFY_EXACT_GIT_PINNED_WORKER_BUNDLE", "WORKER_SOURCE",
         )
     elif sources["vultr"] not in (
             "LABEL_ABSENT_SINGLE_PAGE_NOT_CREATE_AUTHORITY",
@@ -146,6 +154,7 @@ if __name__ == "__main__":
             operation_id=os.environ["OPERATION_ID"],
             source_digest=os.environ["GITHUB_SHA"],
             release_set_sha256=os.environ["RELEASE_SET_SHA256"],
+            worker_bundle_status=os.environ["VM_BUNDLE_STATUS"],
         )
         print(json.dumps(result, sort_keys=True, separators=(",", ":")))
     except (ValueError, KeyError, TypeError, json.JSONDecodeError) as error:
