@@ -370,8 +370,7 @@ pub(crate) fn run(
                 if kind == ManagedHostKind::Vm {
                     // Git readiness is explicitly NOT Worker activation,
                     // provider CREATE or a signed native receipt.
-                    host_first_use_status::print_git_readiness(host)
-                        .map_err(str::to_owned)?;
+                    host_first_use_status::print_git_readiness(host).map_err(str::to_owned)?;
                     // Proven only by the canonical Git registry; these flags
                     // never claim Worker activation or installed root trust.
                     println!(
