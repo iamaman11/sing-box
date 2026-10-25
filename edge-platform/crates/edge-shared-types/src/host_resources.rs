@@ -597,6 +597,59 @@ fn validate_vm_bootstrap_phase(
     Ok(())
 }
 
+
+/// Full /proc metadata is read-only, never a trusted remote receipt. Bound
+/// size, sorted uniqueness and redacted error codes prevent a compromised
+/// runner from injecting arbitrary text or claiming a complete scan.
+pub fn validate_vm_process_snapshot(
+    snapshot: &crate::FleetVmProcessSnapshot,
+) -> Result<(), &'static str> {
+    if snapshot.processes.len() > 4096
+        || snapshot.observed_count < snapshot.processes.len() as u32
+        || snapshot.truncated != (snapshot.observed_count > snapshot.processes.len() as u32)
+        || (!snapshot.procfs_readable
+            && (!snapshot.processes.is_empty() || snapshot.observed_count != 0))
+        || snapshot.read_error_count > snapshot.processes.len() as u32
+    {
+        return Err("VM_PROCESS_SNAPSHOT_SCOPE_INVALID");
+    }
+    let mut prev = 0u32;
+    let mut errors = 0u32;
+    for process in &snapshot.processes {
+        let ok_state = matches!(
+            process.state_code.as_str(),
+            "R" | "S" | "D" | "Z" | "T" | "I" | "X" | "W" | "K" | "P" | "?"
+        );
+        if process.pid == 0 || process.pid <= prev || !ok_state {
+            return Err("VM_PROCESS_SNAPSHOT_ORDER_OR_STATE_INVALID");
+        }
+        prev = process.pid;
+        if process.read_error_code.is_empty() {
+            if process.command_name_sha256.len() != 32
+                || process.command_name_sha256.iter().all(|b| *b == 0)
+                || process.state_code == "?"
+            {
+                return Err("VM_PROCESS_SNAPSHOT_COMMAND_PROOF_INVALID");
+            }
+        } else {
+            errors += 1;
+            if !matches!(
+                process.read_error_code.as_str(),
+                "STAT_UNAVAILABLE" | "STAT_INVALID" | "METADATA_UNAVAILABLE"
+            ) || !process.command_name_sha256.is_empty()
+                || process.state_code != "?"
+                || process.parent_pid != 0
+            {
+                return Err("VM_PROCESS_SNAPSHOT_ERROR_INVALID");
+            }
+        }
+    }
+    if errors != snapshot.read_error_count {
+        return Err("VM_PROCESS_SNAPSHOT_ERROR_COUNT_INVALID");
+    }
+    Ok(())
+}
+
 pub fn validate_vm_resource_report(
     report: &FleetVmResourceReport,
     host: &FleetHost,
@@ -614,6 +667,9 @@ pub fn validate_vm_resource_report(
     }
     if let Some(network) = report.network.as_ref() {
         validate_vm_network_readback(network)?;
+    }
+    if let Some(processes) = report.processes.as_ref() {
+        validate_vm_process_snapshot(processes)?;
     }
     let credential = report
         .credential
@@ -898,6 +954,7 @@ mod tests {
         let report = FleetVmResourceReport {
             schema_version: 2,
             bootstrap_phase: crate::FleetVmBootstrapPhase::Unspecified as i32,
+            processes: None,
             machine_id: "vm-a".into(),
             observed_at_unix: 100,
             resources: vec![FleetVmResourceReadback {
@@ -1923,6 +1980,7 @@ mod resource_planning_tests {
         let report = FleetVmResourceReport {
             schema_version: 2,
             bootstrap_phase: crate::FleetVmBootstrapPhase::Unspecified as i32,
+            processes: None,
             machine_id: host.machine_id.clone(),
             observed_at_unix: 100,
             resources: vec![FleetVmResourceReadback {

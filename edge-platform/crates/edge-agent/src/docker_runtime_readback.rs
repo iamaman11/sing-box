@@ -1,4 +1,7 @@
 use super::*;
+#[path = "docker_process_readback.rs"]
+mod process_readback;
+use process_readback::collect_native_process_snapshot;
 
 /// Running is not equivalent to readiness. A missing healthcheck is not
 /// an implicit PASS. This only describes local Docker health, not egress.
@@ -416,6 +419,7 @@ pub(crate) async fn observe_vm_resource_report(
         installed_policy_error_code,
         credential: Some(credential),
         bootstrap_phase: bootstrap_phase as i32,
+        processes: Some(collect_native_process_snapshot()),
     };
     edge_shared_types::host_resources::validate_vm_resource_report(&report, host)
         .map_err(str::to_owned)?;
