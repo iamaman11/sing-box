@@ -1021,6 +1021,36 @@ pub(crate) fn run(
             println!("host_mutations=0");
             Ok(())
         }
+        HostCommand::BootstrapProofCheck { machine_id, proof_path } => {
+            use edge_shared_types::{FleetVmBootstrapKeyProof, vm_bootstrap};
+            let selected = desired.hosts.iter()
+                .find(|host| host.machine_id == machine_id && host.kind == ManagedHostKind::Vm as i32)
+                .ok_or("BOOTSTRAP_GIT_MACHINE_NOT_REGISTERED")?;
+            if !selected.native_receipt_public_key.is_empty() {
+                return Err("BOOTSTRAP_GIT_RECEIPT_ALREADY_REGISTERED".into());
+            }
+            let meta = std::fs::symlink_metadata(&proof_path)
+                .map_err(|_| "BOOTSTRAP_ROOT_PROOF_MISSING")?;
+            if !meta.is_file() || meta.len() == 0 || meta.len() > 512 {
+                return Err("BOOTSTRAP_ROOT_PROOF_INVALID".into());
+            }
+            let bytes = std::fs::read(&proof_path)
+                .map_err(|_| "BOOTSTRAP_ROOT_PROOF_UNREADABLE")?;
+            let proof = FleetVmBootstrapKeyProof::decode(bytes.as_slice())
+                .map_err(|_| "BOOTSTRAP_ROOT_PROOF_PROTO_INVALID")?;
+            if proof.encode_to_vec() != bytes
+                || proof.machine_id != machine_id
+                || proof.release_set_sha256 != exact_hex_sha256(&release.release().release_set_sha256)?
+            {
+                return Err("BOOTSTRAP_GIT_SCOPE_OR_RELEASE_MISMATCH".into());
+            }
+            vm_bootstrap::verify_root_proof(&proof).map_err(str::to_owned)?;
+            println!("bootstrap_proof=SELF_SIGNED_NOT_PROVIDER_ATTESTATION");
+            println!("bootstrap_native_receipt_public_key_hex={}",
+                proof.native_receipt_public_key.iter().map(|b| format!("{b:02x}")).collect::<String>());
+            println!("bootstrap_mutations=0");
+            Ok(())
+        }
         HostCommand::BootstrapSeal {
             machine_id,
             proof_path,
