@@ -114,3 +114,4 @@ hosts: {
     windows_mode: FLEET_HOST_MODE_PROXY_ONLY
   }
 }
+# native-receipt-registration-pending application-acceptance-4 issue1-comment-6391329957
