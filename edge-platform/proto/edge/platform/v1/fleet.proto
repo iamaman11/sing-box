@@ -246,6 +246,10 @@ message FleetVmNetworkReadback {
   bytes nft_ruleset_sha256 = 4;
   uint32 nft_rule_count = 5;
   bool nft_ruleset_observed = 6;
+  // Independent host-namespace native rtnetlink dump of both IP families
+  // and ALL addressable route tables; not rule/Internet/mutation proof.
+  FleetVmDualStackNetwork dual_stack = 7;
+  string dual_stack_error_code = 8;
 }
 
 // A closed diagnosis of the INSTALLED policy readback only. Neither this
