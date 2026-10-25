@@ -135,6 +135,11 @@ pub(crate) enum HostCommand {
         /// Internal, runner-copied VM diagnostic; never a native receipt.
         #[arg(long)]
         resources_path: Option<PathBuf>,
+        /// Independently authenticated native root diagnostic proof.
+        #[arg(long)]
+        signed_snapshot_path: Option<PathBuf>,
+        #[arg(long)]
+        snapshot_comment_id: Option<u64>,
     },
     /// Internal-only correlation of two runner-copied protobufs. Neither
     /// artifact authenticates SYSTEM/root or promotes a physical receipt.
