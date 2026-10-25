@@ -17,6 +17,8 @@ pub fn validate(request: &FleetNativeAdministrativeRequest) -> Result<(), &'stat
         || request.machine_id.len() > 64
         || !request.machine_id.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_' | b'.'))
         || request.source_comment_id == 0
+        || request.comment_sha256.len() != 32
+        || request.release_set_sha256.len() != 32
         || request.operation_id != format!("issue1-comment-{}", request.source_comment_id)
         || request.argv.is_empty()
         || request.argv.len() > 64
@@ -152,6 +154,8 @@ mod tests {
             operation_id: "issue1-comment-42".to_owned(),
             source_comment_id: 42,
             argv: vec!["/usr/bin/true".to_owned()],
+            comment_sha256: vec![7; 32],
+            release_set_sha256: vec![8; 32],
         }
     }
     #[test]
