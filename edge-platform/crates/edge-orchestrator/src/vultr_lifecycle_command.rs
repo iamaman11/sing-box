@@ -100,9 +100,18 @@ fn validate_disposable_acceptance(desired: &DesiredApplicationState) -> Result<(
     Ok(())
 }
 
-const DEFAULT_CLOUD_INIT_PATH: &str = "win/vultr-waw/cloud-init.yaml";
 const CANONICAL_SSH_PUBLIC_KEY_PATH: &str = "infra/vultr/singbox-ops.pub";
 const FIREWALL_PROFILES_PATH: &str = "infra/vultr/firewall-profiles.json";
+
+/// General lifecycle may observe or reconcile an already owned VM, but it
+/// is never the VM first-use owner. No SSH fallback may CREATE a new VM.
+fn deny_unregistered_native_vm_create(class: &PlanClass) -> Result<(), &'static str> {
+    if *class == PlanClass::Create {
+        Err("HOST_VM_CREATE_REQUIRES_NATIVE_ONE_TIME_ENROLLMENT_NO_SSH")
+    } else {
+        Ok(())
+    }
+}
 
 async fn apply_machine_value(
     spec_path: &Path,
@@ -116,7 +125,6 @@ async fn apply_machine_value(
         .find(|machine| machine.id == machine_id)
         .ok_or_else(|| format!("machine {machine_id} is not present in desired state"))?;
     let profiles = load_firewall_profiles(&desired)?;
-    let substrate = host_substrate_versions_from_env()?;
     let policy = LifecycleExecutionPolicy::default();
     let mut lifecycle_provider = lifecycle_provider_from_env()?;
     let mut support_provider = support_provider_from_env()?;
@@ -139,9 +147,7 @@ async fn apply_machine_value(
     // No general lifecycle path may silently provision the retired SSH
     // host, even if the dedicated /host first-use preflight is bypassed.
     // Observing/updating existing instances remains a separate operation.
-    if initial_class == PlanClass::Create {
-        return Err("HOST_VM_CREATE_REQUIRES_NATIVE_ONE_TIME_ENROLLMENT_NO_SSH".to_owned());
-    }
+    deny_unregistered_native_vm_create(&initial_class).map_err(str::to_owned)?;
     let authorized = authorize_vultr_machine(&desired, &initial.inventory, initial_plan)?;
     let authority_digest = expected_authority
         .map(ToOwned::to_owned)
@@ -2249,75 +2255,6 @@ pub(crate) fn read_canonical_ssh_public_key() -> Result<String, String> {
         ));
     }
     Ok(public_key)
-}
-
-fn resolve_create_prerequisites(
-    machine: &MachineSpec,
-    ssh_key_id: &str,
-    firewall: Option<&ResolvedFirewallProfile>,
-    cloud_init: String,
-) -> Result<CreatePrerequisites, String> {
-    if machine.bootstrap_profile != "singbox-host-v2" {
-        return Err(format!(
-            "bootstrap profile {} is not implemented by the current application layer",
-            machine.bootstrap_profile
-        ));
-    }
-    if ssh_key_id.trim().is_empty() {
-        return Err("resolved Vultr SSH key id is empty".to_owned());
-    }
-
-    let (firewall_group_id, firewall_profile) =
-        match (machine.provider.firewall_profile.as_deref(), firewall) {
-            (None, None) => (None, None),
-            (Some(expected), Some(resolved)) if resolved.profile_name == expected => (
-                Some(resolved.id.clone()),
-                Some(resolved.profile_name.clone()),
-            ),
-            (Some(expected), Some(resolved)) => {
-                return Err(format!(
-                    "resolved firewall profile {} does not match desired profile {expected}",
-                    resolved.profile_name
-                ));
-            }
-            (Some(expected), None) => {
-                return Err(format!(
-                    "machine {} requires resolved firewall profile {expected}",
-                    machine.id
-                ));
-            }
-            (None, Some(resolved)) => {
-                return Err(format!(
-                    "machine {} has no firewall profile but resolver supplied {}",
-                    machine.id, resolved.profile_name
-                ));
-            }
-        };
-
-    Ok(CreatePrerequisites {
-        bootstrap_profile: machine.bootstrap_profile.clone(),
-        ssh_key_id: ssh_key_id.to_owned(),
-        cloud_init,
-        firewall_group_id,
-        firewall_profile,
-    })
-}
-
-fn read_base_cloud_init(machine: &MachineSpec) -> Result<String, String> {
-    if machine.bootstrap_profile != "singbox-host-v2" {
-        return Err(format!(
-            "bootstrap profile {} is not implemented by the current application layer",
-            machine.bootstrap_profile
-        ));
-    }
-    let cloud_init_path = PathBuf::from(DEFAULT_CLOUD_INIT_PATH);
-    fs::read_to_string(&cloud_init_path).map_err(|err| {
-        format!(
-            "failed to read bootstrap profile {} from {}: {err}",
-            machine.bootstrap_profile,
-            cloud_init_path.display()
-        )
-    })
 }
 
 fn empty_create_prerequisites(machine: &MachineSpec) -> CreatePrerequisites {
