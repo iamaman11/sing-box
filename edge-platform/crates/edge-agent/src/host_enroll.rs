@@ -436,6 +436,12 @@ async fn enroll_locked(machine_id: &str, release_digest: &str) -> Result<(), Str
         .as_deref()
         .ok_or("HOST_ENROLL_RECEIPT_KEY_MISSING_FOR_FIRST_USE")?;
     write_protected_file(&stage, "receipt-key.pk8", receipt_key)?;
+    // Fresh first-use receiver is native root-only. The public half is
+    // later signed by the receipt key and carried via the existing runner.
+    // Never rotate this private receiver on a Git trust refresh.
+    let (bootstrap_private, _bootstrap_public) =
+        edge_shared_types::vm_bootstrap::fresh_recipient().map_err(str::to_owned)?;
+    write_protected_file(&stage, "bootstrap-x25519.secret", &bootstrap_private)?;
     let journal = stage.join("journal");
     DirBuilder::new()
         .mode(0o700)
