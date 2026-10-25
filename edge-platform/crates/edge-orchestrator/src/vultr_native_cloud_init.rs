@@ -54,14 +54,18 @@ printf '%s\n' NATIVE_ROOT_ENROLLED_AWAITING_ONE_TIME_CREDENTIAL_HANDOFF \
 
 fn exact_sha(value: &str) -> bool {
     value.len() == 64
-        && value.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         && value.bytes().any(|byte| byte != b'0')
 }
 
 fn host_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 63
-        && value.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
         && value.as_bytes()[0].is_ascii_alphanumeric()
         && value.as_bytes()[value.len() - 1].is_ascii_alphanumeric()
 }
@@ -115,9 +119,7 @@ pub fn render_native_first_use_cloud_init(
         "#cloud-config\nhostname: {machine_id}\nmanage_etc_hosts: true\nssh_pwauth: false\ndisable_root: true\n"
     );
     rendered = rendered.replacen("#cloud-config\n", &header, 1);
-    rendered.push_str(&format!(
-        "  - [bash, -lc, \"{NATIVE_INIT_PATH}\"]\n"
-    ));
+    rendered.push_str(&format!("  - [bash, -lc, \"{NATIVE_INIT_PATH}\"]\n"));
     if !rendered.contains("native-first-use.sh")
         || rendered.contains("VULTR_SSH_PRIVATE_KEY")
         || rendered.contains("EDGE_RUNNER_REGISTRATION_TOKEN")
@@ -138,7 +140,8 @@ mod tests {
             "5:29.0.4-1~debian.12~bookworm".into(),
             "1.7.28-1".into(),
             "5.0.0-1~debian.12~bookworm".into(),
-        ).unwrap()
+        )
+        .unwrap()
     }
 
     fn fixture() -> &'static str {
@@ -152,7 +155,8 @@ mod tests {
             &"a".repeat(64),
             &"b".repeat(64),
             &substrate(),
-        ).unwrap()
+        )
+        .unwrap()
     }
 
     #[test]
@@ -162,7 +166,7 @@ mod tests {
         assert!(config.contains("/usr/local/sbin/singbox-native-first-use.sh"));
         assert!(config.contains("local host-enroll 'application-acceptance-5' '"));
         assert!(config.contains("sha256sum --check --status"));
-        assert!(config.contains("edge-release-".to_owned().as_str()));
+        assert!(config.contains("edge-release-"));
         assert!(config.contains("NATIVE_ROOT_ENROLLED_AWAITING_ONE_TIME_CREDENTIAL_HANDOFF"));
         assert!(config.contains("HOST_CLOUD_INIT_NATIVE_OWNER_ALREADY_PRESENT_NO_REPLAY"));
         assert!(config.contains("systemctl disable --now edge-agent.service"));
@@ -172,24 +176,49 @@ mod tests {
         assert!(!config.contains("CF_ACCESS_CLIENT_SECRET="));
         assert!(!config.contains("EDGE_RUNNER_REGISTRATION_TOKEN"));
         assert!(!config.contains("@@"));
-        assert!(config.ends_with("  - [bash, -lc, \"/usr/local/sbin/singbox-native-first-use.sh\"]\n"));
+        assert!(
+            config.ends_with("  - [bash, -lc, \"/usr/local/sbin/singbox-native-first-use.sh\"]\n")
+        );
     }
 
     #[test]
     fn reject_untrusted_ids_and_missing_pins() {
-        for id in ["", "../host", "host_5", "HOST-5", "-host", "host-", "host 5"] {
-            assert!(render_native_first_use_cloud_init(
-                fixture(), id, &"a".repeat(64), &"b".repeat(64), &substrate()
-            ).is_err());
+        for id in [
+            "", "../host", "host_5", "HOST-5", "-host", "host-", "host 5",
+        ] {
+            assert!(
+                render_native_first_use_cloud_init(
+                    fixture(),
+                    id,
+                    &"a".repeat(64),
+                    &"b".repeat(64),
+                    &substrate()
+                )
+                .is_err()
+            );
         }
         for digest in ["", "deadbeef", &"A".repeat(64), &"0".repeat(64)] {
-            assert!(render_native_first_use_cloud_init(
-                fixture(), "host-5", digest, &"b".repeat(64), &substrate()
-            ).is_err());
+            assert!(
+                render_native_first_use_cloud_init(
+                    fixture(),
+                    "host-5",
+                    digest,
+                    &"b".repeat(64),
+                    &substrate()
+                )
+                .is_err()
+            );
         }
-        assert!(render_native_first_use_cloud_init(
-            fixture(), "host-5", &"a".repeat(64), &"0".repeat(64), &substrate()
-        ).is_err());
+        assert!(
+            render_native_first_use_cloud_init(
+                fixture(),
+                "host-5",
+                &"a".repeat(64),
+                &"0".repeat(64),
+                &substrate()
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -200,9 +229,16 @@ mod tests {
             format!("{}users:\n  - name: root\n", fixture()),
             fixture().replace("runcmd:\n", "runcmd:\nother_key: true\n"),
         ] {
-            assert!(render_native_first_use_cloud_init(
-                &mutated, "host-5", &"a".repeat(64), &"b".repeat(64), &substrate()
-            ).is_err());
+            assert!(
+                render_native_first_use_cloud_init(
+                    &mutated,
+                    "host-5",
+                    &"a".repeat(64),
+                    &"b".repeat(64),
+                    &substrate()
+                )
+                .is_err()
+            );
         }
     }
 }
