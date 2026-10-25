@@ -98,7 +98,7 @@ class TestHostCapabilitySelector(TestCase):
         def exact_get(url, token, host):
             self.assertEqual(token, "opaque-token")
             self.assertEqual(host, "api.github.com")
-            return responses[url]
+            return responses.get(url)
         with patch.object(capability, "observe_json", side_effect=exact_get):
             self.assertEqual(capability.registered_vm_runner(
                 "iamaman11/sing-box", "opaque-token", "application-acceptance-4"),
