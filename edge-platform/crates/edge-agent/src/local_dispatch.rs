@@ -94,8 +94,9 @@ pub(super) async fn run_local(command: cli::LocalCommand) -> Result<(), AgentErr
         cli::LocalCommand::HostAdmin => host_admin_native::execute()
             .await
             .map_err(AgentError::Command),
-        cli::LocalCommand::HostBootstrapProof => host_bootstrap_access::public_proof()
-            .map_err(AgentError::Command),
+        cli::LocalCommand::HostBootstrapProof => {
+            host_bootstrap_access::public_proof().map_err(AgentError::Command)
+        }
         cli::LocalCommand::HostBootstrapAccess => host_bootstrap_access::install()
             .await
             .map_err(AgentError::Command),
