@@ -693,25 +693,50 @@ pub(crate) fn run(
                     );
                 }
                 if let Some(processes) = report.processes.as_ref() {
-                    println!("host_vm_process_origin=ROOT_LOCAL_PROCFS_RUNNER_COPIED_UNAUTHENTICATED");
-                    println!("host_vm_process_procfs_readable={}", processes.procfs_readable);
+                    println!(
+                        "host_vm_process_origin=ROOT_LOCAL_PROCFS_RUNNER_COPIED_UNAUTHENTICATED"
+                    );
+                    println!(
+                        "host_vm_process_procfs_readable={}",
+                        processes.procfs_readable
+                    );
                     println!("host_vm_process_observed={}", processes.observed_count);
                     println!("host_vm_process_reported={}", processes.processes.len());
                     println!("host_vm_process_truncated={}", processes.truncated);
                     println!("host_vm_process_read_errors={}", processes.read_error_count);
-                    let zombies = processes.processes.iter().filter(|p| p.state_code == "Z").count();
-                    let uninterruptible = processes.processes.iter().filter(|p| p.state_code == "D").count();
+                    let zombies = processes
+                        .processes
+                        .iter()
+                        .filter(|p| p.state_code == "Z")
+                        .count();
+                    let uninterruptible = processes
+                        .processes
+                        .iter()
+                        .filter(|p| p.state_code == "D")
+                        .count();
                     println!("host_vm_process_zombie_count={zombies}");
                     println!("host_vm_process_uninterruptible_count={uninterruptible}");
-                    for item in processes.processes.iter()
-                        .filter(|p| p.state_code == "D" || p.state_code == "Z" || !p.read_error_code.is_empty())
+                    for item in processes
+                        .processes
+                        .iter()
+                        .filter(|p| {
+                            p.state_code == "D"
+                                || p.state_code == "Z"
+                                || !p.read_error_code.is_empty()
+                        })
                         .take(16)
                     {
                         println!(
                             "host_vm_process_anomaly=pid:{} ppid:{} uid:{} state:{} read_error:{}",
-                            item.pid, item.parent_pid, item.real_uid,
+                            item.pid,
+                            item.parent_pid,
+                            item.real_uid,
                             item.state_code,
-                            if item.read_error_code.is_empty() { "NONE" } else { &item.read_error_code }
+                            if item.read_error_code.is_empty() {
+                                "NONE"
+                            } else {
+                                &item.read_error_code
+                            }
                         );
                     }
                     println!("host_vm_process_process_names=SHA256_ONLY_NO_ENV_OR_ARGUMENTS");

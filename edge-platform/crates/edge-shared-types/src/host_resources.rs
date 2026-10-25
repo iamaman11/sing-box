@@ -597,7 +597,6 @@ fn validate_vm_bootstrap_phase(
     Ok(())
 }
 
-
 /// Full /proc metadata is read-only, never a trusted remote receipt. Bound
 /// size, sorted uniqueness and redacted error codes prevent a compromised
 /// runner from injecting arbitrary text or claiming a complete scan.
