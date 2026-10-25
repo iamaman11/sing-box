@@ -268,6 +268,7 @@ jobs:
       operation: ${{ needs.host.outputs.operation }}
       command_body: ${{ github.event.comment.body }}
       source_comment_id: ${{ github.event.comment.id }}
+      report_comment_id: ${{ needs.host_report.outputs.comment_id }}
 
   host_report:
     # Post an immediate, bounded Actions run pointer. An offline runner
