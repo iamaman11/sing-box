@@ -24,9 +24,27 @@ assert "Refresh protected Git main release" in native
 capability = router.split("  host_capabilities:", 1)[1].split("  host_first_use:", 1)[0]
 assert "issues/26/comments" not in capability, "historical journal must not gate read-only status"
 assert "sing-box-credential-existing-join-begin" not in capability
-assert "vm-credential-proof" not in capability
+assert 'vm-credential-proof "${TARGET_MACHINE}"' in capability
+assert "host_vm_worker_live_source=GIT_PIN_EXACT_ACCESS_GET_PROVEN" in capability
+assert "host_vm_worker_live_source=BLOCKED" in capability
+assert "host_worker_mutations=0" in capability
+assert "host_provider_mutations=0" in capability
+assert "host_diagnostic_summary.py" in capability
+assert "HOST_DIAGNOSTIC=CORRELATED_ONE_REPORT_NO_MUTATION" in capability
+assert "RELEASE_SET_SHA256:" in capability
+assert "REPORT_COMMENT_ID:" in capability
+assert "issues/comments/${REPORT_COMMENT_ID}" in capability
+assert "native-sealed-access" not in capability
+assert "  host_capabilities:" in router
 assert "host_first_use:" in router and "host_resume_receipt:" in router
 assert "  workflow_call:" in native and "  workflow_call:" not in router
+# One shared Git readback is passed to existing protected hosted capability
+# checks; neither a second runner nor a second desired source is added.
+assert "diagnostic_git_phase:" in router
+assert "diagnostic_git_reason:" in router
+assert "host_first_use_last_proven_step=" not in router
+assert 'host_first_use_${field}=' in router
+assert "diagnostic_release_set_sha256" in router
 # A deleted/offline VM can keep its self-hosted job queued forever.
 # VM-native serialization must be PER MACHINE, never the shared fleet lock
 # that also protects the hosted Worker authorizer and Vultr first-use owner.
