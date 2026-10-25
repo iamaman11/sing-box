@@ -99,7 +99,7 @@ impl LifecycleProvider for VultrApiProvider {
                 os_id: request.os_id,
                 snapshot_id: request.snapshot_id.as_deref(),
                 label: &request.label,
-                ssh_key_id: &request.ssh_key_id,
+                ssh_key_id: (!request.ssh_key_id.is_empty()).then_some(request.ssh_key_id.as_str()),
                 cloud_init: &request.cloud_init,
                 firewall_group_id: request.firewall_group_id.as_deref(),
                 tags: tag_refs,
@@ -583,8 +583,24 @@ fn validate_create_prerequisites(
             prerequisites.bootstrap_profile, machine.bootstrap_profile
         ));
     }
-    if prerequisites.ssh_key_id.trim().is_empty() {
-        return Err("CREATE requires a resolved Vultr SSH key object id".to_owned());
+    match machine.bootstrap_profile.as_str() {
+        "singbox-host-v2" if !prerequisites.ssh_key_id.trim().is_empty() => {}
+        "singbox-native-first-use-v1"
+            if prerequisites.ssh_key_id.is_empty()
+                && prerequisites.cloud_init.starts_with("#cloud-config\n")
+                && prerequisites.cloud_init.contains("singbox-native-first-use.sh")
+                && prerequisites.cloud_init.contains("ssh_pwauth: false")
+                && prerequisites.cloud_init.contains("disable_root: true")
+                && !prerequisites.cloud_init.contains("ssh_authorized_keys:") => {}
+        "singbox-host-v2" => {
+            return Err("CREATE requires a resolved Vultr SSH key object id".to_owned());
+        }
+        "singbox-native-first-use-v1" => {
+            return Err("HOST_NATIVE_CREATE_MUST_HAVE_NO_SSH_AND_PINNED_CLOUD_INIT".to_owned());
+        }
+        _ => {
+            return Err("HOST_CREATE_BOOTSTRAP_PROFILE_NOT_SUPPORTED".to_owned());
+        }
     }
     if prerequisites.cloud_init.trim().is_empty() {
         return Err("CREATE requires non-empty bootstrap user-data".to_owned());
