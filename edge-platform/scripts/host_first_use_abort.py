@@ -114,10 +114,14 @@ def read_job_log(job_id):
                  host.endswith(".blob.core.windows.net")),
                 "HOST_ABORT_JOB_LOG_SIGNED_LOCATION_INVALID")
         # Deliberately NO authorization headers on the redirected request.
-        with urlopen(Request(location, headers={
-                "User-Agent": "sing-box-read-only-diagnostic",
-            }, method="GET"), timeout=45) as downloaded:
-            raw = downloaded.read(2_000_001)
+        # Never let urllib render a signed download URL in an exception.
+        try:
+            with urlopen(Request(location, headers={
+                    "User-Agent": "sing-box-read-only-diagnostic",
+                }, method="GET"), timeout=45) as downloaded:
+                raw = downloaded.read(2_000_001)
+        except (HTTPError, URLError, OSError, TimeoutError, ValueError):
+            raise Blocked("HOST_ABORT_ORIGINAL_JOB_LOG_UNAVAILABLE") from None
     except (URLError, OSError, TimeoutError, ValueError):
         raise Blocked("HOST_ABORT_ORIGINAL_JOB_LOG_UNAVAILABLE") from None
     finally:
