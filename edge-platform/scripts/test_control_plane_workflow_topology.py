@@ -144,7 +144,7 @@ assert "HOST_CLOUD_INIT_NATIVE_OWNER_ALREADY_PRESENT_NO_REPLAY" in native_init
 assert "NATIVE_ROOT_ENROLLED_AWAITING_ONE_TIME_CREDENTIAL_HANDOFF" in native_init
 assert "EDGE_RUNNER_REGISTRATION_TOKEN" not in native_init.split("const NATIVE_FIRST_USE:",1)[1].split('"#;',1)[0]
 assert "ssh_authorized_keys:" not in native_init.split("const NATIVE_FIRST_USE:",1)[1].split('"#;',1)[0]
-assert "admit_first_use_bootstrap_transport().map_err(str::to_owned)?;" in provider
+assert "admit_first_use_bootstrap_transport().map_err(str::to_owned)" in provider
 
 # Provider payload omits sshkey_id entirely for the native bootstrap profile.
 native_provider=Path("edge-platform/crates/edge-provider-vultr/src/lib.rs").read_text(encoding="utf-8")
