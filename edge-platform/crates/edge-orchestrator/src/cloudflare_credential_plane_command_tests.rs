@@ -11,7 +11,6 @@ fn host_github_app_private_key_validation_fails_closed_without_disclosure() {
     }
 }
 
-
 #[test]
 fn vm_signer_requires_exact_eight_and_accepted_active_module() {
     let desired = desired();
@@ -42,31 +41,60 @@ fn vm_signer_requires_exact_eight_and_accepted_active_module() {
             binding_type: "secret_text".into(),
         })
         .collect();
-    assert!(verify_exact_vm_signer_source(&desired, &observed, &accepted, source.as_bytes()).is_ok());
+    assert!(
+        verify_exact_vm_signer_source(&desired, &observed, &accepted, source.as_bytes()).is_ok()
+    );
     assert_eq!(
         verify_exact_vm_signer_source(&desired, &observed, &accepted, b"foreign code"),
         Err("HOST_SIGNER_VM_WORKER_SOURCE_NOT_ACCEPTED_RELEASE".into())
     );
     let mut missing = observed.clone();
-    missing.projections.iter_mut().find(|p| p.projection == "vm").unwrap()
-        .worker_secret_bindings.pop();
-    assert!(verify_exact_vm_signer_source(&desired, &missing, &accepted, source.as_bytes()).is_err());
+    missing
+        .projections
+        .iter_mut()
+        .find(|p| p.projection == "vm")
+        .unwrap()
+        .worker_secret_bindings
+        .pop();
+    assert!(
+        verify_exact_vm_signer_source(&desired, &missing, &accepted, source.as_bytes()).is_err()
+    );
     let mut seven = missing.clone();
-    seven.projections.iter_mut().find(|p| p.projection == "vm").unwrap()
+    seven
+        .projections
+        .iter_mut()
+        .find(|p| p.projection == "vm")
+        .unwrap()
         .worker_binding_count = Some(7);
     assert!(verify_exact_vm_signer_source(&desired, &seven, &accepted, source.as_bytes()).is_err());
     let mut two = observed.clone();
-    let vm = two.projections.iter_mut().find(|p| p.projection == "vm").unwrap();
+    let vm = two
+        .projections
+        .iter_mut()
+        .find(|p| p.projection == "vm")
+        .unwrap();
     vm.worker_binding_count = Some(2);
     vm.worker_secret_bindings.truncate(2);
     assert!(verify_exact_vm_signer_source(&desired, &two, &accepted, source.as_bytes()).is_err());
     let mut foreign = observed.clone();
-    foreign.projections.iter_mut().find(|p| p.projection == "vm").unwrap()
-        .worker_secret_bindings[0].name = "UNAUTHORIZED_SECRET".into();
-    assert!(verify_exact_vm_signer_source(&desired, &foreign, &accepted, source.as_bytes()).is_err());
+    foreign
+        .projections
+        .iter_mut()
+        .find(|p| p.projection == "vm")
+        .unwrap()
+        .worker_secret_bindings[0]
+        .name = "UNAUTHORIZED_SECRET".into();
+    assert!(
+        verify_exact_vm_signer_source(&desired, &foreign, &accepted, source.as_bytes()).is_err()
+    );
     let mut split = observed.clone();
-    split.projections.iter_mut().find(|p| p.projection == "vm").unwrap()
-        .worker_active_version_ids.push("unapproved".into());
+    split
+        .projections
+        .iter_mut()
+        .find(|p| p.projection == "vm")
+        .unwrap()
+        .worker_active_version_ids
+        .push("unapproved".into());
     assert!(verify_exact_vm_signer_source(&desired, &split, &accepted, source.as_bytes()).is_err());
 }
 
