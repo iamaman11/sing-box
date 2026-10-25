@@ -493,7 +493,7 @@ message FleetHostAdministrativeReceipt {
   int32 exit_code = 6;
   bytes stdout_sha256 = 7;
   bytes stderr_sha256 = 8;
-  bool terminal_verified = 9;
+  bool process_exited_successfully = 9;
   bytes root_signature = 10;
 }
 
