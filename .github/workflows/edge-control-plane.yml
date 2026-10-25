@@ -43,6 +43,12 @@ jobs:
       host_matrix: ${{ steps.observe.outputs.host_matrix }}
       host_targets_present: ${{ steps.observe.outputs.host_targets_present }}
       runner_inventory_state: ${{ steps.runner_inventory.outputs.state }}
+      diagnostic_git_phase: ${{ steps.observe.outputs.git_phase }}
+      diagnostic_git_owner: ${{ steps.observe.outputs.git_owner }}
+      diagnostic_git_reason: ${{ steps.observe.outputs.git_reason }}
+      diagnostic_git_last_proven_step: ${{ steps.observe.outputs.git_last_proven_step }}
+      diagnostic_git_next_action: ${{ steps.observe.outputs.git_next_action }}
+      diagnostic_release_set_sha256: ${{ steps.observe.outputs.diagnostic_release_set_sha256 }}
     runs-on: ubuntu-24.04
     timeout-minutes: 12
     permissions:
@@ -188,6 +194,25 @@ jobs:
             --intent-output "${RUNNER_TEMP}/host-intent.pb" \
             "${runner_args[@]}" \
             "${command[@]}" | tee "${RUNNER_TEMP}/host-observation.txt"
+          if [[ "${COMMAND_BODY}" =~ ^/host[[:space:]]status[[:space:]][a-zA-Z0-9][a-zA-Z0-9._-]{0,63}[[:space:]]--deep$ ]]; then
+            # Trust ONLY the exact Rust-produced Git readiness (one machine).
+            # GH outputs are ephemeral transport, never independent evidence.
+            test "$(grep -c '^host_machine_id=' "${RUNNER_TEMP}/host-observation.txt")" = 1
+            for field in phase owner reason last_proven_step next_action; do
+              value="$(grep -E "^host_first_use_${field}=" "${RUNNER_TEMP}/host-observation.txt" | cut -d= -f2-)"
+              [[ "${value}" =~ ^[A-Z][A-Z0-9_]{1,119}$ ]] || {
+                echo HOST_DIAGNOSTIC_GIT_STAGE_MISSING >&2
+                exit 1
+              }
+              printf 'git_%s=%s\n' "${field}" "${value}" >> "${GITHUB_OUTPUT}"
+            done
+            digest="$(grep -E '^release_set_sha256=' "${RUNNER_TEMP}/host-observation.txt" | cut -d= -f2-)"
+            [[ "${digest}" =~ ^[0-9a-f]{64}$ ]] || {
+              echo HOST_DIAGNOSTIC_RELEASE_DIGEST_INVALID >&2
+              exit 1
+            }
+            echo "diagnostic_release_set_sha256=${digest}" >> "${GITHUB_OUTPUT}"
+          fi
           {
             echo '### Host — exact typed operation'
             echo '~~~text'
