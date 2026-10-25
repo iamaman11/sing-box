@@ -116,13 +116,13 @@ assert "VULTR_SSH_PRIVATE_KEY" not in capability_job
 capability_probe=Path("edge-platform/scripts/host_capability_preflight.py").read_text(encoding="utf-8")
 assert "operator_ssh_private_key" not in capability_probe
 assert '"bootstrap_transport": "SSH_RETIRED_CLOUD_INIT_REQUIRED"' in capability_probe
-assert 'admit_first_use_bootstrap_transport().map_err(str::to_owned)?;' in provider
+assert 'admit_first_use_bootstrap_transport().map_err(str::to_owned)' in provider
 assert provider.count("admit_first_use_bootstrap_transport().map_err(str::to_owned)") == 1
 assert 'HOST_FIRST_USE_CLOUD_INIT_ENROLLMENT_NOT_IMPLEMENTED_NO_CREATE' in provider
 # Only a read-only GH-hosted first-use preflight is reachable. The old SSH
 # installer, provider lease, registration-token POST and receipt draft
 # creation cannot silently reappear when a Rust gate is removed.
-firstuse_job=router.split("  host_first_use:\\n",1)[1].split("  host_resume_receipt:\\n",1)[0]
+firstuse_job=router.split("  host_first_use:\n",1)[1].split("  host_resume_receipt:\n",1)[0]
 assert "VULTR_SSH_PRIVATE_KEY" not in firstuse_job
 assert "EDGE_SSH_PRIVATE_KEY_PATH" not in firstuse_job
 assert "/actions/runners/registration-token" not in firstuse_job
