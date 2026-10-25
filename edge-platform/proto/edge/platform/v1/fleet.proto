@@ -328,6 +328,21 @@ message FleetVmManagedDockerResource {
   uint64 restart_generation = 8;
 }
 
+// One bounded, native Docker readback for EACH Git-owned managed object.
+// Daemon fingerprints are SHA256 only. No object IDs, tokens or raw logs.
+// UNKNOWN/FOREIGN never becomes a successful CONVERGED.
+message FleetVmManagedDockerReadback {
+  string resource_name = 1;
+  FleetVmManagedDockerKind kind = 2;
+  FleetVmManagedDockerDesiredState desired_state = 3;
+  bytes manifest_sha256 = 4;
+  bool present = 5;
+  bool ownership_proven = 6;
+  bytes fingerprint_sha256 = 7;
+  string reason_code = 8;
+  bool converged = 9;
+}
+
 // Non-secret process snapshot from root-local /proc. It reports live kernel
 // processes only; an exited process has no /proc entry and cannot be
 // reconstructed from this snapshot. Runner copy is never an attestation.
@@ -372,6 +387,7 @@ message FleetVmResourceReport {
   // Scoped read-only process metadata. No command lines, environment,
   // process names, raw errors or kernel stack content are transported.
   FleetVmProcessSnapshot processes = 12;
+  repeated FleetVmManagedDockerReadback managed_docker = 13;
 }
 
 enum FleetHostRunState {

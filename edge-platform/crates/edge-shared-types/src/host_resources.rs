@@ -711,6 +711,57 @@ pub fn validate_vm_resource_report(
             }
         }
     }
+    // These bytes can be copied by an untrusted runner. Bound them and
+    // reject foreign identities or claimed convergence without owner evidence.
+    if report.managed_docker.len() > 64 {
+        return Err("VM_MANAGED_DOCKER_READBACK_TOO_MANY");
+    }
+    let mut managed_names = std::collections::BTreeSet::new();
+    for row in &report.managed_docker {
+        if row.reason_code.is_empty()
+            || row.reason_code.len() > 96
+            || !row
+                .reason_code
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+            || (row.present != row.ownership_proven)
+            || (row.present != !row.fingerprint_sha256.is_empty())
+            || (!row.fingerprint_sha256.is_empty() && row.fingerprint_sha256.len() != 32)
+            || (row.converged && !row.reason_code.starts_with("DESIRED_"))
+        {
+            return Err("VM_MANAGED_DOCKER_EVIDENCE_INVALID");
+        }
+        if row.resource_name.is_empty() {
+            if row.kind != 0
+                || row.desired_state != 0
+                || !row.manifest_sha256.is_empty()
+                || row.present
+                || row.converged
+            {
+                return Err("VM_MANAGED_DOCKER_UNSCOPED_EVIDENCE");
+            }
+        } else if !row
+            .resource_name
+            .starts_with(&format!("sb-{}-", host.machine_id))
+            || row.resource_name.len() > 112
+            || !managed_names.insert(row.resource_name.as_str())
+            || row.manifest_sha256.len() != 32
+            || !matches!(
+                crate::FleetVmManagedDockerKind::try_from(row.kind),
+                Ok(crate::FleetVmManagedDockerKind::LocalVolume
+                    | crate::FleetVmManagedDockerKind::BridgeNetwork
+                    | crate::FleetVmManagedDockerKind::Container)
+            )
+            || !matches!(
+                crate::FleetVmManagedDockerDesiredState::try_from(row.desired_state),
+                Ok(crate::FleetVmManagedDockerDesiredState::Present
+                    | crate::FleetVmManagedDockerDesiredState::Absent
+                    | crate::FleetVmManagedDockerDesiredState::Stopped)
+            )
+        {
+            return Err("VM_MANAGED_DOCKER_RESOURCE_SCOPE_INVALID");
+        }
+    }
     for (row, expected) in report.resources.iter().zip(host.vm_containers.iter()) {
         if row.resource.as_ref() != Some(expected)
             || row.image.len() > 256
@@ -954,6 +1005,7 @@ mod tests {
             schema_version: 2,
             bootstrap_phase: crate::FleetVmBootstrapPhase::Unspecified as i32,
             processes: None,
+            managed_docker: Vec::new(),
             machine_id: "vm-a".into(),
             observed_at_unix: 100,
             resources: vec![FleetVmResourceReadback {
@@ -1980,6 +2032,7 @@ mod resource_planning_tests {
             schema_version: 2,
             bootstrap_phase: crate::FleetVmBootstrapPhase::Unspecified as i32,
             processes: None,
+            managed_docker: Vec::new(),
             machine_id: host.machine_id.clone(),
             observed_at_unix: 100,
             resources: vec![FleetVmResourceReadback {

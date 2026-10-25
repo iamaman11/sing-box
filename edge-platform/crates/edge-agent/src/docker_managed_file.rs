@@ -278,9 +278,187 @@ pub(crate) async fn apply_native_vm_managed_file_once(
     Ok(())
 }
 
+/// A bounded, non-secret diagnostic of every declared managed Docker manifest.
+/// Even malformed/foreign entries yield an explicit failure, never silence.
+fn managed_readback_failure(reason: &str) -> edge_shared_types::FleetVmManagedDockerReadback {
+    edge_shared_types::FleetVmManagedDockerReadback {
+        reason_code: reason.to_owned(),
+        ..Default::default()
+    }
+}
+
+fn managed_docker_state_reason(
+    kind: i32,
+    desired: i32,
+    fingerprint: Option<&str>,
+) -> (&'static str, bool) {
+    use edge_shared_types::{
+        FleetVmManagedDockerDesiredState as State, FleetVmManagedDockerKind as Kind,
+    };
+    if desired == State::Absent as i32 {
+        return if fingerprint.is_none() {
+            ("DESIRED_ABSENT", true)
+        } else {
+            ("UNEXPECTED_PRESENT", false)
+        };
+    }
+    let Some(fingerprint) = fingerprint else {
+        return ("MISSING_MANAGED_OBJECT", false);
+    };
+    if kind == Kind::Container as i32 {
+        let running = fingerprint.split('|').nth(1);
+        return match (desired, running) {
+            (state, Some("R")) if state == State::Present as i32 => ("DESIRED_RUNNING", true),
+            (state, Some("S")) if state == State::Stopped as i32 => ("DESIRED_STOPPED", true),
+            _ => ("MANAGED_CONTAINER_STATE_MISMATCH", false),
+        };
+    }
+    ("DESIRED_PRESENT", true)
+}
+
+pub(crate) async fn collect_native_managed_docker_readback(
+    stack_dir: &Path,
+    host: &FleetHost,
+    docker: Option<&bollard::Docker>,
+) -> Vec<edge_shared_types::FleetVmManagedDockerReadback> {
+    let dir = stack_dir.join("managed");
+    match fs::symlink_metadata(&dir) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Vec::new(),
+        Err(_) => return vec![managed_readback_failure("MANAGED_DIRECTORY_UNREADABLE")],
+        Ok(_) => {}
+    }
+    if checked_managed_directory(stack_dir, false).is_err() {
+        return vec![managed_readback_failure("MANAGED_DIRECTORY_UNTRUSTED")];
+    }
+    let entries = match fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(_) => return vec![managed_readback_failure("MANAGED_DIRECTORY_LIST_FAILED")],
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        let Ok(entry) = entry else {
+            return vec![managed_readback_failure(
+                "MANAGED_DIRECTORY_ENTRY_UNREADABLE",
+            )];
+        };
+        let Ok(name) = entry.file_name().into_string() else {
+            return vec![managed_readback_failure("MANAGED_DIRECTORY_NAME_INVALID")];
+        };
+        if is_managed_docker_manifest(&format!("managed/{name}")) {
+            names.push(name);
+            if names.len() > 64 {
+                return vec![managed_readback_failure("MANAGED_OBJECT_COUNT_EXCEEDED")];
+            }
+        }
+    }
+    names.sort();
+    let mut rows = Vec::with_capacity(names.len());
+    for name in names {
+        let file = dir.join(&name);
+        let mut row = managed_readback_failure("MANAGED_MANIFEST_UNPROVEN");
+        let bytes = match checked_managed_existing_file(&file, 0) {
+            Ok(Some(bytes)) => bytes,
+            Ok(None) => {
+                row.reason_code = "MANAGED_MANIFEST_DISAPPEARED".into();
+                rows.push(row);
+                continue;
+            }
+            Err(reason) => {
+                row.reason_code = reason.into();
+                rows.push(row);
+                continue;
+            }
+        };
+        let full_name = format!("managed/{name}");
+        let spec = match managed_object::decode_exact_spec(host, &full_name, &bytes) {
+            Ok(spec) => spec,
+            Err(reason) => {
+                row.reason_code = reason;
+                rows.push(row);
+                continue;
+            }
+        };
+        row.resource_name = spec.resource_name.clone();
+        row.kind = spec.kind;
+        row.desired_state = spec.desired_state;
+        row.manifest_sha256 = ring::digest::digest(&ring::digest::SHA256, &bytes)
+            .as_ref()
+            .to_vec();
+        if let Some(docker) = docker {
+            match managed_object::observe_managed_docker_object(docker, &spec, false).await {
+                Ok(fingerprint) => {
+                    row.present = fingerprint.is_some();
+                    row.ownership_proven = fingerprint.is_some();
+                    if let Some(ref raw) = fingerprint {
+                        row.fingerprint_sha256 =
+                            ring::digest::digest(&ring::digest::SHA256, raw.as_bytes())
+                                .as_ref()
+                                .to_vec();
+                    }
+                    let (reason, converged) = managed_docker_state_reason(
+                        spec.kind,
+                        spec.desired_state,
+                        fingerprint.as_deref(),
+                    );
+                    row.reason_code = reason.into();
+                    row.converged = converged;
+                }
+                Err(reason) => row.reason_code = reason,
+            }
+        } else {
+            row.reason_code = "DOCKER_ENGINE_UNAVAILABLE".into();
+        }
+        rows.push(row);
+    }
+    rows
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn docker_readback_absent_running_and_drift_are_distinct() {
+        use edge_shared_types::{
+            FleetVmManagedDockerDesiredState as Desired, FleetVmManagedDockerKind as Kind,
+        };
+        assert_eq!(
+            managed_docker_state_reason(Kind::LocalVolume as i32, Desired::Absent as i32, None),
+            ("DESIRED_ABSENT", true)
+        );
+        assert_eq!(
+            managed_docker_state_reason(
+                Kind::Container as i32,
+                Desired::Present as i32,
+                Some("opaque|R|timestamp")
+            ),
+            ("DESIRED_RUNNING", true)
+        );
+        assert_eq!(
+            managed_docker_state_reason(
+                Kind::Container as i32,
+                Desired::Present as i32,
+                Some("opaque|S|timestamp")
+            ),
+            ("MANAGED_CONTAINER_STATE_MISMATCH", false)
+        );
+        assert_eq!(
+            managed_docker_state_reason(
+                Kind::BridgeNetwork as i32,
+                Desired::Absent as i32,
+                Some("opaque")
+            ),
+            ("UNEXPECTED_PRESENT", false)
+        );
+        assert_eq!(
+            managed_docker_state_reason(
+                Kind::Container as i32,
+                Desired::Stopped as i32,
+                Some("opaque|S|timestamp")
+            ),
+            ("DESIRED_STOPPED", true)
+        );
+    }
+
     #[test]
     fn managed_file_scope_rejects_foreign_and_path_traversal() {
         for invalid in [

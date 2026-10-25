@@ -104,7 +104,7 @@ pub(super) fn is_managed_docker_manifest(path: &str) -> bool {
         || path.starts_with("managed/docker-container-")
 }
 
-fn decode_exact_spec(
+pub(super) fn decode_exact_spec(
     host: &FleetHost,
     path: &str,
     bytes: &[u8],
@@ -129,7 +129,7 @@ fn expected_labels(spec: &FleetVmManagedDockerResource) -> HashMap<String, Strin
 
 /// Only Docker 404 means absent. Network or volume daemon failure is not
 /// inferred as absence. Never adopt names with unknown ownership.
-async fn observe_managed_docker_object(
+pub(super) async fn observe_managed_docker_object(
     docker: &bollard::Docker,
     spec: &FleetVmManagedDockerResource,
     for_delete: bool,
