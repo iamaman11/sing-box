@@ -1021,11 +1021,18 @@ pub(crate) fn run(
             println!("host_mutations=0");
             Ok(())
         }
-        HostCommand::BootstrapSeal { machine_id, proof_path, output_path } => {
+        HostCommand::BootstrapSeal {
+            machine_id,
+            proof_path,
+            output_path,
+        } => {
             use edge_shared_types::{FleetVmBootstrapKeyProof, vm_bootstrap};
-            let selected = desired.hosts.iter()
-                .find(|host| host.machine_id == machine_id
-                    && host.kind == ManagedHostKind::Vm as i32)
+            let selected = desired
+                .hosts
+                .iter()
+                .find(|host| {
+                    host.machine_id == machine_id && host.kind == ManagedHostKind::Vm as i32
+                })
                 .ok_or("BOOTSTRAP_GIT_MACHINE_NOT_REGISTERED")?;
             if selected.native_receipt_public_key.len() != 32 {
                 return Err("BOOTSTRAP_GIT_RECEIPT_NOT_REGISTERED".into());
@@ -1035,14 +1042,15 @@ pub(crate) fn run(
             if !meta.is_file() || meta.len() == 0 || meta.len() > 512 {
                 return Err("BOOTSTRAP_ROOT_PROOF_INVALID".into());
             }
-            let proof_bytes = std::fs::read(&proof_path)
-                .map_err(|_| "BOOTSTRAP_ROOT_PROOF_UNREADABLE")?;
+            let proof_bytes =
+                std::fs::read(&proof_path).map_err(|_| "BOOTSTRAP_ROOT_PROOF_UNREADABLE")?;
             let proof = FleetVmBootstrapKeyProof::decode(proof_bytes.as_slice())
                 .map_err(|_| "BOOTSTRAP_ROOT_PROOF_PROTO_INVALID")?;
             if proof.encode_to_vec() != proof_bytes
                 || proof.machine_id != machine_id
                 || proof.native_receipt_public_key != selected.native_receipt_public_key
-                || proof.release_set_sha256 != exact_hex_sha256(&release.release().release_set_sha256)?
+                || proof.release_set_sha256
+                    != exact_hex_sha256(&release.release().release_set_sha256)?
             {
                 return Err("BOOTSTRAP_GIT_SCOPE_OR_RELEASE_MISMATCH".into());
             }
@@ -1051,13 +1059,15 @@ pub(crate) fn run(
             // pass it as an argv, log, workflow artifact, runner env or Git
             // field. Only the AEAD ciphertext leaves this trusted process.
             let mut identity = Vec::new();
-            std::io::stdin().take(1025).read_to_end(&mut identity)
+            std::io::stdin()
+                .take(1025)
+                .read_to_end(&mut identity)
                 .map_err(|_| "BOOTSTRAP_ACCESS_INPUT_UNAVAILABLE")?;
             if identity.is_empty() || identity.len() > 1024 {
                 return Err("BOOTSTRAP_ACCESS_INPUT_INVALID".into());
             }
-            let sealed = vm_bootstrap::seal_for_native_root(&proof, &identity)
-                .map_err(str::to_owned)?;
+            let sealed =
+                vm_bootstrap::seal_for_native_root(&proof, &identity).map_err(str::to_owned)?;
             let bytes = sealed.encode_to_vec();
             let mut options = std::fs::OpenOptions::new();
             options.write(true).create_new(true);
@@ -1066,9 +1076,11 @@ pub(crate) fn run(
                 use std::os::unix::fs::OpenOptionsExt;
                 options.mode(0o600);
             }
-            let mut file = options.open(&output_path)
+            let mut file = options
+                .open(&output_path)
                 .map_err(|_| "BOOTSTRAP_ENVELOPE_OUTPUT_EXISTS_OR_UNAVAILABLE")?;
-            file.write_all(&bytes).and_then(|_| file.sync_all())
+            file.write_all(&bytes)
+                .and_then(|_| file.sync_all())
                 .map_err(|_| "BOOTSTRAP_ENVELOPE_OUTPUT_UNCERTAIN")?;
             println!("bootstrap_envelope=SEALED_FOR_GIT_PINNED_ROOT");
             println!("bootstrap_recipient_verified=true");
