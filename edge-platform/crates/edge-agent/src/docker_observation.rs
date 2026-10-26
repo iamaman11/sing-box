@@ -2279,11 +2279,13 @@ fn valid_gateway_image_replace_prestate(
     target_warp_image: &str,
 ) -> bool {
     owned.len() == expected_count
-        && owned.iter().all(|container| match container.service.as_str() {
-            "line1-gateway" | "line2-proxy" => container.running,
-            "warp-egress" => container.running || container.image_ref != target_warp_image,
-            _ => false,
-        })
+        && owned
+            .iter()
+            .all(|container| match container.service.as_str() {
+                "line1-gateway" | "line2-proxy" => container.running,
+                "warp-egress" => container.running || container.image_ref != target_warp_image,
+                _ => false,
+            })
 }
 
 fn verified_image_transition(
@@ -2754,8 +2756,7 @@ async fn apply_gateway_image_replace_once(
             .ok_or("HOST_VM_IMAGE_POSTSTATE_IDENTITY_MISSING_NO_REPLAY")?;
         if !current.running
             || (!*old_running
-                && !(selector.compose_service == "warp-egress"
-                    && plan.new_warp_image.is_some()))
+                && !(selector.compose_service == "warp-egress" && plan.new_warp_image.is_some()))
         {
             return Err("HOST_VM_IMAGE_POSTSTATE_NOT_RUNNING_NO_REPLAY".into());
         }
@@ -4427,9 +4428,7 @@ mod native_vm_partial_image_reconcile_tests {
             &desired_warp
         ));
         assert!(!valid_gateway_image_replace_prestate(
-            &prestate,
-            3,
-            &old_warp
+            &prestate, 3, &old_warp
         ));
         prestate[0].running = false;
         assert!(!valid_gateway_image_replace_prestate(
