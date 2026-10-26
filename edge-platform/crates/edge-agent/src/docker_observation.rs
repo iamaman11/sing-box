@@ -2517,10 +2517,7 @@ async fn preflight_gateway_image_replace(
                 new_gateway_image.as_str(),
                 "ghcr.io/iamaman11/vultr-edge-gateway",
             ),
-            "warp-egress" => (
-                target_warp.as_str(),
-                "ghcr.io/iamaman11/vultr-warp-egress",
-            ),
+            "warp-egress" => (target_warp.as_str(), "ghcr.io/iamaman11/vultr-warp-egress"),
             _ => return Err("HOST_VM_IMAGE_UNREGISTERED_RUNTIME_SERVICE".into()),
         };
         super::validate_exact_image_ref("EDGE_IMAGE", &item.image_ref, repository)?;
@@ -2561,9 +2558,10 @@ async fn preflight_gateway_image_replace(
     };
     let mut prepared_gateways = Vec::new();
     for service in ["line2-proxy", "line1-gateway"] {
-        if owned.iter().any(|item| {
-            item.service == service && item.image_ref != new_gateway_image
-        }) {
+        if owned
+            .iter()
+            .any(|item| item.service == service && item.image_ref != new_gateway_image)
+        {
             prepared_gateways.push((
                 service.to_owned(),
                 native_gateway_create_body(
@@ -2821,9 +2819,9 @@ pub(crate) async fn preflight_native_vm_replace(
         let network = read_owned_edge_network_id(&docker, host).await?;
         verify_vm_network_attachments(&docker, host, &owned, &network).await?;
         let pins = read_vm_expected_image_refs(stack_dir, &host.vm_containers)?;
-        owned.iter().any(|item| {
-            pins.get(&item.service) != Some(&item.image_ref)
-        })
+        owned
+            .iter()
+            .any(|item| pins.get(&item.service) != Some(&item.image_ref))
     } else {
         false
     };
