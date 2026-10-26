@@ -136,6 +136,22 @@ assert worker.count("if: needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREF
 assert "if: steps.plan.outputs.required == 'false' && needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'" not in worker
 assert "vm-worker-signer-prepare" in worker and "vm-worker-signer-commit" in worker
 assert worker.index("Apply exact VM Worker code once") < worker.index("Prepare one ephemeral VM signer")
+# A historical BEGIN must be root-journal verified, never inferred from
+# Docker's running state or erased by an operator status request.
+native_pending=Path("edge-platform/crates/edge-agent/src/host_snapshot.rs").read_text(encoding="utf-8")
+typed_proto=Path("edge-platform/proto/edge/platform/v1/fleet.proto").read_text(encoding="utf-8")
+assert "HOST_SNAPSHOT_ORIGINAL_BEGIN_MISMATCH" in native_pending
+assert "decode_host_result(&begin_bytes)" in native_pending
+assert "begin.operation_id != intent.operation_id" in native_pending
+assert "pending_original_release_sha256: intent.release_set_sha256" in native_pending
+assert "pending_original_desired_sha256: intent.desired_sha256" in native_pending
+assert "pending_begin_record_sha256:" in native_pending
+assert "pending_original_release_sha256 = 17" in typed_proto
+assert "pending_original_desired_sha256 = 18" in typed_proto
+assert "pending_begin_record_sha256 = 19" in typed_proto
+assert "pending_original_release_sha256|pending_original_desired_sha256|pending_begin_record_sha256" in native
+assert "protected_journal_has_pending(journal)?" in Path("edge-platform/crates/edge-agent/src/host_native.rs").read_text(encoding="utf-8")
+
 # Operator drift evidence must come from the Ed25519-verified root snapshot,
 # and can never be substituted by the runner's unauthenticated observation.
 host_readback=Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(encoding="utf-8")
