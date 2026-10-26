@@ -726,6 +726,27 @@ fn native_vm_replace_error_class(code: &str) -> &'static str {
         "HOST_VM_NATIVE_RECREATE_STOP_UNCERTAIN_NO_REPLAY" => {
             "HOST_VM_NATIVE_RECREATE_STOP_UNCERTAIN_NO_REPLAY"
         }
+        "HOST_VM_NATIVE_RECREATE_STOP_RUNNING_NO_REPLAY" => {
+            "HOST_VM_NATIVE_RECREATE_STOP_RUNNING_NO_REPLAY"
+        }
+        "HOST_VM_NATIVE_RECREATE_STOP_RESTARTING_NO_REPLAY" => {
+            "HOST_VM_NATIVE_RECREATE_STOP_RESTARTING_NO_REPLAY"
+        }
+        "HOST_VM_NATIVE_RECREATE_STOP_PAUSED_NO_REPLAY" => {
+            "HOST_VM_NATIVE_RECREATE_STOP_PAUSED_NO_REPLAY"
+        }
+        "HOST_VM_NATIVE_RECREATE_STOP_DEAD_NO_REPLAY" => {
+            "HOST_VM_NATIVE_RECREATE_STOP_DEAD_NO_REPLAY"
+        }
+        "HOST_VM_NATIVE_RECREATE_STOP_INSPECT_UNAVAILABLE_NO_REPLAY" => {
+            "HOST_VM_NATIVE_RECREATE_STOP_INSPECT_UNAVAILABLE_NO_REPLAY"
+        }
+        "HOST_VM_NATIVE_RECREATE_STOP_STATE_UNKNOWN_NO_REPLAY" => {
+            "HOST_VM_NATIVE_RECREATE_STOP_STATE_UNKNOWN_NO_REPLAY"
+        }
+        "HOST_VM_NATIVE_RECREATE_STOP_IDENTITY_CHANGED_NO_REPLAY" => {
+            "HOST_VM_NATIVE_RECREATE_STOP_IDENTITY_CHANGED_NO_REPLAY"
+        }
         "HOST_VM_NATIVE_RECREATE_DELETE_UNCERTAIN_NO_REPLAY" => {
             "HOST_VM_NATIVE_RECREATE_DELETE_UNCERTAIN_NO_REPLAY"
         }
@@ -1177,6 +1198,34 @@ mod native_host_path_tests {
         assert_eq!(
             native_vm_replace_error_class("HOST_VM_NATIVE_RECREATE_STOP_UNCERTAIN_NO_REPLAY"),
             "HOST_VM_NATIVE_RECREATE_STOP_UNCERTAIN_NO_REPLAY"
+        );
+        assert_eq!(
+            native_vm_replace_error_class("HOST_VM_NATIVE_RECREATE_STOP_RUNNING_NO_REPLAY"),
+            "HOST_VM_NATIVE_RECREATE_STOP_RUNNING_NO_REPLAY"
+        );
+        assert_eq!(
+            native_vm_replace_error_class("HOST_VM_NATIVE_RECREATE_STOP_RESTARTING_NO_REPLAY"),
+            "HOST_VM_NATIVE_RECREATE_STOP_RESTARTING_NO_REPLAY"
+        );
+        assert_eq!(
+            native_vm_replace_error_class("HOST_VM_NATIVE_RECREATE_STOP_PAUSED_NO_REPLAY"),
+            "HOST_VM_NATIVE_RECREATE_STOP_PAUSED_NO_REPLAY"
+        );
+        assert_eq!(
+            native_vm_replace_error_class("HOST_VM_NATIVE_RECREATE_STOP_DEAD_NO_REPLAY"),
+            "HOST_VM_NATIVE_RECREATE_STOP_DEAD_NO_REPLAY"
+        );
+        assert_eq!(
+            native_vm_replace_error_class("HOST_VM_NATIVE_RECREATE_STOP_INSPECT_UNAVAILABLE_NO_REPLAY"),
+            "HOST_VM_NATIVE_RECREATE_STOP_INSPECT_UNAVAILABLE_NO_REPLAY"
+        );
+        assert_eq!(
+            native_vm_replace_error_class("HOST_VM_NATIVE_RECREATE_STOP_STATE_UNKNOWN_NO_REPLAY"),
+            "HOST_VM_NATIVE_RECREATE_STOP_STATE_UNKNOWN_NO_REPLAY"
+        );
+        assert_eq!(
+            native_vm_replace_error_class("HOST_VM_NATIVE_RECREATE_STOP_IDENTITY_CHANGED_NO_REPLAY"),
+            "HOST_VM_NATIVE_RECREATE_STOP_IDENTITY_CHANGED_NO_REPLAY"
         );
         assert_eq!(
             native_vm_replace_error_class("HOST_VM_IMAGE_ACTIVATE_UNCERTAIN_NO_REPLAY"),

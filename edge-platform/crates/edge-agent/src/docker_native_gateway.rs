@@ -269,6 +269,60 @@ pub(super) fn native_gateway_create_body(
     })
 }
 
+/// Closed, non-secret Docker STOP observation. Only the exact registered
+/// container ID and Compose owner may satisfy the transition; this result
+/// NEVER authorizes a second STOP or clears a pending root journal.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum NativeVmStopReadback {
+    Stopped,
+    Running,
+    Restarting,
+    Paused,
+    Dead,
+    Unavailable,
+    Unknown,
+    IdentityChanged,
+}
+
+impl NativeVmStopReadback {
+    fn error_code(self) -> &'static str {
+        match self {
+            Self::Stopped => "HOST_VM_NATIVE_RECREATE_STOPPED",
+            Self::Running => "HOST_VM_NATIVE_RECREATE_STOP_RUNNING_NO_REPLAY",
+            Self::Restarting => "HOST_VM_NATIVE_RECREATE_STOP_RESTARTING_NO_REPLAY",
+            Self::Paused => "HOST_VM_NATIVE_RECREATE_STOP_PAUSED_NO_REPLAY",
+            Self::Dead => "HOST_VM_NATIVE_RECREATE_STOP_DEAD_NO_REPLAY",
+            Self::Unavailable => "HOST_VM_NATIVE_RECREATE_STOP_INSPECT_UNAVAILABLE_NO_REPLAY",
+            Self::Unknown => "HOST_VM_NATIVE_RECREATE_STOP_STATE_UNKNOWN_NO_REPLAY",
+            Self::IdentityChanged => "HOST_VM_NATIVE_RECREATE_STOP_IDENTITY_CHANGED_NO_REPLAY",
+        }
+    }
+}
+
+fn classify_native_vm_stop_readback(
+    identity_verified: bool,
+    running: Option<bool>,
+    restarting: Option<bool>,
+    paused: Option<bool>,
+    dead: Option<bool>,
+) -> NativeVmStopReadback {
+    if !identity_verified {
+        NativeVmStopReadback::IdentityChanged
+    } else if restarting == Some(true) {
+        NativeVmStopReadback::Restarting
+    } else if paused == Some(true) {
+        NativeVmStopReadback::Paused
+    } else if dead == Some(true) {
+        NativeVmStopReadback::Dead
+    } else if running == Some(false) {
+        NativeVmStopReadback::Stopped
+    } else if running == Some(true) {
+        NativeVmStopReadback::Running
+    } else {
+        NativeVmStopReadback::Unknown
+    }
+}
+
 /// Recreate one exact application-owned service through the same native
 /// Docker owner and no-replay journal. WARP and gateways use pre-BEGIN
 /// validated container policy; foreign Mesh and arbitrary names are refused.
@@ -318,10 +372,11 @@ pub(super) async fn recreate_native_vm_container_once(
         .inspect_image(expected_image)
         .await
         .map_err(|_| "HOST_VM_NATIVE_RECREATE_PINNED_IMAGE_MISSING_NO_REPLAY")?;
-    // Docker can report a failed/lost STOP ACK even though it already
-    // stopped the exact container. Never issue a second STOP. Independently
-    // inspect the SAME owned immutable ID under the existing root journal
-    // and owner lock; only a proved stopped state may proceed to DELETE.
+    // Docker may lose the STOP ACK or take time to transition. Exactly ONE
+    // STOP is permitted by the signed owner journal. A bounded series of
+    // read-only INSPECT calls determines what actually happened to this ID.
+    // Never print arbitrary daemon errors, labels or environment variables.
+    let stop_started = tokio::time::Instant::now();
     let stop_ack = docker
         .stop_container(
             previous_id,
@@ -332,33 +387,81 @@ pub(super) async fn recreate_native_vm_container_once(
             ),
         )
         .await;
-    let stopped = docker
-        .inspect_container(previous_id, None)
-        .await
-        .map_err(|_| "HOST_VM_NATIVE_RECREATE_STOP_UNCERTAIN_NO_REPLAY")?;
-    if stopped.id.as_deref() != Some(previous_id)
-        || stopped.name.as_deref() != Some(format!("/{}", selector.container_name).as_str())
-        || !stopped.state.as_ref().is_some_and(|state| {
-            state.running == Some(false)
-                && state.paused != Some(true)
-                && state.restarting != Some(true)
-        })
-    {
-        return Err("HOST_VM_NATIVE_RECREATE_STOP_UNCERTAIN_NO_REPLAY".into());
+    let ack = if stop_ack.is_ok() { "OK" } else { "ERROR" };
+    let observation_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
+    let mut observed = NativeVmStopReadback::Unavailable;
+    let mut inspections = 0u32;
+    let mut state_fields = String::from("UNAVAILABLE");
+
+    loop {
+        inspections += 1;
+        match docker.inspect_container(previous_id, None).await {
+            Ok(container) => {
+                let owner_verified = container
+                    .config
+                    .as_ref()
+                    .and_then(|config| config.labels.as_ref())
+                    .is_some_and(|labels| {
+                        exact_application_compose_owner(
+                            &selector.container_name,
+                            labels,
+                            &host.vm_containers,
+                        )
+                        .is_ok()
+                    });
+                let identity_verified = container.id.as_deref() == Some(previous_id)
+                    && container.name.as_deref()
+                        == Some(format!("/{}", selector.container_name).as_str())
+                    && owner_verified;
+                let state = container.state.as_ref();
+                observed = classify_native_vm_stop_readback(
+                    identity_verified,
+                    state.and_then(|s| s.running),
+                    state.and_then(|s| s.restarting),
+                    state.and_then(|s| s.paused),
+                    state.and_then(|s| s.dead),
+                );
+                // Only Docker's typed state and restart policy; NEVER its
+                // free-form error message or any container configuration.
+                state_fields = format!(
+                    "running={:?} restarting={:?} paused={:?} dead={:?} exit={:?} restart_policy={:?}",
+                    state.and_then(|s| s.running),
+                    state.and_then(|s| s.restarting),
+                    state.and_then(|s| s.paused),
+                    state.and_then(|s| s.dead),
+                    state.and_then(|s| s.exit_code),
+                    container.host_config.as_ref()
+                        .and_then(|h| h.restart_policy.as_ref())
+                        .and_then(|p| p.name.as_ref()),
+                );
+            }
+            Err(_) => {
+                observed = NativeVmStopReadback::Unavailable;
+                state_fields = "INSPECT_API_ERROR".to_owned();
+            }
+        }
+        if observed == NativeVmStopReadback::Stopped
+            || observed == NativeVmStopReadback::IdentityChanged
+            || tokio::time::Instant::now() >= observation_deadline
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
     }
-    let stopped_labels = stopped
-        .config
-        .as_ref()
-        .and_then(|config| config.labels.as_ref())
-        .ok_or("HOST_VM_NATIVE_RECREATE_STOP_OWNER_UNPROVEN_NO_REPLAY")?;
-    exact_application_compose_owner(
-        &selector.container_name,
-        stopped_labels,
-        &host.vm_containers,
-    )
-    .map_err(|_| "HOST_VM_NATIVE_RECREATE_STOP_OWNER_UNPROVEN_NO_REPLAY")?;
-    if stop_ack.is_err() {
-        eprintln!("host_native_docker_stop_ack=RECONCILED_BY_EXACT_STOPPED_ID");
+    // One compact causal trace per transition, including failures. The root
+    // journal stays authoritative for no-replay; CI logs are diagnostics,
+    // never accepted as a signed physical success receipt.
+    eprintln!(
+        "host_native_docker_stop service={service} container_id={previous_id} ack={ack} readback={observed:?} inspections={inspections} elapsed_ms={} {state_fields} next_action={}",
+        stop_started.elapsed().as_millis(),
+        if observed == NativeVmStopReadback::Stopped {
+            "CONTINUE_REGISTERED_TRANSITION"
+        } else {
+            "SIGNED_RECOVER_AFTER_READ_ONLY_DIAGNOSIS"
+        },
+    );
+    if observed != NativeVmStopReadback::Stopped {
+        return Err(observed.error_code().into());
     }
     docker
         .remove_container(
@@ -400,4 +503,30 @@ pub(super) async fn recreate_native_gateway_once(
         return Err("HOST_VM_GATEWAY_SCOPE_UNSUPPORTED".into());
     }
     recreate_native_vm_container_once(docker, host, service, previous_id, network_id, body).await
+}
+
+#[cfg(test)]
+mod native_vm_stop_diagnostics_tests {
+    use super::*;
+
+    #[test]
+    fn stopped_requires_same_id_name_and_owner() {
+        use NativeVmStopReadback::*;
+        assert_eq!(classify_native_vm_stop_readback(true, Some(false), Some(false), Some(false), Some(false)), Stopped);
+        assert_eq!(classify_native_vm_stop_readback(false, Some(false), Some(false), Some(false), Some(false)), IdentityChanged);
+        assert_eq!(classify_native_vm_stop_readback(true, None, None, None, None), Unknown);
+    }
+
+    #[test]
+    fn running_restart_paused_dead_and_missing_readback_are_distinct() {
+        use NativeVmStopReadback::*;
+        assert_eq!(classify_native_vm_stop_readback(true, Some(true), Some(false), Some(false), Some(false)), Running);
+        assert_eq!(classify_native_vm_stop_readback(true, Some(true), Some(true), Some(false), Some(false)), Restarting);
+        assert_eq!(classify_native_vm_stop_readback(true, Some(true), Some(false), Some(true), Some(false)), Paused);
+        assert_eq!(classify_native_vm_stop_readback(true, Some(false), Some(false), Some(false), Some(true)), Dead);
+        for result in [Running, Restarting, Paused, Dead, Unavailable, Unknown, IdentityChanged] {
+            assert!(result.error_code().ends_with("_NO_REPLAY"));
+        }
+        assert_eq!(Stopped.error_code(), "HOST_VM_NATIVE_RECREATE_STOPPED");
+    }
 }
