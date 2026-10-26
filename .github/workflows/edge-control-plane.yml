@@ -1,5 +1,5 @@
 name: Edge Control Plane
-run-name: ${{ startsWith(github.event.comment.body, '/') && github.event.comment.body || 'Edge Control Plane — NO_COMMAND' }}
+run-name: ${{ github.event_name == 'issue_comment' && format('Host operator {0}', github.event.comment.id) || 'Edge Control Plane — release continuation' }}
 
 on:
   issue_comment:
