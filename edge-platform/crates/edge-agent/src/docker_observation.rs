@@ -2474,7 +2474,11 @@ async fn preflight_gateway_image_replace(
         let warp = target_graph
             .resources
             .iter_mut()
-            .find(|row| row.resource.as_ref().is_some_and(|r| r.compose_service == "warp-egress"))
+            .find(|row| {
+                row.resource
+                    .as_ref()
+                    .is_some_and(|r| r.compose_service == "warp-egress")
+            })
             .ok_or("HOST_VM_IMAGE_WARP_OWNER_MISSING")?;
         warp.image_ref.clone_from(image);
         changed += 1;
@@ -2518,7 +2522,12 @@ async fn preflight_gateway_image_replace(
             .inspect_image(image)
             .await
             .map_err(|_| "HOST_VM_IMAGE_WARP_PINNED_IMAGE_NOT_LOCAL")?;
-        Some(native_warp_create_body(stack_dir, host, image, &edge_network_id)?)
+        Some(native_warp_create_body(
+            stack_dir,
+            host,
+            image,
+            &edge_network_id,
+        )?)
     } else {
         None
     };
@@ -2660,12 +2669,8 @@ async fn apply_gateway_image_replace_once(
             if current.id == *old_id || current.image_ref != plan.new_gateway_image {
                 return Err("HOST_VM_IMAGE_GATEWAY_NOT_RECREATED_NO_REPLAY".into());
             }
-        } else if selector.compose_service == "warp-egress"
-            && plan.new_warp_image.is_some()
-        {
-            if current.id == *old_id
-                || Some(&current.image_ref) != plan.new_warp_image.as_ref()
-            {
+        } else if selector.compose_service == "warp-egress" && plan.new_warp_image.is_some() {
+            if current.id == *old_id || Some(&current.image_ref) != plan.new_warp_image.as_ref() {
                 return Err("HOST_VM_IMAGE_WARP_NOT_RECREATED_NO_REPLAY".into());
             }
         } else if current.id != *old_id || current.image_ref != *old_image {
