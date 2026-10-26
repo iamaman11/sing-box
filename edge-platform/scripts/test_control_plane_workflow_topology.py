@@ -203,6 +203,14 @@ assert "host_native_snapshot_proof=VERIFIED_ROOT_SIGNED_READ_ONLY" in native
 native_dispatch = router.split("  host_observe:\n", 1)[1].split("  host_report:\n", 1)[0]
 assert "needs.host_worker_authorizer.result == 'success' &&" in native_dispatch
 assert "needs.host_worker_authorizer.outputs.source_upgrade_required == 'false'" in native_dispatch
+# Explicit historical RECOVER is a signed FleetHostAction::Recover carried by
+# the existing VM root host-apply dispatch; unlike a fresh APPLY, it cannot
+# request a source-upgrade action. The signed Root Agent verifies Worker auth.
+# Without this narrow admission the green workflow silently skips the VM job.
+assert "github.event.comment.body == format('/host recover {0} --adjudicate', needs.host.outputs.machine_id)" in native_dispatch
+assert "needs.host_worker_authorizer.result == 'success'" in native_dispatch
+assert "github.event.comment.body == format('/host apply {0}', needs.host.outputs.machine_id)" in worker
+assert "needs.host.outputs.operation == 'APPLY_PREFLIGHT'" in native_dispatch
 assert "source_upgrade_required: ${{ steps.plan.outputs.required }}" in worker
 assert worker.index("source_upgrade_required: ${{ steps.plan.outputs.required }}") < worker.index("Plan exact VM Worker release with GET only")
 assert 'case "${RUST_WORKER_PLAN_REQUIRED}" in' in worker
