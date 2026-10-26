@@ -2039,6 +2039,9 @@ fn host_lifecycle_admission(
         .ok_or("HOST_NOT_REGISTERED")?;
     let kind =
         ManagedHostKind::try_from(selected.kind).map_err(|_| "HOST_KIND_INVALID".to_owned())?;
+    if operation == HostLifecycleOperation::Adjudicate && kind != ManagedHostKind::Vm {
+        return Err("HOST_ADJUDICATION_VM_ONLY".into());
+    }
     let owner = match (kind, selected.owner.as_ref()) {
         (ManagedHostKind::Windows, Some(managed_host::Owner::WindowsRunnerName(name))) => name,
         (ManagedHostKind::Vm, Some(managed_host::Owner::VmMachineId(name))) => name,
