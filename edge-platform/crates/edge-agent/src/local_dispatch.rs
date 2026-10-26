@@ -511,15 +511,15 @@ mod native_read_only_diagnostics_tests {
         let lines = vec!["FATAL invalid config with credential=secret".to_owned()];
         assert_eq!(
             classify_native_container_failure(None, &lines),
-            "CONFIG_PARSE_HINT"
+            "CONFIG_PARSE_ERROR"
         );
         assert_eq!(
             classify_native_container_failure(None, &[]),
-            "UNCLASSIFIED_OR_NO_LOG"
+            "NO_PROVEN_FATAL_DIAGNOSTIC"
         );
         assert_eq!(
             classify_native_container_failure(Some("permission denied with token=secret"), &[]),
-            "PERMISSION_HINT"
+            "PERMISSION_ERROR"
         );
         // Normal operational TLS/certificate INFO lines are not proof of failure.
         assert_eq!(
