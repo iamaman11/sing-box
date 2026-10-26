@@ -727,6 +727,21 @@ pub(super) fn redact_runtime_log_line(line: &str) -> String {
     .iter()
     .any(|marker| lowered.contains(marker))
     {
+        // An ERROR/FATAL private-key load failure needs a useful diagnosis,
+        // without exposing a key, path, original log token or surrounding
+        // secret. Emit one fixed safe symbol, not a redacted raw excerpt.
+        if (lowered.contains(" fatal[") || lowered.starts_with("fatal")
+            || lowered.contains(" error[") || lowered.starts_with("error"))
+            && (lowered.contains("private key") || lowered.contains("private_key"))
+            && (lowered.contains("tls") || lowered.contains("certificate"))
+            && (lowered.contains("failed")
+                || lowered.contains("invalid")
+                || lowered.contains("mismatch")
+                || lowered.contains("cannot")
+                || lowered.contains("unable"))
+        {
+            return "[SAFE_FATAL_TLS_PRIVATE_KEY_ERROR]".to_owned();
+        }
         return "[redacted sensitive runtime log line]".to_owned();
     }
     line.chars().take(320).collect()
