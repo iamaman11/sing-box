@@ -306,6 +306,11 @@ pub(super) async fn run_local(command: cli::LocalCommand) -> Result<(), AgentErr
                 println!("credential_runtime_proof=UNPROVEN");
                 println!("credential_runtime_proof_reason={err}");
             }
+            // Existing read-only root entrypoint; pending transactions never
+            // prevent a signed diagnostic. Arbitrary ADMIN remains unchanged.
+            host_snapshot::emit_if_requested(&stack_dir)
+                .await
+                .map_err(AgentError::Command)?;
             Ok(())
         }
         cli::LocalCommand::MeshVerify => {
