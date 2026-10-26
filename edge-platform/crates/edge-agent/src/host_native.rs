@@ -712,7 +712,12 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
     // mutation before credential access, Worker POST and native Docker effects.
     // Only root's read-only diagnostic may inspect such entries.
     let journal = Path::new(JOURNAL_ROOT);
-    if protected_journal_has_pending(journal)? {
+    // A pending mutation still blocks every fresh APPLY. Only an explicitly
+    // Worker-signed RECOVER may enter the journal's read-only historical
+    // adjudication state machine; it can NEVER invoke Docker effectors.
+    if protected_journal_has_pending(journal)?
+        && intent.action != edge_shared_types::FleetHostAction::Recover as i32
+    {
         return Err("HOST_NATIVE_RESOURCE_PENDING_UNKNOWN_NO_REPLAY".into());
     }
     let trust_root = Path::new(TRUSTED_ROOT);

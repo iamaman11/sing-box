@@ -1538,8 +1538,22 @@ pub(crate) fn run(
         HostCommand::Recover {
             machine_id,
             bootstrap_access,
+            adjudicate,
         } => {
-            if bootstrap_access {
+            if adjudicate {
+                host_lifecycle_admission(
+                    &desired,
+                    &machine_id,
+                    HostLifecycleOperation::Adjudicate,
+                    &release.release().release_set_sha256,
+                    digest.as_ref(),
+                    runner_inventory_json,
+                    github_output,
+                    source_comment_id,
+                    intent_output,
+                    None,
+                )
+            } else if bootstrap_access {
                 host_bootstrap_access_resume_admission(
                     &desired,
                     &machine_id,
@@ -1997,6 +2011,9 @@ fn host_bootstrap_access_resume_admission(
 enum HostLifecycleOperation {
     Apply,
     Recover,
+    // Explicit signed RECOVER over an old whole-resource BEGIN. Reuse native
+    // APPLY transport, but the protobuf action remains RECOVER, never APPLY.
+    Adjudicate,
 }
 
 /// A new typed Host action must never depend on old A/B journals.
@@ -2022,6 +2039,9 @@ fn host_lifecycle_admission(
         .ok_or("HOST_NOT_REGISTERED")?;
     let kind =
         ManagedHostKind::try_from(selected.kind).map_err(|_| "HOST_KIND_INVALID".to_owned())?;
+    if operation == HostLifecycleOperation::Adjudicate && kind != ManagedHostKind::Vm {
+        return Err("HOST_ADJUDICATION_VM_ONLY".into());
+    }
     let owner = match (kind, selected.owner.as_ref()) {
         (ManagedHostKind::Windows, Some(managed_host::Owner::WindowsRunnerName(name))) => name,
         (ManagedHostKind::Vm, Some(managed_host::Owner::VmMachineId(name))) => name,
@@ -2166,7 +2186,9 @@ fn host_lifecycle_admission(
         operation_id: format!("issue1-comment-{comment_id}"),
         action: match operation {
             HostLifecycleOperation::Apply => FleetHostAction::Apply as i32,
-            HostLifecycleOperation::Recover => FleetHostAction::Recover as i32,
+            HostLifecycleOperation::Recover | HostLifecycleOperation::Adjudicate => {
+                FleetHostAction::Recover as i32
+            }
         },
         registry_sha256: exact_registry_sha256.to_vec(),
         desired_sha256: desired_sha.clone(),
@@ -2240,9 +2262,17 @@ fn host_lifecycle_admission(
         match operation {
             HostLifecycleOperation::Apply => "APPLY",
             HostLifecycleOperation::Recover => "RECOVER",
+            HostLifecycleOperation::Adjudicate => "ADJUDICATE_NO_REPLAY",
         }
     );
-    println!("host_historical_journal_authority=FORBIDDEN");
+    println!(
+        "host_historical_journal_authority={}",
+        if operation == HostLifecycleOperation::Adjudicate {
+            "SIGNED_RECOVER_ONLY_NO_EFFECT_REPLAY"
+        } else {
+            "FORBIDDEN"
+        }
+    );
     // Source capability must never be presented as installed owner authority.
     // Only the native signed receipt may establish a physical result.
     let (source_capability, next_action) = match kind {
@@ -2276,6 +2306,7 @@ fn host_lifecycle_admission(
         match operation {
             HostLifecycleOperation::Apply => HostWorkflowOperation::ApplyPreflight,
             HostLifecycleOperation::Recover => HostWorkflowOperation::RecoverPreflight,
+            HostLifecycleOperation::Adjudicate => HostWorkflowOperation::ApplyPreflight,
         },
     )?;
     let targets = if matches!(

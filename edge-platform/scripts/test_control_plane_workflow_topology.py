@@ -152,6 +152,28 @@ assert "pending_begin_record_sha256 = 19" in typed_proto
 assert "pending_original_release_sha256|pending_original_desired_sha256|pending_begin_record_sha256" in native
 assert "protected_journal_has_pending(journal)?" in Path("edge-platform/crates/edge-agent/src/host_native.rs").read_text(encoding="utf-8")
 
+# A signed explicit recovery for an old BEGIN uses the existing native
+# transport, NEVER a second service or an unsigned root journal reset.
+journal = Path("edge-platform/crates/edge-shared-types/src/host_journal.rs").read_text(encoding="utf-8")
+native_admission = Path("edge-platform/crates/edge-agent/src/host_native.rs").read_text(encoding="utf-8")
+assert "--adjudicate" in router
+assert "command=(recover" in router
+assert "adjudicate: bool" in orchestrator_cli
+adjudication_source = Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(encoding="utf-8")
+assert "HostLifecycleOperation::Adjudicate" in adjudication_source
+assert "HostLifecycleOperation::Adjudicate => HostWorkflowOperation::ApplyPreflight" in adjudication_source
+assert "intent.action != edge_shared_types::FleetHostAction::Recover as i32" in native_admission
+assert "HOST_NATIVE_HISTORICAL_BASELINE_UNPROVEN_NO_REPLAY" in journal
+assert "HOST_NATIVE_RECOVERY_CONFLICTING_TERMINAL" in journal
+assert 'let terminal_name = if partial { "incomplete" } else { "verified" };' in journal
+assert "FleetHostResultState::UnknownNoReplay as i32" in journal
+assert '("incomplete", Ok(FleetHostResultState::UnknownNoReplay))' in journal
+assert "HistoricalPartialRequiresFreshApply" in journal
+assert "FLEET_HOST_RESULT_REASON_HISTORICAL_PARTIAL_REQUIRES_FRESH_APPLY = 7" in typed_proto
+assert "Refresh exact root owner for code-only recover, without resource replay" in native
+assert "HOST_OPERATION == 'RECOVER_PREFLIGHT'" in native
+assert "HOST_OPERATION == 'APPLY_PREFLIGHT'" in native
+
 # Operator drift evidence must come from the Ed25519-verified root snapshot,
 # and can never be substituted by the runner's unauthenticated observation.
 host_readback=Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(encoding="utf-8")

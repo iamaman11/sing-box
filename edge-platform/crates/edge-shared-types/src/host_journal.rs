@@ -671,6 +671,46 @@ fn verify_read_only_recovery_state(
     }
 }
 
+/// Classify an old, different Git release as incomplete. The new
+/// root-signed RECOVER only proves a *known current baseline*, not that the
+/// historical effect succeeded. No Docker command can be dispatched here.
+fn verify_historical_partial_recovery_state(
+    host: &crate::FleetHost,
+    observed: &crate::FleetNativeObservation,
+    current_release: &[u8],
+    now_unix: u64,
+) -> Result<crate::FleetHostResultReason, &'static str> {
+    use crate::{
+        FleetHostKind, FleetHostRunState, FleetNativeOwnerState, FleetNativeReleaseProof,
+        host_lifecycle::validate_native_observation,
+    };
+    validate_native_observation(observed)?;
+    if host.kind != FleetHostKind::Vm as i32
+        || host.target.as_ref().map(|target| target.run_state)
+            != Some(FleetHostRunState::Running as i32)
+        || observed.host_kind != host.kind
+        || observed.observed_at_unix > now_unix.saturating_add(60)
+        || now_unix.saturating_sub(observed.observed_at_unix) > 300
+        || !observed.reason_codes.is_empty()
+        || observed.owner_state != FleetNativeOwnerState::Running as i32
+        || observed.release_proof != FleetNativeReleaseProof::ApplicationBundle as i32
+        // Broken network/proxy readiness is the problem a fresh replacement
+        // must repair. Its FALSE value is admissible only when an owned native
+        // readback explicitly PROVES that value; never equate it with success.
+        || !observed.runtime_ready_proven
+        || current_release.len() != 32
+        || observed.observed_release_sha256.len() != 32
+        || observed
+            .observed_release_sha256
+            .iter()
+            .all(|byte| *byte == 0)
+        || observed.observed_release_sha256 == current_release
+    {
+        return Err("HOST_NATIVE_HISTORICAL_BASELINE_UNPROVEN_NO_REPLAY");
+    }
+    Ok(crate::FleetHostResultReason::HistoricalPartialRequiresFreshApply)
+}
+
 /// Reconcile a durable previous BEGIN WITHOUT repeating its native effect.
 /// The original root/SYSTEM journal remains the sole mutation authority.
 /// A new separately signed RECOVER is consumed as its own read-only receipt.
@@ -698,9 +738,6 @@ fn resolve_pending_native_recovery_once(
         || original.kind != intent.kind
         || original.resource_id != intent.resource_id
         || original.operation_id == intent.operation_id
-        || original.registry_sha256 != intent.registry_sha256
-        || original.desired_sha256 != intent.desired_sha256
-        || original.release_set_sha256 != intent.release_set_sha256
         || !matches!(
             FleetHostAction::try_from(original.action),
             Ok(FleetHostAction::Apply | FleetHostAction::Recover)
@@ -727,29 +764,74 @@ fn resolve_pending_native_recovery_once(
     {
         return Err("HOST_NATIVE_RECOVERY_BEGIN_MISMATCH");
     }
-    let verdict = verify_read_only_recovery_state(
-        selected,
-        observed,
-        &bound.runtime_release_sha256,
-        now_unix,
-    )?;
+    // Exact original release can use the existing full-convergence VERIFY.
+    // If the original source differs, a fresh Worker-signed RECOVER may only
+    // classify an old whole-VM APPLY as incomplete against a proven running
+    // native baseline. Never misrepresent a different release as original
+    // success, regardless of what Docker reports.
+    let historical_drift = original.registry_sha256 != intent.registry_sha256
+        || original.desired_sha256 != intent.desired_sha256
+        || original.release_set_sha256 != intent.release_set_sha256;
+    // A failed first-use or OCI pull can still be incomplete under the SAME
+    // ReleaseSet. Requiring a new Git release to classify this state would
+    // cause another loop. The root-observed installed digest is independent
+    // of the pending source identity and must not be mistaken for convergence.
+    let native_release_mismatch = observed.observed_release_sha256 != bound.runtime_release_sha256;
+    let incomplete = historical_drift || native_release_mismatch;
+    if incomplete
+        && (original.action != FleetHostAction::Apply as i32
+            || original.resource_id != "sing-box"
+            || selected.kind != crate::FleetHostKind::Vm as i32)
+    {
+        return Err("HOST_NATIVE_HISTORICAL_SCOPE_UNSUPPORTED_NO_REPLAY");
+    }
+    let verdict = if incomplete {
+        verify_historical_partial_recovery_state(
+            selected,
+            observed,
+            &bound.runtime_release_sha256,
+            now_unix,
+        )?
+    } else {
+        verify_read_only_recovery_state(
+            selected,
+            observed,
+            &bound.runtime_release_sha256,
+            now_unix,
+        )?
+    };
+    let partial = verdict == crate::FleetHostResultReason::HistoricalPartialRequiresFreshApply;
     let mut prior_result = FleetHostResult {
         schema_version: 1,
         machine_id: original.machine_id.clone(),
         resource_id: original.resource_id.clone(),
         operation_id: original.operation_id.clone(),
         action: original.action,
-        state: FleetHostResultState::Verified as i32,
+        state: if partial {
+            FleetHostResultState::UnknownNoReplay as i32
+        } else {
+            FleetHostResultState::Verified as i32
+        },
         release_set_sha256: original.release_set_sha256.clone(),
         desired_sha256: original.desired_sha256.clone(),
         observed_at_unix: observed.observed_at_unix,
         error_class: String::new(),
         next_action: String::new(),
-        physical_readback: true,
+        // An incomplete historic action has a known NEW baseline, not a
+        // completed original physical effect. Never set VERIFIED evidence.
+        physical_readback: !partial,
         reason: 0,
     };
     crate::host_lifecycle::set_host_result_reason(&mut prior_result, verdict);
-    let prior_terminal = journal_dir.join(format!("{prior_id}.verified.pb"));
+    let terminal_name = if partial { "incomplete" } else { "verified" };
+    let opposite = journal_dir.join(format!(
+        "{prior_id}.{}.pb",
+        if partial { "verified" } else { "incomplete" }
+    ));
+    if fs::symlink_metadata(opposite).is_ok() {
+        return Err("HOST_NATIVE_RECOVERY_CONFLICTING_TERMINAL");
+    }
+    let prior_terminal = journal_dir.join(format!("{prior_id}.{terminal_name}.pb"));
     match fs::symlink_metadata(&prior_terminal) {
         Ok(_) => {
             // A crash after terminal sync but before unlocking the scope
@@ -758,8 +840,11 @@ fn resolve_pending_native_recovery_once(
                 &fs::read(&prior_terminal)
                     .map_err(|_| "HOST_NATIVE_RECOVERY_TERMINAL_UNREADABLE")?,
             )?;
-            if exact.state != FleetHostResultState::Verified as i32
-                || !exact.physical_readback
+            if exact.state != prior_result.state
+                || exact.physical_readback != prior_result.physical_readback
+                || exact.reason != prior_result.reason
+                || exact.error_class != prior_result.error_class
+                || exact.next_action != prior_result.next_action
                 || exact.machine_id != original.machine_id
                 || exact.resource_id != original.resource_id
                 || exact.operation_id != original.operation_id
@@ -778,7 +863,7 @@ fn resolve_pending_native_recovery_once(
             store_native_terminal_and_unlock_once(
                 &original,
                 &prior_result,
-                "verified",
+                terminal_name,
                 journal_dir,
             )?;
         }
@@ -961,9 +1046,15 @@ fn store_native_terminal_and_unlock_once(
             (terminal, FleetHostResultState::try_from(result.state)),
             ("verified", Ok(FleetHostResultState::Verified))
                 | ("observed", Ok(FleetHostResultState::Observed))
+                | ("incomplete", Ok(FleetHostResultState::UnknownNoReplay))
         )
         || (terminal == "observed" && result.physical_readback)
         || (terminal == "verified" && !result.physical_readback)
+        || (terminal == "incomplete"
+            && (result.physical_readback
+                || result.reason
+                    != crate::FleetHostResultReason::HistoricalPartialRequiresFreshApply as i32))
+        || crate::host_lifecycle::validate_host_result_reason(result).is_err()
     {
         return Err("HOST_TERMINAL_RESULT_INVALID");
     }
@@ -1107,6 +1198,173 @@ mod tests {
             verify_read_only_recovery_state(&windows, &observed, &[1; 32], 1000),
             Err("HOST_NATIVE_RECOVERY_MODE_NOT_ACCEPTED")
         );
+    }
+
+    #[test]
+    fn historical_partial_recovery_preserves_original_unknown_and_never_verifies_it() {
+        use crate::host_lifecycle::{
+            BoundNativeHostArtifacts, host_authorization_payload, prepared_host_result,
+            set_host_result_reason,
+        };
+        use crate::{FleetNativeOwnerState, FleetNativeReleaseProof};
+        let rng = SystemRandom::new();
+        let pair =
+            Ed25519KeyPair::from_pkcs8(Ed25519KeyPair::generate_pkcs8(&rng).unwrap().as_ref())
+                .unwrap();
+        let host = FleetHost {
+            machine_id: "vm-history".into(),
+            kind: FleetHostKind::Vm as i32,
+            owner: Some(managed_host::Owner::VmMachineId("vm-history".into())),
+            target: Some(FleetHostTarget {
+                run_state: FleetHostRunState::Running as i32,
+                windows_mode: FleetHostMode::Unspecified as i32,
+            }),
+            ..Default::default()
+        };
+        let registry = HostRegistry {
+            schema_version: 1,
+            hosts: vec![host.clone()],
+        };
+        let old = FleetHostIntent {
+            schema_version: 1,
+            machine_id: host.machine_id.clone(),
+            kind: host.kind,
+            resource_id: "sing-box".into(),
+            operation_id: "issue1-comment-100".into(),
+            action: FleetHostAction::Apply as i32,
+            registry_sha256: vec![9; 32],
+            desired_sha256: vec![8; 32],
+            release_set_sha256: vec![7; 32],
+            requested_at_unix: 1000,
+            ..Default::default()
+        };
+        let mut current = old.clone();
+        current.operation_id = "issue1-comment-101".into();
+        current.action = FleetHostAction::Recover as i32;
+        current.registry_sha256 = vec![1; 32];
+        current.desired_sha256 = vec![2; 32];
+        current.release_set_sha256 = vec![3; 32];
+        let bound = BoundNativeHostArtifacts {
+            registry_sha256: current.registry_sha256.clone(),
+            desired_sha256: current.desired_sha256.clone(),
+            release_set_sha256: current.release_set_sha256.clone(),
+            runtime_release_sha256: vec![4; 32],
+        };
+        let mut authorization = FleetHostAuthorization {
+            schema_version: 1,
+            key_id: "worker-v1".into(),
+            operation_id: current.operation_id.clone(),
+            issued_at_unix: 1000,
+            expires_at_unix: 1100,
+            ..Default::default()
+        };
+        authorization.ed25519_signature = pair
+            .sign(&host_authorization_payload(&current, &authorization))
+            .as_ref()
+            .to_vec();
+        let observation = crate::FleetNativeObservation {
+            schema_version: 1,
+            host_kind: host.kind,
+            observed_at_unix: 1020,
+            owner_state: FleetNativeOwnerState::Running as i32,
+            release_proof: FleetNativeReleaseProof::ApplicationBundle as i32,
+            observed_release_sha256: vec![6; 32],
+            runtime_ready: true,
+            runtime_ready_proven: true,
+            ..Default::default()
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "sing-box-partial-recovery-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&dir).unwrap();
+        fs::write(native_scope_pending_path(&dir, &old), old.encode_to_vec()).unwrap();
+        let mut begin = prepared_host_result(&old);
+        begin.state = FleetHostResultState::Authorized as i32;
+        set_host_result_reason(
+            &mut begin,
+            crate::FleetHostResultReason::AuthorizedAwaitNativeReadback,
+        );
+        fs::write(
+            dir.join(format!("{}.pb", journal_hex(old.operation_id.as_bytes()))),
+            begin.encode_to_vec(),
+        )
+        .unwrap();
+        let resolve = |observed: &crate::FleetNativeObservation| {
+            resolve_pending_native_recovery_once(
+                &current,
+                &authorization,
+                &registry,
+                &host,
+                &bound,
+                pair.public_key().as_ref(),
+                &host.machine_id,
+                host.kind,
+                1020,
+                &dir,
+                observed,
+            )
+        };
+        let mut unproven = observation.clone();
+        unproven.runtime_ready = false;
+        unproven.runtime_ready_proven = false;
+        assert_eq!(
+            resolve(&unproven).unwrap_err(),
+            "HOST_NATIVE_HISTORICAL_BASELINE_UNPROVEN_NO_REPLAY"
+        );
+        let mut degraded = observation.clone();
+        degraded.runtime_ready = false;
+        assert_eq!(
+            verify_historical_partial_recovery_state(
+                &host,
+                &degraded,
+                &bound.runtime_release_sha256,
+                1020,
+            ),
+            Ok(crate::FleetHostResultReason::HistoricalPartialRequiresFreshApply)
+        );
+        assert!(native_scope_pending_path(&dir, &old).exists());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+        let mut wrong_release = observation.clone();
+        wrong_release.observed_release_sha256 = vec![4; 32];
+        assert_eq!(
+            resolve(&wrong_release).unwrap_err(),
+            "HOST_NATIVE_HISTORICAL_BASELINE_UNPROVEN_NO_REPLAY"
+        );
+        assert!(native_scope_pending_path(&dir, &old).exists());
+        let result = resolve(&observation).unwrap();
+        assert_eq!(result.state, FleetHostResultState::Observed as i32);
+        assert!(!result.physical_readback);
+        assert_eq!(
+            result.reason,
+            crate::FleetHostResultReason::HistoricalPartialRequiresFreshApply as i32
+        );
+        assert!(!native_scope_pending_path(&dir, &old).exists());
+        let prior_id = journal_hex(old.operation_id.as_bytes());
+        let incomplete = crate::host_lifecycle::decode_host_result(
+            &fs::read(dir.join(format!("{prior_id}.incomplete.pb"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            incomplete.state,
+            FleetHostResultState::UnknownNoReplay as i32
+        );
+        assert!(!incomplete.physical_readback);
+        assert_eq!(incomplete.operation_id, old.operation_id);
+        assert!(!dir.join(format!("{prior_id}.verified.pb")).exists());
+        assert!(
+            dir.join(format!(
+                "{}.observed.pb",
+                journal_hex(current.operation_id.as_bytes())
+            ))
+            .exists()
+        );
+        assert!(resolve(&observation).is_err()); // Old gate never re-created or re-executed.
+        fs::remove_dir_all(dir).unwrap();
     }
 
     #[test]

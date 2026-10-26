@@ -164,6 +164,10 @@ jobs:
             # root owner independently validate the closed read-only grammar.
             read -r -a probe_argv <<< "${BASH_REMATCH[2]}"
             command=(diagnose "${machine}" -- "${probe_argv[@]}")
+          elif [[ "${COMMAND_BODY}" =~ ^/host[[:space:]]recover[[:space:]]([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})[[:space:]]--adjudicate$ ]]; then
+            # Explicit signed historical readback; native RecOVER runs through
+            # existing one-shot host APPLY transport but NEVER repeats effects.
+            command=(recover "${BASH_REMATCH[1]}" --adjudicate)
           elif [[ "${COMMAND_BODY}" =~ ^/host[[:space:]]recover[[:space:]]([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})[[:space:]]--bootstrap-access$ ]]; then
             command=(recover "${BASH_REMATCH[1]}" --bootstrap-access)
           elif [[ "${COMMAND_BODY}" =~ ^/host[[:space:]](apply|recover)[[:space:]]([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})$ ]]; then

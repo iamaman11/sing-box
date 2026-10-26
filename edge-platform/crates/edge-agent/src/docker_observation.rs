@@ -2234,12 +2234,14 @@ struct NativeVmGatewayImageReplacePlan {
     previous_images: Vec<u8>,
     new_images: Vec<u8>,
     new_gateway_image: String,
+    new_warp_image: Option<String>,
     identities: Vec<Option<(String, bool, String)>>,
     installed_graph: edge_shared_types::FleetVmDesiredGraph,
     target_graph: edge_shared_types::FleetVmDesiredGraph,
     release: edge_shared_types::ApplicationBundleReleaseState,
     edge_network_id: String,
     prepared_gateways: Vec<(String, bollard::models::ContainerCreateBody)>,
+    prepared_warp: Option<bollard::models::ContainerCreateBody>,
     compose_sha256: Vec<u8>,
 }
 
@@ -2342,13 +2344,40 @@ fn gateway_image_policy_delta(
     gateway.ok_or_else(|| "HOST_VM_IMAGE_GATEWAY_MISSING".into())
 }
 
-/// This remains within the single existing VM ReleaseSet replace transaction:
-/// any change outside .images.env is inadmissible, including WARP images,
-/// unrelated templates and Docker networking.
+/// Pure release policy decision, independent of the running VM. Retain the
+/// established gateway-only checker to verify all unchanged bytes, and allow
+/// one additional digest-pinned WARP image inside the SAME transaction.
+fn application_image_policy_delta(
+    installed: &[u8],
+    desired: &[u8],
+) -> Result<(String, Option<String>), String> {
+    let previous = parse_vm_release_image_pins(installed)?;
+    let requested = parse_vm_release_image_pins(desired)?;
+    if requested["CLOUDFLARE_MESH_IMAGE"] != previous["CLOUDFLARE_MESH_IMAGE"] {
+        return Err("HOST_VM_IMAGE_FOREIGN_IMAGE_OR_ENV_CHANGED".into());
+    }
+    let target_warp = &requested["EDGE_WARP_EGRESS_IMAGE"];
+    let old_warp = &previous["EDGE_WARP_EGRESS_IMAGE"];
+    let desired_text = std::str::from_utf8(desired).map_err(|_| "HOST_VM_IMAGE_TARGET_NOT_UTF8")?;
+    let normalized = desired_text.replace(
+        &format!("EDGE_WARP_EGRESS_IMAGE={target_warp}"),
+        &format!("EDGE_WARP_EGRESS_IMAGE={old_warp}"),
+    );
+    let next_gateway = gateway_image_policy_delta(
+        installed,
+        normalized.as_bytes(),
+        &previous["EDGE_GATEWAY_IMAGE"],
+    )?;
+    let next_warp = (target_warp != old_warp).then(|| target_warp.clone());
+    Ok((next_gateway, next_warp))
+}
+
+/// One exact Git-owned .images.env update: paired gateway change and an
+/// optional WARP change. Foreign Mesh, templates and networking never change.
 fn select_gateway_image_policy(
     stack_dir: &Path,
     request: &ApplyBundleRequest,
-) -> Result<(Vec<u8>, Vec<u8>, String), String> {
+) -> Result<(Vec<u8>, Vec<u8>, String, Option<String>), String> {
     if request.stack_files.is_empty() || request.stack_files.len() > 128 {
         return Err("HOST_VM_IMAGE_BUNDLE_INVALID".into());
     }
@@ -2366,14 +2395,10 @@ fn select_gateway_image_policy(
     }
     let desired = candidate.content.clone();
     let installed = exact_vm_policy_file(stack_dir, ".images.env")?;
-    let old_images = super::read_exact_image_environment(stack_dir)?;
-    let old_gateway = old_images
-        .get("EDGE_GATEWAY_IMAGE")
-        .ok_or("HOST_VM_IMAGE_OLD_GATEWAY_MISSING")?;
-    let next_gateway = gateway_image_policy_delta(&installed, &desired, old_gateway)?;
+    let (next_gateway, next_warp) = application_image_policy_delta(&installed, &desired)?;
     candidate.content = installed.clone();
     verify_exact_installed_vm_bundle_static(stack_dir, &exact)?;
-    Ok((installed, desired, next_gateway))
+    Ok((installed, desired, next_gateway, next_warp))
 }
 
 /// Shared image ownership must be demonstrated by the actual Compose-derived
@@ -2420,7 +2445,7 @@ async fn preflight_gateway_image_replace(
     {
         return Err("HOST_VM_IMAGE_RELEASE_ALREADY_INSTALLED".into());
     }
-    let (previous_images, new_images, new_gateway_image) =
+    let (previous_images, new_images, new_gateway_image, new_warp_image) =
         select_gateway_image_policy(stack_dir, request)?;
     for service in [ScopedVmService::Line1, ScopedVmService::Line2] {
         service.container_name(host)?;
@@ -2444,8 +2469,21 @@ async fn preflight_gateway_image_replace(
             changed += 1;
         }
     }
-    if changed != 2 {
-        return Err("HOST_VM_IMAGE_TWO_GATEWAYS_REQUIRED".into());
+    if let Some(ref image) = new_warp_image {
+        let warp = target_graph
+            .resources
+            .iter_mut()
+            .find(|row| {
+                row.resource
+                    .as_ref()
+                    .is_some_and(|r| r.compose_service == "warp-egress")
+            })
+            .ok_or("HOST_VM_IMAGE_WARP_OWNER_MISSING")?;
+        warp.image_ref.clone_from(image);
+        changed += 1;
+    }
+    if changed != 2 + usize::from(new_warp_image.is_some()) {
+        return Err("HOST_VM_IMAGE_REGISTERED_SERVICES_INCOMPLETE".into());
     }
     edge_shared_types::host_resources::validate_vm_desired_graph(&target_graph, host)
         .map_err(str::to_owned)?;
@@ -2472,12 +2510,20 @@ async fn preflight_gateway_image_replace(
     }
     let edge_network_id = read_owned_edge_network_id(&docker, host).await?;
     verify_vm_network_attachments(&docker, host, &owned, &edge_network_id).await?;
-    // Require both replacement image and exact network policy to be
-    // available before committing the one-shot journal transaction.
-    docker
-        .inspect_image(&new_gateway_image)
-        .await
-        .map_err(|_| "HOST_VM_IMAGE_PINNED_IMAGE_NOT_LOCAL")?;
+    // OCI pins are already validated against the exact immutable release.
+    // Do not require a separate manual "docker pull": this same signed
+    // operation fetches missing images AFTER the durable BEGIN, before
+    // altering running containers or installed policy.
+    let prepared_warp = if let Some(ref image) = new_warp_image {
+        Some(native_warp_create_body(
+            stack_dir,
+            host,
+            image,
+            &edge_network_id,
+        )?)
+    } else {
+        None
+    };
     let mut prepared_gateways = Vec::new();
     for service in ["line2-proxy", "line1-gateway"] {
         prepared_gateways.push((
@@ -2506,11 +2552,13 @@ async fn preflight_gateway_image_replace(
         previous_images,
         new_images,
         new_gateway_image,
+        new_warp_image,
         identities,
         installed_graph,
         target_graph,
         edge_network_id,
         prepared_gateways,
+        prepared_warp,
         compose_sha256,
         release: edge_shared_types::ApplicationBundleReleaseState {
             schema_version: 1,
@@ -2538,6 +2586,13 @@ async fn apply_gateway_image_replace_once(
     }
     verify_vm_network_attachments(&docker, host, &owned, &plan.edge_network_id).await?;
 
+    // Reuse the existing bounded, digest-verified native OCI pull, still
+    // inside the ONE signed owner journal. Never require external Docker CLI.
+    pull_native_vm_image_once(&docker, &plan.new_gateway_image).await?;
+    if let Some(ref image) = plan.new_warp_image {
+        pull_native_vm_image_once(&docker, image).await?;
+    }
+
     let staging = stack_dir.join(".images.env.next");
     if fs::symlink_metadata(&staging).is_ok() {
         return Err("HOST_VM_IMAGE_STAGING_EXISTS_NO_REPLAY".into());
@@ -2553,11 +2608,29 @@ async fn apply_gateway_image_replace_once(
         .and_then(|directory| directory.sync_all())
         .map_err(|_| "HOST_VM_IMAGE_SYNC_UNCERTAIN_NO_REPLAY")?;
     let image_vars = super::read_exact_image_environment(stack_dir)?;
-    if image_vars.get("EDGE_GATEWAY_IMAGE") != Some(&plan.new_gateway_image) {
+    if image_vars.get("EDGE_GATEWAY_IMAGE") != Some(&plan.new_gateway_image)
+        || (plan.new_warp_image.is_some()
+            && image_vars.get("EDGE_WARP_EGRESS_IMAGE") != plan.new_warp_image.as_ref())
+    {
         return Err("HOST_VM_IMAGE_ENV_NOT_CONVERGED_NO_REPLAY".into());
     }
-    // Recreate the two gateway children through one root-owned Docker API
-    // boundary, leaving WARP, network and foreign Mesh untouched.
+    // WARP is a dependency of BOTH gateways: recreate it first, then the
+    // two gateways, inside one durable native BEGIN. No Compose or shell.
+    if let Some(body) = plan.prepared_warp {
+        let previous = owned
+            .iter()
+            .find(|item| item.service == "warp-egress")
+            .ok_or("HOST_VM_IMAGE_WARP_ID_MISSING_NO_REPLAY")?;
+        recreate_native_vm_container_once(
+            &docker,
+            host,
+            "warp-egress",
+            &previous.id,
+            &plan.edge_network_id,
+            body,
+        )
+        .await?;
+    }
     for (service, body) in plan.prepared_gateways {
         let previous = owned
             .iter()
@@ -2595,6 +2668,10 @@ async fn apply_gateway_image_replace_once(
         if gateway {
             if current.id == *old_id || current.image_ref != plan.new_gateway_image {
                 return Err("HOST_VM_IMAGE_GATEWAY_NOT_RECREATED_NO_REPLAY".into());
+            }
+        } else if selector.compose_service == "warp-egress" && plan.new_warp_image.is_some() {
+            if current.id == *old_id || Some(&current.image_ref) != plan.new_warp_image.as_ref() {
+                return Err("HOST_VM_IMAGE_WARP_NOT_RECREATED_NO_REPLAY".into());
             }
         } else if current.id != *old_id || current.image_ref != *old_image {
             return Err("HOST_VM_IMAGE_NEIGHBOUR_CHANGED_NO_REPLAY".into());
@@ -2666,17 +2743,20 @@ pub(crate) async fn preflight_native_vm_replace(
                 "line1-gateway" | "line2-proxy"
             )
         });
-    let gateway_pair = changed.len() == 2
+    let gateway_pair = (changed.len() == 2 || changed.len() == 3)
         && changed.iter().all(|resource| {
             resource.change == FleetVmPolicyChange::ImageReplaced as i32
                 && resource.resource_kind == Kind::DockerContainer as i32
         })
-        && changed
-            .iter()
-            .filter_map(|resource| resource.resource.as_ref())
-            .map(|resource| resource.compose_service.as_str())
-            .collect::<BTreeSet<_>>()
-            == BTreeSet::from(["line1-gateway", "line2-proxy"]);
+        && {
+            let owners = changed
+                .iter()
+                .filter_map(|resource| resource.resource.as_ref())
+                .map(|resource| resource.compose_service.as_str())
+                .collect::<BTreeSet<_>>();
+            owners == BTreeSet::from(["line1-gateway", "line2-proxy"])
+                || owners == BTreeSet::from(["line1-gateway", "line2-proxy", "warp-egress"])
+        };
     // A signed ReleaseSet may also mutate exactly one non-secret file
     // inside root-owned stack/managed. Changes to network/container/Compose
     // are never reinterpreted as file actions.
@@ -3995,6 +4075,51 @@ mod vm_native_start_order_tests {
         assert!(gateway_image_policy_delta(old, wrong.as_bytes(), &existing).is_err());
         let duplicated = next.replace("EDGE_WARP_EGRESS_IMAGE=", "EDGE_GATEWAY_IMAGE=");
         assert!(gateway_image_policy_delta(old, duplicated.as_bytes(), &existing).is_err());
+    }
+
+    #[test]
+    fn paired_gateway_and_warp_images_use_one_exact_release_policy() {
+        let old = format!(
+            "EDGE_GATEWAY_IMAGE=ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}\nEDGE_WARP_EGRESS_IMAGE=ghcr.io/iamaman11/vultr-warp-egress@sha256:{}\nCLOUDFLARE_MESH_IMAGE=docker.io/cloudflare/mesh@sha256:{}\n",
+            "a".repeat(64),
+            "b".repeat(64),
+            "c".repeat(64)
+        );
+        let next_gateway = format!(
+            "ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}",
+            "d".repeat(64)
+        );
+        let next_warp = format!(
+            "ghcr.io/iamaman11/vultr-warp-egress@sha256:{}",
+            "e".repeat(64)
+        );
+        let gateway_only = old.replace(
+            &format!(
+                "ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}",
+                "a".repeat(64)
+            ),
+            &next_gateway,
+        );
+        assert_eq!(
+            application_image_policy_delta(old.as_bytes(), gateway_only.as_bytes()).unwrap(),
+            (next_gateway.clone(), None)
+        );
+        let both = gateway_only.replace(
+            &format!(
+                "ghcr.io/iamaman11/vultr-warp-egress@sha256:{}",
+                "b".repeat(64)
+            ),
+            &next_warp,
+        );
+        assert_eq!(
+            application_image_policy_delta(old.as_bytes(), both.as_bytes()).unwrap(),
+            (next_gateway, Some(next_warp))
+        );
+        assert!(application_image_policy_delta(old.as_bytes(), old.as_bytes()).is_err());
+        let changed_mesh = both.replace(&"c".repeat(64), &"f".repeat(64));
+        assert!(application_image_policy_delta(old.as_bytes(), changed_mesh.as_bytes()).is_err());
+        let unpinned_warp = both.replace("@sha256:eeee", ":latest-eeee");
+        assert!(application_image_policy_delta(old.as_bytes(), unpinned_warp.as_bytes()).is_err());
     }
 
     #[test]
