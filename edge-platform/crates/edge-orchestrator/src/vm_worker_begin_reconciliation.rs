@@ -176,8 +176,7 @@ fn prior_code_committed_signer_failed(
         return false;
     }
     let matches = matching_worker_jobs(jobs, prior);
-    if matches.len() != 1
-        || matches[0].get("conclusion").and_then(Value::as_str) != Some("failure")
+    if matches.len() != 1 || matches[0].get("conclusion").and_then(Value::as_str) != Some("failure")
     {
         return false;
     }
@@ -186,22 +185,43 @@ fn prior_code_committed_signer_failed(
     };
     const EXPECTED: [(&str, &str); 11] = [
         ("Set up job", "success"),
-        ("Resolve exact protected VM release and published owner", "success"),
+        (
+            "Resolve exact protected VM release and published owner",
+            "success",
+        ),
         ("Plan exact VM Worker release with GET only", "success"),
         ("Require exact Rust VM Worker plan decision", "success"),
-        ("Reserve one durable VM Worker version transaction before mutation", "success"),
-        ("Apply exact VM Worker code once and verify immutable active version", "success"),
-        ("Prepare one ephemeral VM signer with existing protected owner", "failure"),
-        ("Reserve exact public-key Git draft before VM Worker mutation", "skipped"),
-        ("Install exactly five Host signer secret bindings once", "skipped"),
+        (
+            "Reserve one durable VM Worker version transaction before mutation",
+            "success",
+        ),
+        (
+            "Apply exact VM Worker code once and verify immutable active version",
+            "success",
+        ),
+        (
+            "Prepare one ephemeral VM signer with existing protected owner",
+            "failure",
+        ),
+        (
+            "Reserve exact public-key Git draft before VM Worker mutation",
+            "skipped",
+        ),
+        (
+            "Install exactly five Host signer secret bindings once",
+            "skipped",
+        ),
         ("Open reserved VM signer PR for protected review", "skipped"),
         ("Complete job", "success"),
     ];
     steps.len() == EXPECTED.len()
-        && steps.iter().zip(EXPECTED).all(|(actual, (name, conclusion))| {
-            actual.get("name").and_then(Value::as_str) == Some(name)
-                && actual.get("conclusion").and_then(Value::as_str) == Some(conclusion)
-        })
+        && steps
+            .iter()
+            .zip(EXPECTED)
+            .all(|(actual, (name, conclusion))| {
+                actual.get("name").and_then(Value::as_str) == Some(name)
+                    && actual.get("conclusion").and_then(Value::as_str) == Some(conclusion)
+            })
 }
 
 async fn github_get_json(client: &Client, token: &str, path: &str) -> Result<Value, String> {
@@ -630,17 +650,35 @@ mod tests {
             "name":"/host apply application-acceptance-5"
         });
         let names = [
-            ("Set up job","success"),
-            ("Resolve exact protected VM release and published owner","success"),
-            ("Plan exact VM Worker release with GET only","success"),
-            ("Require exact Rust VM Worker plan decision","success"),
-            ("Reserve one durable VM Worker version transaction before mutation","success"),
-            ("Apply exact VM Worker code once and verify immutable active version","success"),
-            ("Prepare one ephemeral VM signer with existing protected owner","failure"),
-            ("Reserve exact public-key Git draft before VM Worker mutation","skipped"),
-            ("Install exactly five Host signer secret bindings once","skipped"),
-            ("Open reserved VM signer PR for protected review","skipped"),
-            ("Complete job","success"),
+            ("Set up job", "success"),
+            (
+                "Resolve exact protected VM release and published owner",
+                "success",
+            ),
+            ("Plan exact VM Worker release with GET only", "success"),
+            ("Require exact Rust VM Worker plan decision", "success"),
+            (
+                "Reserve one durable VM Worker version transaction before mutation",
+                "success",
+            ),
+            (
+                "Apply exact VM Worker code once and verify immutable active version",
+                "success",
+            ),
+            (
+                "Prepare one ephemeral VM signer with existing protected owner",
+                "failure",
+            ),
+            (
+                "Reserve exact public-key Git draft before VM Worker mutation",
+                "skipped",
+            ),
+            (
+                "Install exactly five Host signer secret bindings once",
+                "skipped",
+            ),
+            ("Open reserved VM signer PR for protected review", "skipped"),
+            ("Complete job", "success"),
         ];
         let steps: Vec<Value> = names
             .iter()
@@ -650,20 +688,32 @@ mod tests {
             "name":"host_worker_authorizer","run_id":40174397210_u64,
             "status":"completed","conclusion":"failure","steps":steps
         }]});
-        assert!(prior_code_committed_signer_failed(&prior,machine,&operator,&run,&jobs));
-        assert!(!prior_run_is_terminal(&prior,machine,&operator,&run,&jobs));
+        assert!(prior_code_committed_signer_failed(
+            &prior, machine, &operator, &run, &jobs
+        ));
+        assert!(!prior_run_is_terminal(
+            &prior, machine, &operator, &run, &jobs
+        ));
         let mut wrong = jobs.clone();
         wrong["jobs"][0]["steps"][5]["conclusion"] = Value::String("failure".into());
-        assert!(!prior_code_committed_signer_failed(&prior,machine,&operator,&run,&wrong));
+        assert!(!prior_code_committed_signer_failed(
+            &prior, machine, &operator, &run, &wrong
+        ));
         let mut unknown = jobs.clone();
         unknown["jobs"][0]["steps"][7]["conclusion"] = Value::String("success".into());
-        assert!(!prior_code_committed_signer_failed(&prior,machine,&operator,&run,&unknown));
+        assert!(!prior_code_committed_signer_failed(
+            &prior, machine, &operator, &run, &unknown
+        ));
         let mut different = jobs.clone();
         different["jobs"][0]["steps"][6]["name"] = Value::String("Unknown step".into());
-        assert!(!prior_code_committed_signer_failed(&prior,machine,&operator,&run,&different));
+        assert!(!prior_code_committed_signer_failed(
+            &prior, machine, &operator, &run, &different
+        ));
         let mut replay = run.clone();
         replay["run_attempt"] = Value::from(2);
-        assert!(!prior_code_committed_signer_failed(&prior,machine,&operator,&replay,&jobs));
+        assert!(!prior_code_committed_signer_failed(
+            &prior, machine, &operator, &replay, &jobs
+        ));
     }
 
     #[test]
