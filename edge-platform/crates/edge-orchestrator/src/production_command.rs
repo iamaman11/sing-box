@@ -77,7 +77,6 @@ fn print_identity(
     println!("immutable_oci_release_identity=true");
 }
 
-
 /// One Git-selected project-owned hostname, physically attached to one VM.
 /// Shared Cloudflare zone is a provider boundary, not an external owner.
 pub(crate) async fn dns_reconcile(
@@ -97,7 +96,9 @@ pub(crate) async fn dns_reconcile(
     let dns = root.dns.as_ref().ok_or("PROJECT_DNS_DESIRED_MISSING")?;
     if machine_id.is_empty()
         || machine_id.len() > 64
-        || !machine_id.bytes().all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
+        || !machine_id
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, b'-' | b'_'))
         || dns.active_machine_id != machine_id
     {
         return Err("PROJECT_DNS_ACTIVE_HOST_MISMATCH".to_owned());
@@ -108,21 +109,34 @@ pub(crate) async fn dns_reconcile(
     }
     let spec = format!("infra/hosts/specs/{machine_id}.textproto");
     let (machine, application) = crate::vm_host_desired::load(Path::new(&spec))?;
-    let line1 = application.runtime_policy.line1.as_ref().ok_or("PROJECT_DNS_LINE1_MISSING")?;
-    let line2 = application.runtime_policy.line2.as_ref().ok_or("PROJECT_DNS_LINE2_MISSING")?;
+    let line1 = application
+        .runtime_policy
+        .line1
+        .as_ref()
+        .ok_or("PROJECT_DNS_LINE1_MISSING")?;
+    let line2 = application
+        .runtime_policy
+        .line2
+        .as_ref()
+        .ok_or("PROJECT_DNS_LINE2_MISSING")?;
     if line1.tunnel_domain != composition.public_hostname
         || line2.proxy_cert_cn != composition.public_hostname
     {
         return Err("PROJECT_DNS_APP_CERTIFICATE_NAME_MISMATCH".to_owned());
     }
-    let vm = crate::vultr_lifecycle_command::exact_existing_machine_observation(&machine, machine_id).await?;
+    let vm =
+        crate::vultr_lifecycle_command::exact_existing_machine_observation(&machine, machine_id)
+            .await?;
     let ip = vm.main_ip.ok_or("PROJECT_DNS_VM_PUBLIC_IP_MISSING")?;
-    let token = env::var("CLOUDFLARE_DNS_TOKEN")
-        .map_err(|_| "PROJECT_DNS_ENV_TOKEN_MISSING".to_owned())?;
+    let token =
+        env::var("CLOUDFLARE_DNS_TOKEN").map_err(|_| "PROJECT_DNS_ENV_TOKEN_MISSING".to_owned())?;
     let mut provider = CloudflareDnsApiProvider::new(token)?;
     let (observed, plan) = plan_dns_apply(&mut provider, &composition.dns, &ip).await?;
     println!("main={}", release_context.release().source_revision);
-    println!("release_set_sha256={}", release_context.release().release_set_sha256);
+    println!(
+        "release_set_sha256={}",
+        release_context.release().release_set_sha256
+    );
     println!("dns_owner=SING_BOX_SHARED_ZONE");
     println!("dns_machine_id={machine_id}");
     println!("dns_record={}", composition.public_hostname);
@@ -144,11 +158,19 @@ pub(crate) async fn dns_reconcile(
         &ip,
         &authorized.authority.authority_digest,
         DnsExecutionPolicy::default(),
-    ).await?;
+    )
+    .await?;
     if !matches!(report.next_plan.action, ApplyAction::Noop) {
         return Err("PROJECT_DNS_POSTSTATE_NOT_CONVERGED".to_owned());
     }
-    println!("dns_mutations={}", if matches!(report.performed, ApplyAction::Noop) { 0 } else { 1 });
+    println!(
+        "dns_mutations={}",
+        if matches!(report.performed, ApplyAction::Noop) {
+            0
+        } else {
+            1
+        }
+    );
     println!("dns_verdict=PROVIDER_EXACT_A_MATCH");
     Ok(())
 }

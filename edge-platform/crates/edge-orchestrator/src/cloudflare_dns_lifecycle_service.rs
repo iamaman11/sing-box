@@ -104,7 +104,15 @@ impl DnsProvider for CloudflareDnsApiProvider {
         expected_ip: &str,
         ip: &str,
     ) -> Result<(), String> {
-        update_a_record_by_id(&self.api_token, zone_name, record_id, record_name, expected_ip, ip).await
+        update_a_record_by_id(
+            &self.api_token,
+            zone_name,
+            record_id,
+            record_name,
+            expected_ip,
+            ip,
+        )
+        .await
     }
 
     async fn delete_record(&mut self, zone_name: &str, record_id: &str) -> Result<(), String> {
@@ -166,7 +174,13 @@ pub async fn apply_dns_once<P: DnsProvider>(
             ref to_ip,
         } => {
             let mutation = provider
-                .update_record(&desired.zone_name, record_id, &desired.record_name, from_ip, to_ip)
+                .update_record(
+                    &desired.zone_name,
+                    record_id,
+                    &desired.record_name,
+                    from_ip,
+                    to_ip,
+                )
                 .await;
             reobserve_apply_change(provider, desired, target_ip, policy, &plan.action, mutation)
                 .await
