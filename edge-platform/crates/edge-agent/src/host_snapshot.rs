@@ -6,7 +6,19 @@ use edge_shared_types::host_lifecycle::decode_host_intent;
 use edge_shared_types::{FleetNativeDiagnosticSnapshot, host_diagnostic_snapshot};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
-fn pending_scope(root: &Path) -> Result<(u32, String, String, Vec<u8>, i32), String> {
+#[derive(Default)]
+struct PendingEvidence {
+    count: u32,
+    operation_id: String,
+    resource_id: String,
+    request_sha256: Vec<u8>,
+    action: i32,
+    original_release_sha256: Vec<u8>,
+    original_desired_sha256: Vec<u8>,
+    begin_record_sha256: Vec<u8>,
+}
+
+fn pending_scope(root: &Path) -> Result<PendingEvidence, String> {
     let journal = root.join("journal");
     let metadata =
         fs::symlink_metadata(&journal).map_err(|_| "HOST_SNAPSHOT_JOURNAL_UNAVAILABLE")?;
@@ -35,30 +47,66 @@ fn pending_scope(root: &Path) -> Result<(u32, String, String, Vec<u8>, i32), Str
     }
     let count = pending.len() as u32;
     let Some((name, path)) = pending.first() else {
-        return Ok((0, String::new(), String::new(), Vec::new(), 0));
+        return Ok(PendingEvidence::default());
     };
     // An admin pending is not interpreted as a resource intent.
     if !name.starts_with("resource-") {
-        return Ok((
+        return Ok(PendingEvidence {
             count,
-            "UNPROVEN_PENDING_RECORD".into(),
-            String::new(),
-            Vec::new(),
-            0,
-        ));
+            operation_id: "UNPROVEN_PENDING_RECORD".into(),
+            ..Default::default()
+        });
     }
     let bytes = host_native::root_file(path, 4096)?;
     let digest = ring::digest::digest(&ring::digest::SHA256, &bytes)
         .as_ref()
         .to_vec();
     let intent = decode_host_intent(&bytes).map_err(str::to_owned)?;
-    Ok((
+    // SHA-256 file name is exactly the native journal's existing stable
+    // operation key, not a new index or mutable state.
+    let id_sha = ring::digest::digest(
+        &ring::digest::SHA256,
+        intent.operation_id.as_bytes(),
+    );
+    let id = id_sha
+        .as_ref()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let begin_bytes = host_native::root_file(&journal.join(format!("{id}.pb")), 8192)?;
+    let begin = edge_shared_types::host_lifecycle::decode_host_result(&begin_bytes)
+        .map_err(str::to_owned)?;
+    if begin.schema_version != 1
+        || begin.state != edge_shared_types::FleetHostResultState::Authorized as i32
+        || begin.physical_readback
+        || !begin.error_class.is_empty()
+        || begin.operation_id != intent.operation_id
+        || begin.machine_id != intent.machine_id
+        || begin.resource_id != intent.resource_id
+        || begin.action != intent.action
+        || begin.release_set_sha256 != intent.release_set_sha256
+        || begin.desired_sha256 != intent.desired_sha256
+        || begin.reason
+            != edge_shared_types::FleetHostResultReason::AuthorizedAwaitNativeReadback as i32
+        || edge_shared_types::host_lifecycle::validate_host_result_reason(&begin).is_err()
+    {
+        return Err("HOST_SNAPSHOT_ORIGINAL_BEGIN_MISMATCH".into());
+    }
+    Ok(PendingEvidence {
         count,
-        intent.operation_id,
-        intent.resource_id,
-        digest,
-        intent.action,
-    ))
+        operation_id: intent.operation_id,
+        resource_id: intent.resource_id,
+        request_sha256: digest,
+        action: intent.action,
+        original_release_sha256: intent.release_set_sha256,
+        original_desired_sha256: intent.desired_sha256,
+        begin_record_sha256: ring::digest::digest(
+            &ring::digest::SHA256,
+            &begin_bytes,
+        )
+        .as_ref()
+        .to_vec(),
+    })
 }
 
 /// Optional source-comment correlation on stdin. Existing `local diagnose`
@@ -94,8 +142,7 @@ pub(super) async fn emit_if_requested(stack_dir: &Path) -> Result<(), String> {
         return Err("HOST_SNAPSHOT_MACHINE_MISMATCH".into());
     }
     let key = host_native::root_file(&root.join("receipt-key.pk8"), 4096)?;
-    let (pending_count, pending_id, pending_resource, pending_digest, pending_action) =
-        pending_scope(root)?;
+    let pending = pending_scope(root)?;
     let observation = capture_local_host_observation(stack_dir).await?;
     let resources = docker_observation::observe_vm_resource_report(&host, stack_dir).await?;
     let mut line2_code = String::new();
@@ -140,11 +187,14 @@ pub(super) async fn emit_if_requested(stack_dir: &Path) -> Result<(), String> {
         observation: Some(observation),
         resources: Some(resources),
         ed25519_signature: Vec::new(),
-        pending_resource_count: pending_count,
-        pending_operation_id: pending_id,
-        pending_resource_id: pending_resource,
-        pending_request_sha256: pending_digest,
-        pending_action,
+        pending_resource_count: pending.count,
+        pending_operation_id: pending.operation_id,
+        pending_resource_id: pending.resource_id,
+        pending_request_sha256: pending.request_sha256,
+        pending_action: pending.action,
+        pending_original_release_sha256: pending.original_release_sha256,
+        pending_original_desired_sha256: pending.original_desired_sha256,
+        pending_begin_record_sha256: pending.begin_record_sha256,
         line2_failure_code: line2_code,
         line2_log_sha256: line2_digest,
         line2_restart_count: line2_restarts,
@@ -158,7 +208,7 @@ pub(super) async fn emit_if_requested(stack_dir: &Path) -> Result<(), String> {
     );
     println!(
         "host_root_signed_snapshot_has_pending={}",
-        pending_count > 0
+        snapshot.pending_resource_count > 0
     );
     println!("host_root_signed_snapshot_mutations=0");
     Ok(())
