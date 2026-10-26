@@ -348,12 +348,18 @@ pub(super) async fn recreate_native_vm_container_once(
         .inspect_container(previous_id, None)
         .await
         .map_err(|_| "HOST_VM_NATIVE_RECREATE_OLD_ID_UNAVAILABLE_NO_REPLAY")?;
+    let state = inspected
+        .state
+        .as_ref()
+        .ok_or("HOST_VM_NATIVE_RECREATE_PRESTATE_CHANGED_NO_REPLAY")?;
+    let known_transition_state =
+        state.paused == Some(false) && state.restarting == Some(false) && state.dead == Some(false);
+    let already_stopped =
+        service == "warp-egress" && known_transition_state && state.running == Some(false);
     if inspected.id.as_deref() != Some(previous_id)
         || inspected.name.as_deref() != Some(format!("/{}", selector.container_name).as_str())
-        || !inspected
-            .state
-            .as_ref()
-            .is_some_and(|state| state.running == Some(true))
+        || !known_transition_state
+        || (state.running != Some(true) && !already_stopped)
     {
         return Err("HOST_VM_NATIVE_RECREATE_PRESTATE_CHANGED_NO_REPLAY".into());
     }
@@ -372,22 +378,35 @@ pub(super) async fn recreate_native_vm_container_once(
         .inspect_image(expected_image)
         .await
         .map_err(|_| "HOST_VM_NATIVE_RECREATE_PINNED_IMAGE_MISSING_NO_REPLAY")?;
-    // Docker may lose the STOP ACK or take time to transition. Exactly ONE
-    // STOP is permitted by the signed owner journal. A bounded series of
+    // Docker may lose the STOP ACK or take time to transition. At most
+    // ONE STOP is permitted by the signed owner journal; an already stopped
+    // owned WARP never receives STOP again. A bounded series of
     // read-only INSPECT calls determines what actually happened to this ID.
     // Never print arbitrary daemon errors, labels or environment variables.
     let stop_started = tokio::time::Instant::now();
-    let stop_ack = docker
-        .stop_container(
-            previous_id,
-            Some(
-                bollard::query_parameters::StopContainerOptionsBuilder::default()
-                    .t(20)
-                    .build(),
-            ),
+    let stop_ack = if already_stopped {
+        None
+    } else {
+        Some(
+            docker
+                .stop_container(
+                    previous_id,
+                    Some(
+                        bollard::query_parameters::StopContainerOptionsBuilder::default()
+                            .t(20)
+                            .build(),
+                    ),
+                )
+                .await,
         )
-        .await;
-    let ack = if stop_ack.is_ok() { "OK" } else { "ERROR" };
+    };
+    let ack = if already_stopped {
+        "NOT_REQUIRED_ALREADY_STOPPED"
+    } else if stop_ack.as_ref().is_some_and(Result::is_ok) {
+        "OK"
+    } else {
+        "ERROR"
+    };
     let observation_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
     let mut observed = NativeVmStopReadback::Unavailable;
     let mut inspections = 0u32;
