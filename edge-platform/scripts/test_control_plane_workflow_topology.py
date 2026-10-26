@@ -159,10 +159,9 @@ native_admission = Path("edge-platform/crates/edge-agent/src/host_native.rs").re
 assert "--adjudicate" in router
 assert "command=(recover" in router
 assert "adjudicate: bool" in orchestrator_cli
-assert "HostLifecycleOperation::Adjudicate" in host_readback if "host_readback" in globals() else (
-    "HostLifecycleOperation::Adjudicate" in Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(encoding="utf-8")
-)
-assert "HostLifecycleOperation::Adjudicate => HostWorkflowOperation::ApplyPreflight" in Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(encoding="utf-8")
+adjudication_source = Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(encoding="utf-8")
+assert "HostLifecycleOperation::Adjudicate" in adjudication_source
+assert "HostLifecycleOperation::Adjudicate => HostWorkflowOperation::ApplyPreflight" in adjudication_source
 assert "intent.action != edge_shared_types::FleetHostAction::Recover as i32" in native_admission
 assert "HOST_NATIVE_HISTORICAL_BASELINE_UNPROVEN_NO_REPLAY" in journal
 assert "HOST_NATIVE_RECOVERY_CONFLICTING_TERMINAL" in journal
