@@ -109,7 +109,7 @@ pub(super) async fn emit_if_requested(stack_dir: &Path) -> Result<(), String> {
     {
         match observe_container_runtime(&line2.container_name).await {
             Ok(evidence) => {
-                line2_code = classify_native_container_failure(
+                line2_code = local_dispatch::classify_native_container_failure(
                     evidence.runtime_error.as_deref(),
                     &evidence.log_tail,
                 )
