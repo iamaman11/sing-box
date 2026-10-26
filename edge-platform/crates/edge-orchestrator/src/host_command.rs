@@ -1564,8 +1564,7 @@ fn append_host_verifier_output(path: &Path, key: &str, value: &str) -> Result<()
     if !matches!(
         key,
         "typed_verdict" | "native_receipt_proof" | "admin_receipt_proof"
-    )
-        || value.is_empty()
+    ) || value.is_empty()
         || value.len() > 96
         || !value
             .bytes()
@@ -2354,7 +2353,8 @@ mod tests {
             append_host_verifier_output(&path, "admin_receipt_proof", "VERIFIED_EXIT_ZERO").is_ok()
         );
         assert!(
-            append_host_verifier_output(&path, "admin_receipt_proof", "verified_exit_zero").is_err()
+            append_host_verifier_output(&path, "admin_receipt_proof", "verified_exit_zero")
+                .is_err()
         );
         let recorded = std::fs::read_to_string(&path).unwrap();
         assert_eq!(
