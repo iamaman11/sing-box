@@ -2905,11 +2905,7 @@ pub(crate) async fn preflight_native_vm_replace(
         let target_warp = pins
             .get("warp-egress")
             .ok_or("HOST_VM_IMAGE_RUNTIME_INCOMPLETE_NO_REPLAY")?;
-        if !valid_gateway_image_replace_prestate(
-            &owned,
-            host.vm_containers.len(),
-            target_warp,
-        ) {
+        if !valid_gateway_image_replace_prestate(&owned, host.vm_containers.len(), target_warp) {
             return Err("HOST_VM_IMAGE_RUNTIME_INCOMPLETE_NO_REPLAY".into());
         }
         owned_runtime_image_drift(&pins, &owned)
