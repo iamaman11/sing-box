@@ -3,7 +3,7 @@ use super::*;
 /// Closed, secret-free failure classification shared by every registered VM
 /// container. Docker State.Error and stdout/stderr are untrusted, potentially
 /// secret-bearing strings; never copy a byte of either into operator reports.
-fn classify_native_container_failure(
+pub(super) fn classify_native_container_failure(
     runtime_error: Option<&str>,
     lines: &[String],
 ) -> &'static str {
