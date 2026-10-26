@@ -14,6 +14,15 @@ router=(root/"edge-control-plane.yml").read_text(encoding="utf-8")
 native=(root/"host-native-observe.yml").read_text(encoding="utf-8")
 ci=(root/"edge-platform-ci.yml").read_text(encoding="utf-8")
 assert "  issue_comment:" in router and "  workflow_run:" in router
+# VM5 first-use continuation must give the existing, read-scoped Github
+# token to the shared ReleaseSet resolver. A missing GH_TOKEN previously
+# stopped the protected seal job *after* the native root key was registered,
+# leaving no safe way to finish bootstrap from that workflow attempt.
+seal = router.split("  host_resume_seal:\n", 1)[1].split("\n  host_resume_native_access:", 1)[0]
+assert "GH_TOKEN: ${{ github.token }}" in seal, "VM bootstrap seal resolver has no GitHub token"
+assert "contents: read" in seal and "actions: read" in seal
+assert "bash edge-platform/scripts/resolve_durable_release.sh" in seal
+assert "IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN" not in seal, "No broad PAT for release GET"
 assert "github.event.issue.number == 1" in router
 assert "github.actor_id == '44100369'" in router
 assert router.count("uses: ./.github/workflows/host-native-observe.yml")==2
