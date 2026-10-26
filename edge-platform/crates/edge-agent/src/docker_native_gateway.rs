@@ -269,11 +269,10 @@ pub(super) fn native_gateway_create_body(
     })
 }
 
-/// Recreate exactly one already-owned gateway using Docker Engine API.
-/// All image, network, mount and port policy is prepared before BEGIN.
-/// A failed STOP/DELETE/CREATE/START ACK is UNKNOWN_NO_REPLAY; the shared
-/// journal remains pending and no automatic compensation is attempted.
-pub(super) async fn recreate_native_gateway_once(
+/// Recreate one exact application-owned service through the same native
+/// Docker owner and no-replay journal. WARP and gateways use pre-BEGIN
+/// validated container policy; foreign Mesh and arbitrary names are refused.
+pub(super) async fn recreate_native_vm_container_once(
     docker: &Docker,
     host: &FleetHost,
     service: &str,
@@ -286,7 +285,7 @@ pub(super) async fn recreate_native_gateway_once(
         .iter()
         .find(|item| item.compose_service == service)
         .ok_or("HOST_VM_NATIVE_RECREATE_SELECTOR_MISSING_NO_REPLAY")?;
-    if !matches!(service, "line1-gateway" | "line2-proxy")
+    if !matches!(service, "line1-gateway" | "line2-proxy" | "warp-egress")
         || read_owned_edge_network_id(docker, host).await?.as_str() != network_id
     {
         return Err("HOST_VM_NATIVE_RECREATE_SCOPE_CHANGED_NO_REPLAY".into());
@@ -355,4 +354,19 @@ pub(super) async fn recreate_native_gateway_once(
         .await
         .map_err(|_| "HOST_VM_NATIVE_RECREATE_START_UNCERTAIN_NO_REPLAY")?;
     Ok(())
+}
+
+/// Keep a closed gateway-only entry point for existing config effectors.
+pub(super) async fn recreate_native_gateway_once(
+    docker: &Docker,
+    host: &FleetHost,
+    service: &str,
+    previous_id: &str,
+    network_id: &str,
+    body: bollard::models::ContainerCreateBody,
+) -> Result<(), String> {
+    if !matches!(service, "line1-gateway" | "line2-proxy") {
+        return Err("HOST_VM_GATEWAY_SCOPE_UNSUPPORTED".into());
+    }
+    recreate_native_vm_container_once(docker, host, service, previous_id, network_id, body).await
 }
