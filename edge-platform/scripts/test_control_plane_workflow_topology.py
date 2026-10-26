@@ -136,6 +136,21 @@ assert worker.count("if: needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREF
 assert "if: steps.plan.outputs.required == 'false' && needs.host.outputs.operation == 'WORKER_AUTHORIZER_PREFLIGHT'" not in worker
 assert "vm-worker-signer-prepare" in worker and "vm-worker-signer-commit" in worker
 assert worker.index("Apply exact VM Worker code once") < worker.index("Prepare one ephemeral VM signer")
+# Operator drift evidence must come from the Ed25519-verified root snapshot,
+# and can never be substituted by the runner's unauthenticated observation.
+host_readback=Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(encoding="utf-8")
+signed_start=host_readback.index("let accepted = edge_shared_types::host_diagnostic_snapshot::verify(")
+signed_proof=host_readback.index("host_native_snapshot_proof=VERIFIED_ROOT_SIGNED_READ_ONLY", signed_start)
+expected=host_readback.index("host_native_snapshot_bundle_expected_sha256=", signed_proof)
+observed=host_readback.index("host_native_snapshot_bundle_observed_sha256=", expected)
+match=host_readback.index("host_native_snapshot_bundle_matches=", observed)
+assert signed_start < signed_proof < expected < observed < match
+assert "hex(&native_bundle_sha)" in host_readback[expected:observed]
+assert "hex(&verified_observation.observed_release_sha256)" in host_readback[observed:match+180]
+assert "host_native_snapshot_replay_allowed=false" in host_readback[match:]
+assert "bundle_expected_sha256|bundle_observed_sha256|bundle_matches" in native
+assert "host_native_snapshot_proof=VERIFIED_ROOT_SIGNED_READ_ONLY" in native
+
 # The same /host apply must never upgrade Worker bytes and trigger native INSTALL.
 # The closed, Rust-owned plan decision gates the dependent native job.
 native_dispatch = router.split("  host_observe:\n", 1)[1].split("  host_report:\n", 1)[0]
