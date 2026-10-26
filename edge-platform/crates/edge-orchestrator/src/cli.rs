@@ -164,6 +164,10 @@ pub(crate) enum HostCommand {
         /// No new VM, container or INSTALL execution is authorized.
         #[arg(long)]
         bootstrap_access: bool,
+        /// Explicit Worker-signed, read-only adjudication of an old native
+        /// resource BEGIN. Distinct from code-only recover; no effect replay.
+        #[arg(long, conflicts_with = "bootstrap_access")]
+        adjudicate: bool,
     },
     /// Internal, bounded public-key-only Git registration proposal. Never
     /// writes protected Git and never authorizes a native mutation.
