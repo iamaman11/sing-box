@@ -100,12 +100,11 @@ fn prior_begins(history: &str, machine_id: &str) -> Result<Vec<PriorBegin>, Stri
     Ok(found)
 }
 
-fn prior_run_is_terminal(
+fn prior_run_matches_owner(
     prior: &PriorBegin,
     machine_id: &str,
     operator: &Value,
     run: &Value,
-    jobs: &Value,
 ) -> bool {
     let exact_command = format!("/host apply {machine_id}");
     operator.get("id").and_then(Value::as_u64) == Some(prior.operator_comment_id)
@@ -116,7 +115,6 @@ fn prior_run_is_terminal(
         && run.get("id").and_then(Value::as_u64) == Some(prior.github_run_id)
         && run.get("head_sha").and_then(Value::as_str) == Some(prior.source_revision.as_str())
         && run.get("status").and_then(Value::as_str) == Some("completed")
-        && run.get("conclusion").and_then(Value::as_str) == Some("success")
         && run.get("event").and_then(Value::as_str) == Some("issue_comment")
         && run.get("run_attempt").and_then(Value::as_u64) == Some(1)
         && run.pointer("/actor/id").and_then(Value::as_u64) == Some(ACTOR_ID)
@@ -124,26 +122,89 @@ fn prior_run_is_terminal(
         && run.get("path").and_then(Value::as_str)
             == Some(".github/workflows/edge-control-plane.yml")
         && run.get("name").and_then(Value::as_str) == Some(exact_command.as_str())
-        && jobs
-            .get("total_count")
-            .and_then(Value::as_u64)
-            .is_some_and(|n| n <= 100)
-        && jobs
-            .get("jobs")
-            .and_then(Value::as_array)
-            .is_some_and(|items| {
-                items
-                    .iter()
-                    .filter(|job| {
-                        job.get("name").and_then(Value::as_str) == Some("host_worker_authorizer")
-                            && job.get("status").and_then(Value::as_str) == Some("completed")
-                            && job.get("conclusion").and_then(Value::as_str) == Some("success")
-                            && job.get("run_id").and_then(Value::as_u64)
-                                == Some(prior.github_run_id)
-                    })
-                    .count()
-                    == 1
+}
+
+fn matching_worker_jobs<'a>(jobs: &'a Value, prior: &PriorBegin) -> Vec<&'a Value> {
+    if !jobs
+        .get("total_count")
+        .and_then(Value::as_u64)
+        .is_some_and(|n| n <= 100)
+    {
+        return Vec::new();
+    }
+    jobs.get("jobs")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|job| {
+            job.get("name").and_then(Value::as_str) == Some("host_worker_authorizer")
+                && job.get("status").and_then(Value::as_str) == Some("completed")
+                && job.get("run_id").and_then(Value::as_u64) == Some(prior.github_run_id)
+        })
+        .collect()
+}
+
+fn prior_run_is_terminal(
+    prior: &PriorBegin,
+    machine_id: &str,
+    operator: &Value,
+    run: &Value,
+    jobs: &Value,
+) -> bool {
+    prior_run_matches_owner(prior, machine_id, operator, run)
+        && run.get("conclusion").and_then(Value::as_str) == Some("success")
+        && matching_worker_jobs(jobs, prior).as_slice()
+            .first()
+            .is_some_and(|job| {
+                matching_worker_jobs(jobs, prior).len() == 1
+                    && job.get("conclusion").and_then(Value::as_str) == Some("success")
             })
+}
+
+/// One precise partial terminal: Worker code was successfully deployed, but
+/// the subsequent signer-prepare step failed without running any signer
+/// mutations. This is NOT a success receipt for that historical BEGIN.
+/// Caller independently proves current Cloudflare active/latest source equals
+/// the accepted predecessor SHA and no pending or split versions remain.
+fn prior_code_committed_signer_failed(
+    prior: &PriorBegin,
+    machine_id: &str,
+    operator: &Value,
+    run: &Value,
+    jobs: &Value,
+) -> bool {
+    if !prior_run_matches_owner(prior, machine_id, operator, run)
+        || run.get("conclusion").and_then(Value::as_str) != Some("failure")
+    {
+        return false;
+    }
+    let matches = matching_worker_jobs(jobs, prior);
+    if matches.len() != 1
+        || matches[0].get("conclusion").and_then(Value::as_str) != Some("failure")
+    {
+        return false;
+    }
+    let Some(steps) = matches[0].get("steps").and_then(Value::as_array) else {
+        return false;
+    };
+    const EXPECTED: [(&str, &str); 11] = [
+        ("Set up job", "success"),
+        ("Resolve exact protected VM release and published owner", "success"),
+        ("Plan exact VM Worker release with GET only", "success"),
+        ("Require exact Rust VM Worker plan decision", "success"),
+        ("Reserve one durable VM Worker version transaction before mutation", "success"),
+        ("Apply exact VM Worker code once and verify immutable active version", "success"),
+        ("Prepare one ephemeral VM signer with existing protected owner", "failure"),
+        ("Reserve exact public-key Git draft before VM Worker mutation", "skipped"),
+        ("Install exactly five Host signer secret bindings once", "skipped"),
+        ("Open reserved VM signer PR for protected review", "skipped"),
+        ("Complete job", "success"),
+    ];
+    steps.len() == EXPECTED.len()
+        && steps.iter().zip(EXPECTED).all(|(actual, (name, conclusion))| {
+            actual.get("name").and_then(Value::as_str) == Some(name)
+                && actual.get("conclusion").and_then(Value::as_str) == Some(conclusion)
+        })
 }
 
 async fn github_get_json(client: &Client, token: &str, path: &str) -> Result<Value, String> {
@@ -220,9 +281,16 @@ pub(crate) async fn verify_prior_vm_worker_begins(machine_id: &str) -> Result<()
             &format!("actions/runs/{}/jobs?per_page=100", prior.github_run_id),
         )
         .await?;
-        if !prior_run_is_terminal(prior, machine_id, &operator, &run, &jobs) {
-            return Err("HOST_VM_WORKER_PRIOR_BEGIN_UNRECONCILED_NO_REPLAY".into());
+        if prior_run_is_terminal(prior, machine_id, &operator, &run, &jobs) {
+            continue;
         }
+        if prior_code_committed_signer_failed(prior, machine_id, &operator, &run, &jobs) {
+            // The failed signer transaction is preserved as a failed historical
+            // BEGIN; current source parity was already independently proven.
+            println!("host_vm_worker_prior_partial=CODE_COMMITTED_SIGNER_PREPARE_FAILED");
+            continue;
+        }
+        return Err("HOST_VM_WORKER_PRIOR_BEGIN_UNRECONCILED_NO_REPLAY".into());
     }
     println!("host_vm_worker_prior_begin=TERMINAL_OWNER_RUN_RECONCILED");
     println!("host_vm_worker_prior_begin_count={}", beginnings.len());
