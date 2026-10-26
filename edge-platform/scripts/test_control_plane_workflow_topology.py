@@ -14,6 +14,12 @@ router=(root/"edge-control-plane.yml").read_text(encoding="utf-8")
 native=(root/"host-native-observe.yml").read_text(encoding="utf-8")
 ci=(root/"edge-platform-ci.yml").read_text(encoding="utf-8")
 assert "  issue_comment:" in router and "  workflow_run:" in router
+# GitHub run titles are public, short navigation labels, never raw commands.
+# /host admin requests carry opaque encoded argv and must stay in signed intents.
+run_name = next(line for line in router.splitlines() if line.startswith("run-name:"))
+assert "github.event.comment.body" not in run_name, "raw admin argv leaked into run title"
+assert "github.event.comment.id" in run_name, "operator correlation removed"
+assert "release continuation" in run_name, "post-merge action title missing"
 # VM5 first-use continuation must give the existing, read-scoped Github
 # token to the shared ReleaseSet resolver. A missing GH_TOKEN previously
 # stopped the protected seal job *after* the native root key was registered,
