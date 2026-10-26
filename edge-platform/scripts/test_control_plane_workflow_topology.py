@@ -23,6 +23,25 @@ assert "GH_TOKEN: ${{ github.token }}" in seal, "VM bootstrap seal resolver has 
 assert "contents: read" in seal and "actions: read" in seal
 assert "bash edge-platform/scripts/resolve_durable_release.sh" in seal
 assert "IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN" not in seal, "No broad PAT for release GET"
+# A fresh authenticated /host recover --bootstrap-access must continue ONLY
+# the existing signed root credential handoff, never the original CREATE/INSTALL.
+# Both the old merge continuation and new explicit recovery share the same
+# native owner/proof/signer; the latter cannot enter host_resume_native APPLY.
+bootstrap = router.split("  host_resume_native_bootstrap:\n", 1)[1].split("\n  host_resume_seal:", 1)[0]
+access = router.split("  host_resume_native_access:\n", 1)[1].split("\n  host_resume_native:", 1)[0]
+install = router.split("  host_resume_native:\n", 1)[1]
+assert 'command=(recover "${BASH_REMATCH[1]}" --bootstrap-access)' in router
+assert "BOOTSTRAP_ACCESS_PREFLIGHT" in bootstrap and "BOOTSTRAP_ACCESS_PREFLIGHT" in seal
+assert "BOOTSTRAP_ACCESS_PREFLIGHT" in access
+assert "github.event_name == 'issue_comment'" in bootstrap
+assert "github.run_attempt == 1" in bootstrap
+assert "local host-refresh" in bootstrap and "local host-bootstrap-proof" in bootstrap
+assert "local host-bootstrap-access" in access
+assert "HOST_RESUME_MODE" in seal
+assert "git/ref/heads/main" in seal and 'test "$(git rev-parse HEAD)"' in seal
+assert "needs.host_resume_receipt.outputs.operation == 'APPLY_PREFLIGHT'" in install
+assert "needs.host.outputs.operation == 'BOOTSTRAP_ACCESS_PREFLIGHT'" not in install
+assert "host_resume_native_bootstrap" in router and "host_resume_native_access" in router
 assert "github.event.issue.number == 1" in router
 assert "github.actor_id == '44100369'" in router
 assert router.count("uses: ./.github/workflows/host-native-observe.yml")==2
