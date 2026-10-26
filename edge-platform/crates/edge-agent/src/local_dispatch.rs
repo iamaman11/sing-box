@@ -34,8 +34,10 @@ pub(super) fn classify_native_container_failure(
                 .rev()
                 .take(40)
                 .map(String::as_str)
-                .filter(|line| native_failure_severity(line)
-                    || line.contains("[SAFE_FATAL_TLS_PRIVATE_KEY_ERROR]")),
+                .filter(|line| {
+                    native_failure_severity(line)
+                        || line.contains("[SAFE_FATAL_TLS_PRIVATE_KEY_ERROR]")
+                }),
         )
     {
         found_error = true;
@@ -532,7 +534,10 @@ mod native_read_only_diagnostics_tests {
         assert_eq!(
             classify_native_container_failure(
                 None,
-                &["FATAL[0000] TLS certificate open /secret/path: no such file or directory".to_owned()],
+                &[
+                    "FATAL[0000] TLS certificate open /secret/path: no such file or directory"
+                        .to_owned()
+                ],
             ),
             "TLS_CERTIFICATE_FILE_MISSING"
         );
