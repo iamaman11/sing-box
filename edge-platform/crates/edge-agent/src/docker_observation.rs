@@ -2226,6 +2226,28 @@ impl ScopedVmService {
     }
 }
 
+/// A desired file is not a physical Docker readback. Keep this comparison
+/// separate from graph diff so old containers behind new .images.env pins
+/// are always recognized before a fresh, separately authorized operation.
+fn owned_runtime_image_drift(
+    refs: &HashMap<String, String>,
+    owned: &[OwnedVmContainer],
+) -> bool {
+    owned
+        .iter()
+        .any(|item| refs.get(&item.service) != Some(&item.image_ref))
+}
+
+fn verified_image_transition(
+    old_id: &str,
+    old_image: &str,
+    now_id: &str,
+    now_image: &str,
+    target: &str,
+) -> bool {
+    now_image == target && ((now_id != old_id) == (old_image != target))
+}
+
 /// One paired, dependency-aware image resource update. The shared image
 /// belongs to both Line1 and Line2. Changing one service independently would
 /// leave a false "desired converged" claim. WARP and Mesh are never adopted.
@@ -2685,10 +2707,13 @@ async fn apply_gateway_image_replace_once(
             "line1-gateway" | "line2-proxy"
         );
         if gateway {
-            let should_replace = old_image != &plan.new_gateway_image;
-            if current.image_ref != plan.new_gateway_image
-                || (current.id != *old_id) != should_replace
-            {
+            if !verified_image_transition(
+                old_id,
+                old_image,
+                &current.id,
+                &current.image_ref,
+                &plan.new_gateway_image,
+            ) {
                 return Err("HOST_VM_IMAGE_GATEWAY_NOT_RECREATED_NO_REPLAY".into());
             }
         } else if selector.compose_service == "warp-egress" && plan.new_warp_image.is_some() {
@@ -2819,9 +2844,7 @@ pub(crate) async fn preflight_native_vm_replace(
         let network = read_owned_edge_network_id(&docker, host).await?;
         verify_vm_network_attachments(&docker, host, &owned, &network).await?;
         let pins = read_vm_expected_image_refs(stack_dir, &host.vm_containers)?;
-        owned
-            .iter()
-            .any(|item| pins.get(&item.service) != Some(&item.image_ref))
+        owned_runtime_image_drift(&pins, &owned)
     } else {
         false
     };
@@ -4253,3 +4276,62 @@ mod native_vm_install_policy_tests;
 #[cfg(test)]
 #[path = "docker_observation_native_vm_gateway_policy_tests.rs"]
 mod native_vm_gateway_policy_tests;
+
+#[cfg(test)]
+mod native_vm_partial_image_reconcile_tests {
+    use super::*;
+
+    fn running(service: &str, image: &str) -> OwnedVmContainer {
+        OwnedVmContainer {
+            id: "a".repeat(64),
+            running: true,
+            service: service.to_owned(),
+            image_ref: image.to_owned(),
+            dependencies: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn staged_policy_does_not_hide_real_docker_image_drift() {
+        let old_gateway = format!("ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}", "a".repeat(64));
+        let new_gateway = format!("ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}", "b".repeat(64));
+        let old_warp = format!("ghcr.io/iamaman11/vultr-warp-egress@sha256:{}", "c".repeat(64));
+        let new_warp = format!("ghcr.io/iamaman11/vultr-warp-egress@sha256:{}", "d".repeat(64));
+        let refs = HashMap::from([
+            ("line1-gateway".to_owned(), new_gateway.clone()),
+            ("line2-proxy".to_owned(), new_gateway.clone()),
+            ("warp-egress".to_owned(), new_warp.clone()),
+        ]);
+        let old = vec![
+            running("line1-gateway", &old_gateway),
+            running("line2-proxy", &old_gateway),
+            running("warp-egress", &old_warp),
+        ];
+        assert!(owned_runtime_image_drift(&refs, &old));
+        let mixed = vec![
+            running("line1-gateway", &new_gateway),
+            running("line2-proxy", &old_gateway),
+            running("warp-egress", &new_warp),
+        ];
+        assert!(owned_runtime_image_drift(&refs, &mixed));
+        let converged = vec![
+            running("line1-gateway", &new_gateway),
+            running("line2-proxy", &new_gateway),
+            running("warp-egress", &new_warp),
+        ];
+        assert!(!owned_runtime_image_drift(&refs, &converged));
+    }
+
+    #[test]
+    fn replacement_readback_requires_exact_id_and_image_transition() {
+        let old_id = "a".repeat(64);
+        let next_id = "b".repeat(64);
+        let previous = "old@sha256:111";
+        let desired = "new@sha256:222";
+        assert!(verified_image_transition(&old_id, previous, &next_id, desired, desired));
+        assert!(!verified_image_transition(&old_id, previous, &old_id, desired, desired));
+        assert!(!verified_image_transition(&old_id, previous, &next_id, previous, desired));
+        assert!(verified_image_transition(&old_id, desired, &old_id, desired, desired));
+        assert!(!verified_image_transition(&old_id, desired, &next_id, desired, desired));
+    }
+}
