@@ -643,6 +643,25 @@ pub(crate) fn run(
                         .map(|b| format!("{b:02x}"))
                         .collect::<String>()
                 );
+                for (label, digest) in [
+                    (
+                        "host_native_snapshot_pending_original_release_sha256",
+                        &accepted.pending_original_release_sha256,
+                    ),
+                    (
+                        "host_native_snapshot_pending_original_desired_sha256",
+                        &accepted.pending_original_desired_sha256,
+                    ),
+                    (
+                        "host_native_snapshot_pending_begin_record_sha256",
+                        &accepted.pending_begin_record_sha256,
+                    ),
+                ] {
+                    println!(
+                        "{label}={}",
+                        digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+                    );
+                }
                 println!(
                     "host_native_snapshot_pending_action={}",
                     accepted.pending_action
