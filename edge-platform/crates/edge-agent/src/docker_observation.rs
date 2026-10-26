@@ -430,6 +430,26 @@ fn exact_owned_network_attachment(
     })
 }
 
+/// A stopped WARP has no active bridge endpoint on some Docker engines.
+/// Its name/Compose labels and immutable ID were independently verified; do
+/// not reject a cleared endpoint, but never admit a foreign attached network.
+fn exact_stopped_warp_network_attachment(
+    observed: Option<&HashMap<String, bollard::models::EndpointSettings>>,
+    compose_network_name: &str,
+    expected_network_id: &str,
+) -> bool {
+    observed.is_none_or(|networks| {
+        networks.is_empty()
+            || (networks.len() == 1
+                && networks.get(compose_network_name).is_some_and(|endpoint| {
+                    endpoint
+                        .network_id
+                        .as_deref()
+                        .is_none_or(|id| id.is_empty() || id == expected_network_id)
+                }))
+    })
+}
+
 async fn verify_vm_network_attachments(
     docker: &Docker,
     host: &FleetHost,
@@ -448,16 +468,16 @@ async fn verify_vm_network_attachments(
             .inspect_container(&container.id, None)
             .await
             .map_err(|_| "HOST_VM_NETWORK_CONTAINER_INSPECT_FAILED")?;
-        if inspect.id.as_deref() != Some(container.id.as_str())
-            || !exact_owned_network_attachment(
-                inspect
-                    .network_settings
-                    .as_ref()
-                    .and_then(|settings| settings.networks.as_ref()),
-                &name,
-                network_id,
-            )
-        {
+        let networks = inspect
+            .network_settings
+            .as_ref()
+            .and_then(|settings| settings.networks.as_ref());
+        let network_proven = if container.service == "warp-egress" && !container.running {
+            exact_stopped_warp_network_attachment(networks, &name, network_id)
+        } else {
+            exact_owned_network_attachment(networks, &name, network_id)
+        };
+        if inspect.id.as_deref() != Some(container.id.as_str()) || !network_proven {
             return Err("HOST_VM_NETWORK_ATTACHMENT_UNPROVEN".into());
         }
     }
@@ -2249,6 +2269,23 @@ fn owned_runtime_image_drift(refs: &HashMap<String, String>, owned: &[OwnedVmCon
         .any(|item| refs.get(&item.service) != Some(&item.image_ref))
 }
 
+/// Only a fully registered, owned WARP may be stopped at admission, and
+/// only when this exact signed image transition will RECREATE it. Gateways
+/// cannot be stopped; a WARP already at the target image needs a separate
+/// signed START, not an unplanned side effect of replacing gateway images.
+fn valid_gateway_image_replace_prestate(
+    owned: &[OwnedVmContainer],
+    expected_count: usize,
+    target_warp_image: &str,
+) -> bool {
+    owned.len() == expected_count
+        && owned.iter().all(|container| match container.service.as_str() {
+            "line1-gateway" | "line2-proxy" => container.running,
+            "warp-egress" => container.running || container.image_ref != target_warp_image,
+            _ => false,
+        })
+}
+
 fn verified_image_transition(
     old_id: &str,
     old_image: &str,
@@ -2539,7 +2576,7 @@ async fn preflight_gateway_image_replace(
         .map_err(str::to_owned)?;
     let docker = docker_connection().await?;
     let mut owned = owned_application_container_ids(&docker, &host.vm_containers).await?;
-    if owned.len() != host.vm_containers.len() || owned.iter().any(|item| !item.running) {
+    if owned.len() != host.vm_containers.len() {
         return Err("HOST_VM_IMAGE_ALL_REGISTERED_MUST_RUN".into());
     }
     bind_owned_vm_compose_dependencies(stack_dir, &host.vm_containers, &mut owned)?;
@@ -2549,6 +2586,9 @@ async fn preflight_gateway_image_replace(
     read_vm_expected_image_refs(stack_dir, &host.vm_containers)?;
     let pins = parse_vm_release_image_pins(&new_images)?;
     let target_warp = &pins["EDGE_WARP_EGRESS_IMAGE"];
+    if !valid_gateway_image_replace_prestate(&owned, host.vm_containers.len(), target_warp) {
+        return Err("HOST_VM_IMAGE_ALL_REGISTERED_MUST_RUN".into());
+    }
     // Authorize only the registered Docker owner + immutable image repository,
     // never an arbitrary tag, foreign repo, or unregistered container. A
     // fresh Worker-signed APPLY can converge old -> staged -> desired directly.
@@ -2712,7 +2752,11 @@ async fn apply_gateway_image_replace_once(
             .iter()
             .find(|item| item.service == selector.compose_service)
             .ok_or("HOST_VM_IMAGE_POSTSTATE_IDENTITY_MISSING_NO_REPLAY")?;
-        if !*old_running || !current.running {
+        if !current.running
+            || (!*old_running
+                && !(selector.compose_service == "warp-egress"
+                    && plan.new_warp_image.is_some()))
+        {
             return Err("HOST_VM_IMAGE_POSTSTATE_NOT_RUNNING_NO_REPLAY".into());
         }
         let gateway = matches!(
@@ -4345,6 +4389,108 @@ mod native_vm_partial_image_reconcile_tests {
             running("warp-egress", &new_warp),
         ];
         assert!(!owned_runtime_image_drift(&refs, &converged));
+    }
+
+    #[test]
+    fn vm5_stopped_warp_may_recreate_only_to_a_different_pinned_image() {
+        let old_gateway = format!(
+            "ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}",
+            "a".repeat(64)
+        );
+        let old_warp = format!(
+            "ghcr.io/iamaman11/vultr-warp-egress@sha256:{}",
+            "b".repeat(64)
+        );
+        let desired_warp = format!(
+            "ghcr.io/iamaman11/vultr-warp-egress@sha256:{}",
+            "c".repeat(64)
+        );
+        let mut prestate = vec![
+            running("line1-gateway", &old_gateway),
+            running("line2-proxy", &old_gateway),
+            running("warp-egress", &old_warp),
+        ];
+        prestate[2].running = false;
+        assert!(valid_gateway_image_replace_prestate(
+            &prestate,
+            3,
+            &desired_warp
+        ));
+        assert!(!valid_gateway_image_replace_prestate(
+            &prestate,
+            3,
+            &old_warp
+        ));
+        prestate[0].running = false;
+        assert!(!valid_gateway_image_replace_prestate(
+            &prestate,
+            3,
+            &desired_warp
+        ));
+        prestate[0].running = true;
+        prestate[1].running = false;
+        assert!(!valid_gateway_image_replace_prestate(
+            &prestate,
+            3,
+            &desired_warp
+        ));
+        prestate[1].running = true;
+        prestate.push(running("foreign-mesh", &old_gateway));
+        assert!(!valid_gateway_image_replace_prestate(
+            &prestate,
+            3,
+            &desired_warp
+        ));
+        prestate.pop();
+        prestate.pop();
+        assert!(!valid_gateway_image_replace_prestate(
+            &prestate,
+            3,
+            &desired_warp
+        ));
+    }
+
+    #[test]
+    fn stopped_warp_can_lack_active_endpoint_but_never_have_foreign_network() {
+        let id = "a".repeat(64);
+        let mut endpoint = bollard::models::EndpointSettings::default();
+        endpoint.network_id = Some(id.clone());
+        let name = "vultr-edge_edge_net";
+        assert!(exact_stopped_warp_network_attachment(None, name, &id));
+        let mut networks = HashMap::new();
+        assert!(exact_stopped_warp_network_attachment(
+            Some(&networks),
+            name,
+            &id
+        ));
+        networks.insert(name.to_owned(), endpoint.clone());
+        assert!(exact_stopped_warp_network_attachment(
+            Some(&networks),
+            name,
+            &id
+        ));
+        endpoint.network_id = Some(String::new());
+        networks.insert(name.to_owned(), endpoint);
+        assert!(exact_stopped_warp_network_attachment(
+            Some(&networks),
+            name,
+            &id
+        ));
+        networks.insert(
+            "foreign_network".to_owned(),
+            bollard::models::EndpointSettings::default(),
+        );
+        assert!(!exact_stopped_warp_network_attachment(
+            Some(&networks),
+            name,
+            &id
+        ));
+        networks.remove(name);
+        assert!(!exact_stopped_warp_network_attachment(
+            Some(&networks),
+            name,
+            &id
+        ));
     }
 
     #[test]
