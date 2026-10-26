@@ -17,13 +17,13 @@ application {
   runtime_env_required: true
   bootstrap_mode: PRODUCTION_BOOTSTRAP_MODE_FULL
   line1 {
-    tunnel_domain: "stage2-acceptance-5.alegria.by"
+    tunnel_domain: "miu.alegria.by"
     acme_email: "admin@alegria.by"
     acme_provider: "letsencrypt"
     reality_server_name: "www.microsoft.com"
   }
   line2 {
     proxy_username: "acceptance"
-    proxy_cert_cn: "stage2-acceptance-5.alegria.by"
+    proxy_cert_cn: "miu.alegria.by"
   }
 }

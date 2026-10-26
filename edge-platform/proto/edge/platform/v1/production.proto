@@ -162,6 +162,8 @@ message ProductionDns {
   // Account containing the intentionally shared DNS zone. This boundary is
   // independent from the active application-exclusive Cloudflare account.
   string account_id = 3;
+  // One Git-selected physical VM for this project-owned FQDN.
+  string active_machine_id = 4;
 }
 
 message ProductionMesh {

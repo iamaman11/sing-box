@@ -1312,20 +1312,24 @@ pub async fn update_a_record_by_id(
     zone_name: &str,
     record_id: &str,
     record_name: &str,
+    expected_ip: &str,
     ip: &str,
 ) -> Result<(), String> {
     require_non_empty("Cloudflare DNS record ID", record_id)?;
     let client = authorized_client(api_token)?;
     let zone = fetch_zone(&client, zone_name).await?;
-    let body = DnsRecordWriteRequest {
-        record_type: "A".to_owned(),
-        name: record_name.to_owned(),
-        content: ip.to_owned(),
-        ttl: 120,
-        proxied: false,
-    };
+    let matches = fetch_records(&client, &zone.id, record_name).await?;
+    if matches.len() != 1
+        || matches[0].id != record_id
+        || matches[0].name != record_name
+        || matches[0].content != expected_ip
+    {
+        return Err("CLOUDFLARE_DNS_EXACT_RECORD_CHANGED_NO_MUTATION".to_owned());
+    }
+    // A content-only PATCH preserves TTL, proxy policy, tags and comments.
+    let body = serde_json::json!({"content": ip});
     let response = client
-        .put(format!(
+        .patch(format!(
             "{API_ROOT}/zones/{}/dns_records/{record_id}",
             zone.id
         ))
@@ -2738,6 +2742,14 @@ struct DnsRecordWriteRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn dns_patch_changes_only_content_not_shared_zone_settings() {
+        let body = serde_json::json!({"content": "64.176.76.2"});
+        assert_eq!(body.as_object().unwrap().len(), 1);
+        assert!(body.get("ttl").is_none());
+        assert!(body.get("proxied").is_none());
+    }
 
     #[test]
     fn vm_github_app_exact_inheritance_preserves_only_eight_allowed_bindings() {

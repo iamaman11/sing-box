@@ -79,6 +79,7 @@ dns {
   zone_name: "alegria.by"
   record_name: "miu.alegria.by"
   account_id: "4426df1449e417511bc7697d60b7f62f"
+  active_machine_id: "application-acceptance-5"
 }
 
 mesh {
