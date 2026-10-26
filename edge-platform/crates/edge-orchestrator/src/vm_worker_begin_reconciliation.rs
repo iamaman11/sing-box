@@ -611,6 +611,65 @@ mod tests {
         ));
     }
     #[test]
+    fn proven_code_commit_then_signer_prepare_failure_is_not_unknown_or_success() {
+        let machine = "application-acceptance-5";
+        let prior = prior_begins(
+            &serde_json::json!([begin(machine, 6395082210, 40174397210)]).to_string(),
+            machine,
+        )
+        .unwrap()
+        .remove(0);
+        let operator = serde_json::json!({
+            "id":6395082210_u64,"user":{"id":ACTOR_ID},"issue_url":ISSUE1,
+            "body":"/host apply application-acceptance-5",
+            "created_at":"2026-10-25T07:51:58Z",
+            "updated_at":"2026-10-25T07:51:58Z"
+        });
+        let run = serde_json::json!({
+            "id":40174397210_u64,"head_sha":revision(),"status":"completed",
+            "conclusion":"failure","event":"issue_comment","run_attempt":1,
+            "actor":{"id":ACTOR_ID},"triggering_actor":{"id":ACTOR_ID},
+            "path":".github/workflows/edge-control-plane.yml",
+            "name":"/host apply application-acceptance-5"
+        });
+        let names = [
+            ("Set up job","success"),
+            ("Resolve exact protected VM release and published owner","success"),
+            ("Plan exact VM Worker release with GET only","success"),
+            ("Require exact Rust VM Worker plan decision","success"),
+            ("Reserve one durable VM Worker version transaction before mutation","success"),
+            ("Apply exact VM Worker code once and verify immutable active version","success"),
+            ("Prepare one ephemeral VM signer with existing protected owner","failure"),
+            ("Reserve exact public-key Git draft before VM Worker mutation","skipped"),
+            ("Install exactly five Host signer secret bindings once","skipped"),
+            ("Open reserved VM signer PR for protected review","skipped"),
+            ("Complete job","success"),
+        ];
+        let steps: Vec<Value> = names
+            .iter()
+            .map(|(name, conclusion)| serde_json::json!({"name":name,"conclusion":conclusion}))
+            .collect();
+        let jobs = serde_json::json!({"total_count":1,"jobs":[{
+            "name":"host_worker_authorizer","run_id":40174397210_u64,
+            "status":"completed","conclusion":"failure","steps":steps
+        }]});
+        assert!(prior_code_committed_signer_failed(&prior,machine,&operator,&run,&jobs));
+        assert!(!prior_run_is_terminal(&prior,machine,&operator,&run,&jobs));
+        let mut wrong = jobs.clone();
+        wrong["jobs"][0]["steps"][5]["conclusion"] = Value::String("failure".into());
+        assert!(!prior_code_committed_signer_failed(&prior,machine,&operator,&run,&wrong));
+        let mut unknown = jobs.clone();
+        unknown["jobs"][0]["steps"][7]["conclusion"] = Value::String("success".into());
+        assert!(!prior_code_committed_signer_failed(&prior,machine,&operator,&run,&unknown));
+        let mut different = jobs.clone();
+        different["jobs"][0]["steps"][6]["name"] = Value::String("Unknown step".into());
+        assert!(!prior_code_committed_signer_failed(&prior,machine,&operator,&run,&different));
+        let mut replay = run.clone();
+        replay["run_attempt"] = Value::from(2);
+        assert!(!prior_code_committed_signer_failed(&prior,machine,&operator,&replay,&jobs));
+    }
+
+    #[test]
     fn failed_begin_reconciliation_requires_exact_original_failed_window() {
         let prior = prior_begins(
             &serde_json::json!([begin("application-acceptance-3", 12, 23)]).to_string(),
