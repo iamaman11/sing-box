@@ -486,6 +486,27 @@ message FleetHostDiagnosticRequest {
   repeated string argv = 4;
 }
 
+// Read-only root-owned diagnostic: domain-separated from every mutation receipt.
+// Works with an unfinished resource BEGIN and never clears or replays it.
+message FleetNativeDiagnosticSnapshot {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  string operation_id = 3;
+  bytes release_set_sha256 = 4;
+  FleetNativeObservation observation = 5;
+  FleetVmResourceReport resources = 6;
+  bytes ed25519_signature = 7;
+  uint32 pending_resource_count = 8;
+  string pending_operation_id = 9;
+  string pending_resource_id = 10;
+  bytes pending_request_sha256 = 11;
+  FleetHostAction pending_action = 12;
+  string line2_failure_code = 13;
+  bytes line2_log_sha256 = 14;
+  uint64 line2_restart_count = 15;
+  int64 line2_last_exit_code = 16;
+}
+
 // Unlimited administrative COMMAND capability belongs only to native VM root.
 // An approved request carries exact argv (shell interpreters are not excluded),
 // optional cwd/env and stdin, but grants no authority without Worker signature.

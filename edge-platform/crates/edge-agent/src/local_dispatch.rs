@@ -3,7 +3,7 @@ use super::*;
 /// Closed, secret-free failure classification shared by every registered VM
 /// container. Docker State.Error and stdout/stderr are untrusted, potentially
 /// secret-bearing strings; never copy a byte of either into operator reports.
-fn classify_native_container_failure(
+pub(super) fn classify_native_container_failure(
     runtime_error: Option<&str>,
     lines: &[String],
 ) -> &'static str {
@@ -306,6 +306,11 @@ pub(super) async fn run_local(command: cli::LocalCommand) -> Result<(), AgentErr
                 println!("credential_runtime_proof=UNPROVEN");
                 println!("credential_runtime_proof_reason={err}");
             }
+            // Existing read-only root entrypoint; pending transactions never
+            // prevent a signed diagnostic. Arbitrary ADMIN remains unchanged.
+            host_snapshot::emit_if_requested(&stack_dir)
+                .await
+                .map_err(AgentError::Command)?;
             Ok(())
         }
         cli::LocalCommand::MeshVerify => {

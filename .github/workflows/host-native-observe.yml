@@ -383,6 +383,38 @@ jobs:
             echo 'host_vm_resources_capture=UNPROVEN_INSTALLED_OWNER'
           fi
 
+      - name: Capture pending-safe Root Agent signed read-only snapshot
+        # Reuse the ALREADY INSTALLED exact sudoers verb 'local diagnose'.
+        # No new runner root authority, sudoers update, shell capability, or
+        # second transport. The root Agent never writes/replays its journal.
+        if: (success() || failure()) && env.TARGET_KIND == 'VM' && (endsWith(env.COMMAND_BODY, ' --deep') || env.HOST_OPERATION == 'APPLY_PREFLIGHT' || env.HOST_OPERATION == 'RECOVER_PREFLIGHT')
+        shell: bash
+        env:
+          SOURCE_COMMENT_ID: ${{ inputs.source_comment_id }}
+        run: |
+          set -euo pipefail
+          owner=/usr/local/libexec/sing-box/edge-agent
+          result="${RUNNER_TEMP}/host-native-snapshot.pb"
+          capture="${RUNNER_TEMP}/root-snapshot-diagnose.txt"
+          rm -f "${result}" "${capture}"
+          [[ "${SOURCE_COMMENT_ID}" =~ ^[1-9][0-9]{0,19}$ ]]
+          if sudo -n -l "${owner}" local diagnose >/dev/null 2>&1 &&
+             printf '%s' "${SOURCE_COMMENT_ID}" | sudo -n "${owner}" local diagnose > "${capture}"; then
+            # Never print the base64 transport blob in the Actions log.
+            count="$(grep -c '^host_root_signed_snapshot_b64=' "${capture}" || true)"
+            if [[ "${count}" = 1 ]]; then
+              sed -n 's/^host_root_signed_snapshot_b64=//p' "${capture}" |
+                base64 --decode > "${result}"
+              test -s "${result}"
+              test "$(stat -c '%s' "${result}")" -le 65536
+              echo 'host_root_snapshot=SIGNED_BINARY_PENDING_HOSTED_VERIFICATION'
+            else
+              echo 'host_root_snapshot=UNPROVEN_NO_SINGLE_SIGNED_RECORD'
+            fi
+          else
+            echo 'host_root_snapshot=UNPROVEN_INSTALLED_OWNER'
+          fi
+
       - name: Retain native bounded protobuf as transport evidence
         # Preserve diagnostic bytes even if host-apply failed after BEGIN.
         # Never export local journal contents, Docker logs or credentials.
@@ -393,6 +425,7 @@ jobs:
           path: |
             ${{ runner.temp }}/host-native-observation.pb
             ${{ runner.temp }}/host-native-resources.pb
+            ${{ runner.temp }}/host-native-snapshot.pb
             ${{ runner.temp }}/host-operation/host-result.pb
           if-no-files-found: ignore
           retention-days: 30
@@ -511,6 +544,12 @@ jobs:
             test -f "${resource_report}" && test ! -L "${resource_report}"
             test "$(stat -c '%s' "${resource_report}")" -le 32768
             extra=(--resources-path "${resource_report}")
+          fi
+          if [[ "${TARGET_KIND}" = VM && -s "${out}/host-native-snapshot.pb" ]]; then
+            signed="${out}/host-native-snapshot.pb"
+            test -f "${signed}" && test ! -L "${signed}"
+            test "$(stat -c '%s' "${signed}")" -le 65536
+            extra+=(--signed-snapshot-path "${signed}" --snapshot-comment-id "${SOURCE_COMMENT_ID}")
           fi
           "${owner}" host --hosts-pb "${registry}" \
             --hosts-sha256 "$(sha256sum "${registry}" | cut -d' ' -f1)" \
@@ -631,6 +670,16 @@ jobs:
           [[ "${typed}" =~ ^[A-Z0-9_]{1,96}$ ]]
           body="$(printf 'Host native result for operator command #%s\n\nHost: `%s`\nKind: `%s`\nResult: `%s`\nTyped readback: `%s`\nEvidence: %s\n\n%s\n' \
             "${SOURCE_COMMENT_ID}" "${TARGET_MACHINE}" "${TARGET_KIND}" "${result}" "${typed}" "${run_url}" "${native_note}")"
+          # Display ONLY Rust-verified root-owner evidence, never the
+          # untrusted base64 record, raw Docker log or private journal bytes.
+          if [[ "${TARGET_KIND}" = VM && "${TYPED_OUTCOME}" = success ]]; then
+            report="${RUNNER_TEMP}/host-readback-result.txt"
+            if [[ -f "${report}" && ! -L "${report}" ]] &&
+               grep -Fxq 'host_native_snapshot_proof=VERIFIED_ROOT_SIGNED_READ_ONLY' "${report}"; then
+              signed_lines="$(grep -E '^host_native_snapshot_(pending_count|pending_operation|pending_resource|pending_request_sha256|pending_action|line2_failure_code|line2_restarts|line2_exit|line2_log_sha256|verdict|replay_allowed|mutations)=' "${report}" | head -n 18)"
+              body="${body}$(printf '\nVerified Root Agent read-only diagnostic (Ed25519, same exact Git/ReleaseSet; NO replay permission):\n~~~text\n%s\n~~~\n' "${signed_lines}")"
+            fi
+          fi
           # Summarize only Rust-validated, bounded, structurally correlated
           # per-container evidence. Never parse arbitrary runner protobuf.
           if [[ "${TYPED_OUTCOME}" = success && "${TARGET_KIND}" = VM &&
