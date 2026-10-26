@@ -1216,7 +1216,9 @@ mod native_host_path_tests {
             "HOST_VM_NATIVE_RECREATE_STOP_DEAD_NO_REPLAY"
         );
         assert_eq!(
-            native_vm_replace_error_class("HOST_VM_NATIVE_RECREATE_STOP_INSPECT_UNAVAILABLE_NO_REPLAY"),
+            native_vm_replace_error_class(
+                "HOST_VM_NATIVE_RECREATE_STOP_INSPECT_UNAVAILABLE_NO_REPLAY"
+            ),
             "HOST_VM_NATIVE_RECREATE_STOP_INSPECT_UNAVAILABLE_NO_REPLAY"
         );
         assert_eq!(
@@ -1224,7 +1226,9 @@ mod native_host_path_tests {
             "HOST_VM_NATIVE_RECREATE_STOP_STATE_UNKNOWN_NO_REPLAY"
         );
         assert_eq!(
-            native_vm_replace_error_class("HOST_VM_NATIVE_RECREATE_STOP_IDENTITY_CHANGED_NO_REPLAY"),
+            native_vm_replace_error_class(
+                "HOST_VM_NATIVE_RECREATE_STOP_IDENTITY_CHANGED_NO_REPLAY"
+            ),
             "HOST_VM_NATIVE_RECREATE_STOP_IDENTITY_CHANGED_NO_REPLAY"
         );
         assert_eq!(
