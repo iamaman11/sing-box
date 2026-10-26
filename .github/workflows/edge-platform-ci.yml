@@ -1707,18 +1707,40 @@ jobs:
           candidate_tree="$(gh api "repos/${REPOSITORY}/git/commits/${candidate_revision}" --jq '.tree.sha')"
           test "${accepted_tree}" = "${candidate_tree}"
 
-          # The protected merge itself names the PR number. Reverse
-          # commit->pull associations are eventually consistent and may return
-          # an empty array even for a completed merged PR. Resolve the exact
-          # immutable Git merge subject, then authenticate the numbered PR.
-          # A nonstandard merge title fails closed; no search or guess.
-          merge_subject="$(jq -er '.message | split("\n")[0]' <<<"${accepted_commit}")"
-          merge_pattern='^Merge pull request #([1-9][0-9]*) from iamaman11/[A-Za-z0-9._/-]+$'
-          if [[ ! "${merge_subject}" =~ ${merge_pattern} ]]; then
-            echo "HOST_RELEASE_MERGE_SUBJECT_NOT_CANONICAL" >&2
+          # A commit subject is descriptive, NOT an identity protocol.
+          # Require one exact GitHub merged-PR association for these two
+          # immutable commit parents and the protected main.
+          pr_number=""
+          for page in {1..10}; do
+            merged_prs="$(gh api "repos/${REPOSITORY}/pulls?state=closed&sort=updated&direction=desc&per_page=100&page=${page}")"
+            page_count="$(jq -er 'length' <<<"${merged_prs}")"
+            [[ "${page_count}" =~ ^[0-9]+$ ]]
+            matches="$(jq -cr --arg accepted "${ACCEPTED_REVISION}" --arg candidate "${candidate_revision}" '
+              [.[] | select(
+                .merge_commit_sha == $accepted
+                and .head.sha == $candidate
+                and .state == "closed"
+                and .merged_at != null
+                and .base.ref == "main"
+                and .base.repo.full_name == "iamaman11/sing-box"
+                and .head.repo.full_name == "iamaman11/sing-box"
+              ) | .number]
+            ' <<<"${merged_prs}")"
+            count="$(jq -er 'length' <<<"${matches}")"
+            if (( count > 1 )); then
+              echo "HOST_RELEASE_MERGED_PR_NOT_UNIQUE" >&2
+              exit 1
+            fi
+            if (( count == 1 )); then
+              pr_number="$(jq -er '.[0]' <<<"${matches}")"
+              break
+            fi
+            if (( page_count < 100 )); then break; fi
+          done
+          if [[ ! "${pr_number}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "HOST_RELEASE_MERGED_PR_ID_UNPROVEN" >&2
             exit 1
           fi
-          pr_number="${BASH_REMATCH[1]}"
           trusted_pr="$(gh api "repos/${REPOSITORY}/pulls/${pr_number}")"
           jq -e --arg accepted "${ACCEPTED_REVISION}" --arg candidate "${candidate_revision}" \
             --argjson pr_number "${pr_number}" '

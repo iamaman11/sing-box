@@ -13,6 +13,15 @@ assert not (legacy & actual), f"legacy mutation workflow present: {legacy&actual
 router=(root/"edge-control-plane.yml").read_text(encoding="utf-8")
 native=(root/"host-native-observe.yml").read_text(encoding="utf-8")
 ci=(root/"edge-platform-ci.yml").read_text(encoding="utf-8")
+# Release publication authenticates GitHub's exact two-parent merge and
+# merged PR identity, not the human commit message. This must support
+# ordinary GitHub merge titles and authorized custom titles equally.
+assert "HOST_RELEASE_MERGE_SUBJECT_NOT_CANONICAL" not in ci
+assert 'repos/${REPOSITORY}/pulls?state=closed&sort=updated&direction=desc&per_page=100' in ci
+assert '.merge_commit_sha == $accepted' in ci
+assert '.head.sha == $candidate' in ci
+assert 'HOST_RELEASE_MERGED_PR_NOT_UNIQUE' in ci
+assert 'HOST_RELEASE_MERGED_PR_ID_UNPROVEN' in ci
 assert "  issue_comment:" in router and "  workflow_run:" in router
 # GitHub run titles are public, short navigation labels, never raw commands.
 # /host admin requests carry opaque encoded argv and must stay in signed intents.
