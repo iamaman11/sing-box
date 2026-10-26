@@ -1190,6 +1190,152 @@ mod tests {
     }
 
     #[test]
+    fn historical_partial_recovery_preserves_original_unknown_and_never_verifies_it() {
+        use crate::host_lifecycle::{
+            host_authorization_payload, prepared_host_result, set_host_result_reason,
+            BoundNativeHostArtifacts,
+        };
+        use crate::{FleetNativeOwnerState, FleetNativeReleaseProof};
+        let rng = SystemRandom::new();
+        let pair =
+            Ed25519KeyPair::from_pkcs8(Ed25519KeyPair::generate_pkcs8(&rng).unwrap().as_ref())
+                .unwrap();
+        let host = FleetHost {
+            machine_id: "vm-history".into(),
+            kind: FleetHostKind::Vm as i32,
+            owner: Some(managed_host::Owner::VmMachineId("vm-history".into())),
+            target: Some(FleetHostTarget {
+                run_state: FleetHostRunState::Running as i32,
+                windows_mode: FleetHostMode::Unspecified as i32,
+            }),
+            ..Default::default()
+        };
+        let registry = HostRegistry {
+            schema_version: 1,
+            hosts: vec![host.clone()],
+        };
+        let old = FleetHostIntent {
+            schema_version: 1,
+            machine_id: host.machine_id.clone(),
+            kind: host.kind,
+            resource_id: "sing-box".into(),
+            operation_id: "issue1-comment-100".into(),
+            action: FleetHostAction::Apply as i32,
+            registry_sha256: vec![9; 32],
+            desired_sha256: vec![8; 32],
+            release_set_sha256: vec![7; 32],
+            requested_at_unix: 1000,
+            ..Default::default()
+        };
+        let mut current = old.clone();
+        current.operation_id = "issue1-comment-101".into();
+        current.action = FleetHostAction::Recover as i32;
+        current.registry_sha256 = vec![1; 32];
+        current.desired_sha256 = vec![2; 32];
+        current.release_set_sha256 = vec![3; 32];
+        let bound = BoundNativeHostArtifacts {
+            registry_sha256: current.registry_sha256.clone(),
+            desired_sha256: current.desired_sha256.clone(),
+            release_set_sha256: current.release_set_sha256.clone(),
+            runtime_release_sha256: vec![4; 32],
+        };
+        let mut authorization = FleetHostAuthorization {
+            schema_version: 1,
+            key_id: "worker-v1".into(),
+            operation_id: current.operation_id.clone(),
+            issued_at_unix: 1000,
+            expires_at_unix: 1100,
+            ..Default::default()
+        };
+        authorization.ed25519_signature = pair
+            .sign(&host_authorization_payload(&current, &authorization))
+            .as_ref()
+            .to_vec();
+        let observation = crate::FleetNativeObservation {
+            schema_version: 1,
+            host_kind: host.kind,
+            observed_at_unix: 1020,
+            owner_state: FleetNativeOwnerState::Running as i32,
+            release_proof: FleetNativeReleaseProof::ApplicationBundle as i32,
+            observed_release_sha256: vec![6; 32],
+            runtime_ready: true,
+            runtime_ready_proven: true,
+            ..Default::default()
+        };
+        let dir = std::env::temp_dir().join(format!(
+            "sing-box-partial-recovery-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        fs::create_dir(&dir).unwrap();
+        fs::write(native_scope_pending_path(&dir, &old), old.encode_to_vec()).unwrap();
+        let mut begin = prepared_host_result(&old);
+        begin.state = FleetHostResultState::Authorized as i32;
+        set_host_result_reason(
+            &mut begin,
+            crate::FleetHostResultReason::AuthorizedAwaitNativeReadback,
+        );
+        fs::write(
+            dir.join(format!("{}.pb", journal_hex(old.operation_id.as_bytes()))),
+            begin.encode_to_vec(),
+        )
+        .unwrap();
+        let resolve = |observed: &crate::FleetNativeObservation| {
+            resolve_pending_native_recovery_once(
+                &current,
+                &authorization,
+                &registry,
+                &host,
+                &bound,
+                pair.public_key().as_ref(),
+                &host.machine_id,
+                host.kind,
+                1020,
+                &dir,
+                observed,
+            )
+        };
+        let mut unready = observation.clone();
+        unready.runtime_ready = false;
+        assert_eq!(
+            resolve(&unready).unwrap_err(),
+            "HOST_NATIVE_HISTORICAL_BASELINE_UNPROVEN_NO_REPLAY"
+        );
+        assert!(native_scope_pending_path(&dir, &old).exists());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+        let mut wrong_release = observation.clone();
+        wrong_release.observed_release_sha256 = vec![4; 32];
+        assert_eq!(
+            resolve(&wrong_release).unwrap_err(),
+            "HOST_NATIVE_HISTORICAL_BASELINE_UNPROVEN_NO_REPLAY"
+        );
+        assert!(native_scope_pending_path(&dir, &old).exists());
+        let result = resolve(&observation).unwrap();
+        assert_eq!(result.state, FleetHostResultState::Observed as i32);
+        assert!(!result.physical_readback);
+        assert_eq!(
+            result.reason,
+            crate::FleetHostResultReason::HistoricalPartialRequiresFreshApply as i32
+        );
+        assert!(!native_scope_pending_path(&dir, &old).exists());
+        let prior_id = journal_hex(old.operation_id.as_bytes());
+        let incomplete = crate::host_lifecycle::decode_host_result(
+            &fs::read(dir.join(format!("{prior_id}.incomplete.pb"))).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(incomplete.state, FleetHostResultState::UnknownNoReplay as i32);
+        assert!(!incomplete.physical_readback);
+        assert_eq!(incomplete.operation_id, old.operation_id);
+        assert!(!dir.join(format!("{prior_id}.verified.pb")).exists());
+        assert!(dir.join(format!(
+            "{}.observed.pb",
+            journal_hex(current.operation_id.as_bytes())
+        )).exists());
+        assert!(resolve(&observation).is_err()); // Old gate never re-created or re-executed.
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn durable_native_admission_never_replays_and_requires_signature() {
         let rng = SystemRandom::new();
         let pair =
