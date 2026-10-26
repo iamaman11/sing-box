@@ -692,6 +692,55 @@ fn native_vm_install_error_class(source: &str, phase: NativeVmInstallFailurePhas
     }
 }
 
+/// Root-owned post-BEGIN stage identity. Only closed, non-sensitive native
+/// error constants may become signed journal reasons or operator diagnostics.
+/// Never include arbitrary Docker daemon errors, command output or secrets.
+fn native_vm_replace_error_class(code: &str) -> &'static str {
+    match code {
+        "HOST_VM_NATIVE_RECREATE_STOP_UNCERTAIN_NO_REPLAY" => {
+            "HOST_VM_NATIVE_RECREATE_STOP_UNCERTAIN_NO_REPLAY"
+        }
+        "HOST_VM_NATIVE_RECREATE_DELETE_UNCERTAIN_NO_REPLAY" => {
+            "HOST_VM_NATIVE_RECREATE_DELETE_UNCERTAIN_NO_REPLAY"
+        }
+        "HOST_VM_NATIVE_RECREATE_CREATE_UNCERTAIN_NO_REPLAY" => {
+            "HOST_VM_NATIVE_RECREATE_CREATE_UNCERTAIN_NO_REPLAY"
+        }
+        "HOST_VM_NATIVE_RECREATE_START_UNCERTAIN_NO_REPLAY" => {
+            "HOST_VM_NATIVE_RECREATE_START_UNCERTAIN_NO_REPLAY"
+        }
+        "HOST_VM_NATIVE_RECREATE_NEW_ID_UNPROVEN_NO_REPLAY" => {
+            "HOST_VM_NATIVE_RECREATE_NEW_ID_UNPROVEN_NO_REPLAY"
+        }
+        "HOST_VM_INSTALL_PULL_TIMEOUT_NO_REPLAY" => "HOST_VM_INSTALL_PULL_TIMEOUT_NO_REPLAY",
+        "HOST_VM_INSTALL_PULL_ACK_UNCERTAIN_NO_REPLAY" => {
+            "HOST_VM_INSTALL_PULL_ACK_UNCERTAIN_NO_REPLAY"
+        }
+        "HOST_VM_IMAGE_STAGE_UNCERTAIN_NO_REPLAY" => "HOST_VM_IMAGE_STAGE_UNCERTAIN_NO_REPLAY",
+        "HOST_VM_IMAGE_STAGE_PERMISSIONS_UNCERTAIN_NO_REPLAY" => {
+            "HOST_VM_IMAGE_STAGE_PERMISSIONS_UNCERTAIN_NO_REPLAY"
+        }
+        "HOST_VM_IMAGE_ACTIVATE_UNCERTAIN_NO_REPLAY" => {
+            "HOST_VM_IMAGE_ACTIVATE_UNCERTAIN_NO_REPLAY"
+        }
+        "HOST_VM_IMAGE_SYNC_UNCERTAIN_NO_REPLAY" => "HOST_VM_IMAGE_SYNC_UNCERTAIN_NO_REPLAY",
+        "HOST_VM_IMAGE_CONFIG_POSTSTATE_UNPROVEN_NO_REPLAY" => {
+            "HOST_VM_IMAGE_CONFIG_POSTSTATE_UNPROVEN_NO_REPLAY"
+        }
+        "HOST_VM_IMAGE_GRAPH_POSTSTATE_UNPROVEN_NO_REPLAY" => {
+            "HOST_VM_IMAGE_GRAPH_POSTSTATE_UNPROVEN_NO_REPLAY"
+        }
+        "HOST_VM_IMAGE_GATEWAY_NOT_RECREATED_NO_REPLAY" => {
+            "HOST_VM_IMAGE_GATEWAY_NOT_RECREATED_NO_REPLAY"
+        }
+        "HOST_VM_IMAGE_WARP_NOT_RECREATED_NO_REPLAY" => {
+            "HOST_VM_IMAGE_WARP_NOT_RECREATED_NO_REPLAY"
+        }
+        "HOST_VM_IMAGE_RELEASE_UNCERTAIN_NO_REPLAY" => "HOST_VM_IMAGE_RELEASE_UNCERTAIN_NO_REPLAY",
+        _ => "HOST_NATIVE_VM_REPLACE_UNCERTAIN_NO_REPLAY",
+    }
+}
+
 /// The existing installed root agent is the *only* mutation authority.
 /// Fail closed while the native root has not received the exact immutable
 /// release and pinned signer material; no implicit provision or fetch.
@@ -956,7 +1005,11 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
                         .block_on(super::docker_observation::apply_native_vm_replace_once(
                             stack_dir, host, proposal,
                         ))
-                        .map_err(|_| "HOST_NATIVE_VM_REPLACE_UNCERTAIN_NO_REPLAY")
+                        .map_err(|error| {
+                            let reason = native_vm_replace_error_class(&error);
+                            eprintln!("host_native_replace_failure={reason}");
+                            reason
+                        })
                 }
                 FleetHostPlannedStep::Install => {
                     let plan = prepared_install
@@ -1071,6 +1124,22 @@ mod native_host_path_tests {
         assert!(verify_installed_native_vm_file(&root, "docker-compose.yml", exact).is_err());
         fs::remove_file(root.join("docker-compose.yml")).unwrap();
         fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn native_vm_replace_error_reason_is_stage_specific_and_closed() {
+        assert_eq!(
+            native_vm_replace_error_class("HOST_VM_NATIVE_RECREATE_STOP_UNCERTAIN_NO_REPLAY"),
+            "HOST_VM_NATIVE_RECREATE_STOP_UNCERTAIN_NO_REPLAY"
+        );
+        assert_eq!(
+            native_vm_replace_error_class("HOST_VM_IMAGE_ACTIVATE_UNCERTAIN_NO_REPLAY"),
+            "HOST_VM_IMAGE_ACTIVATE_UNCERTAIN_NO_REPLAY"
+        );
+        assert_eq!(
+            native_vm_replace_error_class("password=secret"),
+            "HOST_NATIVE_VM_REPLACE_UNCERTAIN_NO_REPLAY"
+        );
     }
 
     #[test]

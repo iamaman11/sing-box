@@ -2226,6 +2226,25 @@ impl ScopedVmService {
     }
 }
 
+/// A desired file is not a physical Docker readback. Keep this comparison
+/// separate from graph diff so old containers behind new .images.env pins
+/// are always recognized before a fresh, separately authorized operation.
+fn owned_runtime_image_drift(refs: &HashMap<String, String>, owned: &[OwnedVmContainer]) -> bool {
+    owned
+        .iter()
+        .any(|item| refs.get(&item.service) != Some(&item.image_ref))
+}
+
+fn verified_image_transition(
+    old_id: &str,
+    old_image: &str,
+    now_id: &str,
+    now_image: &str,
+    target: &str,
+) -> bool {
+    now_image == target && ((now_id != old_id) == (old_image != target))
+}
+
 /// One paired, dependency-aware image resource update. The shared image
 /// belongs to both Line1 and Line2. Changing one service independently would
 /// leave a false "desired converged" claim. WARP and Mesh are never adopted.
@@ -2436,6 +2455,7 @@ async fn preflight_gateway_image_replace(
     stack_dir: &Path,
     host: &FleetHost,
     request: &ApplyBundleRequest,
+    staged_runtime_drift: bool,
 ) -> Result<NativeVmGatewayImageReplacePlan, String> {
     let (bundle_id, digest) = super::validate_digest_bound_bundle_request(request)?;
     if super::read_application_release(stack_dir)
@@ -2445,8 +2465,24 @@ async fn preflight_gateway_image_replace(
     {
         return Err("HOST_VM_IMAGE_RELEASE_ALREADY_INSTALLED".into());
     }
-    let (previous_images, new_images, new_gateway_image, new_warp_image) =
-        select_gateway_image_policy(stack_dir, request)?;
+    let (previous_images, new_images, new_gateway_image, policy_warp_image) =
+        if staged_runtime_drift {
+            // A previous signed BEGIN may have committed image pins before Docker
+            // stopped. The old journal must have been separately adjudicated;
+            // never pretend that matching file bytes prove running image parity.
+            verify_exact_installed_vm_bundle_static(stack_dir, request)?;
+            let images = exact_vm_policy_file(stack_dir, ".images.env")?;
+            let pins = parse_vm_release_image_pins(&images)?;
+            let gateway = pins["EDGE_GATEWAY_IMAGE"].clone();
+            (
+                images.clone(),
+                images,
+                gateway,
+                Some(pins["EDGE_WARP_EGRESS_IMAGE"].clone()),
+            )
+        } else {
+            select_gateway_image_policy(stack_dir, request)?
+        };
     for service in [ScopedVmService::Line1, ScopedVmService::Line2] {
         service.container_name(host)?;
     }
@@ -2469,7 +2505,7 @@ async fn preflight_gateway_image_replace(
             changed += 1;
         }
     }
-    if let Some(ref image) = new_warp_image {
+    if let Some(ref image) = policy_warp_image {
         let warp = target_graph
             .resources
             .iter_mut()
@@ -2482,7 +2518,7 @@ async fn preflight_gateway_image_replace(
         warp.image_ref.clone_from(image);
         changed += 1;
     }
-    if changed != 2 + usize::from(new_warp_image.is_some()) {
+    if changed != 2 + usize::from(policy_warp_image.is_some()) {
         return Err("HOST_VM_IMAGE_REGISTERED_SERVICES_INCOMPLETE".into());
     }
     edge_shared_types::host_resources::validate_vm_desired_graph(&target_graph, host)
@@ -2495,12 +2531,33 @@ async fn preflight_gateway_image_replace(
     bind_owned_vm_compose_dependencies(stack_dir, &host.vm_containers, &mut owned)?;
     owned_vm_start_order(&owned)?;
     let expected_images = read_vm_expected_image_refs(stack_dir, &host.vm_containers)?;
-    if owned
-        .iter()
-        .any(|item| expected_images.get(&item.service) != Some(&item.image_ref))
-    {
-        return Err("HOST_VM_IMAGE_PREVIOUS_IDENTITY_DRIFT".into());
+    let pins = parse_vm_release_image_pins(&new_images)?;
+    let target_warp = &pins["EDGE_WARP_EGRESS_IMAGE"];
+    // A fresh signed intent may safely finish a previously adjudicated
+    // transition. Only registered, owned containers on an exact old or
+    // desired repository digest qualify; foreign images fail before BEGIN.
+    for item in &owned {
+        let (target, repository) = match item.service.as_str() {
+            "line1-gateway" | "line2-proxy" => (
+                new_gateway_image.as_str(),
+                "ghcr.io/iamaman11/vultr-edge-gateway",
+            ),
+            "warp-egress" => (target_warp.as_str(), "ghcr.io/iamaman11/vultr-warp-egress"),
+            _ => return Err("HOST_VM_IMAGE_UNREGISTERED_RUNTIME_SERVICE".into()),
+        };
+        super::validate_exact_image_ref("EDGE_IMAGE", &item.image_ref, repository)?;
+        if item.image_ref != target
+            && !staged_runtime_drift
+            && expected_images.get(&item.service) != Some(&item.image_ref)
+        {
+            return Err("HOST_VM_IMAGE_PREVIOUS_IDENTITY_DRIFT".into());
+        }
     }
+    let new_warp_image = owned
+        .iter()
+        .find(|item| item.service == "warp-egress")
+        .filter(|item| item.image_ref != *target_warp)
+        .map(|_| target_warp.clone());
     for service in [ScopedVmService::Line1, ScopedVmService::Line2] {
         verify_running_container_config_binding(
             service.container_name(host)?,
@@ -2526,16 +2583,21 @@ async fn preflight_gateway_image_replace(
     };
     let mut prepared_gateways = Vec::new();
     for service in ["line2-proxy", "line1-gateway"] {
-        prepared_gateways.push((
-            service.to_owned(),
-            native_gateway_create_body(
-                stack_dir,
-                host,
-                service,
-                &new_gateway_image,
-                &edge_network_id,
-            )?,
-        ));
+        if owned
+            .iter()
+            .any(|item| item.service == service && item.image_ref != new_gateway_image)
+        {
+            prepared_gateways.push((
+                service.to_owned(),
+                native_gateway_create_body(
+                    stack_dir,
+                    host,
+                    service,
+                    &new_gateway_image,
+                    &edge_network_id,
+                )?,
+            ));
+        }
     }
     let compose_sha256 = native_vm_compose_digest(stack_dir)?;
     let identities = host
@@ -2593,27 +2655,9 @@ async fn apply_gateway_image_replace_once(
         pull_native_vm_image_once(&docker, image).await?;
     }
 
-    let staging = stack_dir.join(".images.env.next");
-    if fs::symlink_metadata(&staging).is_ok() {
-        return Err("HOST_VM_IMAGE_STAGING_EXISTS_NO_REPLAY".into());
-    }
-    // The shared signed native journal has already persisted BEGIN. No
-    // automatic rollback/retry can be safe if either Compose ACK is lost.
-    fs::write(&staging, &plan.new_images).map_err(|_| "HOST_VM_IMAGE_STAGE_UNCERTAIN_NO_REPLAY")?;
-    super::set_bundle_file_permissions(&staging, false, false)
-        .map_err(|_| "HOST_VM_IMAGE_STAGE_PERMISSIONS_UNCERTAIN_NO_REPLAY")?;
-    fs::rename(&staging, stack_dir.join(".images.env"))
-        .map_err(|_| "HOST_VM_IMAGE_ACTIVATE_UNCERTAIN_NO_REPLAY")?;
-    fs::File::open(stack_dir)
-        .and_then(|directory| directory.sync_all())
-        .map_err(|_| "HOST_VM_IMAGE_SYNC_UNCERTAIN_NO_REPLAY")?;
-    let image_vars = super::read_exact_image_environment(stack_dir)?;
-    if image_vars.get("EDGE_GATEWAY_IMAGE") != Some(&plan.new_gateway_image)
-        || (plan.new_warp_image.is_some()
-            && image_vars.get("EDGE_WARP_EGRESS_IMAGE") != plan.new_warp_image.as_ref())
-    {
-        return Err("HOST_VM_IMAGE_ENV_NOT_CONVERGED_NO_REPLAY".into());
-    }
+    // The previous implementation committed .images.env before stopping WARP.
+    // Keep old pins durable until all Docker transitions pass their readback.
+    // Signed journal BEGIN still prohibits replay of an uncertain Docker ACK.
     // WARP is a dependency of BOTH gateways: recreate it first, then the
     // two gateways, inside one durable native BEGIN. No Compose or shell.
     if let Some(body) = plan.prepared_warp {
@@ -2666,7 +2710,13 @@ async fn apply_gateway_image_replace_once(
             "line1-gateway" | "line2-proxy"
         );
         if gateway {
-            if current.id == *old_id || current.image_ref != plan.new_gateway_image {
+            if !verified_image_transition(
+                old_id,
+                old_image,
+                &current.id,
+                &current.image_ref,
+                &plan.new_gateway_image,
+            ) {
                 return Err("HOST_VM_IMAGE_GATEWAY_NOT_RECREATED_NO_REPLAY".into());
             }
         } else if selector.compose_service == "warp-egress" && plan.new_warp_image.is_some() {
@@ -2676,6 +2726,33 @@ async fn apply_gateway_image_replace_once(
         } else if current.id != *old_id || current.image_ref != *old_image {
             return Err("HOST_VM_IMAGE_NEIGHBOUR_CHANGED_NO_REPLAY".into());
         }
+    }
+    // Commit the image policy only after exact Docker IDs/images and network
+    // have been checked. If this commit itself fails, later signed recovery
+    // can observe target containers with old pins and finish without replay.
+    if plan.previous_images != plan.new_images {
+        let staging = stack_dir.join(".images.env.next");
+        if fs::symlink_metadata(&staging).is_ok() {
+            return Err("HOST_VM_IMAGE_STAGING_EXISTS_NO_REPLAY".into());
+        }
+        fs::write(&staging, &plan.new_images)
+            .map_err(|_| "HOST_VM_IMAGE_STAGE_UNCERTAIN_NO_REPLAY")?;
+        super::set_bundle_file_permissions(&staging, false, false)
+            .map_err(|_| "HOST_VM_IMAGE_STAGE_PERMISSIONS_UNCERTAIN_NO_REPLAY")?;
+        fs::rename(&staging, stack_dir.join(".images.env"))
+            .map_err(|_| "HOST_VM_IMAGE_ACTIVATE_UNCERTAIN_NO_REPLAY")?;
+        fs::File::open(stack_dir)
+            .and_then(|directory| directory.sync_all())
+            .map_err(|_| "HOST_VM_IMAGE_SYNC_UNCERTAIN_NO_REPLAY")?;
+    }
+    let image_vars = super::read_exact_image_environment(stack_dir)?;
+    if image_vars.get("EDGE_GATEWAY_IMAGE") != Some(&plan.new_gateway_image)
+        || plan
+            .new_warp_image
+            .as_ref()
+            .is_some_and(|pin| image_vars.get("EDGE_WARP_EGRESS_IMAGE") != Some(pin))
+    {
+        return Err("HOST_VM_IMAGE_ENV_NOT_CONVERGED_NO_REPLAY".into());
     }
     for service in [ScopedVmService::Line1, ScopedVmService::Line2] {
         verify_running_container_config_binding(
@@ -2743,7 +2820,7 @@ pub(crate) async fn preflight_native_vm_replace(
                 "line1-gateway" | "line2-proxy"
             )
         });
-    let gateway_pair = (changed.len() == 2 || changed.len() == 3)
+    let graph_gateway_pair = (changed.len() == 2 || changed.len() == 3)
         && changed.iter().all(|resource| {
             resource.change == FleetVmPolicyChange::ImageReplaced as i32
                 && resource.resource_kind == Kind::DockerContainer as i32
@@ -2757,6 +2834,24 @@ pub(crate) async fn preflight_native_vm_replace(
             owners == BTreeSet::from(["line1-gateway", "line2-proxy"])
                 || owners == BTreeSet::from(["line1-gateway", "line2-proxy", "warp-egress"])
         };
+    // A fully matching Git-owned image policy can still conceal a partially
+    // completed prior ReplaceRelease: inspect actual owned Docker images,
+    // never mistake policy equality for physical parity.
+    let staged_runtime_drift = if changed.is_empty() {
+        let docker = docker_connection().await?;
+        let mut owned = owned_application_container_ids(&docker, &host.vm_containers).await?;
+        if owned.len() != host.vm_containers.len() || owned.iter().any(|item| !item.running) {
+            return Err("HOST_VM_IMAGE_RUNTIME_INCOMPLETE_NO_REPLAY".into());
+        }
+        bind_owned_vm_compose_dependencies(stack_dir, &host.vm_containers, &mut owned)?;
+        let network = read_owned_edge_network_id(&docker, host).await?;
+        verify_vm_network_attachments(&docker, host, &owned, &network).await?;
+        let pins = read_vm_expected_image_refs(stack_dir, &host.vm_containers)?;
+        owned_runtime_image_drift(&pins, &owned)
+    } else {
+        false
+    };
+    let gateway_pair = graph_gateway_pair || staged_runtime_drift;
     // A signed ReleaseSet may also mutate exactly one non-secret file
     // inside root-owned stack/managed. Changes to network/container/Compose
     // are never reinterpreted as file actions.
@@ -2770,12 +2865,12 @@ pub(crate) async fn preflight_native_vm_replace(
             .find(|file| file.relative_path == ".images.env")
             .ok_or("HOST_VM_REPLACE_IMAGE_ENV_MISSING")?;
         let current = exact_vm_policy_file(stack_dir, ".images.env")?;
-        if (images.content != current) != gateway_pair {
+        if (images.content != current) != graph_gateway_pair {
             return Err("HOST_VM_RECONCILE_IMAGE_SCOPE_CONFLICT".into());
         }
     }
     let plan = if gateway_pair {
-        preflight_gateway_image_replace(stack_dir, host, request)
+        preflight_gateway_image_replace(stack_dir, host, request, staged_runtime_drift)
             .await
             .map(NativeVmReplacePlan::GatewayImage)?
     } else if config_only {
@@ -4184,3 +4279,84 @@ mod native_vm_install_policy_tests;
 #[cfg(test)]
 #[path = "docker_observation_native_vm_gateway_policy_tests.rs"]
 mod native_vm_gateway_policy_tests;
+
+#[cfg(test)]
+mod native_vm_partial_image_reconcile_tests {
+    use super::*;
+
+    fn running(service: &str, image: &str) -> OwnedVmContainer {
+        OwnedVmContainer {
+            id: "a".repeat(64),
+            running: true,
+            service: service.to_owned(),
+            image_ref: image.to_owned(),
+            dependencies: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn staged_policy_does_not_hide_real_docker_image_drift() {
+        let old_gateway = format!(
+            "ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}",
+            "a".repeat(64)
+        );
+        let new_gateway = format!(
+            "ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}",
+            "b".repeat(64)
+        );
+        let old_warp = format!(
+            "ghcr.io/iamaman11/vultr-warp-egress@sha256:{}",
+            "c".repeat(64)
+        );
+        let new_warp = format!(
+            "ghcr.io/iamaman11/vultr-warp-egress@sha256:{}",
+            "d".repeat(64)
+        );
+        let refs = HashMap::from([
+            ("line1-gateway".to_owned(), new_gateway.clone()),
+            ("line2-proxy".to_owned(), new_gateway.clone()),
+            ("warp-egress".to_owned(), new_warp.clone()),
+        ]);
+        let old = vec![
+            running("line1-gateway", &old_gateway),
+            running("line2-proxy", &old_gateway),
+            running("warp-egress", &old_warp),
+        ];
+        assert!(owned_runtime_image_drift(&refs, &old));
+        let mixed = vec![
+            running("line1-gateway", &new_gateway),
+            running("line2-proxy", &old_gateway),
+            running("warp-egress", &new_warp),
+        ];
+        assert!(owned_runtime_image_drift(&refs, &mixed));
+        let converged = vec![
+            running("line1-gateway", &new_gateway),
+            running("line2-proxy", &new_gateway),
+            running("warp-egress", &new_warp),
+        ];
+        assert!(!owned_runtime_image_drift(&refs, &converged));
+    }
+
+    #[test]
+    fn replacement_readback_requires_exact_id_and_image_transition() {
+        let old_id = "a".repeat(64);
+        let next_id = "b".repeat(64);
+        let previous = "old@sha256:111";
+        let desired = "new@sha256:222";
+        assert!(verified_image_transition(
+            &old_id, previous, &next_id, desired, desired
+        ));
+        assert!(!verified_image_transition(
+            &old_id, previous, &old_id, desired, desired
+        ));
+        assert!(!verified_image_transition(
+            &old_id, previous, &next_id, previous, desired
+        ));
+        assert!(verified_image_transition(
+            &old_id, desired, &old_id, desired, desired
+        ));
+        assert!(!verified_image_transition(
+            &old_id, desired, &next_id, desired, desired
+        ));
+    }
+}

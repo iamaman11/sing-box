@@ -318,7 +318,11 @@ pub(super) async fn recreate_native_vm_container_once(
         .inspect_image(expected_image)
         .await
         .map_err(|_| "HOST_VM_NATIVE_RECREATE_PINNED_IMAGE_MISSING_NO_REPLAY")?;
-    docker
+    // Docker can report a failed/lost STOP ACK even though it already
+    // stopped the exact container. Never issue a second STOP. Independently
+    // inspect the SAME owned immutable ID under the existing root journal
+    // and owner lock; only a proved stopped state may proceed to DELETE.
+    let stop_ack = docker
         .stop_container(
             previous_id,
             Some(
@@ -327,8 +331,35 @@ pub(super) async fn recreate_native_vm_container_once(
                     .build(),
             ),
         )
+        .await;
+    let stopped = docker
+        .inspect_container(previous_id, None)
         .await
         .map_err(|_| "HOST_VM_NATIVE_RECREATE_STOP_UNCERTAIN_NO_REPLAY")?;
+    if stopped.id.as_deref() != Some(previous_id)
+        || stopped.name.as_deref() != Some(format!("/{}", selector.container_name).as_str())
+        || !stopped.state.as_ref().is_some_and(|state| {
+            state.running == Some(false)
+                && state.paused != Some(true)
+                && state.restarting != Some(true)
+        })
+    {
+        return Err("HOST_VM_NATIVE_RECREATE_STOP_UNCERTAIN_NO_REPLAY".into());
+    }
+    let stopped_labels = stopped
+        .config
+        .as_ref()
+        .and_then(|config| config.labels.as_ref())
+        .ok_or("HOST_VM_NATIVE_RECREATE_STOP_OWNER_UNPROVEN_NO_REPLAY")?;
+    exact_application_compose_owner(
+        &selector.container_name,
+        stopped_labels,
+        &host.vm_containers,
+    )
+    .map_err(|_| "HOST_VM_NATIVE_RECREATE_STOP_OWNER_UNPROVEN_NO_REPLAY")?;
+    if stop_ack.is_err() {
+        eprintln!("host_native_docker_stop_ack=RECONCILED_BY_EXACT_STOPPED_ID");
+    }
     docker
         .remove_container(
             previous_id,
