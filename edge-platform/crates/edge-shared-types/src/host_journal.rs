@@ -671,6 +671,41 @@ fn verify_read_only_recovery_state(
     }
 }
 
+/// Classify an old, different Git release as incomplete. The new
+/// root-signed RECOVER only proves a *known current baseline*, not that the
+/// historical effect succeeded. No Docker command can be dispatched here.
+fn verify_historical_partial_recovery_state(
+    host: &crate::FleetHost,
+    observed: &crate::FleetNativeObservation,
+    current_release: &[u8],
+    now_unix: u64,
+) -> Result<crate::FleetHostResultReason, &'static str> {
+    use crate::{
+        FleetHostKind, FleetHostRunState, FleetNativeOwnerState, FleetNativeReleaseProof,
+        host_lifecycle::validate_native_observation,
+    };
+    validate_native_observation(observed)?;
+    if host.kind != FleetHostKind::Vm as i32
+        || host.target.as_ref().map(|target| target.run_state)
+            != Some(FleetHostRunState::Running as i32)
+        || observed.host_kind != host.kind
+        || observed.observed_at_unix > now_unix.saturating_add(60)
+        || now_unix.saturating_sub(observed.observed_at_unix) > 300
+        || !observed.reason_codes.is_empty()
+        || observed.owner_state != FleetNativeOwnerState::Running as i32
+        || observed.release_proof != FleetNativeReleaseProof::ApplicationBundle as i32
+        || !observed.runtime_ready_proven
+        || !observed.runtime_ready
+        || current_release.len() != 32
+        || observed.observed_release_sha256.len() != 32
+        || observed.observed_release_sha256.iter().all(|byte| *byte == 0)
+        || observed.observed_release_sha256 == current_release
+    {
+        return Err("HOST_NATIVE_HISTORICAL_BASELINE_UNPROVEN_NO_REPLAY");
+    }
+    Ok(crate::FleetHostResultReason::HistoricalPartialRequiresFreshApply)
+}
+
 /// Reconcile a durable previous BEGIN WITHOUT repeating its native effect.
 /// The original root/SYSTEM journal remains the sole mutation authority.
 /// A new separately signed RECOVER is consumed as its own read-only receipt.
@@ -698,9 +733,6 @@ fn resolve_pending_native_recovery_once(
         || original.kind != intent.kind
         || original.resource_id != intent.resource_id
         || original.operation_id == intent.operation_id
-        || original.registry_sha256 != intent.registry_sha256
-        || original.desired_sha256 != intent.desired_sha256
-        || original.release_set_sha256 != intent.release_set_sha256
         || !matches!(
             FleetHostAction::try_from(original.action),
             Ok(FleetHostAction::Apply | FleetHostAction::Recover)
@@ -727,29 +759,68 @@ fn resolve_pending_native_recovery_once(
     {
         return Err("HOST_NATIVE_RECOVERY_BEGIN_MISMATCH");
     }
-    let verdict = verify_read_only_recovery_state(
-        selected,
-        observed,
-        &bound.runtime_release_sha256,
-        now_unix,
-    )?;
+    // Exact original release can use the existing full-convergence VERIFY.
+    // If the original source differs, a fresh Worker-signed RECOVER may only
+    // classify an old whole-VM APPLY as incomplete against a proven running
+    // native baseline. Never misrepresent a different release as original
+    // success, regardless of what Docker reports.
+    let historical_drift = original.registry_sha256 != intent.registry_sha256
+        || original.desired_sha256 != intent.desired_sha256
+        || original.release_set_sha256 != intent.release_set_sha256;
+    if historical_drift
+        && (original.action != FleetHostAction::Apply as i32
+            || original.resource_id != "sing-box"
+            || selected.kind != crate::FleetHostKind::Vm as i32)
+    {
+        return Err("HOST_NATIVE_HISTORICAL_SCOPE_UNSUPPORTED_NO_REPLAY");
+    }
+    let verdict = if historical_drift {
+        verify_historical_partial_recovery_state(
+            selected,
+            observed,
+            &bound.runtime_release_sha256,
+            now_unix,
+        )?
+    } else {
+        verify_read_only_recovery_state(
+            selected,
+            observed,
+            &bound.runtime_release_sha256,
+            now_unix,
+        )?
+    };
+    let partial = verdict == crate::FleetHostResultReason::HistoricalPartialRequiresFreshApply;
     let mut prior_result = FleetHostResult {
         schema_version: 1,
         machine_id: original.machine_id.clone(),
         resource_id: original.resource_id.clone(),
         operation_id: original.operation_id.clone(),
         action: original.action,
-        state: FleetHostResultState::Verified as i32,
+        state: if partial {
+            FleetHostResultState::UnknownNoReplay as i32
+        } else {
+            FleetHostResultState::Verified as i32
+        },
         release_set_sha256: original.release_set_sha256.clone(),
         desired_sha256: original.desired_sha256.clone(),
         observed_at_unix: observed.observed_at_unix,
         error_class: String::new(),
         next_action: String::new(),
-        physical_readback: true,
+        // An incomplete historic action has a known NEW baseline, not a
+        // completed original physical effect. Never set VERIFIED evidence.
+        physical_readback: !partial,
         reason: 0,
     };
     crate::host_lifecycle::set_host_result_reason(&mut prior_result, verdict);
-    let prior_terminal = journal_dir.join(format!("{prior_id}.verified.pb"));
+    let terminal_name = if partial { "incomplete" } else { "verified" };
+    let opposite = journal_dir.join(format!(
+        "{prior_id}.{}.pb",
+        if partial { "verified" } else { "incomplete" }
+    ));
+    if fs::symlink_metadata(opposite).is_ok() {
+        return Err("HOST_NATIVE_RECOVERY_CONFLICTING_TERMINAL");
+    }
+    let prior_terminal = journal_dir.join(format!("{prior_id}.{terminal_name}.pb"));
     match fs::symlink_metadata(&prior_terminal) {
         Ok(_) => {
             // A crash after terminal sync but before unlocking the scope
@@ -758,8 +829,11 @@ fn resolve_pending_native_recovery_once(
                 &fs::read(&prior_terminal)
                     .map_err(|_| "HOST_NATIVE_RECOVERY_TERMINAL_UNREADABLE")?,
             )?;
-            if exact.state != FleetHostResultState::Verified as i32
-                || !exact.physical_readback
+            if exact.state != prior_result.state
+                || exact.physical_readback != prior_result.physical_readback
+                || exact.reason != prior_result.reason
+                || exact.error_class != prior_result.error_class
+                || exact.next_action != prior_result.next_action
                 || exact.machine_id != original.machine_id
                 || exact.resource_id != original.resource_id
                 || exact.operation_id != original.operation_id
@@ -778,7 +852,7 @@ fn resolve_pending_native_recovery_once(
             store_native_terminal_and_unlock_once(
                 &original,
                 &prior_result,
-                "verified",
+                terminal_name,
                 journal_dir,
             )?;
         }
@@ -961,9 +1035,15 @@ fn store_native_terminal_and_unlock_once(
             (terminal, FleetHostResultState::try_from(result.state)),
             ("verified", Ok(FleetHostResultState::Verified))
                 | ("observed", Ok(FleetHostResultState::Observed))
+                | ("incomplete", Ok(FleetHostResultState::UnknownNoReplay))
         )
         || (terminal == "observed" && result.physical_readback)
         || (terminal == "verified" && !result.physical_readback)
+        || (terminal == "incomplete"
+            && (result.physical_readback
+                || result.reason
+                    != crate::FleetHostResultReason::HistoricalPartialRequiresFreshApply as i32))
+        || crate::host_lifecycle::validate_host_result_reason(result).is_err()
     {
         return Err("HOST_TERMINAL_RESULT_INVALID");
     }
