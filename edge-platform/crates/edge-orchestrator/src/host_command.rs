@@ -228,7 +228,7 @@ pub(crate) fn run(
     let (command, signed_diagnose_alias) = match command {
         HostCommand::Diagnose { machine_id, argv }
             if argv.len() == 1
-                && !argv[0].is_empty()
+                && argv[0].starts_with("eyJ") // Base64URL of a JSON object starting with {\".
                 && argv[0].len() <= 24000
                 && argv[0]
                     .bytes()
