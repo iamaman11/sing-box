@@ -2358,8 +2358,7 @@ fn application_image_policy_delta(
     }
     let target_warp = &requested["EDGE_WARP_EGRESS_IMAGE"];
     let old_warp = &previous["EDGE_WARP_EGRESS_IMAGE"];
-    let desired_text =
-        std::str::from_utf8(desired).map_err(|_| "HOST_VM_IMAGE_TARGET_NOT_UTF8")?;
+    let desired_text = std::str::from_utf8(desired).map_err(|_| "HOST_VM_IMAGE_TARGET_NOT_UTF8")?;
     let normalized = desired_text.replace(
         &format!("EDGE_WARP_EGRESS_IMAGE={target_warp}"),
         &format!("EDGE_WARP_EGRESS_IMAGE={old_warp}"),
@@ -4081,18 +4080,35 @@ mod vm_native_start_order_tests {
     fn paired_gateway_and_warp_images_use_one_exact_release_policy() {
         let old = format!(
             "EDGE_GATEWAY_IMAGE=ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}\nEDGE_WARP_EGRESS_IMAGE=ghcr.io/iamaman11/vultr-warp-egress@sha256:{}\nCLOUDFLARE_MESH_IMAGE=docker.io/cloudflare/mesh@sha256:{}\n",
-            "a".repeat(64), "b".repeat(64), "c".repeat(64)
+            "a".repeat(64),
+            "b".repeat(64),
+            "c".repeat(64)
         );
-        let next_gateway = format!("ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}", "d".repeat(64));
-        let next_warp = format!("ghcr.io/iamaman11/vultr-warp-egress@sha256:{}", "e".repeat(64));
-        let gateway_only = old.replace(&format!("ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}", "a".repeat(64)), &next_gateway);
+        let next_gateway = format!(
+            "ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}",
+            "d".repeat(64)
+        );
+        let next_warp = format!(
+            "ghcr.io/iamaman11/vultr-warp-egress@sha256:{}",
+            "e".repeat(64)
+        );
+        let gateway_only = old.replace(
+            &format!(
+                "ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}",
+                "a".repeat(64)
+            ),
+            &next_gateway,
+        );
         assert_eq!(
             application_image_policy_delta(old.as_bytes(), gateway_only.as_bytes()).unwrap(),
             (next_gateway.clone(), None)
         );
         let both = gateway_only.replace(
-            &format!("ghcr.io/iamaman11/vultr-warp-egress@sha256:{}", "b".repeat(64)),
-            &next_warp
+            &format!(
+                "ghcr.io/iamaman11/vultr-warp-egress@sha256:{}",
+                "b".repeat(64)
+            ),
+            &next_warp,
         );
         assert_eq!(
             application_image_policy_delta(old.as_bytes(), both.as_bytes()).unwrap(),
