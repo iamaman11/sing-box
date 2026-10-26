@@ -2510,17 +2510,11 @@ async fn preflight_gateway_image_replace(
     }
     let edge_network_id = read_owned_edge_network_id(&docker, host).await?;
     verify_vm_network_attachments(&docker, host, &owned, &edge_network_id).await?;
-    // Require both replacement image and exact network policy to be
-    // available before committing the one-shot journal transaction.
-    docker
-        .inspect_image(&new_gateway_image)
-        .await
-        .map_err(|_| "HOST_VM_IMAGE_PINNED_IMAGE_NOT_LOCAL")?;
+    // OCI pins are already validated against the exact immutable release.
+    // Do not require a separate manual "docker pull": this same signed
+    // operation fetches missing images AFTER the durable BEGIN, before
+    // altering running containers or installed policy.
     let prepared_warp = if let Some(ref image) = new_warp_image {
-        docker
-            .inspect_image(image)
-            .await
-            .map_err(|_| "HOST_VM_IMAGE_WARP_PINNED_IMAGE_NOT_LOCAL")?;
         Some(native_warp_create_body(
             stack_dir,
             host,
@@ -2591,6 +2585,13 @@ async fn apply_gateway_image_replace_once(
         return Err("HOST_VM_IMAGE_PRESTATE_CHANGED_NO_REPLAY".into());
     }
     verify_vm_network_attachments(&docker, host, &owned, &plan.edge_network_id).await?;
+
+    // Reuse the existing bounded, digest-verified native OCI pull, still
+    // inside the ONE signed owner journal. Never require external Docker CLI.
+    pull_native_vm_image_once(&docker, &plan.new_gateway_image).await?;
+    if let Some(ref image) = plan.new_warp_image {
+        pull_native_vm_image_once(&docker, image).await?;
+    }
 
     let staging = stack_dir.join(".images.env.next");
     if fs::symlink_metadata(&staging).is_ok() {
