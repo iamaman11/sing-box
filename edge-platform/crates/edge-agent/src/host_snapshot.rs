@@ -64,10 +64,7 @@ fn pending_scope(root: &Path) -> Result<PendingEvidence, String> {
     let intent = decode_host_intent(&bytes).map_err(str::to_owned)?;
     // SHA-256 file name is exactly the native journal's existing stable
     // operation key, not a new index or mutable state.
-    let id_sha = ring::digest::digest(
-        &ring::digest::SHA256,
-        intent.operation_id.as_bytes(),
-    );
+    let id_sha = ring::digest::digest(&ring::digest::SHA256, intent.operation_id.as_bytes());
     let id = id_sha
         .as_ref()
         .iter()
@@ -100,12 +97,9 @@ fn pending_scope(root: &Path) -> Result<PendingEvidence, String> {
         action: intent.action,
         original_release_sha256: intent.release_set_sha256,
         original_desired_sha256: intent.desired_sha256,
-        begin_record_sha256: ring::digest::digest(
-            &ring::digest::SHA256,
-            &begin_bytes,
-        )
-        .as_ref()
-        .to_vec(),
+        begin_record_sha256: ring::digest::digest(&ring::digest::SHA256, &begin_bytes)
+            .as_ref()
+            .to_vec(),
     })
 }
 
