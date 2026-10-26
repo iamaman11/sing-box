@@ -1561,8 +1561,10 @@ pub(crate) fn run(
 /// GitHub outputs are only derived from verified typed protobuf. Diagnostic
 /// stdout can never authorize a transition or masquerade as native proof.
 fn append_host_verifier_output(path: &Path, key: &str, value: &str) -> Result<(), String> {
-    if !matches!(key, "typed_verdict" | "native_receipt_proof")
-        || value.is_empty()
+    if !matches!(
+        key,
+        "typed_verdict" | "native_receipt_proof" | "admin_receipt_proof"
+    ) || value.is_empty()
         || value.len() > 96
         || !value
             .bytes()
@@ -2347,10 +2349,17 @@ mod tests {
         assert!(
             append_host_verifier_output(&path, "native_receipt_proof", "OBSERVED_ONLY").is_ok()
         );
+        assert!(
+            append_host_verifier_output(&path, "admin_receipt_proof", "VERIFIED_EXIT_ZERO").is_ok()
+        );
+        assert!(
+            append_host_verifier_output(&path, "admin_receipt_proof", "verified_exit_zero")
+                .is_err()
+        );
         let recorded = std::fs::read_to_string(&path).unwrap();
         assert_eq!(
             recorded,
-            "typed_verdict=UNPROVEN_NO_NATIVE_OWNER\nnative_receipt_proof=OBSERVED_ONLY\n"
+            "typed_verdict=UNPROVEN_NO_NATIVE_OWNER\nnative_receipt_proof=OBSERVED_ONLY\nadmin_receipt_proof=VERIFIED_EXIT_ZERO\n"
         );
         std::fs::remove_file(&path).unwrap();
         assert!(append_host_verifier_output(&path, "typed_verdict", "PASS").is_err());
