@@ -222,28 +222,6 @@ pub(crate) fn run(
         return Err("host protobuf differs from protected Git inventory SHA-256".to_owned());
     }
     let desired = decode_host_registry(&bytes)?;
-    // One root execution path for arbitrary diagnosis and administration.
-    // URL-safe encoded diagnose payloads use the SAME signed AdminRequest;
-    // the historical literal safe probes remain available as read-only.
-    let (command, signed_diagnose_alias) = match command {
-        HostCommand::Diagnose { machine_id, argv }
-            if argv.len() == 1
-                && argv[0].starts_with("eyJ") // Base64URL of a JSON object starting with {\".
-                && argv[0].len() <= 24000
-                && argv[0]
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_') =>
-        {
-            (
-                HostCommand::Admin {
-                    machine_id,
-                    argv_base64: argv[0].clone(),
-                },
-                true,
-            )
-        }
-        other => (other, false),
-    };
     let (command, diagnostic, administrative) = match command {
         HostCommand::Admin {
             machine_id,
@@ -266,12 +244,7 @@ pub(crate) fn run(
             let stdin_bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
                 .decode(operator.stdin_base64.as_bytes())
                 .map_err(|_| "HOST_ADMIN_STDIN_ENCODING_INVALID")?;
-            let verb = if signed_diagnose_alias {
-                "diagnose"
-            } else {
-                "admin"
-            };
-            let body = format!("/host {verb} {machine_id} {argv_base64}");
+            let body = format!("/host admin {machine_id} {argv_base64}");
             let request = edge_shared_types::FleetNativeAdminRequest {
                 schema_version: 1,
                 machine_id: machine_id.clone(),
