@@ -143,13 +143,13 @@ def merge_rust_verified_native(original, native_readback, comment_id, expected_s
     Git-pinned Rust verifier writes. Text here supplies bounded presentation,
     NEVER signature authority or mutation admission.
     """
-    marker = "### Unified deep diagnosis — read only\\n\\n" + "```json\\n"
+    marker = "### Unified deep diagnosis — read only\n\n" + "```json\n"
     if original.count(marker) != 1:
         raise ValueError("HOST_DIAG_REPORT_MARKER_INVALID")
     before, remaining = original.split(marker, 1)
-    if "\\n```" not in remaining:
+    if "\n```" not in remaining:
         raise ValueError("HOST_DIAG_REPORT_FENCE_MISSING")
-    json_text, suffix = remaining.split("\\n```", 1)
+    json_text, suffix = remaining.split("\n```", 1)
     if len(json_text) > 8192:
         raise ValueError("HOST_DIAG_REPORT_JSON_TOO_LARGE")
     report = json.loads(json_text)
@@ -235,7 +235,7 @@ def merge_rust_verified_native(original, native_readback, comment_id, expected_s
         )
     return (before + marker +
             json.dumps(report, sort_keys=True, separators=(",", ":")) +
-            "\\n```" + suffix)
+            "\n```" + suffix)
 
 
 if __name__ == "__main__":
