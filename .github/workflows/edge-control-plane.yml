@@ -1427,18 +1427,26 @@ jobs:
   host_resume_native_bootstrap:
     # First receive the protected public receipt, then refresh the exact
     # root trust snapshot WITHOUT resource replay and return fresh proof.
-    needs: host_resume_receipt
+    # The accepted receipt merge and a fresh scoped recovery use the same
+    # installed Root Agent, journal and proof path; never replay CREATE.
+    needs: [host, host_resume_receipt]
     if: >-
-      needs.host_resume_receipt.result == 'success' &&
-      needs.host_resume_receipt.outputs.operation == 'APPLY_PREFLIGHT' &&
-      needs.host_resume_receipt.outputs.kind == 'VM'
-    runs-on: ${{ fromJSON(needs.host_resume_receipt.outputs.runner_labels) }}
+      always() && !cancelled() &&
+      ((needs.host_resume_receipt.result == 'success' &&
+        needs.host_resume_receipt.outputs.operation == 'APPLY_PREFLIGHT' &&
+        needs.host_resume_receipt.outputs.kind == 'VM') ||
+       (needs.host.result == 'success' &&
+        github.event_name == 'issue_comment' &&
+        github.run_attempt == 1 &&
+        needs.host.outputs.operation == 'BOOTSTRAP_ACCESS_PREFLIGHT' &&
+        needs.host.outputs.kind == 'VM'))
+    runs-on: ${{ fromJSON(needs.host.outputs.operation == 'BOOTSTRAP_ACCESS_PREFLIGHT' && needs.host.outputs.runner_labels || needs.host_resume_receipt.outputs.runner_labels) }}
     timeout-minutes: 25
     permissions:
       contents: read
       actions: write
     env:
-      TARGET_MACHINE: ${{ needs.host_resume_receipt.outputs.machine_id }}
+      TARGET_MACHINE: ${{ needs.host.outputs.operation == 'BOOTSTRAP_ACCESS_PREFLIGHT' && needs.host.outputs.machine_id || needs.host_resume_receipt.outputs.machine_id }}
     steps:
       - name: Refresh only native code/trust and sign fresh public recipient
         shell: bash
@@ -1463,8 +1471,8 @@ jobs:
     # Plaintext Access identity exists only in this GitHub-hosted protected
     # job and in the VM Root Agent after decryption. Never in runner secrets,
     # Vultr user-data, Git, issue comments or logs.
-    needs: [host_resume_receipt, host_resume_native_bootstrap]
-    if: needs.host_resume_native_bootstrap.result == 'success'
+    needs: [host, host_resume_receipt, host_resume_native_bootstrap]
+    if: always() && !cancelled() && needs.host_resume_native_bootstrap.result == 'success'
     runs-on: ubuntu-24.04
     environment:
       name: production-vultr
@@ -1474,10 +1482,11 @@ jobs:
       contents: read
       actions: read
     env:
-      TARGET_MACHINE: ${{ needs.host_resume_receipt.outputs.machine_id }}
+      TARGET_MACHINE: ${{ needs.host.outputs.operation == 'BOOTSTRAP_ACCESS_PREFLIGHT' && needs.host.outputs.machine_id || needs.host_resume_receipt.outputs.machine_id }}
       # The resolver is a GitHub API client, not a second secret owner.
       # github.token is already granted contents/actions read in this job.
       GH_TOKEN: ${{ github.token }}
+      HOST_RESUME_MODE: ${{ needs.host.outputs.operation }}
       ACCESS_ID: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID }}
       ACCESS_SECRET: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET }}
     steps:
@@ -1490,7 +1499,7 @@ jobs:
         shell: bash
         env:
           REPOSITORY: ${{ github.repository }}
-          ACCEPTED_REVISION: ${{ github.event.workflow_run.head_sha }}
+          ACCEPTED_REVISION: ${{ needs.host.outputs.operation == 'BOOTSTRAP_ACCESS_PREFLIGHT' && github.sha || github.event.workflow_run.head_sha }}
           OUTPUT_DIR: ${{ runner.temp }}/host-release
         run: |
           set -euo pipefail
@@ -1500,6 +1509,11 @@ jobs:
           git fetch -q --no-tags --depth=1 origin "${ACCEPTED_REVISION}"
           git checkout -q --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "${ACCEPTED_REVISION}"
+          # A fresh operator recovery must use the EXACT current protected
+          # main. Git receipt-merge continuation retains its prior exact SHA.
+          if [[ "${HOST_RESUME_MODE}" == BOOTSTRAP_ACCESS_PREFLIGHT ]]; then
+            test "$(gh api "repos/${GITHUB_REPOSITORY}/git/ref/heads/main" --jq '.object.sha')" = "${ACCEPTED_REVISION}"
+          fi
           bash edge-platform/scripts/resolve_durable_release.sh
           source "${OUTPUT_DIR}/resolved.env"
           test "${EDGE_ACCEPTED_REVISION}" = "${ACCEPTED_REVISION}"
@@ -1527,15 +1541,15 @@ jobs:
           retention-days: 1
 
   host_resume_native_access:
-    needs: [host_resume_receipt, host_resume_seal]
-    if: needs.host_resume_seal.result == 'success'
-    runs-on: ${{ fromJSON(needs.host_resume_receipt.outputs.runner_labels) }}
+    needs: [host, host_resume_receipt, host_resume_seal]
+    if: always() && !cancelled() && needs.host_resume_seal.result == 'success'
+    runs-on: ${{ fromJSON(needs.host.outputs.operation == 'BOOTSTRAP_ACCESS_PREFLIGHT' && needs.host.outputs.runner_labels || needs.host_resume_receipt.outputs.runner_labels) }}
     timeout-minutes: 15
     permissions:
       contents: read
       actions: read
     env:
-      TARGET_MACHINE: ${{ needs.host_resume_receipt.outputs.machine_id }}
+      TARGET_MACHINE: ${{ needs.host.outputs.operation == 'BOOTSTRAP_ACCESS_PREFLIGHT' && needs.host.outputs.machine_id || needs.host_resume_receipt.outputs.machine_id }}
     steps:
       - uses: actions/download-artifact@v4
         with:
