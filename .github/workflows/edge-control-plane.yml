@@ -1470,6 +1470,9 @@ jobs:
       actions: read
     env:
       TARGET_MACHINE: ${{ needs.host_resume_receipt.outputs.machine_id }}
+      # The resolver is a GitHub API client, not a second secret owner.
+      # github.token is already granted contents/actions read in this job.
+      GH_TOKEN: ${{ github.token }}
       ACCESS_ID: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID }}
       ACCESS_SECRET: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET }}
     steps:
