@@ -2602,7 +2602,9 @@ mod native_runtime_diagnostic_code_tests {
             "UDP_PORTS_MISSING"
         );
         assert_eq!(
-            native_runtime_reason_code("container abc does not match exact accepted runtime: PRIVATE"),
+            native_runtime_reason_code(
+                "container abc does not match exact accepted runtime: PRIVATE"
+            ),
             "EXACT_IMAGE_OR_CONTAINER_UNREADY"
         );
         assert_eq!(
