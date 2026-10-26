@@ -335,8 +335,9 @@ jobs:
       needs.host.outputs.host_targets_present == 'true' &&
       (needs.host.outputs.kind != 'VM' ||
        needs.host.outputs.operation != 'APPLY_PREFLIGHT' ||
-       needs.host_worker_authorizer.result == 'success' &&
-       needs.host_worker_authorizer.outputs.source_upgrade_required == 'false') &&
+       github.event.comment.body == format('/host recover {0} --adjudicate', needs.host.outputs.machine_id) ||
+       (needs.host_worker_authorizer.result == 'success' &&
+        needs.host_worker_authorizer.outputs.source_upgrade_required == 'false')) &&
       (needs.host.outputs.operation == 'STATUS' ||
        needs.host.outputs.operation == 'APPLY_PREFLIGHT' ||
        needs.host.outputs.operation == 'RECOVER_PREFLIGHT' ||
