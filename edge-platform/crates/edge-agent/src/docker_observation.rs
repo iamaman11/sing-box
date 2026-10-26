@@ -2344,6 +2344,35 @@ fn gateway_image_policy_delta(
     gateway.ok_or_else(|| "HOST_VM_IMAGE_GATEWAY_MISSING".into())
 }
 
+/// Pure release policy decision, independent of the running VM. Retain the
+/// established gateway-only checker to verify all unchanged bytes, and allow
+/// one additional digest-pinned WARP image inside the SAME transaction.
+fn application_image_policy_delta(
+    installed: &[u8],
+    desired: &[u8],
+) -> Result<(String, Option<String>), String> {
+    let previous = parse_vm_release_image_pins(installed)?;
+    let requested = parse_vm_release_image_pins(desired)?;
+    if requested["CLOUDFLARE_MESH_IMAGE"] != previous["CLOUDFLARE_MESH_IMAGE"] {
+        return Err("HOST_VM_IMAGE_FOREIGN_IMAGE_OR_ENV_CHANGED".into());
+    }
+    let target_warp = &requested["EDGE_WARP_EGRESS_IMAGE"];
+    let old_warp = &previous["EDGE_WARP_EGRESS_IMAGE"];
+    let desired_text =
+        std::str::from_utf8(desired).map_err(|_| "HOST_VM_IMAGE_TARGET_NOT_UTF8")?;
+    let normalized = desired_text.replace(
+        &format!("EDGE_WARP_EGRESS_IMAGE={target_warp}"),
+        &format!("EDGE_WARP_EGRESS_IMAGE={old_warp}"),
+    );
+    let next_gateway = gateway_image_policy_delta(
+        installed,
+        normalized.as_bytes(),
+        &previous["EDGE_GATEWAY_IMAGE"],
+    )?;
+    let next_warp = (target_warp != old_warp).then(|| target_warp.clone());
+    Ok((next_gateway, next_warp))
+}
+
 /// One exact Git-owned .images.env update: paired gateway change and an
 /// optional WARP change. Foreign Mesh, templates and networking never change.
 fn select_gateway_image_policy(
@@ -2367,32 +2396,7 @@ fn select_gateway_image_policy(
     }
     let desired = candidate.content.clone();
     let installed = exact_vm_policy_file(stack_dir, ".images.env")?;
-    let old_images = super::read_exact_image_environment(stack_dir)?;
-    let old_gateway = old_images
-        .get("EDGE_GATEWAY_IMAGE")
-        .ok_or("HOST_VM_IMAGE_OLD_GATEWAY_MISSING")?;
-    let old_warp = old_images
-        .get("EDGE_WARP_EGRESS_IMAGE")
-        .ok_or("HOST_VM_IMAGE_OLD_WARP_MISSING")?;
-    let requested = parse_vm_release_image_pins(&desired)?;
-    if requested.get("CLOUDFLARE_MESH_IMAGE") != old_images.get("CLOUDFLARE_MESH_IMAGE") {
-        return Err("HOST_VM_IMAGE_FOREIGN_IMAGE_OR_ENV_CHANGED".into());
-    }
-    let target_warp = requested
-        .get("EDGE_WARP_EGRESS_IMAGE")
-        .ok_or("HOST_VM_IMAGE_TARGET_WARP_MISSING")?;
-    // Normalize just the WARP line to its old value before invoking the
-    // existing exact-byte gateway-only checker. All three environment keys
-    // still have to be present with canonical immutable OCI digests.
-    let desired_text =
-        std::str::from_utf8(&desired).map_err(|_| "HOST_VM_IMAGE_TARGET_NOT_UTF8")?;
-    let canonical_warp_line = format!("EDGE_WARP_EGRESS_IMAGE={target_warp}");
-    let normalized = desired_text.replace(
-        &canonical_warp_line,
-        &format!("EDGE_WARP_EGRESS_IMAGE={old_warp}"),
-    );
-    let next_gateway = gateway_image_policy_delta(&installed, normalized.as_bytes(), old_gateway)?;
-    let next_warp = (target_warp != old_warp).then(|| target_warp.clone());
+    let (next_gateway, next_warp) = application_image_policy_delta(&installed, &desired)?;
     candidate.content = installed.clone();
     verify_exact_installed_vm_bundle_static(stack_dir, &exact)?;
     Ok((installed, desired, next_gateway, next_warp))
@@ -4066,6 +4070,34 @@ mod vm_native_start_order_tests {
         assert!(gateway_image_policy_delta(old, wrong.as_bytes(), &existing).is_err());
         let duplicated = next.replace("EDGE_WARP_EGRESS_IMAGE=", "EDGE_GATEWAY_IMAGE=");
         assert!(gateway_image_policy_delta(old, duplicated.as_bytes(), &existing).is_err());
+    }
+
+    #[test]
+    fn paired_gateway_and_warp_images_use_one_exact_release_policy() {
+        let old = format!(
+            "EDGE_GATEWAY_IMAGE=ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}\nEDGE_WARP_EGRESS_IMAGE=ghcr.io/iamaman11/vultr-warp-egress@sha256:{}\nCLOUDFLARE_MESH_IMAGE=docker.io/cloudflare/mesh@sha256:{}\n",
+            "a".repeat(64), "b".repeat(64), "c".repeat(64)
+        );
+        let next_gateway = format!("ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}", "d".repeat(64));
+        let next_warp = format!("ghcr.io/iamaman11/vultr-warp-egress@sha256:{}", "e".repeat(64));
+        let gateway_only = old.replace(&format!("ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}", "a".repeat(64)), &next_gateway);
+        assert_eq!(
+            application_image_policy_delta(old.as_bytes(), gateway_only.as_bytes()).unwrap(),
+            (next_gateway.clone(), None)
+        );
+        let both = gateway_only.replace(
+            &format!("ghcr.io/iamaman11/vultr-warp-egress@sha256:{}", "b".repeat(64)),
+            &next_warp
+        );
+        assert_eq!(
+            application_image_policy_delta(old.as_bytes(), both.as_bytes()).unwrap(),
+            (next_gateway, Some(next_warp))
+        );
+        assert!(application_image_policy_delta(old.as_bytes(), old.as_bytes()).is_err());
+        let changed_mesh = both.replace(&"c".repeat(64), &"f".repeat(64));
+        assert!(application_image_policy_delta(old.as_bytes(), changed_mesh.as_bytes()).is_err());
+        let unpinned_warp = both.replace("@sha256:eeee", ":latest-eeee");
+        assert!(application_image_policy_delta(old.as_bytes(), unpinned_warp.as_bytes()).is_err());
     }
 
     #[test]
