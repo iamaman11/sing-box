@@ -56,10 +56,27 @@ fn validate_scope(
             .bytes()
             .any(|b| !b.is_ascii_uppercase() && !b.is_ascii_digit() && b != b'_')
         || !(snapshot.line2_log_sha256.is_empty() || snapshot.line2_log_sha256.len() == 32)
+        || !(snapshot.pending_original_release_sha256.is_empty()
+            || snapshot.pending_original_release_sha256.len() == 32)
+        || !(snapshot.pending_original_desired_sha256.is_empty()
+            || snapshot.pending_original_desired_sha256.len() == 32)
+        || !(snapshot.pending_begin_record_sha256.is_empty()
+            || snapshot.pending_begin_record_sha256.len() == 32)
+        || (snapshot.pending_operation_id.starts_with("issue1-comment-")
+            && (snapshot.pending_original_release_sha256.len() != 32
+                || snapshot.pending_original_desired_sha256.len() != 32
+                || snapshot.pending_begin_record_sha256.len() != 32))
+        || (snapshot.pending_operation_id == "UNPROVEN_PENDING_RECORD"
+            && (!snapshot.pending_original_release_sha256.is_empty()
+                || !snapshot.pending_original_desired_sha256.is_empty()
+                || !snapshot.pending_begin_record_sha256.is_empty()))
         || (snapshot.pending_resource_count == 0
             && (!snapshot.pending_operation_id.is_empty()
                 || !snapshot.pending_resource_id.is_empty()
-                || !snapshot.pending_request_sha256.is_empty()))
+                || !snapshot.pending_request_sha256.is_empty()
+                || !snapshot.pending_original_release_sha256.is_empty()
+                || !snapshot.pending_original_desired_sha256.is_empty()
+                || !snapshot.pending_begin_record_sha256.is_empty()))
     {
         return Err("HOST_SNAPSHOT_PENDING_DIAGNOSTIC_INVALID");
     }
