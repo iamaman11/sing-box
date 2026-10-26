@@ -294,5 +294,94 @@ class TestUnifiedHostDiagnosis(TestCase):
             self.diagnose()
 
 
+
+class TestSignedNativeDeepReportFusion(TestCase):
+    """A Rust-verified root snapshot updates one report, never effect authority."""
+
+    @staticmethod
+    def sample():
+        op = "issue1-comment-6406871791"
+        sha = "e" * 40
+        report = {
+            "schema": "sing-box.host-diagnostic/v1",
+            "operation_id": op, "source_digest": sha,
+            "release_set_sha256": "f" * 64, "machine_id": "application-acceptance-5",
+            "status": "UNPROVEN", "phase": "BOOTSTRAP_OR_RUNNER",
+            "owner": "GITHUB_RUNNER", "reason": "RUNNER_BUSY",
+            "last_proven_step": "VULTR_LABEL_PRESENT_NOT_NATIVE_PROOF",
+            "next_action": "CHECK_RUNNER_AND_PROVIDER_CONSOLE_JOURNAL",
+            "physical_accepted": False, "mutation_authorized": False,
+            "replay_allowed": False, "provider_mutations": 0,
+            "worker_mutations": 0, "github_mutations": 0,
+            "sources": {
+                "runner": "RUNNER_BUSY",
+                "root_agent": "UNPROVEN_NO_SIGNED_NATIVE_OBSERVATION",
+                "signed_receipt": "UNPROVEN_GIT_PIN_IS_NOT_PHYSICAL_RECEIPT",
+            },
+        }
+        marker = "### Unified deep diagnosis — read only\n\n```json\n"
+        body = "Prior exact operator report\n\n" + marker + json.dumps(report) + (
+            "\n```\n\nSigned native receipt: **UNPROVEN** until verifier.")
+        native = "\n".join([
+            "host_native_snapshot_proof=VERIFIED_ROOT_SIGNED_READ_ONLY",
+            "host_native_snapshot_operation_id=" + op,
+            "host_native_snapshot_pending_count=1",
+            "host_native_snapshot_pending_operation=issue1-comment-6406287261",
+            "host_native_snapshot_pending_resource=sing-box",
+            "host_native_snapshot_pending_request_sha256=" + "4" * 64,
+            "host_native_snapshot_pending_action=2",
+            "host_native_snapshot_line2_failure_code=TLS_HINT",
+            "host_native_snapshot_line2_restarts=59",
+            "host_native_snapshot_line2_exit=1",
+            "host_native_snapshot_line2_log_sha256=" + "a" * 64,
+            "host_native_snapshot_replay_allowed=false",
+            "host_native_snapshot_mutations=0",
+        ])
+        return body, native, op, sha, marker
+
+    def test_exact_signed_root_readback_replaces_stale_runner_status(self):
+        body, native, op, sha, marker = self.sample()
+        result = summary.merge_rust_verified_native(
+            body, native, op.removeprefix("issue1-comment-"), sha)
+        data = json.loads(result.split(marker, 1)[1].split("\n```", 1)[0])
+        self.assertEqual(data["status"], "BLOCKED")
+        self.assertEqual(data["owner"], "ROOT_AGENT")
+        self.assertEqual(data["reason"], "HOST_RESOURCE_PENDING_NO_REPLAY")
+        self.assertEqual(data["phase"], "NATIVE_SIGNED_OBSERVATION")
+        self.assertEqual(data["last_proven_step"], "ROOT_SIGNED_PENDING_OBSERVATION")
+        self.assertEqual(data["sources"]["root_agent"], "VERIFIED_ROOT_SIGNED_READ_ONLY")
+        self.assertEqual(data["sources"]["runner"], "RUNNER_BUSY")  # Old GET preserved.
+        self.assertEqual(data["sources"]["signed_receipt"],
+                         "UNPROVEN_NO_MUTATION_RECEIPT")
+        self.assertEqual(data["native"]["pending_operation_id"],
+                         "issue1-comment-6406287261")
+        self.assertEqual(data["native"]["line2_restarts"], 59)
+        self.assertEqual(data["native"]["line2_failure_code"], "TLS_HINT")
+        self.assertFalse(data["replay_allowed"])
+        self.assertFalse(data["mutation_authorized"])
+        self.assertFalse(data["physical_accepted"])
+        self.assertEqual(result.count(marker), 1)
+
+    def test_unsigned_or_wrong_scope_never_upgrades_report(self):
+        body, native, op, sha, _ = self.sample()
+        correct_id = op.removeprefix("issue1-comment-")
+        cases = [
+            (body, native.replace("VERIFIED_ROOT_SIGNED_READ_ONLY", "UNPROVEN"), correct_id, sha),
+            (body, native, str(int(correct_id) + 1), sha),
+            (body, native.replace(op, "issue1-comment-5"), correct_id, sha),
+            (body, native, correct_id, "a" * 40),
+            (body, native.replace("replay_allowed=false", "replay_allowed=true"), correct_id, sha),
+            (body, native.replace("mutations=0", "mutations=1"), correct_id, sha),
+            (body.replace('"physical_accepted": false', '"physical_accepted": true'),
+             native, correct_id, sha),
+            (body + "\n### Unified deep diagnosis — read only\n\n```json\n{}",
+             native, correct_id, sha),
+        ]
+        for source, signed, comment, digest in cases:
+            with self.subTest(comment=comment, source_size=len(source)):
+                with self.assertRaises(ValueError):
+                    summary.merge_rust_verified_native(source, signed, comment, digest)
+
+
 if __name__ == "__main__":
     main()
