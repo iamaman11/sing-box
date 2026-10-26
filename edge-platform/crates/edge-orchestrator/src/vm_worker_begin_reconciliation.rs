@@ -151,14 +151,11 @@ fn prior_run_is_terminal(
     run: &Value,
     jobs: &Value,
 ) -> bool {
+    let matches = matching_worker_jobs(jobs, prior);
     prior_run_matches_owner(prior, machine_id, operator, run)
         && run.get("conclusion").and_then(Value::as_str) == Some("success")
-        && matching_worker_jobs(jobs, prior).as_slice()
-            .first()
-            .is_some_and(|job| {
-                matching_worker_jobs(jobs, prior).len() == 1
-                    && job.get("conclusion").and_then(Value::as_str) == Some("success")
-            })
+        && matches.len() == 1
+        && matches[0].get("conclusion").and_then(Value::as_str) == Some("success")
 }
 
 /// One precise partial terminal: Worker code was successfully deployed, but
@@ -292,7 +289,7 @@ pub(crate) async fn verify_prior_vm_worker_begins(machine_id: &str) -> Result<()
         }
         return Err("HOST_VM_WORKER_PRIOR_BEGIN_UNRECONCILED_NO_REPLAY".into());
     }
-    println!("host_vm_worker_prior_begin=TERMINAL_OWNER_RUN_RECONCILED");
+    println!("host_vm_worker_prior_begin=PROVEN_SUCCESS_OR_CODE_ONLY_PARTIAL_RECONCILED");
     println!("host_vm_worker_prior_begin_count={}", beginnings.len());
     Ok(())
 }
