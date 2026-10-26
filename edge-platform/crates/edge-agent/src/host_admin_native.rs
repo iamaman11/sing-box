@@ -345,10 +345,8 @@ mod io_tests {
 
     #[test]
     fn foreign_resource_pending_does_not_block_independent_admin_or_allow_replay() {
-        let dir = std::env::temp_dir().join(format!(
-            "sing-box-independent-admin-{}",
-            std::process::id()
-        ));
+        let dir =
+            std::env::temp_dir().join(format!("sing-box-independent-admin-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let foreign = dir.join("resource-existing.pending.pb");
         std::fs::write(&foreign, b"foreign-original").unwrap();
