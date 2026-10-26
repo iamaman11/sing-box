@@ -1,3 +1,15 @@
+#[test]
+fn fatal_sensitive_tls_key_log_emits_only_constant_diagnostic_marker() {
+    let raw = "FATAL[0000] tls: invalid private key password=secret credential=hidden";
+    let result = redact_runtime_log_line(raw);
+    assert_eq!(result, "[SAFE_FATAL_TLS_PRIVATE_KEY_ERROR]");
+    assert!(!result.contains("secret"));
+    assert!(!result.contains("credential="));
+
+    let ordinary = redact_runtime_log_line("INFO[0000] tls private key loaded password=secret");
+    assert_eq!(ordinary, "[redacted sensitive runtime log line]");
+}
+
 use super::*;
 
 fn vm_scope_test() -> Vec<FleetVmContainer> {
