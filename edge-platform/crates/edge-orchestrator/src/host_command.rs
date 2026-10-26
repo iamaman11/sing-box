@@ -2493,9 +2493,9 @@ mod tests {
         });
         host_bootstrap_access_resume_admission(&registry, id, Some(&path), Some(42)).unwrap();
         let result = std::fs::read_to_string(&path).unwrap();
-        assert!(result.contains("operation=BOOTSTRAP_ACCESS_PREFLIGHT\\n"));
-        assert!(result.contains("machine_id=vm-access-test\\n"));
-        assert!(!result.contains("operation=APPLY_PREFLIGHT\\n"));
+        assert!(result.contains("operation=BOOTSTRAP_ACCESS_PREFLIGHT\n"));
+        assert!(result.contains("machine_id=vm-access-test\n"));
+        assert!(!result.contains("operation=APPLY_PREFLIGHT\n"));
         std::fs::remove_file(path).unwrap();
     }
 
