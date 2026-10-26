@@ -772,14 +772,21 @@ fn resolve_pending_native_recovery_once(
     let historical_drift = original.registry_sha256 != intent.registry_sha256
         || original.desired_sha256 != intent.desired_sha256
         || original.release_set_sha256 != intent.release_set_sha256;
-    if historical_drift
+    // A failed first-use or OCI pull can still be incomplete under the SAME
+    // ReleaseSet. Requiring a new Git release to classify this state would
+    // cause another loop. The root-observed installed digest is independent
+    // of the pending source identity and must not be mistaken for convergence.
+    let native_release_mismatch =
+        observed.observed_release_sha256 != bound.runtime_release_sha256;
+    let incomplete = historical_drift || native_release_mismatch;
+    if incomplete
         && (original.action != FleetHostAction::Apply as i32
             || original.resource_id != "sing-box"
             || selected.kind != crate::FleetHostKind::Vm as i32)
     {
         return Err("HOST_NATIVE_HISTORICAL_SCOPE_UNSUPPORTED_NO_REPLAY");
     }
-    let verdict = if historical_drift {
+    let verdict = if incomplete {
         verify_historical_partial_recovery_state(
             selected,
             observed,
