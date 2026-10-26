@@ -235,6 +235,90 @@ jobs:
           if-no-files-found: error
           retention-days: 7
 
+
+  host_project_dns:
+    # Same operator ingress and protected Environment; existing Rust Cloudflare
+    # DNS and Vultr owners, never a VM-side DNS API credential.
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.repository == 'iamaman11/sing-box' &&
+      github.repository_id == '1221750822' &&
+      github.event.issue.number == 1 &&
+      !github.event.issue.pull_request &&
+      github.actor_id == '44100369' &&
+      github.run_attempt == 1 &&
+      (startsWith(github.event.comment.body, '/host dns status ') ||
+       startsWith(github.event.comment.body, '/host dns apply '))
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    concurrency:
+      group: vultr-control-plane-production
+      cancel-in-progress: false
+    timeout-minutes: 25
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    env:
+      COMMAND_BODY: ${{ github.event.comment.body }}
+      GH_TOKEN: ${{ github.token }}
+      VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+      CLOUDFLARE_DNS_TOKEN: ${{ secrets.CLOUDFLARE_DNS_TOKEN }}
+    steps:
+      - name: Execute exact project-owned DNS owner
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${COMMAND_BODY}" =~ ^/host[[:space:]]dns[[:space:]](status|apply)[[:space:]]([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})$ ]] || {
+            echo PROJECT_DNS_OPERATOR_COMMAND_INVALID >&2
+            exit 2
+          }
+          op="${BASH_REMATCH[1]}"
+          target="${BASH_REMATCH[2]}"
+          test -n "${VULTR_API_KEY}" || { echo PROJECT_DNS_VULTR_TOKEN_MISSING >&2; exit 2; }
+          test -n "${CLOUDFLARE_DNS_TOKEN}" || { echo PROJECT_DNS_ENV_TOKEN_MISSING >&2; exit 2; }
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --no-tags --depth=1 origin "${GITHUB_SHA}"
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          export REPOSITORY="${GITHUB_REPOSITORY}"
+          export ACCEPTED_REVISION="${GITHUB_SHA}"
+          export OUTPUT_DIR="${RUNNER_TEMP}/dns-release"
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          bin="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          test "$(sha256sum "${bin}" | cut -d' ' -f1)" = "${EDGE_ORCHESTRATOR_SHA256}"
+          chmod 0755 "${bin}"
+          bash edge-platform/scripts/compile_vm_host_desired.sh "${target}"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
+          cmd=(production dns-reconcile "${target}")
+          if [[ "${op}" == apply ]]; then cmd+=(--apply); fi
+          "${bin}" "${cmd[@]}" | tee "${RUNNER_TEMP}/dns-result.txt"
+          {
+            echo '### Exact project DNS owner — typed provider result'
+            echo '~~~text'
+            cat "${RUNNER_TEMP}/dns-result.txt"
+            echo '~~~'
+          } >> "${GITHUB_STEP_SUMMARY}"
+      - name: Return bounded project DNS outcome to operator
+        if: always()
+        shell: bash
+        env:
+          DNS_JOB_STATUS: ${{ job.status }}
+        run: |
+          set -euo pipefail
+          result="Project DNS: ${DNS_JOB_STATUS}. Command ${COMMAND_BODY}. Evidence https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}."
+          if [[ "${DNS_JOB_STATUS}" == success ]]; then
+            result="${result} Provider readback and exact Git-selected VM comparison PASS. Consult run summary for plan or mutation."
+          else
+            result="${result} No DNS mutation acceptance; inspect named failed step, do not replay an unknown result."
+          fi
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/1/comments" -f "body=${result}" >/dev/null
+
   host_observe:
     # No routine hosted SSH refresh/upgrade; the installed native owner
     # independently verifies current Git receipt and signed intent.

@@ -310,6 +310,12 @@ pub(crate) enum ProductionCommand {
     Diagnose,
     /// Bounded read-only Cloudflare/Vultr DNS preflight, not a mutation.
     DnsNoop,
+    /// Current project DNS: one Git-selected VM and exact provider readback.
+    DnsReconcile {
+        machine_id: String,
+        #[arg(long)]
+        apply: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

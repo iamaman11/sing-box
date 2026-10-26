@@ -191,6 +191,9 @@ async fn run(
             cli::ProductionCommand::DnsNoop => {
                 production_command::verify_dns_noop(release_context).await
             }
+            cli::ProductionCommand::DnsReconcile { machine_id, apply } => {
+                production_command::dns_reconcile(release_context, &machine_id, apply).await
+            }
         },
     }
 }

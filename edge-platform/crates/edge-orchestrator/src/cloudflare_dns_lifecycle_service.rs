@@ -59,6 +59,7 @@ pub trait DnsProvider {
         zone_name: &str,
         record_id: &str,
         record_name: &str,
+        expected_ip: &str,
         ip: &str,
     ) -> Result<(), String>;
     async fn delete_record(&mut self, zone_name: &str, record_id: &str) -> Result<(), String>;
@@ -100,9 +101,18 @@ impl DnsProvider for CloudflareDnsApiProvider {
         zone_name: &str,
         record_id: &str,
         record_name: &str,
+        expected_ip: &str,
         ip: &str,
     ) -> Result<(), String> {
-        update_a_record_by_id(&self.api_token, zone_name, record_id, record_name, ip).await
+        update_a_record_by_id(
+            &self.api_token,
+            zone_name,
+            record_id,
+            record_name,
+            expected_ip,
+            ip,
+        )
+        .await
     }
 
     async fn delete_record(&mut self, zone_name: &str, record_id: &str) -> Result<(), String> {
@@ -160,11 +170,17 @@ pub async fn apply_dns_once<P: DnsProvider>(
         }
         ApplyAction::Update {
             ref record_id,
+            ref from_ip,
             ref to_ip,
-            ..
         } => {
             let mutation = provider
-                .update_record(&desired.zone_name, record_id, &desired.record_name, to_ip)
+                .update_record(
+                    &desired.zone_name,
+                    record_id,
+                    &desired.record_name,
+                    from_ip,
+                    to_ip,
+                )
                 .await;
             reobserve_apply_change(provider, desired, target_ip, policy, &plan.action, mutation)
                 .await
@@ -396,8 +412,10 @@ mod tests {
             _zone_name: &str,
             record_id: &str,
             _record_name: &str,
+            expected_ip: &str,
             ip: &str,
         ) -> Result<(), String> {
+            assert!(!expected_ip.is_empty());
             self.update_calls += 1;
             if self.mutation_error.is_none() || self.commit_on_error {
                 if let Some(record) = self
