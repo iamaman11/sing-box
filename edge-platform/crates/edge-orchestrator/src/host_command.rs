@@ -1786,7 +1786,9 @@ fn host_bootstrap_access_resume_admission(
     output: Option<&Path>,
     source_comment_id: Option<u64>,
 ) -> Result<(), String> {
-    let selected = desired.hosts.iter()
+    let selected = desired
+        .hosts
+        .iter()
         .find(|host| host.machine_id == machine_id)
         .ok_or("HOST_NOT_REGISTERED")?;
     if selected.kind != ManagedHostKind::Vm as i32 {
@@ -1803,13 +1805,19 @@ fn host_bootstrap_access_resume_admission(
         Some(managed_host::Owner::VmMachineId(name)) if name == machine_id => name,
         _ => return Err("HOST_OWNER_MISMATCH".into()),
     };
-    let comment = source_comment_id.filter(|id| *id > 0)
+    let comment = source_comment_id
+        .filter(|id| *id > 0)
         .ok_or("HOST_SOURCE_COMMENT_REQUIRED")?;
     let labels = runner_labels(ManagedHostKind::Vm, owner, &selected.windows_runner_label)?;
     let output = output.ok_or("HOST_PREFLIGHT_OUTPUT_REQUIRED")?;
     append_control_outputs(
-        output, machine_id, ManagedHostKind::Vm, owner, &labels,
-        &selected.windows_runner_label, &selected.desired_spec_path,
+        output,
+        machine_id,
+        ManagedHostKind::Vm,
+        owner,
+        &labels,
+        &selected.windows_runner_label,
+        &selected.desired_spec_path,
     )?;
     append_action_output(output, HostWorkflowOperation::BootstrapAccessPreflight)?;
     append_observation_matrix(output, &[])?;
@@ -2449,10 +2457,8 @@ mod tests {
                 ..Default::default()
             }],
         };
-        let path = std::env::temp_dir().join(format!(
-            "singbox-access-resume-{}",
-            std::process::id()
-        ));
+        let path =
+            std::env::temp_dir().join(format!("singbox-access-resume-{}", std::process::id()));
         let _ = std::fs::remove_file(&path);
         std::fs::write(&path, "").unwrap();
         assert_eq!(
@@ -2461,13 +2467,11 @@ mod tests {
             "HOST_NOT_REGISTERED"
         );
         assert_eq!(
-            host_bootstrap_access_resume_admission(&registry, id, Some(&path), None)
-                .unwrap_err(),
+            host_bootstrap_access_resume_admission(&registry, id, Some(&path), None).unwrap_err(),
             "HOST_SOURCE_COMMENT_REQUIRED"
         );
         assert_eq!(
-            host_bootstrap_access_resume_admission(&registry, id, None, Some(42))
-                .unwrap_err(),
+            host_bootstrap_access_resume_admission(&registry, id, None, Some(42)).unwrap_err(),
             "HOST_PREFLIGHT_OUTPUT_REQUIRED"
         );
         registry.hosts[0].native_receipt_public_key.clear();
