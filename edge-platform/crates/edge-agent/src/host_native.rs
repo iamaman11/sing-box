@@ -692,6 +692,32 @@ fn native_vm_install_error_class(source: &str, phase: NativeVmInstallFailurePhas
     }
 }
 
+/// Pre-BEGIN errors are safe to retry with a NEW signed operation because
+/// no resource effects have run. Preserve useful closed diagnostics without
+/// serializing untrusted Docker daemon text or private paths.
+fn native_vm_replace_preadmission_class(code: &str) -> &'static str {
+    match code {
+        "HOST_VM_STATIC_BUNDLE_DRIFT" => "HOST_VM_STATIC_BUNDLE_DRIFT",
+        "HOST_VM_IMAGE_PREVIOUS_IDENTITY_DRIFT" => "HOST_VM_IMAGE_PREVIOUS_IDENTITY_DRIFT",
+        "HOST_VM_IMAGE_ALL_REGISTERED_MUST_RUN" => "HOST_VM_IMAGE_ALL_REGISTERED_MUST_RUN",
+        "HOST_VM_IMAGE_RUNTIME_INCOMPLETE_NO_REPLAY" => {
+            "HOST_VM_IMAGE_RUNTIME_INCOMPLETE_NO_REPLAY"
+        }
+        "HOST_VM_RECONCILE_EFFECTOR_NOT_IMPLEMENTED" => {
+            "HOST_VM_RECONCILE_EFFECTOR_NOT_IMPLEMENTED"
+        }
+        "HOST_VM_RECONCILE_IMAGE_SCOPE_CONFLICT" => "HOST_VM_RECONCILE_IMAGE_SCOPE_CONFLICT",
+        "HOST_VM_IMAGE_FOREIGN_IMAGE_OR_ENV_CHANGED" => {
+            "HOST_VM_IMAGE_FOREIGN_IMAGE_OR_ENV_CHANGED"
+        }
+        "HOST_VM_IMAGE_PREVIOUS_RELEASE_UNPROVEN" => "HOST_VM_IMAGE_PREVIOUS_RELEASE_UNPROVEN",
+        "HOST_VM_IMAGE_ENV_SCOPE_INVALID" => "HOST_VM_IMAGE_ENV_SCOPE_INVALID",
+        "HOST_VM_RELEASE_TARGET_GRAPH_MISMATCH" => "HOST_VM_RELEASE_TARGET_GRAPH_MISMATCH",
+        "HOST_VM_STATIC_BUNDLE_MANIFEST_DRIFT" => "HOST_VM_STATIC_BUNDLE_MANIFEST_DRIFT",
+        _ => "HOST_NATIVE_VM_REPLACE_NOT_RESOURCE_SCOPED",
+    }
+}
+
 /// Root-owned post-BEGIN stage identity. Only closed, non-sensitive native
 /// error constants may become signed journal reasons or operator diagnostics.
 /// Never include arbitrary Docker daemon errors, command output or secrets.
@@ -970,7 +996,11 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
                         .block_on(super::docker_observation::preflight_native_vm_replace(
                             stack_dir, host, &request,
                         ))
-                        .map_err(|_| "HOST_NATIVE_VM_REPLACE_NOT_RESOURCE_SCOPED")?;
+                        .map_err(|error| {
+                            let reason = native_vm_replace_preadmission_class(&error);
+                            eprintln!("host_native_replace_preadmission={reason}");
+                            reason
+                        })?;
                     if intent.resource_id != "sing-box" {
                         let scope = proposal
                             .single_config_resource_id(host)
@@ -1124,6 +1154,22 @@ mod native_host_path_tests {
         assert!(verify_installed_native_vm_file(&root, "docker-compose.yml", exact).is_err());
         fs::remove_file(root.join("docker-compose.yml")).unwrap();
         fs::remove_dir(root).unwrap();
+    }
+
+    #[test]
+    fn native_vm_replace_preadmission_reason_explains_static_drift_safely() {
+        assert_eq!(
+            native_vm_replace_preadmission_class("HOST_VM_STATIC_BUNDLE_DRIFT"),
+            "HOST_VM_STATIC_BUNDLE_DRIFT"
+        );
+        assert_eq!(
+            native_vm_replace_preadmission_class("HOST_VM_IMAGE_PREVIOUS_IDENTITY_DRIFT"),
+            "HOST_VM_IMAGE_PREVIOUS_IDENTITY_DRIFT"
+        );
+        assert_eq!(
+            native_vm_replace_preadmission_class("API_TOKEN=secret"),
+            "HOST_NATIVE_VM_REPLACE_NOT_RESOURCE_SCOPED"
+        );
     }
 
     #[test]

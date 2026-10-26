@@ -2229,6 +2229,20 @@ impl ScopedVmService {
 /// A desired file is not a physical Docker readback. Keep this comparison
 /// separate from graph diff so old containers behind new .images.env pins
 /// are always recognized before a fresh, separately authorized operation.
+/// A previous journaled replacement can leave file pins one generation
+/// ahead of the actual owned Docker container, while a newer immutable
+/// ReleaseSet introduces yet another generation. Only the exact repository
+/// and digest are admission invariants; file == Docker is NOT an invariant.
+fn pinned_owned_image_needs_replacement(
+    observed: &str,
+    desired: &str,
+    repository: &str,
+) -> Result<bool, String> {
+    super::validate_exact_image_ref("RUNNING_IMAGE", observed, repository)?;
+    super::validate_exact_image_ref("TARGET_IMAGE", desired, repository)?;
+    Ok(observed != desired)
+}
+
 fn owned_runtime_image_drift(refs: &HashMap<String, String>, owned: &[OwnedVmContainer]) -> bool {
     owned
         .iter()
@@ -2530,12 +2544,14 @@ async fn preflight_gateway_image_replace(
     }
     bind_owned_vm_compose_dependencies(stack_dir, &host.vm_containers, &mut owned)?;
     owned_vm_start_order(&owned)?;
-    let expected_images = read_vm_expected_image_refs(stack_dir, &host.vm_containers)?;
+    // Compose and Git-owned image policy remain exact, even if the physical
+    // container came from a release older than the last committed file pins.
+    read_vm_expected_image_refs(stack_dir, &host.vm_containers)?;
     let pins = parse_vm_release_image_pins(&new_images)?;
     let target_warp = &pins["EDGE_WARP_EGRESS_IMAGE"];
-    // A fresh signed intent may safely finish a previously adjudicated
-    // transition. Only registered, owned containers on an exact old or
-    // desired repository digest qualify; foreign images fail before BEGIN.
+    // Authorize only the registered Docker owner + immutable image repository,
+    // never an arbitrary tag, foreign repo, or unregistered container. A
+    // fresh Worker-signed APPLY can converge old -> staged -> desired directly.
     for item in &owned {
         let (target, repository) = match item.service.as_str() {
             "line1-gateway" | "line2-proxy" => (
@@ -2545,13 +2561,7 @@ async fn preflight_gateway_image_replace(
             "warp-egress" => (target_warp.as_str(), "ghcr.io/iamaman11/vultr-warp-egress"),
             _ => return Err("HOST_VM_IMAGE_UNREGISTERED_RUNTIME_SERVICE".into()),
         };
-        super::validate_exact_image_ref("EDGE_IMAGE", &item.image_ref, repository)?;
-        if item.image_ref != target
-            && !staged_runtime_drift
-            && expected_images.get(&item.service) != Some(&item.image_ref)
-        {
-            return Err("HOST_VM_IMAGE_PREVIOUS_IDENTITY_DRIFT".into());
-        }
+        pinned_owned_image_needs_replacement(&item.image_ref, target, repository)?;
     }
     let new_warp_image = owned
         .iter()
@@ -4335,6 +4345,42 @@ mod native_vm_partial_image_reconcile_tests {
             running("warp-egress", &new_warp),
         ];
         assert!(!owned_runtime_image_drift(&refs, &converged));
+    }
+
+    #[test]
+    fn pinned_runtime_image_accepts_three_immutable_generations_only() {
+        let repository = "ghcr.io/iamaman11/vultr-edge-gateway";
+        let old = format!("{repository}@sha256:{}", "a".repeat(64));
+        let intermediate = format!("{repository}@sha256:{}", "b".repeat(64));
+        let desired = format!("{repository}@sha256:{}", "c".repeat(64));
+        assert_eq!(
+            pinned_owned_image_needs_replacement(&old, &desired, repository),
+            Ok(true)
+        );
+        assert_eq!(
+            pinned_owned_image_needs_replacement(&intermediate, &desired, repository),
+            Ok(true)
+        );
+        assert_eq!(
+            pinned_owned_image_needs_replacement(&desired, &desired, repository),
+            Ok(false)
+        );
+        assert!(
+            pinned_owned_image_needs_replacement(
+                "docker.io/foreign@sha256:dead",
+                &desired,
+                repository
+            )
+            .is_err()
+        );
+        assert!(
+            pinned_owned_image_needs_replacement(
+                "ghcr.io/iamaman11/vultr-edge-gateway:latest",
+                &desired,
+                repository
+            )
+            .is_err()
+        );
     }
 
     #[test]
