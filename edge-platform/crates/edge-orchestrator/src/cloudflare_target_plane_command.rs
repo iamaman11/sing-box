@@ -612,11 +612,21 @@ async fn apply_once(
             .await
         }
         TargetPlaneAction::UpdateProductionDnsRecord { record_id } => {
+            let records = cloudflare::list_a_records(
+                &inputs.dns_token,
+                &desired.dns_zone_name,
+                &desired.dns_record_name,
+            )
+            .await?;
+            if records.len() != 1 || records[0].id != *record_id {
+                return Err("CLOUDFLARE_DNS_EXACT_RECORD_CHANGED_NO_MUTATION".to_owned());
+            }
             cloudflare::update_a_record_by_id(
                 &inputs.dns_token,
                 &desired.dns_zone_name,
                 record_id,
                 &desired.dns_record_name,
+                &records[0].ip,
                 &desired.dns_target_ipv4,
             )
             .await
