@@ -158,7 +158,7 @@ jobs:
             command=(apply "${BASH_REMATCH[1]}" --resource-id "${BASH_REMATCH[2]}")
           elif [[ "${COMMAND_BODY}" =~ ^/host[[:space:]]admin[[:space:]]([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})[[:space:]]([A-Za-z0-9_-]{1,24000})$ ]]; then
             command=(admin "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")
-          elif [[ "${COMMAND_BODY}" =~ ^/host[[:space:]]diagnose[[:space:]]([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})[[:space:]](.{1,480})$ ]]; then
+          elif [[ "${COMMAND_BODY}" =~ ^/host[[:space:]]diagnose[[:space:]]([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})[[:space:]](.{1,24000})$ ]]; then
             machine="${BASH_REMATCH[1]}"
             # Splitting into argv is ONLY transport. Rust coordinator and native
             # root owner independently validate the closed read-only grammar.
