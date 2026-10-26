@@ -164,6 +164,8 @@ jobs:
             # root owner independently validate the closed read-only grammar.
             read -r -a probe_argv <<< "${BASH_REMATCH[2]}"
             command=(diagnose "${machine}" -- "${probe_argv[@]}")
+          elif [[ "${COMMAND_BODY}" =~ ^/host[[:space:]]recover[[:space:]]([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})[[:space:]]--bootstrap-access$ ]]; then
+            command=(recover "${BASH_REMATCH[1]}" --bootstrap-access)
           elif [[ "${COMMAND_BODY}" =~ ^/host[[:space:]](apply|recover)[[:space:]]([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})$ ]]; then
             command=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")
           else
@@ -280,6 +282,7 @@ jobs:
       (needs.host.outputs.operation == 'STATUS' ||
        needs.host.outputs.operation == 'APPLY_PREFLIGHT' ||
        needs.host.outputs.operation == 'RECOVER_PREFLIGHT' ||
+       needs.host.outputs.operation == 'BOOTSTRAP_ACCESS_PREFLIGHT' ||
        needs.host.outputs.operation == 'DIAGNOSE' ||
        needs.host.outputs.operation == 'ADMIN' ||
        needs.host.outputs.operation == 'FIRST_USE_PREFLIGHT' ||
@@ -325,8 +328,10 @@ jobs:
           report_kind='Host read-only report'
           if [[ "${HOST_OPERATION}" == RECOVER_PREFLIGHT ]]; then
             report_kind='Host code-only recovery report'
+          elif [[ "${HOST_OPERATION}" == BOOTSTRAP_ACCESS_PREFLIGHT ]]; then
+            report_kind='Host enrolled-VM Access continuation report'
           fi
-          body="$(printf '%s for operator command #%s\n\nOperation: `%s`\nResult: `%s`\nPhysical dispatch selected: `%s`\nRunner inventory API: `%s` (not physical proof)\nCI evidence: %s\n\nResults arrive as separate correlated replies. Unresponsive runners remain UNPROVEN. For VM /host recover, the installed root owner may refresh only its exact protected binary/trust and diagnose; this never authorizes resource replay, Docker/network changes or a signed INSTALL.\n' \
+          body="$(printf '%s for operator command #%s\n\nOperation: `%s`\nResult: `%s`\nPhysical dispatch selected: `%s`\nRunner inventory API: `%s` (not physical proof)\nCI evidence: %s\n\nResults arrive as separate correlated replies. Unresponsive runners remain UNPROVEN. Normal VM /host recover is code-only. Explicit --bootstrap-access permits only a root-owned one-shot Access identity handoff; neither case replays CREATE, INSTALL or resource mutations.\n' \
             "${report_kind}" "${SOURCE_COMMENT_ID}" "${COMMAND_BODY}" "${result}" "${TARGETS_PRESENT}" "${RUNNER_INVENTORY_STATE}" "${run_url}")"
           comment_id="$(gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/1/comments" -f "body=${body}" --jq '.id')"
           [[ "${comment_id}" =~ ^[0-9]+$ ]]
