@@ -698,7 +698,10 @@ fn verify_historical_partial_recovery_state(
         || !observed.runtime_ready
         || current_release.len() != 32
         || observed.observed_release_sha256.len() != 32
-        || observed.observed_release_sha256.iter().all(|byte| *byte == 0)
+        || observed
+            .observed_release_sha256
+            .iter()
+            .all(|byte| *byte == 0)
         || observed.observed_release_sha256 == current_release
     {
         return Err("HOST_NATIVE_HISTORICAL_BASELINE_UNPROVEN_NO_REPLAY");
@@ -1192,8 +1195,8 @@ mod tests {
     #[test]
     fn historical_partial_recovery_preserves_original_unknown_and_never_verifies_it() {
         use crate::host_lifecycle::{
-            host_authorization_payload, prepared_host_result, set_host_result_reason,
-            BoundNativeHostArtifacts,
+            BoundNativeHostArtifacts, host_authorization_payload, prepared_host_result,
+            set_host_result_reason,
         };
         use crate::{FleetNativeOwnerState, FleetNativeReleaseProof};
         let rng = SystemRandom::new();
@@ -1265,7 +1268,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "sing-box-partial-recovery-{}-{}",
             std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         fs::create_dir(&dir).unwrap();
         fs::write(native_scope_pending_path(&dir, &old), old.encode_to_vec()).unwrap();
@@ -1323,14 +1329,20 @@ mod tests {
             &fs::read(dir.join(format!("{prior_id}.incomplete.pb"))).unwrap(),
         )
         .unwrap();
-        assert_eq!(incomplete.state, FleetHostResultState::UnknownNoReplay as i32);
+        assert_eq!(
+            incomplete.state,
+            FleetHostResultState::UnknownNoReplay as i32
+        );
         assert!(!incomplete.physical_readback);
         assert_eq!(incomplete.operation_id, old.operation_id);
         assert!(!dir.join(format!("{prior_id}.verified.pb")).exists());
-        assert!(dir.join(format!(
-            "{}.observed.pb",
-            journal_hex(current.operation_id.as_bytes())
-        )).exists());
+        assert!(
+            dir.join(format!(
+                "{}.observed.pb",
+                journal_hex(current.operation_id.as_bytes())
+            ))
+            .exists()
+        );
         assert!(resolve(&observation).is_err()); // Old gate never re-created or re-executed.
         fs::remove_dir_all(dir).unwrap();
     }
