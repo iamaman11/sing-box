@@ -776,8 +776,7 @@ fn resolve_pending_native_recovery_once(
     // ReleaseSet. Requiring a new Git release to classify this state would
     // cause another loop. The root-observed installed digest is independent
     // of the pending source identity and must not be mistaken for convergence.
-    let native_release_mismatch =
-        observed.observed_release_sha256 != bound.runtime_release_sha256;
+    let native_release_mismatch = observed.observed_release_sha256 != bound.runtime_release_sha256;
     let incomplete = historical_drift || native_release_mismatch;
     if incomplete
         && (original.action != FleetHostAction::Apply as i32
