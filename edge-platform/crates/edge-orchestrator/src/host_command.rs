@@ -619,7 +619,7 @@ pub(crate) fn run(
                     );
                     println!(
                         "host_native_snapshot_bundle_matches={}",
-                        native_bundle_sha == verified_observation.observed_release_sha256
+                        native_bundle_sha.as_slice() == verified_observation.observed_release_sha256.as_slice()
                     );
                 }
                 println!(
