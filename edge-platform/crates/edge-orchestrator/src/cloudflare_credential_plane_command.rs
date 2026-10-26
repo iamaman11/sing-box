@@ -4126,11 +4126,17 @@ async function GITHUB(info,e,now){
  const commentResult=await GITHUB_GET("/issues/comments/"+id,"GITHUB_COMMENT");
  if(commentResult.error)return commentResult.error;
  const c=commentResult.value,stamp=Date.parse(c?.created_at)/1000;
+ // Rust encodes explicit native historical adjudication as action=RECOVER,
+ // but its GitHub command has an exact --adjudicate suffix. Authorize only
+ // that VM whole-resource form; no generic fallback or unsigned journal reset.
+ const expectedCommand=info.kind===2&&info.action===3&&info.resource==="sing-box"
+   ? "/host recover "+info.m+" --adjudicate"
+   : "/host "+(info.action===2?"apply":"recover")+" "+info.m+
+     (info.resource==="sing-box"?"":" "+info.resource);
  if(!c||String(c.user?.id)!==actor||c.issue_url!==base+"/issues/1"||
     c.updated_at!==c.created_at||!Number.isFinite(stamp)||
     stamp>now+30||info.when<stamp-30||
-    c.body!=="/host "+(info.action===2?"apply":"recover")+" "+info.m+
-       (info.resource==="sing-box"?"":" "+info.resource))return "DENIED";
+    c.body!==expectedCommand)return "DENIED";
  const tag="edge-release-"+info.release;
  const releaseResult=await GITHUB_GET("/releases/tags/"+tag,"GITHUB_RELEASE");
  if(releaseResult.error)return releaseResult.error;

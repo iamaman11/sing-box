@@ -50,7 +50,7 @@ const env={
 };
 const expectedCertUrl=issuer+"/cdn-cgi/access/certs";
 let publishedRelease=true;
-let approvedResource="sing-box";
+let approvedResource="sing-box",operatorComment="/host apply vm-test-1";
 let commentCreated=now-2, receiptMerged=true, receiptBranchValid=true, mainMatched=true, receiptMergedAgo=20;
 const testReleaseTag="edge-release-"+Buffer.alloc(32,3).toString("hex");
 globalThis.fetch=async u=>{
@@ -61,7 +61,7 @@ globalThis.fetch=async u=>{
       issue_url:"https://api.github.com/repos/iamaman11/sing-box/issues/1",
       created_at:new Date(commentCreated*1000).toISOString(),
       updated_at:new Date(commentCreated*1000).toISOString(),
-      body:"/host apply vm-test-1"+
+      body:operatorComment+
         (approvedResource==="sing-box"?"":" "+approvedResource),
     });
   if(String(u)==="https://api.github.com/repos/iamaman11/sing-box/git/ref/heads/main")
@@ -197,6 +197,25 @@ const badScope=combine(
 );
 requireTest((await call(badScope)).status===400,
   "arbitrary container scope accepted by config-only Worker");
+// Native historical adjudication reuses signed FleetHostAction::Recover,
+// but operator authorization must match the exact --adjudicate syntax.
+const recoverIntent=combine(
+ number(1,1),field(2,TE.encode("vm-test-1")),number(3,2),
+ field(4,TE.encode("sing-box")),field(5,TE.encode("issue1-comment-123")),
+ number(6,3),field(7,Buffer.alloc(32,1)),field(8,Buffer.alloc(32,2)),
+ field(9,Buffer.alloc(32,3)),number(11,now)
+);
+operatorComment="/host recover vm-test-1 --adjudicate";
+requireTest((await call(recoverIntent)).status===200,
+ "signed VM adjudication rejected despite exact GitHub approval");
+operatorComment="/host recover vm-test-1";
+requireTest((await call(recoverIntent)).status===403,
+ "VM adjudication authorized by ordinary code-only recover command");
+operatorComment="/host apply vm-test-1";
+requireTest((await call(recoverIntent)).status===403,
+ "VM adjudication authorized by different APPLY command");
+requireTest((await call(intent)).status===200,
+ "normal APPLY no longer authorized after adjudication contract");
 const windowsSource=readFileSync(process.argv[2],"utf8").replace("const P=2;","const P=1;");
 const tmpUrl="data:text/javascript;base64,"+Buffer.from(windowsSource).toString("base64");
 const windows=await import(tmpUrl);
