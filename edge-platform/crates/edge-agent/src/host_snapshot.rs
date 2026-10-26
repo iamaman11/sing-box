@@ -2,13 +2,14 @@
 //! No alternate root executor, no journal mutation and no credential output.
 use super::*;
 use base64::Engine;
-use edge_shared_types::{FleetNativeDiagnosticSnapshot, host_diagnostic_snapshot};
 use edge_shared_types::host_lifecycle::decode_host_intent;
+use edge_shared_types::{FleetNativeDiagnosticSnapshot, host_diagnostic_snapshot};
 use std::os::unix::fs::{MetadataExt, PermissionsExt};
 
 fn pending_scope(root: &Path) -> Result<(u32, String, String, Vec<u8>, i32), String> {
     let journal = root.join("journal");
-    let metadata = fs::symlink_metadata(&journal).map_err(|_| "HOST_SNAPSHOT_JOURNAL_UNAVAILABLE")?;
+    let metadata =
+        fs::symlink_metadata(&journal).map_err(|_| "HOST_SNAPSHOT_JOURNAL_UNAVAILABLE")?;
     if !metadata.is_dir() || metadata.uid() != 0 || metadata.permissions().mode() & 0o077 != 0 {
         return Err("HOST_SNAPSHOT_JOURNAL_UNTRUSTED".into());
     }
@@ -38,12 +39,26 @@ fn pending_scope(root: &Path) -> Result<(u32, String, String, Vec<u8>, i32), Str
     };
     // An admin pending is not interpreted as a resource intent.
     if !name.starts_with("resource-") {
-        return Ok((count, "UNPROVEN_PENDING_RECORD".into(), String::new(), Vec::new(), 0));
+        return Ok((
+            count,
+            "UNPROVEN_PENDING_RECORD".into(),
+            String::new(),
+            Vec::new(),
+            0,
+        ));
     }
     let bytes = host_native::root_file(path, 4096)?;
-    let digest = ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref().to_vec();
+    let digest = ring::digest::digest(&ring::digest::SHA256, &bytes)
+        .as_ref()
+        .to_vec();
     let intent = decode_host_intent(&bytes).map_err(str::to_owned)?;
-    Ok((count, intent.operation_id, intent.resource_id, digest, intent.action))
+    Ok((
+        count,
+        intent.operation_id,
+        intent.resource_id,
+        digest,
+        intent.action,
+    ))
 }
 
 /// Optional source-comment correlation on stdin. Existing `local diagnose`
@@ -51,16 +66,19 @@ fn pending_scope(root: &Path) -> Result<(u32, String, String, Vec<u8>, i32), Str
 /// or sudoers entry. Only bounded signed protobuf is exported.
 pub(super) async fn emit_if_requested(stack_dir: &Path) -> Result<(), String> {
     let mut source = String::new();
-    io::stdin().take(24).read_to_string(&mut source)
+    io::stdin()
+        .take(24)
+        .read_to_string(&mut source)
         .map_err(|_| "HOST_SNAPSHOT_REQUEST_UNREADABLE")?;
     if source.is_empty() {
         return Ok(());
     }
-    if source.len() > 20 || source.starts_with('0') ||
-       !source.bytes().all(|b| b.is_ascii_digit()) {
+    if source.len() > 20 || source.starts_with('0') || !source.bytes().all(|b| b.is_ascii_digit()) {
         return Err("HOST_SNAPSHOT_REQUEST_INVALID".into());
     }
-    let comment_id: u64 = source.parse().map_err(|_| "HOST_SNAPSHOT_REQUEST_INVALID")?;
+    let comment_id: u64 = source
+        .parse()
+        .map_err(|_| "HOST_SNAPSHOT_REQUEST_INVALID")?;
     if comment_id == 0 {
         return Err("HOST_SNAPSHOT_REQUEST_INVALID".into());
     }
@@ -84,27 +102,41 @@ pub(super) async fn emit_if_requested(stack_dir: &Path) -> Result<(), String> {
     let mut line2_digest = Vec::new();
     let mut line2_restarts = 0;
     let mut line2_exit = -1;
-    if let Some(line2) = host.vm_containers.iter().find(|c| c.container_name.contains("line2")) {
+    if let Some(line2) = host
+        .vm_containers
+        .iter()
+        .find(|c| c.container_name.contains("line2"))
+    {
         match observe_container_runtime(&line2.container_name).await {
             Ok(evidence) => {
                 line2_code = classify_native_container_failure(
-                    evidence.runtime_error.as_deref(), &evidence.log_tail).to_owned();
-                line2_digest = ring::digest::digest(&ring::digest::SHA256,
-                    evidence.log_tail.join("\n").as_bytes()).as_ref().to_vec();
+                    evidence.runtime_error.as_deref(),
+                    &evidence.log_tail,
+                )
+                .to_owned();
+                line2_digest = ring::digest::digest(
+                    &ring::digest::SHA256,
+                    evidence.log_tail.join("\n").as_bytes(),
+                )
+                .as_ref()
+                .to_vec();
                 line2_restarts = evidence.restart_count.unwrap_or(0);
                 line2_exit = evidence.exit_code.unwrap_or(-1);
             }
             Err(_) => line2_code = "DOCKER_READBACK_UNAVAILABLE".into(),
         }
     }
-    let now = SystemTime::now().duration_since(UNIX_EPOCH)
-        .map_err(|_| "HOST_SNAPSHOT_CLOCK_INVALID")?.as_secs();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "HOST_SNAPSHOT_CLOCK_INVALID")?
+        .as_secs();
     let mut snapshot = FleetNativeDiagnosticSnapshot {
         schema_version: 1,
         machine_id: host.machine_id.clone(),
         operation_id: format!("issue1-comment-{comment_id}"),
-        release_set_sha256: ring::digest::digest(&ring::digest::SHA256,
-            &trust.release_set_pb).as_ref().to_vec(),
+        release_set_sha256: ring::digest::digest(&ring::digest::SHA256, &trust.release_set_pb)
+            .as_ref()
+            .to_vec(),
         observation: Some(observation),
         resources: Some(resources),
         ed25519_signature: Vec::new(),
@@ -120,9 +152,14 @@ pub(super) async fn emit_if_requested(stack_dir: &Path) -> Result<(), String> {
     };
     host_diagnostic_snapshot::sign(&mut snapshot, &host, &key, now).map_err(str::to_owned)?;
     let bytes = snapshot.encode_to_vec();
-    println!("host_root_signed_snapshot_b64={}",
-        base64::engine::general_purpose::STANDARD.encode(bytes));
-    println!("host_root_signed_snapshot_has_pending={}", pending_count > 0);
+    println!(
+        "host_root_signed_snapshot_b64={}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    );
+    println!(
+        "host_root_signed_snapshot_has_pending={}",
+        pending_count > 0
+    );
     println!("host_root_signed_snapshot_mutations=0");
     Ok(())
 }
