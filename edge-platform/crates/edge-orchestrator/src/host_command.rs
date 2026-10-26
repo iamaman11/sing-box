@@ -1372,18 +1372,32 @@ pub(crate) fn run(
             intent_output,
             resource_id.as_deref(),
         ),
-        HostCommand::Recover { machine_id } => host_lifecycle_admission(
-            &desired,
-            &machine_id,
-            HostLifecycleOperation::Recover,
-            &release.release().release_set_sha256,
-            digest.as_ref(),
-            runner_inventory_json,
-            github_output,
-            source_comment_id,
-            intent_output,
-            None,
-        ),
+        HostCommand::Recover {
+            machine_id,
+            bootstrap_access,
+        } => {
+            if bootstrap_access {
+                host_bootstrap_access_resume_admission(
+                    &desired,
+                    &machine_id,
+                    github_output,
+                    source_comment_id,
+                )
+            } else {
+                host_lifecycle_admission(
+                    &desired,
+                    &machine_id,
+                    HostLifecycleOperation::Recover,
+                    &release.release().release_set_sha256,
+                    digest.as_ref(),
+                    runner_inventory_json,
+                    github_output,
+                    source_comment_id,
+                    intent_output,
+                    None,
+                )
+            }
+        }
         HostCommand::RegisterSigner {
             machine_id,
             signer_public_key_hex,
@@ -1761,6 +1775,59 @@ fn validate_readback_scope(
     Ok("LOCAL_OBSERVATION_ONLY_NOT_PHYSICAL_ACCEPTANCE")
 }
 
+/// A new, explicitly authorized /host recover --bootstrap-access request.
+/// This only selects the existing protected, one-shot sealed Access handoff.
+/// The installed root owner independently checks Git-pinned receipt/release
+/// and refuses any already-started or ambiguous bootstrap access journal.
+/// No old INSTALL, CREATE or root administration request can be replayed.
+fn host_bootstrap_access_resume_admission(
+    desired: &HostRegistry,
+    machine_id: &str,
+    output: Option<&Path>,
+    source_comment_id: Option<u64>,
+) -> Result<(), String> {
+    let selected = desired
+        .hosts
+        .iter()
+        .find(|host| host.machine_id == machine_id)
+        .ok_or("HOST_NOT_REGISTERED")?;
+    if selected.kind != ManagedHostKind::Vm as i32 {
+        return Err("HOST_BOOTSTRAP_ACCESS_VM_ONLY".into());
+    }
+    edge_shared_types::host_lifecycle::verify_vm_signed_git_prerequisites(selected)
+        .map_err(str::to_owned)?;
+    edge_shared_types::host_lifecycle::verify_vm_first_use_git_prerequisites(selected)
+        .map_err(str::to_owned)?;
+    if selected.vm_first_use_credential.is_none() {
+        return Err("HOST_VM_FIRST_USE_CREDENTIAL_GIT_REQUIRED".into());
+    }
+    let owner = match selected.owner.as_ref() {
+        Some(managed_host::Owner::VmMachineId(name)) if name == machine_id => name,
+        _ => return Err("HOST_OWNER_MISMATCH".into()),
+    };
+    let comment = source_comment_id
+        .filter(|id| *id > 0)
+        .ok_or("HOST_SOURCE_COMMENT_REQUIRED")?;
+    let labels = runner_labels(ManagedHostKind::Vm, owner, &selected.windows_runner_label)?;
+    let output = output.ok_or("HOST_PREFLIGHT_OUTPUT_REQUIRED")?;
+    append_control_outputs(
+        output,
+        machine_id,
+        ManagedHostKind::Vm,
+        owner,
+        &labels,
+        &selected.windows_runner_label,
+        &selected.desired_spec_path,
+    )?;
+    append_action_output(output, HostWorkflowOperation::BootstrapAccessPreflight)?;
+    append_observation_matrix(output, &[])?;
+    println!("host_operation_id=issue1-comment-{comment}");
+    println!("host_machine_id={machine_id}");
+    println!("host_bootstrap_access=FRESH_HANDOFF_PREFLIGHT_ONLY");
+    println!("host_mutations=0");
+    Ok(())
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HostLifecycleOperation {
     Apply,
@@ -2106,6 +2173,7 @@ enum HostWorkflowOperation {
     Diagnose,
     ApplyPreflight,
     RecoverPreflight,
+    BootstrapAccessPreflight,
     FirstUsePreflight,
     FirstUseAbortPreflight,
     WorkerAuthorizerPreflight,
@@ -2119,6 +2187,7 @@ impl HostWorkflowOperation {
             Self::Diagnose => "DIAGNOSE",
             Self::ApplyPreflight => "APPLY_PREFLIGHT",
             Self::RecoverPreflight => "RECOVER_PREFLIGHT",
+            Self::BootstrapAccessPreflight => "BOOTSTRAP_ACCESS_PREFLIGHT",
             Self::FirstUsePreflight => "FIRST_USE_PREFLIGHT",
             Self::FirstUseAbortPreflight => "FIRST_USE_ABORT_PREFLIGHT",
             Self::WorkerAuthorizerPreflight => "WORKER_AUTHORIZER_PREFLIGHT",
@@ -2293,6 +2362,7 @@ mod tests {
             HostWorkflowOperation::Status,
             HostWorkflowOperation::ApplyPreflight,
             HostWorkflowOperation::RecoverPreflight,
+            HostWorkflowOperation::BootstrapAccessPreflight,
             HostWorkflowOperation::FirstUsePreflight,
             HostWorkflowOperation::WorkerAuthorizerPreflight,
         ];
@@ -2303,6 +2373,7 @@ mod tests {
                 "STATUS",
                 "APPLY_PREFLIGHT",
                 "RECOVER_PREFLIGHT",
+                "BOOTSTRAP_ACCESS_PREFLIGHT",
                 "FIRST_USE_PREFLIGHT",
                 "WORKER_AUTHORIZER_PREFLIGHT",
             ]
@@ -2354,6 +2425,78 @@ mod tests {
             &vm,
             ManagedHostKind::Windows
         ));
+    }
+
+    #[test]
+    fn bootstrap_access_resume_requires_enrolled_vm_signed_git_and_new_operator_comment() {
+        use edge_shared_types::{FleetHostTarget, FleetVmContainer, FleetVmFirstUseCredential};
+        let id = "vm-access-test";
+        let mut registry = HostRegistry {
+            schema_version: 1,
+            hosts: vec![ManagedHost {
+                machine_id: id.into(),
+                kind: ManagedHostKind::Vm as i32,
+                owner: Some(managed_host::Owner::VmMachineId(id.into())),
+                vm_provider_spec_path: "infra/vultr/vm-access-test.textproto".into(),
+                desired_spec_path: "infra/hosts/specs/vm-access-test.textproto".into(),
+                target: Some(FleetHostTarget {
+                    run_state: edge_shared_types::FleetHostRunState::Running as i32,
+                    ..Default::default()
+                }),
+                vm_containers: vec![FleetVmContainer {
+                    container_name: "vultr-line1-gateway".into(),
+                    compose_project: "vultr-edge".into(),
+                    compose_service: "line1-gateway".into(),
+                }],
+                worker_authority_public_key: vec![7; 32],
+                native_receipt_public_key: vec![9; 32],
+                vm_first_use_credential: Some(FleetVmFirstUseCredential {
+                    generation: 1,
+                    bundle_sha256: "a".repeat(64),
+                }),
+                ..Default::default()
+            }],
+        };
+        let path =
+            std::env::temp_dir().join(format!("singbox-access-resume-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        std::fs::write(&path, "").unwrap();
+        assert_eq!(
+            host_bootstrap_access_resume_admission(&registry, "other", Some(&path), Some(42))
+                .unwrap_err(),
+            "HOST_NOT_REGISTERED"
+        );
+        assert_eq!(
+            host_bootstrap_access_resume_admission(&registry, id, Some(&path), None).unwrap_err(),
+            "HOST_SOURCE_COMMENT_REQUIRED"
+        );
+        assert_eq!(
+            host_bootstrap_access_resume_admission(&registry, id, None, Some(42)).unwrap_err(),
+            "HOST_PREFLIGHT_OUTPUT_REQUIRED"
+        );
+        registry.hosts[0].native_receipt_public_key.clear();
+        assert_eq!(
+            host_bootstrap_access_resume_admission(&registry, id, Some(&path), Some(42))
+                .unwrap_err(),
+            "HOST_VM_GIT_RECEIPT_REGISTRATION_REQUIRED"
+        );
+        registry.hosts[0].native_receipt_public_key = vec![9; 32];
+        registry.hosts[0].vm_first_use_credential = None;
+        assert_eq!(
+            host_bootstrap_access_resume_admission(&registry, id, Some(&path), Some(42))
+                .unwrap_err(),
+            "HOST_VM_FIRST_USE_CREDENTIAL_GIT_REQUIRED"
+        );
+        registry.hosts[0].vm_first_use_credential = Some(FleetVmFirstUseCredential {
+            generation: 1,
+            bundle_sha256: "a".repeat(64),
+        });
+        host_bootstrap_access_resume_admission(&registry, id, Some(&path), Some(42)).unwrap();
+        let result = std::fs::read_to_string(&path).unwrap();
+        assert!(result.contains("operation=BOOTSTRAP_ACCESS_PREFLIGHT\n"));
+        assert!(result.contains("machine_id=vm-access-test\n"));
+        assert!(!result.contains("operation=APPLY_PREFLIGHT\n"));
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

@@ -152,8 +152,14 @@ pub(crate) enum HostCommand {
         #[arg(long)]
         resource_id: Option<String>,
     },
-    /// One bounded fresh typed recovery preflight; never resumes historical operations.
-    Recover { machine_id: String },
+    /// One bounded fresh typed recovery preflight; never replays previous effects.
+    Recover {
+        machine_id: String,
+        /// Explicitly finish the root-only Access handoff on an already-enrolled VM.
+        /// No new VM, container or INSTALL execution is authorized.
+        #[arg(long)]
+        bootstrap_access: bool,
+    },
     /// Internal, bounded public-key-only Git registration proposal. Never
     /// writes protected Git and never authorizes a native mutation.
     #[command(hide = true)]
