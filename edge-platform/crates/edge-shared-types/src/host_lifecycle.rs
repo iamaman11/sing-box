@@ -619,6 +619,9 @@ fn host_result_reason_projection(
         Reason::StoppedReleaseDriftRequiresInstallTarget => {
             ("", "STOPPED_RELEASE_DRIFT_REQUIRES_INSTALL_TARGET")
         }
+        Reason::HistoricalPartialRequiresFreshApply => {
+            ("", "HISTORICAL_PARTIAL_REQUIRES_FRESH_APPLY")
+        }
     }
 }
 
@@ -630,6 +633,9 @@ pub fn validate_host_result_reason(result: &FleetHostResult) -> Result<(), &'sta
         Reason::Unspecified => false,
         Reason::PreparedNeedsOwnerTrust => state == State::Prepared,
         Reason::AuthorizedAwaitNativeReadback => state == State::Authorized,
+        Reason::HistoricalPartialRequiresFreshApply => {
+            matches!(state, State::UnknownNoReplay | State::Observed)
+        }
         _ => matches!(state, State::Observed | State::Verified),
     };
     let (error, action) = host_result_reason_projection(reason);
