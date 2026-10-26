@@ -40,20 +40,22 @@ fn validate_scope(
     if snapshot.pending_resource_count > 64
         || snapshot.pending_operation_id.len() > 128
         || snapshot.pending_resource_id.len() > 128
-        || snapshot.pending_operation_id.bytes().any(|b| {
-            !b.is_ascii_alphanumeric() && !matches!(b, b'-' | b'_' | b'.' | b':')
-        })
-        || snapshot.pending_resource_id.bytes().any(|b| {
-            !b.is_ascii_alphanumeric() && !matches!(b, b'-' | b'_' | b'.' | b'/')
-        })
+        || snapshot
+            .pending_operation_id
+            .bytes()
+            .any(|b| !b.is_ascii_alphanumeric() && !matches!(b, b'-' | b'_' | b'.' | b':'))
+        || snapshot
+            .pending_resource_id
+            .bytes()
+            .any(|b| !b.is_ascii_alphanumeric() && !matches!(b, b'-' | b'_' | b'.' | b'/'))
         || !(snapshot.pending_request_sha256.is_empty()
             || snapshot.pending_request_sha256.len() == 32)
         || snapshot.line2_failure_code.len() > 96
-        || snapshot.line2_failure_code.bytes().any(|b| {
-            !b.is_ascii_uppercase() && !b.is_ascii_digit() && b != b'_'
-        })
-        || !(snapshot.line2_log_sha256.is_empty()
-            || snapshot.line2_log_sha256.len() == 32)
+        || snapshot
+            .line2_failure_code
+            .bytes()
+            .any(|b| !b.is_ascii_uppercase() && !b.is_ascii_digit() && b != b'_')
+        || !(snapshot.line2_log_sha256.is_empty() || snapshot.line2_log_sha256.len() == 32)
         || (snapshot.pending_resource_count == 0
             && (!snapshot.pending_operation_id.is_empty()
                 || !snapshot.pending_resource_id.is_empty()
