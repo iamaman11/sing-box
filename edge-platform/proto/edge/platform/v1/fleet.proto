@@ -604,6 +604,10 @@ enum FleetHostResultReason {
   FLEET_HOST_RESULT_REASON_RECOVERED_NATIVE_RUNNING = 4;
   FLEET_HOST_RESULT_REASON_RECOVERED_NATIVE_STOPPED = 5;
   FLEET_HOST_RESULT_REASON_STOPPED_RELEASE_DRIFT_REQUIRES_INSTALL_TARGET = 6;
+  // An independently observed historical BEGIN remains UNKNOWN, NEVER VERIFIED.
+  // A newly signed RECOVER classified its partial release and releases the
+  // resource gate for a DIFFERENT, freshly authorized reconciliation intent.
+  FLEET_HOST_RESULT_REASON_HISTORICAL_PARTIAL_REQUIRES_FRESH_APPLY = 7;
 }
 
 message FleetHostResult {
