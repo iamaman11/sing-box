@@ -143,8 +143,8 @@ typed_proto=Path("edge-platform/proto/edge/platform/v1/fleet.proto").read_text(e
 assert "HOST_SNAPSHOT_ORIGINAL_BEGIN_MISMATCH" in native_pending
 assert "decode_host_result(&begin_bytes)" in native_pending
 assert "begin.operation_id != intent.operation_id" in native_pending
-assert "pending_original_release_sha256: intent.release_set_sha256" in native_pending
-assert "pending_original_desired_sha256: intent.desired_sha256" in native_pending
+assert "original_release_sha256: intent.release_set_sha256" in native_pending
+assert "original_desired_sha256: intent.desired_sha256" in native_pending
 assert "pending_begin_record_sha256:" in native_pending
 assert "pending_original_release_sha256 = 17" in typed_proto
 assert "pending_original_desired_sha256 = 18" in typed_proto
