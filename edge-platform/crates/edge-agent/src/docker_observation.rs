@@ -2229,10 +2229,7 @@ impl ScopedVmService {
 /// A desired file is not a physical Docker readback. Keep this comparison
 /// separate from graph diff so old containers behind new .images.env pins
 /// are always recognized before a fresh, separately authorized operation.
-fn owned_runtime_image_drift(
-    refs: &HashMap<String, String>,
-    owned: &[OwnedVmContainer],
-) -> bool {
+fn owned_runtime_image_drift(refs: &HashMap<String, String>, owned: &[OwnedVmContainer]) -> bool {
     owned
         .iter()
         .any(|item| refs.get(&item.service) != Some(&item.image_ref))
@@ -4293,10 +4290,22 @@ mod native_vm_partial_image_reconcile_tests {
 
     #[test]
     fn staged_policy_does_not_hide_real_docker_image_drift() {
-        let old_gateway = format!("ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}", "a".repeat(64));
-        let new_gateway = format!("ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}", "b".repeat(64));
-        let old_warp = format!("ghcr.io/iamaman11/vultr-warp-egress@sha256:{}", "c".repeat(64));
-        let new_warp = format!("ghcr.io/iamaman11/vultr-warp-egress@sha256:{}", "d".repeat(64));
+        let old_gateway = format!(
+            "ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}",
+            "a".repeat(64)
+        );
+        let new_gateway = format!(
+            "ghcr.io/iamaman11/vultr-edge-gateway@sha256:{}",
+            "b".repeat(64)
+        );
+        let old_warp = format!(
+            "ghcr.io/iamaman11/vultr-warp-egress@sha256:{}",
+            "c".repeat(64)
+        );
+        let new_warp = format!(
+            "ghcr.io/iamaman11/vultr-warp-egress@sha256:{}",
+            "d".repeat(64)
+        );
         let refs = HashMap::from([
             ("line1-gateway".to_owned(), new_gateway.clone()),
             ("line2-proxy".to_owned(), new_gateway.clone()),
@@ -4328,10 +4337,20 @@ mod native_vm_partial_image_reconcile_tests {
         let next_id = "b".repeat(64);
         let previous = "old@sha256:111";
         let desired = "new@sha256:222";
-        assert!(verified_image_transition(&old_id, previous, &next_id, desired, desired));
-        assert!(!verified_image_transition(&old_id, previous, &old_id, desired, desired));
-        assert!(!verified_image_transition(&old_id, previous, &next_id, previous, desired));
-        assert!(verified_image_transition(&old_id, desired, &old_id, desired, desired));
-        assert!(!verified_image_transition(&old_id, desired, &next_id, desired, desired));
+        assert!(verified_image_transition(
+            &old_id, previous, &next_id, desired, desired
+        ));
+        assert!(!verified_image_transition(
+            &old_id, previous, &old_id, desired, desired
+        ));
+        assert!(!verified_image_transition(
+            &old_id, previous, &next_id, previous, desired
+        ));
+        assert!(verified_image_transition(
+            &old_id, desired, &old_id, desired, desired
+        ));
+        assert!(!verified_image_transition(
+            &old_id, desired, &next_id, desired, desired
+        ));
     }
 }
