@@ -2894,13 +2894,23 @@ pub(crate) async fn preflight_native_vm_replace(
     let staged_runtime_drift = if changed.is_empty() {
         let docker = docker_connection().await?;
         let mut owned = owned_application_container_ids(&docker, &host.vm_containers).await?;
-        if owned.len() != host.vm_containers.len() || owned.iter().any(|item| !item.running) {
+        if owned.len() != host.vm_containers.len() {
             return Err("HOST_VM_IMAGE_RUNTIME_INCOMPLETE_NO_REPLAY".into());
         }
         bind_owned_vm_compose_dependencies(stack_dir, &host.vm_containers, &mut owned)?;
         let network = read_owned_edge_network_id(&docker, host).await?;
         verify_vm_network_attachments(&docker, host, &owned, &network).await?;
         let pins = read_vm_expected_image_refs(stack_dir, &host.vm_containers)?;
+        let target_warp = pins
+            .get("warp-egress")
+            .ok_or("HOST_VM_IMAGE_RUNTIME_INCOMPLETE_NO_REPLAY")?;
+        if !valid_gateway_image_replace_prestate(
+            &owned,
+            host.vm_containers.len(),
+            target_warp,
+        ) {
+            return Err("HOST_VM_IMAGE_RUNTIME_INCOMPLETE_NO_REPLAY".into());
+        }
         owned_runtime_image_drift(&pins, &owned)
     } else {
         false
