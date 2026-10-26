@@ -352,12 +352,10 @@ pub(super) async fn recreate_native_vm_container_once(
         .state
         .as_ref()
         .ok_or("HOST_VM_NATIVE_RECREATE_PRESTATE_CHANGED_NO_REPLAY")?;
-    let known_transition_state = state.paused == Some(false)
-        && state.restarting == Some(false)
-        && state.dead == Some(false);
-    let already_stopped = service == "warp-egress"
-        && known_transition_state
-        && state.running == Some(false);
+    let known_transition_state =
+        state.paused == Some(false) && state.restarting == Some(false) && state.dead == Some(false);
+    let already_stopped =
+        service == "warp-egress" && known_transition_state && state.running == Some(false);
     if inspected.id.as_deref() != Some(previous_id)
         || inspected.name.as_deref() != Some(format!("/{}", selector.container_name).as_str())
         || !known_transition_state
