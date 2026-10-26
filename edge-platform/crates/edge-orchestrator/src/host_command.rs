@@ -552,54 +552,111 @@ pub(crate) fn run(
                     .ok_or("HOST_SNAPSHOT_COMMENT_REQUIRED")?;
                 let meta = std::fs::symlink_metadata(path)
                     .map_err(|_| "HOST_SNAPSHOT_ARTIFACT_UNAVAILABLE")?;
-                if !meta.file_type().is_file() || meta.len() == 0 ||
-                   meta.len() > edge_shared_types::host_diagnostic_snapshot::MAX_SNAPSHOT_BYTES as u64 {
+                if !meta.file_type().is_file()
+                    || meta.len() == 0
+                    || meta.len()
+                        > edge_shared_types::host_diagnostic_snapshot::MAX_SNAPSHOT_BYTES as u64
+                {
                     return Err("HOST_SNAPSHOT_ARTIFACT_INVALID".into());
                 }
                 let mut signed = Vec::new();
-                File::open(path).map_err(|_| "HOST_SNAPSHOT_ARTIFACT_UNREADABLE")?
-                    .take(edge_shared_types::host_diagnostic_snapshot::MAX_SNAPSHOT_BYTES as u64 + 1)
+                File::open(path)
+                    .map_err(|_| "HOST_SNAPSHOT_ARTIFACT_UNREADABLE")?
+                    .take(
+                        edge_shared_types::host_diagnostic_snapshot::MAX_SNAPSHOT_BYTES as u64 + 1,
+                    )
                     .read_to_end(&mut signed)
                     .map_err(|_| "HOST_SNAPSHOT_ARTIFACT_UNREADABLE")?;
                 let operation = format!("issue1-comment-{comment}");
                 let accepted = edge_shared_types::host_diagnostic_snapshot::verify(
-                    &signed, selected, &operation, &release_sha, now).map_err(str::to_owned)?;
-                let verified_observation = accepted.observation.as_ref()
+                    &signed,
+                    selected,
+                    &operation,
+                    &release_sha,
+                    now,
+                )
+                .map_err(str::to_owned)?;
+                let verified_observation = accepted
+                    .observation
+                    .as_ref()
                     .ok_or("HOST_SNAPSHOT_OBSERVATION_MISSING")?;
-                let verified_resources = accepted.resources.as_ref()
+                let verified_resources = accepted
+                    .resources
+                    .as_ref()
                     .ok_or("HOST_SNAPSHOT_RESOURCES_MISSING")?;
                 // The signed Root Agent observation is independent of the
                 // untrusted runner-copied readback. The two may differ in time.
                 let signed_verdict = validate_readback_scope(
-                    selected, verified_observation,
+                    selected,
+                    verified_observation,
                     &release.release().release_set_sha256,
                     (selected.kind == ManagedHostKind::Vm as i32)
-                        .then_some(native_bundle_sha.as_slice()), now)?;
+                        .then_some(native_bundle_sha.as_slice()),
+                    now,
+                )?;
                 println!("host_native_snapshot_proof=VERIFIED_ROOT_SIGNED_READ_ONLY");
                 println!("host_native_snapshot_operation_id={operation}");
-                println!("host_native_snapshot_observed_at_unix={}",
-                    verified_observation.observed_at_unix);
+                println!(
+                    "host_native_snapshot_observed_at_unix={}",
+                    verified_observation.observed_at_unix
+                );
                 println!("host_native_snapshot_verdict={signed_verdict}");
-                println!("host_native_snapshot_pending_count={}",
-                    accepted.pending_resource_count);
-                println!("host_native_snapshot_pending_operation={}",
-                    accepted.pending_operation_id);
-                println!("host_native_snapshot_pending_resource={}",
-                    accepted.pending_resource_id);
-                println!("host_native_snapshot_pending_request_sha256={}",
-                    accepted.pending_request_sha256.iter().map(|b|format!("{b:02x}")).collect::<String>());
-                println!("host_native_snapshot_pending_action={}", accepted.pending_action);
-                println!("host_native_snapshot_line2_failure_code={}", accepted.line2_failure_code);
-                println!("host_native_snapshot_line2_restarts={}", accepted.line2_restart_count);
-                println!("host_native_snapshot_line2_exit={}", accepted.line2_last_exit_code);
-                println!("host_native_snapshot_line2_log_sha256={}",
-                    accepted.line2_log_sha256.iter().map(|b|format!("{b:02x}")).collect::<String>());
-                println!("host_native_snapshot_resource_count={}", verified_resources.resources.len());
+                println!(
+                    "host_native_snapshot_pending_count={}",
+                    accepted.pending_resource_count
+                );
+                println!(
+                    "host_native_snapshot_pending_operation={}",
+                    accepted.pending_operation_id
+                );
+                println!(
+                    "host_native_snapshot_pending_resource={}",
+                    accepted.pending_resource_id
+                );
+                println!(
+                    "host_native_snapshot_pending_request_sha256={}",
+                    accepted
+                        .pending_request_sha256
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<String>()
+                );
+                println!(
+                    "host_native_snapshot_pending_action={}",
+                    accepted.pending_action
+                );
+                println!(
+                    "host_native_snapshot_line2_failure_code={}",
+                    accepted.line2_failure_code
+                );
+                println!(
+                    "host_native_snapshot_line2_restarts={}",
+                    accepted.line2_restart_count
+                );
+                println!(
+                    "host_native_snapshot_line2_exit={}",
+                    accepted.line2_last_exit_code
+                );
+                println!(
+                    "host_native_snapshot_line2_log_sha256={}",
+                    accepted
+                        .line2_log_sha256
+                        .iter()
+                        .map(|b| format!("{b:02x}"))
+                        .collect::<String>()
+                );
+                println!(
+                    "host_native_snapshot_resource_count={}",
+                    verified_resources.resources.len()
+                );
                 println!("host_native_snapshot_replay_allowed=false");
                 println!("host_native_snapshot_mutations=0");
                 if let Some(path) = github_output {
-                    append_host_verifier_output(path, "native_snapshot_proof",
-                        "VERIFIED_ROOT_SIGNED_READ_ONLY")?;
+                    append_host_verifier_output(
+                        path,
+                        "native_snapshot_proof",
+                        "VERIFIED_ROOT_SIGNED_READ_ONLY",
+                    )?;
                 }
             } else if snapshot_comment_id.is_some() {
                 return Err("HOST_SNAPSHOT_PATH_REQUIRED".into());
