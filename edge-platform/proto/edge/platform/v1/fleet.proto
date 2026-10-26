@@ -505,6 +505,11 @@ message FleetNativeDiagnosticSnapshot {
   bytes line2_log_sha256 = 14;
   uint64 line2_restart_count = 15;
   int64 line2_last_exit_code = 16;
+  // Source-bound historical BEGIN, read from the private root journal.
+  // These are forensic metadata, NOT a terminal receipt or replay authority.
+  bytes pending_original_release_sha256 = 17;
+  bytes pending_original_desired_sha256 = 18;
+  bytes pending_begin_record_sha256 = 19;
 }
 
 // Unlimited administrative COMMAND capability belongs only to native VM root.
