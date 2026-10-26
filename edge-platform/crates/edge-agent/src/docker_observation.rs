@@ -4353,11 +4353,34 @@ mod native_vm_partial_image_reconcile_tests {
         let old = format!("{repository}@sha256:{}", "a".repeat(64));
         let intermediate = format!("{repository}@sha256:{}", "b".repeat(64));
         let desired = format!("{repository}@sha256:{}", "c".repeat(64));
-        assert_eq!(pinned_owned_image_needs_replacement(&old, &desired, repository), Ok(true));
-        assert_eq!(pinned_owned_image_needs_replacement(&intermediate, &desired, repository), Ok(true));
-        assert_eq!(pinned_owned_image_needs_replacement(&desired, &desired, repository), Ok(false));
-        assert!(pinned_owned_image_needs_replacement("docker.io/foreign@sha256:dead", &desired, repository).is_err());
-        assert!(pinned_owned_image_needs_replacement("ghcr.io/iamaman11/vultr-edge-gateway:latest", &desired, repository).is_err());
+        assert_eq!(
+            pinned_owned_image_needs_replacement(&old, &desired, repository),
+            Ok(true)
+        );
+        assert_eq!(
+            pinned_owned_image_needs_replacement(&intermediate, &desired, repository),
+            Ok(true)
+        );
+        assert_eq!(
+            pinned_owned_image_needs_replacement(&desired, &desired, repository),
+            Ok(false)
+        );
+        assert!(
+            pinned_owned_image_needs_replacement(
+                "docker.io/foreign@sha256:dead",
+                &desired,
+                repository
+            )
+            .is_err()
+        );
+        assert!(
+            pinned_owned_image_needs_replacement(
+                "ghcr.io/iamaman11/vultr-edge-gateway:latest",
+                &desired,
+                repository
+            )
+            .is_err()
+        );
     }
 
     #[test]
