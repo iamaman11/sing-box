@@ -331,6 +331,34 @@ fn run_local_fast(stack_dir: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Operator-visible diagnostics are closed and non-secret: never print
+/// arbitrary Docker, network or credential error strings into GH logs.
+fn native_runtime_reason_code(reason: &str) -> &'static str {
+    if reason == "direct egress datapath probe failed" {
+        "DIRECT_EGRESS_FAILED"
+    } else if reason == "WARP egress datapath probe failed" {
+        "WARP_EGRESS_FAILED"
+    } else if reason.starts_with("expected containers are not running: ") {
+        "CONTAINER_NOT_RUNNING"
+    } else if reason.starts_with("expected TCP ports are not listening: ") {
+        "TCP_PORTS_MISSING"
+    } else if reason.starts_with("expected UDP ports are not listening: ") {
+        "UDP_PORTS_MISSING"
+    } else if reason.starts_with("container ")
+        && reason.contains("does not match exact accepted runtime")
+    {
+        "EXACT_IMAGE_OR_CONTAINER_UNREADY"
+    } else if reason.contains("bundle artifact") {
+        "BUNDLE_ARTIFACT_UNREADY"
+    } else if reason.to_ascii_lowercase().contains("mesh") {
+        "MESH_RUNTIME_UNREADY"
+    } else if reason.contains("docker runtime") {
+        "DOCKER_UNAVAILABLE"
+    } else {
+        "OTHER_UNPROVEN"
+    }
+}
+
 fn print_agent_state_evidence(operation: &str, state: &AgentState) {
     println!("operation={operation}");
     println!("healthy={}", state.healthy);
@@ -340,6 +368,22 @@ fn print_agent_state_evidence(operation: &str, state: &AgentState) {
     println!("running_container_count={}", state.running_containers.len());
     println!("missing_container_count={}", state.missing_containers.len());
     println!("degraded_reason_count={}", state.degraded_reasons.len());
+    // Distinguish unknown from an independently probed false result, without
+    // publishing raw curl/warp-cli/network output or a second telemetry store.
+    for (name, result) in [
+        ("direct_egress", state.direct_egress_ready),
+        ("warp_egress", state.warp_egress_ready),
+        ("mesh_runtime", state.mesh_runtime_ready),
+    ] {
+        println!("{name}_proven={}", result.is_some());
+        println!("{name}_ready={}", result.unwrap_or(false));
+    }
+    for (index, reason) in state.degraded_reasons.iter().take(12).enumerate() {
+        println!(
+            "degraded_reason_{index}_code={}",
+            native_runtime_reason_code(reason)
+        );
+    }
     println!("tcp_listener_count={}", state.listening_tcp_ports.len());
     println!("udp_listener_count={}", state.listening_udp_ports.len());
     for (index, container) in state.containers.iter().enumerate() {
@@ -2533,6 +2577,47 @@ struct ComposeService {
 struct BundleSummary {
     label: Option<String>,
     instance_id: Option<String>,
+}
+
+#[cfg(test)]
+mod native_runtime_diagnostic_code_tests {
+    use super::*;
+
+    #[test]
+    fn known_readiness_failures_are_distinct_and_do_not_echo_secrets() {
+        assert_eq!(
+            native_runtime_reason_code("direct egress datapath probe failed"),
+            "DIRECT_EGRESS_FAILED"
+        );
+        assert_eq!(
+            native_runtime_reason_code("WARP egress datapath probe failed"),
+            "WARP_EGRESS_FAILED"
+        );
+        assert_eq!(
+            native_runtime_reason_code("expected TCP ports are not listening: 443"),
+            "TCP_PORTS_MISSING"
+        );
+        assert_eq!(
+            native_runtime_reason_code("expected UDP ports are not listening: 443"),
+            "UDP_PORTS_MISSING"
+        );
+        assert_eq!(
+            native_runtime_reason_code("container abc does not match exact accepted runtime: PRIVATE"),
+            "EXACT_IMAGE_OR_CONTAINER_UNREADY"
+        );
+        assert_eq!(
+            native_runtime_reason_code("mesh credential private-token=SECRET"),
+            "MESH_RUNTIME_UNREADY"
+        );
+        assert_eq!(
+            native_runtime_reason_code("docker runtime is not reachable from edge-agent"),
+            "DOCKER_UNAVAILABLE"
+        );
+        assert_eq!(
+            native_runtime_reason_code("unexpected token=SECRET"),
+            "OTHER_UNPROVEN"
+        );
+    }
 }
 
 #[cfg(test)]
