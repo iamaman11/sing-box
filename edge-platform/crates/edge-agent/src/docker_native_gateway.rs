@@ -430,7 +430,9 @@ pub(super) async fn recreate_native_vm_container_once(
                     state.and_then(|s| s.paused),
                     state.and_then(|s| s.dead),
                     state.and_then(|s| s.exit_code),
-                    container.host_config.as_ref()
+                    container
+                        .host_config
+                        .as_ref()
                         .and_then(|h| h.restart_policy.as_ref())
                         .and_then(|p| p.name.as_ref()),
                 );
@@ -512,19 +514,84 @@ mod native_vm_stop_diagnostics_tests {
     #[test]
     fn stopped_requires_same_id_name_and_owner() {
         use NativeVmStopReadback::*;
-        assert_eq!(classify_native_vm_stop_readback(true, Some(false), Some(false), Some(false), Some(false)), Stopped);
-        assert_eq!(classify_native_vm_stop_readback(false, Some(false), Some(false), Some(false), Some(false)), IdentityChanged);
-        assert_eq!(classify_native_vm_stop_readback(true, None, None, None, None), Unknown);
+        assert_eq!(
+            classify_native_vm_stop_readback(
+                true,
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false)
+            ),
+            Stopped
+        );
+        assert_eq!(
+            classify_native_vm_stop_readback(
+                false,
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(false)
+            ),
+            IdentityChanged
+        );
+        assert_eq!(
+            classify_native_vm_stop_readback(true, None, None, None, None),
+            Unknown
+        );
     }
 
     #[test]
     fn running_restart_paused_dead_and_missing_readback_are_distinct() {
         use NativeVmStopReadback::*;
-        assert_eq!(classify_native_vm_stop_readback(true, Some(true), Some(false), Some(false), Some(false)), Running);
-        assert_eq!(classify_native_vm_stop_readback(true, Some(true), Some(true), Some(false), Some(false)), Restarting);
-        assert_eq!(classify_native_vm_stop_readback(true, Some(true), Some(false), Some(true), Some(false)), Paused);
-        assert_eq!(classify_native_vm_stop_readback(true, Some(false), Some(false), Some(false), Some(true)), Dead);
-        for result in [Running, Restarting, Paused, Dead, Unavailable, Unknown, IdentityChanged] {
+        assert_eq!(
+            classify_native_vm_stop_readback(
+                true,
+                Some(true),
+                Some(false),
+                Some(false),
+                Some(false)
+            ),
+            Running
+        );
+        assert_eq!(
+            classify_native_vm_stop_readback(
+                true,
+                Some(true),
+                Some(true),
+                Some(false),
+                Some(false)
+            ),
+            Restarting
+        );
+        assert_eq!(
+            classify_native_vm_stop_readback(
+                true,
+                Some(true),
+                Some(false),
+                Some(true),
+                Some(false)
+            ),
+            Paused
+        );
+        assert_eq!(
+            classify_native_vm_stop_readback(
+                true,
+                Some(false),
+                Some(false),
+                Some(false),
+                Some(true)
+            ),
+            Dead
+        );
+        for result in [
+            Running,
+            Restarting,
+            Paused,
+            Dead,
+            Unavailable,
+            Unknown,
+            IdentityChanged,
+        ] {
             assert!(result.error_code().ends_with("_NO_REPLAY"));
         }
         assert_eq!(Stopped.error_code(), "HOST_VM_NATIVE_RECREATE_STOPPED");
