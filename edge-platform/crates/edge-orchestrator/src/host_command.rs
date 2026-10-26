@@ -601,6 +601,28 @@ pub(crate) fn run(
                     verified_observation.observed_at_unix
                 );
                 println!("host_native_snapshot_verdict={signed_verdict}");
+                // Report exact logical release drift from the Ed25519-verified
+                // Root Agent observation, never from the runner-copied readback.
+                // A digest pair is diagnosis only: it cannot admit an APPLY or
+                // clear a pre-existing unknown BEGIN.
+                if selected.kind == ManagedHostKind::Vm as i32 {
+                    let hex = |value: &[u8]| -> String {
+                        value.iter().map(|byte| format!("{byte:02x}")).collect()
+                    };
+                    println!(
+                        "host_native_snapshot_bundle_expected_sha256={}",
+                        hex(&native_bundle_sha)
+                    );
+                    println!(
+                        "host_native_snapshot_bundle_observed_sha256={}",
+                        hex(&verified_observation.observed_release_sha256)
+                    );
+                    println!(
+                        "host_native_snapshot_bundle_matches={}",
+                        native_bundle_sha.as_slice()
+                            == verified_observation.observed_release_sha256.as_slice()
+                    );
+                }
                 println!(
                     "host_native_snapshot_pending_count={}",
                     accepted.pending_resource_count
