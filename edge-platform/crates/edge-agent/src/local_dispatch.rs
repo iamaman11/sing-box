@@ -3,53 +3,104 @@ use super::*;
 /// Closed, secret-free failure classification shared by every registered VM
 /// container. Docker State.Error and stdout/stderr are untrusted, potentially
 /// secret-bearing strings; never copy a byte of either into operator reports.
+/// Only an actual error-severity sing-box line can diagnose a startup fault.
+/// Routine INFO lines mentioning "certificate" or "tls" are not failures.
+fn native_failure_severity(line: &str) -> bool {
+    let value = line.trim().to_ascii_lowercase();
+    value.starts_with("fatal")
+        || value.starts_with("error")
+        || value.contains(" fatal[")
+        || value.contains(" error[")
+        || value.contains(" level=fatal")
+        || value.contains(" level=error")
+        || value.contains(" [fatal]")
+        || value.contains(" [error]")
+}
+
+/// Closed, secret-free failure reason from Docker State.Error or an explicit
+/// ERROR/FATAL log. No credential, hostname, path or arbitrary log text
+/// crosses the root-signed diagnostic boundary.
 pub(super) fn classify_native_container_failure(
     runtime_error: Option<&str>,
     lines: &[String],
 ) -> &'static str {
+    let mut found_error = false;
     for source in runtime_error
+        .filter(|value| !value.is_empty())
         .into_iter()
-        .chain(lines.iter().rev().take(40).map(String::as_str))
+        .chain(
+            lines
+                .iter()
+                .rev()
+                .take(40)
+                .map(String::as_str)
+                .filter(|line| native_failure_severity(line)
+                    || line.contains("[SAFE_FATAL_TLS_PRIVATE_KEY_ERROR]")),
+        )
     {
+        found_error = true;
         let normalized = source
             .chars()
             .take(4096)
             .collect::<String>()
             .to_ascii_lowercase();
+        if normalized.contains("[safe_fatal_tls_private_key_error]") {
+            return "TLS_PRIVATE_KEY_STARTUP_ERROR";
+        }
         if normalized.contains("invalid config")
-            || normalized.contains("failed to parse")
             || normalized.contains("config parse")
             || normalized.contains("json:")
             || normalized.contains("unknown field")
         {
-            return "CONFIG_PARSE_HINT";
+            return "CONFIG_PARSE_ERROR";
+        }
+        if normalized.contains("certificate") && normalized.contains("no such file or directory") {
+            return "TLS_CERTIFICATE_FILE_MISSING";
+        }
+        if (normalized.contains("certificate") || normalized.contains("tls:"))
+            && (normalized.contains("failed to parse")
+                || normalized.contains("invalid pem")
+                || normalized.contains("malformed"))
+        {
+            return "TLS_CERTIFICATE_PARSE_ERROR";
+        }
+        if (normalized.contains("certificate") || normalized.contains("tls:"))
+            && (normalized.contains("mismatch") || normalized.contains("does not match"))
+        {
+            return "TLS_CERTIFICATE_KEY_MISMATCH";
         }
         if normalized.contains("permission denied") || normalized.contains("access denied") {
-            return "PERMISSION_HINT";
+            return "PERMISSION_ERROR";
         }
         if normalized.contains("address already in use") || normalized.contains("bind:") {
-            return "LISTENER_BIND_HINT";
+            return "LISTENER_BIND_ERROR";
         }
         if normalized.contains("no such host") || normalized.contains("dns lookup") {
-            return "DNS_HINT";
+            return "DNS_ERROR";
         }
         if normalized.contains("connection refused") {
-            return "UPSTREAM_REFUSED_HINT";
+            return "UPSTREAM_REFUSED_ERROR";
+        }
+        if normalized.contains("certificate") && normalized.contains("failed to load") {
+            return "TLS_CERTIFICATE_LOAD_ERROR";
         }
         if normalized.contains("tls:") || normalized.contains("certificate") {
-            return "TLS_HINT";
+            return "TLS_ERROR_UNCLASSIFIED";
+        }
+        if normalized.contains("failed to parse") {
+            return "CONFIG_PARSE_ERROR";
         }
         if normalized.contains("panic") || normalized.contains("segmentation fault") {
-            return "PROCESS_CRASH_HINT";
+            return "PROCESS_CRASH_ERROR";
         }
         if normalized.contains("no such file or directory") {
-            return "FILE_MISSING_HINT";
+            return "FILE_MISSING_ERROR";
         }
     }
-    if runtime_error.is_some_and(|reason| !reason.is_empty()) {
-        "UNCLASSIFIED_DOCKER_STATE_ERROR"
+    if found_error {
+        "STARTUP_ERROR_UNCLASSIFIED"
     } else {
-        "UNCLASSIFIED_OR_NO_LOG"
+        "NO_PROVEN_FATAL_DIAGNOSTIC"
     }
 }
 
@@ -469,6 +520,35 @@ mod native_read_only_diagnostics_tests {
         assert_eq!(
             classify_native_container_failure(Some("permission denied with token=secret"), &[]),
             "PERMISSION_HINT"
+        );
+        // Normal operational TLS/certificate INFO lines are not proof of failure.
+        assert_eq!(
+            classify_native_container_failure(
+                None,
+                &["INFO[0000] certificate loaded; tls: listening".to_owned()],
+            ),
+            "NO_PROVEN_FATAL_DIAGNOSTIC"
+        );
+        assert_eq!(
+            classify_native_container_failure(
+                None,
+                &["FATAL[0000] TLS certificate open /secret/path: no such file or directory".to_owned()],
+            ),
+            "TLS_CERTIFICATE_FILE_MISSING"
+        );
+        assert_eq!(
+            classify_native_container_failure(
+                None,
+                &["[SAFE_FATAL_TLS_PRIVATE_KEY_ERROR]".to_owned()],
+            ),
+            "TLS_PRIVATE_KEY_STARTUP_ERROR"
+        );
+        assert_eq!(
+            classify_native_container_failure(
+                None,
+                &["ERROR[0001] tls: handshake error".to_owned()],
+            ),
+            "TLS_ERROR_UNCLASSIFIED"
         );
         assert_eq!(native_container_health_class(None), "NO_HEALTHCHECK");
         assert_eq!(
