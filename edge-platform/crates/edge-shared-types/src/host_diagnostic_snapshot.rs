@@ -161,6 +161,46 @@ mod tests {
     use super::*;
     use ring::{rand::SystemRandom, signature::KeyPair};
     #[test]
+    fn historical_pending_begin_requires_exact_three_hashes() {
+        let host = FleetHost {
+            machine_id: "vm5".into(),
+            kind: FleetHostKind::Vm as i32,
+            ..Default::default()
+        };
+        let mut snapshot = FleetNativeDiagnosticSnapshot {
+            schema_version: 1,
+            machine_id: "vm5".into(),
+            operation_id: "issue1-comment-43".into(),
+            release_set_sha256: vec![5; 32],
+            pending_resource_count: 1,
+            pending_operation_id: "issue1-comment-40".into(),
+            pending_resource_id: "sing-box".into(),
+            pending_request_sha256: vec![1; 32],
+            pending_original_release_sha256: vec![2; 32],
+            pending_original_desired_sha256: vec![3; 32],
+            pending_begin_record_sha256: vec![4; 32],
+            ..Default::default()
+        };
+        // The next rejection is for absent observation, NOT for a truncated
+        // historical BEGIN. No fabricated physical acceptance is possible.
+        assert_eq!(
+            validate_scope(&snapshot, &host, "issue1-comment-43", &[5; 32], 100),
+            Err("HOST_SNAPSHOT_OBSERVATION_MISSING")
+        );
+        snapshot.pending_begin_record_sha256.clear();
+        assert_eq!(
+            validate_scope(&snapshot, &host, "issue1-comment-43", &[5; 32], 100),
+            Err("HOST_SNAPSHOT_PENDING_DIAGNOSTIC_INVALID")
+        );
+        snapshot.pending_begin_record_sha256 = vec![4; 32];
+        snapshot.pending_resource_count = 0;
+        assert_eq!(
+            validate_scope(&snapshot, &host, "issue1-comment-43", &[5; 32], 100),
+            Err("HOST_SNAPSHOT_PENDING_DIAGNOSTIC_INVALID")
+        );
+    }
+
+    #[test]
     fn snapshot_requires_full_signed_scope() {
         let key = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
         let pair = Ed25519KeyPair::from_pkcs8(key.as_ref()).unwrap();
