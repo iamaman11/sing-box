@@ -2465,23 +2465,24 @@ async fn preflight_gateway_image_replace(
     {
         return Err("HOST_VM_IMAGE_RELEASE_ALREADY_INSTALLED".into());
     }
-    let (previous_images, new_images, new_gateway_image, policy_warp_image) = if staged_runtime_drift {
-        // A previous signed BEGIN may have committed image pins before Docker
-        // stopped. The old journal must have been separately adjudicated;
-        // never pretend that matching file bytes prove running image parity.
-        verify_exact_installed_vm_bundle_static(stack_dir, request)?;
-        let images = exact_vm_policy_file(stack_dir, ".images.env")?;
-        let pins = parse_vm_release_image_pins(&images)?;
-        let gateway = pins["EDGE_GATEWAY_IMAGE"].clone();
-        (
-            images.clone(),
-            images,
-            gateway,
-            Some(pins["EDGE_WARP_EGRESS_IMAGE"].clone()),
-        )
-    } else {
-        select_gateway_image_policy(stack_dir, request)?
-    };
+    let (previous_images, new_images, new_gateway_image, policy_warp_image) =
+        if staged_runtime_drift {
+            // A previous signed BEGIN may have committed image pins before Docker
+            // stopped. The old journal must have been separately adjudicated;
+            // never pretend that matching file bytes prove running image parity.
+            verify_exact_installed_vm_bundle_static(stack_dir, request)?;
+            let images = exact_vm_policy_file(stack_dir, ".images.env")?;
+            let pins = parse_vm_release_image_pins(&images)?;
+            let gateway = pins["EDGE_GATEWAY_IMAGE"].clone();
+            (
+                images.clone(),
+                images,
+                gateway,
+                Some(pins["EDGE_WARP_EGRESS_IMAGE"].clone()),
+            )
+        } else {
+            select_gateway_image_policy(stack_dir, request)?
+        };
     for service in [ScopedVmService::Line1, ScopedVmService::Line2] {
         service.container_name(host)?;
     }
