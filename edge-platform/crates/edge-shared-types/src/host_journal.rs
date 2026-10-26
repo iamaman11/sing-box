@@ -694,8 +694,10 @@ fn verify_historical_partial_recovery_state(
         || !observed.reason_codes.is_empty()
         || observed.owner_state != FleetNativeOwnerState::Running as i32
         || observed.release_proof != FleetNativeReleaseProof::ApplicationBundle as i32
+        // Broken network/proxy readiness is the problem a fresh replacement
+        // must repair. Its FALSE value is admissible only when an owned native
+        // readback explicitly PROVES that value; never equate it with success.
         || !observed.runtime_ready_proven
-        || !observed.runtime_ready
         || current_release.len() != 32
         || observed.observed_release_sha256.len() != 32
         || observed
@@ -1301,11 +1303,23 @@ mod tests {
                 observed,
             )
         };
-        let mut unready = observation.clone();
-        unready.runtime_ready = false;
+        let mut unproven = observation.clone();
+        unproven.runtime_ready = false;
+        unproven.runtime_ready_proven = false;
         assert_eq!(
-            resolve(&unready).unwrap_err(),
+            resolve(&unproven).unwrap_err(),
             "HOST_NATIVE_HISTORICAL_BASELINE_UNPROVEN_NO_REPLAY"
+        );
+        let mut degraded = observation.clone();
+        degraded.runtime_ready = false;
+        assert_eq!(
+            verify_historical_partial_recovery_state(
+                &host,
+                &degraded,
+                &bound.runtime_release_sha256,
+                1020,
+            ),
+            Ok(crate::FleetHostResultReason::HistoricalPartialRequiresFreshApply)
         );
         assert!(native_scope_pending_path(&dir, &old).exists());
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
