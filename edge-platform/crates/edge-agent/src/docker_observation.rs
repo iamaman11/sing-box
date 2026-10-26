@@ -2465,7 +2465,7 @@ async fn preflight_gateway_image_replace(
     {
         return Err("HOST_VM_IMAGE_RELEASE_ALREADY_INSTALLED".into());
     }
-    let (previous_images, new_images, new_gateway_image, _) = if staged_runtime_drift {
+    let (previous_images, new_images, new_gateway_image, policy_warp_image) = if staged_runtime_drift {
         // A previous signed BEGIN may have committed image pins before Docker
         // stopped. The old journal must have been separately adjudicated;
         // never pretend that matching file bytes prove running image parity.
@@ -2473,7 +2473,12 @@ async fn preflight_gateway_image_replace(
         let images = exact_vm_policy_file(stack_dir, ".images.env")?;
         let pins = parse_vm_release_image_pins(&images)?;
         let gateway = pins["EDGE_GATEWAY_IMAGE"].clone();
-        (images.clone(), images, gateway, None)
+        (
+            images.clone(),
+            images,
+            gateway,
+            Some(pins["EDGE_WARP_EGRESS_IMAGE"].clone()),
+        )
     } else {
         select_gateway_image_policy(stack_dir, request)?
     };
@@ -2499,7 +2504,7 @@ async fn preflight_gateway_image_replace(
             changed += 1;
         }
     }
-    if let Some(ref image) = new_warp_image {
+    if let Some(ref image) = policy_warp_image {
         let warp = target_graph
             .resources
             .iter_mut()
@@ -2512,7 +2517,7 @@ async fn preflight_gateway_image_replace(
         warp.image_ref.clone_from(image);
         changed += 1;
     }
-    if changed != 2 + usize::from(new_warp_image.is_some()) {
+    if changed != 2 + usize::from(policy_warp_image.is_some()) {
         return Err("HOST_VM_IMAGE_REGISTERED_SERVICES_INCOMPLETE".into());
     }
     edge_shared_types::host_resources::validate_vm_desired_graph(&target_graph, host)
