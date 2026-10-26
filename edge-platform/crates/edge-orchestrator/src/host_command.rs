@@ -659,7 +659,10 @@ pub(crate) fn run(
                 ] {
                     println!(
                         "{label}={}",
-                        digest.iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+                        digest
+                            .iter()
+                            .map(|byte| format!("{byte:02x}"))
+                            .collect::<String>()
                     );
                 }
                 println!(
