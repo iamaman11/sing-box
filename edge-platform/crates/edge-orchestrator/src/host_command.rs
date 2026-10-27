@@ -2326,8 +2326,17 @@ fn host_lifecycle_admission(
     // Never prepare or schedule an executable VM intent while protected Git
     // lacks signer/receipt identity. Owner enrollment is a distinct root-only
     // first-use operation, not something the runner may improvise.
-    edge_shared_types::host_lifecycle::verify_vm_signed_git_prerequisites(selected)
-        .map_err(str::to_owned)?;
+    match kind {
+        ManagedHostKind::Vm => {
+            edge_shared_types::host_lifecycle::verify_vm_signed_git_prerequisites(selected)
+                .map_err(str::to_owned)?;
+        }
+        ManagedHostKind::Windows => {
+            edge_shared_types::host_lifecycle::verify_windows_signed_git_prerequisites(selected)
+                .map_err(str::to_owned)?;
+        }
+        ManagedHostKind::Unspecified => return Err("HOST_KIND_INVALID".into()),
+    }
     let prepared = prepared_host_result(&intent);
     validate_host_result(&prepared, &intent).map_err(str::to_owned)?;
     let bytes = intent.encode_to_vec();
@@ -2407,8 +2416,8 @@ fn host_lifecycle_admission(
             "VERIFY_INSTALLED_ROOT_TRUST_ACTIVE_CREDENTIALS_AND_NATIVE_RECEIPT",
         ),
         ManagedHostKind::Windows => (
-            "WINDOWS_SIGNED_SYSTEM_HANDLER_MISSING",
-            "IMPLEMENT_WINDOWS_SYSTEM_SIGNED_HANDLER_AND_PHYSICAL_RECEIPT",
+            "WINDOWS_SIGNED_SYSTEM_HANDLER_SOURCE_PRESENT",
+            "INSTALL_SIGNED_SYSTEM_RELEASE_ENROLL_TRUST_AND_VERIFY_NATIVE_RECEIPT",
         ),
         ManagedHostKind::Unspecified => return Err("HOST_KIND_INVALID".to_owned()),
     };
@@ -3110,9 +3119,9 @@ mod tests {
                     run_state: edge_shared_types::FleetHostRunState::Stopped as i32,
                     windows_mode: FleetHostMode::ProxyOnly as i32,
                 }),
-                native_receipt_public_key: Vec::new(),
+                native_receipt_public_key: vec![8; 32],
                 vm_first_use_credential: None,
-                worker_authority_public_key: Vec::new(),
+                worker_authority_public_key: vec![7; 32],
                 vm_provider_spec_path: String::new(),
             }],
         };

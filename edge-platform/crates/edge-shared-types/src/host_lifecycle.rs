@@ -438,6 +438,23 @@ pub fn verify_vm_signed_git_prerequisites(host: &FleetHost) -> Result<(), &'stat
     verify_vm_git_resource_scope(host)
 }
 
+/// Windows runner transport may prepare a signed SYSTEM intent only after
+/// BOTH public identities have been independently enrolled in protected Git.
+/// VM first-use has its own existing gate. No bootstrap exception here:
+/// unsigned runner bytes or a published binary cannot invent native trust.
+pub fn verify_windows_signed_git_prerequisites(host: &FleetHost) -> Result<(), &'static str> {
+    if host.kind != FleetHostKind::Windows as i32 {
+        return Err("HOST_WINDOWS_SIGNED_KIND_REQUIRED");
+    }
+    verify_git_host_worker_signer_pin(host, &host.worker_authority_public_key)?;
+    if host.native_receipt_public_key.len() != 32
+        || host.native_receipt_public_key.iter().all(|byte| *byte == 0)
+    {
+        return Err("HOST_WINDOWS_GIT_RECEIPT_REGISTRATION_REQUIRED");
+    }
+    Ok(())
+}
+
 /// Exact artifact digests computed from the supplied Git registry, host
 /// desired bytes, and immutable ReleaseSet. This is structural integrity,
 /// NOT Git provenance: only an existing privileged owner may supply these
@@ -1707,5 +1724,36 @@ mod partial_vm_recovery_tests {
         let mut changed = baseline;
         changed.vm_recovery_resources = None;
         assert!(!known_partial_vm_resource_baseline(&host, &changed));
+    }
+
+    #[test]
+    fn windows_signed_admission_requires_git_worker_and_system_receipt_keys() {
+        let mut host = FleetHost {
+            machine_id: "sing-box-windows-lab".into(),
+            kind: FleetHostKind::Windows as i32,
+            ..Default::default()
+        };
+        assert_eq!(
+            verify_windows_signed_git_prerequisites(&host),
+            Err("HOST_GIT_WORKER_SIGNER_KEY_REQUIRED")
+        );
+        host.worker_authority_public_key = vec![7; 32];
+        assert_eq!(
+            verify_windows_signed_git_prerequisites(&host),
+            Err("HOST_WINDOWS_GIT_RECEIPT_REGISTRATION_REQUIRED")
+        );
+        host.native_receipt_public_key = vec![9; 32];
+        assert_eq!(verify_windows_signed_git_prerequisites(&host), Ok(()));
+        host.native_receipt_public_key = vec![0; 32];
+        assert_eq!(
+            verify_windows_signed_git_prerequisites(&host),
+            Err("HOST_WINDOWS_GIT_RECEIPT_REGISTRATION_REQUIRED")
+        );
+        host.native_receipt_public_key = vec![9; 32];
+        host.kind = FleetHostKind::Vm as i32;
+        assert_eq!(
+            verify_windows_signed_git_prerequisites(&host),
+            Err("HOST_WINDOWS_SIGNED_KIND_REQUIRED")
+        );
     }
 }

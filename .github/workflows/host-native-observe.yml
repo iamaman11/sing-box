@@ -40,7 +40,7 @@ jobs:
     # retains its independent fleet-wide concurrency lock.
     # Status remains independent and read-only; Windows is unaffected.
     concurrency:
-      group: ${{ (inputs.kind == 'VM' && (inputs.operation == 'APPLY_PREFLIGHT' || inputs.operation == 'RECOVER_PREFLIGHT' || inputs.operation == 'ADMIN')) && format('host-native-vm-{0}', inputs.machine_id) || format('host-readonly-{0}', inputs.source_comment_id) }}
+      group: ${{ (inputs.kind == 'VM' && (inputs.operation == 'APPLY_PREFLIGHT' || inputs.operation == 'RECOVER_PREFLIGHT' || inputs.operation == 'ADMIN')) && format('host-native-vm-{0}', inputs.machine_id) || (inputs.kind == 'WINDOWS' && inputs.operation == 'APPLY_PREFLIGHT' && (startsWith(inputs.command_body, '/host start ') || startsWith(inputs.command_body, '/host stop '))) && format('host-native-windows-{0}', inputs.machine_id) || format('host-readonly-{0}', inputs.source_comment_id) }}
       cancel-in-progress: false
     # Git selects a single owner from Rust's exact protobuf matrix.
     # This job NEVER holds issues:write, Docker socket or generic root.
@@ -321,6 +321,111 @@ jobs:
           echo 'host_native_execution=ROOT_OWNER_ONE_SHOT'
           echo 'host_native_result=LOCAL_PROTOBUF_NOT_YET_REMOTE_ATTESTED'
 
+      - name: Receive typed Windows HostIntent from protected Git
+        if: env.TARGET_KIND == 'WINDOWS' && env.HOST_OPERATION == 'APPLY_PREFLIGHT' && (startsWith(env.COMMAND_BODY, '/host start ') || startsWith(env.COMMAND_BODY, '/host stop '))
+        uses: actions/download-artifact@v4
+        with:
+          name: host-intent-${{ inputs.source_comment_id }}
+          path: ${{ runner.temp }}/windows-signed-intent
+
+      - name: Forward exact Windows HostIntent to existing SYSTEM task
+        if: env.TARGET_KIND == 'WINDOWS' && env.HOST_OPERATION == 'APPLY_PREFLIGHT' && (startsWith(env.COMMAND_BODY, '/host start ') || startsWith(env.COMMAND_BODY, '/host stop '))
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_NAME -cne $env:TARGET_OWNER -or
+              $env:TARGET_OWNER -cne 'DESKTOP-0E1F6UQ' -or
+              $env:TARGET_MACHINE -cne 'sing-box-windows-lab' -or
+              $env:COMMAND_BODY -cnotmatch '^/host (start|stop) sing-box-windows-lab$') {
+            throw 'HOST_WINDOWS_NATIVE_TRANSPORT_IDENTITY_INVALID'
+          }
+          if ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -cne 'S-1-5-20') {
+            throw 'HOST_WINDOWS_RUNNER_MUST_REMAIN_NETWORKSERVICE'
+          }
+          $root = 'C:\sing-box'
+          $intent = Join-Path $env:RUNNER_TEMP 'windows-signed-intent\host-intent.pb'
+          if (-not (Test-Path -LiteralPath $intent -PathType Leaf) -or
+              ((Get-Item -LiteralPath $intent).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'HOST_WINDOWS_NATIVE_INTENT_NOT_REGULAR'
+          }
+          $size = (Get-Item -LiteralPath $intent).Length
+          if ($size -lt 1 -or $size -gt 8192) { throw 'HOST_WINDOWS_NATIVE_INTENT_SIZE_INVALID' }
+          # Stale installed binary cannot interpret/authorize this intent.
+          # Never install code or change SCM as a runner workaround.
+          $observation = Join-Path $env:RUNNER_TEMP 'windows-owner-capability.pb'
+          & (Join-Path $root 'bin\edge-diagnostic.exe') host-observe (Join-Path $root 'current.pb') > $observation
+          if ($LASTEXITCODE -ne 0 -or
+              -not (Test-Path -LiteralPath $observation -PathType Leaf) -or
+              (Get-Item -LiteralPath $observation).Length -lt 1 -or
+              (Get-Item -LiteralPath $observation).Length -gt 4096) {
+            throw 'HOST_WINDOWS_INSTALLED_SYSTEM_OWNER_UPGRADE_REQUIRED'
+          }
+          $task = Get-ScheduledTask -TaskName 'EdgePlatformPrivilegedDispatch' -ErrorAction Stop
+          # LocalSystem names are localized; resolve immutable kernel SID.
+          try {
+            $principalName = [string]$task.Principal.UserId
+            $principalSid = if ($principalName -ceq 'S-1-5-18') { 'S-1-5-18' } else {
+              ([Security.Principal.NTAccount]::new($principalName)).Translate(
+                [Security.Principal.SecurityIdentifier]).Value
+            }
+          } catch { throw 'HOST_WINDOWS_SYSTEM_TASK_PRINCIPAL_UNPROVEN' }
+          if ($principalSid -cne 'S-1-5-18' -or
+              $task.State -cnotin @('Ready','Running') -or
+              [string]$task.Principal.RunLevel -cne 'Highest' -or
+              [string]$task.Principal.LogonType -cne 'ServiceAccount' -or
+              @($task.Actions).Count -ne 1 -or
+              [string]$task.Actions[0].Arguments -cnotmatch '^privileged-dispatch --install-root') {
+            throw 'HOST_WINDOWS_SYSTEM_TASK_IDENTITY_INVALID'
+          }
+          $receipt = Join-Path $root 'exchange\results\host-receipt.pb'
+          # An old static result is not this comment's terminal receipt.
+          # Remember its exact bytes BEFORE creating the new request.
+          $priorHash = ''
+          if (Test-Path -LiteralPath $receipt -PathType Leaf) {
+            $priorBytes = [IO.File]::ReadAllBytes($receipt)
+            $priorHash = [Convert]::ToHexString(
+              [Security.Cryptography.SHA256]::HashData($priorBytes))
+          }
+          $destination = Join-Path $root 'exchange\requests\host-intent.pb'
+          $bytes = [IO.File]::ReadAllBytes($intent)
+          # Exclusive, fsynced CREATE: never overwrite an uncertain request.
+          $stream = [IO.File]::Open($destination,
+            [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+          try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) }
+          finally { $stream.Dispose() }
+          # The EXISTING SYSTEM task wakes once per minute. NetworkService
+          # cannot edit/create/run that task, nor directly invoke SCM.
+          $folder = Join-Path $env:RUNNER_TEMP 'windows-system-result'
+          New-Item -ItemType Directory -Path $folder -Force | Out-Null
+          $deadline = (Get-Date).AddSeconds(100)
+          $changed = $false
+          do {
+            if (Test-Path -LiteralPath $receipt -PathType Leaf) {
+              $candidate = [IO.File]::ReadAllBytes($receipt)
+              if ($candidate.Length -gt 0 -and $candidate.Length -le 8192) {
+                $digest = [Convert]::ToHexString(
+                  [Security.Cryptography.SHA256]::HashData($candidate))
+                if ($digest -cne $priorHash) {
+                  $changed = $true
+                  break
+                }
+              }
+            }
+            Start-Sleep -Milliseconds 500
+          } while ((Get-Date) -lt $deadline)
+          if (-not $changed) { throw 'HOST_WINDOWS_SYSTEM_RECEIPT_UNKNOWN_NO_REPLAY' }
+          [IO.File]::WriteAllBytes((Join-Path $folder 'host-result.pb'), $candidate)
+          Write-Output 'host_windows_receipt=UNTRUSTED_COPY_REQUIRE_HOSTED_RUST_VERIFIER'
+
+      - name: Preserve Windows signed owner result for hosted Rust
+        if: (success() || failure()) && env.TARGET_KIND == 'WINDOWS' && env.HOST_OPERATION == 'APPLY_PREFLIGHT' && (startsWith(env.COMMAND_BODY, '/host start ') || startsWith(env.COMMAND_BODY, '/host stop '))
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-windows-receipt-${{ inputs.source_comment_id }}
+          path: ${{ runner.temp }}/windows-system-result/host-result.pb
+          if-no-files-found: warn
+          retention-days: 7
+
       - name: Capture exact installed Windows typed readback when supported
         if: env.TARGET_KIND == 'WINDOWS'
         shell: pwsh
@@ -591,6 +696,41 @@ jobs:
               echo '~~~'
             } >> "${GITHUB_STEP_SUMMARY}"
           fi
+          if [[ "${TARGET_KIND}" = WINDOWS && "${HOST_OPERATION}" = APPLY_PREFLIGHT &&
+                "${COMMAND_BODY}" =~ ^/host\ (start|stop)\ ${TARGET_MACHINE}$ ]]; then
+            system_dir="${RUNNER_TEMP}/host-windows-system-receipt"
+            mkdir -p "${system_dir}"
+            if gh run download "${GITHUB_RUN_ID}" -R "${GITHUB_REPOSITORY}" \
+                -n "native-windows-receipt-${SOURCE_COMMENT_ID}" -D "${system_dir}" >/dev/null 2>&1; then
+              receipt="${system_dir}/host-result.pb"
+              test -f "${receipt}" && test ! -L "${receipt}"
+              test "$(stat -c '%s' "${receipt}")" -gt 0
+              test "$(stat -c '%s' "${receipt}")" -le 8192
+              exact_intent="${RUNNER_TEMP}/host-windows-exact-intent"
+              mkdir -p "${exact_intent}"
+              gh run download "${GITHUB_RUN_ID}" -R "${GITHUB_REPOSITORY}" \
+                -n "host-intent-${SOURCE_COMMENT_ID}" -D "${exact_intent}"
+              intent="${exact_intent}/host-intent.pb"
+              test -f "${intent}" && test ! -L "${intent}"
+              test "$(stat -c '%s' "${intent}")" -gt 0
+              test "$(stat -c '%s' "${intent}")" -le 8192
+              # Existing VM/Rust receipt verifier, same Git pinned public key.
+              "${owner}" host --hosts-pb "${registry}" \
+                --hosts-sha256 "$(sha256sum "${registry}" | cut -d' ' -f1)" \
+                --github-output "${GITHUB_OUTPUT}" \
+                native-result "${TARGET_MACHINE}" --intent-path "${intent}" \
+                --result-path "${receipt}" \
+                > "${RUNNER_TEMP}/host-system-native-receipt-audit.txt"
+              {
+                echo '### Windows SYSTEM Ed25519 native receipt'
+                echo '~~~text'
+                cat "${RUNNER_TEMP}/host-system-native-receipt-audit.txt"
+                echo '~~~'
+              } >> "${GITHUB_STEP_SUMMARY}"
+            else
+              echo 'windows_system_receipt=MISSING_UNKNOWN_NO_REPLAY' >> "${GITHUB_OUTPUT}"
+            fi
+          fi
           {
             echo '### Exact typed Host readback (UNAUTHENTICATED runner copy)'
             echo '~~~text'
@@ -654,7 +794,9 @@ jobs:
               result=ADMIN_UNVERIFIED_UNKNOWN_NO_REPLAY
             fi
           fi
-          if [[ "${TARGET_KIND}" = VM && "${HOST_OPERATION}" = APPLY_PREFLIGHT ]]; then
+          if [[ ("${TARGET_KIND}" = VM && "${HOST_OPERATION}" = APPLY_PREFLIGHT) ||
+                ("${TARGET_KIND}" = WINDOWS && "${HOST_OPERATION}" = APPLY_PREFLIGHT &&
+                 "${COMMAND_BODY}" =~ ^/host\ (start|stop)\ ${TARGET_MACHINE}$) ]]; then
             # Only the exact Rust Ed25519 verifier can upgrade this result.
             # A successful runner step or unsigned readback never can.
             native_note='Native VM transaction: remote authenticated receipt UNPROVEN.'
