@@ -177,11 +177,25 @@ def merge_rust_verified_native(original, native_readback, comment_id, expected_s
         if key in evidence or len(value) > 128:
             raise ValueError("HOST_DIAG_SIGNED_FIELD_DUPLICATE_OR_LARGE")
         evidence[key] = value
-    if (evidence.get("proof") != "VERIFIED_ROOT_SIGNED_READ_ONLY"
+    proof = evidence.get("proof")
+    stale = proof == "VERIFIED_ROOT_SIGNED_STALE_RELEASE_READ_ONLY"
+    if (proof not in ("VERIFIED_ROOT_SIGNED_READ_ONLY",
+                      "VERIFIED_ROOT_SIGNED_STALE_RELEASE_READ_ONLY")
             or evidence.get("operation_id") != op
             or evidence.get("replay_allowed") != "false"
             or evidence.get("mutations") != "0"):
         raise ValueError("HOST_DIAG_SIGNED_VERDICT_UNPROVEN")
+    # All fields originate from the hosted Rust verifier, which checked the
+    # pinned Ed25519 key. A historical installed SHA is NOT authenticated
+    # current Git parity nor an independently fetched ReleaseSet artifact.
+    if stale:
+        if (evidence.get("release_parity") != "INSTALLED_RELEASE_DRIFT"
+                or evidence.get("release_provenance") != "ROOT_SIGNED_INSTALLED_CLAIM_ONLY"
+                or evidence.get("verdict") != "INSTALLED_RELEASE_DRIFT_CURRENT_STATE_UNPROVEN"
+                or not DIGEST.fullmatch(evidence.get("installed_release_sha256", ""))
+                or evidence.get("desired_release_sha256") != report["release_set_sha256"]
+                or evidence["installed_release_sha256"] == report["release_set_sha256"]):
+            raise ValueError("HOST_DIAG_SIGNED_STALE_RELEASE_CONTRADICTION")
     try:
         pending = int(evidence["pending_count"])
         restarts = int(evidence["line2_restarts"])
@@ -242,8 +256,8 @@ def merge_rust_verified_native(original, native_readback, comment_id, expected_s
     elif any(re.fullmatch(r"reason_[0-9]{1,2}_code", key) for key in evidence):
         raise ValueError("HOST_DIAG_SIGNED_REASON_WITHOUT_COUNT")
 
-    report["sources"]["root_agent"] = "VERIFIED_ROOT_SIGNED_READ_ONLY"
-    report["sources"]["native_snapshot"] = "VERIFIED_ROOT_SIGNED_READ_ONLY"
+    report["sources"]["root_agent"] = proof
+    report["sources"]["native_snapshot"] = proof
     report["sources"]["signed_receipt"] = "UNPROVEN_NO_MUTATION_RECEIPT"
     report["sources"]["native_job"] = "VERIFIED_READ_ONLY_RUNNER_DELIVERY"
     # Preserve the early GitHub runner API status in sources for provenance.
@@ -262,6 +276,10 @@ def merge_rust_verified_native(original, native_readback, comment_id, expected_s
         "mutation_authorized": False,
         "snapshot_verdict": verdict,
     }
+    if stale:
+        report["native"]["installed_release_sha256"] = evidence["installed_release_sha256"]
+        report["native"]["release_parity"] = "INSTALLED_RELEASE_DRIFT"
+        report["native"]["release_provenance"] = "ROOT_SIGNED_INSTALLED_CLAIM_ONLY"
     if runtime is not None:
         report["native"]["runtime"] = runtime
     # Source drift is independent of runtime failure and of the historical
@@ -284,15 +302,28 @@ def merge_rust_verified_native(original, native_readback, comment_id, expected_s
             "expected_sha256": evidence["bundle_expected_sha256"],
             "observed_sha256": evidence["bundle_observed_sha256"],
         }
-    if pending and report["phase"] in ("BOOTSTRAP_OR_RUNNER", "NATIVE_OBSERVATION"):
-        report.update(
-            phase="NATIVE_SIGNED_OBSERVATION",
-            status="BLOCKED",
-            owner="ROOT_AGENT",
-            reason="HOST_RESOURCE_PENDING_NO_REPLAY",
-            last_proven_step="ROOT_SIGNED_PENDING_OBSERVATION",
-            next_action="READ_ONLY_RECONCILE_ORIGINAL_BEGIN_AND_FAILED_PREDICATE",
-        )
+    # A provider or Git BLOCKED reason is still binding. Replace the early
+    # runner-busy placeholder only after hosted Rust verified this very
+    # operation's root signature. Never mark current release physically GO.
+    if report["phase"] in ("BOOTSTRAP_OR_RUNNER", "NATIVE_OBSERVATION"):
+        if pending:
+            report.update(
+                phase="NATIVE_SIGNED_OBSERVATION",
+                status="BLOCKED",
+                owner="ROOT_AGENT",
+                reason="HOST_RESOURCE_PENDING_NO_REPLAY",
+                last_proven_step="ROOT_SIGNED_PENDING_OBSERVATION",
+                next_action="READ_ONLY_RECONCILE_ORIGINAL_BEGIN_AND_FAILED_PREDICATE",
+            )
+        elif stale:
+            report.update(
+                phase="INSTALLED_RELEASE_READ_ONLY",
+                status="UNPROVEN",
+                owner="ROOT_AGENT",
+                reason="INSTALLED_RELEASE_DRIFT",
+                last_proven_step="ROOT_SIGNED_INSTALLED_SNAPSHOT",
+                next_action="VERIFY_CURRENT_RELEASE_AND_PLAN_SIGNED_OWNER_REFRESH",
+            )
     return (before + marker +
             json.dumps(report, sort_keys=True, separators=(",", ":")) +
             "\n```" + suffix)
