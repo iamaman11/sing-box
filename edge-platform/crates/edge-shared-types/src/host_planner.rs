@@ -742,8 +742,7 @@ mod tests {
             "VM_DIAGNOSTIC_TRUNCATED",
             "OTHER_UNPROVEN",
         ] {
-            observed.reason_codes =
-                vec!["WARP_LINE1_CONSUMER_EGRESS_FAILED".into(), fault.into()];
+            observed.reason_codes = vec!["WARP_LINE1_CONSUMER_EGRESS_FAILED".into(), fault.into()];
             assert_eq!(
                 propose_host_transition(&vm, Some(&observed), &[9; 32], &[2; 32], 1000).step,
                 FleetHostPlannedStep::Blocked as i32
