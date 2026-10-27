@@ -953,9 +953,28 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
             now,
             journal,
             || {
-                handle
+                let mut observed = handle
                     .block_on(super::capture_local_host_observation(stack_dir))
-                    .map_err(|_| "HOST_NATIVE_READBACK_FAILED")
+                    .map_err(|_| "HOST_NATIVE_READBACK_FAILED")?;
+                // Extend the SAME native readback only when a resource was
+                // observed stopped during a RUNNING target. Root owns the
+                // operation lock and the existing Worker-signed intent here.
+                // No Docker effect and no extra service or permanent state.
+                if observed.owner_state
+                    == edge_shared_types::FleetNativeOwnerState::Stopped as i32
+                    && observed.reason_codes.iter().any(|s| s == "CONTAINER_NOT_RUNNING")
+                {
+                    let report = handle
+                        .block_on(
+                            super::docker_observation::capture_partial_vm_resource_evidence(
+                                stack_dir, host,
+                            ),
+                        )
+                        .map_err(|_| "HOST_NATIVE_PARTIAL_RESOURCE_EVIDENCE_UNPROVEN")?;
+                    observed.vm_recovery_resources = Some(report);
+                    edge_shared_types::host_lifecycle::validate_native_observation(&observed)?;
+                }
+                Ok(observed)
             },
             |step| match step {
                 FleetHostPlannedStep::Start | FleetHostPlannedStep::Stop => {
