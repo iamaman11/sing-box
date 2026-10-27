@@ -1399,13 +1399,19 @@ mod tests {
         // Recovery with a known degraded datapath can terminalize the old
         // UNKNOWN only as INCOMPLETE, never as VERIFIED.
         let recovered_degraded = resolve(&degraded).unwrap();
-        assert_eq!(recovered_degraded.state, FleetHostResultState::Observed as i32);
+        assert_eq!(
+            recovered_degraded.state,
+            FleetHostResultState::Observed as i32
+        );
         let prior_id = journal_hex(old.operation_id.as_bytes());
         let original_terminal = crate::host_lifecycle::decode_host_result(
-            &fs::read(dir.join(format!("{prior_id}.incomplete.pb"))).unwrap()
+            &fs::read(dir.join(format!("{prior_id}.incomplete.pb"))).unwrap(),
         )
         .unwrap();
-        assert_eq!(original_terminal.state, FleetHostResultState::UnknownNoReplay as i32);
+        assert_eq!(
+            original_terminal.state,
+            FleetHostResultState::UnknownNoReplay as i32
+        );
         assert!(!original_terminal.physical_readback);
         assert!(!dir.join(format!("{prior_id}.verified.pb")).exists());
         assert!(!native_scope_pending_path(&dir, &old).exists());
@@ -1414,14 +1420,18 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "sing-box-partial-recovery-continued-{}-{}",
             std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         fs::create_dir(&dir).unwrap();
         fs::write(native_scope_pending_path(&dir, &old), old.encode_to_vec()).unwrap();
         fs::write(
             dir.join(format!("{}.pb", journal_hex(old.operation_id.as_bytes()))),
             begin.encode_to_vec(),
-        ).unwrap();
+        )
+        .unwrap();
         let resolve = |observed: &crate::FleetNativeObservation| {
             resolve_pending_native_recovery_once(
                 &current,
