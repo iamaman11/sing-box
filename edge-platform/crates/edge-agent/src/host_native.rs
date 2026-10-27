@@ -960,9 +960,11 @@ pub async fn apply(stack_dir: &Path) -> Result<(), String> {
                 // observed stopped during a RUNNING target. Root owns the
                 // operation lock and the existing Worker-signed intent here.
                 // No Docker effect and no extra service or permanent state.
-                if observed.owner_state
-                    == edge_shared_types::FleetNativeOwnerState::Stopped as i32
-                    && observed.reason_codes.iter().any(|s| s == "CONTAINER_NOT_RUNNING")
+                if observed.owner_state == edge_shared_types::FleetNativeOwnerState::Stopped as i32
+                    && observed
+                        .reason_codes
+                        .iter()
+                        .any(|s| s == "CONTAINER_NOT_RUNNING")
                 {
                     let report = handle
                         .block_on(

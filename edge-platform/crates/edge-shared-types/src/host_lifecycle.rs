@@ -119,11 +119,14 @@ pub fn validate_native_observation(
                     .bytes()
                     .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == b'_')
         })
-        || observed.vm_recovery_resources.as_ref().is_some_and(|report| {
-            kind != FleetHostKind::Vm
-                || report.machine_id.is_empty()
-                || report.observed_at_unix != observed.observed_at_unix
-        })
+        || observed
+            .vm_recovery_resources
+            .as_ref()
+            .is_some_and(|report| {
+                kind != FleetHostKind::Vm
+                    || report.machine_id.is_empty()
+                    || report.observed_at_unix != observed.observed_at_unix
+            })
         || observed.encode_to_vec().len() > MAX_NATIVE_OBSERVATION_BYTES
     {
         return Err("HOST_OBSERVATION_EVIDENCE_INVALID");
@@ -140,15 +143,18 @@ pub(crate) fn known_partial_vm_resource_baseline(
     observed: &crate::FleetNativeObservation,
 ) -> bool {
     use crate::{
-        FleetHostKind, FleetNativeOwnerState, FleetVmConfigProof,
-        FleetVmInstalledPolicyStatus, FleetVmObservedReason,
+        FleetHostKind, FleetNativeOwnerState, FleetVmConfigProof, FleetVmInstalledPolicyStatus,
+        FleetVmObservedReason,
     };
     if host.kind != FleetHostKind::Vm as i32
         || observed.host_kind != host.kind
         || observed.owner_state != FleetNativeOwnerState::Stopped as i32
         || !observed.runtime_ready_proven
         || observed.runtime_ready
-        || !observed.reason_codes.iter().any(|s| s == "CONTAINER_NOT_RUNNING")
+        || !observed
+            .reason_codes
+            .iter()
+            .any(|s| s == "CONTAINER_NOT_RUNNING")
         || observed.reason_codes.iter().any(|s| {
             !matches!(
                 s.as_str(),
@@ -1560,11 +1566,11 @@ mod tests {
 mod partial_vm_recovery_tests {
     use super::*;
     use crate::{
-        FleetHostKind, FleetNativeOwnerState, FleetNativeReleaseProof,
-        FleetVmBootstrapPhase, FleetVmConfigProof, FleetVmContainer,
-        FleetVmCredentialReadback, FleetVmCredentialState, FleetVmDesiredGraph,
-        FleetVmDesiredNetwork, FleetVmDesiredResource, FleetVmInstalledPolicyStatus,
-        FleetVmObservedReason, FleetVmResourceReadback, FleetVmResourceReport,
+        FleetHostKind, FleetNativeOwnerState, FleetNativeReleaseProof, FleetVmBootstrapPhase,
+        FleetVmConfigProof, FleetVmContainer, FleetVmCredentialReadback, FleetVmCredentialState,
+        FleetVmDesiredGraph, FleetVmDesiredNetwork, FleetVmDesiredResource,
+        FleetVmInstalledPolicyStatus, FleetVmObservedReason, FleetVmResourceReadback,
+        FleetVmResourceReport,
     };
 
     fn fixture() -> (FleetHost, crate::FleetNativeObservation) {
@@ -1657,7 +1663,11 @@ mod partial_vm_recovery_tests {
         changed.vm_recovery_resources.as_mut().unwrap().resources[0].image = "foreign/image".into();
         assert!(!known_partial_vm_resource_baseline(&host, &changed));
         let mut changed = baseline.clone();
-        changed.vm_recovery_resources.as_mut().unwrap().installed_policy_status = 0;
+        changed
+            .vm_recovery_resources
+            .as_mut()
+            .unwrap()
+            .installed_policy_status = 0;
         assert!(!known_partial_vm_resource_baseline(&host, &changed));
         let mut changed = baseline.clone();
         changed.vm_recovery_resources.as_mut().unwrap().resources[0].running_proven = false;
@@ -1666,7 +1676,11 @@ mod partial_vm_recovery_tests {
         changed.reason_codes.push("VM_DOCKER_UNAVAILABLE".into());
         assert!(!known_partial_vm_resource_baseline(&host, &changed));
         let mut changed = baseline.clone();
-        changed.vm_recovery_resources.as_mut().unwrap().observed_at_unix += 1;
+        changed
+            .vm_recovery_resources
+            .as_mut()
+            .unwrap()
+            .observed_at_unix += 1;
         assert!(!known_partial_vm_resource_baseline(&host, &changed));
         let mut changed = baseline;
         changed.vm_recovery_resources = None;
