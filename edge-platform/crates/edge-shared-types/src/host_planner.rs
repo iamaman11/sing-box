@@ -162,7 +162,21 @@ pub fn propose_host_transition(
             actual,
         );
     }
-    if !observed.reason_codes.is_empty() {
+    // A signed, addressable consumer datapath failure cannot masquerade as
+    // proof that Docker/image/ports are missing. Allow only a *proposal* to
+    // converge a genuinely different VM bundle, never an implicit restart.
+    // The native root owner still rechecks the typed resource snapshot before
+    // BEGIN, and this planner never grants mutation authority.
+    let vm_known_datapath_bundle_drift = kind == FleetHostKind::Vm
+        && desired_run == FleetHostRunState::Running
+        && observed.owner_state == FleetNativeOwnerState::Running as i32
+        && observed.release_proof == FleetNativeReleaseProof::ApplicationBundle as i32
+        && actual.len() == 32
+        && actual.iter().any(|byte| *byte != 0)
+        && actual != expected
+        && !observed.reason_codes.is_empty()
+        && crate::host_lifecycle::known_runtime_only_historical_reasons(observed);
+    if !observed.reason_codes.is_empty() && !vm_known_datapath_bundle_drift {
         return plan(
             host,
             Blocked,
@@ -697,6 +711,72 @@ mod tests {
             "TUN_SEPARATE_PHYSICAL_GATE_REQUIRED"
         );
     }
+    #[test]
+    fn vm_bundle_drift_with_addressed_warp_consumer_can_propose_replace_only() {
+        let vm = host(
+            FleetHostKind::Vm,
+            FleetHostMode::Unspecified,
+            FleetHostRunState::Running,
+        );
+        let mut observed = observed(FleetHostKind::Vm, FleetNativeOwnerState::Running);
+        observed.observed_release_sha256 = vec![1; 32];
+        observed.runtime_ready = false;
+        observed.runtime_ready_proven = true;
+        observed.reason_codes = vec!["WARP_LINE1_CONSUMER_EGRESS_FAILED".into()];
+        let proposal = propose_host_transition(&vm, Some(&observed), &[9; 32], &[2; 32], 1000);
+        assert_eq!(proposal.step, FleetHostPlannedStep::ReplaceRelease as i32);
+        assert_eq!(proposal.reason_code, "RELEASE_MISMATCH_PROPOSAL_ONLY");
+        assert!(!proposal.owner_attested && !proposal.mutation_authorized);
+
+        // Current release, generic network failure, missing consumers/ports,
+        // unknown resources and failed trust must never trigger another apply.
+        for fault in [
+            "WARP_EGRESS_FAILED",
+            "WARP_CONSUMERS_ABSENT",
+            "WARP_CLIENT_CONNECTION_UNPROVEN",
+            "TCP_PORTS_MISSING",
+            "UDP_PORTS_MISSING",
+            "CONTAINER_NOT_RUNNING",
+            "EXACT_IMAGE_OR_CONTAINER_UNREADY",
+            "DOCKER_UNAVAILABLE",
+            "VM_DIAGNOSTIC_TRUNCATED",
+            "OTHER_UNPROVEN",
+        ] {
+            observed.reason_codes =
+                vec!["WARP_LINE1_CONSUMER_EGRESS_FAILED".into(), fault.into()];
+            assert_eq!(
+                propose_host_transition(&vm, Some(&observed), &[9; 32], &[2; 32], 1000).step,
+                FleetHostPlannedStep::Blocked as i32
+            );
+        }
+        observed.reason_codes = vec!["WARP_LINE2_CONSUMER_EGRESS_FAILED".into()];
+        assert_eq!(
+            propose_host_transition(&vm, Some(&observed), &[9; 32], &[2; 32], 1000).step,
+            FleetHostPlannedStep::ReplaceRelease as i32
+        );
+        assert_eq!(
+            propose_host_transition(&vm, Some(&observed), &[9; 32], &[1; 32], 1000).step,
+            FleetHostPlannedStep::Blocked as i32
+        );
+        observed.owner_state = FleetNativeOwnerState::Unproven as i32;
+        assert_eq!(
+            propose_host_transition(&vm, Some(&observed), &[9; 32], &[2; 32], 1000).step,
+            FleetHostPlannedStep::Blocked as i32
+        );
+        observed.owner_state = FleetNativeOwnerState::Running as i32;
+        observed.runtime_ready_proven = false;
+        assert_eq!(
+            propose_host_transition(&vm, Some(&observed), &[9; 32], &[2; 32], 1000).step,
+            FleetHostPlannedStep::Blocked as i32
+        );
+        observed.runtime_ready_proven = true;
+        observed.observed_release_sha256 = vec![0; 32];
+        assert_eq!(
+            propose_host_transition(&vm, Some(&observed), &[9; 32], &[2; 32], 1000).step,
+            FleetHostPlannedStep::Blocked as i32
+        );
+    }
+
     #[test]
     fn degraded_vm_start_is_only_a_proposal_and_requires_scoped_owner_proof() {
         let vm = host(
