@@ -342,8 +342,8 @@ fn native_runtime_reason_code(reason: &str) -> &'static str {
         "DIRECT_EGRESS_FAILED"
     } else if reason == "WARP egress datapath probe failed" {
         "WARP_EGRESS_FAILED"
-    } else if reason == "WARP client not connected" {
-        "WARP_CLIENT_NOT_CONNECTED"
+    } else if reason == "WARP client connection unproven" {
+        "WARP_CLIENT_CONNECTION_UNPROVEN"
     } else if reason == "WARP consumers absent" {
         "WARP_CONSUMERS_ABSENT"
     } else if reason == "WARP Line1 consumer egress failed" {
@@ -2675,8 +2675,8 @@ mod native_runtime_diagnostic_code_tests {
             "WARP_EGRESS_FAILED"
         );
         assert_eq!(
-            native_runtime_reason_code("WARP client not connected"),
-            "WARP_CLIENT_NOT_CONNECTED"
+            native_runtime_reason_code("WARP client connection unproven"),
+            "WARP_CLIENT_CONNECTION_UNPROVEN"
         );
         assert_eq!(
             native_runtime_reason_code("WARP Line1 consumer egress failed"),
