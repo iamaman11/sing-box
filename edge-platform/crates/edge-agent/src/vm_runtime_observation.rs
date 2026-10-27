@@ -146,12 +146,10 @@ pub(super) async fn inspect_datapath_readiness(
             .push("direct egress datapath probe failed".to_owned());
     }
 
-    let warp_ready = probe_warp_egress(&state.running_containers);
-    state.warp_egress_ready = Some(warp_ready);
-    if !warp_ready {
-        state
-            .degraded_reasons
-            .push("WARP egress datapath probe failed".to_owned());
+    let warp_failure = probe_warp_egress_failure(&state.running_containers);
+    state.warp_egress_ready = Some(warp_failure.is_none());
+    if let Some(reason) = warp_failure {
+        state.degraded_reasons.push(reason.to_owned());
     }
 
     let mesh_ready = if docker.container_present(MESH_CONTAINER) {
@@ -167,7 +165,7 @@ pub(super) async fn inspect_datapath_readiness(
     };
     state.mesh_runtime_ready = mesh_ready;
 
-    direct_ready && warp_ready && mesh_ready != Some(false)
+    direct_ready && warp_failure.is_none() && mesh_ready != Some(false)
 }
 
 pub(super) fn wait_for_warp_datapath() -> Result<(), String> {
@@ -256,38 +254,50 @@ pub(super) fn probe_warp_service_local() -> bool {
     })
 }
 
-pub(super) fn probe_warp_egress(running_containers: &[String]) -> bool {
+/// Same native WARP probe as before; now report the FIRST failed predicate
+/// without duplicating probes or publishing curl/warp-cli stdout.
+pub(super) fn probe_warp_egress_failure(running_containers: &[String]) -> Option<&'static str> {
     if !warp_client_connected() {
-        return false;
+        return Some("WARP client connection unproven");
     }
     let consumers = runtime_probe_consumers(running_containers);
-    !consumers.is_empty()
-        && consumers.into_iter().all(|consumer| {
-            bounded_command_output(
-                "docker",
-                &[
-                    "exec",
-                    consumer,
-                    "curl",
-                    "-4",
-                    "--fail",
-                    "--silent",
-                    "--show-error",
-                    "--connect-timeout",
-                    "3",
-                    "--max-time",
-                    "8",
-                    "--socks5-hostname",
-                    "warp-egress:11080",
-                    CLOUDFLARE_TRACE_URL,
-                ],
-                12,
-            )
-            .is_some_and(|output| {
-                cloudflare_trace_has_warp_mode(&output, "on")
-                    || cloudflare_trace_has_warp_mode(&output, "plus")
-            })
-        })
+    if consumers.is_empty() {
+        return Some("WARP consumers absent");
+    }
+    for consumer in consumers {
+        let ok = bounded_command_output(
+            "docker",
+            &[
+                "exec",
+                consumer,
+                "curl",
+                "-4",
+                "--fail",
+                "--silent",
+                "--show-error",
+                "--connect-timeout",
+                "3",
+                "--max-time",
+                "8",
+                "--socks5-hostname",
+                "warp-egress:11080",
+                CLOUDFLARE_TRACE_URL,
+            ],
+            12,
+        )
+        .is_some_and(|output| {
+            cloudflare_trace_has_warp_mode(&output, "on")
+                || cloudflare_trace_has_warp_mode(&output, "plus")
+        });
+        if !ok {
+            return Some(match consumer {
+                LINE1_CONTAINER => "WARP Line1 consumer egress failed",
+                LINE2_CONTAINER => "WARP Line2 consumer egress failed",
+                _ => "WARP consumer identity unproven",
+            });
+        }
+    }
+    None
 }
 
 pub(super) fn parse_warp_connection_state(probe: &BoundedCommandProbe) -> Option<String> {

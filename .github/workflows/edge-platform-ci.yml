@@ -195,7 +195,9 @@ jobs:
           grep -Fq '"server": "warp-egress"' win/vultr-waw/stack/line2-proxy/config.template.json
           grep -Fq '"warp-egress:11080"' edge-platform/crates/edge-agent/src/vm_runtime_observation.rs
           grep -Fq 'direct egress datapath probe failed' edge-platform/crates/edge-agent/src/vm_runtime_observation.rs
-          grep -Fq 'WARP egress datapath probe failed' edge-platform/crates/edge-agent/src/vm_runtime_observation.rs
+          grep -Fq 'probe_warp_egress_failure(&state.running_containers)' edge-platform/crates/edge-agent/src/vm_runtime_observation.rs
+          grep -Fq 'WARP Line1 consumer egress failed' edge-platform/crates/edge-agent/src/vm_runtime_observation.rs
+          grep -Fq 'WARP Line2 consumer egress failed' edge-platform/crates/edge-agent/src/vm_runtime_observation.rs
           if grep -Fq 'Mesh runtime warp-cli status is not Connected' edge-platform/crates/edge-agent/src/vm_runtime_observation.rs; then
             echo "Mesh readiness must not present failed observation as explicit disconnection" >&2
             exit 1
