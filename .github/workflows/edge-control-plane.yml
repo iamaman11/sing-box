@@ -29,6 +29,9 @@ jobs:
        startsWith(github.event.comment.body, '/host status ') ||
        startsWith(github.event.comment.body, '/host apply ') ||
        startsWith(github.event.comment.body, '/host recover ') ||
+       startsWith(github.event.comment.body, '/host start ') ||
+       startsWith(github.event.comment.body, '/host stop ') ||
+       startsWith(github.event.comment.body, '/host set-mode ') ||
        startsWith(github.event.comment.body, '/host diagnose ') ||
        startsWith(github.event.comment.body, '/host admin '))
     outputs:
@@ -170,8 +173,10 @@ jobs:
             command=(recover "${BASH_REMATCH[1]}" --adjudicate)
           elif [[ "${COMMAND_BODY}" =~ ^/host[[:space:]]recover[[:space:]]([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})[[:space:]]--bootstrap-access$ ]]; then
             command=(recover "${BASH_REMATCH[1]}" --bootstrap-access)
-          elif [[ "${COMMAND_BODY}" =~ ^/host[[:space:]](apply|recover)[[:space:]]([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})$ ]]; then
+          elif [[ "${COMMAND_BODY}" =~ ^/host[[:space:]](apply|recover|start|stop)[[:space:]]([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})$ ]]; then
             command=("${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")
+          elif [[ "${COMMAND_BODY}" =~ ^/host[[:space:]]set-mode[[:space:]]([a-zA-Z0-9][a-zA-Z0-9._-]{0,63})[[:space:]](proxy-only|managed-tun)$ ]]; then
+            command=(set-mode "${BASH_REMATCH[1]}" "${BASH_REMATCH[2]}")
           else
             echo 'HOST_COMMAND_INVALID' >&2
             exit 1

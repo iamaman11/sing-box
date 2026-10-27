@@ -157,6 +157,15 @@ pub(crate) enum HostCommand {
         #[arg(long)]
         resource_id: Option<String>,
     },
+    /// Windows target-matched typed lifecycle preflight; never a direct SCM start.
+    Start { machine_id: String },
+    /// Windows target-matched typed lifecycle preflight; never a direct SCM stop.
+    Stop { machine_id: String },
+    /// Windows mode may change only to the exact Git target, not on CLI authority.
+    SetMode {
+        machine_id: String,
+        mode: HostWindowsModeArg,
+    },
     /// One bounded fresh typed recovery preflight; never replays previous effects.
     Recover {
         machine_id: String,
@@ -320,6 +329,21 @@ pub(crate) enum ProductionCommand {
         #[arg(long)]
         apply: bool,
     },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub(crate) enum HostWindowsModeArg {
+    ProxyOnly,
+    ManagedTun,
+}
+
+impl From<HostWindowsModeArg> for edge_shared_types::FleetHostMode {
+    fn from(value: HostWindowsModeArg) -> Self {
+        match value {
+            HostWindowsModeArg::ProxyOnly => Self::ProxyOnly,
+            HostWindowsModeArg::ManagedTun => Self::ManagedTun,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]

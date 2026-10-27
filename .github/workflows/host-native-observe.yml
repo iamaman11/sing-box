@@ -330,18 +330,26 @@ jobs:
           $current = 'C:\sing-box\current.pb'
           $output = Join-Path $env:RUNNER_TEMP 'host-native-observation.pb'
           Remove-Item -LiteralPath $output -Force -ErrorAction SilentlyContinue
-          # An older installed ReleaseSet may not expose this read-only verb.
-          # Do not upgrade here, invoke a privileged dispatcher or claim PASS.
+          # Use ONLY the installed native owner. A stale ReleaseSet cannot
+          # counterfeit protobuf with text parsing or runner-side binaries.
+          # This step is OPTIONAL read-only evidence: missing support is
+          # UNPROVEN, not a failure of the previously accepted SCM doctor.
           & $doctor host-observe $current > $output
-          if ($LASTEXITCODE -ne 0 -or
-              -not (Test-Path -LiteralPath $output -PathType Leaf) -or
-              (Get-Item -LiteralPath $output).Length -gt 4096 -or
-              (Get-Item -LiteralPath $output).Length -eq 0) {
+          $nativeExit = $LASTEXITCODE
+          $captured = (Test-Path -LiteralPath $output -PathType Leaf) -and
+            (Get-Item -LiteralPath $output).Length -gt 0 -and
+            (Get-Item -LiteralPath $output).Length -le 4096
+          if ($nativeExit -ne 0 -or -not $captured) {
             Remove-Item -LiteralPath $output -Force -ErrorAction SilentlyContinue
-            Write-Output 'host_typed_readback=UNAVAILABLE_INSTALLED_VERSION_OR_EVIDENCE'
-          } else {
-            Write-Output 'host_typed_readback=BOUNDED_PROTOBUF_CAPTURED_UNAUTHENTICATED'
+            Write-Output 'host_typed_readback=UNPROVEN_INSTALLED_VERSION_OR_EVIDENCE'
+            Write-Output 'host_typed_readback_next_action=SIGNED_WINDOWS_SYSTEM_RELEASE_REFRESH_REQUIRED'
+            Write-Output 'host_mutations=0'
+            # A failed OPTIONAL read-only CLI must not leak its LASTEXITCODE
+            # into the job outcome. The hosted verifier sees no protobuf
+            # and therefore MUST NOT claim physical/native attestation.
+            exit 0
           }
+          Write-Output 'host_typed_readback=BOUNDED_PROTOBUF_CAPTURED_UNAUTHENTICATED'
 
       - name: Capture exact installed VM typed readback when permitted
         # On a failed native transaction retain a read-only postmortem.
