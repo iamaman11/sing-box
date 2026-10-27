@@ -1940,9 +1940,7 @@ fn validate_readback_scope(
         .map_err(|_| "HOST_READBACK_PROOF_INVALID")?;
     let owner = FleetNativeOwnerState::try_from(observed.owner_state)
         .map_err(|_| "HOST_READBACK_OWNER_INVALID")?;
-    if owner == FleetNativeOwnerState::Unproven
-        || proof == FleetNativeReleaseProof::Unproven
-    {
+    if owner == FleetNativeOwnerState::Unproven || proof == FleetNativeReleaseProof::Unproven {
         return Ok("UNPROVEN_NATIVE_OWNER_OR_RUNTIME");
     }
     if kind == ManagedHostKind::Windows {
