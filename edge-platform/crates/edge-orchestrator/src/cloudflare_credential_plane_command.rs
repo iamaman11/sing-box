@@ -4006,7 +4006,7 @@ function INFO(b){
     /^config\/[A-Za-z0-9][A-Za-z0-9._-]{0,63}\/(line1-gateway|line2-proxy)$/.test(resource);
  if(schema!==1||(kind!==1&&kind!==2)||
     !(resource==="sing-box"||(kind===2&&action===2&&scoped))||
-    (action!==2&&action!==3)||
+    !(action===2||action===3||(kind===1&&(action===7||action===8)))||
     typeof id!=="string"||!/^issue1-comment-[1-9][0-9]{0,19}$/.test(id)||
     typeof m!=="string"||!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(m)||
     !Number.isSafeInteger(when)||when<=0)return null;
@@ -4131,7 +4131,7 @@ async function GITHUB(info,e,now){
  // that VM whole-resource form; no generic fallback or unsigned journal reset.
  const expectedCommand=info.kind===2&&info.action===3&&info.resource==="sing-box"
    ? "/host recover "+info.m+" --adjudicate"
-   : "/host "+(info.action===2?"apply":"recover")+" "+info.m+
+   : "/host "+(info.action===2?"apply":info.action===3?"recover":info.action===7?"start":"stop")+" "+info.m+
      (info.resource==="sing-box"?"":" "+info.resource);
  if(!c||String(c.user?.id)!==actor||c.issue_url!==base+"/issues/1"||
     c.updated_at!==c.created_at||!Number.isFinite(stamp)||
