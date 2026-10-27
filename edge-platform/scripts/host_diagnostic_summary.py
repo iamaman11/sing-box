@@ -205,6 +205,43 @@ def merge_rust_verified_native(original, native_readback, comment_id, expected_s
     elif pending_op or pending_resource or pending_digest:
         raise ValueError("HOST_DIAG_SIGNED_PENDING_UNEXPECTED")
 
+    # Only accept bounded fields that the existing Git-pinned Rust verifier
+    # extracted from the Ed25519-verified native snapshot. No Python signing,
+    # source-of-truth override, or new diagnostic state machine.
+    verdict = evidence.get("verdict", "UNPROVEN")
+    if not TOKEN.fullmatch(verdict):
+        raise ValueError("HOST_DIAG_SIGNED_VERDICT_INVALID")
+    ready_proven = evidence.get("runtime_ready_proven")
+    ready = evidence.get("runtime_ready")
+    reason_count_text = evidence.get("reason_count")
+    runtime = None
+    if any(value is not None for value in (ready_proven, ready, reason_count_text)):
+        if (ready_proven not in ("true", "false") or ready not in ("true", "false")
+                or reason_count_text is None or not reason_count_text.isascii()
+                or not reason_count_text.isdecimal()
+                or int(reason_count_text) > 12
+                or (ready == "true" and ready_proven != "true")):
+            raise ValueError("HOST_DIAG_SIGNED_RUNTIME_INVALID")
+        reason_count = int(reason_count_text)
+        codes = []
+        for index in range(reason_count):
+            code = evidence.get(f"reason_{index}_code")
+            if not isinstance(code, str) or len(code) > 96 or not TOKEN.fullmatch(code):
+                raise ValueError("HOST_DIAG_SIGNED_REASON_INVALID")
+            codes.append(code)
+        actual_keys = {key for key in evidence
+                       if re.fullmatch(r"reason_[0-9]{1,2}_code", key)}
+        expected_keys = {f"reason_{index}_code" for index in range(reason_count)}
+        if actual_keys != expected_keys:
+            raise ValueError("HOST_DIAG_SIGNED_REASON_MISMATCH")
+        runtime = {
+            "ready_proven": ready_proven == "true",
+            "ready": ready == "true",
+            "reason_codes": codes,
+        }
+    elif any(re.fullmatch(r"reason_[0-9]{1,2}_code", key) for key in evidence):
+        raise ValueError("HOST_DIAG_SIGNED_REASON_WITHOUT_COUNT")
+
     report["sources"]["root_agent"] = "VERIFIED_ROOT_SIGNED_READ_ONLY"
     report["sources"]["native_snapshot"] = "VERIFIED_ROOT_SIGNED_READ_ONLY"
     report["sources"]["signed_receipt"] = "UNPROVEN_NO_MUTATION_RECEIPT"
@@ -223,7 +260,30 @@ def merge_rust_verified_native(original, native_readback, comment_id, expected_s
         "line2_log_sha256": evidence.get("line2_log_sha256", ""),
         "replay_allowed": False,
         "mutation_authorized": False,
+        "snapshot_verdict": verdict,
     }
+    if runtime is not None:
+        report["native"]["runtime"] = runtime
+    # Source drift is independent of runtime failure and of the historical
+    # pending BEGIN. Never treat a current logical bundle mismatch as evidence
+    # that the older signed Docker effect was not executed.
+    bundle_fields = ("bundle_expected_sha256", "bundle_observed_sha256", "bundle_matches")
+    if any(key in evidence for key in bundle_fields):
+        if (not all(key in evidence for key in bundle_fields)
+                or not DIGEST.fullmatch(evidence["bundle_expected_sha256"])
+                or (evidence["bundle_observed_sha256"]
+                    and not DIGEST.fullmatch(evidence["bundle_observed_sha256"]))
+                or evidence["bundle_matches"] not in ("true", "false")):
+            raise ValueError("HOST_DIAG_SIGNED_BUNDLE_INVALID")
+        matches = evidence["bundle_matches"] == "true"
+        if matches != (evidence["bundle_expected_sha256"]
+                       == evidence["bundle_observed_sha256"]):
+            raise ValueError("HOST_DIAG_SIGNED_BUNDLE_CONTRADICTION")
+        report["native"]["bundle"] = {
+            "matches_current_release": matches,
+            "expected_sha256": evidence["bundle_expected_sha256"],
+            "observed_sha256": evidence["bundle_observed_sha256"],
+        }
     if pending and report["phase"] in ("BOOTSTRAP_OR_RUNNER", "NATIVE_OBSERVATION"):
         report.update(
             phase="NATIVE_SIGNED_OBSERVATION",
@@ -231,7 +291,7 @@ def merge_rust_verified_native(original, native_readback, comment_id, expected_s
             owner="ROOT_AGENT",
             reason="HOST_RESOURCE_PENDING_NO_REPLAY",
             last_proven_step="ROOT_SIGNED_PENDING_OBSERVATION",
-            next_action="READ_ONLY_RECONCILE_ORIGINAL_BEGIN_AND_LINE2",
+            next_action="READ_ONLY_RECONCILE_ORIGINAL_BEGIN_AND_FAILED_PREDICATE",
         )
     return (before + marker +
             json.dumps(report, sort_keys=True, separators=(",", ":")) +
