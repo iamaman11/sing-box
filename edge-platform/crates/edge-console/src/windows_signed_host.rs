@@ -66,14 +66,20 @@ fn verify_system_trust(
         return Err("HOST_WINDOWS_SYSTEM_TRUST_IDENTITY_INVALID");
     }
     let (registry, bound) = bind_native_host_artifacts(
-        intent, &trust.registry_pb, &trust.selected_spec_bytes,
-        &trust.release_set_pb, None,
+        intent,
+        &trust.registry_pb,
+        &trust.selected_spec_bytes,
+        &trust.release_set_pb,
+        None,
     )?;
-    let host = registry.hosts.iter()
+    let host = registry
+        .hosts
+        .iter()
         .find(|host| host.machine_id == intent.machine_id && host.kind == intent.kind)
         .ok_or("HOST_WINDOWS_SYSTEM_HOST_NOT_REGISTERED")?;
     edge_shared_types::host_lifecycle::verify_git_host_worker_signer_pin(
-        host, &trust.pinned_worker_public_key,
+        host,
+        &trust.pinned_worker_public_key,
     )?;
     check_native_receipt_key(host, private_key)?;
     if lowercase_sha(&bound.release_set_sha256) != installed_release_sha256 {
@@ -112,25 +118,34 @@ fn system_native_observation(install_root: &Path) -> Result<FleetNativeObservati
 fn apply_exact_proxyonly_scm_step(step: FleetHostPlannedStep) -> Result<(), &'static str> {
     let scm = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
         .map_err(|_| "HOST_WINDOWS_SYSTEM_SCM_UNAVAILABLE")?;
-    let service = scm.open_service(
-        WINDOWS_CONTROLLER_SERVICE_NAME,
-        ServiceAccess::QUERY_STATUS | ServiceAccess::START | ServiceAccess::STOP,
-    ).map_err(|_| "HOST_WINDOWS_SYSTEM_CONTROLLER_UNAVAILABLE")?;
+    let service = scm
+        .open_service(
+            WINDOWS_CONTROLLER_SERVICE_NAME,
+            ServiceAccess::QUERY_STATUS | ServiceAccess::START | ServiceAccess::STOP,
+        )
+        .map_err(|_| "HOST_WINDOWS_SYSTEM_CONTROLLER_UNAVAILABLE")?;
     match step {
         FleetHostPlannedStep::Start => {
-            service.start::<&str>(&[])
+            service
+                .start::<&str>(&[])
                 .map_err(|_| "HOST_WINDOWS_SYSTEM_START_FAILED")?;
             wait_for_service_state(
-                &service, ServiceState::Running,
+                &service,
+                ServiceState::Running,
                 Duration::from_secs(WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS),
-            ).map_err(|_| "HOST_WINDOWS_SYSTEM_START_POSTSTATE_UNPROVEN")?;
+            )
+            .map_err(|_| "HOST_WINDOWS_SYSTEM_START_POSTSTATE_UNPROVEN")?;
         }
         FleetHostPlannedStep::Stop => {
-            service.stop().map_err(|_| "HOST_WINDOWS_SYSTEM_STOP_FAILED")?;
+            service
+                .stop()
+                .map_err(|_| "HOST_WINDOWS_SYSTEM_STOP_FAILED")?;
             wait_for_service_state(
-                &service, ServiceState::Stopped,
+                &service,
+                ServiceState::Stopped,
                 Duration::from_secs(WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS),
-            ).map_err(|_| "HOST_WINDOWS_SYSTEM_STOP_POSTSTATE_UNPROVEN")?;
+            )
+            .map_err(|_| "HOST_WINDOWS_SYSTEM_STOP_POSTSTATE_UNPROVEN")?;
         }
         _ => return Err("HOST_WINDOWS_SYSTEM_UNSUPPORTED_STEP"),
     }
@@ -140,7 +155,10 @@ fn apply_exact_proxyonly_scm_step(step: FleetHostPlannedStep) -> Result<(), &'st
 /// Returns false when the existing task should process the legacy, read-only
 /// Ping/RuntimeEvidence. A signed request cannot coexist with the old format.
 pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, String> {
-    let request = install_root.join("exchange").join("requests").join(INTENT_FILE);
+    let request = install_root
+        .join("exchange")
+        .join("requests")
+        .join(INTENT_FILE);
     match fs::symlink_metadata(&request) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
         Err(_) => return Err("HOST_WINDOWS_SYSTEM_REQUEST_METADATA_UNAVAILABLE".into()),
@@ -158,8 +176,10 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
     let journal = protected.join("journal");
     verify_native_journal_protection(&journal).map_err(str::to_owned)?;
     let intent_bytes = bounded_regular_file(
-        &request, edge_shared_types::host_lifecycle::MAX_HOST_INTENT_BYTES as u64,
-    ).map_err(str::to_owned)?;
+        &request,
+        edge_shared_types::host_lifecycle::MAX_HOST_INTENT_BYTES as u64,
+    )
+    .map_err(str::to_owned)?;
     let intent = decode_host_intent(&intent_bytes).map_err(str::to_owned)?;
     if intent.kind != FleetHostKind::Windows as i32
         || intent.resource_id != "sing-box"
@@ -172,39 +192,61 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
     }
     let trust_bytes = bounded_regular_file(&protected.join(TRUST_FILE), 9 * 1024 * 1024)
         .map_err(str::to_owned)?;
-    let receipt_private = bounded_regular_file(
-        &protected.join(RECEIPT_KEY_FILE), 4096,
-    ).map_err(str::to_owned)?;
+    let receipt_private =
+        bounded_regular_file(&protected.join(RECEIPT_KEY_FILE), 4096).map_err(str::to_owned)?;
     let installed = load_verified_activation(install_root)
         .map_err(|_| "HOST_WINDOWS_SYSTEM_ACTIVATION_UNPROVEN")?;
     let trust = verify_system_trust(
-        &trust_bytes, &intent, &installed.release_set_sha256, &receipt_private,
-    ).map_err(str::to_owned)?;
+        &trust_bytes,
+        &intent,
+        &installed.release_set_sha256,
+        &receipt_private,
+    )
+    .map_err(str::to_owned)?;
     let registry = edge_shared_types::decode_host_registry(&trust.registry_pb)?;
-    let selected = registry.hosts.iter()
+    let selected = registry
+        .hosts
+        .iter()
         .find(|host| host.machine_id == intent.machine_id && host.kind == intent.kind)
         .ok_or("HOST_WINDOWS_SYSTEM_HOST_NOT_REGISTERED")?;
-    let mode = selected.target.as_ref()
+    let mode = selected
+        .target
+        .as_ref()
         .map(|target| FleetHostMode::try_from(target.windows_mode))
-        .transpose().map_err(|_| "HOST_WINDOWS_SYSTEM_TARGET_MODE_INVALID")?;
+        .transpose()
+        .map_err(|_| "HOST_WINDOWS_SYSTEM_TARGET_MODE_INVALID")?;
     if mode != Some(FleetHostMode::ProxyOnly) {
         return Err("HOST_WINDOWS_SYSTEM_PROXY_ONLY_REQUIRED".into());
     }
     // A pre-BEGIN native SCM/readback failure never creates journal state.
     system_native_observation(install_root).map_err(str::to_owned)?;
-    let identity = install_root.join("state").join("secrets").join(ACCESS_IDENTITY_FILE_NAME);
+    let identity = install_root
+        .join("state")
+        .join("secrets")
+        .join(ACCESS_IDENTITY_FILE_NAME);
     edge_secrets::diagnose_canonical_host_access(&identity)
-        .await.map_err(str::to_owned)?;
+        .await
+        .map_err(str::to_owned)?;
     // Worker POST is one-shot; no fallback to a runner-supplied signature.
     let auth: FleetHostAuthorization =
         edge_secrets::request_canonical_host_authorization(&intent_bytes, &identity).await?;
-    let now = SystemTime::now().duration_since(UNIX_EPOCH)
-        .map_err(|_| "HOST_WINDOWS_SYSTEM_CLOCK_UNAVAILABLE")?.as_secs();
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "HOST_WINDOWS_SYSTEM_CLOCK_UNAVAILABLE")?
+        .as_secs();
     let result = tokio::task::block_in_place(|| {
         execute_native_host_once(
-            &intent, &auth, &trust.registry_pb, &trust.selected_spec_bytes,
-            &trust.release_set_pb, None, &trust.pinned_worker_public_key,
-            &trust.machine_id, FleetHostKind::Windows as i32, now, &journal,
+            &intent,
+            &auth,
+            &trust.registry_pb,
+            &trust.selected_spec_bytes,
+            &trust.release_set_pb,
+            None,
+            &trust.pinned_worker_public_key,
+            &trust.machine_id,
+            FleetHostKind::Windows as i32,
+            now,
+            &journal,
             || system_native_observation(install_root),
             |step| match step {
                 FleetHostPlannedStep::Start | FleetHostPlannedStep::Stop => Ok(()),
@@ -212,15 +254,18 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
             },
             apply_exact_proxyonly_scm_step,
         )
-    }).map_err(str::to_owned)?;
+    })
+    .map_err(str::to_owned)?;
     // Native journal has already fsynced terminal before SYSTEM signs.
-    let signed = sign_native_receipt(&intent, &result, selected, &receipt_private)
-        .map_err(str::to_owned)?;
-    let receipt_path = install_root.join("exchange").join("results").join(RECEIPT_FILE);
+    let signed =
+        sign_native_receipt(&intent, &result, selected, &receipt_private).map_err(str::to_owned)?;
+    let receipt_path = install_root
+        .join("exchange")
+        .join("results")
+        .join(RECEIPT_FILE);
     write_atomic(&receipt_path, &signed.encode_to_vec())
         .map_err(|_| "HOST_WINDOWS_SYSTEM_RECEIPT_PUBLISH_UNCERTAIN")?;
-    fs::remove_file(request)
-        .map_err(|_| "HOST_WINDOWS_SYSTEM_REQUEST_CONSUMPTION_UNCERTAIN")?;
+    fs::remove_file(request).map_err(|_| "HOST_WINDOWS_SYSTEM_REQUEST_CONSUMPTION_UNCERTAIN")?;
     println!("status=PASS");
     println!("native_system_receipt=SIGNED_TERMINAL");
     println!("native_system_operation_id={}", intent.operation_id);
