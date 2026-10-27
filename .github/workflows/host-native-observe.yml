@@ -321,512 +321,79 @@ jobs:
           echo 'host_native_execution=ROOT_OWNER_ONE_SHOT'
           echo 'host_native_result=LOCAL_PROTOBUF_NOT_YET_REMOTE_ATTESTED'
 
-      - name: Receive one Git-pinned Windows lifecycle intent
+      - name: Receive typed Windows HostIntent from protected Git
         if: env.TARGET_KIND == 'WINDOWS' && env.HOST_OPERATION == 'APPLY_PREFLIGHT' && (startsWith(env.COMMAND_BODY, '/host start ') || startsWith(env.COMMAND_BODY, '/host stop '))
         uses: actions/download-artifact@v4
         with:
           name: host-intent-${{ inputs.source_comment_id }}
           path: ${{ runner.temp }}/windows-signed-intent
 
-      - name: Submit Windows signed intent through EXISTING SYSTEM task
-        if: env.TARGET_KIND == 'WINDOWS' && env.HOST_OPERATION == 'APPLY_PREFLIGHT' && (startsWith(env.COMMAND_BODY, '/host start ') || startsWith(env.COMMAND_BODY, '/host stop ')
+      - name: Forward exact Windows HostIntent to existing SYSTEM task
+        if: env.TARGET_KIND == 'WINDOWS' && env.HOST_OPERATION == 'APPLY_PREFLIGHT' && (startsWith(env.COMMAND_BODY, '/host start ') || startsWith(env.COMMAND_BODY, '/host stop '))
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          # This runner is only a copy/notification transport. No direct
-          # SCM, Powershell interpreter, routes or Docker mutations by runner.
           if ($env:RUNNER_NAME -cne $env:TARGET_OWNER -or
-              $env:TARGET_MACHINE -cne 'sing-box-windows-lab' -or
               $env:TARGET_OWNER -cne 'DESKTOP-0E1F6UQ' -or
-              $env:COMMAND_BODY -cnotmatch '^/host (start|stop) sing-box-windows-lab
-        if: env.TARGET_KIND == 'WINDOWS'
-        shell: pwsh
-        run: |
-          $ErrorActionPreference = 'Continue'
-          $doctor = 'C:\sing-box\bin\edge-diagnostic.exe'
-          $current = 'C:\sing-box\current.pb'
-          $output = Join-Path $env:RUNNER_TEMP 'host-native-observation.pb'
-          Remove-Item -LiteralPath $output -Force -ErrorAction SilentlyContinue
-          # Use ONLY the installed native owner. A stale ReleaseSet cannot
-          # counterfeit protobuf with text parsing or runner-side binaries.
-          # This step is OPTIONAL read-only evidence: missing support is
-          # UNPROVEN, not a failure of the previously accepted SCM doctor.
-          & $doctor host-observe $current > $output
-          $nativeExit = $LASTEXITCODE
-          $captured = (Test-Path -LiteralPath $output -PathType Leaf) -and
-            (Get-Item -LiteralPath $output).Length -gt 0 -and
-            (Get-Item -LiteralPath $output).Length -le 4096
-          if ($nativeExit -ne 0 -or -not $captured) {
-            Remove-Item -LiteralPath $output -Force -ErrorAction SilentlyContinue
-            Write-Output 'host_typed_readback=UNPROVEN_INSTALLED_VERSION_OR_EVIDENCE'
-            Write-Output 'host_typed_readback_next_action=SIGNED_WINDOWS_SYSTEM_RELEASE_REFRESH_REQUIRED'
-            Write-Output 'host_mutations=0'
-            # A failed OPTIONAL read-only CLI must not leak its LASTEXITCODE
-            # into the job outcome. The hosted verifier sees no protobuf
-            # and therefore MUST NOT claim physical/native attestation.
-            exit 0
-          }
-          Write-Output 'host_typed_readback=BOUNDED_PROTOBUF_CAPTURED_UNAUTHENTICATED'
-
-      - name: Capture exact installed VM typed readback when permitted
-        # On a failed native transaction retain a read-only postmortem.
-        # A failure cannot authorize replay and may have physical effects.
-        if: (success() || failure()) && env.TARGET_KIND == 'VM'
-        shell: bash
-        run: |
-          set -euo pipefail
-          owner=/usr/local/libexec/sing-box/edge-agent
-          output="${RUNNER_TEMP}/host-native-observation.pb"
-          rm -f "${output}"
-          if sudo -n -l "${owner}" local host-observe >/dev/null 2>&1 &&
-             sudo -n "${owner}" local host-observe > "${output}" &&
-             test -s "${output}" && test "$(stat -c '%s' "${output}")" -le 4096; then
-            echo 'host_typed_readback=BOUNDED_PROTOBUF_CAPTURED_UNAUTHENTICATED'
-          else
-            rm -f "${output}"
-            echo 'host_typed_readback=UNAVAILABLE_INSTALLED_VERSION_OR_SUDOERS'
-          fi
-
-      - name: Capture bounded VM per-container resource evidence
-        if: (success() || failure()) && env.TARGET_KIND == 'VM' && (endsWith(env.COMMAND_BODY, ' --deep') || env.HOST_OPERATION == 'APPLY_PREFLIGHT' || env.HOST_OPERATION == 'RECOVER_PREFLIGHT')
-        shell: bash
-        run: |
-          set -euo pipefail
-          owner=/usr/local/libexec/sing-box/edge-agent
-          output="${RUNNER_TEMP}/host-native-resources.pb"
-          rm -f "${output}"
-          # Older installations may not yet offer the exact read-only verb.
-          # Missing support is UNPROVEN, not an excuse for a direct Docker call.
-          if sudo -n -l "${owner}" local host-resources >/dev/null 2>&1 &&
-             sudo -n "${owner}" local host-resources > "${output}" &&
-             test -f "${output}" && test ! -L "${output}" &&
-             test -s "${output}" &&
-             test "$(stat -c '%s' "${output}")" -le 32768; then
-            echo 'host_vm_resources_capture=BOUNDED_UNAUTHENTICATED'
-          else
-            rm -f "${output}"
-            echo 'host_vm_resources_capture=UNPROVEN_INSTALLED_OWNER'
-          fi
-
-      - name: Capture pending-safe Root Agent signed read-only snapshot
-        # Reuse the ALREADY INSTALLED exact sudoers verb 'local diagnose'.
-        # No new runner root authority, sudoers update, shell capability, or
-        # second transport. The root Agent never writes/replays its journal.
-        if: (success() || failure()) && env.TARGET_KIND == 'VM' && (endsWith(env.COMMAND_BODY, ' --deep') || env.HOST_OPERATION == 'APPLY_PREFLIGHT' || env.HOST_OPERATION == 'RECOVER_PREFLIGHT')
-        shell: bash
-        env:
-          SOURCE_COMMENT_ID: ${{ inputs.source_comment_id }}
-        run: |
-          set -euo pipefail
-          owner=/usr/local/libexec/sing-box/edge-agent
-          result="${RUNNER_TEMP}/host-native-snapshot.pb"
-          capture="${RUNNER_TEMP}/root-snapshot-diagnose.txt"
-          rm -f "${result}" "${capture}"
-          [[ "${SOURCE_COMMENT_ID}" =~ ^[1-9][0-9]{0,19}$ ]]
-          if sudo -n -l "${owner}" local diagnose >/dev/null 2>&1 &&
-             printf '%s' "${SOURCE_COMMENT_ID}" | sudo -n "${owner}" local diagnose > "${capture}"; then
-            # Never print the base64 transport blob in the Actions log.
-            count="$(grep -c '^host_root_signed_snapshot_b64=' "${capture}" || true)"
-            if [[ "${count}" = 1 ]]; then
-              sed -n 's/^host_root_signed_snapshot_b64=//p' "${capture}" |
-                base64 --decode > "${result}"
-              test -s "${result}"
-              test "$(stat -c '%s' "${result}")" -le 65536
-              echo 'host_root_snapshot=SIGNED_BINARY_PENDING_HOSTED_VERIFICATION'
-            else
-              echo 'host_root_snapshot=UNPROVEN_NO_SINGLE_SIGNED_RECORD'
-            fi
-          else
-            echo 'host_root_snapshot=UNPROVEN_INSTALLED_OWNER'
-          fi
-
-      - name: Retain native bounded protobuf as transport evidence
-        # Preserve diagnostic bytes even if host-apply failed after BEGIN.
-        # Never export local journal contents, Docker logs or credentials.
-        if: success() || failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: native-readback-${{ inputs.machine_id }}-${{ inputs.source_comment_id }}
-          path: |
-            ${{ runner.temp }}/host-native-observation.pb
-            ${{ runner.temp }}/host-native-resources.pb
-            ${{ runner.temp }}/host-native-snapshot.pb
-            ${{ runner.temp }}/host-operation/host-result.pb
-          if-no-files-found: ignore
-          retention-days: 30
-
-  report:
-    # An unavailable third runner must not hold the reports for healthy peers.
-    # A runner queued forever cannot produce a PASS; no claim is inferred.
-    needs: observe
-    if: always()
-    runs-on: ubuntu-24.04
-    # The hosted GET-only diagnosis and this native readback update the
-    # same comment. GitHub-native concurrency prevents lost PATCH updates.
-    concurrency:
-      group: host-deep-report-${{ inputs.source_comment_id }}
-      cancel-in-progress: false
-    timeout-minutes: 3
-    permissions:
-      contents: read
-      actions: read
-      issues: write
-    env:
-      GH_TOKEN: ${{ github.token }}
-      TARGET_MACHINE: ${{ inputs.machine_id }}
-      TARGET_KIND: ${{ inputs.kind }}
-      SOURCE_COMMENT_ID: ${{ inputs.source_comment_id }}
-      REPORT_COMMENT_ID: ${{ inputs.report_comment_id }}
-      OBSERVED_RESULT: ${{ needs.observe.result }}
-      COMMAND_BODY: ${{ inputs.command_body }}
-      HOST_OPERATION: ${{ inputs.operation }}
-    steps:
-      - name: Validate optional native protobuf with the exact Rust Fleet Orchestrator
-        id: typed
-        # Failed first-party native runs may still contain valid read-only
-        # artifacts; validate them without upgrading to a signed receipt.
-        if: env.OBSERVED_RESULT == 'success' || env.OBSERVED_RESULT == 'failure'
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "${TARGET_MACHINE}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]
-          name="native-readback-${TARGET_MACHINE}-${SOURCE_COMMENT_ID}"
-          out="${RUNNER_TEMP}/host-native-readback"
-          mkdir -p "${out}"
-          if [[ "${HOST_OPERATION}" != ADMIN ]]; then
-            # Native ADMIN has its own exact authenticated receipt.
-            if ! gh run download "${GITHUB_RUN_ID}" -R "${GITHUB_REPOSITORY}" -n "${name}" -D "${out}" >/dev/null 2>&1; then
-              echo 'typed_verdict=UNAVAILABLE_INSTALLED_OWNER_VERSION' >> "${GITHUB_OUTPUT}"
-              exit 0
-            fi
-            observation="${out}/host-native-observation.pb"
-            test -f "${observation}" && test ! -L "${observation}"
-            test "$(stat -c '%s' "${observation}")" -gt 0
-            test "$(stat -c '%s' "${observation}")" -le 4096
-          fi
-          # Resolve the ONE accepted Git commit and exact immutable runtime,
-          # matching the primary control-plane path. Never execute a
-          # checkout-built or runner-supplied orchestrator.
-          git init -q .
-          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
-          git fetch -q --no-tags --depth=1 origin "${GITHUB_SHA}"
-          git checkout -q --detach FETCH_HEAD
-          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
-          export ACCEPTED_REVISION="${GITHUB_SHA}"
-          export REPOSITORY="${GITHUB_REPOSITORY}"
-          export OUTPUT_DIR="${RUNNER_TEMP}/host-readback-release"
-          bash edge-platform/scripts/resolve_durable_release.sh
-          source "${OUTPUT_DIR}/resolved.env"
-          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
-          owner="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
-          echo "${EDGE_ORCHESTRATOR_SHA256}  ${owner}" | sha256sum --check --status
-          chmod 0755 "${owner}"
-          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
-          # Reparse protected Git desired with the already-pinned compiler;
-          # never consume inventory supplied by the native runner.
-          buf="${RUNNER_TEMP}/host-readback-buf"
-          curl --fail --silent --show-error --location \
-            "https://github.com/bufbuild/buf/releases/download/v1.73.0/buf-Linux-x86_64" -o "${buf}"
-          echo "8f2986298ad08f0cc1bf999b9797b7c383adf32d7edf0f73d6f1e1a701baeac1  ${buf}" | sha256sum --check --status
-          chmod 0755 "${buf}"
-          (cd edge-platform && "${buf}" convert proto/edge/platform/v1/fleet.proto \
-            --type edge.platform.v1.FleetDesiredState \
-            --from "../infra/hosts/hosts.textproto#format=txtpb" \
-            --to "${RUNNER_TEMP}/host-readback-registry.pb#format=binpb")
-          registry="${RUNNER_TEMP}/host-readback-registry.pb"
-          test -s "${registry}"
-          if [[ "${TARGET_KIND}" = VM && "${HOST_OPERATION}" = ADMIN ]]; then
-            admin_name="host-admin-result-${SOURCE_COMMENT_ID}"
-            if ! gh run download "${GITHUB_RUN_ID}" -R "${GITHUB_REPOSITORY}" -n "${admin_name}" -D "${out}" >/dev/null 2>&1; then
-              echo 'typed_verdict=ADMIN_RECEIPT_MISSING_UNKNOWN_NO_REPLAY' >> "${GITHUB_OUTPUT}"
-              exit 0
-            fi
-            intent_dir="${RUNNER_TEMP}/host-admin-verified-intent"
-            mkdir -p "${intent_dir}"
-            gh run download "${GITHUB_RUN_ID}" -R "${GITHUB_REPOSITORY}" \
-              -n "host-intent-${SOURCE_COMMENT_ID}" -D "${intent_dir}"
-            request="${intent_dir}/host-intent.pb"
-            signed="${out}/admin-result.pb"
-            test -f "${request}" && test ! -L "${request}"
-            test -f "${signed}" && test ! -L "${signed}"
-            "${owner}" host --hosts-pb "${registry}" \
-              --hosts-sha256 "$(sha256sum "${registry}" | cut -d' ' -f1)" \
-              --github-output "${GITHUB_OUTPUT}" \
-              admin-result "${TARGET_MACHINE}" --request-path "${request}" \
-              --result-path "${signed}" > "${RUNNER_TEMP}/host-admin-audit.txt"
-            echo 'typed_verdict=ADMIN_RECEIPT_CRYPTO_VERIFIED' >> "${GITHUB_OUTPUT}"
-            {
-              echo '### Independent native admin receipt verification'
-              echo '~~~text'
-              cat "${RUNNER_TEMP}/host-admin-audit.txt"
-              echo '~~~'
-            } >> "${GITHUB_STEP_SUMMARY}"
-            exit 0
-          fi
-          extra=()
-          if [[ "${TARGET_KIND}" = VM && -s "${out}/host-native-resources.pb" ]]; then
-            resource_report="${out}/host-native-resources.pb"
-            test -f "${resource_report}" && test ! -L "${resource_report}"
-            test "$(stat -c '%s' "${resource_report}")" -le 32768
-            extra=(--resources-path "${resource_report}")
-          fi
-          if [[ "${TARGET_KIND}" = VM && -s "${out}/host-native-snapshot.pb" ]]; then
-            signed="${out}/host-native-snapshot.pb"
-            test -f "${signed}" && test ! -L "${signed}"
-            test "$(stat -c '%s' "${signed}")" -le 65536
-            extra+=(--signed-snapshot-path "${signed}" --snapshot-comment-id "${SOURCE_COMMENT_ID}")
-          fi
-          "${owner}" host --hosts-pb "${registry}" \
-            --hosts-sha256 "$(sha256sum "${registry}" | cut -d' ' -f1)" \
-            --github-output "${GITHUB_OUTPUT}" \
-            readback "${TARGET_MACHINE}" --observation-path "${observation}" "${extra[@]}" \
-            > "${RUNNER_TEMP}/host-readback-result.txt"
-          result="${RUNNER_TEMP}/host-readback-result.txt"
-          # One exact Rust parser also audits the native transaction result.
-          # This is correlation, never authenticated SYSTEM/root attestation.
-          if [[ "${TARGET_KIND}" = VM && "${HOST_OPERATION}" = APPLY_PREFLIGHT &&
-                -s "${out}/host-operation/host-result.pb" ]]; then
-            intent_dir="${RUNNER_TEMP}/host-readback-intent"
-            install -d -m 0700 "${intent_dir}"
-            gh run download "${GITHUB_RUN_ID}" -R "${GITHUB_REPOSITORY}" \
-              -n "host-intent-${SOURCE_COMMENT_ID}" -D "${intent_dir}"
-            intent="${intent_dir}/host-intent.pb"
-            test -f "${intent}" && test ! -L "${intent}"
-            test "$(stat -c '%s' "${intent}")" -gt 0
-            test "$(stat -c '%s' "${intent}")" -le 4096
-            "${owner}" host --hosts-pb "${registry}" \
-              --hosts-sha256 "$(sha256sum "${registry}" | cut -d' ' -f1)" \
-              --github-output "${GITHUB_OUTPUT}" \
-              native-result "${TARGET_MACHINE}" --intent-path "${intent}" \
-              --result-path "${out}/host-operation/host-result.pb" \
-              > "${RUNNER_TEMP}/host-native-result-correlation.txt"
-            audit="${RUNNER_TEMP}/host-native-result-correlation.txt"
-            {
-              echo '### Native owner cryptographically verified receipt'
-              echo '~~~text'
-              cat "${audit}"
-              echo '~~~'
-            } >> "${GITHUB_STEP_SUMMARY}"
-          fi
-          {
-            echo '### Exact typed Host readback (UNAUTHENTICATED runner copy)'
-            echo '~~~text'
-            cat "${result}"
-            echo '~~~'
-          } >> "${GITHUB_STEP_SUMMARY}"
-
-      - name: Return bounded result for this ONE native owner
-        if: always()
-        env:
-          TYPED_OUTCOME: ${{ steps.typed.outcome }}
-          TYPED_VERDICT: ${{ steps.typed.outputs.typed_verdict }}
-          NATIVE_RECEIPT_PROOF: ${{ steps.typed.outputs.native_receipt_proof }}
-          ADMIN_RECEIPT_PROOF: ${{ steps.typed.outputs.admin_receipt_proof }}
-          NATIVE_SNAPSHOT_PROOF: ${{ steps.typed.outputs.native_snapshot_proof }}
-        shell: bash
-        run: |
-          set -euo pipefail
-          [[ "${SOURCE_COMMENT_ID}" =~ ^[0-9]+$ ]]
-          [[ "${TARGET_MACHINE}" =~ ^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$ ]]
-          case "${TARGET_KIND}" in WINDOWS|VM) ;; *) exit 1 ;; esac
-          case "${OBSERVED_RESULT}" in
-            success) result=NATIVE_DIAGNOSTIC_EXECUTED ;;
-            failure) result=NATIVE_DIAGNOSTIC_FAILED ;;
-            cancelled) result=NATIVE_DIAGNOSTIC_CANCELLED ;;
-            skipped) result=OWNER_NOT_OBSERVED ;;
-            *) result=UNKNOWN_NOT_ACCEPTED ;;
-          esac
-          native_note='Native mutation authority: NONE. A read-only observation is not an authenticated owner receipt.'
-          if [[ "${TARGET_KIND}" = VM && "${HOST_OPERATION}" = RECOVER_PREFLIGHT ]]; then
-            # Operator requested a code/trust-only refresh; the same root owner
-            # chose exact main, without any resource effect or journal replay.
-            native_note='VM code/trust owner refresh attempted under root lock. No Docker, journal, DNS, firewall or credential resource mutation. Runner-copied diagnosis is UNAUTHENTICATED and never lifts pending/NO_REPLAY.'
-            if [[ "${OBSERVED_RESULT}" = success ]]; then
-              result=ROOT_CODE_ONLY_REFRESH_COMPLETED_NO_RESOURCE_AUTHORITY
-            else
-              result=ROOT_CODE_ONLY_REFRESH_BLOCKED_NO_REPLAY
-            fi
-          fi
-          if [[ "${TARGET_KIND}" = VM && "${HOST_OPERATION}" = ADMIN ]]; then
-            native_note='Native ADMIN: no independent signed result established.'
-            if [[ "${TYPED_OUTCOME}" = success && "${ADMIN_RECEIPT_PROOF}" = VERIFIED_EXIT_ZERO ]]; then
-              result=ADMIN_SIGNED_EXIT_ZERO
-              native_note='Ed25519 native receipt verified against exact Git request; physical poststate requires independent observation.'
-            elif [[ "${TYPED_OUTCOME}" = success && "${ADMIN_RECEIPT_PROOF}" = VERIFIED_EXIT_NONZERO ]]; then
-              result=ADMIN_SIGNED_EXIT_NONZERO
-              native_note='Ed25519 native receipt verified; program returned a nonzero exit status.'
-            elif [[ "${TYPED_OUTCOME}" = success && "${ADMIN_RECEIPT_PROOF}" = VERIFIED_STDIN_INCOMPLETE_NO_REPLAY ]]; then
-              result=ADMIN_SIGNED_STDIN_INCOMPLETE_NO_REPLAY
-              native_note='Native root receipt proves incomplete stdin; terminal preserved, pending remains, no automatic retry.'
-            elif [[ "${TYPED_OUTCOME}" = success && "${ADMIN_RECEIPT_PROOF}" = VERIFIED_OUTPUT_INCOMPLETE_NO_REPLAY ]]; then
-              result=ADMIN_SIGNED_OUTPUT_INCOMPLETE_NO_REPLAY
-              native_note='Direct child exited but inherited output pipe did not reach EOF; signed partial output only, no replay.'
-            elif [[ "${TYPED_OUTCOME}" = success && "${ADMIN_RECEIPT_PROOF}" = VERIFIED_EXIT_124_OR_137_AMBIGUOUS ]]; then
-              result=ADMIN_SIGNED_EXIT_AMBIGUOUS
-              native_note='Ed25519 receipt verifies exit 124/137, not whether timeout or application supplied the code.'
-            elif [[ "${TYPED_OUTCOME}" = success && "${ADMIN_RECEIPT_PROOF}" = VERIFIED_NO_EXIT ]]; then
-              result=ADMIN_SIGNED_NO_EXIT
-              native_note='Signed result exists but normal child completion is not proved; no replay.'
-            else
-              result=ADMIN_UNVERIFIED_UNKNOWN_NO_REPLAY
-            fi
-          fi
-          if [[ "${TARGET_KIND}" = VM && "${HOST_OPERATION}" = APPLY_PREFLIGHT ]]; then
-            # Only the exact Rust Ed25519 verifier can upgrade this result.
-            # A successful runner step or unsigned readback never can.
-            native_note='Native VM transaction: remote authenticated receipt UNPROVEN.'
-            if [[ "${TYPED_OUTCOME}" = success &&
-                  "${NATIVE_RECEIPT_PROOF}" = VERIFIED_PHYSICAL ]]; then
-              result=NATIVE_RECEIPT_VERIFIED_PHYSICAL
-              native_note='Git-pinned Ed25519 native-owner receipt verified against exact intent and native physical readback; external TLS/auth/egress acceptance remains separate.'
-            elif [[ "${TYPED_OUTCOME}" = success &&
-                    "${NATIVE_RECEIPT_PROOF}" = OBSERVED_ONLY ]]; then
-              result=NATIVE_RECEIPT_OBSERVED_ONLY
-              native_note='Git-pinned Ed25519 native-owner receipt verified; no physical mutation poststate accepted.'
-            else
-              result=NATIVE_EXECUTION_NOT_VERIFIED_NO_REPLAY
-            fi
-          fi
-          run_url="https://github.com/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}"
-          if [[ "${TYPED_OUTCOME}" = failure ]]; then
-            typed=REJECTED_EXACT_RUST_VALIDATION
-          else
-            typed="${TYPED_VERDICT:-UNPROVEN_NO_TYPED_READBACK}"
-          fi
-          [[ "${typed}" =~ ^[A-Z0-9_]{1,96}$ ]]
-          body="$(printf 'Host native result for operator command #%s\n\nHost: `%s`\nKind: `%s`\nResult: `%s`\nTyped readback: `%s`\nEvidence: %s\n\n%s\n' \
-            "${SOURCE_COMMENT_ID}" "${TARGET_MACHINE}" "${TARGET_KIND}" "${result}" "${typed}" "${run_url}" "${native_note}")"
-          # Display ONLY Rust-verified root-owner evidence, never the
-          # untrusted base64 record, raw Docker log or private journal bytes.
-          if [[ "${TARGET_KIND}" = VM && "${TYPED_OUTCOME}" = success ]]; then
-            report="${RUNNER_TEMP}/host-readback-result.txt"
-            if [[ -f "${report}" && ! -L "${report}" ]] &&
-               grep -Fxq 'host_native_snapshot_proof=VERIFIED_ROOT_SIGNED_READ_ONLY' "${report}"; then
-              signed_lines="$(grep -E '^host_native_snapshot_(pending_count|pending_operation|pending_resource|pending_request_sha256|pending_original_release_sha256|pending_original_desired_sha256|pending_begin_record_sha256|pending_action|line2_failure_code|line2_restarts|line2_exit|line2_log_sha256|bundle_expected_sha256|bundle_observed_sha256|bundle_matches|verdict|runtime_ready_proven|runtime_ready|reason_count|reason_[0-9]{1,2}_code|replay_allowed|mutations)=' "${report}" | head -n 40)"
-              body="${body}$(printf '\nVerified Root Agent read-only diagnostic (Ed25519, same exact Git/ReleaseSet; NO replay permission):\n~~~text\n%s\n~~~\n' "${signed_lines}")"
-            elif [[ -f "${report}" && ! -L "${report}" ]] &&
-                 grep -Fxq 'host_native_snapshot_proof=VERIFIED_ROOT_SIGNED_STALE_RELEASE_READ_ONLY' "${report}"; then
-              # Keep old installed-owner signature evidence visible, but do
-              # NOT let the current-Git readiness reconciler promote it.
-              stale_lines="$(grep -E '^host_native_snapshot_(release_parity|installed_release_sha256|desired_release_sha256|release_provenance|verdict|runtime_ready_proven|runtime_ready|pending_count|replay_allowed|mutations)=' "${report}" | head -n 12)"
-              body="${body}$(printf '\nRoot Ed25519 VERIFIED HISTORICAL installed ReleaseSet only; CURRENT Git parity and physical GO UNPROVEN. No mutation/replay authority:\n~~~text\n%s\n~~~\n' "${stale_lines}")"
-            fi
-          fi
-          # Summarize only Rust-validated, bounded, structurally correlated
-          # per-container evidence. Never parse arbitrary runner protobuf.
-          if [[ "${TYPED_OUTCOME}" = success && "${TARGET_KIND}" = VM &&
-                ( "${COMMAND_BODY}" = "/host status ${TARGET_MACHINE} --deep" ||
-                  "${HOST_OPERATION}" = APPLY_PREFLIGHT ) ]]; then
-            report="${RUNNER_TEMP}/host-readback-result.txt"
-            if [[ -f "${report}" && ! -L "${report}" ]] &&
-               grep -q '^host_vm_resources_count=' "${report}" &&
-               grep -Fxq 'host_vm_resources_origin=RUNNER_COPIED_UNAUTHENTICATED' "${report}"; then
-              per_resource="$(awk '/^host_vm_resource=/{print; if (++n == 24) exit}' "${report}")"
-              counts="$(grep -E '^host_vm_resources_(count|problem_count)=' "${report}")"
-              body="${body}$(printf '\nVM containers / post-failure evidence (Rust-validated; runner copy UNAUTHENTICATED; no mutation authority):\n~~~text\n%s\n%s\n~~~\n' "${counts}" "${per_resource}")"
-            else
-              body="${body}$(printf '\nVM containers: UNPROVEN — no accepted installed-owner resource report.\n')"
-            fi
-          fi
-          if [[ "${COMMAND_BODY}" == "/host status ${TARGET_MACHINE} --deep" &&
-                "${REPORT_COMMENT_ID}" =~ ^[1-9][0-9]{0,19}$ ]]; then
-            # Reuse the original correlation, not a second diagnostics
-            # thread. The native payload stays explicitly UNAUTHENTICATED
-            # unless the existing Rust verifier proves a signed receipt.
-            original="$(gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${REPORT_COMMENT_ID}" --jq '.body')"
-            (( ${#original} > 0 && ${#original} < 20000 ))
-            # Early provider/runner GET is a historical observation. Once the
-            # exact hosted Rust verifier authenticates a ROOT-signed snapshot,
-            # reconcile the SAME JSON report instead of leaving RUNNER_BUSY
-            # and ROOT_UNPROVEN above proved native facts. This is presentation
-            # only: no HostIntent, terminal APPLY receipt or replay authority.
-            if [[ "${TYPED_OUTCOME}" = success &&
-                  ( "${NATIVE_SNAPSHOT_PROOF}" = VERIFIED_ROOT_SIGNED_READ_ONLY ||
-                    "${NATIVE_SNAPSHOT_PROOF}" = VERIFIED_ROOT_SIGNED_STALE_RELEASE_READ_ONLY ) ]]; then
-              audit="${RUNNER_TEMP}/host-readback-result.txt"
-              test -f "${audit}" && test ! -L "${audit}"
-              grep -Fxq "host_native_snapshot_proof=${NATIVE_SNAPSHOT_PROOF}" "${audit}"
-              original_file="${RUNNER_TEMP}/host-deep-preliminary.txt"
-              printf '%s' "${original}" > "${original_file}"
-              original="$(python3 edge-platform/scripts/host_diagnostic_summary.py --merge-signed \
-                "${original_file}" "${audit}" "${SOURCE_COMMENT_ID}" "${GITHUB_SHA}")"
-            fi
-            appendix="$(printf '\n\n### Native observation — same operation, independent runner\n\n%s\n' "${body}")"
-            gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${REPORT_COMMENT_ID}" \
-              -f "body=${original}${appendix}" >/dev/null
-          else
-            gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/1/comments" -f "body=${body}" >/dev/null
-          fi
-          if [[ "${TYPED_OUTCOME}" = failure ]]; then
-            echo 'HOST_TYPED_READBACK_REJECTED' >&2
-            exit 1
-          fi
-) {
+              $env:TARGET_MACHINE -cne 'sing-box-windows-lab' -or
+              $env:COMMAND_BODY -cnotmatch '^/host (start|stop) sing-box-windows-lab$') {
             throw 'HOST_WINDOWS_NATIVE_TRANSPORT_IDENTITY_INVALID'
           }
-          $sid = [Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-          if ($sid -cne 'S-1-5-20') {
+          if ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -cne 'S-1-5-20') {
             throw 'HOST_WINDOWS_RUNNER_MUST_REMAIN_NETWORKSERVICE'
           }
           $root = 'C:\sing-box'
-          $doctor = Join-Path $root 'bin\edge-diagnostic.exe'
-          $current = Join-Path $root 'current.pb'
-          # Old installed owner must be refreshed by its FIRST-USE owner,
-          # not bypassed by a runner copying fresh executables into C:\sing-box.
-          $native = Join-Path $env:RUNNER_TEMP 'windows-signed-intent\host-intent.pb'
-          if (-not (Test-Path -LiteralPath $native -PathType Leaf) -or
-              ((Get-Item -LiteralPath $native).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
-            throw 'HOST_WINDOWS_NATIVE_INTENT_MISSING_OR_REPARSE'
+          $intent = Join-Path $env:RUNNER_TEMP 'windows-signed-intent\host-intent.pb'
+          if (-not (Test-Path -LiteralPath $intent -PathType Leaf) -or
+              ((Get-Item -LiteralPath $intent).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            throw 'HOST_WINDOWS_NATIVE_INTENT_NOT_REGULAR'
           }
-          $length = (Get-Item -LiteralPath $native).Length
-          if ($length -lt 1 -or $length -gt 8192) { throw 'HOST_WINDOWS_NATIVE_INTENT_SIZE_INVALID' }
-          $obs = Join-Path $env:RUNNER_TEMP 'windows-signed-preflight.pb'
-          & $doctor host-observe $current > $obs
+          $size = (Get-Item -LiteralPath $intent).Length
+          if ($size -lt 1 -or $size -gt 8192) { throw 'HOST_WINDOWS_NATIVE_INTENT_SIZE_INVALID' }
+          # Stale installed binary cannot interpret/authorize this intent.
+          # Never install code or change SCM as a runner workaround.
+          $observation = Join-Path $env:RUNNER_TEMP 'windows-owner-capability.pb'
+          & (Join-Path $root 'bin\edge-diagnostic.exe') host-observe (Join-Path $root 'current.pb') > $observation
           if ($LASTEXITCODE -ne 0 -or
-              -not (Test-Path -LiteralPath $obs -PathType Leaf) -or
-              (Get-Item -LiteralPath $obs).Length -lt 1 -or
-              (Get-Item -LiteralPath $obs).Length -gt 4096) {
-            throw 'HOST_WINDOWS_NATIVE_INSTALLED_OWNER_VERSION_UNPROVEN'
+              -not (Test-Path -LiteralPath $observation -PathType Leaf) -or
+              (Get-Item -LiteralPath $observation).Length -lt 1 -or
+              (Get-Item -LiteralPath $observation).Length -gt 4096) {
+            throw 'HOST_WINDOWS_INSTALLED_SYSTEM_OWNER_UPGRADE_REQUIRED'
           }
           $task = Get-ScheduledTask -TaskName 'EdgePlatformPrivilegedDispatch' -ErrorAction Stop
           if ($task.Principal.UserId -cnotin @('SYSTEM','NT AUTHORITY\SYSTEM','S-1-5-18') -or
-              $task.State -eq 'Disabled' -or
-              @($task.Actions).Count -ne 1 -or
+              $task.State -eq 'Disabled' -or @($task.Actions).Count -ne 1 -or
               [string]$task.Actions[0].Arguments -cnotmatch 'privileged-dispatch') {
-            throw 'HOST_WINDOWS_NATIVE_SYSTEM_TASK_IDENTITY_UNPROVEN'
+            throw 'HOST_WINDOWS_SYSTEM_TASK_IDENTITY_INVALID'
           }
           $destination = Join-Path $root 'exchange\requests\host-intent.pb'
-          $bytes = [IO.File]::ReadAllBytes($native)
-          # FileMode.CreateNew: request_id may NEVER be overwritten. A lost
-          # task ACK or prior BEGIN makes this operation UNKNOWN_NO_REPLAY.
+          $bytes = [IO.File]::ReadAllBytes($intent)
+          # Exclusive, fsynced CREATE: never overwrite an uncertain request.
           $stream = [IO.File]::Open($destination,
             [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
-          try { $stream.Write($bytes,0,$bytes.Length); $stream.Flush($true) }
+          try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) }
           finally { $stream.Dispose() }
-          # Wake ONLY pre-existing exact SYSTEM task. No arbitrary PowerShell
-          # command, task creation, service start or ACL change from runner.
           Start-ScheduledTask -TaskName 'EdgePlatformPrivilegedDispatch' -ErrorAction Stop
           $receipt = Join-Path $root 'exchange\results\host-receipt.pb'
-          $outputDir = Join-Path $env:RUNNER_TEMP 'windows-system-result'
-          New-Item -ItemType Directory -Path $outputDir -Force | Out-Null
-          # A bounded TaskScheduler completion check; no blind retry of SCM.
-          # The Rust hosted verifier MUST independently authenticate bytes.
+          $folder = Join-Path $env:RUNNER_TEMP 'windows-system-result'
+          New-Item -ItemType Directory -Path $folder -Force | Out-Null
+          # Task state is observed after dispatch. Timeout means NO_REPLAY.
           $deadline = (Get-Date).AddSeconds(90)
           do {
-            $state = (Get-ScheduledTask -TaskName 'EdgePlatformPrivilegedDispatch' -ErrorAction Stop).State
-            if ($state -ne 'Running') { break }
+            $status = (Get-ScheduledTask -TaskName 'EdgePlatformPrivilegedDispatch' -ErrorAction Stop).State
+            if ($status -ne 'Running') { break }
             Start-Sleep -Milliseconds 300
           } while ((Get-Date) -lt $deadline)
-          if ($state -eq 'Running') { throw 'HOST_WINDOWS_SYSTEM_OUTCOME_UNKNOWN_NO_REPLAY' }
+          if ($status -eq 'Running') { throw 'HOST_WINDOWS_SYSTEM_ACK_UNKNOWN_NO_REPLAY' }
           if (-not (Test-Path -LiteralPath $receipt -PathType Leaf) -or
               (Get-Item -LiteralPath $receipt).Length -lt 1 -or
               (Get-Item -LiteralPath $receipt).Length -gt 8192) {
-            throw 'HOST_WINDOWS_SYSTEM_RECEIPT_MISSING_UNKNOWN_NO_REPLAY'
+            throw 'HOST_WINDOWS_SYSTEM_RECEIPT_MISSING_NO_REPLAY'
           }
-          Copy-Item -LiteralPath $receipt -Destination (Join-Path $outputDir 'host-result.pb') -ErrorAction Stop
-          Write-Output 'host_windows_receipt=RUNNER_COPIED_PENDING_INDEPENDENT_GIT_PINNED_ED25519_VERIFICATION'
+          Copy-Item -LiteralPath $receipt -Destination (Join-Path $folder 'host-result.pb')
+          Write-Output 'host_windows_receipt=UNTRUSTED_COPY_REQUIRE_HOSTED_RUST_VERIFIER'
 
-      - name: Preserve Windows SYSTEM receipt bytes for hosted Rust verification
+      - name: Preserve Windows signed owner result for hosted Rust
         if: (success() || failure()) && env.TARGET_KIND == 'WINDOWS' && env.HOST_OPERATION == 'APPLY_PREFLIGHT' && (startsWith(env.COMMAND_BODY, '/host start ') || startsWith(env.COMMAND_BODY, '/host stop '))
         uses: actions/upload-artifact@v4
         with:
