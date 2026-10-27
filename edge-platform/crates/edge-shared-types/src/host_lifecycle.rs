@@ -1555,3 +1555,121 @@ mod tests {
         assert!(decode_host_intent(&vec![0u8; MAX_HOST_INTENT_BYTES + 1]).is_err());
     }
 }
+
+#[cfg(test)]
+mod partial_vm_recovery_tests {
+    use super::*;
+    use crate::{
+        FleetHostKind, FleetNativeOwnerState, FleetNativeReleaseProof,
+        FleetVmBootstrapPhase, FleetVmConfigProof, FleetVmContainer,
+        FleetVmCredentialReadback, FleetVmCredentialState, FleetVmDesiredGraph,
+        FleetVmDesiredNetwork, FleetVmDesiredResource, FleetVmInstalledPolicyStatus,
+        FleetVmObservedReason, FleetVmResourceReadback, FleetVmResourceReport,
+    };
+
+    fn fixture() -> (FleetHost, crate::FleetNativeObservation) {
+        // Generic registered resource: recovery is not coupled to WARP names.
+        let identity = FleetVmContainer {
+            container_name: "my-proxy".into(),
+            compose_project: "my-app".into(),
+            compose_service: "proxy".into(),
+        };
+        let host = FleetHost {
+            machine_id: "vm-a".into(),
+            kind: FleetHostKind::Vm as i32,
+            vm_containers: vec![identity.clone()],
+            ..Default::default()
+        };
+        let image = format!("example.invalid/proxy@sha256:{}", "a".repeat(64));
+        let report = FleetVmResourceReport {
+            schema_version: 2,
+            machine_id: host.machine_id.clone(),
+            observed_at_unix: 100,
+            resources: vec![FleetVmResourceReadback {
+                resource: Some(identity.clone()),
+                present: true,
+                ownership_proven: true,
+                container_id: "b".repeat(64),
+                image: image.clone(),
+                running_proven: true,
+                running: false,
+                reason_code: "STOPPED".into(),
+                observed_reason: FleetVmObservedReason::Stopped as i32,
+                config_proof: FleetVmConfigProof::NotRunning as i32,
+                ..Default::default()
+            }],
+            installed_policy_graph: Some(FleetVmDesiredGraph {
+                schema_version: 1,
+                machine_id: host.machine_id.clone(),
+                resources: vec![FleetVmDesiredResource {
+                    resource: Some(identity),
+                    image_ref: image,
+                    ..Default::default()
+                }],
+                networks: vec![FleetVmDesiredNetwork {
+                    compose_project: "my-app".into(),
+                    network_name: "my_app_net".into(),
+                    driver: "bridge".into(),
+                    attached_services: vec!["proxy".into()],
+                }],
+            }),
+            installed_policy_status: FleetVmInstalledPolicyStatus::Valid as i32,
+            credential: Some(FleetVmCredentialReadback {
+                state: FleetVmCredentialState::ActiveLocalValid as i32,
+                active_generation: 42,
+                ..Default::default()
+            }),
+            bootstrap_phase: FleetVmBootstrapPhase::Unspecified as i32,
+            ..Default::default()
+        };
+        let observed = crate::FleetNativeObservation {
+            schema_version: 1,
+            host_kind: host.kind,
+            owner_state: FleetNativeOwnerState::Stopped as i32,
+            release_proof: FleetNativeReleaseProof::ApplicationBundle as i32,
+            observed_at_unix: 100,
+            observed_release_sha256: vec![3; 32],
+            runtime_ready_proven: true,
+            runtime_ready: false,
+            reason_codes: vec!["CONTAINER_NOT_RUNNING".into()],
+            vm_recovery_resources: Some(report),
+        };
+        (host, observed)
+    }
+
+    #[test]
+    fn generic_stopped_owned_container_is_proven_partial_not_success() {
+        let (host, observed) = fixture();
+        assert!(known_partial_vm_resource_baseline(&host, &observed));
+        assert!(validate_native_observation(&observed).is_ok());
+    }
+
+    #[test]
+    fn partial_recovery_rejects_unknown_or_foreign_effects() {
+        let (host, baseline) = fixture();
+        let mut changed = baseline.clone();
+        changed.vm_recovery_resources.as_mut().unwrap().resources[0].ownership_proven = false;
+        assert!(!known_partial_vm_resource_baseline(&host, &changed));
+        let mut changed = baseline.clone();
+        changed.vm_recovery_resources.as_mut().unwrap().resources[0].container_id = "c".repeat(63);
+        assert!(!known_partial_vm_resource_baseline(&host, &changed));
+        let mut changed = baseline.clone();
+        changed.vm_recovery_resources.as_mut().unwrap().resources[0].image = "foreign/image".into();
+        assert!(!known_partial_vm_resource_baseline(&host, &changed));
+        let mut changed = baseline.clone();
+        changed.vm_recovery_resources.as_mut().unwrap().installed_policy_status = 0;
+        assert!(!known_partial_vm_resource_baseline(&host, &changed));
+        let mut changed = baseline.clone();
+        changed.vm_recovery_resources.as_mut().unwrap().resources[0].running_proven = false;
+        assert!(!known_partial_vm_resource_baseline(&host, &changed));
+        let mut changed = baseline.clone();
+        changed.reason_codes.push("VM_DOCKER_UNAVAILABLE".into());
+        assert!(!known_partial_vm_resource_baseline(&host, &changed));
+        let mut changed = baseline.clone();
+        changed.vm_recovery_resources.as_mut().unwrap().observed_at_unix += 1;
+        assert!(!known_partial_vm_resource_baseline(&host, &changed));
+        let mut changed = baseline;
+        changed.vm_recovery_resources = None;
+        assert!(!known_partial_vm_resource_baseline(&host, &changed));
+    }
+}
