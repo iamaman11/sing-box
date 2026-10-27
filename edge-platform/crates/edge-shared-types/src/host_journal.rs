@@ -671,6 +671,28 @@ fn verify_read_only_recovery_state(
     }
 }
 
+/// During historical read-only adjudication, a proven transport/datapath
+/// failure cannot erase otherwise proven native ownership.  This is NOT
+/// authority to mark the old APPLY VERIFIED or to replay its effects.
+/// Resource, image, compose, Docker and unknown reasons remain blocking.
+fn known_runtime_only_historical_reasons(observed: &crate::FleetNativeObservation) -> bool {
+    if observed.reason_codes.is_empty() {
+        return true;
+    }
+    observed.runtime_ready_proven
+        && !observed.runtime_ready
+        && observed.reason_codes.iter().all(|code| {
+            matches!(
+                code.as_str(),
+                "DIRECT_EGRESS_FAILED"
+                    | "WARP_EGRESS_FAILED"
+                    | "TCP_PORTS_MISSING"
+                    | "UDP_PORTS_MISSING"
+                    | "MESH_RUNTIME_UNREADY"
+            )
+        })
+}
+
 /// Classify an old, different Git release as incomplete. The new
 /// root-signed RECOVER only proves a *known current baseline*, not that the
 /// historical effect succeeded. No Docker command can be dispatched here.
@@ -691,7 +713,7 @@ fn verify_historical_partial_recovery_state(
         || observed.host_kind != host.kind
         || observed.observed_at_unix > now_unix.saturating_add(60)
         || now_unix.saturating_sub(observed.observed_at_unix) > 300
-        || !observed.reason_codes.is_empty()
+        || !known_runtime_only_historical_reasons(observed)
         || observed.owner_state != FleetNativeOwnerState::Running as i32
         || observed.release_proof != FleetNativeReleaseProof::ApplicationBundle as i32
         // Broken network/proxy readiness is the problem a fresh replacement
@@ -1329,6 +1351,88 @@ mod tests {
         );
         assert!(native_scope_pending_path(&dir, &old).exists());
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
+        // A physical WARP failure is NOT an unproven Docker effect.
+        degraded.reason_codes = vec!["WARP_EGRESS_FAILED".into()];
+        assert_eq!(
+            verify_historical_partial_recovery_state(
+                &host,
+                &degraded,
+                &bound.runtime_release_sha256,
+                1020,
+            ),
+            Ok(crate::FleetHostResultReason::HistoricalPartialRequiresFreshApply)
+        );
+        // Other native/resource/unknown causes never free the journal gate.
+        for reason in [
+            "CONTAINER_NOT_RUNNING",
+            "EXACT_IMAGE_OR_CONTAINER_UNREADY",
+            "DOCKER_UNAVAILABLE",
+            "OTHER_UNPROVEN",
+        ] {
+            degraded.reason_codes = vec![reason.into()];
+            assert_eq!(
+                verify_historical_partial_recovery_state(
+                    &host,
+                    &degraded,
+                    &bound.runtime_release_sha256,
+                    1020,
+                ),
+                Err("HOST_NATIVE_HISTORICAL_BASELINE_UNPROVEN_NO_REPLAY")
+            );
+        }
+        degraded.reason_codes = vec!["WARP_EGRESS_FAILED".into()];
+        degraded.runtime_ready_proven = false;
+        assert_eq!(
+            verify_historical_partial_recovery_state(
+                &host,
+                &degraded,
+                &bound.runtime_release_sha256,
+                1020,
+            ),
+            Err("HOST_NATIVE_HISTORICAL_BASELINE_UNPROVEN_NO_REPLAY")
+        );
+        degraded.runtime_ready_proven = true;
+        // Recovery with a known degraded datapath can terminalize the old
+        // UNKNOWN only as INCOMPLETE, never as VERIFIED.
+        let recovered_degraded = resolve(&degraded).unwrap();
+        assert_eq!(recovered_degraded.state, FleetHostResultState::Observed as i32);
+        let prior_id = journal_hex(old.operation_id.as_bytes());
+        let original_terminal = crate::host_lifecycle::decode_host_result(
+            &fs::read(dir.join(format!("{prior_id}.incomplete.pb"))).unwrap()
+        )
+        .unwrap();
+        assert_eq!(original_terminal.state, FleetHostResultState::UnknownNoReplay as i32);
+        assert!(!original_terminal.physical_readback);
+        assert!(!dir.join(format!("{prior_id}.verified.pb")).exists());
+        assert!(!native_scope_pending_path(&dir, &old).exists());
+        fs::remove_dir_all(&dir).unwrap();
+        // The existing scenario below exercises a separate fresh journal.
+        let dir = std::env::temp_dir().join(format!(
+            "sing-box-partial-recovery-continued-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        fs::create_dir(&dir).unwrap();
+        fs::write(native_scope_pending_path(&dir, &old), old.encode_to_vec()).unwrap();
+        fs::write(
+            dir.join(format!("{}.pb", journal_hex(old.operation_id.as_bytes()))),
+            begin.encode_to_vec(),
+        ).unwrap();
+        let resolve = |observed: &crate::FleetNativeObservation| {
+            resolve_pending_native_recovery_once(
+                &current,
+                &authorization,
+                &registry,
+                &host,
+                &bound,
+                pair.public_key().as_ref(),
+                &host.machine_id,
+                host.kind,
+                1020,
+                &dir,
+                observed,
+            )
+        };
         let mut wrong_release = observation.clone();
         wrong_release.observed_release_sha256 = vec![4; 32];
         assert_eq!(
