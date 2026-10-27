@@ -503,10 +503,7 @@ pub(super) async fn recreate_native_vm_container_once(
             }
             Err(error) => {
                 observed = NativeVmStopReadback::Unavailable;
-                state_fields = format!(
-                    "INSPECT_API_{}",
-                    native_docker_api_failure_class(&error)
-                );
+                state_fields = format!("INSPECT_API_{}", native_docker_api_failure_class(&error));
             }
         }
         if observed == NativeVmStopReadback::Stopped
@@ -589,17 +586,35 @@ mod native_vm_stop_diagnostics_tests {
 
     #[test]
     fn one_docker_api_classifier_covers_every_lifecycle_phase_without_daemon_text() {
-        assert_eq!(native_docker_http_failure_class(400), "DAEMON_REQUEST_INVALID");
+        assert_eq!(
+            native_docker_http_failure_class(400),
+            "DAEMON_REQUEST_INVALID"
+        );
         assert_eq!(native_docker_http_failure_class(401), "DAEMON_AUTH_DENIED");
         assert_eq!(native_docker_http_failure_class(403), "DAEMON_AUTH_DENIED");
-        assert_eq!(native_docker_http_failure_class(404), "DAEMON_OBJECT_NOT_FOUND");
+        assert_eq!(
+            native_docker_http_failure_class(404),
+            "DAEMON_OBJECT_NOT_FOUND"
+        );
         assert_eq!(native_docker_http_failure_class(408), "DAEMON_TIMEOUT");
-        assert_eq!(native_docker_http_failure_class(409), "DAEMON_RESOURCE_CONFLICT");
+        assert_eq!(
+            native_docker_http_failure_class(409),
+            "DAEMON_RESOURCE_CONFLICT"
+        );
         assert_eq!(native_docker_http_failure_class(429), "DAEMON_RATE_LIMITED");
-        assert_eq!(native_docker_http_failure_class(500), "DAEMON_SERVER_FAILURE");
-        assert_eq!(native_docker_http_failure_class(503), "DAEMON_SERVER_FAILURE");
+        assert_eq!(
+            native_docker_http_failure_class(500),
+            "DAEMON_SERVER_FAILURE"
+        );
+        assert_eq!(
+            native_docker_http_failure_class(503),
+            "DAEMON_SERVER_FAILURE"
+        );
         assert_eq!(native_docker_http_failure_class(504), "DAEMON_TIMEOUT");
-        assert_eq!(native_docker_http_failure_class(418), "DAEMON_HTTP_UNCLASSIFIED");
+        assert_eq!(
+            native_docker_http_failure_class(418),
+            "DAEMON_HTTP_UNCLASSIFIED"
+        );
         // The daemon's arbitrary response text must never be returned.
         let error = BollardError::DockerResponseServerError {
             status_code: 409,
