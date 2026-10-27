@@ -325,9 +325,7 @@ fn validate_native_action_kind(
     use crate::{FleetHostAction as Action, FleetHostKind as Kind};
     match (kind, action) {
         (Kind::Vm, Action::Apply | Action::Recover)
-        | (Kind::Windows, Action::Apply | Action::Recover | Action::Start | Action::Stop) => {
-            Ok(())
-        }
+        | (Kind::Windows, Action::Apply | Action::Recover | Action::Start | Action::Stop) => Ok(()),
         (Kind::Windows, Action::SetMode) => {
             // The pure planner deliberately blocks ManagedTun until its own
             // physical gate exists. Never use START or APPLY as an alias.
@@ -345,14 +343,10 @@ fn validate_native_action_step(
     use crate::{FleetHostAction as Action, FleetHostKind as Kind, FleetHostPlannedStep as Step};
     validate_native_action_kind(kind, action)?;
     match (kind, action) {
-        (Kind::Windows, Action::Start)
-            if !matches!(step, Step::Start | Step::Noop) =>
-        {
+        (Kind::Windows, Action::Start) if !matches!(step, Step::Start | Step::Noop) => {
             Err("HOST_WINDOWS_SIGNED_START_STEP_MISMATCH")
         }
-        (Kind::Windows, Action::Stop)
-            if !matches!(step, Step::Stop | Step::Noop) =>
-        {
+        (Kind::Windows, Action::Stop) if !matches!(step, Step::Stop | Step::Noop) => {
             Err("HOST_WINDOWS_SIGNED_STOP_STEP_MISMATCH")
         }
         _ => Ok(()),
@@ -462,10 +456,7 @@ where
             .iter()
             .find(|host| host.machine_id == intent.machine_id && host.kind == intent.kind)
             .ok_or("HOST_INTENT_UNKNOWN_MACHINE")?;
-        crate::host_lifecycle::verify_git_worker_signer_pin(
-            selected,
-            pinned_worker_public_key,
-        )?;
+        crate::host_lifecycle::verify_git_worker_signer_pin(selected, pinned_worker_public_key)?;
     }
     verify_host_authorization(intent, authorization, pinned_worker_public_key, now_unix)?;
     let action = FleetHostAction::try_from(intent.action)
@@ -2294,20 +2285,21 @@ mod tests {
     #[test]
     fn windows_signed_stop_requires_exact_git_signer_and_owner_capability_before_begin() {
         use crate::host_lifecycle::{digest_host_desired, host_authorization_payload};
-        use crate::{
-            encode_host_registry, FleetHost, FleetHostTarget, FleetNativeObservation,
-            FleetNativeOwnerState, FleetNativeReleaseProof, HostRegistry,
-        };
         use crate::release::v1::ReleaseSet;
+        use crate::{
+            FleetHost, FleetHostTarget, FleetNativeObservation, FleetNativeOwnerState,
+            FleetNativeReleaseProof, HostRegistry, encode_host_registry,
+        };
         let rng = SystemRandom::new();
-        let signer = Ed25519KeyPair::from_pkcs8(
-            Ed25519KeyPair::generate_pkcs8(&rng).unwrap().as_ref(),
-        )
-        .unwrap();
+        let signer =
+            Ed25519KeyPair::from_pkcs8(Ed25519KeyPair::generate_pkcs8(&rng).unwrap().as_ref())
+                .unwrap();
         let host = FleetHost {
             machine_id: "windows-exact".into(),
             kind: FleetHostKind::Windows as i32,
-            owner: Some(managed_host::Owner::WindowsRunnerName("DESKTOP-EXACT".into())),
+            owner: Some(managed_host::Owner::WindowsRunnerName(
+                "DESKTOP-EXACT".into(),
+            )),
             windows_runner_label: "windows-exact".into(),
             desired_spec_path: "infra/production/production.textproto".into(),
             target: Some(FleetHostTarget {
@@ -2357,7 +2349,10 @@ mod tests {
         let dir = std::env::temp_dir().join(format!(
             "sing-box-windows-signed-test-{}-{}",
             std::process::id(),
-            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
         ));
         fs::create_dir(&dir).unwrap();
         let observe = || {
@@ -2373,8 +2368,17 @@ mod tests {
         };
         let call = |pin: &[u8]| {
             execute_after_protected_owner_check_once(
-                &intent, &auth, &registry_pb, spec, &release_pb, None, pin,
-                "windows-exact", FleetHostKind::Windows as i32, 1020, &dir,
+                &intent,
+                &auth,
+                &registry_pb,
+                spec,
+                &release_pb,
+                None,
+                pin,
+                "windows-exact",
+                FleetHostKind::Windows as i32,
+                1020,
+                &dir,
                 observe,
                 |step| {
                     assert_eq!(step, FleetHostPlannedStep::Stop);
@@ -2398,17 +2402,37 @@ mod tests {
 
     #[test]
     fn signed_native_windows_actions_never_reinterpret_planned_effects() {
-        use crate::{FleetHostAction as Action, FleetHostKind as Kind, FleetHostPlannedStep as Step};
-        assert_eq!(validate_native_action_kind(Kind::Vm, Action::Start),
-            Err("HOST_NATIVE_EXECUTION_ACTION_NOT_ALLOWED"));
-        assert_eq!(validate_native_action_kind(Kind::Vm, Action::SetMode),
-            Err("HOST_NATIVE_EXECUTION_ACTION_NOT_ALLOWED"));
-        assert_eq!(validate_native_action_kind(Kind::Windows, Action::SetMode),
-            Err("HOST_WINDOWS_SIGNED_MODE_EFFECT_NOT_ACCEPTED"));
-        assert_eq!(validate_native_action_step(Kind::Windows, Action::Start, Step::Start), Ok(()));
-        assert_eq!(validate_native_action_step(Kind::Windows, Action::Stop, Step::Stop), Ok(()));
-        assert_eq!(validate_native_action_step(Kind::Windows, Action::Start, Step::Noop), Ok(()));
-        assert_eq!(validate_native_action_step(Kind::Windows, Action::Stop, Step::Noop), Ok(()));
+        use crate::{
+            FleetHostAction as Action, FleetHostKind as Kind, FleetHostPlannedStep as Step,
+        };
+        assert_eq!(
+            validate_native_action_kind(Kind::Vm, Action::Start),
+            Err("HOST_NATIVE_EXECUTION_ACTION_NOT_ALLOWED")
+        );
+        assert_eq!(
+            validate_native_action_kind(Kind::Vm, Action::SetMode),
+            Err("HOST_NATIVE_EXECUTION_ACTION_NOT_ALLOWED")
+        );
+        assert_eq!(
+            validate_native_action_kind(Kind::Windows, Action::SetMode),
+            Err("HOST_WINDOWS_SIGNED_MODE_EFFECT_NOT_ACCEPTED")
+        );
+        assert_eq!(
+            validate_native_action_step(Kind::Windows, Action::Start, Step::Start),
+            Ok(())
+        );
+        assert_eq!(
+            validate_native_action_step(Kind::Windows, Action::Stop, Step::Stop),
+            Ok(())
+        );
+        assert_eq!(
+            validate_native_action_step(Kind::Windows, Action::Start, Step::Noop),
+            Ok(())
+        );
+        assert_eq!(
+            validate_native_action_step(Kind::Windows, Action::Stop, Step::Noop),
+            Ok(())
+        );
         for forbidden in [Step::Stop, Step::ReplaceRelease, Step::Install] {
             assert_eq!(
                 validate_native_action_step(Kind::Windows, Action::Start, forbidden),
@@ -2421,8 +2445,14 @@ mod tests {
                 Err("HOST_WINDOWS_SIGNED_STOP_STEP_MISMATCH")
             );
         }
-        assert_eq!(validate_native_action_step(Kind::Vm, Action::Apply, Step::Start), Ok(()));
-        assert_eq!(validate_native_action_step(Kind::Vm, Action::Recover, Step::Noop), Ok(()));
+        assert_eq!(
+            validate_native_action_step(Kind::Vm, Action::Apply, Step::Start),
+            Ok(())
+        );
+        assert_eq!(
+            validate_native_action_step(Kind::Vm, Action::Recover, Step::Noop),
+            Ok(())
+        );
     }
 
     #[cfg(unix)]
