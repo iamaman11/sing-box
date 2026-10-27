@@ -2327,10 +2327,13 @@ fn host_lifecycle_admission(
     );
     println!("host_intent_state=PREPARED_NOT_AUTHORIZED");
     println!("host_native_mutation_authorized=false");
-    println!("host_requested_mode={:?}", match operation {
-        HostLifecycleOperation::SetMode(mode) => mode,
-        _ => FleetHostMode::Unspecified,
-    });
+    println!(
+        "host_requested_mode={:?}",
+        match operation {
+            HostLifecycleOperation::SetMode(mode) => mode,
+            _ => FleetHostMode::Unspecified,
+        }
+    );
     println!("host_machine_id={machine_id}");
     println!("host_kind={kind:?}");
     println!("host_runner_registration={registration}");
@@ -3208,8 +3211,7 @@ mod tests {
         );
         let mut vm_target = desired.clone();
         vm_target.hosts[0].kind = ManagedHostKind::Vm as i32;
-        vm_target.hosts[0].owner =
-            Some(managed_host::Owner::VmMachineId("vm-test".into()));
+        vm_target.hosts[0].owner = Some(managed_host::Owner::VmMachineId("vm-test".into()));
         assert_eq!(
             host_lifecycle_admission(
                 &vm_target,
