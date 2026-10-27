@@ -687,6 +687,12 @@ jobs:
                grep -Fxq 'host_native_snapshot_proof=VERIFIED_ROOT_SIGNED_READ_ONLY' "${report}"; then
               signed_lines="$(grep -E '^host_native_snapshot_(pending_count|pending_operation|pending_resource|pending_request_sha256|pending_original_release_sha256|pending_original_desired_sha256|pending_begin_record_sha256|pending_action|line2_failure_code|line2_restarts|line2_exit|line2_log_sha256|bundle_expected_sha256|bundle_observed_sha256|bundle_matches|verdict|runtime_ready_proven|runtime_ready|reason_count|reason_[0-9]{1,2}_code|replay_allowed|mutations)=' "${report}" | head -n 40)"
               body="${body}$(printf '\nVerified Root Agent read-only diagnostic (Ed25519, same exact Git/ReleaseSet; NO replay permission):\n~~~text\n%s\n~~~\n' "${signed_lines}")"
+            elif [[ -f "${report}" && ! -L "${report}" ]] &&
+                 grep -Fxq 'host_native_snapshot_proof=VERIFIED_ROOT_SIGNED_STALE_RELEASE_READ_ONLY' "${report}"; then
+              # Keep old installed-owner signature evidence visible, but do
+              # NOT let the current-Git readiness reconciler promote it.
+              stale_lines="$(grep -E '^host_native_snapshot_(release_parity|installed_release_sha256|desired_release_sha256|release_provenance|verdict|runtime_ready_proven|runtime_ready|pending_count|replay_allowed|mutations)=' "${report}" | head -n 12)"
+              body="${body}$(printf '\nRoot Ed25519 VERIFIED HISTORICAL installed ReleaseSet only; CURRENT Git parity and physical GO UNPROVEN. No mutation/replay authority:\n~~~text\n%s\n~~~\n' "${stale_lines}")"
             fi
           fi
           # Summarize only Rust-validated, bounded, structurally correlated
