@@ -9,6 +9,8 @@ mod credential_access_bootstrap;
 mod credential_transition;
 mod error;
 mod initial_line1_witness;
+#[cfg(windows)]
+mod windows_signed_host;
 
 use clap::Parser;
 use command_dispatch::run;
@@ -524,6 +526,12 @@ fn submit_privileged_request(
 async fn dispatch_privileged_request(
     install_root: &Path,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // The SAME installed SYSTEM Task accepts bounded Worker-signed native
+    // HostIntent, never a runner's legacy mutation code or arbitrary PowerShell.
+    #[cfg(windows)]
+    if windows_signed_host::dispatch_if_present(install_root).await? {
+        return Ok(());
+    }
     let request_path = privileged_request_path(install_root);
     let bytes = match fs::read(&request_path) {
         Ok(bytes) => bytes,
