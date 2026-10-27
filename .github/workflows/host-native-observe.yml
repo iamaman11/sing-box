@@ -724,10 +724,11 @@ jobs:
             # and ROOT_UNPROVEN above proved native facts. This is presentation
             # only: no HostIntent, terminal APPLY receipt or replay authority.
             if [[ "${TYPED_OUTCOME}" = success &&
-                  "${NATIVE_SNAPSHOT_PROOF}" = VERIFIED_ROOT_SIGNED_READ_ONLY ]]; then
+                  ( "${NATIVE_SNAPSHOT_PROOF}" = VERIFIED_ROOT_SIGNED_READ_ONLY ||
+                    "${NATIVE_SNAPSHOT_PROOF}" = VERIFIED_ROOT_SIGNED_STALE_RELEASE_READ_ONLY ) ]]; then
               audit="${RUNNER_TEMP}/host-readback-result.txt"
               test -f "${audit}" && test ! -L "${audit}"
-              grep -Fxq 'host_native_snapshot_proof=VERIFIED_ROOT_SIGNED_READ_ONLY' "${audit}"
+              grep -Fxq "host_native_snapshot_proof=${NATIVE_SNAPSHOT_PROOF}" "${audit}"
               original_file="${RUNNER_TEMP}/host-deep-preliminary.txt"
               printf '%s' "${original}" > "${original_file}"
               original="$(python3 edge-platform/scripts/host_diagnostic_summary.py --merge-signed \

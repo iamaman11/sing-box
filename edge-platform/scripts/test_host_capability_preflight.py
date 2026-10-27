@@ -362,6 +362,109 @@ class TestSignedNativeDeepReportFusion(TestCase):
         self.assertFalse(data["physical_accepted"])
         self.assertEqual(result.count(marker), 1)
 
+    @staticmethod
+    def stale_installed_sample():
+        body, native, op, sha, marker = TestSignedNativeDeepReportFusion.sample()
+        # One *already* Rust-verified historical owner snapshot, no pending.
+        native = native.replace(
+            "VERIFIED_ROOT_SIGNED_READ_ONLY",
+            "VERIFIED_ROOT_SIGNED_STALE_RELEASE_READ_ONLY",
+        ).replace(
+            "host_native_snapshot_pending_count=1",
+            "host_native_snapshot_pending_count=0",
+        ).replace(
+            "host_native_snapshot_pending_operation=issue1-comment-6406287261",
+            "host_native_snapshot_pending_operation=",
+        ).replace(
+            "host_native_snapshot_pending_resource=sing-box",
+            "host_native_snapshot_pending_resource=",
+        ).replace(
+            "host_native_snapshot_pending_request_sha256=" + "4" * 64,
+            "host_native_snapshot_pending_request_sha256=",
+        )
+        native += "\n" + "\n".join([
+            "host_native_snapshot_release_parity=INSTALLED_RELEASE_DRIFT",
+            "host_native_snapshot_installed_release_sha256=" + "a" * 64,
+            "host_native_snapshot_desired_release_sha256=" + "f" * 64,
+            "host_native_snapshot_release_provenance=ROOT_SIGNED_INSTALLED_CLAIM_ONLY",
+            "host_native_snapshot_verdict=INSTALLED_RELEASE_DRIFT_CURRENT_STATE_UNPROVEN",
+            "host_native_snapshot_runtime_ready_proven=true",
+            "host_native_snapshot_runtime_ready=true",
+            "host_native_snapshot_reason_count=0",
+        ])
+        return body, native, op, sha, marker
+
+    def test_stale_root_signed_snapshot_updates_one_g2_report_without_current_go(self):
+        body, native, op, sha, marker = self.stale_installed_sample()
+        merged = summary.merge_rust_verified_native(
+            body, native, op.removeprefix("issue1-comment-"), sha,
+        )
+        data = json.loads(merged.split(marker, 1)[1].split("\n```", 1)[0])
+        self.assertEqual(merged.count(marker), 1)
+        self.assertEqual(data["phase"], "INSTALLED_RELEASE_READ_ONLY")
+        self.assertEqual(data["status"], "UNPROVEN")
+        self.assertEqual(data["owner"], "ROOT_AGENT")
+        self.assertEqual(data["reason"], "INSTALLED_RELEASE_DRIFT")
+        self.assertEqual(data["next_action"],
+                         "VERIFY_CURRENT_RELEASE_AND_PLAN_SIGNED_OWNER_REFRESH")
+        self.assertEqual(data["sources"]["runner"], "RUNNER_BUSY")
+        self.assertEqual(data["sources"]["root_agent"],
+                         "VERIFIED_ROOT_SIGNED_STALE_RELEASE_READ_ONLY")
+        self.assertEqual(data["sources"]["signed_receipt"],
+                         "UNPROVEN_NO_MUTATION_RECEIPT")
+        self.assertEqual(data["native"]["installed_release_sha256"], "a" * 64)
+        self.assertEqual(data["native"]["release_parity"], "INSTALLED_RELEASE_DRIFT")
+        self.assertTrue(data["native"]["runtime"]["ready"])
+        self.assertEqual(data["native"]["pending_count"], 0)
+        self.assertFalse(data["replay_allowed"])
+        self.assertFalse(data["mutation_authorized"])
+        self.assertFalse(data["physical_accepted"])
+        self.assertEqual(data["release_set_sha256"], "f" * 64)
+
+    def test_stale_snapshots_require_exact_verified_digests_and_preserve_git_block(self):
+        body, native, op, sha, marker = self.stale_installed_sample()
+        comment = op.removeprefix("issue1-comment-")
+        for altered in (
+            native.replace("host_native_snapshot_release_parity=INSTALLED_RELEASE_DRIFT",
+                           "host_native_snapshot_release_parity=MATCHED_CURRENT"),
+            native.replace("host_native_snapshot_desired_release_sha256=" + "f" * 64,
+                           "host_native_snapshot_desired_release_sha256=" + "b" * 64),
+            native.replace("host_native_snapshot_installed_release_sha256=" + "a" * 64,
+                           "host_native_snapshot_installed_release_sha256=" + "f" * 64),
+            native.replace("ROOT_SIGNED_INSTALLED_CLAIM_ONLY",
+                           "GIT_PIN_ONLY"),
+            native.replace("INSTALLED_RELEASE_DRIFT_CURRENT_STATE_UNPROVEN",
+                           "LOCAL_OBSERVATION_ONLY_NOT_PHYSICAL_ACCEPTANCE"),
+            native.replace("host_native_snapshot_mutations=0",
+                           "host_native_snapshot_mutations=1"),
+            native.replace("host_native_snapshot_replay_allowed=false",
+                           "host_native_snapshot_replay_allowed=true"),
+            native.replace("host_native_snapshot_proof=VERIFIED_ROOT_SIGNED_STALE_RELEASE_READ_ONLY",
+                           "host_native_snapshot_proof=UNPROVEN"),
+            native.replace(op, "issue1-comment-123"),
+        ):
+            with self.subTest(altered=altered[-96:]):
+                with self.assertRaises(ValueError):
+                    summary.merge_rust_verified_native(body, altered, comment, sha)
+        with self.assertRaises(ValueError):
+            summary.merge_rust_verified_native(body, native, comment, "b" * 40)
+        # Git admission BLOCKED is a separate owner and cannot be erased by
+        # authenticated installed-but-historical VM observation.
+        structured = json.loads(body.split(marker, 1)[1].split("\n```", 1)[0])
+        structured.update(
+            status="BLOCKED", phase="GIT_READINESS",
+            reason="HOST_GIT_DESIRED_INVALID", owner="GIT_OWNER",
+        )
+        prefix, tail = body.split(marker, 1)
+        _, suffix = tail.split("\n```", 1)
+        blocked = prefix + marker + json.dumps(structured) + "\n```" + suffix
+        merged = summary.merge_rust_verified_native(blocked, native, comment, sha)
+        data = json.loads(merged.split(marker, 1)[1].split("\n```", 1)[0])
+        self.assertEqual(data["status"], "BLOCKED")
+        self.assertEqual(data["reason"], "HOST_GIT_DESIRED_INVALID")
+        self.assertEqual(data["sources"]["root_agent"],
+                         "VERIFIED_ROOT_SIGNED_STALE_RELEASE_READ_ONLY")
+
     def test_unsigned_or_wrong_scope_never_upgrades_report(self):
         body, native, op, sha, _ = self.sample()
         correct_id = op.removeprefix("issue1-comment-")
