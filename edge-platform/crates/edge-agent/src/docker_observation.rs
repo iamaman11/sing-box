@@ -458,6 +458,20 @@ fn exact_owned_network_attachment(
     })
 }
 
+fn exact_owned_network_identity(
+    observed: Option<&HashMap<String, bollard::models::EndpointSettings>>,
+    compose_network_name: &str,
+    expected_network_id: &str,
+) -> bool {
+    observed.is_some_and(|networks| {
+        networks.len() == 1
+            && networks
+                .get(compose_network_name)
+                .and_then(|endpoint| endpoint.network_id.as_deref())
+                == Some(expected_network_id)
+    })
+}
+
 /// A stopped WARP has no active bridge endpoint on some Docker engines.
 /// Its name/Compose labels and immutable ID were independently verified; do
 /// not reject a cleared endpoint, but never admit a foreign attached network.
@@ -541,11 +555,12 @@ async fn missing_owned_vm_service_aliases(
     Ok(missing)
 }
 
-async fn verify_vm_network_attachments(
+async fn verify_vm_network_attachments_with_policy(
     docker: &Docker,
     host: &FleetHost,
     owned: &[OwnedVmContainer],
     network_id: &str,
+    require_alias: bool,
 ) -> Result<(), String> {
     let project = host
         .vm_containers
@@ -565,14 +580,36 @@ async fn verify_vm_network_attachments(
             .and_then(|settings| settings.networks.as_ref());
         let network_proven = if container.service == "warp-egress" && !container.running {
             exact_stopped_warp_network_attachment(networks, &name, network_id)
-        } else {
+        } else if require_alias {
             exact_owned_network_attachment(networks, &name, network_id, &container.service)
+        } else {
+            exact_owned_network_identity(networks, &name, network_id)
         };
         if inspect.id.as_deref() != Some(container.id.as_str()) || !network_proven {
             return Err("HOST_VM_NETWORK_ATTACHMENT_UNPROVEN".into());
         }
     }
     Ok(())
+}
+
+async fn verify_vm_network_attachments(
+    docker: &Docker,
+    host: &FleetHost,
+    owned: &[OwnedVmContainer],
+    network_id: &str,
+) -> Result<(), String> {
+    verify_vm_network_attachments_with_policy(docker, host, owned, network_id, true).await
+}
+
+/// A signed REPLACE may admit a missing service alias, but not a foreign
+/// network, unregistered container or changed immutable Docker ID.
+async fn verify_vm_network_identity_before_repair(
+    docker: &Docker,
+    host: &FleetHost,
+    owned: &[OwnedVmContainer],
+    network_id: &str,
+) -> Result<(), String> {
+    verify_vm_network_attachments_with_policy(docker, host, owned, network_id, false).await
 }
 
 /// Exact Docker network ID + Compose labels, from the engine itself. A
