@@ -256,9 +256,7 @@ pub(super) fn probe_warp_service_local() -> bool {
 
 /// Same native WARP probe as before; now report the FIRST failed predicate
 /// without duplicating probes or publishing curl/warp-cli stdout.
-pub(super) fn probe_warp_egress_failure(
-    running_containers: &[String],
-) -> Option<&'static str> {
+pub(super) fn probe_warp_egress_failure(running_containers: &[String]) -> Option<&'static str> {
     if !warp_client_connected() {
         return Some("WARP client not connected");
     }
