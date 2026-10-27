@@ -2292,6 +2292,111 @@ mod tests {
     }
 
     #[test]
+    fn windows_signed_stop_requires_exact_git_signer_and_owner_capability_before_begin() {
+        use crate::host_lifecycle::{digest_host_desired, host_authorization_payload};
+        use crate::{
+            encode_host_registry, FleetHost, FleetHostTarget, FleetNativeObservation,
+            FleetNativeOwnerState, FleetNativeReleaseProof, HostRegistry,
+        };
+        use crate::release::v1::ReleaseSet;
+        let rng = SystemRandom::new();
+        let signer = Ed25519KeyPair::from_pkcs8(
+            Ed25519KeyPair::generate_pkcs8(&rng).unwrap().as_ref(),
+        )
+        .unwrap();
+        let host = FleetHost {
+            machine_id: "windows-exact".into(),
+            kind: FleetHostKind::Windows as i32,
+            owner: Some(managed_host::Owner::WindowsRunnerName("DESKTOP-EXACT".into())),
+            windows_runner_label: "windows-exact".into(),
+            desired_spec_path: "infra/production/production.textproto".into(),
+            target: Some(FleetHostTarget {
+                run_state: FleetHostRunState::Stopped as i32,
+                windows_mode: FleetHostMode::ProxyOnly as i32,
+            }),
+            worker_authority_public_key: signer.public_key().as_ref().to_vec(),
+            ..Default::default()
+        };
+        let registry = HostRegistry {
+            schema_version: 1,
+            hosts: vec![host.clone()],
+        };
+        let registry_pb = encode_host_registry(&registry).unwrap();
+        let spec = b"exact checked-out Windows desired";
+        let release_pb = ReleaseSet {
+            schema_version: 7,
+            source_revision: "a".repeat(40),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let intent = FleetHostIntent {
+            schema_version: 1,
+            machine_id: host.machine_id.clone(),
+            kind: host.kind,
+            resource_id: "sing-box".into(),
+            operation_id: "issue1-comment-881".into(),
+            action: FleetHostAction::Stop as i32,
+            registry_sha256: digest(&SHA256, &registry_pb).as_ref().to_vec(),
+            desired_sha256: digest_host_desired(&host, spec).unwrap(),
+            release_set_sha256: digest(&SHA256, &release_pb).as_ref().to_vec(),
+            requested_at_unix: 1000,
+            ..Default::default()
+        };
+        let mut auth = FleetHostAuthorization {
+            schema_version: 1,
+            key_id: "worker-v1".into(),
+            operation_id: intent.operation_id.clone(),
+            issued_at_unix: 1000,
+            expires_at_unix: 1100,
+            ..Default::default()
+        };
+        auth.ed25519_signature = signer
+            .sign(&host_authorization_payload(&intent, &auth))
+            .as_ref()
+            .to_vec();
+        let dir = std::env::temp_dir().join(format!(
+            "sing-box-windows-signed-test-{}-{}",
+            std::process::id(),
+            SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_nanos()
+        ));
+        fs::create_dir(&dir).unwrap();
+        let observe = || {
+            Ok(FleetNativeObservation {
+                schema_version: 1,
+                host_kind: FleetHostKind::Windows as i32,
+                observed_at_unix: 1020,
+                owner_state: FleetNativeOwnerState::Running as i32,
+                release_proof: FleetNativeReleaseProof::ActivationRecord as i32,
+                observed_release_sha256: intent.release_set_sha256.clone(),
+                ..Default::default()
+            })
+        };
+        let call = |pin: &[u8]| {
+            execute_after_protected_owner_check_once(
+                &intent, &auth, &registry_pb, spec, &release_pb, None, pin,
+                "windows-exact", FleetHostKind::Windows as i32, 1020, &dir,
+                observe,
+                |step| {
+                    assert_eq!(step, FleetHostPlannedStep::Stop);
+                    Err("HOST_WINDOWS_SIGNED_SYSTEM_HANDLER_MISSING")
+                },
+                |_step| panic!("unauthorized Windows SCM mutation"),
+            )
+        };
+        assert_eq!(
+            call(&[9; 32]).unwrap_err(),
+            "HOST_WORKER_SIGNER_DIFFERS_FROM_PROTECTED_GIT"
+        );
+        assert_eq!(
+            call(signer.public_key().as_ref()).unwrap_err(),
+            "HOST_WINDOWS_SIGNED_SYSTEM_HANDLER_MISSING"
+        );
+        assert!(!native_scope_pending_path(&dir, &intent).exists());
+        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn signed_native_windows_actions_never_reinterpret_planned_effects() {
         use crate::{FleetHostAction as Action, FleetHostKind as Kind, FleetHostPlannedStep as Step};
         assert_eq!(validate_native_action_kind(Kind::Vm, Action::Start),
