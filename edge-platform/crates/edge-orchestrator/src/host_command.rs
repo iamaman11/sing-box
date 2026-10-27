@@ -3169,6 +3169,126 @@ mod tests {
         let recover = std::fs::read_to_string(&file).unwrap();
         assert!(recover.contains("operation=RECOVER_PREFLIGHT"));
         assert!(!recover.contains("admitted_at_unix="));
+        // A Windows stopped ProxyOnly target accepts only matching typed
+        // lifecycle proposals. No operation is ever an SCM effect here.
+        std::fs::remove_file(&intent_path).unwrap();
+        std::fs::remove_file(intent_path.with_extension("receipt.pb")).unwrap();
+        assert_eq!(
+            host_lifecycle_admission(
+                &desired,
+                "windows-test",
+                HostLifecycleOperation::Start,
+                &release,
+                &registry_sha,
+                None,
+                Some(&file),
+                Some(125),
+                Some(&intent_path),
+                None,
+            )
+            .unwrap_err(),
+            "HOST_ACTION_CONFLICTS_WITH_DESIRED"
+        );
+        assert!(!intent_path.exists());
+        assert_eq!(
+            host_lifecycle_admission(
+                &desired,
+                "windows-test",
+                HostLifecycleOperation::SetMode(FleetHostMode::ManagedTun),
+                &release,
+                &registry_sha,
+                None,
+                Some(&file),
+                Some(126),
+                Some(&intent_path),
+                None,
+            )
+            .unwrap_err(),
+            "HOST_ACTION_CONFLICTS_WITH_DESIRED"
+        );
+        let mut vm_target = desired.clone();
+        vm_target.hosts[0].kind = ManagedHostKind::Vm as i32;
+        vm_target.hosts[0].owner =
+            Some(managed_host::Owner::VmMachineId("vm-test".into()));
+        assert_eq!(
+            host_lifecycle_admission(
+                &vm_target,
+                "windows-test",
+                HostLifecycleOperation::Stop,
+                &release,
+                &registry_sha,
+                None,
+                Some(&file),
+                Some(127),
+                Some(&intent_path),
+                None,
+            )
+            .unwrap_err(),
+            "HOST_WINDOWS_LIFECYCLE_KIND_REQUIRED"
+        );
+        std::fs::write(&file, "").unwrap();
+        host_lifecycle_admission(
+            &desired,
+            "windows-test",
+            HostLifecycleOperation::Stop,
+            &release,
+            &registry_sha,
+            None,
+            Some(&file),
+            Some(128),
+            Some(&intent_path),
+            None,
+        )
+        .unwrap();
+        let stop = edge_shared_types::host_lifecycle::decode_host_intent(
+            &std::fs::read(&intent_path).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(stop.action, FleetHostAction::Stop as i32);
+        assert_eq!(stop.requested_mode, FleetHostMode::Unspecified as i32);
+        let stop_output = std::fs::read_to_string(&file).unwrap();
+        assert!(stop_output.contains("host_requested_operation=STOP"));
+        assert!(stop_output.contains("host_native_mutation_authorized=false"));
+        assert!(stop_output.contains("operation=APPLY_PREFLIGHT"));
+        // Duplicate source comment / path never overwrites a first proposal.
+        assert_eq!(
+            host_lifecycle_admission(
+                &desired,
+                "windows-test",
+                HostLifecycleOperation::Stop,
+                &release,
+                &registry_sha,
+                None,
+                Some(&file),
+                Some(128),
+                Some(&intent_path),
+                None,
+            )
+            .unwrap_err(),
+            "HOST_INTENT_ALREADY_EXISTS_OR_UNWRITABLE"
+        );
+        std::fs::remove_file(&intent_path).unwrap();
+        std::fs::remove_file(intent_path.with_extension("receipt.pb")).unwrap();
+        std::fs::write(&file, "").unwrap();
+        host_lifecycle_admission(
+            &desired,
+            "windows-test",
+            HostLifecycleOperation::SetMode(FleetHostMode::ProxyOnly),
+            &release,
+            &registry_sha,
+            None,
+            Some(&file),
+            Some(129),
+            Some(&intent_path),
+            None,
+        )
+        .unwrap();
+        let mode = edge_shared_types::host_lifecycle::decode_host_intent(
+            &std::fs::read(&intent_path).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(mode.action, FleetHostAction::SetMode as i32);
+        assert_eq!(mode.requested_mode, FleetHostMode::ProxyOnly as i32);
         assert!(
             host_lifecycle_admission(
                 &desired,
