@@ -269,6 +269,39 @@ pub(super) fn native_gateway_create_body(
     })
 }
 
+/// One classification for native Docker API failures, irrespective of the
+/// lifecycle phase or resource. Docker daemon error messages can carry
+/// credentials, paths and container configuration: classify ONLY the typed
+/// HTTP status, never copy the message into logs, receipts or comments.
+fn native_docker_http_failure_class(status_code: u16) -> &'static str {
+    match status_code {
+        400 | 422 => "DAEMON_REQUEST_INVALID",
+        401 | 403 => "DAEMON_AUTH_DENIED",
+        404 => "DAEMON_OBJECT_NOT_FOUND",
+        408 | 504 => "DAEMON_TIMEOUT",
+        409 | 423 => "DAEMON_RESOURCE_CONFLICT",
+        429 => "DAEMON_RATE_LIMITED",
+        500..=599 => "DAEMON_SERVER_FAILURE",
+        _ => "DAEMON_HTTP_UNCLASSIFIED",
+    }
+}
+
+fn native_docker_api_failure_class(error: &BollardError) -> &'static str {
+    match error {
+        BollardError::DockerResponseServerError { status_code, .. } => {
+            native_docker_http_failure_class(*status_code)
+        }
+        _ => "CLIENT_TRANSPORT_OR_PROTOCOL_UNPROVEN",
+    }
+}
+
+fn record_native_docker_api_failure(phase: &str, service: &str, error: &BollardError) {
+    eprintln!(
+        "host_native_docker_api phase={phase} service={service} failure_class={}",
+        native_docker_api_failure_class(error)
+    );
+}
+
 /// Closed, non-secret Docker STOP observation. Only the exact registered
 /// container ID and Compose owner may satisfy the transition; this result
 /// NEVER authorizes a second STOP or clears a pending root journal.
@@ -347,7 +380,10 @@ pub(super) async fn recreate_native_vm_container_once(
     let inspected = docker
         .inspect_container(previous_id, None)
         .await
-        .map_err(|_| "HOST_VM_NATIVE_RECREATE_OLD_ID_UNAVAILABLE_NO_REPLAY")?;
+        .map_err(|error| {
+            record_native_docker_api_failure("INSPECT_PRESTATE", service, &error);
+            "HOST_VM_NATIVE_RECREATE_OLD_ID_UNAVAILABLE_NO_REPLAY".to_owned()
+        })?;
     let state = inspected
         .state
         .as_ref()
@@ -377,7 +413,10 @@ pub(super) async fn recreate_native_vm_container_once(
     docker
         .inspect_image(expected_image)
         .await
-        .map_err(|_| "HOST_VM_NATIVE_RECREATE_PINNED_IMAGE_MISSING_NO_REPLAY")?;
+        .map_err(|error| {
+            record_native_docker_api_failure("INSPECT_IMAGE", service, &error);
+            "HOST_VM_NATIVE_RECREATE_PINNED_IMAGE_MISSING_NO_REPLAY".to_owned()
+        })?;
     // Docker may lose the STOP ACK or take time to transition. At most
     // ONE STOP is permitted by the signed owner journal; an already stopped
     // owned WARP never receives STOP again. A bounded series of
@@ -407,6 +446,12 @@ pub(super) async fn recreate_native_vm_container_once(
     } else {
         "ERROR"
     };
+    let ack_class = stop_ack
+        .as_ref()
+        .and_then(|result| result.as_ref().err())
+        .map(native_docker_api_failure_class)
+        .unwrap_or("NONE");
+    let stop_api_elapsed_ms = stop_started.elapsed().as_millis();
     let observation_deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(3);
     let mut observed = NativeVmStopReadback::Unavailable;
     let mut inspections = 0u32;
@@ -456,9 +501,12 @@ pub(super) async fn recreate_native_vm_container_once(
                         .and_then(|p| p.name.as_ref()),
                 );
             }
-            Err(_) => {
+            Err(error) => {
                 observed = NativeVmStopReadback::Unavailable;
-                state_fields = "INSPECT_API_ERROR".to_owned();
+                state_fields = format!(
+                    "INSPECT_API_{}",
+                    native_docker_api_failure_class(&error)
+                );
             }
         }
         if observed == NativeVmStopReadback::Stopped
@@ -473,7 +521,7 @@ pub(super) async fn recreate_native_vm_container_once(
     // journal stays authoritative for no-replay; CI logs are diagnostics,
     // never accepted as a signed physical success receipt.
     eprintln!(
-        "host_native_docker_stop service={service} container_id={previous_id} ack={ack} readback={observed:?} inspections={inspections} elapsed_ms={} {state_fields} next_action={}",
+        "host_native_docker_stop service={service} container_id={previous_id} ack={ack} ack_class={ack_class} readback={observed:?} inspections={inspections} stop_api_elapsed_ms={stop_api_elapsed_ms} elapsed_ms={} {state_fields} next_action={}",
         stop_started.elapsed().as_millis(),
         if observed == NativeVmStopReadback::Stopped {
             "CONTINUE_REGISTERED_TRANSITION"
@@ -490,14 +538,20 @@ pub(super) async fn recreate_native_vm_container_once(
             None::<bollard::query_parameters::RemoveContainerOptions>,
         )
         .await
-        .map_err(|_| "HOST_VM_NATIVE_RECREATE_DELETE_UNCERTAIN_NO_REPLAY")?;
+        .map_err(|error| {
+            record_native_docker_api_failure("REMOVE", service, &error);
+            "HOST_VM_NATIVE_RECREATE_DELETE_UNCERTAIN_NO_REPLAY".to_owned()
+        })?;
     let options = bollard::query_parameters::CreateContainerOptionsBuilder::default()
         .name(&selector.container_name)
         .build();
     let created = docker
         .create_container(Some(options), body)
         .await
-        .map_err(|_| "HOST_VM_NATIVE_RECREATE_CREATE_UNCERTAIN_NO_REPLAY")?;
+        .map_err(|error| {
+            record_native_docker_api_failure("CREATE", service, &error);
+            "HOST_VM_NATIVE_RECREATE_CREATE_UNCERTAIN_NO_REPLAY".to_owned()
+        })?;
     if created.id.len() != 64 || !created.id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
         return Err("HOST_VM_NATIVE_RECREATE_NEW_ID_UNPROVEN_NO_REPLAY".into());
     }
@@ -507,7 +561,10 @@ pub(super) async fn recreate_native_vm_container_once(
             None::<bollard::query_parameters::StartContainerOptions>,
         )
         .await
-        .map_err(|_| "HOST_VM_NATIVE_RECREATE_START_UNCERTAIN_NO_REPLAY")?;
+        .map_err(|error| {
+            record_native_docker_api_failure("START", service, &error);
+            "HOST_VM_NATIVE_RECREATE_START_UNCERTAIN_NO_REPLAY".to_owned()
+        })?;
     Ok(())
 }
 
@@ -529,6 +586,30 @@ pub(super) async fn recreate_native_gateway_once(
 #[cfg(test)]
 mod native_vm_stop_diagnostics_tests {
     use super::*;
+
+    #[test]
+    fn one_docker_api_classifier_covers_every_lifecycle_phase_without_daemon_text() {
+        assert_eq!(native_docker_http_failure_class(400), "DAEMON_REQUEST_INVALID");
+        assert_eq!(native_docker_http_failure_class(401), "DAEMON_AUTH_DENIED");
+        assert_eq!(native_docker_http_failure_class(403), "DAEMON_AUTH_DENIED");
+        assert_eq!(native_docker_http_failure_class(404), "DAEMON_OBJECT_NOT_FOUND");
+        assert_eq!(native_docker_http_failure_class(408), "DAEMON_TIMEOUT");
+        assert_eq!(native_docker_http_failure_class(409), "DAEMON_RESOURCE_CONFLICT");
+        assert_eq!(native_docker_http_failure_class(429), "DAEMON_RATE_LIMITED");
+        assert_eq!(native_docker_http_failure_class(500), "DAEMON_SERVER_FAILURE");
+        assert_eq!(native_docker_http_failure_class(503), "DAEMON_SERVER_FAILURE");
+        assert_eq!(native_docker_http_failure_class(504), "DAEMON_TIMEOUT");
+        assert_eq!(native_docker_http_failure_class(418), "DAEMON_HTTP_UNCLASSIFIED");
+        // The daemon's arbitrary response text must never be returned.
+        let error = BollardError::DockerResponseServerError {
+            status_code: 409,
+            message: "Authorization: Bearer confidential".into(),
+        };
+        assert_eq!(
+            native_docker_api_failure_class(&error),
+            "DAEMON_RESOURCE_CONFLICT"
+        );
+    }
 
     #[test]
     fn stopped_requires_same_id_name_and_owner() {
