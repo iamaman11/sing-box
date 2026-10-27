@@ -177,8 +177,8 @@ pub(super) fn native_gateway_create_body(
     network_id: &str,
 ) -> Result<bollard::models::ContainerCreateBody, String> {
     use bollard::models::{
-        ContainerCreateBody, EndpointSettings, HostConfig, NetworkingConfig, PortBinding,
-        RestartPolicy, RestartPolicyNameEnum,
+        ContainerCreateBody, HostConfig, NetworkingConfig, PortBinding, RestartPolicy,
+        RestartPolicyNameEnum,
     };
     if !matches!(service, "line1-gateway" | "line2-proxy")
         || image_ref.is_empty()
@@ -239,10 +239,7 @@ pub(super) fn native_gateway_create_body(
     let mut endpoints = HashMap::new();
     endpoints.insert(
         format!("{}_edge_net", identity.compose_project),
-        EndpointSettings {
-            network_id: Some(network_id.to_owned()),
-            ..Default::default()
-        },
+        native_vm_service_endpoint(network_id, &identity.compose_service),
     );
     Ok(ContainerCreateBody {
         image: Some(image_ref.to_owned()),

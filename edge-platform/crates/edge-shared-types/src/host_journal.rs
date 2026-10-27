@@ -671,9 +671,10 @@ fn verify_read_only_recovery_state(
     }
 }
 
-/// Classify an old, different Git release as incomplete. The new
-/// root-signed RECOVER only proves a *known current baseline*, not that the
-/// historical effect succeeded. No Docker command can be dispatched here.
+/// Classify a prior BEGIN as incomplete when Git release changed OR when
+/// the installed bundle matches but an independently proven addressed
+/// application datapath is still degraded. RECOVER only proves a known
+/// current baseline; it never replays the historical Docker effect.
 fn verify_historical_partial_recovery_state(
     host: &crate::FleetHost,
     observed: &crate::FleetNativeObservation,
@@ -705,7 +706,12 @@ fn verify_historical_partial_recovery_state(
             .observed_release_sha256
             .iter()
             .all(|byte| *byte == 0)
-        || observed.observed_release_sha256 == current_release
+        // A healthy readback at the current source is not a missing-ACK
+        // datapath recovery proof for a different old BEGIN. Same-release
+        // historical INCOMPLETE needs a specific observed runtime defect.
+        || (observed.observed_release_sha256 == current_release
+            && (observed.runtime_ready
+                || !crate::host_lifecycle::known_runtime_only_historical_reasons(observed)))
     {
         return Err("HOST_NATIVE_HISTORICAL_BASELINE_UNPROVEN_NO_REPLAY");
     }
@@ -778,7 +784,11 @@ fn resolve_pending_native_recovery_once(
     // cause another loop. The root-observed installed digest is independent
     // of the pending source identity and must not be mistaken for convergence.
     let native_release_mismatch = observed.observed_release_sha256 != bound.runtime_release_sha256;
-    let incomplete = historical_drift || native_release_mismatch;
+    let known_runtime_incomplete = selected.kind == crate::FleetHostKind::Vm as i32
+        && observed.owner_state == crate::FleetNativeOwnerState::Running as i32
+        && !observed.runtime_ready
+        && crate::host_lifecycle::known_runtime_only_historical_reasons(observed);
+    let incomplete = historical_drift || native_release_mismatch || known_runtime_incomplete;
     if incomplete
         && (original.action != FleetHostAction::Apply as i32
             || original.resource_id != "sing-box"
@@ -1335,6 +1345,17 @@ mod tests {
         // A specific attempted consumer datapath probe is distinguishable
         // from absent resources. The old generic WARP code is NOT sufficient.
         degraded.reason_codes = vec!["WARP_LINE1_CONSUMER_EGRESS_FAILED".into()];
+        let mut same_release = degraded.clone();
+        same_release.observed_release_sha256 = bound.runtime_release_sha256.clone();
+        assert_eq!(
+            verify_historical_partial_recovery_state(
+                &host,
+                &same_release,
+                &bound.runtime_release_sha256,
+                1020,
+            ),
+            Ok(crate::FleetHostResultReason::HistoricalPartialRequiresFreshApply)
+        );
         assert_eq!(
             verify_historical_partial_recovery_state(
                 &host,

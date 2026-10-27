@@ -176,7 +176,16 @@ pub fn propose_host_transition(
         && ((observed.owner_state == FleetNativeOwnerState::Running as i32
             && crate::host_lifecycle::known_runtime_only_historical_reasons(observed))
             || crate::host_lifecycle::known_partial_vm_resource_baseline(host, observed));
-    if !observed.reason_codes.is_empty() && !vm_known_resource_bundle_drift {
+    let vm_known_same_release_runtime_defect = kind == FleetHostKind::Vm
+        && desired_run == FleetHostRunState::Running
+        && observed.owner_state == FleetNativeOwnerState::Running as i32
+        && observed.release_proof == FleetNativeReleaseProof::ApplicationBundle as i32
+        && actual == expected
+        && crate::host_lifecycle::known_runtime_only_historical_reasons(observed);
+    if !observed.reason_codes.is_empty()
+        && !vm_known_resource_bundle_drift
+        && !vm_known_same_release_runtime_defect
+    {
         return plan(
             host,
             Blocked,
@@ -499,6 +508,25 @@ mod tests {
     }
 
     #[test]
+    fn same_release_known_runtime_failure_proposes_only_scoped_root_repair() {
+        let vm = host(
+            FleetHostKind::Vm,
+            FleetHostMode::Unspecified,
+            FleetHostRunState::Running,
+        );
+        let mut observed = observed(FleetHostKind::Vm, FleetNativeOwnerState::Running);
+        observed.runtime_ready = false;
+        observed.reason_codes = vec!["WARP_LINE1_CONSUMER_EGRESS_FAILED".into()];
+        let proposal = propose_host_transition(&vm, Some(&observed), &[1; 32], &[1; 32], 1000);
+        assert_eq!(proposal.step, FleetHostPlannedStep::Start as i32);
+        assert!(!proposal.owner_attested);
+        assert!(!proposal.mutation_authorized);
+        observed.reason_codes = vec!["DOCKER_UNAVAILABLE".into()];
+        let rejected = propose_host_transition(&vm, Some(&observed), &[1; 32], &[1; 32], 1000);
+        assert_eq!(rejected.step, FleetHostPlannedStep::Blocked as i32);
+    }
+
+    #[test]
     fn proven_absent_vm_proposes_fresh_install_but_never_authorizes_it() {
         use crate::host_lifecycle::build_native_observation;
         let vm = host(
@@ -729,8 +757,10 @@ mod tests {
         assert_eq!(proposal.reason_code, "RELEASE_MISMATCH_PROPOSAL_ONLY");
         assert!(!proposal.owner_attested && !proposal.mutation_authorized);
 
-        // Current release, generic network failure, missing consumers/ports,
-        // unknown resources and failed trust must never trigger another apply.
+        // Generic network failure, missing consumers/ports, unknown
+        // resources and failed trust must never trigger another apply.
+        // Same-release known datapath defect is now an explicitly scoped
+        // START proposal only, not authorization or a replay.
         for fault in [
             "WARP_EGRESS_FAILED",
             "WARP_CONSUMERS_ABSENT",
@@ -756,7 +786,7 @@ mod tests {
         );
         assert_eq!(
             propose_host_transition(&vm, Some(&observed), &[9; 32], &[1; 32], 1000).step,
-            FleetHostPlannedStep::Blocked as i32
+            FleetHostPlannedStep::Start as i32
         );
         observed.owner_state = FleetNativeOwnerState::Unproven as i32;
         assert_eq!(
