@@ -141,11 +141,10 @@ pub fn validate_host_registry(desired: &HostRegistry) -> Result<(), String> {
             return Err("HOST_NATIVE_RECEIPT_PUBLIC_KEY_INVALID".to_owned());
         }
         if !host.worker_authority_public_key.is_empty()
-            && (kind != ManagedHostKind::Vm
-                || host.worker_authority_public_key.len() != 32
+            && (host.worker_authority_public_key.len() != 32
                 || host.worker_authority_public_key.iter().all(|b| *b == 0))
         {
-            return Err("HOST_VM_GIT_WORKER_SIGNER_KEY_INVALID".to_owned());
+            return Err("HOST_GIT_WORKER_SIGNER_KEY_INVALID".to_owned());
         }
         // Git selects an existing Vultr spec, never stores or generates
         // another provider desired. Reject paths outside the owned catalog.
@@ -3226,7 +3225,15 @@ mod release_set_tests {
         wrong_signer.hosts[0].worker_authority_public_key = vec![1; 12];
         assert!(validate_host_registry(&wrong_signer).is_err());
         wrong_signer.hosts[0].worker_authority_public_key = Vec::new();
+        // Windows shares the one Worker authorization identity. It may
+        // pin a public signer, but the absence of a native SYSTEM effector
+        // still means no authorization to change Windows state.
         wrong_signer.hosts[2].worker_authority_public_key = vec![3; 32];
+        assert!(validate_host_registry(&wrong_signer).is_ok());
+        let verify_pin = crate::host_lifecycle::verify_git_host_worker_signer_pin;
+        assert_eq!(verify_pin(&wrong_signer.hosts[2], &[3; 32]), Ok(()));
+        assert!(verify_pin(&wrong_signer.hosts[2], &[4; 32]).is_err());
+        wrong_signer.hosts[2].worker_authority_public_key = vec![0; 32];
         assert!(validate_host_registry(&wrong_signer).is_err());
         let mut provider_binding = expected.clone();
         provider_binding.hosts[0].vm_provider_spec_path =
