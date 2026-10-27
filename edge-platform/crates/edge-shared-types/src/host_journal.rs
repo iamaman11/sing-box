@@ -33,7 +33,7 @@ fn create_private_native_record(path: &Path) -> std::io::Result<File> {
 }
 
 #[cfg(unix)]
-fn verify_native_journal_protection(path: &Path) -> Result<(), &'static str> {
+pub fn verify_native_journal_protection(path: &Path) -> Result<(), &'static str> {
     use std::os::unix::fs::MetadataExt;
 
     unsafe extern "C" {
@@ -68,7 +68,7 @@ fn verify_native_journal_protection(path: &Path) -> Result<(), &'static str> {
 }
 
 #[cfg(windows)]
-fn verify_native_journal_protection(path: &Path) -> Result<(), &'static str> {
+pub fn verify_native_journal_protection(path: &Path) -> Result<(), &'static str> {
     use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Foundation::{CloseHandle, LocalFree};
     use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
