@@ -350,12 +350,15 @@ pub fn native_vm_bundle_runtime_digest(
     Ok(decoded)
 }
 
-/// The single Worker public signer contract shared by root enrollment,
-/// native execution and read-only first-use diagnosis. No caller-provided
-/// public key may override protected Git desired.
+/// The single Worker public signer contract shared by VM enrollment,
+/// Windows SYSTEM native execution, and read-only first-use diagnosis.
+/// The signer pin is public identity, never a secret or a second Worker.
+/// No caller-provided public key may override protected Git desired.
 pub fn verify_git_worker_signer_pin(host: &FleetHost, supplied: &[u8]) -> Result<(), &'static str> {
-    if host.kind != FleetHostKind::Vm as i32
-        || host.worker_authority_public_key.len() != 32
+    if !matches!(
+        FleetHostKind::try_from(host.kind),
+        Ok(FleetHostKind::Vm | FleetHostKind::Windows)
+    ) || host.worker_authority_public_key.len() != 32
         || host.worker_authority_public_key.iter().all(|b| *b == 0)
     {
         return Err("HOST_GIT_WORKER_SIGNER_KEY_REQUIRED");
