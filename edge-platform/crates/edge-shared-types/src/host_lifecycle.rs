@@ -622,9 +622,6 @@ fn host_result_reason_projection(
         Reason::HistoricalPartialRequiresFreshApply => {
             ("", "HISTORICAL_PARTIAL_REQUIRES_FRESH_APPLY")
         }
-        Reason::ResourcesAppliedRuntimeDegraded => {
-            ("", "DIAGNOSE_RUNTIME_NOT_OPERATIONAL_GO")
-        }
     }
 }
 
@@ -639,7 +636,6 @@ pub fn validate_host_result_reason(result: &FleetHostResult) -> Result<(), &'sta
         Reason::HistoricalPartialRequiresFreshApply => {
             matches!(state, State::UnknownNoReplay | State::Observed)
         }
-        Reason::ResourcesAppliedRuntimeDegraded => state == State::Verified,
         _ => matches!(state, State::Observed | State::Verified),
     };
     let (error, action) = host_result_reason_projection(reason);
