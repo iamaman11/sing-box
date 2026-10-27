@@ -392,7 +392,13 @@ fn native_runtime_reason_codes(
 ) -> Vec<&'static str> {
     for reason in &state.degraded_reasons {
         let code = native_runtime_reason_code(reason);
-        if !codes.contains(&code) && codes.len() < 12 {
+        if !codes.contains(&code) {
+            if codes.len() == 12 {
+                // Never silently drop an unknown/missing-resource defect:
+                // a truncated snapshot must block historical adjudication.
+                codes[11] = "VM_DIAGNOSTIC_TRUNCATED";
+                break;
+            }
             codes.push(code);
         }
     }
@@ -2649,6 +2655,21 @@ mod native_runtime_diagnostic_code_tests {
         );
         let full = native_runtime_reason_codes(&state, vec!["VM_DOCKER_UNAVAILABLE"; 12]);
         assert_eq!(full.len(), 12);
+        assert_eq!(full[11], "VM_DIAGNOSTIC_TRUNCATED");
+        // A single WARP fault remains addressable, while an overflowing set
+        // of reasons cannot accidentally appear as WARP-only.
+        let limited = native_runtime_reason_codes(
+            &AgentState {
+                ready: false,
+                degraded_reasons: vec![
+                    "WARP Line1 consumer egress failed".to_owned(),
+                    "expected containers are not running: line2".to_owned(),
+                ],
+                ..Default::default()
+            },
+            vec!["VM_DOCKER_UNAVAILABLE"; 11],
+        );
+        assert_eq!(limited.last(), Some(&"VM_DIAGNOSTIC_TRUNCATED"));
         let unknown = AgentState {
             ready: false,
             ..Default::default()
