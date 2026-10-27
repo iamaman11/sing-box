@@ -691,8 +691,9 @@ fn verify_historical_partial_recovery_state(
         || observed.host_kind != host.kind
         || observed.observed_at_unix > now_unix.saturating_add(60)
         || now_unix.saturating_sub(observed.observed_at_unix) > 300
-        || !crate::host_lifecycle::known_runtime_only_historical_reasons(observed)
-        || observed.owner_state != FleetNativeOwnerState::Running as i32
+        || !(observed.owner_state == FleetNativeOwnerState::Running as i32
+            && crate::host_lifecycle::known_runtime_only_historical_reasons(observed)
+            || crate::host_lifecycle::known_partial_vm_resource_baseline(host, observed))
         || observed.release_proof != FleetNativeReleaseProof::ApplicationBundle as i32
         // Broken network/proxy readiness is the problem a fresh replacement
         // must repair. Its FALSE value is admissible only when an owned native
@@ -1166,6 +1167,7 @@ mod tests {
             runtime_ready: true,
             runtime_ready_proven: true,
             reason_codes: vec![],
+            vm_recovery_resources: None,
         };
         assert_eq!(
             verify_read_only_recovery_state(&host, &observed, &[1; 32], 1000),
@@ -1606,6 +1608,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(files.len(), 2); // authorized journal + durable per-resource gate
         let stopped_observation = crate::FleetNativeObservation {
+            vm_recovery_resources: None,
             schema_version: 1,
             host_kind: FleetHostKind::Vm as i32,
             observed_at_unix: 1020,
@@ -1765,6 +1768,7 @@ mod tests {
         )
         .unwrap();
         let post = crate::FleetNativeObservation {
+            vm_recovery_resources: None,
             schema_version: 1,
             host_kind: FleetHostKind::Vm as i32,
             observed_at_unix: 1020,

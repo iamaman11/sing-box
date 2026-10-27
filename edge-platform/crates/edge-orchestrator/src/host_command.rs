@@ -2915,6 +2915,7 @@ mod tests {
             runtime_ready: true,
             runtime_ready_proven: true,
             reason_codes: vec![],
+            vm_recovery_resources: None,
         };
         assert_eq!(
             validate_readback_scope(&host, &o, &"a".repeat(64), None, 1000).unwrap(),

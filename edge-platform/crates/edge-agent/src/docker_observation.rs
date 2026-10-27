@@ -529,6 +529,33 @@ async fn read_owned_edge_network_id(docker: &Docker, host: &FleetHost) -> Result
     Ok(id)
 }
 
+/// Reuse the same authoritative Docker/resource report for historical
+/// recovery and the next fresh APPLY. The root caller owns the lock; this
+/// function performs NO effect. Validate network ownership and attachment
+/// separately from Docker names before trusting the report in the journal.
+pub(crate) async fn capture_partial_vm_resource_evidence(
+    stack_dir: &Path,
+    host: &FleetHost,
+) -> Result<edge_shared_types::FleetVmResourceReport, String> {
+    let docker = docker_connection().await?;
+    let owned = owned_application_container_ids(&docker, &host.vm_containers).await?;
+    if owned.len() != host.vm_containers.len() {
+        return Err("HOST_VM_PARTIAL_REGISTERED_SCOPE_UNPROVEN".into());
+    }
+    let network_id = read_owned_edge_network_id(&docker, host).await?;
+    verify_vm_network_attachments(&docker, host, &owned, &network_id).await?;
+    let mut report = observe_vm_resource_report(host, stack_dir).await?;
+    // No duplicate diagnostic store or oversized /host intent. Only the
+    // already typed Docker resource and installed-policy evidence is needed
+    // for resource recovery. The full deep diagnostic remains available.
+    report.network = None;
+    report.processes = None;
+    report.managed_docker.clear();
+    edge_shared_types::host_resources::validate_vm_resource_report(&report, host)
+        .map_err(str::to_owned)?;
+    Ok(report)
+}
+
 /// Compile exactly one owned gateway into native Docker Engine API fields.
 /// Resolve the common typed resource planner against root-local Docker
 /// evidence BEFORE the journal BEGIN. A single absent owned gateway may

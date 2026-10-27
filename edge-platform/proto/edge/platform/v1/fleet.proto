@@ -684,6 +684,9 @@ message FleetNativeObservation {
   bool runtime_ready = 7;
   bool runtime_ready_proven = 8;
   repeated string reason_codes = 9;
+  // Root-local resource evidence for signed historical RECOVER; this is
+  // the already existing FleetVmResourceReport, not a second state store.
+  FleetVmResourceReport vm_recovery_resources = 10;
 }
 
 

@@ -162,21 +162,21 @@ pub fn propose_host_transition(
             actual,
         );
     }
-    // A signed, addressable consumer datapath failure cannot masquerade as
-    // proof that Docker/image/ports are missing. Allow only a *proposal* to
-    // converge a genuinely different VM bundle, never an implicit restart.
-    // The native root owner still rechecks the typed resource snapshot before
-    // BEGIN, and this planner never grants mutation authority.
-    let vm_known_datapath_bundle_drift = kind == FleetHostKind::Vm
+    // A known degraded datapath or an EXACT native-owned partial resource
+    // readback permits only a proposal to converge a DIFFERENT VM bundle.
+    // A generic 'stopped' observation cannot satisfy this gate. The existing
+    // pre-BEGIN resource effector must independently verify all Docker IDs.
+    let vm_known_resource_bundle_drift = kind == FleetHostKind::Vm
         && desired_run == FleetHostRunState::Running
-        && observed.owner_state == FleetNativeOwnerState::Running as i32
         && observed.release_proof == FleetNativeReleaseProof::ApplicationBundle as i32
         && actual.len() == 32
         && actual.iter().any(|byte| *byte != 0)
         && actual != expected
         && !observed.reason_codes.is_empty()
-        && crate::host_lifecycle::known_runtime_only_historical_reasons(observed);
-    if !observed.reason_codes.is_empty() && !vm_known_datapath_bundle_drift {
+        && ((observed.owner_state == FleetNativeOwnerState::Running as i32
+            && crate::host_lifecycle::known_runtime_only_historical_reasons(observed))
+            || crate::host_lifecycle::known_partial_vm_resource_baseline(host, observed));
+    if !observed.reason_codes.is_empty() && !vm_known_resource_bundle_drift {
         return plan(
             host,
             Blocked,
@@ -450,6 +450,7 @@ mod tests {
             runtime_ready: state == FleetNativeOwnerState::Running,
             runtime_ready_proven: true,
             reason_codes: vec![],
+            vm_recovery_resources: None,
         }
     }
 
