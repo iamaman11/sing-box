@@ -3119,9 +3119,9 @@ mod tests {
                     run_state: edge_shared_types::FleetHostRunState::Stopped as i32,
                     windows_mode: FleetHostMode::ProxyOnly as i32,
                 }),
-                native_receipt_public_key: Vec::new(),
+                native_receipt_public_key: vec![8; 32],
                 vm_first_use_credential: None,
-                worker_authority_public_key: Vec::new(),
+                worker_authority_public_key: vec![7; 32],
                 vm_provider_spec_path: String::new(),
             }],
         };
