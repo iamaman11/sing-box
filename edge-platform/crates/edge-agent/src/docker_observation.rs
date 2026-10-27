@@ -2566,6 +2566,7 @@ struct NativeVmGatewayImageReplacePlan {
     edge_network_id: String,
     prepared_gateways: Vec<(String, bollard::models::ContainerCreateBody)>,
     prepared_warp: Option<bollard::models::ContainerCreateBody>,
+    alias_repairs: Vec<String>,
     compose_sha256: Vec<u8>,
 }
 
@@ -2870,7 +2871,9 @@ async fn preflight_gateway_image_replace(
         .await?;
     }
     let edge_network_id = read_owned_edge_network_id(&docker, host).await?;
-    verify_vm_network_attachments(&docker, host, &owned, &edge_network_id).await?;
+    verify_vm_network_identity_before_repair(&docker, host, &owned, &edge_network_id).await?;
+    let alias_repairs =
+        missing_owned_vm_service_aliases(&docker, host, &owned, &edge_network_id).await?;
     // OCI pins are already validated against the exact immutable release.
     // Do not require a separate manual "docker pull": this same signed
     // operation fetches missing images AFTER the durable BEGIN, before
@@ -2925,6 +2928,7 @@ async fn preflight_gateway_image_replace(
         edge_network_id,
         prepared_gateways,
         prepared_warp,
+        alias_repairs,
         compose_sha256,
         release: edge_shared_types::ApplicationBundleReleaseState {
             schema_version: 1,
@@ -2950,7 +2954,12 @@ async fn apply_gateway_image_replace_once(
     {
         return Err("HOST_VM_IMAGE_PRESTATE_CHANGED_NO_REPLAY".into());
     }
-    verify_vm_network_attachments(&docker, host, &owned, &plan.edge_network_id).await?;
+    verify_vm_network_identity_before_repair(&docker, host, &owned, &plan.edge_network_id).await?;
+    if missing_owned_vm_service_aliases(&docker, host, &owned, &plan.edge_network_id).await?
+        != plan.alias_repairs
+    {
+        return Err("HOST_VM_IMAGE_ALIAS_PRESTATE_CHANGED_NO_REPLAY".into());
+    }
 
     // Reuse the existing bounded, digest-verified native OCI pull, still
     // inside the ONE signed owner journal. Never require external Docker CLI.
@@ -2994,10 +3003,25 @@ async fn apply_gateway_image_replace_once(
         )
         .await?;
     }
-    let after = owned_application_container_ids(&docker, &host.vm_containers).await?;
+    let mut after = owned_application_container_ids(&docker, &host.vm_containers).await?;
     if after.len() != host.vm_containers.len() {
         return Err("HOST_VM_IMAGE_POSTSTATE_MISSING_NO_REPLAY".into());
     }
+    bind_owned_vm_compose_dependencies(stack_dir, &host.vm_containers, &mut after)?;
+    let remaining =
+        missing_owned_vm_service_aliases(&docker, host, &after, &plan.edge_network_id).await?;
+    if remaining.iter().any(|service| !plan.alias_repairs.contains(service)) {
+        return Err("HOST_VM_IMAGE_UNPLANNED_ALIAS_DRIFT_NO_REPLAY".into());
+    }
+    apply_owned_vm_service_aliases_once(
+        &docker,
+        host,
+        &after,
+        &plan.edge_network_id,
+        &remaining,
+    )
+    .await?;
+    verify_vm_network_attachments(&docker, host, &after, &plan.edge_network_id).await?;
     for (selector, before) in host.vm_containers.iter().zip(&plan.identities) {
         let (old_id, old_running, old_image) = before
             .as_ref()
@@ -3152,7 +3176,7 @@ pub(crate) async fn preflight_native_vm_replace(
         }
         bind_owned_vm_compose_dependencies(stack_dir, &host.vm_containers, &mut owned)?;
         let network = read_owned_edge_network_id(&docker, host).await?;
-        verify_vm_network_attachments(&docker, host, &owned, &network).await?;
+        verify_vm_network_identity_before_repair(&docker, host, &owned, &network).await?;
         let pins = read_vm_expected_image_refs(stack_dir, &host.vm_containers)?;
         let target_warp = pins
             .get("warp-egress")
