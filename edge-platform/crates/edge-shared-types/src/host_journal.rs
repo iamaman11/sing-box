@@ -671,28 +671,6 @@ fn verify_read_only_recovery_state(
     }
 }
 
-/// Historical reconciliation may release an old BEGIN only when the
-/// independently observed baseline has no readiness defects, or when the
-/// sole defect is an *addressed* WARP consumer datapath probe. Generic
-/// egress, absent consumers/ports, missing resources, unknown and truncated
-/// evidence can conceal an incomplete Docker effect and must remain pending.
-/// This does not claim that the original effect succeeded or authorize replay.
-fn known_runtime_only_historical_reasons(observed: &crate::FleetNativeObservation) -> bool {
-    if !observed.runtime_ready_proven {
-        return false;
-    }
-    if observed.runtime_ready {
-        return observed.reason_codes.is_empty();
-    }
-    !observed.reason_codes.is_empty()
-        && observed.reason_codes.iter().all(|code| {
-            matches!(
-                code.as_str(),
-                "WARP_LINE1_CONSUMER_EGRESS_FAILED" | "WARP_LINE2_CONSUMER_EGRESS_FAILED"
-            )
-        })
-}
-
 /// Classify an old, different Git release as incomplete. The new
 /// root-signed RECOVER only proves a *known current baseline*, not that the
 /// historical effect succeeded. No Docker command can be dispatched here.
@@ -713,7 +691,7 @@ fn verify_historical_partial_recovery_state(
         || observed.host_kind != host.kind
         || observed.observed_at_unix > now_unix.saturating_add(60)
         || now_unix.saturating_sub(observed.observed_at_unix) > 300
-        || !known_runtime_only_historical_reasons(observed)
+        || !crate::host_lifecycle::known_runtime_only_historical_reasons(observed)
         || observed.owner_state != FleetNativeOwnerState::Running as i32
         || observed.release_proof != FleetNativeReleaseProof::ApplicationBundle as i32
         // Broken network/proxy readiness is the problem a fresh replacement
