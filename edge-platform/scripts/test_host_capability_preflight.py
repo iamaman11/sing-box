@@ -382,7 +382,7 @@ class TestSignedNativeDeepReportFusion(TestCase):
             "host_native_snapshot_pending_request_sha256=" + "4" * 64,
             "host_native_snapshot_pending_request_sha256=",
         )
-        native += "\\n" + "\\n".join([
+        native += "\n" + "\n".join([
             "host_native_snapshot_release_parity=INSTALLED_RELEASE_DRIFT",
             "host_native_snapshot_installed_release_sha256=" + "a" * 64,
             "host_native_snapshot_desired_release_sha256=" + "f" * 64,
@@ -399,7 +399,7 @@ class TestSignedNativeDeepReportFusion(TestCase):
         merged = summary.merge_rust_verified_native(
             body, native, op.removeprefix("issue1-comment-"), sha,
         )
-        data = json.loads(merged.split(marker, 1)[1].split("\\n```", 1)[0])
+        data = json.loads(merged.split(marker, 1)[1].split("\n```", 1)[0])
         self.assertEqual(merged.count(marker), 1)
         self.assertEqual(data["phase"], "INSTALLED_RELEASE_READ_ONLY")
         self.assertEqual(data["status"], "UNPROVEN")
@@ -450,16 +450,16 @@ class TestSignedNativeDeepReportFusion(TestCase):
             summary.merge_rust_verified_native(body, native, comment, "b" * 40)
         # Git admission BLOCKED is a separate owner and cannot be erased by
         # authenticated installed-but-historical VM observation.
-        structured = json.loads(body.split(marker, 1)[1].split("\\n```", 1)[0])
+        structured = json.loads(body.split(marker, 1)[1].split("\n```", 1)[0])
         structured.update(
             status="BLOCKED", phase="GIT_READINESS",
             reason="HOST_GIT_DESIRED_INVALID", owner="GIT_OWNER",
         )
         prefix, tail = body.split(marker, 1)
-        _, suffix = tail.split("\\n```", 1)
-        blocked = prefix + marker + json.dumps(structured) + "\\n```" + suffix
+        _, suffix = tail.split("\n```", 1)
+        blocked = prefix + marker + json.dumps(structured) + "\n```" + suffix
         merged = summary.merge_rust_verified_native(blocked, native, comment, sha)
-        data = json.loads(merged.split(marker, 1)[1].split("\\n```", 1)[0])
+        data = json.loads(merged.split(marker, 1)[1].split("\n```", 1)[0])
         self.assertEqual(data["status"], "BLOCKED")
         self.assertEqual(data["reason"], "HOST_GIT_DESIRED_INVALID")
         self.assertEqual(data["sources"]["root_agent"],
