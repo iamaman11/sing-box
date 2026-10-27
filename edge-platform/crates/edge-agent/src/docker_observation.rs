@@ -662,8 +662,7 @@ async fn apply_owned_vm_service_aliases_once(
     if !aliases.is_empty() {
         use bollard::models::{NetworkConnectRequest, NetworkDisconnectRequest};
         if read_owned_edge_network_id(docker, host).await?.as_str() != network_id
-            || missing_owned_vm_service_aliases(docker, host, owned, network_id).await?
-                != aliases
+            || missing_owned_vm_service_aliases(docker, host, owned, network_id).await? != aliases
         {
             return Err("HOST_VM_ALIAS_PRESTATE_CHANGED_NO_REPLAY".into());
         }
@@ -931,14 +930,8 @@ pub(crate) async fn apply_native_vm_run_once(
             .edge_network_id
             .as_deref()
             .ok_or("HOST_VM_ALIAS_PLAN_NETWORK_UNPROVEN_NO_REPLAY")?;
-        apply_owned_vm_service_aliases_once(
-            &docker,
-            host,
-            &owned,
-            network_id,
-            &plan.alias_repairs,
-        )
-        .await?;
+        apply_owned_vm_service_aliases_once(&docker, host, &owned, network_id, &plan.alias_repairs)
+            .await?;
     }
     if let Some(service) = plan.create_missing.as_deref() {
         if plan.step != FleetHostPlannedStep::Start
@@ -3010,17 +3003,14 @@ async fn apply_gateway_image_replace_once(
     bind_owned_vm_compose_dependencies(stack_dir, &host.vm_containers, &mut after)?;
     let remaining =
         missing_owned_vm_service_aliases(&docker, host, &after, &plan.edge_network_id).await?;
-    if remaining.iter().any(|service| !plan.alias_repairs.contains(service)) {
+    if remaining
+        .iter()
+        .any(|service| !plan.alias_repairs.contains(service))
+    {
         return Err("HOST_VM_IMAGE_UNPLANNED_ALIAS_DRIFT_NO_REPLAY".into());
     }
-    apply_owned_vm_service_aliases_once(
-        &docker,
-        host,
-        &after,
-        &plan.edge_network_id,
-        &remaining,
-    )
-    .await?;
+    apply_owned_vm_service_aliases_once(&docker, host, &after, &plan.edge_network_id, &remaining)
+        .await?;
     verify_vm_network_attachments(&docker, host, &after, &plan.edge_network_id).await?;
     for (selector, before) in host.vm_containers.iter().zip(&plan.identities) {
         let (old_id, old_running, old_image) = before
