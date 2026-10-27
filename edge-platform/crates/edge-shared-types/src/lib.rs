@@ -3230,14 +3230,9 @@ mod release_set_tests {
         // still means no authorization to change Windows state.
         wrong_signer.hosts[2].worker_authority_public_key = vec![3; 32];
         assert!(validate_host_registry(&wrong_signer).is_ok());
-        assert_eq!(
-            crate::host_lifecycle::verify_git_host_worker_signer_pin(&wrong_signer.hosts[2], &[3; 32],),
-            Ok(())
-        );
-        assert!(
-            crate::host_lifecycle::verify_git_host_worker_signer_pin(&wrong_signer.hosts[2], &[4; 32],)
-                .is_err()
-        );
+        let verify_pin = crate::host_lifecycle::verify_git_host_worker_signer_pin;
+        assert_eq!(verify_pin(&wrong_signer.hosts[2], &[3; 32]), Ok(()));
+        assert!(verify_pin(&wrong_signer.hosts[2], &[4; 32]).is_err());
         wrong_signer.hosts[2].worker_authority_public_key = vec![0; 32];
         assert!(validate_host_registry(&wrong_signer).is_err());
         let mut provider_binding = expected.clone();
