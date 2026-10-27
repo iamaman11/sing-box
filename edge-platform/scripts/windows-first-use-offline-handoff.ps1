@@ -101,6 +101,130 @@ $console = [string]$before['console_path']
 if (-not (Test-Path -LiteralPath $console -PathType Leaf)) {
   throw 'FIRST_USE_OFFLINE_BLOCKED: exact installed native console missing'
 }
+# Prove the actual installed SYSTEM task before any one-shot release BEGIN.
+# Task identity and executable must match the immutable native doctor, not
+# merely an expected Task Scheduler name from Git workflow text.
+$task = Get-ScheduledTask -TaskName 'EdgePlatformPrivilegedDispatch' -ErrorAction Stop
+try {
+  $principal = [string]$task.Principal.UserId
+  $systemSid = if ($principal -ceq 'S-1-5-18') { 'S-1-5-18' } else {
+    ([Security.Principal.NTAccount]::new($principal)).Translate(
+      [Security.Principal.SecurityIdentifier]).Value
+  }
+  $taskAction = @($task.Actions)[0]
+  $taskConsole = [IO.Path]::GetFullPath(([string]$taskAction.Execute).Trim('"'))
+  $installedConsole = [IO.Path]::GetFullPath($console)
+} catch {
+  throw 'FIRST_USE_OFFLINE_BLOCKED: SYSTEM task identity not provable'
+}
+if ($systemSid -cne 'S-1-5-18' -or
+    [string]$task.Principal.RunLevel -cne 'Highest' -or
+    [string]$task.Principal.LogonType -cne 'ServiceAccount' -or
+    $task.State -cnotin @('Ready','Running') -or
+    @($task.Actions).Count -ne 1 -or
+    $taskConsole -ine $installedConsole -or
+    [string]$taskAction.Arguments -cnotmatch '^privileged-dispatch --install-root "?C:\\sing-box"?
+if ($LASTEXITCODE -ne 0 -or -not ($commands | Where-Object { $_ -match '\bprivileged-offline-activate\b' })) {
+  throw 'FIRST_USE_OFFLINE_BLOCKED: installed owner has no native offline capability; BEGIN forbidden'
+}
+if ([string]$before['release_set_sha256'] -cne $ReleaseSetSha256) {
+  # This is the exact installer path consumed by the installed Rust offline
+  # owner. Refuse a missing/reparse prerequisite BEFORE writing the one-shot
+  # GitHub BEGIN rather than discovering it after a VM/Windows transaction.
+  $bootstrap = Join-Path $root 'bootstrap\install-windows-release.ps1'
+  if (-not (Test-Path -LiteralPath $bootstrap -PathType Leaf) -or
+      ((Get-Item -LiteralPath $bootstrap -ErrorAction Stop).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+    throw 'FIRST_USE_OFFLINE_BLOCKED: protected native offline installer prerequisite missing before BEGIN'
+  }
+}
+function Read-SystemCredential([string]$native) {
+  # The installed SYSTEM owner reads the private store; GitHub never does.
+  $output = @(& $native privileged-runtime-evidence --install-root $root)
+  if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_APPLY_BLOCKED: SYSTEM evidence unavailable' }
+  $rows = @($output | Where-Object { [string]$_ -like 'detail=runtime_evidence=BOUNDED_READ_ONLY;*' })
+  if ($rows.Count -ne 1) { throw 'WINDOWS_APPLY_BLOCKED: ambiguous SYSTEM evidence' }
+  $proof = [string]$rows[0]
+  if ($ExistingActive) {
+    foreach ($field in @('credential_cursor=VALID','credential_active_present=true',
+        'credential_candidate_present=false','credential_previous_present=false',
+        'first_use_runtime=PRESENT','first_use_config=PRESENT')) {
+      if ([regex]::Matches($proof,'(?:^|;)' + [regex]::Escape($field) + '(?:;|$)').Count -ne 1) {
+        throw 'WINDOWS_APPLY_BLOCKED: ACTIVE cursor/runtime not exact'
+      }
+    }
+  } elseif ($proof -notmatch ';credential_cursor=ABSENT(?:;|$)' -or
+      $proof -notmatch ';first_use_runtime=ABSENT(?:;|$)' -or
+      $proof -notmatch ';first_use_config=ABSENT(?:;|$)' -or
+      $proof -notmatch ';first_use_access_identity=PRESENT_NONEMPTY_UNVERIFIED(?:;|$)') {
+    throw 'FIRST_USE_OFFLINE_BLOCKED: credential cursor, runtime or Access identity unproven'
+  }
+  return $proof
+}
+$credentialBefore = Read-SystemCredential $console
+if ($Preflight) {
+  # A once-only credential BEGIN may be written only after native offline
+  # ReleaseSet upgrade already completed and exact owner readback is stable.
+  if ($RequireCurrentRelease -and [string]$before['release_set_sha256'] -cne $ReleaseSetSha256) {
+    throw 'FIRST_USE_PREBEGIN_BLOCKED: exact accepted Windows ReleaseSet must be installed BEFORE durable BEGIN'
+  }
+  Write-Output "windows_credential_policy=$(if ($ExistingActive) { 'EXISTING_ACTIVE_RELEASE_ONLY' } else { 'FRESH_FIRST_USE' })"
+  Write-Host 'windows_first_use_prebegin_preflight=PASS_READ_ONLY'
+  Write-Host "windows_offline_source_mode=$([string]$before['windows_datapath_mode'])"
+  Write-Output "windows_offline_source_release=$([string]$before['release_set_sha256'])"
+  Write-Output "windows_offline_transition_needed=$([string]$before['release_set_sha256'] -cne $ReleaseSetSha256)"
+  Write-Host "windows_installed_release=$([string]$before['release_set_sha256'])"
+  Write-Host 'windows_scm_state=Stopped'
+  Write-Host 'windows_credential_mutations=0'
+  return
+}
+if ([string]$before['release_set_sha256'] -cne $ReleaseSetSha256) {
+  # Rust's existing offline owner owns the journal, exact ReleaseSet download,
+  # SCM manual-start retarget and compensation for BOTH stopped source modes.
+  # Do not introduce another installer/privilege path or reattempt on unknown.
+  $console = [string]$before['console_path']
+  if (-not (Test-Path -LiteralPath $console -PathType Leaf)) {
+    throw 'FIRST_USE_OFFLINE_BLOCKED: immutable installed native console missing'
+  }
+  # Single existing SYSTEM operation owns exact release download, journalled
+  # pointers, task/SCM handoff and rollback. Never perform native file writes
+  # or invoke this twice after a lost/uncertain ACK.
+  & $console privileged-offline-activate $AcceptedRevision $ReleaseSetSha256 --install-root $root
+  if ($LASTEXITCODE -ne 0) {
+    throw 'FIRST_USE_OFFLINE_UNKNOWN: native release handoff unconfirmed; no replay'
+  }
+}
+$after = Read-Owner
+if ($ExistingActive) {
+  $credentialAfter = Read-SystemCredential ([string]$after['console_path'])
+  foreach ($field in @('credential_active_generation','credential_active_slot','credential_active_sha256')) {
+    $old = [regex]::Match($credentialBefore,'(?:^|;)' + $field + '=([^;]*)')
+    $new = [regex]::Match($credentialAfter,'(?:^|;)' + $field + '=([^;]*)')
+    if ($old.Success -and $old.Groups[1].Value -notin @('UNKNOWN','UNKNOWN_NOT_EXPORTED') -and
+        (-not $new.Success -or $old.Groups[1].Value -cne $new.Groups[1].Value)) {
+      throw 'WINDOWS_APPLY_UNKNOWN: credential metadata changed; no replay'
+    }
+  }
+  if ($networkBefore -cne (Read-NetworkOwner)) {
+    throw 'WINDOWS_APPLY_UNKNOWN: route, DNS or Cloudflare One owner drift; no replay'
+  }
+}
+if ([string]$after['release_set_sha256'] -cne $ReleaseSetSha256 -or
+    [string]$after['windows_datapath_mode'] -cne 'ProxyOnly') {
+  throw 'FIRST_USE_OFFLINE_UNKNOWN: exact stopped ProxyOnly target not proven; no replay'
+}
+Require-DirectNetwork
+Write-Host "windows_release_only_result=$(if ($ExistingActive) { 'PASS_ACTIVE_CURSOR_AND_NETWORK_PARITY_ORIGIN_UNPROVEN' } else { 'NOT_APPLICABLE_FIRST_USE' })"
+Write-Host 'windows_first_use_offline_release=PASS_STOPPED_PROXY_ONLY'
+Write-Host "windows_release_set_sha256=$ReleaseSetSha256"
+Write-Host 'windows_scm_state=Stopped'
+Write-Host 'managed_tun_present=false'
+Write-Host 'windows_dns_mutations=0'
+Write-Host 'windows_routes_mutations=0'
+Write-Host 'windows_tun_mutations=0'
+Write-Host 'credential_pair_committed=false'
+) {
+  throw 'FIRST_USE_OFFLINE_BLOCKED: installed SYSTEM task or immutable action mismatched'
+}
 $commands = @(& $console --help)
 if ($LASTEXITCODE -ne 0 -or -not ($commands | Where-Object { $_ -match '\bprivileged-offline-activate\b' })) {
   throw 'FIRST_USE_OFFLINE_BLOCKED: installed owner has no native offline capability; BEGIN forbidden'
