@@ -456,7 +456,10 @@ where
             .iter()
             .find(|host| host.machine_id == intent.machine_id && host.kind == intent.kind)
             .ok_or("HOST_INTENT_UNKNOWN_MACHINE")?;
-        crate::host_lifecycle::verify_git_host_worker_signer_pin(selected, pinned_worker_public_key)?;
+        crate::host_lifecycle::verify_git_host_worker_signer_pin(
+            selected,
+            pinned_worker_public_key,
+        )?;
     }
     verify_host_authorization(intent, authorization, pinned_worker_public_key, now_unix)?;
     let action = FleetHostAction::try_from(intent.action)
