@@ -671,9 +671,10 @@ fn verify_read_only_recovery_state(
     }
 }
 
-/// Classify an old, different Git release as incomplete. The new
-/// root-signed RECOVER only proves a *known current baseline*, not that the
-/// historical effect succeeded. No Docker command can be dispatched here.
+/// Classify a prior BEGIN as incomplete when Git release changed OR when
+/// the installed bundle matches but an independently proven addressed
+/// application datapath is still degraded. RECOVER only proves a known
+/// current baseline; it never replays the historical Docker effect.
 fn verify_historical_partial_recovery_state(
     host: &crate::FleetHost,
     observed: &crate::FleetNativeObservation,

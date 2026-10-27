@@ -495,11 +495,18 @@ async fn missing_owned_vm_service_aliases(
         .compose_project
         .as_str();
     let name = format!("{project}_edge_net");
+    if owned.len() != host.vm_containers.len() {
+        return Err("HOST_VM_NETWORK_REGISTERED_CONTAINER_MISSING".into());
+    }
     let mut missing = Vec::new();
-    for registered in &host.vm_containers {
-        let container = owned
+    // Reattach upstream dependencies first (WARP before both gateways).
+    // Reuse the installed Compose dependency DAG, not a special service list.
+    for index in owned_vm_start_order(owned)? {
+        let container = &owned[index];
+        let registered = host
+            .vm_containers
             .iter()
-            .find(|item| item.service == registered.compose_service)
+            .find(|item| item.compose_service == container.service)
             .ok_or("HOST_VM_NETWORK_REGISTERED_CONTAINER_MISSING")?;
         if !container.running {
             continue;
@@ -711,8 +718,7 @@ pub(crate) async fn preflight_native_vm_run(
     let mut prepared_create = None;
     let alias_repairs = if step == FleetHostPlannedStep::Start && create_missing.is_none() {
         let network_id = read_owned_edge_network_id(&docker, host).await?;
-        let missing =
-            missing_owned_vm_service_aliases(&docker, host, &owned, &network_id).await?;
+        let missing = missing_owned_vm_service_aliases(&docker, host, &owned, &network_id).await?;
         if !missing.is_empty() {
             edge_network_id = Some(network_id);
         }
@@ -1376,9 +1382,7 @@ fn verify_native_vm_run_poststate(
             _ => return Err("HOST_NATIVE_VM_POSTSTATE_OWNER_CHANGED_NO_REPLAY".into()),
         }
     }
-    if (changes == 0 && plan.alias_repairs.is_empty())
-        || after.len() > host.vm_containers.len()
-    {
+    if (changes == 0 && plan.alias_repairs.is_empty()) || after.len() > host.vm_containers.len() {
         return Err("HOST_NATIVE_VM_POSTSTATE_CHANGE_UNPROVEN_NO_REPLAY".into());
     }
     Ok(())
