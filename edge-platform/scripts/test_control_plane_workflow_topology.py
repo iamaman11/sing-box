@@ -423,7 +423,13 @@ assert "verify_windows_signed_git_prerequisites(selected)" in host_source
 assert "HOST_WINDOWS_GIT_RECEIPT_REGISTRATION_REQUIRED" in Path(
     "edge-platform/crates/edge-shared-types/src/host_lifecycle.rs"
 ).read_text(encoding="utf-8")
-assert "Start-ScheduledTask -TaskName 'EdgePlatformPrivilegedDispatch'" in native
+assert "Start-ScheduledTask -TaskName" not in native
+assert "host-native-windows-" in native
+assert "HOST_WINDOWS_SYSTEM_RECEIPT_UNKNOWN_NO_REPLAY" in native
+assert "SHA256]::HashData($candidate)" in native
+assert "EdgePlatformPrivilegedDispatch" in Path(
+    "edge-platform/scripts/bootstrap-windows-runner.ps1"
+).read_text(encoding="utf-8")
 assert "WindowsIdentity]::GetCurrent().User.Value -cne 'S-1-5-20'" in native
 assert "[IO.FileMode]::CreateNew" in native
 assert "native-windows-receipt-" in native
