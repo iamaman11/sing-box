@@ -435,6 +435,18 @@ assert "[IO.FileMode]::CreateNew" in native
 assert "native-windows-receipt-" in native
 assert 'native-result "${TARGET_MACHINE}"' in native
 assert "host-native-windows-" in native
+# Exact Windows read-only preflight reuses the old SYSTEM owner and native
+# existing handoff; no runner-side installer or secondary first-use route.
+assert "release_set_sha256: ${{ needs.host.outputs.diagnostic_release_set_sha256 }}" in router
+assert "release_set_sha256:\n        required: false" in native
+assert "windows-first-use-offline-handoff.ps1" in native
+assert "-Preflight -ExistingActive" in native
+assert "host_windows_offline_preflight=PASS_READ_ONLY_NO_BEGIN" in native
+assert "actions/checkout@v4" in native
+assert "Start-ScheduledTask" not in native
+assert "SYSTEM task or immutable action mismatched" in Path(
+    "edge-platform/scripts/windows-first-use-offline-handoff.ps1"
+).read_text(encoding="utf-8")
 assert "grep -Fxq false" not in router, "GitHub API bool must be decoded as JSON"
 assert "jq -e '(.errors == null)" in router
 assert "needs.host.outputs.operation == 'STATUS'" in router

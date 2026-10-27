@@ -101,6 +101,30 @@ $console = [string]$before['console_path']
 if (-not (Test-Path -LiteralPath $console -PathType Leaf)) {
   throw 'FIRST_USE_OFFLINE_BLOCKED: exact installed native console missing'
 }
+# Prove the actual installed SYSTEM task before any one-shot release BEGIN.
+# Task identity and executable must match immutable native doctor evidence.
+$task = Get-ScheduledTask -TaskName 'EdgePlatformPrivilegedDispatch' -ErrorAction Stop
+try {
+  $principal = [string]$task.Principal.UserId
+  $systemSid = if ($principal -ceq 'S-1-5-18') { 'S-1-5-18' } else {
+    ([Security.Principal.NTAccount]::new($principal)).Translate(
+      [Security.Principal.SecurityIdentifier]).Value
+  }
+  $taskAction = @($task.Actions)[0]
+  $taskConsole = [IO.Path]::GetFullPath(([string]$taskAction.Execute).Trim('"'))
+  $installedConsole = [IO.Path]::GetFullPath($console)
+} catch {
+  throw 'FIRST_USE_OFFLINE_BLOCKED: SYSTEM task identity not provable'
+}
+if ($systemSid -cne 'S-1-5-18' -or
+    [string]$task.Principal.RunLevel -cne 'Highest' -or
+    [string]$task.Principal.LogonType -cne 'ServiceAccount' -or
+    $task.State -cnotin @('Ready','Running') -or
+    @($task.Actions).Count -ne 1 -or
+    $taskConsole -ine $installedConsole -or
+    [string]$taskAction.Arguments -cnotmatch '^privileged-dispatch --install-root "?C:\\sing-box"?$') {
+  throw 'FIRST_USE_OFFLINE_BLOCKED: installed SYSTEM task or immutable action mismatched'
+}
 $commands = @(& $console --help)
 if ($LASTEXITCODE -ne 0 -or -not ($commands | Where-Object { $_ -match '\bprivileged-offline-activate\b' })) {
   throw 'FIRST_USE_OFFLINE_BLOCKED: installed owner has no native offline capability; BEGIN forbidden'

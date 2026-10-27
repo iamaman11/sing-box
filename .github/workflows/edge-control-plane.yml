@@ -388,6 +388,7 @@ jobs:
       command_body: ${{ github.event.comment.body }}
       source_comment_id: ${{ github.event.comment.id }}
       report_comment_id: ${{ needs.host_report.outputs.comment_id }}
+      release_set_sha256: ${{ needs.host.outputs.diagnostic_release_set_sha256 }}
 
   host_report:
     # Post an immediate, bounded Actions run pointer. An offline runner
