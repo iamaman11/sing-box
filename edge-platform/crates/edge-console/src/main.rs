@@ -3538,6 +3538,26 @@ fn converge_application_acl(install_root: &Path) -> Result<(), String> {
         &install_root.join("exchange").join("results"),
         &["/grant:r", "*S-1-5-20:(OI)(CI)RX", "/Q"],
     )?;
+    // Reuse the existing host_journal for the SYSTEM owner, but isolate
+    // journal, Worker pin and Ed25519 private key from the controller service
+    // and GitHub runner. This is not a second scheduler/daemon/state store.
+    // No trust/key is synthesized by the installer.
+    for path in [
+        install_root.join("native-host"),
+        install_root.join("native-host").join("journal"),
+    ] {
+        fs::create_dir_all(&path)
+            .map_err(|_| "HOST_WINDOWS_SYSTEM_NATIVE_ROOT_CREATE_FAILED")?;
+        run_icacls(&path, &["/inheritance:r", "/Q"])?;
+        run_icacls(&path, &[
+            "/grant:r",
+            "*S-1-5-18:(OI)(CI)F",
+            "*S-1-5-32-544:(OI)(CI)F",
+            "/Q",
+        ])?;
+        run_icacls(&path, &["/remove:g", "*S-1-5-20", "/Q"])?;
+        run_icacls(&path, &["/setowner", "*S-1-5-32-544", "/Q"])?;
+    }
     Ok(())
 }
 
