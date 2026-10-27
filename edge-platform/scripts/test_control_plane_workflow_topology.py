@@ -419,7 +419,7 @@ assert ('"${HOST_OPERATION}" = APPLY_PREFLIGHT ]]; then' in native
         or '"${TARGET_KIND}" = WINDOWS && "${HOST_OPERATION}" = APPLY_PREFLIGHT' in native)
 # Windows cannot be dispatched by runner unless current Git public trust
 # was pinned at PREPARE, and only one existing SYSTEM task may mutate SCM.
-assert "verify_windows_signed_git_prerequisites(selected)" in host_command
+assert "verify_windows_signed_git_prerequisites(selected)" in host_source
 assert "HOST_WINDOWS_GIT_RECEIPT_REGISTRATION_REQUIRED" in Path(
     "edge-platform/crates/edge-shared-types/src/host_lifecycle.rs"
 ).read_text(encoding="utf-8")
