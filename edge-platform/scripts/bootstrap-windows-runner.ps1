@@ -7,7 +7,12 @@ param(
     [string]$RunnerRoot = "C:\sing-box-runner",
     [string]$ApplicationRoot = "C:\sing-box",
     [string]$RunnerName = "",
-    [string]$HostId = ""
+    [string]$HostId = "",
+    # Narrow one-time SYSTEM task repair on an ALREADY INSTALLED exact release.
+    # Requires local interactive Administrator; does not install or update
+    # application, credential identity, GitHub runner, SCM, TUN or network.
+    [switch]$RepairPrivilegedTaskOnly,
+    [string]$ExpectedInstalledReleaseSetSha256 = ""
 )
 
 Set-StrictMode -Version Latest
@@ -162,8 +167,26 @@ function Converge-ControllerService {
 }
 
 
+function Assert-ExactPrivilegedDispatcher {
+    param([Parameter(Mandatory)][string]$Console)
+    $task = Get-ScheduledTask -TaskName $PrivilegedTaskName -ErrorAction Stop
+    $sid = Resolve-IdentitySid -Identity ([string]$task.Principal.UserId)
+    if ($sid -cne $SystemSid -or
+        [string]$task.Principal.LogonType -cne 'ServiceAccount' -or
+        [string]$task.Principal.RunLevel -cne 'Highest' -or
+        $task.State -cnotin @('Ready','Running') -or
+        @($task.Actions).Count -ne 1 -or
+        [string]@($task.Actions)[0].Execute.Trim('"') -ine $Console -or
+        [string]@($task.Actions)[0].Arguments -cnotmatch '^privileged-dispatch --install-root "?C:\\sing-box"?$') {
+        throw 'WINDOWS_FIRST_USE_SYSTEM_TASK_IDENTITY_INVALID'
+    }
+}
 function Register-PrivilegedDispatcher {
-    $console = Join-Path $ApplicationRoot "releases\$ReleaseSetSha256\bin\edge-console.exe"
+    param(
+        [string]$ExactInstalledReleaseSetSha256 = $ReleaseSetSha256,
+        [switch]$CreateOnly
+    )
+    $console = Join-Path $ApplicationRoot "releases\$ExactInstalledReleaseSetSha256\bin\edge-console.exe"
     if (-not (Test-Path -LiteralPath $console -PathType Leaf)) {
         throw "Exact immutable privileged console is missing: $console"
     }
@@ -184,18 +207,19 @@ function Register-PrivilegedDispatcher {
         -ExecutionTimeLimit (New-TimeSpan -Minutes 10) `
         -StartWhenAvailable
 
-    Register-ScheduledTask `
-        -TaskName $PrivilegedTaskName `
-        -Action $action `
-        -Trigger $trigger `
-        -Principal $principal `
-        -Settings $settings `
-        -Force | Out-Null
-
-    $task = Get-ScheduledTask -TaskName $PrivilegedTaskName
-    if ((Resolve-IdentitySid -Identity ([string]$task.Principal.UserId)) -ne $SystemSid) {
-        throw "Privileged dispatcher task is not owned by LocalSystem SID"
+    $register = @{
+        TaskName = $PrivilegedTaskName
+        Action = $action
+        Trigger = $trigger
+        Principal = $principal
+        Settings = $settings
+        ErrorAction = 'Stop'
     }
+    # This first-use repair NEVER overwrites an existing SYSTEM task. If the
+    # task appears between preflight and registration, fail closed.
+    if (-not $CreateOnly) { $register.Force = $true }
+    Register-ScheduledTask @register | Out-Null
+    Assert-ExactPrivilegedDispatcher -Console $console
 }
 function Get-RunnerService {
     $serviceMarker = Join-Path $RunnerRoot ".service"
@@ -278,6 +302,101 @@ function Register-Runner {
 Assert-Administrator
 Assert-IsolatedRoots
 Assert-MainProtected
+if ($RepairPrivilegedTaskOnly) {
+    # Reuse the existing bootstrap function, but constrain it to the ONLY
+    # missing privileged task. No installed ReleaseSet is replaced.
+    if ($ExpectedInstalledReleaseSetSha256 -cnotmatch '^[0-9a-f]{64}$') {
+        throw 'WINDOWS_FIRST_USE_INSTALLED_RELEASE_REQUIRED'
+    }
+    $headers = @{
+        Accept = 'application/vnd.github+json'
+        'User-Agent' = 'sing-box-windows-task-first-use'
+    }
+    $published = Invoke-RestMethod -Method Get `
+        -Uri "https://api.github.com/repos/$Repository/releases/tags/edge-release-$ReleaseSetSha256" `
+        -Headers $headers -ErrorAction Stop
+    if ([string]$published.target_commitish -cne $AcceptedRevision -or
+        [bool]$published.draft -or [bool]$published.prerelease -or
+        @($published.assets | Where-Object { $_.name -eq 'release-set.pb' }).Count -ne 1) {
+        throw 'WINDOWS_FIRST_USE_CANONICAL_RELEASE_UNPROVEN'
+    }
+    $root = [IO.Path]::GetFullPath($ApplicationRoot).TrimEnd('\')
+    $doctor = Join-Path $root 'bin\edge-diagnostic.exe'
+    $current = Join-Path $root 'current.pb'
+    if (-not (Test-Path -LiteralPath $doctor -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $current -PathType Leaf)) {
+        throw 'WINDOWS_FIRST_USE_INSTALLED_DOCTOR_MISSING'
+    }
+    $v = @{}
+    $raw = @(& $doctor doctor $current)
+    if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_FIRST_USE_INSTALLED_DOCTOR_FAILED' }
+    foreach ($row in $raw) {
+        $pair = ([string]$row).Split('=',2)
+        if ($pair.Count -eq 2) { $v[$pair[0]] = $pair[1] }
+    }
+    if ([string]$v['exact_release_files'] -cne 'PASS' -or
+        [string]$v['release_set_sha256'] -cne $ExpectedInstalledReleaseSetSha256 -or
+        [string]$v['windows_datapath_mode'] -cne 'ProxyOnly' -or
+        [string]$v['scm_state'] -cne 'Stopped' -or
+        [string]$v['scm_start_type'] -cne 'OnDemand' -or
+        [string]$v['managed_tun_present'] -cne 'false' -or
+        [string]$v['managed_singbox_process_count'] -cne '0' -or
+        [string]$v['orphan_singbox_process_count'] -cne '0' -or
+        [string]$v['conflicting_singbox_process_count'] -cne '0' -or
+        [string]$v['unknown_singbox_process_count'] -cne '0') {
+        throw 'WINDOWS_FIRST_USE_STABLE_STOPPED_OWNER_REQUIRED'
+    }
+    $console = Join-Path $root "releases\$ExpectedInstalledReleaseSetSha256\bin\edge-console.exe"
+    if ([string]$v['console_path'] -ine $console -or
+        -not (Test-Path -LiteralPath $console -PathType Leaf) -or
+        ((Get-Item -LiteralPath $console).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw 'WINDOWS_FIRST_USE_IMMUTABLE_CONSOLE_UNPROVEN'
+    }
+    $bootstrapInstaller = Join-Path $root 'bootstrap\install-windows-release.ps1'
+    if (-not (Test-Path -LiteralPath $bootstrapInstaller -PathType Leaf) -or
+        ((Get-Item -LiteralPath $bootstrapInstaller).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw 'WINDOWS_FIRST_USE_OFFLINE_INSTALLER_PREREQUISITE_MISSING'
+    }
+    $service = Get-CimInstance Win32_Service -Filter "Name='EdgePlatformController'" -ErrorAction Stop
+    if ($null -eq $service -or [string]$service.State -cne 'Stopped' -or
+        [string]$service.StartMode -cne 'Manual') {
+        throw 'WINDOWS_FIRST_USE_SCM_STOPPED_MANUAL_REQUIRED'
+    }
+    $runnerService = Get-RunnerService
+    if ($null -eq $runnerService -or [string]$runnerService.State -cne 'Running') {
+        throw 'WINDOWS_FIRST_USE_NETWORKSERVICE_RUNNER_UNPROVEN'
+    }
+
+    $existing = Get-ScheduledTask -TaskName $PrivilegedTaskName -ErrorAction SilentlyContinue
+    if ($null -ne $existing) {
+        Assert-ExactPrivilegedDispatcher -Console $console
+        Write-Output 'windows_privileged_task_first_use=NOOP_EXISTING_EXACT'
+    } else {
+        Register-PrivilegedDispatcher -ExactInstalledReleaseSetSha256 $ExpectedInstalledReleaseSetSha256 -CreateOnly
+        Write-Output 'windows_privileged_task_first_use=CREATED_SYSTEM_OWNER_ONLY'
+    }
+    # Physical native re-observation; unknown poststate is NOT retried.
+    $after = @{}
+    foreach ($row in @(& $doctor doctor $current)) {
+        $pair = ([string]$row).Split('=',2)
+        if ($pair.Count -eq 2) { $after[$pair[0]] = $pair[1] }
+    }
+    if ($LASTEXITCODE -ne 0 -or
+        [string]$after['release_set_sha256'] -cne $ExpectedInstalledReleaseSetSha256 -or
+        [string]$after['scm_state'] -cne 'Stopped' -or
+        [string]$after['managed_tun_present'] -cne 'false') {
+        throw 'WINDOWS_FIRST_USE_TASK_POSTSTATE_UNKNOWN_NO_REPLAY'
+    }
+    Assert-ExactPrivilegedDispatcher -Console $console
+    Write-Output 'windows_privileged_task_authority=LOCALSYSTEM_SID_18'
+    Write-Output 'windows_privileged_task_release_unchanged=true'
+    Write-Output 'windows_privileged_task_scm_unchanged=Stopped'
+    Write-Output 'windows_privileged_task_tun_dns_route_mutations=0'
+    return
+}
+if ($ExpectedInstalledReleaseSetSha256) {
+    throw 'WINDOWS_FIRST_USE_INSTALLED_RELEASE_ONLY_VALID_FOR_TASK_REPAIR'
+}
 Install-InitialApplicationAuthority
 Converge-ControllerService
 Install-CredentialAccessIdentity
