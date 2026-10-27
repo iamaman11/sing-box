@@ -186,8 +186,14 @@ assert "HOST_OPERATION == 'APPLY_PREFLIGHT'" in native
 # Operator drift evidence must come from the Ed25519-verified root snapshot,
 # and can never be substituted by the runner's unauthenticated observation.
 host_readback=Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(encoding="utf-8")
-signed_start=host_readback.index("let accepted = edge_shared_types::host_diagnostic_snapshot::verify(")
-signed_proof=host_readback.index("host_native_snapshot_proof=VERIFIED_ROOT_SIGNED_READ_ONLY", signed_start)
+signed_start=host_readback.index("edge_shared_types::host_diagnostic_snapshot::verify_installed_read_only(")
+signed_proof=host_readback.index("let snapshot_proof = if matches_current_release {", signed_start)
+assert '"VERIFIED_ROOT_SIGNED_READ_ONLY"' in host_readback[signed_proof:]
+assert '"VERIFIED_ROOT_SIGNED_STALE_RELEASE_READ_ONLY"' in host_readback[signed_proof:]
+assert "host_native_snapshot_proof={snapshot_proof}" in host_readback[signed_proof:]
+assert "INSTALLED_RELEASE_DRIFT_CURRENT_STATE_UNPROVEN" in host_readback[signed_proof:]
+assert "ROOT_SIGNED_INSTALLED_CLAIM_ONLY" in host_readback[signed_proof:]
+assert "native_snapshot_proof" in host_readback[signed_proof:]
 expected=host_readback.index("host_native_snapshot_bundle_expected_sha256=", signed_proof)
 observed=host_readback.index("host_native_snapshot_bundle_observed_sha256=", expected)
 match=host_readback.index("host_native_snapshot_bundle_matches=", observed)
