@@ -649,6 +649,72 @@ async fn read_owned_edge_network_id(docker: &Docker, host: &FleetHost) -> Result
     Ok(id)
 }
 
+/// One native Worker-authorized endpoint repair effector for both START and
+/// REPLACE. Docker IDs, network owner and alias drift are re-proven after
+/// the durable BEGIN. Lost Engine ACK never triggers a retry.
+async fn apply_owned_vm_service_aliases_once(
+    docker: &Docker,
+    host: &FleetHost,
+    owned: &[OwnedVmContainer],
+    network_id: &str,
+    aliases: &[String],
+) -> Result<(), String> {
+    if !aliases.is_empty() {
+        use bollard::models::{NetworkConnectRequest, NetworkDisconnectRequest};
+        if read_owned_edge_network_id(docker, host).await?.as_str() != network_id
+            || missing_owned_vm_service_aliases(docker, host, owned, network_id).await?
+                != aliases
+        {
+            return Err("HOST_VM_ALIAS_PRESTATE_CHANGED_NO_REPLAY".into());
+        }
+        for service in aliases {
+            let container = owned
+                .iter()
+                .find(|item| &item.service == service && item.running)
+                .ok_or("HOST_VM_ALIAS_REGISTERED_OWNER_MISSING_NO_REPLAY")?;
+            docker
+                .disconnect_network(
+                    network_id,
+                    NetworkDisconnectRequest {
+                        container: container.id.clone(),
+                        force: Some(false),
+                    },
+                )
+                .await
+                .map_err(|_| "HOST_VM_ALIAS_DISCONNECT_UNCERTAIN_NO_REPLAY")?;
+            docker
+                .connect_network(
+                    network_id,
+                    NetworkConnectRequest {
+                        container: container.id.clone(),
+                        endpoint_config: Some(native_vm_service_endpoint(network_id, service)),
+                    },
+                )
+                .await
+                .map_err(|_| "HOST_VM_ALIAS_CONNECT_UNCERTAIN_NO_REPLAY")?;
+            let inspected = docker
+                .inspect_container(&container.id, None)
+                .await
+                .map_err(|_| "HOST_VM_ALIAS_POSTSTATE_UNPROVEN_NO_REPLAY")?;
+            let network_name = format!("{}_edge_net", host.vm_containers[0].compose_project);
+            if inspected.id.as_deref() != Some(container.id.as_str())
+                || !exact_owned_network_attachment(
+                    inspected
+                        .network_settings
+                        .as_ref()
+                        .and_then(|settings| settings.networks.as_ref()),
+                    &network_name,
+                    network_id,
+                    service,
+                )
+            {
+                return Err("HOST_VM_ALIAS_POSTSTATE_UNPROVEN_NO_REPLAY".into());
+            }
+        }
+    }
+    Ok(())
+}
+
 /// Reuse the same authoritative Docker/resource report for historical
 /// recovery and the next fresh APPLY. The root caller owns the lock; this
 /// function performs NO effect. Validate network ownership and attachment
@@ -861,61 +927,18 @@ pub(crate) async fn apply_native_vm_run_once(
     // or touch the daemon outside this Worker-signed root-owned journal.
     // A lost Docker ACK leaves BEGIN pending, never silently retried.
     if !plan.alias_repairs.is_empty() {
-        use bollard::models::{NetworkConnectRequest, NetworkDisconnectRequest};
         let network_id = plan
             .edge_network_id
             .as_deref()
             .ok_or("HOST_VM_ALIAS_PLAN_NETWORK_UNPROVEN_NO_REPLAY")?;
-        if read_owned_edge_network_id(&docker, host).await?.as_str() != network_id
-            || missing_owned_vm_service_aliases(&docker, host, &owned, network_id).await?
-                != plan.alias_repairs
-        {
-            return Err("HOST_VM_ALIAS_PRESTATE_CHANGED_NO_REPLAY".into());
-        }
-        for service in &plan.alias_repairs {
-            let container = owned
-                .iter()
-                .find(|item| &item.service == service && item.running)
-                .ok_or("HOST_VM_ALIAS_REGISTERED_OWNER_MISSING_NO_REPLAY")?;
-            docker
-                .disconnect_network(
-                    network_id,
-                    NetworkDisconnectRequest {
-                        container: container.id.clone(),
-                        force: Some(false),
-                    },
-                )
-                .await
-                .map_err(|_| "HOST_VM_ALIAS_DISCONNECT_UNCERTAIN_NO_REPLAY")?;
-            docker
-                .connect_network(
-                    network_id,
-                    NetworkConnectRequest {
-                        container: container.id.clone(),
-                        endpoint_config: Some(native_vm_service_endpoint(network_id, service)),
-                    },
-                )
-                .await
-                .map_err(|_| "HOST_VM_ALIAS_CONNECT_UNCERTAIN_NO_REPLAY")?;
-            let inspected = docker
-                .inspect_container(&container.id, None)
-                .await
-                .map_err(|_| "HOST_VM_ALIAS_POSTSTATE_UNPROVEN_NO_REPLAY")?;
-            let network_name = format!("{}_edge_net", host.vm_containers[0].compose_project);
-            if inspected.id.as_deref() != Some(container.id.as_str())
-                || !exact_owned_network_attachment(
-                    inspected
-                        .network_settings
-                        .as_ref()
-                        .and_then(|settings| settings.networks.as_ref()),
-                    &network_name,
-                    network_id,
-                    service,
-                )
-            {
-                return Err("HOST_VM_ALIAS_POSTSTATE_UNPROVEN_NO_REPLAY".into());
-            }
-        }
+        apply_owned_vm_service_aliases_once(
+            &docker,
+            host,
+            &owned,
+            network_id,
+            &plan.alias_repairs,
+        )
+        .await?;
     }
     if let Some(service) = plan.create_missing.as_deref() {
         if plan.step != FleetHostPlannedStep::Start
