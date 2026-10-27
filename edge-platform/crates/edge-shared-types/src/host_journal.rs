@@ -686,7 +686,6 @@ fn known_runtime_only_historical_reasons(observed: &crate::FleetNativeObservatio
                 code.as_str(),
                 "DIRECT_EGRESS_FAILED"
                     | "WARP_EGRESS_FAILED"
-                    | "WARP_CLIENT_NOT_CONNECTED"
                     | "WARP_CONSUMERS_ABSENT"
                     | "WARP_LINE1_CONSUMER_EGRESS_FAILED"
                     | "WARP_LINE2_CONSUMER_EGRESS_FAILED"
