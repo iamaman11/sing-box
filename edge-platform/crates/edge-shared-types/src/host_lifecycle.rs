@@ -131,7 +131,9 @@ pub fn validate_native_observation(
 /// egress, absent consumers/ports, missing resources, unknown and truncated
 /// evidence can conceal an incomplete Docker effect and must remain pending.
 /// This does not claim that the original effect succeeded or authorize replay.
-pub(crate) fn known_runtime_only_historical_reasons(observed: &crate::FleetNativeObservation) -> bool {
+pub(crate) fn known_runtime_only_historical_reasons(
+    observed: &crate::FleetNativeObservation,
+) -> bool {
     if !observed.runtime_ready_proven {
         return false;
     }
