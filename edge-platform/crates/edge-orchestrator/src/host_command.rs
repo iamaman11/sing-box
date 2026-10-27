@@ -3249,8 +3249,9 @@ mod tests {
         assert_eq!(stop.action, FleetHostAction::Stop as i32);
         assert_eq!(stop.requested_mode, FleetHostMode::Unspecified as i32);
         let stop_output = std::fs::read_to_string(&file).unwrap();
-        assert!(stop_output.contains("host_requested_operation=STOP"));
-        assert!(stop_output.contains("host_native_mutation_authorized=false"));
+        // GitHub workflow outputs contain only routing scalars. Human-readable
+        // host_requested_operation and authorization state print to stdout,
+        // never a runner-owned side channel or journal.
         assert!(stop_output.contains("operation=APPLY_PREFLIGHT"));
         // Duplicate source comment / path never overwrites a first proposal.
         assert_eq!(
