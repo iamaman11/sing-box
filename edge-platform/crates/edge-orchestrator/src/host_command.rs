@@ -601,6 +601,25 @@ pub(crate) fn run(
                     verified_observation.observed_at_unix
                 );
                 println!("host_native_snapshot_verdict={signed_verdict}");
+                // These existing Protobuf reason codes came from the
+                // Ed25519-verified Root snapshot, never from runner stdout.
+                // Exact signature and schema validation already bound them
+                // to the machine, operation, release and observation time.
+                println!(
+                    "host_native_snapshot_runtime_ready_proven={}",
+                    verified_observation.runtime_ready_proven
+                );
+                println!(
+                    "host_native_snapshot_runtime_ready={}",
+                    verified_observation.runtime_ready
+                );
+                println!(
+                    "host_native_snapshot_reason_count={}",
+                    verified_observation.reason_codes.len()
+                );
+                for (index, code) in verified_observation.reason_codes.iter().enumerate() {
+                    println!("host_native_snapshot_reason_{index}_code={code}");
+                }
                 // Report exact logical release drift from the Ed25519-verified
                 // Root Agent observation, never from the runner-copied readback.
                 // A digest pair is diagnosis only: it cannot admit an APPLY or
@@ -1923,7 +1942,6 @@ fn validate_readback_scope(
         .map_err(|_| "HOST_READBACK_OWNER_INVALID")?;
     if owner == FleetNativeOwnerState::Unproven
         || proof == FleetNativeReleaseProof::Unproven
-        || !observed.reason_codes.is_empty()
     {
         return Ok("UNPROVEN_NATIVE_OWNER_OR_RUNTIME");
     }
@@ -1950,6 +1968,10 @@ fn validate_readback_scope(
     }
     if !observed.runtime_ready_proven || !observed.runtime_ready {
         return Ok("UNPROVEN_RUNTIME_READINESS");
+    }
+    // A positive runtime bit cannot override independently observed defects.
+    if !observed.reason_codes.is_empty() {
+        return Ok("UNPROVEN_NATIVE_OWNER_OR_RUNTIME");
     }
     Ok("LOCAL_OBSERVATION_ONLY_NOT_PHYSICAL_ACCEPTANCE")
 }
@@ -2938,6 +2960,26 @@ mod tests {
         assert_eq!(
             validate_readback_scope(&vm_host, &o, &"a".repeat(64), None, 1400).unwrap(),
             "VM_EXPECTED_BUNDLE_UNPROVEN"
+        );
+        // Signed reason codes must not conceal source parity, and a
+        // source-parity match must not conceal runtime failure.
+        o.reason_codes = vec!["WARP_EGRESS_FAILED".into()];
+        o.runtime_ready = false;
+        assert_eq!(
+            validate_readback_scope(&vm_host, &o, &"a".repeat(64), Some(&[0xaa; 32]), 1400)
+                .unwrap(),
+            "VM_BUNDLE_LOGICAL_DIGEST_MISMATCH"
+        );
+        assert_eq!(
+            validate_readback_scope(&vm_host, &o, &"a".repeat(64), Some(&[0xbb; 32]), 1400)
+                .unwrap(),
+            "UNPROVEN_RUNTIME_READINESS"
+        );
+        o.runtime_ready = true;
+        assert_eq!(
+            validate_readback_scope(&vm_host, &o, &"a".repeat(64), Some(&[0xbb; 32]), 1400)
+                .unwrap(),
+            "UNPROVEN_NATIVE_OWNER_OR_RUNTIME"
         );
     }
 
