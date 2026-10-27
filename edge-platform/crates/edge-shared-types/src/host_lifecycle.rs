@@ -148,7 +148,10 @@ pub(crate) fn known_partial_vm_resource_baseline(
     };
     if host.kind != FleetHostKind::Vm as i32
         || observed.host_kind != host.kind
-        || observed.owner_state != FleetNativeOwnerState::Stopped as i32
+        || !matches!(
+            FleetNativeOwnerState::try_from(observed.owner_state),
+            Ok(FleetNativeOwnerState::Running | FleetNativeOwnerState::Stopped)
+        )
         || !observed.runtime_ready_proven
         || observed.runtime_ready
         || !observed
@@ -1631,7 +1634,9 @@ mod partial_vm_recovery_tests {
         let observed = crate::FleetNativeObservation {
             schema_version: 1,
             host_kind: host.kind,
-            owner_state: FleetNativeOwnerState::Stopped as i32,
+            // The VM is RUNNING if other registered containers remain live.
+            // Only the typed resource readback may prove a partial STOP.
+            owner_state: FleetNativeOwnerState::Running as i32,
             release_proof: FleetNativeReleaseProof::ApplicationBundle as i32,
             observed_at_unix: 100,
             observed_release_sha256: vec![3; 32],
@@ -1653,6 +1658,9 @@ mod partial_vm_recovery_tests {
     #[test]
     fn partial_recovery_rejects_unknown_or_foreign_effects() {
         let (host, baseline) = fixture();
+        let mut changed = baseline.clone();
+        changed.owner_state = FleetNativeOwnerState::Unproven as i32;
+        assert!(!known_partial_vm_resource_baseline(&host, &changed));
         let mut changed = baseline.clone();
         changed.vm_recovery_resources.as_mut().unwrap().resources[0].ownership_proven = false;
         assert!(!known_partial_vm_resource_baseline(&host, &changed));
