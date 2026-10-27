@@ -165,7 +165,7 @@ pub(super) async fn inspect_datapath_readiness(
     };
     state.mesh_runtime_ready = mesh_ready;
 
-    direct_ready && warp_ready && mesh_ready != Some(false)
+    direct_ready && warp_failure.is_none() && mesh_ready != Some(false)
 }
 
 pub(super) fn wait_for_warp_datapath() -> Result<(), String> {
