@@ -342,6 +342,16 @@ fn native_runtime_reason_code(reason: &str) -> &'static str {
         "DIRECT_EGRESS_FAILED"
     } else if reason == "WARP egress datapath probe failed" {
         "WARP_EGRESS_FAILED"
+    } else if reason == "WARP client not connected" {
+        "WARP_CLIENT_NOT_CONNECTED"
+    } else if reason == "WARP consumers absent" {
+        "WARP_CONSUMERS_ABSENT"
+    } else if reason == "WARP Line1 consumer egress failed" {
+        "WARP_LINE1_CONSUMER_EGRESS_FAILED"
+    } else if reason == "WARP Line2 consumer egress failed" {
+        "WARP_LINE2_CONSUMER_EGRESS_FAILED"
+    } else if reason == "WARP consumer identity unproven" {
+        "WARP_CONSUMER_IDENTITY_UNPROVEN"
     } else if reason.starts_with("expected containers are not running: ") {
         "CONTAINER_NOT_RUNNING"
     } else if reason.starts_with("expected TCP ports are not listening: ") {
@@ -2663,6 +2673,18 @@ mod native_runtime_diagnostic_code_tests {
         assert_eq!(
             native_runtime_reason_code("WARP egress datapath probe failed"),
             "WARP_EGRESS_FAILED"
+        );
+        assert_eq!(
+            native_runtime_reason_code("WARP client not connected"),
+            "WARP_CLIENT_NOT_CONNECTED"
+        );
+        assert_eq!(
+            native_runtime_reason_code("WARP Line1 consumer egress failed"),
+            "WARP_LINE1_CONSUMER_EGRESS_FAILED"
+        );
+        assert_eq!(
+            native_runtime_reason_code("WARP Line2 consumer egress failed"),
+            "WARP_LINE2_CONSUMER_EGRESS_FAILED"
         );
         assert_eq!(
             native_runtime_reason_code("expected TCP ports are not listening: 443"),
