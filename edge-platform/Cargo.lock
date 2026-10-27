@@ -362,6 +362,7 @@ dependencies = [
  "edge-shared-types",
  "edge-singbox",
  "ring",
+ "prost",
  "serde_json",
  "rusqlite",
  "tokio",
