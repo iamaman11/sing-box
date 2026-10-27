@@ -156,6 +156,38 @@ pub fn verify(
     Ok(snapshot)
 }
 
+/// Authenticate the *installed owner's* pending-safe read-only snapshot
+/// with the Git-pinned native receipt key, even when its exact installed
+/// ReleaseSet predates current Git desired. This NEVER authorizes APPLY,
+/// upgrades, journal changes or resource parity. A signed historical digest
+/// is an owner observation, not independent proof of a published artifact.
+pub fn verify_installed_read_only(
+    bytes: &[u8],
+    host: &FleetHost,
+    operation_id: &str,
+    current_release_sha256: &[u8],
+    now: u64,
+) -> Result<(FleetNativeDiagnosticSnapshot, bool), &'static str> {
+    if current_release_sha256.len() != 32 {
+        return Err("HOST_SNAPSHOT_EXPECTED_RELEASE_INVALID");
+    }
+    if bytes.is_empty() || bytes.len() > MAX_SNAPSHOT_BYTES {
+        return Err("HOST_SNAPSHOT_SIZE_INVALID");
+    }
+    let claimed = FleetNativeDiagnosticSnapshot::decode(bytes)
+        .map_err(|_| "HOST_SNAPSHOT_PROTO_INVALID")?;
+    if claimed.release_set_sha256.len() != 32
+        || claimed.release_set_sha256.iter().all(|byte| *byte == 0)
+    {
+        return Err("HOST_SNAPSHOT_INSTALLED_RELEASE_INVALID");
+    }
+    // verify() still enforces exact machine/comment, canonical bytes, freshness,
+    // resources and Ed25519 signature, using this Git-pinned owner's key.
+    let accepted = verify(bytes, host, operation_id, &claimed.release_set_sha256, now)?;
+    let current = accepted.release_set_sha256 == current_release_sha256;
+    Ok((accepted, current))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -198,6 +230,107 @@ mod tests {
             validate_scope(&snapshot, &host, "issue1-comment-43", &[5; 32], 100),
             Err("HOST_SNAPSHOT_PENDING_DIAGNOSTIC_INVALID")
         );
+    }
+
+    #[test]
+    fn stale_installed_snapshot_is_signed_read_only_not_current_parity() {
+        use crate::{
+            FleetNativeObservation, FleetNativeOwnerState, FleetNativeReleaseProof,
+            FleetVmContainer, FleetVmCredentialReadback, FleetVmCredentialState,
+            FleetVmResourceReadback, FleetVmResourceReport,
+        };
+        let pair_bytes = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+        let signer = Ed25519KeyPair::from_pkcs8(pair_bytes.as_ref()).unwrap();
+        let resource = FleetVmContainer {
+            container_name: "my-proxy".into(),
+            compose_project: "my-app".into(),
+            compose_service: "proxy".into(),
+        };
+        let host = FleetHost {
+            machine_id: "vm5".into(),
+            kind: FleetHostKind::Vm as i32,
+            native_receipt_public_key: signer.public_key().as_ref().to_vec(),
+            vm_containers: vec![resource.clone()],
+            ..Default::default()
+        };
+        let installed = vec![5; 32];
+        let current = vec![6; 32];
+        let mut snapshot = FleetNativeDiagnosticSnapshot {
+            schema_version: 1,
+            machine_id: "vm5".into(),
+            operation_id: "issue1-comment-42".into(),
+            release_set_sha256: installed.clone(),
+            observation: Some(FleetNativeObservation {
+                schema_version: 1,
+                host_kind: FleetHostKind::Vm as i32,
+                observed_at_unix: 100,
+                owner_state: FleetNativeOwnerState::Running as i32,
+                release_proof: FleetNativeReleaseProof::ApplicationBundle as i32,
+                observed_release_sha256: vec![9; 32],
+                runtime_ready: true,
+                runtime_ready_proven: true,
+                ..Default::default()
+            }),
+            resources: Some(FleetVmResourceReport {
+                schema_version: 2,
+                machine_id: "vm5".into(),
+                observed_at_unix: 100,
+                resources: vec![FleetVmResourceReadback {
+                    resource: Some(resource),
+                    present: true,
+                    ownership_proven: true,
+                    running: true,
+                    running_proven: true,
+                    container_id: "a".repeat(64),
+                    reason_code: "HEALTHY".into(),
+                    observed_reason: crate::FleetVmObservedReason::Healthy as i32,
+                    health: "HEALTHY".into(),
+                    ..Default::default()
+                }],
+                credential: Some(FleetVmCredentialReadback {
+                    state: FleetVmCredentialState::ActiveLocalValid as i32,
+                    active_generation: 42,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        sign(&mut snapshot, &host, pair_bytes.as_ref(), 100).unwrap();
+        let bytes = snapshot.encode_to_vec();
+        let (signed_old, parity) = verify_installed_read_only(
+            &bytes, &host, "issue1-comment-42", &current, 100,
+        )
+        .unwrap();
+        assert_eq!(signed_old.release_set_sha256, installed);
+        assert!(!parity);
+        assert!(verify(&bytes, &host, "issue1-comment-42", &current, 100).is_err());
+        assert!(verify_installed_read_only(
+            &bytes, &host, "issue1-comment-42", &installed, 100,
+        ).unwrap().1);
+        assert_eq!(verify_installed_read_only(
+            &bytes, &host, "issue1-comment-43", &current, 100,
+        ).unwrap_err(), "HOST_SNAPSHOT_CORRELATION_OR_RELEASE_INVALID");
+        let other = FleetHost {
+            machine_id: "other".into(),
+            ..host.clone()
+        };
+        assert_eq!(verify_installed_read_only(
+            &bytes, &other, "issue1-comment-42", &current, 100,
+        ).unwrap_err(), "HOST_SNAPSHOT_CORRELATION_OR_RELEASE_INVALID");
+        let mut tampered = snapshot.clone();
+        tampered.release_set_sha256 = vec![7; 32];
+        assert_eq!(verify_installed_read_only(
+            &tampered.encode_to_vec(), &host, "issue1-comment-42", &current, 100,
+        ).unwrap_err(), "HOST_SNAPSHOT_SIGNATURE_INVALID");
+        let mut other_key = host.clone();
+        other_key.native_receipt_public_key = vec![8; 32];
+        assert_eq!(verify_installed_read_only(
+            &bytes, &other_key, "issue1-comment-42", &current, 100,
+        ).unwrap_err(), "HOST_SNAPSHOT_SIGNATURE_INVALID");
+        assert_eq!(verify_installed_read_only(
+            &bytes, &host, "issue1-comment-42", &current, 501,
+        ).unwrap_err(), "HOST_SNAPSHOT_STALE_OR_SCOPE_INVALID");
     }
 
     #[test]
