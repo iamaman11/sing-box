@@ -706,6 +706,12 @@ fn verify_historical_partial_recovery_state(
             .observed_release_sha256
             .iter()
             .all(|byte| *byte == 0)
+        // A healthy readback at the current source is not a missing-ACK
+        // datapath recovery proof for a different old BEGIN. Same-release
+        // historical INCOMPLETE needs a specific observed runtime defect.
+        || (observed.observed_release_sha256 == current_release
+            && (observed.runtime_ready
+                || !crate::host_lifecycle::known_runtime_only_historical_reasons(observed)))
     {
         return Err("HOST_NATIVE_HISTORICAL_BASELINE_UNPROVEN_NO_REPLAY");
     }

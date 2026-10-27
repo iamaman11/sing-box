@@ -757,8 +757,10 @@ mod tests {
         assert_eq!(proposal.reason_code, "RELEASE_MISMATCH_PROPOSAL_ONLY");
         assert!(!proposal.owner_attested && !proposal.mutation_authorized);
 
-        // Current release, generic network failure, missing consumers/ports,
-        // unknown resources and failed trust must never trigger another apply.
+        // Generic network failure, missing consumers/ports, unknown
+        // resources and failed trust must never trigger another apply.
+        // Same-release known datapath defect is now an explicitly scoped
+        // START proposal only, not authorization or a replay.
         for fault in [
             "WARP_EGRESS_FAILED",
             "WARP_CONSUMERS_ABSENT",
@@ -784,7 +786,7 @@ mod tests {
         );
         assert_eq!(
             propose_host_transition(&vm, Some(&observed), &[9; 32], &[1; 32], 1000).step,
-            FleetHostPlannedStep::Blocked as i32
+            FleetHostPlannedStep::Start as i32
         );
         observed.owner_state = FleetNativeOwnerState::Unproven as i32;
         assert_eq!(
