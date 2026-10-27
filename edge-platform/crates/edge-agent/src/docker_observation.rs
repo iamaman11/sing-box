@@ -4052,6 +4052,53 @@ mod vm_native_start_order_tests {
     }
 
     #[test]
+    fn release_upgrade_accepts_missing_alias_only_with_exact_network_identity() {
+        let id = "a".repeat(64);
+        let mut endpoint = native_vm_service_endpoint(&id, "line1-gateway");
+        let mut networks = HashMap::from([("vultr-edge_edge_net".into(), endpoint.clone())]);
+        assert!(exact_owned_network_identity(
+            Some(&networks),
+            "vultr-edge_edge_net",
+            &id
+        ));
+        assert!(exact_owned_network_attachment(
+            Some(&networks),
+            "vultr-edge_edge_net",
+            &id,
+            "line1-gateway"
+        ));
+        endpoint.aliases = None;
+        networks.insert("vultr-edge_edge_net".into(), endpoint.clone());
+        assert!(exact_owned_network_identity(
+            Some(&networks),
+            "vultr-edge_edge_net",
+            &id
+        ));
+        assert!(!exact_owned_network_attachment(
+            Some(&networks),
+            "vultr-edge_edge_net",
+            &id,
+            "line1-gateway"
+        ));
+        assert!(!exact_owned_network_identity(
+            Some(&networks),
+            "vultr-edge_edge_net",
+            &"b".repeat(64)
+        ));
+        assert!(!exact_owned_network_identity(
+            Some(&networks),
+            "foreign_edge_net",
+            &id
+        ));
+        networks.insert("foreign_edge_net".into(), endpoint);
+        assert!(!exact_owned_network_identity(
+            Some(&networks),
+            "vultr-edge_edge_net",
+            &id
+        ));
+    }
+
+    #[test]
     fn native_docker_service_endpoint_sets_compose_alias() {
         let network_id = "a".repeat(64);
         let warp = native_vm_service_endpoint(&network_id, "warp-egress");
