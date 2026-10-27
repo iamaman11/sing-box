@@ -258,7 +258,7 @@ pub(super) fn probe_warp_service_local() -> bool {
 /// without duplicating probes or publishing curl/warp-cli stdout.
 pub(super) fn probe_warp_egress_failure(running_containers: &[String]) -> Option<&'static str> {
     if !warp_client_connected() {
-        return Some("WARP client not connected");
+        return Some("WARP client connection unproven");
     }
     let consumers = runtime_probe_consumers(running_containers);
     if consumers.is_empty() {
