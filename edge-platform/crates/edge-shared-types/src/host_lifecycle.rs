@@ -1756,5 +1756,4 @@ mod partial_vm_recovery_tests {
             Err("HOST_WINDOWS_SIGNED_KIND_REQUIRED")
         );
     }
-
 }
