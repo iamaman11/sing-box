@@ -574,7 +574,11 @@ pub(crate) fn run(
                 // Never promote a signed historical snapshot to current GO.
                 let (accepted, matches_current_release) =
                     edge_shared_types::host_diagnostic_snapshot::verify_installed_read_only(
-                        &signed, selected, &operation, &release_sha, now,
+                        &signed,
+                        selected,
+                        &operation,
+                        &release_sha,
+                        now,
                     )
                     .map_err(str::to_owned)?;
                 let verified_observation = accepted
@@ -611,13 +615,22 @@ pub(crate) fn run(
                 );
                 println!(
                     "host_native_snapshot_installed_release_sha256={}",
-                    accepted.release_set_sha256.iter()
+                    accepted
+                        .release_set_sha256
+                        .iter()
                         .map(|byte| format!("{byte:02x}"))
                         .collect::<String>()
                 );
-                println!("host_native_snapshot_desired_release_sha256={}",
-                    release_sha.iter().map(|byte| format!("{byte:02x}")).collect::<String>());
-                println!("host_native_snapshot_release_provenance=ROOT_SIGNED_INSTALLED_CLAIM_ONLY");
+                println!(
+                    "host_native_snapshot_desired_release_sha256={}",
+                    release_sha
+                        .iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>()
+                );
+                println!(
+                    "host_native_snapshot_release_provenance=ROOT_SIGNED_INSTALLED_CLAIM_ONLY"
+                );
                 println!("host_native_snapshot_operation_id={operation}");
                 println!(
                     "host_native_snapshot_observed_at_unix={}",
@@ -745,11 +758,7 @@ pub(crate) fn run(
                 println!("host_native_snapshot_replay_allowed=false");
                 println!("host_native_snapshot_mutations=0");
                 if let Some(path) = github_output {
-                    append_host_verifier_output(
-                        path,
-                        "native_snapshot_proof",
-                        snapshot_proof,
-                    )?;
+                    append_host_verifier_output(path, "native_snapshot_proof", snapshot_proof)?;
                 }
             } else if snapshot_comment_id.is_some() {
                 return Err("HOST_SNAPSHOT_PATH_REQUIRED".into());
