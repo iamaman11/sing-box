@@ -672,6 +672,41 @@ jobs:
               echo '~~~'
             } >> "${GITHUB_STEP_SUMMARY}"
           fi
+          if [[ "${TARGET_KIND}" = WINDOWS && "${HOST_OPERATION}" = APPLY_PREFLIGHT &&
+                "${COMMAND_BODY}" =~ ^/host\ (start|stop)\ ${TARGET_MACHINE}$ ]]; then
+            system_dir="${RUNNER_TEMP}/host-windows-system-receipt"
+            mkdir -p "${system_dir}"
+            if gh run download "${GITHUB_RUN_ID}" -R "${GITHUB_REPOSITORY}" \
+                -n "native-windows-receipt-${SOURCE_COMMENT_ID}" -D "${system_dir}" >/dev/null 2>&1; then
+              receipt="${system_dir}/host-result.pb"
+              test -f "${receipt}" && test ! -L "${receipt}"
+              test "$(stat -c '%s' "${receipt}")" -gt 0
+              test "$(stat -c '%s' "${receipt}")" -le 8192
+              exact_intent="${RUNNER_TEMP}/host-windows-exact-intent"
+              mkdir -p "${exact_intent}"
+              gh run download "${GITHUB_RUN_ID}" -R "${GITHUB_REPOSITORY}" \
+                -n "host-intent-${SOURCE_COMMENT_ID}" -D "${exact_intent}"
+              intent="${exact_intent}/host-intent.pb"
+              test -f "${intent}" && test ! -L "${intent}"
+              test "$(stat -c '%s' "${intent}")" -gt 0
+              test "$(stat -c '%s' "${intent}")" -le 8192
+              # Existing VM/Rust receipt verifier, same Git pinned public key.
+              "${owner}" host --hosts-pb "${registry}" \
+                --hosts-sha256 "$(sha256sum "${registry}" | cut -d' ' -f1)" \
+                --github-output "${GITHUB_OUTPUT}" \
+                native-result "${TARGET_MACHINE}" --intent-path "${intent}" \
+                --result-path "${receipt}" \
+                > "${RUNNER_TEMP}/host-system-native-receipt-audit.txt"
+              {
+                echo '### Windows SYSTEM Ed25519 native receipt'
+                echo '~~~text'
+                cat "${RUNNER_TEMP}/host-system-native-receipt-audit.txt"
+                echo '~~~'
+              } >> "${GITHUB_STEP_SUMMARY}"
+            else
+              echo 'windows_system_receipt=MISSING_UNKNOWN_NO_REPLAY' >> "${GITHUB_OUTPUT}"
+            fi
+          fi
           {
             echo '### Exact typed Host readback (UNAUTHENTICATED runner copy)'
             echo '~~~text'
@@ -735,7 +770,9 @@ jobs:
               result=ADMIN_UNVERIFIED_UNKNOWN_NO_REPLAY
             fi
           fi
-          if [[ "${TARGET_KIND}" = VM && "${HOST_OPERATION}" = APPLY_PREFLIGHT ]]; then
+          if [[ ("${TARGET_KIND}" = VM && "${HOST_OPERATION}" = APPLY_PREFLIGHT) ||
+                ("${TARGET_KIND}" = WINDOWS && "${HOST_OPERATION}" = APPLY_PREFLIGHT &&
+                 "${COMMAND_BODY}" =~ ^/host\ (start|stop)\ ${TARGET_MACHINE}$) ]]; then
             # Only the exact Rust Ed25519 verifier can upgrade this result.
             # A successful runner step or unsigned readback never can.
             native_note='Native VM transaction: remote authenticated receipt UNPROVEN.'
