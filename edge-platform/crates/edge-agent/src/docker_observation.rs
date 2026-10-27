@@ -29,7 +29,11 @@ use prost::Message;
 use std::net::IpAddr;
 
 const DOCKER_SOCKET: &str = "unix:///var/run/docker.sock";
+// Fast bounded readback and pre-BEGIN admission remain cheap.
 const DOCKER_API_TIMEOUT_SECONDS: u64 = 6;
+// Native Docker effects may legitimately wait up to 20 seconds for STOP.
+// Their API deadline must outlive that Docker-side grace period.
+const DOCKER_EFFECT_API_TIMEOUT_SECONDS: u64 = 30;
 
 #[derive(Debug, Clone)]
 struct DockerContainerObservation {
@@ -142,16 +146,20 @@ impl DockerObservation {
     }
 }
 
+async fn docker_connection_with_timeout(timeout_seconds: u64) -> Result<Docker, String> {
+    Docker::connect_with_unix(DOCKER_SOCKET, timeout_seconds, API_DEFAULT_VERSION)
+        .map_err(|err| format!("failed to open Docker Engine Unix socket: {err}"))?
+        .negotiate_version()
+        .await
+        .map_err(|err| format!("failed to negotiate Docker Engine API version: {err}"))
+}
+
 async fn docker_connection() -> Result<Docker, String> {
-    Docker::connect_with_unix(
-        DOCKER_SOCKET,
-        DOCKER_API_TIMEOUT_SECONDS,
-        API_DEFAULT_VERSION,
-    )
-    .map_err(|err| format!("failed to open Docker Engine Unix socket: {err}"))?
-    .negotiate_version()
-    .await
-    .map_err(|err| format!("failed to negotiate Docker Engine API version: {err}"))
+    docker_connection_with_timeout(DOCKER_API_TIMEOUT_SECONDS).await
+}
+
+async fn docker_effect_connection() -> Result<Docker, String> {
+    docker_connection_with_timeout(DOCKER_EFFECT_API_TIMEOUT_SECONDS).await
 }
 
 /// Prevent the native lifecycle from ever adopting a same-named container
@@ -658,7 +666,7 @@ pub(crate) async fn apply_native_vm_run_once(
     host: &FleetHost,
     plan: NativeVmRunPlan,
 ) -> Result<(), String> {
-    let docker = docker_connection().await?;
+    let docker = docker_effect_connection().await?;
     let mut owned = owned_application_container_ids(&docker, &host.vm_containers).await?;
     bind_owned_vm_compose_dependencies(stack_dir, &host.vm_containers, &mut owned)?;
     check_owned_vm_snapshot(host, &owned, &plan.identities)?;
@@ -2092,7 +2100,7 @@ pub(crate) async fn apply_native_vm_install_once(
     host: &FleetHost,
     plan: NativeVmInstallPlan,
 ) -> Result<(), String> {
-    let docker = docker_connection().await?;
+    let docker = docker_effect_connection().await?;
     if !owned_application_container_ids(&docker, &host.vm_containers)
         .await?
         .is_empty()
@@ -2687,7 +2695,7 @@ async fn apply_gateway_image_replace_once(
     host: &FleetHost,
     plan: NativeVmGatewayImageReplacePlan,
 ) -> Result<(), String> {
-    let docker = docker_connection().await?;
+    let docker = docker_effect_connection().await?;
     let mut owned = owned_application_container_ids(&docker, &host.vm_containers).await?;
     bind_owned_vm_compose_dependencies(stack_dir, &host.vm_containers, &mut owned)?;
     check_owned_vm_snapshot(host, &owned, &plan.identities)?;
@@ -3261,7 +3269,7 @@ pub(crate) async fn apply_native_vm_scoped_replace_once(
     host: &FleetHost,
     plan: NativeVmScopedReplacePlan,
 ) -> Result<(), String> {
-    let docker = docker_connection().await?;
+    let docker = docker_effect_connection().await?;
     let mut before = owned_application_container_ids(&docker, &host.vm_containers).await?;
     bind_owned_vm_compose_dependencies(stack_dir, &host.vm_containers, &mut before)?;
     check_owned_vm_snapshot(host, &before, &plan.identities)?;

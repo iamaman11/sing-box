@@ -452,7 +452,7 @@ async fn stop_managed_container(
 pub(super) async fn apply_managed_docker_object_once(
     plan: &PreparedManagedDocker,
 ) -> Result<(), String> {
-    let docker = super::super::docker_connection().await?;
+    let docker = super::super::docker_effect_connection().await?;
     let old_spec = plan
         .previous
         .as_ref()
