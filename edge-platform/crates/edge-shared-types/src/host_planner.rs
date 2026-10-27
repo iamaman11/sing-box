@@ -450,6 +450,7 @@ mod tests {
             runtime_ready: state == FleetNativeOwnerState::Running,
             runtime_ready_proven: true,
             reason_codes: vec![],
+            vm_recovery_resources: None,
         }
     }
 

@@ -1167,6 +1167,7 @@ mod tests {
             runtime_ready: true,
             runtime_ready_proven: true,
             reason_codes: vec![],
+            vm_recovery_resources: None,
         };
         assert_eq!(
             verify_read_only_recovery_state(&host, &observed, &[1; 32], 1000),
@@ -1607,6 +1608,7 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(files.len(), 2); // authorized journal + durable per-resource gate
         let stopped_observation = crate::FleetNativeObservation {
+            vm_recovery_resources: None,
             schema_version: 1,
             host_kind: FleetHostKind::Vm as i32,
             observed_at_unix: 1020,
@@ -1766,6 +1768,7 @@ mod tests {
         )
         .unwrap();
         let post = crate::FleetNativeObservation {
+            vm_recovery_resources: None,
             schema_version: 1,
             host_kind: FleetHostKind::Vm as i32,
             observed_at_unix: 1020,
