@@ -2639,12 +2639,18 @@ mod native_runtime_diagnostic_code_tests {
         );
         let full = native_runtime_reason_codes(&state, vec!["VM_DOCKER_UNAVAILABLE"; 12]);
         assert_eq!(full.len(), 12);
-        let unknown = AgentState { ready: false, ..Default::default() };
+        let unknown = AgentState {
+            ready: false,
+            ..Default::default()
+        };
         assert_eq!(
             native_runtime_reason_codes(&unknown, Vec::new()),
             vec!["VM_RUNTIME_NOT_READY_UNPROVEN"]
         );
-        let ready = AgentState { ready: true, ..Default::default() };
+        let ready = AgentState {
+            ready: true,
+            ..Default::default()
+        };
         assert!(native_runtime_reason_codes(&ready, Vec::new()).is_empty());
     }
 
