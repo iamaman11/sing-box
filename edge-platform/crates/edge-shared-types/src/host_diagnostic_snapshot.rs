@@ -174,8 +174,8 @@ pub fn verify_installed_read_only(
     if bytes.is_empty() || bytes.len() > MAX_SNAPSHOT_BYTES {
         return Err("HOST_SNAPSHOT_SIZE_INVALID");
     }
-    let claimed = FleetNativeDiagnosticSnapshot::decode(bytes)
-        .map_err(|_| "HOST_SNAPSHOT_PROTO_INVALID")?;
+    let claimed =
+        FleetNativeDiagnosticSnapshot::decode(bytes).map_err(|_| "HOST_SNAPSHOT_PROTO_INVALID")?;
     if claimed.release_set_sha256.len() != 32
         || claimed.release_set_sha256.iter().all(|byte| *byte == 0)
     {
@@ -298,39 +298,55 @@ mod tests {
         };
         sign(&mut snapshot, &host, pair_bytes.as_ref(), 100).unwrap();
         let bytes = snapshot.encode_to_vec();
-        let (signed_old, parity) = verify_installed_read_only(
-            &bytes, &host, "issue1-comment-42", &current, 100,
-        )
-        .unwrap();
+        let (signed_old, parity) =
+            verify_installed_read_only(&bytes, &host, "issue1-comment-42", &current, 100).unwrap();
         assert_eq!(signed_old.release_set_sha256, installed);
         assert!(!parity);
         assert!(verify(&bytes, &host, "issue1-comment-42", &current, 100).is_err());
-        assert!(verify_installed_read_only(
-            &bytes, &host, "issue1-comment-42", &installed, 100,
-        ).unwrap().1);
-        assert_eq!(verify_installed_read_only(
-            &bytes, &host, "issue1-comment-43", &current, 100,
-        ).unwrap_err(), "HOST_SNAPSHOT_CORRELATION_OR_RELEASE_INVALID");
+        assert!(
+            verify_installed_read_only(&bytes, &host, "issue1-comment-42", &installed, 100,)
+                .unwrap()
+                .1
+        );
+        assert_eq!(
+            verify_installed_read_only(&bytes, &host, "issue1-comment-43", &current, 100,)
+                .unwrap_err(),
+            "HOST_SNAPSHOT_CORRELATION_OR_RELEASE_INVALID"
+        );
         let other = FleetHost {
             machine_id: "other".into(),
             ..host.clone()
         };
-        assert_eq!(verify_installed_read_only(
-            &bytes, &other, "issue1-comment-42", &current, 100,
-        ).unwrap_err(), "HOST_SNAPSHOT_CORRELATION_OR_RELEASE_INVALID");
+        assert_eq!(
+            verify_installed_read_only(&bytes, &other, "issue1-comment-42", &current, 100,)
+                .unwrap_err(),
+            "HOST_SNAPSHOT_CORRELATION_OR_RELEASE_INVALID"
+        );
         let mut tampered = snapshot.clone();
         tampered.release_set_sha256 = vec![7; 32];
-        assert_eq!(verify_installed_read_only(
-            &tampered.encode_to_vec(), &host, "issue1-comment-42", &current, 100,
-        ).unwrap_err(), "HOST_SNAPSHOT_SIGNATURE_INVALID");
+        assert_eq!(
+            verify_installed_read_only(
+                &tampered.encode_to_vec(),
+                &host,
+                "issue1-comment-42",
+                &current,
+                100,
+            )
+            .unwrap_err(),
+            "HOST_SNAPSHOT_SIGNATURE_INVALID"
+        );
         let mut other_key = host.clone();
         other_key.native_receipt_public_key = vec![8; 32];
-        assert_eq!(verify_installed_read_only(
-            &bytes, &other_key, "issue1-comment-42", &current, 100,
-        ).unwrap_err(), "HOST_SNAPSHOT_SIGNATURE_INVALID");
-        assert_eq!(verify_installed_read_only(
-            &bytes, &host, "issue1-comment-42", &current, 501,
-        ).unwrap_err(), "HOST_SNAPSHOT_STALE_OR_SCOPE_INVALID");
+        assert_eq!(
+            verify_installed_read_only(&bytes, &other_key, "issue1-comment-42", &current, 100,)
+                .unwrap_err(),
+            "HOST_SNAPSHOT_SIGNATURE_INVALID"
+        );
+        assert_eq!(
+            verify_installed_read_only(&bytes, &host, "issue1-comment-42", &current, 501,)
+                .unwrap_err(),
+            "HOST_SNAPSHOT_STALE_OR_SCOPE_INVALID"
+        );
     }
 
     #[test]
