@@ -585,6 +585,12 @@ mod native_vm_stop_diagnostics_tests {
     use super::*;
 
     #[test]
+    fn native_docker_effect_timeout_outlives_stop_grace_without_slowing_readbacks() {
+        assert!(super::super::DOCKER_API_TIMEOUT_SECONDS < 20);
+        assert!(super::super::DOCKER_EFFECT_API_TIMEOUT_SECONDS > 20);
+    }
+
+    #[test]
     fn one_docker_api_classifier_covers_every_lifecycle_phase_without_daemon_text() {
         assert_eq!(
             native_docker_http_failure_class(400),
