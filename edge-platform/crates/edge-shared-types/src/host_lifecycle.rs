@@ -350,11 +350,13 @@ pub fn native_vm_bundle_runtime_digest(
     Ok(decoded)
 }
 
-/// The single Worker public signer contract shared by VM enrollment,
-/// Windows SYSTEM native execution, and read-only first-use diagnosis.
-/// The signer pin is public identity, never a secret or a second Worker.
-/// No caller-provided public key may override protected Git desired.
-pub fn verify_git_worker_signer_pin(host: &FleetHost, supplied: &[u8]) -> Result<(), &'static str> {
+/// One public Git signer pin for both host kinds. The exact Worker
+/// signature is still checked separately before any privileged operation.
+/// No caller-supplied public key may override protected Git desired.
+pub fn verify_git_host_worker_signer_pin(
+    host: &FleetHost,
+    supplied: &[u8],
+) -> Result<(), &'static str> {
     if !matches!(
         FleetHostKind::try_from(host.kind),
         Ok(FleetHostKind::Vm | FleetHostKind::Windows)
@@ -367,6 +369,15 @@ pub fn verify_git_worker_signer_pin(host: &FleetHost, supplied: &[u8]) -> Result
         return Err("HOST_WORKER_SIGNER_DIFFERS_FROM_PROTECTED_GIT");
     }
     Ok(())
+}
+
+/// VM enrollment is a VM-only operation. Windows may use the same public
+/// authority for its SYSTEM journal, but must never pass VM enrollment.
+pub fn verify_git_worker_signer_pin(host: &FleetHost, supplied: &[u8]) -> Result<(), &'static str> {
+    if host.kind != FleetHostKind::Vm as i32 {
+        return Err("HOST_GIT_WORKER_SIGNER_KEY_REQUIRED");
+    }
+    verify_git_host_worker_signer_pin(host, supplied)
 }
 
 /// One typed resource-scope prerequisite shared across the first-use
