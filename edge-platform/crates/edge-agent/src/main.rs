@@ -256,6 +256,10 @@ async fn capture_local_host_observation(
     } else if !ownership_proven {
         reasons.push("VM_APPLICATION_OWNER_UNPROVEN");
     }
+    // Preserve the root-observed *reason*, not only runtime_ready=false.
+    // Reason codes are already part of signed FleetNativeObservation/v1;
+    // never export raw Docker, WARP or credential errors.
+    let reasons = native_runtime_reason_codes(&state, reasons);
     // Runtime readiness is already explicitly encoded as
     // runtime_ready_proven / runtime_ready. Stopped VM resources are not
     // a broken observation; do not flag them as an evidence error merely
@@ -350,6 +354,16 @@ fn native_runtime_reason_code(reason: &str) -> &'static str {
         "EXACT_IMAGE_OR_CONTAINER_UNREADY"
     } else if reason.contains("bundle artifact") {
         "BUNDLE_ARTIFACT_UNREADY"
+    } else if reason.starts_with("compose file is not readable") {
+        "COMPOSE_UNREADABLE"
+    } else if reason.starts_with("compose file is not valid YAML") {
+        "COMPOSE_INVALID"
+    } else if reason.starts_with("exact ReleaseSet image authority is unavailable") {
+        "EXACT_IMAGE_AUTHORITY_UNPROVEN"
+    } else if reason.starts_with("no exact ReleaseSet image mapping exists") {
+        "EXACT_IMAGE_MAPPING_MISSING"
+    } else if reason.starts_with("typed Docker inspection failed") {
+        "DOCKER_CONTAINER_INSPECTION_UNPROVEN"
     } else if reason.to_ascii_lowercase().contains("mesh") {
         "MESH_RUNTIME_UNREADY"
     } else if reason.contains("docker runtime") {
@@ -357,6 +371,25 @@ fn native_runtime_reason_code(reason: &str) -> &'static str {
     } else {
         "OTHER_UNPROVEN"
     }
+}
+
+/// Reuse the same closed readiness evidence for unsigned local diagnosis and
+/// the existing root-signed FleetNativeObservation. No new wire contract, no
+/// raw command errors, and no mutation: absence of a proven cause stays UNPROVEN.
+fn native_runtime_reason_codes(
+    state: &AgentState,
+    mut codes: Vec<&'static str>,
+) -> Vec<&'static str> {
+    for reason in &state.degraded_reasons {
+        let code = native_runtime_reason_code(reason);
+        if !codes.contains(&code) && codes.len() < 12 {
+            codes.push(code);
+        }
+    }
+    if !state.ready && codes.is_empty() {
+        codes.push("VM_RUNTIME_NOT_READY_UNPROVEN");
+    }
+    codes
 }
 
 fn print_agent_state_evidence(operation: &str, state: &AgentState) {
@@ -2582,6 +2615,38 @@ struct BundleSummary {
 #[cfg(test)]
 mod native_runtime_diagnostic_code_tests {
     use super::*;
+
+    #[test]
+    fn signed_observation_uses_closed_bounded_readiness_codes() {
+        let state = AgentState {
+            ready: false,
+            degraded_reasons: vec![
+                "WARP egress datapath probe failed".to_owned(),
+                "direct egress datapath probe failed".to_owned(),
+                "WARP egress datapath probe failed".to_owned(),
+                "unexpected API_TOKEN=secret".to_owned(),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(
+            native_runtime_reason_codes(&state, vec!["VM_APPLICATION_OWNER_UNPROVEN"]),
+            vec![
+                "VM_APPLICATION_OWNER_UNPROVEN",
+                "WARP_EGRESS_FAILED",
+                "DIRECT_EGRESS_FAILED",
+                "OTHER_UNPROVEN"
+            ]
+        );
+        let full = native_runtime_reason_codes(&state, vec!["VM_DOCKER_UNAVAILABLE"; 12]);
+        assert_eq!(full.len(), 12);
+        let unknown = AgentState { ready: false, ..Default::default() };
+        assert_eq!(
+            native_runtime_reason_codes(&unknown, Vec::new()),
+            vec!["VM_RUNTIME_NOT_READY_UNPROVEN"]
+        );
+        let ready = AgentState { ready: true, ..Default::default() };
+        assert!(native_runtime_reason_codes(&ready, Vec::new()).is_empty());
+    }
 
     #[test]
     fn known_readiness_failures_are_distinct_and_do_not_echo_secrets() {
