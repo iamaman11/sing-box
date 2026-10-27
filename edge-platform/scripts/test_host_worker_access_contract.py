@@ -299,6 +299,37 @@ const req=async t=>new Request(url,{method:'POST',
 githubMode='approved';
 let response=await AUTHORIZE(await req(await jwt()),env,url);
 assert.equal(response.status,200,'approved HostIntent signed with nbf-absent JWT');
+// The SAME published Worker authorizes Windows START/STOP, but ONLY if its
+// authenticated GitHub issue #1 comment matches the exact typed intent.
+// VM may not borrow these effects and SET_MODE/TUN remains closed.
+const winBytes=(kind,action,mode=null)=>CAT(
+ FNUM(1,1),FLD(2,TE.encode('sing-box-windows-lab')),FNUM(3,kind),
+ FLD(4,TE.encode('sing-box')),FLD(5,TE.encode(info.id)),FNUM(6,action),
+ FLD(7,new Uint8Array(32).fill(1)),FLD(8,new Uint8Array(32).fill(2)),
+ FLD(9,new Uint8Array(32).fill(0xaa)),
+ ...(mode===null?[]:[FNUM(10,mode)]),FNUM(11,now));
+const signedWindows=async data=>AUTHORIZE(
+ new Request(url,{method:'POST',headers:{
+  'Cf-Access-Jwt-Assertion':await jwt(),
+  'Content-Type':'application/x-protobuf'},body:data}),env,url);
+for(const [action,verb] of [[7,'start'],[8,'stop']]){
+ adminComment='/host '+verb+' sing-box-windows-lab';
+ const request=winBytes(1,action);
+ assert.equal(INFO(request).action,action,'strict Windows host action decode');
+ response=await signedWindows(request);
+ assert.equal(response.status,200,'fresh exact Windows '+verb+' signed by same Worker');
+ // Correct action with a forged source comment must not receive authority.
+ adminComment='/host '+(verb==='start'?'stop':'start')+' sing-box-windows-lab';
+ response=await signedWindows(request);
+ assert.equal(response.status,403,'Windows '+verb+' cannot reuse opposite comment');
+}
+adminComment='/host start sing-box-windows-lab';
+assert.equal(INFO(winBytes(2,7)),null,'VM cannot acquire Windows START authority');
+assert.equal(INFO(winBytes(2,8)),null,'VM cannot acquire Windows STOP authority');
+assert.equal(INFO(winBytes(1,9,1)),null,'Windows mode/TUN is not yet a signed Worker effect');
+response=await signedWindows(winBytes(2,7));
+assert.equal(response.status,400,'Worker rejects malformed VM START before GitHub GET');
+adminComment=null;
 // Signer failures must be bounded/typed; no private key or exception details.
 response=await AUTHORIZE(await req(await jwt()),
  {...env,EDGE_HOST_SIGNING_PKCS8_BASE64:'INVALID-KEY'},url);
