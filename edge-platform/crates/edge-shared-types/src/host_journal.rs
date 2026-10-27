@@ -671,27 +671,24 @@ fn verify_read_only_recovery_state(
     }
 }
 
-/// During historical read-only adjudication, a proven transport/datapath
-/// failure cannot erase otherwise proven native ownership.  This is NOT
-/// authority to mark the old APPLY VERIFIED or to replay its effects.
-/// Resource, image, compose, Docker and unknown reasons remain blocking.
+/// Historical reconciliation may release an old BEGIN only when the
+/// independently observed baseline has no readiness defects, or when the
+/// sole defect is an *addressed* WARP consumer datapath probe. Generic
+/// egress, absent consumers/ports, missing resources, unknown and truncated
+/// evidence can conceal an incomplete Docker effect and must remain pending.
+/// This does not claim that the original effect succeeded or authorize replay.
 fn known_runtime_only_historical_reasons(observed: &crate::FleetNativeObservation) -> bool {
-    if observed.reason_codes.is_empty() {
-        return true;
+    if !observed.runtime_ready_proven {
+        return false;
     }
-    observed.runtime_ready_proven
-        && !observed.runtime_ready
+    if observed.runtime_ready {
+        return observed.reason_codes.is_empty();
+    }
+    !observed.reason_codes.is_empty()
         && observed.reason_codes.iter().all(|code| {
             matches!(
                 code.as_str(),
-                "DIRECT_EGRESS_FAILED"
-                    | "WARP_EGRESS_FAILED"
-                    | "WARP_CONSUMERS_ABSENT"
-                    | "WARP_LINE1_CONSUMER_EGRESS_FAILED"
-                    | "WARP_LINE2_CONSUMER_EGRESS_FAILED"
-                    | "TCP_PORTS_MISSING"
-                    | "UDP_PORTS_MISSING"
-                    | "MESH_RUNTIME_UNREADY"
+                "WARP_LINE1_CONSUMER_EGRESS_FAILED" | "WARP_LINE2_CONSUMER_EGRESS_FAILED"
             )
         })
 }
@@ -1343,6 +1340,7 @@ mod tests {
         );
         let mut degraded = observation.clone();
         degraded.runtime_ready = false;
+        // Unexplained false readiness never settles an unknown prior effect.
         assert_eq!(
             verify_historical_partial_recovery_state(
                 &host,
@@ -1350,12 +1348,13 @@ mod tests {
                 &bound.runtime_release_sha256,
                 1020,
             ),
-            Ok(crate::FleetHostResultReason::HistoricalPartialRequiresFreshApply)
+            Err("HOST_NATIVE_HISTORICAL_BASELINE_UNPROVEN_NO_REPLAY")
         );
         assert!(native_scope_pending_path(&dir, &old).exists());
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
-        // A physical WARP failure is NOT an unproven Docker effect.
-        degraded.reason_codes = vec!["WARP_EGRESS_FAILED".into()];
+        // A specific attempted consumer datapath probe is distinguishable
+        // from absent resources. The old generic WARP code is NOT sufficient.
+        degraded.reason_codes = vec!["WARP_LINE1_CONSUMER_EGRESS_FAILED".into()];
         assert_eq!(
             verify_historical_partial_recovery_state(
                 &host,
@@ -1365,14 +1364,23 @@ mod tests {
             ),
             Ok(crate::FleetHostResultReason::HistoricalPartialRequiresFreshApply)
         );
-        // Other native/resource/unknown causes never free the journal gate.
+        // Any non-datapath reason, including one mixed with an accepted code,
+        // cannot release the old durable scope.
         for reason in [
+            "WARP_EGRESS_FAILED",
+            "WARP_CONSUMERS_ABSENT",
+            "WARP_CLIENT_CONNECTION_UNPROVEN",
+            "DIRECT_EGRESS_FAILED",
+            "TCP_PORTS_MISSING",
+            "UDP_PORTS_MISSING",
+            "MESH_RUNTIME_UNREADY",
             "CONTAINER_NOT_RUNNING",
             "EXACT_IMAGE_OR_CONTAINER_UNREADY",
             "DOCKER_UNAVAILABLE",
             "OTHER_UNPROVEN",
+            "VM_DIAGNOSTIC_TRUNCATED",
         ] {
-            degraded.reason_codes = vec![reason.into()];
+            degraded.reason_codes = vec!["WARP_LINE1_CONSUMER_EGRESS_FAILED".into(), reason.into()];
             assert_eq!(
                 verify_historical_partial_recovery_state(
                     &host,
@@ -1382,8 +1390,16 @@ mod tests {
                 ),
                 Err("HOST_NATIVE_HISTORICAL_BASELINE_UNPROVEN_NO_REPLAY")
             );
+            // Reject at the actual journal boundary too, without consuming
+            // the pending gate or emitting any terminal receipt.
+            assert_eq!(
+                resolve(&degraded),
+                Err("HOST_NATIVE_HISTORICAL_BASELINE_UNPROVEN_NO_REPLAY")
+            );
+            assert!(native_scope_pending_path(&dir, &old).exists());
+            assert_eq!(fs::read_dir(&dir).unwrap().count(), 2);
         }
-        degraded.reason_codes = vec!["WARP_EGRESS_FAILED".into()];
+        degraded.reason_codes = vec!["WARP_LINE1_CONSUMER_EGRESS_FAILED".into()];
         degraded.runtime_ready_proven = false;
         assert_eq!(
             verify_historical_partial_recovery_state(
