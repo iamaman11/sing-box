@@ -508,6 +508,25 @@ mod tests {
     }
 
     #[test]
+    fn same_release_known_runtime_failure_proposes_only_scoped_root_repair() {
+        let vm = host(
+            FleetHostKind::Vm,
+            FleetHostMode::Unspecified,
+            FleetHostRunState::Running,
+        );
+        let mut observed = observed(FleetHostKind::Vm, FleetNativeOwnerState::Running);
+        observed.runtime_ready = false;
+        observed.reason_codes = vec!["WARP_LINE1_CONSUMER_EGRESS_FAILED".into()];
+        let proposal = propose_host_transition(&vm, Some(&observed), &[1; 32], &[1; 32], 1000);
+        assert_eq!(proposal.step, FleetHostPlannedStep::Start as i32);
+        assert!(!proposal.owner_attested);
+        assert!(!proposal.mutation_authorized);
+        observed.reason_codes = vec!["DOCKER_UNAVAILABLE".into()];
+        let rejected = propose_host_transition(&vm, Some(&observed), &[1; 32], &[1; 32], 1000);
+        assert_eq!(rejected.step, FleetHostPlannedStep::Blocked as i32);
+    }
+
+    #[test]
     fn proven_absent_vm_proposes_fresh_install_but_never_authorizes_it() {
         use crate::host_lifecycle::build_native_observation;
         let vm = host(

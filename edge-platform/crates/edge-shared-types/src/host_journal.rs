@@ -1338,6 +1338,17 @@ mod tests {
         // A specific attempted consumer datapath probe is distinguishable
         // from absent resources. The old generic WARP code is NOT sufficient.
         degraded.reason_codes = vec!["WARP_LINE1_CONSUMER_EGRESS_FAILED".into()];
+        let mut same_release = degraded.clone();
+        same_release.observed_release_sha256 = bound.runtime_release_sha256.clone();
+        assert_eq!(
+            verify_historical_partial_recovery_state(
+                &host,
+                &same_release,
+                &bound.runtime_release_sha256,
+                1020,
+            ),
+            Ok(crate::FleetHostResultReason::HistoricalPartialRequiresFreshApply)
+        );
         assert_eq!(
             verify_historical_partial_recovery_state(
                 &host,

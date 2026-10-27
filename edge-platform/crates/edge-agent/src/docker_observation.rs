@@ -1376,7 +1376,9 @@ fn verify_native_vm_run_poststate(
             _ => return Err("HOST_NATIVE_VM_POSTSTATE_OWNER_CHANGED_NO_REPLAY".into()),
         }
     }
-    if changes == 0 || after.len() > host.vm_containers.len() {
+    if (changes == 0 && plan.alias_repairs.is_empty())
+        || after.len() > host.vm_containers.len()
+    {
         return Err("HOST_NATIVE_VM_POSTSTATE_CHANGE_UNPROVEN_NO_REPLAY".into());
     }
     Ok(())
@@ -4127,6 +4129,7 @@ mod vm_native_start_order_tests {
             ],
             desired_graph: Some(graph),
             create_missing: Some("line2-proxy".into()),
+            alias_repairs: Vec::new(),
             prepared_create: None,
             compose_sha256: None,
             edge_network_id: None,
@@ -4220,6 +4223,7 @@ mod vm_native_start_order_tests {
             identities: snapshot,
             desired_graph: None,
             create_missing: None,
+            alias_repairs: Vec::new(),
             prepared_create: None,
             compose_sha256: None,
             edge_network_id: None,
@@ -4241,6 +4245,7 @@ mod vm_native_start_order_tests {
             ],
             desired_graph: None,
             create_missing: None,
+            alias_repairs: Vec::new(),
             prepared_create: None,
             compose_sha256: None,
             edge_network_id: None,
