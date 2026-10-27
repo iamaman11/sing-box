@@ -125,6 +125,30 @@ pub fn validate_native_observation(
     Ok(())
 }
 
+/// Historical reconciliation may release an old BEGIN only when the
+/// independently observed baseline has no readiness defects, or when the
+/// sole defect is an *addressed* WARP consumer datapath probe. Generic
+/// egress, absent consumers/ports, missing resources, unknown and truncated
+/// evidence can conceal an incomplete Docker effect and must remain pending.
+/// This does not claim that the original effect succeeded or authorize replay.
+pub(crate) fn known_runtime_only_historical_reasons(
+    observed: &crate::FleetNativeObservation,
+) -> bool {
+    if !observed.runtime_ready_proven {
+        return false;
+    }
+    if observed.runtime_ready {
+        return observed.reason_codes.is_empty();
+    }
+    !observed.reason_codes.is_empty()
+        && observed.reason_codes.iter().all(|code| {
+            matches!(
+                code.as_str(),
+                "WARP_LINE1_CONSUMER_EGRESS_FAILED" | "WARP_LINE2_CONSUMER_EGRESS_FAILED"
+            )
+        })
+}
+
 pub fn decode_native_observation(
     bytes: &[u8],
 ) -> Result<crate::FleetNativeObservation, &'static str> {
