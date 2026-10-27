@@ -705,7 +705,6 @@ fn verify_historical_partial_recovery_state(
             .observed_release_sha256
             .iter()
             .all(|byte| *byte == 0)
-        || observed.observed_release_sha256 == current_release
     {
         return Err("HOST_NATIVE_HISTORICAL_BASELINE_UNPROVEN_NO_REPLAY");
     }
@@ -778,7 +777,11 @@ fn resolve_pending_native_recovery_once(
     // cause another loop. The root-observed installed digest is independent
     // of the pending source identity and must not be mistaken for convergence.
     let native_release_mismatch = observed.observed_release_sha256 != bound.runtime_release_sha256;
-    let incomplete = historical_drift || native_release_mismatch;
+    let known_runtime_incomplete = selected.kind == crate::FleetHostKind::Vm as i32
+        && observed.owner_state == crate::FleetNativeOwnerState::Running as i32
+        && !observed.runtime_ready
+        && crate::host_lifecycle::known_runtime_only_historical_reasons(observed);
+    let incomplete = historical_drift || native_release_mismatch || known_runtime_incomplete;
     if incomplete
         && (original.action != FleetHostAction::Apply as i32
             || original.resource_id != "sing-box"

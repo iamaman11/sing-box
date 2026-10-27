@@ -176,7 +176,16 @@ pub fn propose_host_transition(
         && ((observed.owner_state == FleetNativeOwnerState::Running as i32
             && crate::host_lifecycle::known_runtime_only_historical_reasons(observed))
             || crate::host_lifecycle::known_partial_vm_resource_baseline(host, observed));
-    if !observed.reason_codes.is_empty() && !vm_known_resource_bundle_drift {
+    let vm_known_same_release_runtime_defect = kind == FleetHostKind::Vm
+        && desired_run == FleetHostRunState::Running
+        && observed.owner_state == FleetNativeOwnerState::Running as i32
+        && observed.release_proof == FleetNativeReleaseProof::ApplicationBundle as i32
+        && actual == expected
+        && crate::host_lifecycle::known_runtime_only_historical_reasons(observed);
+    if !observed.reason_codes.is_empty()
+        && !vm_known_resource_bundle_drift
+        && !vm_known_same_release_runtime_defect
+    {
         return plan(
             host,
             Blocked,

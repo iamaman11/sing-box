@@ -177,8 +177,8 @@ pub(super) fn native_gateway_create_body(
     network_id: &str,
 ) -> Result<bollard::models::ContainerCreateBody, String> {
     use bollard::models::{
-        ContainerCreateBody, HostConfig, NetworkingConfig, PortBinding,
-        RestartPolicy, RestartPolicyNameEnum,
+        ContainerCreateBody, HostConfig, NetworkingConfig, PortBinding, RestartPolicy,
+        RestartPolicyNameEnum,
     };
     if !matches!(service, "line1-gateway" | "line2-proxy")
         || image_ref.is_empty()

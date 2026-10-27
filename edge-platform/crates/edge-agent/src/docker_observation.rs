@@ -298,6 +298,9 @@ pub(crate) struct NativeVmRunPlan {
     // Exactly one missing gateway can be re-created without touching the
     // existing WARP, sibling gateway, shared network, or release marker.
     create_missing: Option<String>,
+    // Exact registered services whose running Docker endpoint lacks the
+    // Compose DNS alias. Reattach through the SAME signed native BEGIN.
+    alias_repairs: Vec<String>,
     prepared_create: Option<bollard::models::ContainerCreateBody>,
     // Raw immutable Compose bytes complement the projected DAG, which does
     // not itself cover published ports and host mount sources.
@@ -475,6 +478,62 @@ fn exact_stopped_warp_network_attachment(
     })
 }
 
+/// A missing Compose DNS service alias is a native Docker resource defect,
+/// even when immutable image and network ID match. Read each registered,
+/// running container by immutable ID. Foreign networks and ambiguous
+/// endpoints are never admitted for an alias repair.
+async fn missing_owned_vm_service_aliases(
+    docker: &Docker,
+    host: &FleetHost,
+    owned: &[OwnedVmContainer],
+    network_id: &str,
+) -> Result<Vec<String>, String> {
+    let project = host
+        .vm_containers
+        .first()
+        .ok_or("HOST_VM_NETWORK_OWNER_MISSING")?
+        .compose_project
+        .as_str();
+    let name = format!("{project}_edge_net");
+    let mut missing = Vec::new();
+    for registered in &host.vm_containers {
+        let container = owned
+            .iter()
+            .find(|item| item.service == registered.compose_service)
+            .ok_or("HOST_VM_NETWORK_REGISTERED_CONTAINER_MISSING")?;
+        if !container.running {
+            continue;
+        }
+        let inspected = docker
+            .inspect_container(&container.id, None)
+            .await
+            .map_err(|_| "HOST_VM_NETWORK_ALIAS_INSPECT_UNAVAILABLE")?;
+        let networks = inspected
+            .network_settings
+            .as_ref()
+            .and_then(|state| state.networks.as_ref())
+            .ok_or("HOST_VM_NETWORK_ALIAS_ENDPOINT_UNPROVEN")?;
+        if inspected.id.as_deref() != Some(container.id.as_str())
+            || networks.len() != 1
+            || networks
+                .get(&name)
+                .and_then(|endpoint| endpoint.network_id.as_deref())
+                != Some(network_id)
+        {
+            return Err("HOST_VM_NETWORK_ALIAS_OWNER_UNPROVEN".into());
+        }
+        if !exact_owned_network_attachment(
+            Some(networks),
+            &name,
+            network_id,
+            &registered.compose_service,
+        ) {
+            missing.push(registered.compose_service.clone());
+        }
+    }
+    Ok(missing)
+}
+
 async fn verify_vm_network_attachments(
     docker: &Docker,
     host: &FleetHost,
@@ -611,13 +670,15 @@ pub(crate) async fn preflight_native_vm_run(
             _ => return Err("HOST_NATIVE_VM_RESOURCE_PLAN_BLOCKED".into()),
         }
     }
-    if changed == 0 {
-        return Err("HOST_NATIVE_VM_RESOURCE_NO_MUTATION_REQUIRED".into());
-    }
     let desired_graph = if step == FleetHostPlannedStep::Start {
         let graph = compile_native_vm_desired_graph(stack_dir, host)?;
-        edge_shared_types::host_resources::validate_vm_native_start_dag(host, &graph, &plan)
-            .map_err(str::to_owned)?;
+        if changed != 0 {
+            edge_shared_types::host_resources::validate_vm_native_start_dag(host, &graph, &plan)
+                .map_err(str::to_owned)?;
+        } else {
+            edge_shared_types::host_resources::validate_vm_desired_graph(&graph, host)
+                .map_err(str::to_owned)?;
+        }
         Some(graph)
     } else {
         // An emergency STOP must not require valid config templates.
@@ -648,6 +709,20 @@ pub(crate) async fn preflight_native_vm_run(
     check_owned_vm_snapshot(host, &owned, &identities)?;
     let mut edge_network_id = None;
     let mut prepared_create = None;
+    let alias_repairs = if step == FleetHostPlannedStep::Start && create_missing.is_none() {
+        let network_id = read_owned_edge_network_id(&docker, host).await?;
+        let missing =
+            missing_owned_vm_service_aliases(&docker, host, &owned, &network_id).await?;
+        if !missing.is_empty() {
+            edge_network_id = Some(network_id);
+        }
+        missing
+    } else {
+        Vec::new()
+    };
+    if changed == 0 && alias_repairs.is_empty() {
+        return Err("HOST_NATIVE_VM_RESOURCE_NO_MUTATION_REQUIRED".into());
+    }
     if let Some(service) = create_missing.as_deref() {
         if owned.len() + 1 != host.vm_containers.len() || owned.iter().any(|item| !item.running) {
             return Err("HOST_VM_CREATE_NEIGHBOUR_INCOMPLETE".into());
@@ -696,6 +771,7 @@ pub(crate) async fn preflight_native_vm_run(
         identities,
         desired_graph,
         create_missing,
+        alias_repairs,
         prepared_create,
         compose_sha256,
         edge_network_id,
@@ -737,6 +813,67 @@ pub(crate) async fn apply_native_vm_run_once(
     } else {
         owned_vm_start_order(&owned)?
     };
+    // A missing service alias is an exact network resource transition.
+    // Keep the immutable container ID/process/image; do not recreate images
+    // or touch the daemon outside this Worker-signed root-owned journal.
+    // A lost Docker ACK leaves BEGIN pending, never silently retried.
+    if !plan.alias_repairs.is_empty() {
+        use bollard::models::{NetworkConnectRequest, NetworkDisconnectRequest};
+        let network_id = plan
+            .edge_network_id
+            .as_deref()
+            .ok_or("HOST_VM_ALIAS_PLAN_NETWORK_UNPROVEN_NO_REPLAY")?;
+        if read_owned_edge_network_id(&docker, host).await?.as_str() != network_id
+            || missing_owned_vm_service_aliases(&docker, host, &owned, network_id).await?
+                != plan.alias_repairs
+        {
+            return Err("HOST_VM_ALIAS_PRESTATE_CHANGED_NO_REPLAY".into());
+        }
+        for service in &plan.alias_repairs {
+            let container = owned
+                .iter()
+                .find(|item| &item.service == service && item.running)
+                .ok_or("HOST_VM_ALIAS_REGISTERED_OWNER_MISSING_NO_REPLAY")?;
+            docker
+                .disconnect_network(
+                    network_id,
+                    NetworkDisconnectRequest {
+                        container: container.id.clone(),
+                        force: Some(false),
+                    },
+                )
+                .await
+                .map_err(|_| "HOST_VM_ALIAS_DISCONNECT_UNCERTAIN_NO_REPLAY")?;
+            docker
+                .connect_network(
+                    network_id,
+                    NetworkConnectRequest {
+                        container: container.id.clone(),
+                        endpoint_config: Some(native_vm_service_endpoint(network_id, service)),
+                    },
+                )
+                .await
+                .map_err(|_| "HOST_VM_ALIAS_CONNECT_UNCERTAIN_NO_REPLAY")?;
+            let inspected = docker
+                .inspect_container(&container.id, None)
+                .await
+                .map_err(|_| "HOST_VM_ALIAS_POSTSTATE_UNPROVEN_NO_REPLAY")?;
+            let network_name = format!("{}_edge_net", host.vm_containers[0].compose_project);
+            if inspected.id.as_deref() != Some(container.id.as_str())
+                || !exact_owned_network_attachment(
+                    inspected
+                        .network_settings
+                        .as_ref()
+                        .and_then(|settings| settings.networks.as_ref()),
+                    &network_name,
+                    network_id,
+                    service,
+                )
+            {
+                return Err("HOST_VM_ALIAS_POSTSTATE_UNPROVEN_NO_REPLAY".into());
+            }
+        }
+    }
     if let Some(service) = plan.create_missing.as_deref() {
         if plan.step != FleetHostPlannedStep::Start
             || owned.len() + 1 != host.vm_containers.len()
@@ -2048,8 +2185,8 @@ fn native_warp_create_body(
     network_id: &str,
 ) -> Result<bollard::models::ContainerCreateBody, String> {
     use bollard::models::{
-        ContainerCreateBody, DeviceMapping, HostConfig, NetworkingConfig,
-        RestartPolicy, RestartPolicyNameEnum,
+        ContainerCreateBody, DeviceMapping, HostConfig, NetworkingConfig, RestartPolicy,
+        RestartPolicyNameEnum,
     };
     let identity = host
         .vm_containers
@@ -3559,9 +3696,6 @@ async fn prepare_owned_vm_start(
         }
     }
     let order = owned_vm_start_order(&owned)?;
-    if !owned.iter().any(|container| !container.running) {
-        return Err("HOST_NATIVE_VM_START_NO_STOPPED_CONTAINER".into());
-    }
     Ok((owned, order))
 }
 
