@@ -1594,6 +1594,42 @@ pub(crate) fn run(
                 )
             }
         }
+        HostCommand::Start { machine_id } => host_lifecycle_admission(
+            &desired,
+            &machine_id,
+            HostLifecycleOperation::Start,
+            &release.release().release_set_sha256,
+            digest.as_ref(),
+            runner_inventory_json,
+            github_output,
+            source_comment_id,
+            intent_output,
+            None,
+        ),
+        HostCommand::Stop { machine_id } => host_lifecycle_admission(
+            &desired,
+            &machine_id,
+            HostLifecycleOperation::Stop,
+            &release.release().release_set_sha256,
+            digest.as_ref(),
+            runner_inventory_json,
+            github_output,
+            source_comment_id,
+            intent_output,
+            None,
+        ),
+        HostCommand::SetMode { machine_id, mode } => host_lifecycle_admission(
+            &desired,
+            &machine_id,
+            HostLifecycleOperation::SetMode(mode.into()),
+            &release.release().release_set_sha256,
+            digest.as_ref(),
+            runner_inventory_json,
+            github_output,
+            source_comment_id,
+            intent_output,
+            None,
+        ),
         HostCommand::RegisterSigner {
             machine_id,
             signer_public_key_hex,
@@ -2031,6 +2067,11 @@ fn host_bootstrap_access_resume_admission(
 enum HostLifecycleOperation {
     Apply,
     Recover,
+    // Only the existing signed SYSTEM native owner may later execute these.
+    // The hosted coordinator emits a PREPARED intent but never SCM effects.
+    Start,
+    Stop,
+    SetMode(FleetHostMode),
     // Explicit signed RECOVER over an old whole-resource BEGIN. Reuse native
     // APPLY transport, but the protobuf action remains RECOVER, never APPLY.
     Adjudicate,
@@ -2061,6 +2102,15 @@ fn host_lifecycle_admission(
         ManagedHostKind::try_from(selected.kind).map_err(|_| "HOST_KIND_INVALID".to_owned())?;
     if operation == HostLifecycleOperation::Adjudicate && kind != ManagedHostKind::Vm {
         return Err("HOST_ADJUDICATION_VM_ONLY".into());
+    }
+    if matches!(
+        operation,
+        HostLifecycleOperation::Start
+            | HostLifecycleOperation::Stop
+            | HostLifecycleOperation::SetMode(_)
+    ) && kind != ManagedHostKind::Windows
+    {
+        return Err("HOST_WINDOWS_LIFECYCLE_KIND_REQUIRED".into());
     }
     let owner = match (kind, selected.owner.as_ref()) {
         (ManagedHostKind::Windows, Some(managed_host::Owner::WindowsRunnerName(name))) => name,
@@ -2209,11 +2259,17 @@ fn host_lifecycle_admission(
             HostLifecycleOperation::Recover | HostLifecycleOperation::Adjudicate => {
                 FleetHostAction::Recover as i32
             }
+            HostLifecycleOperation::Start => FleetHostAction::Start as i32,
+            HostLifecycleOperation::Stop => FleetHostAction::Stop as i32,
+            HostLifecycleOperation::SetMode(_) => FleetHostAction::SetMode as i32,
         },
         registry_sha256: exact_registry_sha256.to_vec(),
         desired_sha256: desired_sha.clone(),
         release_set_sha256: release_sha.clone(),
-        requested_mode: FleetHostMode::Unspecified as i32,
+        requested_mode: match operation {
+            HostLifecycleOperation::SetMode(mode) => mode as i32,
+            _ => FleetHostMode::Unspecified as i32,
+        },
         requested_at_unix: now,
     };
     validate_host_intent(
@@ -2270,6 +2326,11 @@ fn host_lifecycle_admission(
             .collect::<String>()
     );
     println!("host_intent_state=PREPARED_NOT_AUTHORIZED");
+    println!("host_native_mutation_authorized=false");
+    println!("host_requested_mode={:?}", match operation {
+        HostLifecycleOperation::SetMode(mode) => mode,
+        _ => FleetHostMode::Unspecified,
+    });
     println!("host_machine_id={machine_id}");
     println!("host_kind={kind:?}");
     println!("host_runner_registration={registration}");
@@ -2282,6 +2343,9 @@ fn host_lifecycle_admission(
         match operation {
             HostLifecycleOperation::Apply => "APPLY",
             HostLifecycleOperation::Recover => "RECOVER",
+            HostLifecycleOperation::Start => "START",
+            HostLifecycleOperation::Stop => "STOP",
+            HostLifecycleOperation::SetMode(_) => "SET_MODE",
             HostLifecycleOperation::Adjudicate => "ADJUDICATE_NO_REPLAY",
         }
     );
@@ -2324,7 +2388,10 @@ fn host_lifecycle_admission(
     append_action_output(
         output,
         match operation {
-            HostLifecycleOperation::Apply => HostWorkflowOperation::ApplyPreflight,
+            HostLifecycleOperation::Apply
+            | HostLifecycleOperation::Start
+            | HostLifecycleOperation::Stop
+            | HostLifecycleOperation::SetMode(_) => HostWorkflowOperation::ApplyPreflight,
             HostLifecycleOperation::Recover => HostWorkflowOperation::RecoverPreflight,
             HostLifecycleOperation::Adjudicate => HostWorkflowOperation::ApplyPreflight,
         },
