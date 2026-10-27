@@ -3231,18 +3231,12 @@ mod release_set_tests {
         wrong_signer.hosts[2].worker_authority_public_key = vec![3; 32];
         assert!(validate_host_registry(&wrong_signer).is_ok());
         assert_eq!(
-            crate::host_lifecycle::verify_git_worker_signer_pin(
-                &wrong_signer.hosts[2],
-                &[3; 32],
-            ),
+            crate::host_lifecycle::verify_git_worker_signer_pin(&wrong_signer.hosts[2], &[3; 32],),
             Ok(())
         );
         assert!(
-            crate::host_lifecycle::verify_git_worker_signer_pin(
-                &wrong_signer.hosts[2],
-                &[4; 32],
-            )
-            .is_err()
+            crate::host_lifecycle::verify_git_worker_signer_pin(&wrong_signer.hosts[2], &[4; 32],)
+                .is_err()
         );
         wrong_signer.hosts[2].worker_authority_public_key = vec![0; 32];
         assert!(validate_host_registry(&wrong_signer).is_err());
