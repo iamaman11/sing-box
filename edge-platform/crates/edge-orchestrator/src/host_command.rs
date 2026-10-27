@@ -568,14 +568,15 @@ pub(crate) fn run(
                     .read_to_end(&mut signed)
                     .map_err(|_| "HOST_SNAPSHOT_ARTIFACT_UNREADABLE")?;
                 let operation = format!("issue1-comment-{comment}");
-                let accepted = edge_shared_types::host_diagnostic_snapshot::verify(
-                    &signed,
-                    selected,
-                    &operation,
-                    &release_sha,
-                    now,
-                )
-                .map_err(str::to_owned)?;
+                // The installed owner signs its OWN protected trust
+                // ReleaseSet. Current Git may be newer: authenticate the
+                // installed root claim before comparing two desired versions.
+                // Never promote a signed historical snapshot to current GO.
+                let (accepted, matches_current_release) =
+                    edge_shared_types::host_diagnostic_snapshot::verify_installed_read_only(
+                        &signed, selected, &operation, &release_sha, now,
+                    )
+                    .map_err(str::to_owned)?;
                 let verified_observation = accepted
                     .observation
                     .as_ref()
@@ -594,13 +595,42 @@ pub(crate) fn run(
                         .then_some(native_bundle_sha.as_slice()),
                     now,
                 )?;
-                println!("host_native_snapshot_proof=VERIFIED_ROOT_SIGNED_READ_ONLY");
+                let snapshot_proof = if matches_current_release {
+                    "VERIFIED_ROOT_SIGNED_READ_ONLY"
+                } else {
+                    "VERIFIED_ROOT_SIGNED_STALE_RELEASE_READ_ONLY"
+                };
+                println!("host_native_snapshot_proof={snapshot_proof}");
+                println!(
+                    "host_native_snapshot_release_parity={}",
+                    if matches_current_release {
+                        "MATCHED_CURRENT"
+                    } else {
+                        "INSTALLED_RELEASE_DRIFT"
+                    }
+                );
+                println!(
+                    "host_native_snapshot_installed_release_sha256={}",
+                    accepted.release_set_sha256.iter()
+                        .map(|byte| format!("{byte:02x}"))
+                        .collect::<String>()
+                );
+                println!("host_native_snapshot_desired_release_sha256={}",
+                    release_sha.iter().map(|byte| format!("{byte:02x}")).collect::<String>());
+                println!("host_native_snapshot_release_provenance=ROOT_SIGNED_INSTALLED_CLAIM_ONLY");
                 println!("host_native_snapshot_operation_id={operation}");
                 println!(
                     "host_native_snapshot_observed_at_unix={}",
                     verified_observation.observed_at_unix
                 );
-                println!("host_native_snapshot_verdict={signed_verdict}");
+                println!(
+                    "host_native_snapshot_verdict={}",
+                    if matches_current_release {
+                        signed_verdict
+                    } else {
+                        "INSTALLED_RELEASE_DRIFT_CURRENT_STATE_UNPROVEN"
+                    }
+                );
                 // These existing Protobuf reason codes came from the
                 // Ed25519-verified Root snapshot, never from runner stdout.
                 // Exact signature and schema validation already bound them
@@ -718,7 +748,7 @@ pub(crate) fn run(
                     append_host_verifier_output(
                         path,
                         "native_snapshot_proof",
-                        "VERIFIED_ROOT_SIGNED_READ_ONLY",
+                        snapshot_proof,
                     )?;
                 }
             } else if snapshot_comment_id.is_some() {
