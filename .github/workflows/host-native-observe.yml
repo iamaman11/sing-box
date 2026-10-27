@@ -361,10 +361,30 @@ jobs:
             throw 'HOST_WINDOWS_INSTALLED_SYSTEM_OWNER_UPGRADE_REQUIRED'
           }
           $task = Get-ScheduledTask -TaskName 'EdgePlatformPrivilegedDispatch' -ErrorAction Stop
-          if ($task.Principal.UserId -cnotin @('SYSTEM','NT AUTHORITY\SYSTEM','S-1-5-18') -or
-              $task.State -eq 'Disabled' -or @($task.Actions).Count -ne 1 -or
-              [string]$task.Actions[0].Arguments -cnotmatch 'privileged-dispatch') {
+          # LocalSystem names are localized; resolve immutable kernel SID.
+          try {
+            $principalName = [string]$task.Principal.UserId
+            $principalSid = if ($principalName -ceq 'S-1-5-18') { 'S-1-5-18' } else {
+              ([Security.Principal.NTAccount]::new($principalName)).Translate(
+                [Security.Principal.SecurityIdentifier]).Value
+            }
+          } catch { throw 'HOST_WINDOWS_SYSTEM_TASK_PRINCIPAL_UNPROVEN' }
+          if ($principalSid -cne 'S-1-5-18' -or
+              $task.State -cnotin @('Ready','Running') -or
+              [string]$task.Principal.RunLevel -cne 'Highest' -or
+              [string]$task.Principal.LogonType -cne 'ServiceAccount' -or
+              @($task.Actions).Count -ne 1 -or
+              [string]$task.Actions[0].Arguments -cnotmatch '^privileged-dispatch --install-root') {
             throw 'HOST_WINDOWS_SYSTEM_TASK_IDENTITY_INVALID'
+          }
+          $receipt = Join-Path $root 'exchange\results\host-receipt.pb'
+          # An old static result is not this comment's terminal receipt.
+          # Remember its exact bytes BEFORE creating the new request.
+          $priorHash = ''
+          if (Test-Path -LiteralPath $receipt -PathType Leaf) {
+            $priorBytes = [IO.File]::ReadAllBytes($receipt)
+            $priorHash = [Convert]::ToHexString(
+              [Security.Cryptography.SHA256]::HashData($priorBytes))
           }
           $destination = Join-Path $root 'exchange\requests\host-intent.pb'
           $bytes = [IO.File]::ReadAllBytes($intent)
@@ -373,24 +393,28 @@ jobs:
             [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
           try { $stream.Write($bytes, 0, $bytes.Length); $stream.Flush($true) }
           finally { $stream.Dispose() }
-          Start-ScheduledTask -TaskName 'EdgePlatformPrivilegedDispatch' -ErrorAction Stop
-          $receipt = Join-Path $root 'exchange\results\host-receipt.pb'
+          # The EXISTING SYSTEM task wakes once per minute. NetworkService
+          # cannot edit/create/run that task, nor directly invoke SCM.
           $folder = Join-Path $env:RUNNER_TEMP 'windows-system-result'
           New-Item -ItemType Directory -Path $folder -Force | Out-Null
-          # Task state is observed after dispatch. Timeout means NO_REPLAY.
-          $deadline = (Get-Date).AddSeconds(90)
+          $deadline = (Get-Date).AddSeconds(100)
+          $changed = $false
           do {
-            $status = (Get-ScheduledTask -TaskName 'EdgePlatformPrivilegedDispatch' -ErrorAction Stop).State
-            if ($status -ne 'Running') { break }
-            Start-Sleep -Milliseconds 300
+            if (Test-Path -LiteralPath $receipt -PathType Leaf) {
+              $candidate = [IO.File]::ReadAllBytes($receipt)
+              if ($candidate.Length -gt 0 -and $candidate.Length -le 8192) {
+                $digest = [Convert]::ToHexString(
+                  [Security.Cryptography.SHA256]::HashData($candidate))
+                if ($digest -cne $priorHash) {
+                  $changed = $true
+                  break
+                }
+              }
+            }
+            Start-Sleep -Milliseconds 500
           } while ((Get-Date) -lt $deadline)
-          if ($status -eq 'Running') { throw 'HOST_WINDOWS_SYSTEM_ACK_UNKNOWN_NO_REPLAY' }
-          if (-not (Test-Path -LiteralPath $receipt -PathType Leaf) -or
-              (Get-Item -LiteralPath $receipt).Length -lt 1 -or
-              (Get-Item -LiteralPath $receipt).Length -gt 8192) {
-            throw 'HOST_WINDOWS_SYSTEM_RECEIPT_MISSING_NO_REPLAY'
-          }
-          Copy-Item -LiteralPath $receipt -Destination (Join-Path $folder 'host-result.pb')
+          if (-not $changed) { throw 'HOST_WINDOWS_SYSTEM_RECEIPT_UNKNOWN_NO_REPLAY' }
+          [IO.File]::WriteAllBytes((Join-Path $folder 'host-result.pb'), $candidate)
           Write-Output 'host_windows_receipt=UNTRUSTED_COPY_REQUIRE_HOSTED_RUST_VERIFIER'
 
       - name: Preserve Windows signed owner result for hosted Rust
