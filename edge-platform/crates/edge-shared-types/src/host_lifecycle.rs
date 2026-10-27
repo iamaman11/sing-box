@@ -78,6 +78,7 @@ pub fn build_native_observation(
         runtime_ready: runtime_ready.unwrap_or(false),
         runtime_ready_proven: runtime_ready.is_some(),
         reason_codes: reason_codes.iter().map(|s| (*s).to_owned()).collect(),
+        vm_recovery_resources: None,
     };
     validate_native_observation(&observation)?;
     Ok(observation)
@@ -118,11 +119,107 @@ pub fn validate_native_observation(
                     .bytes()
                     .all(|ch| ch.is_ascii_uppercase() || ch.is_ascii_digit() || ch == b'_')
         })
+        || observed.vm_recovery_resources.as_ref().is_some_and(|report| {
+            kind != FleetHostKind::Vm
+                || report.machine_id.is_empty()
+                || report.observed_at_unix != observed.observed_at_unix
+        })
         || observed.encode_to_vec().len() > MAX_NATIVE_OBSERVATION_BYTES
     {
         return Err("HOST_OBSERVATION_EVIDENCE_INVALID");
     }
     Ok(())
+}
+
+/// The native owner's *existing* typed Docker report can prove that a
+/// previously interrupted transition left a known PARTIAL resource graph.
+/// This is not VERIFIED, not a successful old APPLY, and never grants replay.
+/// It applies to any registered owned container, not a special WARP path.
+pub(crate) fn known_partial_vm_resource_baseline(
+    host: &crate::FleetHost,
+    observed: &crate::FleetNativeObservation,
+) -> bool {
+    use crate::{
+        FleetHostKind, FleetNativeOwnerState, FleetVmConfigProof,
+        FleetVmInstalledPolicyStatus, FleetVmObservedReason,
+    };
+    if host.kind != FleetHostKind::Vm as i32
+        || observed.host_kind != host.kind
+        || observed.owner_state != FleetNativeOwnerState::Stopped as i32
+        || !observed.runtime_ready_proven
+        || observed.runtime_ready
+        || !observed.reason_codes.iter().any(|s| s == "CONTAINER_NOT_RUNNING")
+        || observed.reason_codes.iter().any(|s| {
+            !matches!(
+                s.as_str(),
+                "CONTAINER_NOT_RUNNING"
+                    | "EXACT_IMAGE_OR_CONTAINER_UNREADY"
+                    | "WARP_CLIENT_CONNECTION_UNPROVEN"
+            )
+        })
+    {
+        return false;
+    }
+    let Some(report) = observed.vm_recovery_resources.as_ref() else {
+        return false;
+    };
+    if report.observed_at_unix != observed.observed_at_unix
+        || crate::host_resources::validate_vm_resource_report(report, host).is_err()
+        || report.installed_policy_status != FleetVmInstalledPolicyStatus::Valid as i32
+    {
+        return false;
+    }
+    let Some(graph) = report.installed_policy_graph.as_ref() else {
+        return false;
+    };
+    if graph.resources.len() != report.resources.len() {
+        return false;
+    }
+    let mut stopped = 0usize;
+    let mut ids = std::collections::BTreeSet::new();
+    for row in &report.resources {
+        let Some(resource) = row.resource.as_ref() else {
+            return false;
+        };
+        let Some(policy) = graph
+            .resources
+            .iter()
+            .find(|candidate| candidate.resource.as_ref() == Some(resource))
+        else {
+            return false;
+        };
+        if !row.present
+            || !row.ownership_proven
+            || !row.running_proven
+            || row.container_id.len() != 64
+            || !ids.insert(row.container_id.as_str())
+            || row.docker_state_error_present
+            || row.image != policy.image_ref
+        {
+            return false;
+        }
+        if row.running {
+            if row.observed_reason != FleetVmObservedReason::RunningNoHealthcheck as i32
+                && row.observed_reason != FleetVmObservedReason::Healthy as i32
+            {
+                return false;
+            }
+            if resource.compose_service != "warp-egress"
+                && row.config_proof != FleetVmConfigProof::BoundRunningProcess as i32
+            {
+                return false;
+            }
+        } else {
+            stopped += 1;
+            if row.observed_reason != FleetVmObservedReason::Stopped as i32
+                || (resource.compose_service != "warp-egress"
+                    && row.config_proof != FleetVmConfigProof::NotRunning as i32)
+            {
+                return false;
+            }
+        }
+    }
+    stopped > 0
 }
 
 /// Historical reconciliation may release an old BEGIN only when the
