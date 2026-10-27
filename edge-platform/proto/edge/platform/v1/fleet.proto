@@ -608,6 +608,10 @@ enum FleetHostResultReason {
   // A newly signed RECOVER classified its partial release and releases the
   // resource gate for a DIFFERENT, freshly authorized reconciliation intent.
   FLEET_HOST_RESULT_REASON_HISTORICAL_PARTIAL_REQUIRES_FRESH_APPLY = 7;
+  // Native resource/image/bundle effects were proved for this intent, but
+  // runtime datapath remains DEGRADED. VERIFIED applies only to the resource
+  // effect; operational GO still requires independent runtime acceptance.
+  FLEET_HOST_RESULT_REASON_RESOURCES_APPLIED_RUNTIME_DEGRADED = 8;
 }
 
 message FleetHostResult {
