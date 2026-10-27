@@ -1725,4 +1725,36 @@ mod partial_vm_recovery_tests {
         changed.vm_recovery_resources = None;
         assert!(!known_partial_vm_resource_baseline(&host, &changed));
     }
+
+    #[test]
+    fn windows_signed_admission_requires_git_worker_and_system_receipt_keys() {
+        let mut host = FleetHost {
+            machine_id: "sing-box-windows-lab".into(),
+            kind: FleetHostKind::Windows as i32,
+            ..Default::default()
+        };
+        assert_eq!(
+            verify_windows_signed_git_prerequisites(&host),
+            Err("HOST_GIT_WORKER_SIGNER_KEY_REQUIRED")
+        );
+        host.worker_authority_public_key = vec![7; 32];
+        assert_eq!(
+            verify_windows_signed_git_prerequisites(&host),
+            Err("HOST_WINDOWS_GIT_RECEIPT_REGISTRATION_REQUIRED")
+        );
+        host.native_receipt_public_key = vec![9; 32];
+        assert_eq!(verify_windows_signed_git_prerequisites(&host), Ok(()));
+        host.native_receipt_public_key = vec![0; 32];
+        assert_eq!(
+            verify_windows_signed_git_prerequisites(&host),
+            Err("HOST_WINDOWS_GIT_RECEIPT_REGISTRATION_REQUIRED")
+        );
+        host.native_receipt_public_key = vec![9; 32];
+        host.kind = FleetHostKind::Vm as i32;
+        assert_eq!(
+            verify_windows_signed_git_prerequisites(&host),
+            Err("HOST_WINDOWS_SIGNED_KIND_REQUIRED")
+        );
+    }
+
 }
