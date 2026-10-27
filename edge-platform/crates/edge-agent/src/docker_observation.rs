@@ -424,17 +424,34 @@ fn verify_scoped_gateway_network_policy(
 /// This is an exact Docker endpoint identity, not a successful DNS lookup
 /// or public access check. No foreign/Mesh network is allowed in this native
 /// application's gateway recovery path.
+/// Compose service discovery is a resource invariant, not implied by
+/// Docker network ID or the non-Compose container name. Native Docker CREATE
+/// must explicitly publish the registered Git-owned service alias.
+fn native_vm_service_endpoint(
+    network_id: &str,
+    service: &str,
+) -> bollard::models::EndpointSettings {
+    bollard::models::EndpointSettings {
+        network_id: Some(network_id.to_owned()),
+        aliases: Some(vec![service.to_owned()]),
+        ..Default::default()
+    }
+}
+
 fn exact_owned_network_attachment(
     observed: Option<&HashMap<String, bollard::models::EndpointSettings>>,
     compose_network_name: &str,
     expected_network_id: &str,
+    registered_service: &str,
 ) -> bool {
     observed.is_some_and(|networks| {
         networks.len() == 1
-            && networks
-                .get(compose_network_name)
-                .and_then(|endpoint| endpoint.network_id.as_deref())
-                == Some(expected_network_id)
+            && networks.get(compose_network_name).is_some_and(|endpoint| {
+                endpoint.network_id.as_deref() == Some(expected_network_id)
+                    && endpoint.aliases.as_ref().is_some_and(|aliases| {
+                        aliases.iter().any(|alias| alias == registered_service)
+                    })
+            })
     })
 }
 
@@ -483,7 +500,7 @@ async fn verify_vm_network_attachments(
         let network_proven = if container.service == "warp-egress" && !container.running {
             exact_stopped_warp_network_attachment(networks, &name, network_id)
         } else {
-            exact_owned_network_attachment(networks, &name, network_id)
+            exact_owned_network_attachment(networks, &name, network_id, &container.service)
         };
         if inspect.id.as_deref() != Some(container.id.as_str()) || !network_proven {
             return Err("HOST_VM_NETWORK_ATTACHMENT_UNPROVEN".into());
@@ -2031,7 +2048,7 @@ fn native_warp_create_body(
     network_id: &str,
 ) -> Result<bollard::models::ContainerCreateBody, String> {
     use bollard::models::{
-        ContainerCreateBody, DeviceMapping, EndpointSettings, HostConfig, NetworkingConfig,
+        ContainerCreateBody, DeviceMapping, HostConfig, NetworkingConfig,
         RestartPolicy, RestartPolicyNameEnum,
     };
     let identity = host
@@ -2057,10 +2074,7 @@ fn native_warp_create_body(
     let mut endpoints = HashMap::new();
     endpoints.insert(
         format!("{}_edge_net", identity.compose_project),
-        EndpointSettings {
-            network_id: Some(network_id.to_owned()),
-            ..Default::default()
-        },
+        native_vm_service_endpoint(network_id, &identity.compose_service),
     );
     Ok(ContainerCreateBody {
         image: Some(image.to_owned()),
@@ -3814,31 +3828,61 @@ mod vm_native_start_order_tests {
     }
 
     #[test]
+    fn native_docker_service_endpoint_sets_compose_alias() {
+        let network_id = "a".repeat(64);
+        let warp = native_vm_service_endpoint(&network_id, "warp-egress");
+        let line1 = native_vm_service_endpoint(&network_id, "line1-gateway");
+        assert_eq!(warp.network_id.as_deref(), Some(network_id.as_str()));
+        assert_eq!(warp.aliases, Some(vec!["warp-egress".to_owned()]));
+        assert_eq!(line1.aliases, Some(vec!["line1-gateway".to_owned()]));
+    }
+
+    #[test]
     fn exact_compose_network_attachment_rejects_missing_foreign_or_multiple_networks() {
         let network_id = "a".repeat(64);
         let mut endpoint = bollard::models::EndpointSettings::default();
         endpoint.network_id = Some(network_id.clone());
+        endpoint.aliases = Some(vec!["warp-egress".into()]);
         let mut endpoints = HashMap::from([("vultr-edge_edge_net".to_owned(), endpoint)]);
         assert!(exact_owned_network_attachment(
             Some(&endpoints),
             "vultr-edge_edge_net",
-            &network_id
+            &network_id,
+            "warp-egress",
         ));
         assert!(!exact_owned_network_attachment(
             None,
             "vultr-edge_edge_net",
-            &network_id
+            &network_id,
+            "warp-egress",
         ));
         assert!(!exact_owned_network_attachment(
             Some(&endpoints),
             "foreign_edge_net",
-            &network_id
+            &network_id,
+            "warp-egress",
         ));
         assert!(!exact_owned_network_attachment(
             Some(&endpoints),
             "vultr-edge_edge_net",
-            &"b".repeat(64)
+            &"b".repeat(64),
+            "warp-egress",
         ));
+        assert!(!exact_owned_network_attachment(
+            Some(&endpoints),
+            "vultr-edge_edge_net",
+            &network_id,
+            "line2-proxy",
+        ));
+        endpoints.get_mut("vultr-edge_edge_net").unwrap().aliases = None;
+        assert!(!exact_owned_network_attachment(
+            Some(&endpoints),
+            "vultr-edge_edge_net",
+            &network_id,
+            "warp-egress",
+        ));
+        endpoints.get_mut("vultr-edge_edge_net").unwrap().aliases =
+            Some(vec!["warp-egress".into()]);
         endpoints.insert(
             "foreign_mesh_net".into(),
             bollard::models::EndpointSettings::default(),
@@ -3846,7 +3890,8 @@ mod vm_native_start_order_tests {
         assert!(!exact_owned_network_attachment(
             Some(&endpoints),
             "vultr-edge_edge_net",
-            &network_id
+            &network_id,
+            "warp-egress",
         ));
     }
 
