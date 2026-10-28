@@ -8,7 +8,9 @@
 use super::*;
 use edge_shared_types::{
     FleetWindowsReceiptIdentityEnrollment,
-    host_journal::{require_windows_local_administrator_first_use, verify_native_journal_protection},
+    host_journal::{
+        require_windows_local_administrator_first_use, verify_native_journal_protection,
+    },
 };
 use prost::Message;
 use ring::{
@@ -49,9 +51,15 @@ fn request_valid(
         || request.source_revision != active.source_revision
         || request.release_set_sha256 != active.release_set_sha256
         || request.source_revision.len() != 40
-        || !request.source_revision.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        || !request
+            .source_revision
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
         || request.release_set_sha256.len() != 64
-        || !request.release_set_sha256.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        || !request
+            .release_set_sha256
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
     {
         return Err("HOST_WINDOWS_RECEIPT_ENROLL_EXACT_RELEASE_OR_HOST_MISMATCH");
     }
@@ -59,8 +67,8 @@ fn request_valid(
 }
 
 fn read_marker(path: &Path, active: &WindowsActivationState) -> Result<(), String> {
-    let meta = fs::symlink_metadata(path)
-        .map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_MARKER_MISSING")?;
+    let meta =
+        fs::symlink_metadata(path).map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_MARKER_MISSING")?;
     if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 512 {
         return Err("HOST_WINDOWS_RECEIPT_ENROLL_MARKER_NOT_BOUNDED_REGULAR".into());
     }
@@ -103,12 +111,16 @@ fn existing_private_public(root: &Path) -> Result<Option<[u8; 32]>, String> {
         Ok(meta) if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 4096 => {
             return Err("HOST_WINDOWS_RECEIPT_ENROLL_PRIVATE_INVALID".into());
         }
-        Ok(_) => fs::read(&private)
-            .map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_PRIVATE_UNREADABLE")?,
+        Ok(_) => {
+            fs::read(&private).map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_PRIVATE_UNREADABLE")?
+        }
     };
     let pair = Ed25519KeyPair::from_pkcs8(&pk8)
         .map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_PRIVATE_INVALID")?;
-    let key: [u8; 32] = pair.public_key().as_ref().try_into()
+    let key: [u8; 32] = pair
+        .public_key()
+        .as_ref()
+        .try_into()
         .map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_PUBLIC_INVALID")?;
     match fs::symlink_metadata(&public) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
@@ -121,8 +133,8 @@ fn existing_private_public(root: &Path) -> Result<Option<[u8; 32]>, String> {
             return Err("HOST_WINDOWS_RECEIPT_ENROLL_PUBLIC_INVALID".into());
         }
         Ok(_) => {
-            let stored = fs::read(&public)
-                .map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_PUBLIC_UNREADABLE")?;
+            let stored =
+                fs::read(&public).map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_PUBLIC_UNREADABLE")?;
             if stored != key {
                 return Err("HOST_WINDOWS_RECEIPT_ENROLL_PUBLIC_PRIVATE_MISMATCH".into());
             }
@@ -152,7 +164,11 @@ pub(super) fn prepare(
     if root.join(PRIVATE).exists() || root.join(PUBLIC).exists() || root.join(COMPLETED).exists() {
         return Err("HOST_WINDOWS_RECEIPT_ENROLL_IDENTITY_ALREADY_EXISTS".into());
     }
-    if install_root.join("exchange").join("requests").join("host-intent.pb").exists()
+    if install_root
+        .join("exchange")
+        .join("requests")
+        .join("host-intent.pb")
+        .exists()
         || privileged_request_path(install_root).exists()
     {
         return Err("HOST_WINDOWS_RECEIPT_ENROLL_COMPETING_REQUEST".into());
@@ -190,13 +206,15 @@ fn complete_marker(root: &Path) -> Result<(), String> {
         }
         Ok(_) => {
             if fs::read(&marker).map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_MARKER_UNREADABLE")?
-                != fs::read(&completed).map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_ARCHIVE_UNREADABLE")?
+                != fs::read(&completed)
+                    .map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_ARCHIVE_UNREADABLE")?
             {
                 return Err("HOST_WINDOWS_RECEIPT_ENROLL_ARCHIVE_MISMATCH".into());
             }
         }
     }
-    fs::remove_file(marker).map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_UNLINK_UNCERTAIN_NO_REPLAY".to_owned())
+    fs::remove_file(marker)
+        .map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_UNLINK_UNCERTAIN_NO_REPLAY".to_owned())
 }
 
 /// Existing periodic LocalSystem task: if exact admin-created, protected
@@ -214,7 +232,11 @@ pub(super) fn dispatch_if_present(install_root: &Path) -> Result<bool, String> {
     let active = load_verified_activation(install_root)?;
     require_offline_windows_owner(install_root, &active)?;
     read_marker(&marker, &active)?;
-    if install_root.join("exchange").join("requests").join("host-intent.pb").exists()
+    if install_root
+        .join("exchange")
+        .join("requests")
+        .join("host-intent.pb")
+        .exists()
         || privileged_request_path(install_root).exists()
     {
         return Err("HOST_WINDOWS_RECEIPT_ENROLL_COMPETING_REQUEST".into());
@@ -229,7 +251,10 @@ pub(super) fn dispatch_if_present(install_root: &Path) -> Result<bool, String> {
                 .map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_KEY_GENERATION_FAILED")?;
             let pair = Ed25519KeyPair::from_pkcs8(secret.as_ref())
                 .map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_KEY_GENERATION_FAILED")?;
-            let key: [u8; 32] = pair.public_key().as_ref().try_into()
+            let key: [u8; 32] = pair
+                .public_key()
+                .as_ref()
+                .try_into()
                 .map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_KEY_GENERATION_FAILED")?;
             // Fail closed on ANY uncertain write: do not generate another key
             // to recover. Future dispatcher can only rederive public identity.
@@ -241,7 +266,13 @@ pub(super) fn dispatch_if_present(install_root: &Path) -> Result<bool, String> {
     complete_marker(&root)?;
     println!("status=PASS");
     println!("native_receipt_identity=SYSTEM_GENERATED_OR_EXACT_EXISTING");
-    println!("native_receipt_public_hex={}", public.iter().map(|b| format!("{b:02x}")).collect::<String>());
+    println!(
+        "native_receipt_public_hex={}",
+        public
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect::<String>()
+    );
     println!("worker_trust=NOT_ENROLLED");
     println!("scm_mutations=0");
     println!("network_mutations=0");
@@ -268,12 +299,14 @@ pub(super) fn observe(install_root: &Path) -> Result<(), String> {
     if !meta.file_type().is_file() || meta.len() != 32 {
         return Err("HOST_WINDOWS_RECEIPT_ENROLL_PUBLIC_INVALID".into());
     }
-    let bytes = fs::read(public)
-        .map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_PUBLIC_UNREADABLE")?;
+    let bytes = fs::read(public).map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_PUBLIC_UNREADABLE")?;
     println!("w4_receipt_identity=PUBLIC_ONLY_OBSERVED");
     println!("machine_id={MACHINE}");
     println!("release_set_sha256={}", active.release_set_sha256);
-    println!("native_receipt_public_hex={}", bytes.iter().map(|b| format!("{b:02x}")).collect::<String>());
+    println!(
+        "native_receipt_public_hex={}",
+        bytes.iter().map(|b| format!("{b:02x}")).collect::<String>()
+    );
     println!("worker_trust=NOT_ENROLLED");
     println!("host_mutations=0");
     Ok(())
@@ -313,7 +346,8 @@ mod tests {
 
     #[test]
     fn protected_identity_never_replaces_existing_private_key() {
-        let test_dir = std::env::temp_dir().join(format!("w4-receipt-identity-{}", std::process::id()));
+        let test_dir =
+            std::env::temp_dir().join(format!("w4-receipt-identity-{}", std::process::id()));
         std::fs::create_dir(&test_dir).unwrap();
         let private = test_dir.join(PRIVATE);
         let public = test_dir.join(PUBLIC);
