@@ -175,11 +175,17 @@ async fn main() -> ExitCode {
     }
 }
 
-/// Only inspected read-only commands reach the old console. Typed native
-/// HostIntent is the sole mutation authority; privileged Task Scheduler,
-/// menu actions and offline bootstrap cannot reinstate an alternate path.
+/// Routine console actions are read-only. The sole first-use exception is
+/// an exact immutable local Administrator invocation of offline-bootstrap,
+/// never a legacy SYSTEM request or runner capability. That Rust handler
+/// proves local SCM CHANGE_CONFIG, Git release identity and no-replay BEGIN.
+/// Subsequent remote mutations require Worker-signed native HostIntent.
 fn legacy_console_entrypoint_allowed(command: &cli::Command) -> bool {
     use cli::Command;
+    #[cfg(windows)]
+    if matches!(command, Command::OfflineBootstrap(_)) {
+        return true;
+    }
     matches!(
         command,
         Command::Status(_)
