@@ -21,6 +21,7 @@ use std::path::Path;
 
 const MACHINE: &str = "sing-box-windows-lab";
 const MARKER: &str = "receipt-enrollment.pb";
+const COMPLETED: &str = "receipt-enrollment.completed.pb";
 const PRIVATE: &str = "receipt-key.pk8";
 const PUBLIC: &str = "receipt-public-key.bin";
 
@@ -148,7 +149,7 @@ pub(super) fn prepare(
     let root = native_root(install_root)?;
     // A pre-existing signing identity cannot be re-enrolled through this
     // unsigned local-first-use boundary, even if its public pin is unknown.
-    if root.join(PRIVATE).exists() || root.join(PUBLIC).exists() {
+    if root.join(PRIVATE).exists() || root.join(PUBLIC).exists() || root.join(COMPLETED).exists() {
         return Err("HOST_WINDOWS_RECEIPT_ENROLL_IDENTITY_ALREADY_EXISTS".into());
     }
     if install_root.join("exchange").join("requests").join("host-intent.pb").exists()
@@ -169,6 +170,33 @@ pub(super) fn prepare(
     println!("w4_next=EXISTING_SYSTEM_TASK_ONLY");
     println!("runtime_mutations=0");
     Ok(())
+}
+
+// Archive the exact immutable one-shot intent before removing its active
+// marker. This prevents a completed enrollment blocking future signed
+// dispatches; a crash between hard-link and unlink is recoverable without
+// ever re-generating the PRIVATE key.
+fn complete_marker(root: &Path) -> Result<(), String> {
+    let marker = root.join(MARKER);
+    let completed = root.join(COMPLETED);
+    match fs::symlink_metadata(&completed) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            fs::hard_link(&marker, &completed)
+                .map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_ARCHIVE_UNCERTAIN_NO_REPLAY")?;
+        }
+        Err(_) => return Err("HOST_WINDOWS_RECEIPT_ENROLL_ARCHIVE_METADATA_UNAVAILABLE".into()),
+        Ok(meta) if !meta.file_type().is_file() => {
+            return Err("HOST_WINDOWS_RECEIPT_ENROLL_ARCHIVE_INVALID".into());
+        }
+        Ok(_) => {
+            if fs::read(&marker).map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_MARKER_UNREADABLE")?
+                != fs::read(&completed).map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_ARCHIVE_UNREADABLE")?
+            {
+                return Err("HOST_WINDOWS_RECEIPT_ENROLL_ARCHIVE_MISMATCH".into());
+            }
+        }
+    }
+    fs::remove_file(marker).map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_UNLINK_UNCERTAIN_NO_REPLAY".to_owned())
 }
 
 /// Existing periodic LocalSystem task: if exact admin-created, protected
@@ -210,6 +238,7 @@ pub(super) fn dispatch_if_present(install_root: &Path) -> Result<bool, String> {
             key
         }
     };
+    complete_marker(&root)?;
     println!("status=PASS");
     println!("native_receipt_identity=SYSTEM_GENERATED_OR_EXACT_EXISTING");
     println!("native_receipt_public_hex={}", public.iter().map(|b| format!("{b:02x}")).collect::<String>());
@@ -226,7 +255,13 @@ pub(super) fn observe(install_root: &Path) -> Result<(), String> {
     require_exact_immutable_activation_console(install_root)?;
     let root = native_root(install_root)?;
     let active = load_verified_activation(install_root)?;
-    read_marker(&root.join(MARKER), &active)?;
+    // After successful SYSTEM processing the original active marker is
+    // archived: reading must not recreate it or assume missing means failure.
+    if root.join(MARKER).exists() {
+        read_marker(&root.join(MARKER), &active)?;
+    } else {
+        read_marker(&root.join(COMPLETED), &active)?;
+    }
     let public = root.join(PUBLIC);
     let meta = fs::symlink_metadata(&public)
         .map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_PUBLIC_NOT_READY")?;
