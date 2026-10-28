@@ -2749,10 +2749,42 @@ fn require_offline_bootstrap_other_pending_absent(install_root: &Path) -> Result
     Ok(())
 }
 
+// A crash between archiving the historical BEGIN and creating a new BEGIN
+// must NEVER look like a clean install. The SHA-addressed immutable archive
+// itself proves that a supersession was attempted. A normal new bootstrap
+// cannot consume it or infer that the earlier operation finished.
+fn require_no_historical_bootstrap_supersession(
+    install_root: &Path,
+) -> Result<(), String> {
+    let entries = fs::read_dir(install_root).map_err(|_| {
+        "OFFLINE_BOOTSTRAP_BLOCKED: historical archive inventory unreadable; no replay"
+            .to_owned()
+    })?;
+    for entry in entries {
+        let entry = entry.map_err(|_| {
+            "OFFLINE_BOOTSTRAP_BLOCKED: historical archive entry unreadable; no replay"
+                .to_owned()
+        })?;
+        if entry
+            .file_name()
+            .to_string_lossy()
+            .to_ascii_lowercase()
+            .starts_with("offline-bootstrap-intent-v1.historical-")
+        {
+            return Err(
+                "OFFLINE_BOOTSTRAP_BLOCKED: historical supersession record exists; no replay"
+                    .to_owned(),
+            );
+        }
+    }
+    Ok(())
+}
+
 // Never begin with a queued legacy mutation, signed request, torn activation,
-// or earlier first-use intent. ENOENT is the only accepted absence.
+// retained historical proof, or earlier first-use intent.
 fn require_offline_bootstrap_quiescent(install_root: &Path) -> Result<(), String> {
     require_offline_bootstrap_other_pending_absent(install_root)?;
+    require_no_historical_bootstrap_supersession(install_root)?;
     let path = install_root.join("offline-bootstrap-intent-v1");
     match fs::symlink_metadata(path) {
         Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
@@ -2793,8 +2825,13 @@ fn archive_retained_offline_bootstrap_intent(
         }
         Err(_) => return Err("OFFLINE_BOOTSTRAP_SUPERSESSION_ARCHIVE_STATE_UNPROVEN".to_owned()),
     }
-    fs::rename(install_root.join("offline-bootstrap-intent-v1"), &archive).map_err(|_| {
-        "OFFLINE_BOOTSTRAP_UNKNOWN: historical intent archive failed; no replay".to_owned()
+    let original = install_root.join("offline-bootstrap-intent-v1");
+    // Create the archive as a hard link FIRST. Unlike a rename, hard_link
+    // refuses to overwrite an existing destination atomically. Until the
+    // old name is removed, a crash leaves the original BEGIN in place.
+    // After removal, the archive itself is a durable fail-closed witness.
+    fs::hard_link(&original, &archive).map_err(|_| {
+        "OFFLINE_BOOTSTRAP_UNKNOWN: create-only historical archive failed; no replay".to_owned()
     })?;
     let readback = fs::read(&archive).map_err(|_| {
         "OFFLINE_BOOTSTRAP_UNKNOWN: archived intent unreadable; no replay".to_owned()
@@ -2802,9 +2839,8 @@ fn archive_retained_offline_bootstrap_intent(
     if readback != verified.original_bytes {
         return Err("OFFLINE_BOOTSTRAP_UNKNOWN: archived intent changed; no replay".to_owned());
     }
-    // Windows FlushFileBuffers requires a writable file handle. The file
-    // contents are never modified after the atomic rename; only durability is
-    // requested, then the exact archived bytes remain immutable.
+    // Flush the same immutable contents before unlinking the old name.
+    // On Windows FlushFileBuffers needs a writable file handle.
     OpenOptions::new()
         .write(true)
         .open(&archive)
@@ -2812,7 +2848,17 @@ fn archive_retained_offline_bootstrap_intent(
         .map_err(|_| {
             "OFFLINE_BOOTSTRAP_UNKNOWN: archived intent durability unproven; no replay".to_owned()
         })?;
-    require_offline_bootstrap_quiescent(install_root)?;
+    fs::remove_file(&original).map_err(|_| {
+        "OFFLINE_BOOTSTRAP_UNKNOWN: historical BEGIN unlink failed; no replay".to_owned()
+    })?;
+    match fs::symlink_metadata(&original) {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        _ => return Err("OFFLINE_BOOTSTRAP_UNKNOWN: old BEGIN not absent; no replay".to_owned()),
+    }
+    // We deliberately DO NOT require full quiescence here: the historical
+    // archive must stay visible so that a crash before the fresh create_new
+    // BEGIN is blocked on every future unpinned bootstrap attempt.
+    require_offline_bootstrap_other_pending_absent(install_root)?;
     Ok(())
 }
 
