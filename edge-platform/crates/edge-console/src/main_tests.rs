@@ -393,7 +393,10 @@ fn historical_handoff_interruption_never_admits_replay_with_or_without_old_name(
     assert!(!original.exists());
     assert_eq!(fs::read(&archive).unwrap(), bytes);
     let gate = require_offline_bootstrap_quiescent(&root).unwrap_err();
-    assert!(gate.contains("historical supersession record exists"), "{gate}");
+    assert!(
+        gate.contains("historical supersession record exists"),
+        "{gate}"
+    );
     assert!(archive_retained_offline_bootstrap_intent(&root, &pins, &installed).is_err());
     // A case variant is also protected (NTFS filename comparisons are case-insensitive).
     fs::rename(
