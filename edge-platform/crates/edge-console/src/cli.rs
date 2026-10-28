@@ -278,12 +278,18 @@ mod tests {
     #[test]
     fn only_exact_explicit_local_first_use_command_is_parseable() {
         let command = Cli::try_parse_from([
-            "edge-console", "offline-bootstrap",
+            "edge-console",
+            "offline-bootstrap",
             "a82d4b6049c63b329d153626f0a143ae5b7e5618",
             "c16c1eec3f29c8d5e00a9969952d12c4807c798a37edcd8f79fd5fc13ef8a680",
-            "--install-root", r"C:\sing-box",
-        ]).unwrap();
-        assert!(matches!(command.command, Some(Command::OfflineBootstrap(_))));
+            "--install-root",
+            r"C:\sing-box",
+        ])
+        .unwrap();
+        assert!(matches!(
+            command.command,
+            Some(Command::OfflineBootstrap(_))
+        ));
         assert!(Cli::try_parse_from(["edge-console", "offline-bootstrap"]).is_err());
         assert!(Cli::try_parse_from(["edge-console", "privileged-offline-activate"]).is_err());
     }
