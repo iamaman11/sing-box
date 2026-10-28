@@ -351,7 +351,13 @@ fn historical_begin_supersession_preserves_exact_bytes_and_replay_is_blocked() {
     let archive = root.join(format!("offline-bootstrap-intent-v1.historical-{digest}"));
     assert_eq!(fs::read(&archive).unwrap(), bytes);
     assert!(!marker.exists());
-    assert!(require_offline_bootstrap_quiescent(&root).is_ok());
+    // A crash NOW (after removing the old name, before the new BEGIN) must
+    // never appear as a clean bootstrap window.
+    assert!(
+        require_offline_bootstrap_quiescent(&root)
+            .unwrap_err()
+            .contains("historical supersession record exists")
+    );
     assert!(archive_retained_offline_bootstrap_intent(&root, &pins, &installed).is_err());
     // The next operation owns a NEW exclusive BEGIN, never a replay of the old one.
     let mut first_use = OpenOptions::new()
@@ -363,6 +369,39 @@ fn historical_begin_supersession_preserves_exact_bytes_and_replay_is_blocked() {
     first_use.sync_all().unwrap();
     assert!(require_offline_bootstrap_quiescent(&root).is_err());
     assert_eq!(fs::read(&archive).unwrap(), bytes);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn historical_handoff_interruption_never_admits_replay_with_or_without_old_name() {
+    let root = offline_test_root("historical-crash-gap");
+    let (bytes, digest, installed) = offline_legacy_intent_fixture();
+    let original = root.join("offline-bootstrap-intent-v1");
+    let archive = root.join(format!("offline-bootstrap-intent-v1.historical-{digest}"));
+    fs::write(&original, &bytes).unwrap();
+    let pins = RetainedOfflineBootstrapSupersession {
+        expected_intent_sha256: digest.clone(),
+        expected_current_release_set_sha256: installed.clone(),
+    };
+    // Crash just after exclusive hard_link: two names, same bytes.
+    fs::hard_link(&original, &archive).unwrap();
+    assert_eq!(fs::read(&archive).unwrap(), fs::read(&original).unwrap());
+    assert!(require_offline_bootstrap_quiescent(&root).is_err());
+    assert!(archive_retained_offline_bootstrap_intent(&root, &pins, &installed).is_err());
+    // Crash after unlinking historical name but BEFORE fresh create_new BEGIN.
+    fs::remove_file(&original).unwrap();
+    assert!(!original.exists());
+    assert_eq!(fs::read(&archive).unwrap(), bytes);
+    let gate = require_offline_bootstrap_quiescent(&root).unwrap_err();
+    assert!(gate.contains("historical supersession record exists"), "{gate}");
+    assert!(archive_retained_offline_bootstrap_intent(&root, &pins, &installed).is_err());
+    // A case variant is also protected (NTFS filename comparisons are case-insensitive).
+    fs::rename(
+        &archive,
+        root.join(format!("OFFLINE-BOOTSTRAP-INTENT-V1.HISTORICAL-{digest}")),
+    )
+    .unwrap();
+    assert!(require_offline_bootstrap_quiescent(&root).is_err());
     fs::remove_dir_all(root).unwrap();
 }
 
