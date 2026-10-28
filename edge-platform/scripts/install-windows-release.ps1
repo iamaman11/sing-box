@@ -1,10 +1,12 @@
 [CmdletBinding()]
 param(
     [string]$Repository = "iamaman11/sing-box",
-    [Parameter(Mandatory = $true)]
-    [string]$ReleaseSetSha256,
-    [Parameter(Mandatory = $true)]
-    [string]$AcceptedRevision,
+    [string]$ReleaseSetSha256 = "",
+    [string]$AcceptedRevision = "",
+    # One operator entrypoint: select exact published main ReleaseSet, no SHA
+    # hand-copied from GitHub. Retained old BEGIN needs separate explicit scope.
+    [switch]$ConnectWindows,
+    [switch]$ApproveRetainedBegin,
     [string]$InstallRoot = "C:\sing-box",
     [string]$GitHubToken = $env:EDGE_GITHUB_TOKEN,
     [switch]$ForceRematerialize,
@@ -15,6 +17,9 @@ param(
     # Exact candidate staging only. No pointer, SCM or task mutation.
     [switch]$StageOnly,
     [switch]$BootstrapNow,
+    # An explicit opt-in for the SAME approved offline-bootstrap invocation.
+    # The SYSTEM task (not this script) generates the private Ed25519 key.
+    [switch]$EnrollReceipt,
     # Explicit local elevated Administrator supersession of an OLD retained
     # one-shot BEGIN. Never silently inferred from an installed newer version.
     [string]$RetainedIntentSha256 = "",
@@ -389,8 +394,180 @@ function Activate-ReleaseAuthority {
     }
 }
 
+# Resolve current published authority BEFORE any creation, SCM, task or marker.
+# This branch reuses this same immutable verified installer, not a new agent.
+if ($ConnectWindows) {
+    if ($Repository -cne 'iamaman11/sing-box' -or
+        $InstallRoot -cne 'C:\sing-box' -or
+        $ReleaseSetSha256 -or $AcceptedRevision -or $Offline -or $BootstrapNow -or
+        $StageOnly -or $EnrollReceipt -or $ForceRematerialize -or
+        $ArchivedAcceptanceSourceRunId -ne 0 -or $RetainedIntentSha256 -or
+        $ExpectedCurrentReleaseSetSha256) {
+        throw 'WINDOWS_CONNECT_INVALID_SCOPE: only canonical local first-use, no SHA inputs'
+    }
+    # Reuse the already proven direct HTTPS GitHub policy of offline W4:
+    # never silently select a different ambient Windows proxy path.
+    $Offline = $true
+    $currentPath = Join-Path $InstallRoot 'current.pb'
+    $stableDiagnostic = Join-Path $InstallRoot 'bin\edge-diagnostic.exe'
+    $hasCurrent = Test-Path -LiteralPath $currentPath -PathType Leaf
+    $hasStable = Test-Path -LiteralPath $stableDiagnostic -PathType Leaf
+    if ($hasCurrent -ne $hasStable) {
+        throw 'WINDOWS_CONNECT_PARTIAL_INITIAL_INSTALL_NO_REPLAY'
+    }
+    $branch = Invoke-GitHubJsonGet -Uri 'https://api.github.com/repos/iamaman11/sing-box/branches/main'
+    if (-not [bool]$branch.protected -or [string]$branch.commit.sha -notmatch '^[0-9a-f]{40}$') {
+        throw 'WINDOWS_CONNECT_CANONICAL_MAIN_UNPROVEN'
+    }
+    $release = Invoke-GitHubJsonGet -Uri 'https://api.github.com/repos/iamaman11/sing-box/releases/latest'
+    $tagName = [string]$release.tag_name
+    if ($tagName -cnotmatch '^edge-release-([0-9a-f]{64})$' -or
+        [string]$release.target_commitish -cne [string]$branch.commit.sha -or
+        [bool]$release.draft -or [bool]$release.prerelease -or
+        [string]::IsNullOrWhiteSpace([string]$release.published_at)) {
+        throw 'WINDOWS_CONNECT_AWAITING_EXACT_PROTECTED_MAIN_RELEASE: no eligible published ReleaseSet'
+    }
+    $selectedDigest = $tagName.Substring('edge-release-'.Length)
+    # The ordinary installer independently re-verifies the exact immutable
+    # release tag, candidate source/tree, ZIP and files before native BEGIN.
+    Assert-AcceptedReleaseAuthority -AcceptedRevision ([string]$branch.commit.sha) -Tag $tagName
+    if (-not $hasCurrent) {
+        # A clean host has no installed controller or scheduled owner yet.
+        # Never overwrite an existing/partial root or foreign service.
+        if (Test-Path -LiteralPath $InstallRoot) {
+            throw 'WINDOWS_CONNECT_PARTIAL_ROOT_NO_REPLAY'
+        }
+        $argsInitial = @(
+            '-AcceptedRevision', [string]$branch.commit.sha,
+            '-ReleaseSetSha256', $selectedDigest,
+            '-InstallRoot', $InstallRoot, '-Offline'
+        )
+        $global:LASTEXITCODE = 0
+        & $PSCommandPath @argsInitial
+        if ($LASTEXITCODE -ne 0) {
+            throw 'WINDOWS_CONNECT_INITIAL_RELEASE_OUTCOME_UNKNOWN_NO_REPLAY'
+        }
+        $console = Join-Path $InstallRoot "releases\$selectedDigest\bin\edge-console.exe"
+        if (-not (Test-Path -LiteralPath $console -PathType Leaf)) {
+            throw 'WINDOWS_CONNECT_INITIAL_CONSOLE_UNPROVEN'
+        }
+        $global:LASTEXITCODE = 0
+        & $console offline-clean-install --install-root $InstallRoot
+        if ($LASTEXITCODE -ne 0) {
+            throw 'WINDOWS_CONNECT_INITIAL_SCM_OR_TASK_UNKNOWN_NO_REPLAY'
+        }
+        Write-Output 'windows_connect=INITIAL_INSTALL_AND_IDENTITY_TRUST_INTENTS_DURABLE'
+        Write-Output 'windows_connect_next=EXISTING_SYSTEM_TASK'
+        exit 0
+    }
+    $installed = Invoke-Diagnostic -Diagnostic $stableDiagnostic -State $currentPath
+    if ([string]$installed['release_set_sha256'] -ceq $selectedDigest) {
+        if ($ApproveRetainedBegin) {
+            throw 'WINDOWS_CONNECT_SUPERSESSION_NOT_APPLICABLE: installed release already current'
+        }
+        $console = [string]$installed['console_path']
+        if (-not (Test-Path -LiteralPath $console -PathType Leaf)) {
+            throw 'WINDOWS_CONNECT_INSTALLED_CONSOLE_MISSING'
+        }
+        $global:LASTEXITCODE = 0
+        $stateText = & $console offline-first-use-status --install-root $InstallRoot
+        if ($LASTEXITCODE -ne 0) {
+            throw 'WINDOWS_CONNECT_FIRST_USE_STATE_UNPROVEN: no replay'
+        }
+        $state = ($stateText | Out-String | ConvertFrom-Json -ErrorAction Stop)
+        if ([string]$state.schema -cne 'sing-box.windows-first-use-status/v1' -or
+            [string]$state.machine_id -cne 'sing-box-windows-lab' -or
+            [string]$state.installed_release_set_sha256 -cne $selectedDigest -or
+            [int]$state.mutations -ne 0) {
+            throw 'WINDOWS_CONNECT_FIRST_USE_STATE_NOT_CANONICAL'
+        }
+        # Historical offline BEGIN may remain after an uncertain handoff.
+        # Status/NOOP is safe, but never authorize another identity/trust
+        # mutation from this result without independent adjudication.
+        $retainedBegin = Test-Path -LiteralPath (Join-Path $InstallRoot 'offline-bootstrap-intent-v1')
+        if ($retainedBegin -and [string]$state.stage -in @(
+            'NOT_STARTED', 'RECEIPT_READY_TRUST_NOT_REQUESTED'
+        )) {
+            throw 'WINDOWS_CONNECT_RETAINED_BEGIN_BLOCKS_NEW_ENROLLMENT_NO_REPLAY'
+        }
+        switch ([string]$state.stage) {
+            'NOT_STARTED' {
+                $global:LASTEXITCODE = 0
+                & $console offline-receipt-identity-prepare --install-root $InstallRoot
+                if ($LASTEXITCODE -ne 0) {
+                    throw 'WINDOWS_CONNECT_IDENTITY_RESULT_UNKNOWN_NO_REPLAY'
+                }
+                Write-Output 'windows_connect=IDENTITY_AND_TRUST_REQUESTED'
+                exit 0
+            }
+            'RECEIPT_READY_TRUST_NOT_REQUESTED' {
+                $global:LASTEXITCODE = 0
+                & $console offline-host-trust-prepare --install-root $InstallRoot
+                if ($LASTEXITCODE -ne 0) {
+                    throw 'WINDOWS_CONNECT_TRUST_RESULT_UNKNOWN_NO_REPLAY'
+                }
+                Write-Output 'windows_connect=TRUST_REQUESTED'
+                exit 0
+            }
+            'SYSTEM_PENDING' {
+                Write-Output 'windows_connect=SYSTEM_PENDING_NOOP'
+                exit 0
+            }
+            'AWAITING_GIT_AUTHORITY_OR_SYSTEM' {
+                Write-Output 'windows_connect=AWAITING_GIT_AUTHORITY_NOOP'
+                exit 0
+            }
+            'TRUST_RECORDED_UNVERIFIED' {
+                Write-Output 'windows_connect=TRUST_RECORDED_NOOP'
+                Write-Output 'independent_worker_acceptance=NOT_PROVEN'
+                exit 0
+            }
+            default {
+                throw 'WINDOWS_CONNECT_FIRST_USE_UNKNOWN_STAGE_NO_REPLAY'
+            }
+        }
+    }
+    $argsExact = @(
+        '-AcceptedRevision', [string]$branch.commit.sha,
+        '-ReleaseSetSha256', $selectedDigest,
+        '-InstallRoot', $InstallRoot,
+        '-Offline', '-BootstrapNow', '-EnrollReceipt'
+    )
+    $oldBegin = Join-Path $InstallRoot 'offline-bootstrap-intent-v1'
+    if (Test-Path -LiteralPath $oldBegin) {
+        if (-not $ApproveRetainedBegin) {
+            throw 'WINDOWS_CONNECT_RETAINED_BEGIN_REQUIRES_EXPLICIT_APPROVAL: no automatic supersession'
+        }
+        $entry = Get-Item -LiteralPath $oldBegin -Force -ErrorAction Stop
+        if ($entry.PSIsContainer -or ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            $entry.Length -lt 1 -or $entry.Length -gt 512) {
+            throw 'WINDOWS_CONNECT_RETAINED_BEGIN_NOT_BOUNDED_REGULAR: no replay'
+        }
+        $oldDigest = (Get-FileHash -LiteralPath $oldBegin -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+        $argsExact += @(
+            '-RetainedIntentSha256', $oldDigest,
+            '-ExpectedCurrentReleaseSetSha256', [string]$installed['release_set_sha256']
+        )
+    } elseif ($ApproveRetainedBegin) {
+        throw 'WINDOWS_CONNECT_SUPERSESSION_REQUEST_WITHOUT_RETAINED_BEGIN'
+    }
+    $global:LASTEXITCODE = 0
+    & $PSCommandPath @argsExact
+    if ($LASTEXITCODE -ne 0) {
+        throw 'WINDOWS_CONNECT_NATIVE_OUTCOME_UNKNOWN_NO_REPLAY: inspect installed release and journal'
+    }
+    Write-Output 'windows_connect=INSTALL_AND_IDENTITY_REQUEST_DURABLE'
+    Write-Output 'windows_connect_next=EXISTING_SYSTEM_TASK'
+    exit 0
+}
+if ($ApproveRetainedBegin) {
+    throw 'WINDOWS_CONNECT_APPROVAL_REQUIRES_CONNECT_WINDOWS'
+}
 if (($StageOnly -or $BootstrapNow) -and (-not $Offline -or $ForceRematerialize -or $ArchivedAcceptanceSourceRunId -ne 0 -or ($StageOnly -and $BootstrapNow))) {
     throw 'OFFLINE_BOOTSTRAP_BLOCKED: StageOnly requires exact ordinary offline candidate'
+}
+if ($EnrollReceipt -and (-not $Offline -or -not $BootstrapNow -or $StageOnly -or $ForceRematerialize -or $ArchivedAcceptanceSourceRunId -ne 0)) {
+    throw 'OFFLINE_BOOTSTRAP_ENROLL_BLOCKED: explicit Offline BootstrapNow required'
 }
 if (($StageOnly -or $BootstrapNow) -and $Repository -cne 'iamaman11/sing-box') {
     throw 'OFFLINE_BOOTSTRAP_BLOCKED: only canonical protected GitHub repository is allowed'
@@ -595,6 +772,7 @@ if ($StageOnly -or $BootstrapNow) {
     Write-Output "offline_bootstrap_console=$console"
     if ($BootstrapNow) {
         $bootstrapArgs = @("offline-bootstrap", $AcceptedRevision, $ReleaseSetSha256, "--install-root", $InstallRoot)
+        if ($EnrollReceipt) { $bootstrapArgs += "--enroll-receipt" }
         if ($hasRetained) {
             $bootstrapArgs += @(
                 "--retained-intent-sha256", $RetainedIntentSha256,
@@ -604,6 +782,10 @@ if ($StageOnly -or $BootstrapNow) {
         & $console @bootstrapArgs
         if ($LASTEXITCODE -ne 0) { throw 'OFFLINE_BOOTSTRAP_UNKNOWN: native result uncertain, DO NOT REPLAY' }
         Write-Output 'offline_bootstrap=RETURNED_FROM_NATIVE_OWNER'
+        if ($EnrollReceipt) {
+            Write-Output 'w4_receipt_identity=LOCAL_ADMIN_REQUEST_DURABLE'
+            Write-Output 'w4_next=EXISTING_SYSTEM_TASK_ONLY'
+        }
         exit 0
     }
     Write-Output 'windows_service_mutations=0'

@@ -10,6 +10,8 @@ mod credential_transition;
 mod error;
 mod initial_line1_witness;
 #[cfg(windows)]
+mod windows_clean_install;
+#[cfg(windows)]
 mod windows_receipt_enrollment;
 #[cfg(windows)]
 mod windows_signed_host;
@@ -192,7 +194,9 @@ fn legacy_console_entrypoint_allowed(command: &cli::Command) -> bool {
         Command::OfflineBootstrap(_)
             | Command::OfflineBootstrapPreflight(_)
             | Command::OfflineReceiptIdentityPrepare(_)
+            | Command::OfflineCleanInstall(_)
             | Command::OfflineReceiptIdentityObserve(_)
+            | Command::OfflineFirstUseStatus(_)
             | Command::OfflineHostTrustPrepare(_)
     ) {
         return true;
@@ -3021,6 +3025,7 @@ fn offline_bootstrap_privileged_release(
     install_root: &Path,
     request: &WindowsPrivilegedRequest,
     supersession: Option<&RetainedOfflineBootstrapSupersession>,
+    enroll_receipt: bool,
 ) -> Result<(String, String, Option<String>), String> {
     // One operator-authorized local admin invocation from the independently
     // verified NEW immutable console. The installed legacy SYSTEM dispatcher
@@ -3045,6 +3050,9 @@ fn offline_bootstrap_privileged_release(
         return Err("OFFLINE_BOOTSTRAP_BLOCKED: canonical target is not ProxyOnly".to_owned());
     }
     let before = read_only_windows_first_use_source(install_root, supersession)?;
+    if enroll_receipt {
+        windows_receipt_enrollment::preflight_fresh_identity_slot(install_root)?;
+    }
     if before.release_set_sha256 == target {
         return Err("OFFLINE_BOOTSTRAP_BLOCKED: exact distinct legacy release required".to_owned());
     }
@@ -3207,6 +3215,19 @@ fn offline_bootstrap_privileged_release(
     // If re-enable fails the one-shot marker remains; never replay.
     change_offline_bootstrap_task_enabled(true)?;
     verify_offline_bootstrap_dispatcher(&console.to_string_lossy(), "Ready")?;
+    if enroll_receipt {
+        // One explicitly scoped local Administrator transaction: after the
+        // exact immutable SYSTEM task has been verified, persist the same
+        // typed enrollment marker. Only SYSTEM generates the PRIVATE key.
+        // The release is already activated; an uncertain marker must not
+        // trigger a second bootstrap or an automatic key regeneration.
+        windows_receipt_enrollment::prepare(install_root).map_err(|reason| {
+            format!("OFFLINE_BOOTSTRAP_IDENTITY_STEP_UNCERTAIN_NO_REPLAY: {reason}; installed release may already be active; inspect current.pb and native identity status before any new authorization")
+        })?;
+        windows_trust_enrollment::prepare_pending(install_root).map_err(|reason| {
+            format!("OFFLINE_BOOTSTRAP_TRUST_INTENT_UNKNOWN_NO_REPLAY: {reason}; keep the same key and journal; do not repeat installation")
+        })?;
+    }
     Ok(activated)
 }
 

@@ -55,16 +55,32 @@ fn verify_enrollment_marker(
 /// Keys, registry and signer identity cannot be passed by the caller.
 /// Only the existing SYSTEM dispatcher is permitted to construct trust.pb.
 pub(super) fn prepare(install_root: &Path) -> Result<(), String> {
+    prepare_exact(install_root, false)
+}
+
+/// Authorize future Git trust in the SAME local operation as receipt identity.
+/// Only the already installed SYSTEM owner performs Git verification and
+/// creates trust.pb once its own Ed25519 identity exists.
+pub(super) fn prepare_pending(install_root: &Path) -> Result<(), String> {
+    prepare_exact(install_root, true)
+}
+
+fn prepare_exact(install_root: &Path, allow_pending_identity: bool) -> Result<(), String> {
     require_windows_local_administrator_first_use().map_err(str::to_owned)?;
     require_exact_immutable_activation_console(install_root)?;
     let active = load_verified_activation(install_root).map_err(|e| e.to_string())?;
     require_offline_windows_owner(install_root, &active)?;
     verify_offline_bootstrap_dispatcher(&active.console_path, "Ready")?;
     let root = install_root.join("native-host");
-    let proof = fs::symlink_metadata(root.join(COMPLETED))
-        .map_err(|_| "HOST_WINDOWS_TRUST_ENROLL_RECEIPT_IDENTITY_UNPROVEN")?;
-    if !proof.file_type().is_file() || proof.len() == 0 || proof.len() > 512 {
-        return Err("HOST_WINDOWS_TRUST_ENROLL_RECEIPT_IDENTITY_INVALID".into());
+    if allow_pending_identity {
+        windows_receipt_enrollment::require_identity_request_for_trust(install_root, &active)?;
+    } else {
+        let proof = fs::symlink_metadata(root.join(COMPLETED))
+            .map_err(|_| "HOST_WINDOWS_TRUST_ENROLL_RECEIPT_IDENTITY_UNPROVEN")?;
+        if !proof.file_type().is_file() || proof.len() == 0 || proof.len() > 512 {
+            return Err("HOST_WINDOWS_TRUST_ENROLL_RECEIPT_IDENTITY_INVALID".into());
+        }
+        windows_receipt_enrollment::require_identity_request_for_trust(install_root, &active)?;
     }
     if root.join(TRUST_FILE).exists() || root.join(DONE).exists() {
         return Err("HOST_WINDOWS_TRUST_ENROLL_ALREADY_COMPLETED".into());
@@ -99,6 +115,78 @@ pub(super) fn prepare(install_root: &Path) -> Result<(), String> {
     println!("scm_mutations=0");
     println!("network_mutations=0");
     Ok(())
+}
+
+/// Derived read-only state, never a second journal or source of authority.
+pub(super) fn first_use_trust_present(root: &Path) -> Result<bool, String> {
+    for name in [MARKER, DONE, TRUST_FILE] {
+        if windows_receipt_enrollment::checked_regular_exists(
+            &root.join(name),
+            if name == TRUST_FILE {
+                9 * 1024 * 1024
+            } else {
+                512
+            },
+        )? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+pub(super) fn read_only_first_use_trust_stage(
+    root: &Path,
+    active: &WindowsActivationState,
+) -> Result<&'static str, String> {
+    let marker = root.join(MARKER);
+    let done = root.join(DONE);
+    let has_marker = windows_receipt_enrollment::checked_regular_exists(&marker, 512)?;
+    let has_done = windows_receipt_enrollment::checked_regular_exists(&done, 512)?;
+    let has_trust = windows_receipt_enrollment::checked_regular_exists(
+        &root.join(TRUST_FILE),
+        9 * 1024 * 1024,
+    )?;
+    if has_marker {
+        let bytes =
+            fs::read(&marker).map_err(|_| "HOST_WINDOWS_FIRST_USE_TRUST_MARKER_UNREADABLE")?;
+        verify_enrollment_marker(&bytes, active).map_err(str::to_owned)?;
+        if has_done
+            && fs::read(&done).map_err(|_| "HOST_WINDOWS_FIRST_USE_TRUST_DONE_UNREADABLE")? != bytes
+        {
+            return Err("HOST_WINDOWS_FIRST_USE_TRUST_MARKER_MISMATCH_NO_REPLAY".into());
+        }
+    } else if has_done {
+        let bytes = fs::read(&done).map_err(|_| "HOST_WINDOWS_FIRST_USE_TRUST_DONE_UNREADABLE")?;
+        verify_enrollment_marker(&bytes, active).map_err(str::to_owned)?;
+    }
+    if !has_trust && has_done {
+        return Err("HOST_WINDOWS_FIRST_USE_TRUST_DONE_WITHOUT_SNAPSHOT".into());
+    }
+    if has_trust {
+        if !has_marker && !has_done {
+            return Err("HOST_WINDOWS_FIRST_USE_ORPHAN_TRUST_SNAPSHOT".into());
+        }
+        let bytes = fs::read(root.join(TRUST_FILE))
+            .map_err(|_| "HOST_WINDOWS_FIRST_USE_TRUST_SNAPSHOT_UNREADABLE")?;
+        let snapshot = FleetNativeTrustSnapshot::decode(bytes.as_slice())
+            .map_err(|_| "HOST_WINDOWS_FIRST_USE_TRUST_SNAPSHOT_PROTO_INVALID")?;
+        if snapshot.encode_to_vec() != bytes
+            || snapshot.schema_version != 1
+            || snapshot.machine_id != HOST
+            || snapshot.pinned_worker_public_key.len() != 32
+            || snapshot.release_set_pb.is_empty()
+            || sha_hex(&snapshot.release_set_pb) != active.release_set_sha256
+        {
+            return Err("HOST_WINDOWS_FIRST_USE_TRUST_SNAPSHOT_INVALID".into());
+        }
+        // This read-only local projection is NOT live Worker attestation.
+        return Ok("TRUST_RECORDED_UNVERIFIED");
+    }
+    if has_marker {
+        Ok("AWAITING_GIT_AUTHORITY_OR_SYSTEM")
+    } else {
+        Ok("RECEIPT_READY_TRUST_NOT_REQUESTED")
+    }
 }
 
 fn complete_trust_marker(root: &Path) -> Result<(), String> {
@@ -140,23 +228,76 @@ fn exact_github_provenance(
     active: &WindowsActivationState,
 ) -> Result<(), &'static str> {
     let tag = format!("edge-release-{}", active.release_set_sha256);
-    // The immutable Windows package was built from a PR candidate SHA; its
-    // ReleaseSet is published later by a protected two-parent merge commit.
-    // The installed source MUST match the canonical release-set.pb (checked
-    // in exact_windows_registration), while Git main MUST match the release
-    // tag's own merge target. Those are different, independently pinned facts.
     let protected_main = head["object"]["sha"].as_str();
+    // Historical installed release must be an authentic immutable published
+    // release. Git HEAD may advance when registering PUBLIC host pins; its
+    // ancestry is verified independently before any new registry is trusted.
+    let old_merge = release["target_commitish"].as_str();
     if head["object"]["type"].as_str() != Some("commit")
-        || protected_main.is_none()
-        || release["target_commitish"].as_str() != protected_main
+        || !protected_main.is_some_and(exact_git_revision)
+        || !old_merge.is_some_and(exact_git_revision)
         || release["tag_name"].as_str() != Some(tag.as_str())
+        || release["draft"].as_bool() != Some(false)
+        || release["prerelease"].as_bool() != Some(false)
+        || release["published_at"].as_str().is_none()
+        || tag_ref["object"]["type"].as_str() != Some("commit")
+        || tag_ref["object"]["sha"].as_str() != old_merge
+    {
+        return Err("HOST_WINDOWS_TRUST_GITHUB_MAIN_RELEASE_TAG_NOT_EXACT");
+    }
+    Ok(())
+}
+
+fn exact_git_revision(sha: &str) -> bool {
+    sha.len() == 40
+        && sha
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+}
+
+/// The new protected Git registry is released independently of the old
+/// installed Windows binaries; no reinstallation merely to publish a key.
+fn exact_current_registry_release(
+    head: &serde_json::Value,
+    release: &serde_json::Value,
+    tag_ref: &serde_json::Value,
+) -> Result<String, &'static str> {
+    let protected_main = head["object"]["sha"].as_str();
+    let published = release["tag_name"].as_str();
+    let released_digest = published.and_then(|tag| tag.strip_prefix("edge-release-"));
+    if head["object"]["type"].as_str() != Some("commit")
+        || !protected_main.is_some_and(exact_git_revision)
+        || !released_digest.is_some_and(|digest| {
+            digest.len() == 64
+                && digest
+                    .bytes()
+                    .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
+        || release["target_commitish"].as_str() != protected_main
         || release["draft"].as_bool() != Some(false)
         || release["prerelease"].as_bool() != Some(false)
         || release["published_at"].as_str().is_none()
         || tag_ref["object"]["type"].as_str() != Some("commit")
         || tag_ref["object"]["sha"].as_str() != protected_main
     {
-        return Err("HOST_WINDOWS_TRUST_GITHUB_MAIN_RELEASE_TAG_NOT_EXACT");
+        return Err("HOST_WINDOWS_TRUST_CURRENT_GIT_RELEASE_NOT_EXACT");
+    }
+    Ok(released_digest.unwrap_or_default().to_owned())
+}
+
+fn exact_installed_git_ancestor(
+    compare: &serde_json::Value,
+    installed_merge: &str,
+    current_main: &str,
+) -> Result<(), &'static str> {
+    let status = compare["status"].as_str();
+    if !exact_git_revision(installed_merge)
+        || !exact_git_revision(current_main)
+        || !matches!(status, Some("ahead" | "identical"))
+        || compare["base_commit"]["sha"].as_str() != Some(installed_merge)
+        || compare["merge_base_commit"]["sha"].as_str() != Some(installed_merge)
+    {
+        return Err("HOST_WINDOWS_TRUST_INSTALLED_GIT_NOT_CANONICAL_ANCESTOR");
     }
     Ok(())
 }
@@ -337,25 +478,87 @@ async fn fetch_exact_protected_git(
     let main_url = format!("{base}/git/ref/heads/main");
     let release_url = format!("{base}/releases/tags/{tag}");
     let tag_url = format!("{base}/git/ref/tags/{tag}");
-    let (head, release, tag_ref) = tokio::try_join!(
+    let current_release_url = format!("{base}/releases/latest");
+    let (head, installed_release, installed_tag, current_release) = tokio::try_join!(
         fetch_json(&client, &main_url),
         fetch_json(&client, &release_url),
         fetch_json(&client, &tag_url),
+        fetch_json(&client, &current_release_url),
     )?;
-    exact_github_provenance(&head, &release, &tag_ref, active).map_err(str::to_owned)?;
+    exact_github_provenance(&head, &installed_release, &installed_tag, active)
+        .map_err(str::to_owned)?;
+    let current_main = head["object"]["sha"]
+        .as_str()
+        .ok_or("HOST_WINDOWS_TRUST_GITHUB_MAIN_MISSING")?;
+    let installed_merge = installed_release["target_commitish"]
+        .as_str()
+        .ok_or("HOST_WINDOWS_TRUST_INSTALLED_MERGE_MISSING")?;
+    let current_tag = current_release["tag_name"]
+        .as_str()
+        .ok_or("HOST_WINDOWS_TRUST_CURRENT_RELEASE_TAG_MISSING")?;
+    // Reject malformed tag BEFORE using untrusted release metadata in a URL.
+    let candidate_digest = current_tag
+        .strip_prefix("edge-release-")
+        .ok_or("HOST_WINDOWS_TRUST_CURRENT_RELEASE_TAG_INVALID")?;
+    if candidate_digest.len() != 64
+        || !candidate_digest
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err("HOST_WINDOWS_TRUST_CURRENT_RELEASE_TAG_INVALID".into());
+    }
+    // Neither the runner nor the Administrator supplies registry bytes.
+    // The published latest release must point EXACTLY at protected Git main.
+    let current_tag_url = format!("{base}/git/ref/tags/{current_tag}");
+    let compare_url = format!("{base}/compare/{installed_merge}...{current_main}");
+    let (current_tag_ref, ancestry) = tokio::try_join!(
+        fetch_json(&client, &current_tag_url),
+        fetch_json(&client, &compare_url),
+    )?;
+    let current_digest = exact_current_registry_release(&head, &current_release, &current_tag_ref)
+        .map_err(str::to_owned)?;
+    exact_installed_git_ancestor(&ancestry, installed_merge, current_main)
+        .map_err(str::to_owned)?;
     let spec_url = format!(
         "https://raw.githubusercontent.com/iamaman11/sing-box/{}/{}",
-        active.source_revision, SPEC
+        current_main, SPEC
     );
-    let (release_pb, registry_pb, spec) = tokio::try_join!(
-        accepted_asset(&client, &release, &tag, "release-set.pb", MAX_RELEASE),
-        accepted_asset(&client, &release, &tag, "fleet-registry.pb", MAX_REGISTRY),
+    let (installed_release_pb, current_release_pb, registry_pb, spec) = tokio::try_join!(
+        accepted_asset(
+            &client,
+            &installed_release,
+            &tag,
+            "release-set.pb",
+            MAX_RELEASE
+        ),
+        accepted_asset(
+            &client,
+            &current_release,
+            current_tag,
+            "release-set.pb",
+            MAX_RELEASE
+        ),
+        accepted_asset(
+            &client,
+            &current_release,
+            current_tag,
+            "fleet-registry.pb",
+            MAX_REGISTRY
+        ),
         fetch_bounded(&client, &spec_url, MAX_SPEC),
     )?;
-    if sha_hex(&release_pb) != active.release_set_sha256 {
+    if sha_hex(&installed_release_pb) != active.release_set_sha256
+        || sha_hex(&current_release_pb) != current_digest
+    {
         return Err("HOST_WINDOWS_TRUST_RELEASE_DIGEST_MISMATCH".into());
     }
-    Ok((release_pb, registry_pb, spec))
+    // Fail closed if protected main moved during the multi-source fetch.
+    // A later SYSTEM tick can evaluate the new state; no bytes are committed.
+    let current_head_again = fetch_json(&client, &main_url).await?;
+    if current_head_again != head {
+        return Err("HOST_WINDOWS_TRUST_GIT_CHANGED_DURING_FETCH".into());
+    }
+    Ok((installed_release_pb, registry_pb, spec))
 }
 
 /// Called ONLY from the existing periodic LocalSystem task, never a new
@@ -377,7 +580,14 @@ pub(super) async fn dispatch_if_needed(install_root: &Path) -> Result<(), String
         return Err("HOST_WINDOWS_TRUST_ENROLL_MARKER_INVALID".into());
     }
     if !root.join(COMPLETED).is_file() {
-        return Err("HOST_WINDOWS_TRUST_ENROLL_RECEIPT_IDENTITY_NOT_COMPLETED".into());
+        // Trust and receipt markers may have been created by ONE local
+        // enrollment. On the first tick SYSTEM creates the key; on a later
+        // tick this existing trust marker resumes without a second admin.
+        let installed = load_verified_activation(install_root)
+            .map_err(|_| "HOST_WINDOWS_TRUST_ACTIVATION_UNAVAILABLE")?;
+        windows_receipt_enrollment::require_identity_request_for_trust(install_root, &installed)?;
+        println!("native_trust=AWAITING_SYSTEM_RECEIPT_IDENTITY");
+        return Ok(());
     }
     // Never synthesize authority when a pending native mutation exists.
     if install_root
@@ -407,8 +617,31 @@ pub(super) async fn dispatch_if_needed(install_root: &Path) -> Result<(), String
     let private =
         fs::read(&key_path).map_err(|_| "HOST_WINDOWS_TRUST_PRIVATE_IDENTITY_UNREADABLE")?;
     let (release_pb, registry_pb, spec) = fetch_exact_protected_git(&active).await?;
-    let trust =
-        exact_windows_registration(&registry_pb, &release_pb, &spec, &active, &private, &public)?;
+    let trust = match exact_windows_registration(
+        &registry_pb,
+        &release_pb,
+        &spec,
+        &active,
+        &private,
+        &public,
+    ) {
+        Ok(snapshot) => snapshot,
+        Err(reason)
+            if matches!(
+                reason.as_str(),
+                "HOST_GIT_WORKER_SIGNER_KEY_REQUIRED"
+                    | "HOST_WINDOWS_GIT_RECEIPT_REGISTRATION_REQUIRED"
+            ) =>
+        {
+            // The public pin is not yet in the new protected Git release.
+            // This is a recoverable waiting state, not permission to use an
+            // unpinned key or repeat an earlier native mutation.
+            println!("native_trust=AWAITING_GIT_AUTHORITY");
+            println!("native_trust_reason={reason}");
+            return Ok(());
+        }
+        Err(reason) => return Err(reason),
+    };
     // GitHub GETs can take seconds. Re-observe the physical installed
     // authority, owner and immutable typed request immediately before the
     // only trust write; a concurrent release/task/marker change is a denial.
@@ -463,6 +696,49 @@ pub(super) async fn dispatch_if_needed(install_root: &Path) -> Result<(), String
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn read_only_trust_stage_never_calls_a_recorded_snapshot_authorized() {
+        let dir = std::env::temp_dir().join(format!("w4-trust-readonly-{}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        let release = b"old installed immutable bytes";
+        let active = WindowsActivationState {
+            schema_version: 1,
+            source_revision: "a".repeat(40),
+            release_set_sha256: sha_hex(release),
+            ..Default::default()
+        };
+        assert_eq!(
+            read_only_first_use_trust_stage(&dir, &active),
+            Ok("RECEIPT_READY_TRUST_NOT_REQUESTED")
+        );
+        let marker = FleetWindowsTrustEnrollment {
+            schema_version: 1,
+            machine_id: HOST.into(),
+            source_revision: active.source_revision.clone(),
+            release_set_sha256: active.release_set_sha256.clone(),
+        };
+        std::fs::write(dir.join(MARKER), marker.encode_to_vec()).unwrap();
+        assert_eq!(
+            read_only_first_use_trust_stage(&dir, &active),
+            Ok("AWAITING_GIT_AUTHORITY_OR_SYSTEM")
+        );
+        let snapshot = FleetNativeTrustSnapshot {
+            schema_version: 1,
+            machine_id: HOST.into(),
+            release_set_pb: release.to_vec(),
+            pinned_worker_public_key: vec![7; 32],
+            ..Default::default()
+        };
+        std::fs::write(dir.join(TRUST_FILE), snapshot.encode_to_vec()).unwrap();
+        assert_eq!(
+            read_only_first_use_trust_stage(&dir, &active),
+            Ok("TRUST_RECORDED_UNVERIFIED")
+        );
+        std::fs::write(dir.join(TRUST_FILE), b"bad protobuf").unwrap();
+        assert!(read_only_first_use_trust_stage(&dir, &active).is_err());
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
     #[test]
     fn trust_marker_binds_exact_host_and_installed_release() {
         let active = WindowsActivationState {
@@ -537,9 +813,14 @@ mod tests {
             exact_github_provenance(&head, &release, &git_tag, &active),
             Ok(())
         );
-        let mut stale = head.clone();
-        stale["object"]["sha"] = serde_json::json!("d".repeat(40));
-        assert!(exact_github_provenance(&stale, &release, &git_tag, &active).is_err());
+        // Git HEAD legitimately advances after PUBLIC pin registration:
+        // old immutable release remains valid, ancestry is checked separately.
+        let mut advanced = head.clone();
+        advanced["object"]["sha"] = serde_json::json!("d".repeat(40));
+        assert!(exact_github_provenance(&advanced, &release, &git_tag, &active).is_ok());
+        let mut invalid_head = head.clone();
+        invalid_head["object"]["type"] = serde_json::json!("tree");
+        assert!(exact_github_provenance(&invalid_head, &release, &git_tag, &active).is_err());
         let mut wrong_release = release.clone();
         wrong_release["target_commitish"] = serde_json::json!(active.source_revision);
         assert!(exact_github_provenance(&head, &wrong_release, &git_tag, &active).is_err());
@@ -552,6 +833,47 @@ mod tests {
         let mut missing_published = release;
         missing_published["published_at"] = serde_json::Value::Null;
         assert!(exact_github_provenance(&head, &missing_published, &git_tag, &active).is_err());
+    }
+
+    #[test]
+    fn current_git_registration_requires_its_own_exact_release_and_tag() {
+        let head_sha = "a".repeat(40);
+        let head = serde_json::json!({"object":{"type":"commit","sha":head_sha}});
+        let tag = format!("edge-release-{}", "b".repeat(64));
+        let release = serde_json::json!({
+            "target_commitish":head_sha,"tag_name":tag,
+            "draft":false,"prerelease":false,"published_at":"2026-10-29T00:00:00Z"
+        });
+        let tag_ref = serde_json::json!({"object":{"type":"commit","sha":head_sha}});
+        assert_eq!(
+            exact_current_registry_release(&head, &release, &tag_ref),
+            Ok("b".repeat(64))
+        );
+        let mut moved = head.clone();
+        moved["object"]["sha"] = serde_json::json!("c".repeat(40));
+        assert!(exact_current_registry_release(&moved, &release, &tag_ref).is_err());
+        let mut wrong_tag = tag_ref.clone();
+        wrong_tag["object"]["sha"] = serde_json::json!("d".repeat(40));
+        assert!(exact_current_registry_release(&head, &release, &wrong_tag).is_err());
+        let mut draft = release.clone();
+        draft["draft"] = serde_json::json!(true);
+        assert!(exact_current_registry_release(&head, &draft, &tag_ref).is_err());
+    }
+
+    #[test]
+    fn old_installed_git_merge_must_be_ancestor_of_new_pin_registry() {
+        let old = "a".repeat(40);
+        let current = "b".repeat(40);
+        let mut compare = serde_json::json!({
+            "status":"ahead", "base_commit":{"sha":old},
+            "merge_base_commit":{"sha":old}
+        });
+        assert!(exact_installed_git_ancestor(&compare, &old, &current).is_ok());
+        compare["merge_base_commit"]["sha"] = serde_json::json!("c".repeat(40));
+        assert!(exact_installed_git_ancestor(&compare, &old, &current).is_err());
+        compare["merge_base_commit"]["sha"] = serde_json::json!(old);
+        compare["status"] = serde_json::json!("diverged");
+        assert!(exact_installed_git_ancestor(&compare, &old, &current).is_err());
     }
 
     #[test]
