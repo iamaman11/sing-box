@@ -410,6 +410,20 @@ pub(super) async fn dispatch_if_needed(install_root: &Path) -> Result<(), String
     let (release_pb, registry_pb, spec) = fetch_exact_protected_git(&active).await?;
     let trust =
         exact_windows_registration(&registry_pb, &release_pb, &spec, &active, &private, &public)?;
+    // GitHub GETs can take seconds. Re-observe the physical installed
+    // authority, owner and immutable typed request immediately before the
+    // only trust write; a concurrent release/task/marker change is a denial.
+    let current = load_verified_activation(install_root).map_err(|e| e.to_string())?;
+    if current != active {
+        return Err("HOST_WINDOWS_TRUST_ENROLL_ACTIVATION_CHANGED_BEFORE_WRITE".into());
+    }
+    require_offline_windows_owner(install_root, &current)?;
+    verify_native_journal_protection(&root.join("journal")).map_err(str::to_owned)?;
+    let request_now = fs::read(&marker)
+        .map_err(|_| "HOST_WINDOWS_TRUST_ENROLL_MARKER_CHANGED_BEFORE_WRITE")?;
+    if request_now != marker_bytes {
+        return Err("HOST_WINDOWS_TRUST_ENROLL_MARKER_CHANGED_BEFORE_WRITE".into());
+    }
     let bytes = trust.encode_to_vec();
     let dest = root.join(TRUST_FILE);
     // The canonical native-host ACL already restricts write to SYSTEM and
