@@ -2683,7 +2683,10 @@ fn inspect_retained_offline_bootstrap_intent(
         return Err("OFFLINE_BOOTSTRAP_SUPERSESSION_LEGACY_INTENT_CHANGED".to_owned());
     }
     let sha256: String = ring::digest::digest(&ring::digest::SHA256, &bytes)
-        .as_ref().iter().map(|v| format!("{v:02x}")).collect();
+        .as_ref()
+        .iter()
+        .map(|v| format!("{v:02x}"))
+        .collect();
     if sha256 != approval.expected_intent_sha256 {
         return Err("OFFLINE_BOOTSTRAP_SUPERSESSION_LEGACY_INTENT_SHA_MISMATCH".to_owned());
     }
@@ -2772,27 +2775,35 @@ fn archive_retained_offline_bootstrap_intent(
     observed_current: &str,
 ) -> Result<(), String> {
     require_offline_bootstrap_other_pending_absent(install_root)?;
-    let verified = inspect_retained_offline_bootstrap_intent(
-        install_root, approval, observed_current,
-    )?;
+    let verified =
+        inspect_retained_offline_bootstrap_intent(install_root, approval, observed_current)?;
     let archive = install_root.join(format!(
-        "offline-bootstrap-intent-v1.historical-{}", verified.sha256
+        "offline-bootstrap-intent-v1.historical-{}",
+        verified.sha256
     ));
     match fs::symlink_metadata(&archive) {
         Err(err) if err.kind() == io::ErrorKind::NotFound => {}
-        Ok(_) => return Err("OFFLINE_BOOTSTRAP_SUPERSESSION_ARCHIVE_ALREADY_EXISTS_NO_REPLAY".to_owned()),
+        Ok(_) => {
+            return Err(
+                "OFFLINE_BOOTSTRAP_SUPERSESSION_ARCHIVE_ALREADY_EXISTS_NO_REPLAY".to_owned(),
+            );
+        }
         Err(_) => return Err("OFFLINE_BOOTSTRAP_SUPERSESSION_ARCHIVE_STATE_UNPROVEN".to_owned()),
     }
-    fs::rename(install_root.join("offline-bootstrap-intent-v1"), &archive)
-        .map_err(|_| "OFFLINE_BOOTSTRAP_UNKNOWN: historical intent archive failed; no replay".to_owned())?;
-    let readback = fs::read(&archive)
-        .map_err(|_| "OFFLINE_BOOTSTRAP_UNKNOWN: archived intent unreadable; no replay".to_owned())?;
+    fs::rename(install_root.join("offline-bootstrap-intent-v1"), &archive).map_err(|_| {
+        "OFFLINE_BOOTSTRAP_UNKNOWN: historical intent archive failed; no replay".to_owned()
+    })?;
+    let readback = fs::read(&archive).map_err(|_| {
+        "OFFLINE_BOOTSTRAP_UNKNOWN: archived intent unreadable; no replay".to_owned()
+    })?;
     if readback != verified.original_bytes {
         return Err("OFFLINE_BOOTSTRAP_UNKNOWN: archived intent changed; no replay".to_owned());
     }
     File::open(&archive)
         .and_then(|file| file.sync_all())
-        .map_err(|_| "OFFLINE_BOOTSTRAP_UNKNOWN: archived intent durability unproven; no replay".to_owned())?;
+        .map_err(|_| {
+            "OFFLINE_BOOTSTRAP_UNKNOWN: archived intent durability unproven; no replay".to_owned()
+        })?;
     require_offline_bootstrap_quiescent(install_root)?;
     Ok(())
 }
