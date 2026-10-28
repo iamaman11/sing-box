@@ -14,7 +14,11 @@ param(
     [switch]$Offline,
     # Exact candidate staging only. No pointer, SCM or task mutation.
     [switch]$StageOnly,
-    [switch]$BootstrapNow
+    [switch]$BootstrapNow,
+    # Explicit local elevated Administrator supersession of an OLD retained
+    # one-shot BEGIN. Never silently inferred from an installed newer version.
+    [string]$RetainedIntentSha256 = "",
+    [string]$ExpectedCurrentReleaseSetSha256 = ""
 )
 
 Set-StrictMode -Version Latest
@@ -391,6 +395,20 @@ if (($StageOnly -or $BootstrapNow) -and (-not $Offline -or $ForceRematerialize -
 if (($StageOnly -or $BootstrapNow) -and $Repository -cne 'iamaman11/sing-box') {
     throw 'OFFLINE_BOOTSTRAP_BLOCKED: only canonical protected GitHub repository is allowed'
 }
+# Both independent pins are mandatory together and permitted ONLY with
+# the existing explicit offline first-use. No StageOnly/online downgrade.
+$hasRetained = -not [string]::IsNullOrEmpty($RetainedIntentSha256)
+$hasCurrent = -not [string]::IsNullOrEmpty($ExpectedCurrentReleaseSetSha256)
+if ($hasRetained -ne $hasCurrent) {
+    throw 'OFFLINE_BOOTSTRAP_SUPERSESSION_BOTH_PINS_REQUIRED'
+}
+if ($hasRetained) {
+    if (-not $Offline -or -not $BootstrapNow -or $StageOnly -or $ForceRematerialize) {
+        throw 'OFFLINE_BOOTSTRAP_SUPERSESSION_ONLY_EXACT_OFFLINE_BOOTSTRAP_NOW'
+    }
+    Assert-HexSha256 -Value $RetainedIntentSha256 -Name 'RetainedIntentSha256'
+    Assert-HexSha256 -Value $ExpectedCurrentReleaseSetSha256 -Name 'ExpectedCurrentReleaseSetSha256'
+}
 Assert-OfflineWindow
 
 $binDir = Join-Path $InstallRoot "bin"
@@ -576,7 +594,14 @@ if ($StageOnly -or $BootstrapNow) {
     Write-Output 'offline_bootstrap_candidate=VERIFIED_STAGE_ONLY'
     Write-Output "offline_bootstrap_console=$console"
     if ($BootstrapNow) {
-        & $console offline-bootstrap $AcceptedRevision $ReleaseSetSha256 --install-root $InstallRoot
+        $bootstrapArgs = @("offline-bootstrap", $AcceptedRevision, $ReleaseSetSha256, "--install-root", $InstallRoot)
+        if ($hasRetained) {
+            $bootstrapArgs += @(
+                "--retained-intent-sha256", $RetainedIntentSha256,
+                "--expected-current-release-set-sha256", $ExpectedCurrentReleaseSetSha256
+            )
+        }
+        & $console @bootstrapArgs
         if ($LASTEXITCODE -ne 0) { throw 'OFFLINE_BOOTSTRAP_UNKNOWN: native result uncertain, DO NOT REPLAY' }
         Write-Output 'offline_bootstrap=RETURNED_FROM_NATIVE_OWNER'
         exit 0
