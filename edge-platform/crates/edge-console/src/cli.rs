@@ -76,6 +76,8 @@ impl Command {
             Self::OfflineReceiptIdentityPrepare(_) => "offline-receipt-identity-prepare",
             #[cfg(windows)]
             Self::OfflineReceiptIdentityObserve(_) => "offline-receipt-identity-observe",
+            #[cfg(windows)]
+            Self::OfflineHostTrustPrepare(_) => "offline-host-trust-prepare",
             Self::VerifyRuntime => "verify-runtime",
             Self::QualityLine1 => "quality-line1",
             Self::Secrets(_) => "secrets",
