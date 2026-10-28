@@ -10,9 +10,9 @@ mod credential_transition;
 mod error;
 mod initial_line1_witness;
 #[cfg(windows)]
-mod windows_signed_host;
-#[cfg(windows)]
 mod windows_receipt_enrollment;
+#[cfg(windows)]
+mod windows_signed_host;
 
 use clap::Parser;
 use command_dispatch::run;
