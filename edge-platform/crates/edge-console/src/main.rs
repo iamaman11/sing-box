@@ -2799,7 +2799,12 @@ fn archive_retained_offline_bootstrap_intent(
     if readback != verified.original_bytes {
         return Err("OFFLINE_BOOTSTRAP_UNKNOWN: archived intent changed; no replay".to_owned());
     }
-    File::open(&archive)
+    // Windows FlushFileBuffers requires a writable file handle. The file
+    // contents are never modified after the atomic rename; only durability is
+    // requested, then the exact archived bytes remain immutable.
+    OpenOptions::new()
+        .write(true)
+        .open(&archive)
         .and_then(|file| file.sync_all())
         .map_err(|_| {
             "OFFLINE_BOOTSTRAP_UNKNOWN: archived intent durability unproven; no replay".to_owned()
