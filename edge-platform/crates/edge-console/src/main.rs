@@ -2451,6 +2451,9 @@ fn offline_activate_privileged_release_with_installer(
         ));
     }
     let handoff = offline_retarget_controller_service(install_root, &before, &post)
+        // The new signed dispatcher assumes this protected native host root,
+        // even when ProxyOnly is STOPPED and SCM is never started.
+        .and_then(|_| converge_native_host_acl(install_root))
         .and_then(|_| retarget_privileged_task(install_root, &post.console_path))
         .and_then(|_| {
             #[cfg(windows)]
@@ -3957,16 +3960,47 @@ fn converge_application_acl(install_root: &Path) -> Result<(), String> {
         &install_root.join("exchange").join("results"),
         &["/grant:r", "*S-1-5-20:(OI)(CI)RX", "/Q"],
     )?;
-    // Reuse the existing host_journal for the SYSTEM owner, but isolate
-    // journal, Worker pin and Ed25519 private key from the controller service
-    // and GitHub runner. This is not a second scheduler/daemon/state store.
-    // No trust/key is synthesized by the installer.
-    for path in [
+    // Same protected SYSTEM root for normal service setup AND offline
+    // first-use. One owner, one journal; do not depend on SCM START.
+    converge_native_host_acl(install_root)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn native_host_acl_paths(install_root: &Path) -> [PathBuf; 2] {
+    [
         install_root.join("native-host"),
         install_root.join("native-host").join("journal"),
-    ] {
-        fs::create_dir_all(&path).map_err(|_| "HOST_WINDOWS_SYSTEM_NATIVE_ROOT_CREATE_FAILED")?;
-        run_icacls(&path, &["/inheritance:r", "/Q"])?;
+    ]
+}
+
+#[cfg(windows)]
+fn existing_native_host_directory_is_safe(meta: &fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    // Windows junctions/reparse points are not trusted filesystem roots.
+    meta.file_type().is_dir() && meta.file_attributes() & 0x400 == 0
+}
+
+#[cfg(windows)]
+fn converge_native_host_acl(install_root: &Path) -> Result<(), String> {
+    // This is invoked during the ONE authorized offline native transaction,
+    // before the existing SYSTEM task is re-enabled. No key or trust is made.
+    for path in native_host_acl_paths(install_root) {
+        let meta = match fs::symlink_metadata(&path) {
+            Ok(meta) => meta,
+            Err(err) if err.kind() == io::ErrorKind::NotFound => {
+                fs::create_dir(&path)
+                    .map_err(|_| "HOST_WINDOWS_SYSTEM_NATIVE_ROOT_CREATE_FAILED")?;
+                fs::symlink_metadata(&path)
+                    .map_err(|_| "HOST_WINDOWS_SYSTEM_NATIVE_ROOT_READBACK_FAILED")?
+            }
+            Err(_) => return Err("HOST_WINDOWS_SYSTEM_NATIVE_ROOT_METADATA_UNAVAILABLE".into()),
+        };
+        if !existing_native_host_directory_is_safe(&meta) {
+            return Err("HOST_WINDOWS_SYSTEM_NATIVE_ROOT_REPARSE_OR_NOT_DIR".into());
+        }
+        // Ensure SYSTEM/Administrators remain authorized before inheritance
+        // is removed; NetworkService and the controller must not write here.
         run_icacls(
             &path,
             &[
@@ -3976,6 +4010,7 @@ fn converge_application_acl(install_root: &Path) -> Result<(), String> {
                 "/Q",
             ],
         )?;
+        run_icacls(&path, &["/inheritance:r", "/Q"])?;
         run_icacls(&path, &["/remove:g", "*S-1-5-20", "/Q"])?;
         run_icacls(&path, &["/setowner", "*S-1-5-32-544", "/Q"])?;
     }

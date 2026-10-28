@@ -14,6 +14,25 @@ fn offline_test_root(label: &str) -> PathBuf {
 }
 
 #[cfg(windows)]
+#[test]
+fn offline_first_use_native_root_paths_are_exact_and_not_reparse_files() {
+    let root = Path::new(r"C:\sing-box");
+    let [protected, journal] = native_host_acl_paths(root);
+    assert_eq!(protected, root.join("native-host"));
+    assert_eq!(journal, protected.join("journal"));
+    let tmp = offline_test_root("native-root-identity");
+    assert!(existing_native_host_directory_is_safe(
+        &fs::symlink_metadata(&tmp).unwrap()
+    ));
+    let foreign = tmp.join("native-host");
+    fs::write(&foreign, b"not-a-protected-directory").unwrap();
+    assert!(!existing_native_host_directory_is_safe(
+        &fs::symlink_metadata(&foreign).unwrap()
+    ));
+    fs::remove_dir_all(tmp).unwrap();
+}
+
+#[cfg(windows)]
 fn create_zip_identity_fixture(root: &Path, include_installer: bool) -> (PathBuf, PathBuf) {
     let package = root.join("package");
     let bootstrap = package.join("bootstrap");
