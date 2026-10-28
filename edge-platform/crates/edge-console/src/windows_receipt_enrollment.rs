@@ -369,10 +369,7 @@ mod tests {
 
     #[test]
     fn completed_identity_marker_never_blocks_future_signed_dispatch() {
-        let dir = std::env::temp_dir().join(format!(
-            "w4-receipt-marker-{}",
-            std::process::id()
-        ));
+        let dir = std::env::temp_dir().join(format!("w4-receipt-marker-{}", std::process::id()));
         std::fs::create_dir(&dir).unwrap();
         let marker = dir.join(MARKER);
         let completed = dir.join(COMPLETED);
