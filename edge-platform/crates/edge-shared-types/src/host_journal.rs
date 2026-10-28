@@ -67,6 +67,82 @@ pub fn verify_native_journal_protection(path: &Path) -> Result<(), &'static str>
     Ok(())
 }
 
+/// The sole unsiged FIRST-USE exception requires a genuinely elevated
+/// local Administrator token. A permissive SCM DACL is NOT sufficient:
+/// NetworkService, LocalService, SYSTEM and UAC-filtered tokens fail even
+/// when a process can query or change the Windows service.
+#[cfg(windows)]
+pub fn require_windows_local_administrator_first_use() -> Result<(), &'static str> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Security::{
+        CheckTokenMembership, CreateWellKnownSid, GetTokenInformation, IsWellKnownSid, TOKEN_QUERY,
+        TOKEN_USER, TokenUser, WinBuiltinAdministratorsSid, WinLocalServiceSid, WinLocalSystemSid,
+        WinNetworkServiceSid,
+    };
+    use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+    let mut token = std::ptr::null_mut();
+    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+        return Err("HOST_WINDOWS_FIRST_USE_TOKEN_UNAVAILABLE");
+    }
+    let check = (|| {
+        let mut length = 0u32;
+        unsafe {
+            GetTokenInformation(token, TokenUser, std::ptr::null_mut(), 0, &mut length);
+        }
+        if length < std::mem::size_of::<TOKEN_USER>() as u32 || length > 65536 {
+            return Err("HOST_WINDOWS_FIRST_USE_IDENTITY_UNPROVEN");
+        }
+        let mut bytes = vec![0u8; length as usize];
+        if unsafe {
+            GetTokenInformation(
+                token,
+                TokenUser,
+                bytes.as_mut_ptr().cast(),
+                length,
+                &mut length,
+            )
+        } == 0
+        {
+            return Err("HOST_WINDOWS_FIRST_USE_IDENTITY_UNPROVEN");
+        }
+        let identity: TOKEN_USER = unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast()) };
+        if identity.User.Sid.is_null()
+            || unsafe { IsWellKnownSid(identity.User.Sid, WinLocalSystemSid) } != 0
+            || unsafe { IsWellKnownSid(identity.User.Sid, WinLocalServiceSid) } != 0
+            || unsafe { IsWellKnownSid(identity.User.Sid, WinNetworkServiceSid) } != 0
+        {
+            return Err("HOST_WINDOWS_FIRST_USE_SERVICE_TOKEN_FORBIDDEN");
+        }
+        // Win32 makes UAC membership depend on the actual ENABLED group,
+        // not on membership of the same principal in the directory.
+        let mut admin_sid = [0u8; 68];
+        let mut admin_length = admin_sid.len() as u32;
+        if unsafe {
+            CreateWellKnownSid(
+                WinBuiltinAdministratorsSid,
+                std::ptr::null_mut(),
+                admin_sid.as_mut_ptr().cast(),
+                &mut admin_length,
+            )
+        } == 0
+        {
+            return Err("HOST_WINDOWS_FIRST_USE_ADMIN_SID_UNAVAILABLE");
+        }
+        let mut enabled = 0i32;
+        if unsafe { CheckTokenMembership(token, admin_sid.as_mut_ptr().cast(), &mut enabled) } == 0
+        {
+            return Err("HOST_WINDOWS_FIRST_USE_ADMIN_MEMBERSHIP_UNPROVEN");
+        }
+        if enabled == 0 {
+            return Err("HOST_WINDOWS_FIRST_USE_ELEVATED_ADMIN_REQUIRED");
+        }
+        Ok(())
+    })();
+    unsafe { CloseHandle(token) };
+    check
+}
+
 #[cfg(windows)]
 pub fn verify_native_journal_protection(path: &Path) -> Result<(), &'static str> {
     use std::os::windows::ffi::OsStrExt;

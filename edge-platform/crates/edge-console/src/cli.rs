@@ -27,6 +27,11 @@ pub(crate) enum Command {
     PrivilegedPing(InstallRootArgs),
     PrivilegedRuntimeEvidence(InstallRootArgs),
     PrivilegedDispatch(InstallRootArgs),
+    // Local elevated Administrator one-shot FIRST-USE only: never a runner or
+    // untrusted exchange command. The Rust owner verifies exact Git release,
+    // immutable candidate, SCM privileges and durable no-replay marker.
+    #[cfg(windows)]
+    OfflineBootstrap(PrivilegedActivateArgs),
     VerifyRuntime,
     QualityLine1,
     Secrets(EndpointArgs),
@@ -48,6 +53,8 @@ impl Command {
             Self::PrivilegedPing(_) => "privileged-ping",
             Self::PrivilegedRuntimeEvidence(_) => "privileged-runtime-evidence",
             Self::PrivilegedDispatch(_) => "privileged-dispatch",
+            #[cfg(windows)]
+            Self::OfflineBootstrap(_) => "offline-bootstrap",
             Self::VerifyRuntime => "verify-runtime",
             Self::QualityLine1 => "quality-line1",
             Self::Secrets(_) => "secrets",
@@ -267,6 +274,26 @@ mod tests {
         assert!(Cli::try_parse_from(["edge-console", "get-operation", "42"]).is_ok());
     }
 
+    #[cfg(windows)]
+    #[test]
+    fn only_exact_explicit_local_first_use_command_is_parseable() {
+        let command = Cli::try_parse_from([
+            "edge-console",
+            "offline-bootstrap",
+            "a82d4b6049c63b329d153626f0a143ae5b7e5618",
+            "c16c1eec3f29c8d5e00a9969952d12c4807c798a37edcd8f79fd5fc13ef8a680",
+            "--install-root",
+            r"C:\sing-box",
+        ])
+        .unwrap();
+        assert!(matches!(
+            command.command,
+            Some(Command::OfflineBootstrap(_))
+        ));
+        assert!(Cli::try_parse_from(["edge-console", "offline-bootstrap"]).is_err());
+        assert!(Cli::try_parse_from(["edge-console", "privileged-offline-activate"]).is_err());
+    }
+
     #[test]
     fn legacy_console_mutation_ingress_is_unparseable() {
         for command in [
@@ -285,7 +312,6 @@ mod tests {
             "privileged-reinstall-accepted",
             "privileged-rollback-previous",
             "privileged-offline-activate",
-            "offline-bootstrap",
             "privileged-stage-credential",
             "credential-transition",
             "privileged-initial-credential-commit",

@@ -175,11 +175,17 @@ async fn main() -> ExitCode {
     }
 }
 
-/// Only inspected read-only commands reach the old console. Typed native
-/// HostIntent is the sole mutation authority; privileged Task Scheduler,
-/// menu actions and offline bootstrap cannot reinstate an alternate path.
+/// Routine console actions are read-only. The sole first-use exception is
+/// an exact immutable local Administrator invocation of offline-bootstrap,
+/// never a legacy SYSTEM request or runner capability. That Rust handler
+/// proves local SCM CHANGE_CONFIG, Git release identity and no-replay BEGIN.
+/// Subsequent remote mutations require Worker-signed native HostIntent.
 fn legacy_console_entrypoint_allowed(command: &cli::Command) -> bool {
     use cli::Command;
+    #[cfg(windows)]
+    if matches!(command, Command::OfflineBootstrap(_)) {
+        return true;
+    }
     matches!(
         command,
         Command::Status(_)
@@ -2733,6 +2739,14 @@ fn offline_bootstrap_identifiers_valid(revision: &str, digest: &str) -> bool {
 }
 
 #[cfg(windows)]
+fn require_explicit_local_administrator_first_use() -> Result<(), String> {
+    // Use the actual kernel token, not a PowerShell child or SCM DACL.
+    // A NetworkService runner cannot spoof a local elevated Administrator.
+    edge_shared_types::host_journal::require_windows_local_administrator_first_use()
+        .map_err(str::to_owned)
+}
+
+#[cfg(windows)]
 fn offline_bootstrap_privileged_release(
     install_root: &Path,
     request: &WindowsPrivilegedRequest,
@@ -2740,6 +2754,7 @@ fn offline_bootstrap_privileged_release(
     // One operator-authorized local admin invocation from the independently
     // verified NEW immutable console. The installed legacy SYSTEM dispatcher
     // never sees a wire operation it does not understand.
+    require_explicit_local_administrator_first_use()?;
     if install_root != Path::new(r"C:\sing-box") {
         return Err("OFFLINE_BOOTSTRAP_BLOCKED: unexpected Windows root".to_owned());
     }

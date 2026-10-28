@@ -208,6 +208,44 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             dispatch_privileged_request(&install_root).await?;
             Ok(())
         }
+        #[cfg(windows)]
+        Command::OfflineBootstrap(args) => {
+            // One locally elevated Administrator invocation against the exact
+            // preverified immutable candidate. This NEVER writes request.pb
+            // for the unsigned installed SYSTEM dispatcher. After bootstrap,
+            // all remote changes require signed native HostIntent.
+            let install_root = PathBuf::from(args.install_root);
+            let request = WindowsPrivilegedRequest {
+                schema_version: PRIVILEGED_REQUEST_SCHEMA_VERSION,
+                request_id: new_privileged_request_id()?,
+                operation: WindowsPrivilegedOperation::OfflineActivateRelease as i32,
+                accepted_revision: Some(args.accepted_revision),
+                release_set_sha256: Some(args.release_set_sha256),
+                credential_generation: None,
+                credential_transition_action: None,
+                initial_commit_intent_sha256: None,
+                initial_commit_slot: None,
+                initial_recovery_intent_sha256: None,
+                initial_candidate_sha256: None,
+                existing_join_vm_candidate_sha256: None,
+                existing_join_windows_active_sha256: None,
+                existing_join_windows_candidate_sha256: None,
+                existing_join_intent_sha256: None,
+                existing_join_slot: None,
+            };
+            let (code, _detail, active) =
+                offline_bootstrap_privileged_release(&install_root, &request)
+                    .map_err(ConsoleError::Command)?;
+            println!("status=PASS");
+            println!("code={code}");
+            if let Some(sha) = active {
+                println!("active_release_set_sha256={sha}");
+            }
+            println!("native_owner=SYSTEM_TASK_RETARGETED");
+            println!("native_signed_trust=REQUIRES_SEPARATE_GIT_ENROLLMENT");
+            println!("network_mutations=0");
+            Ok(())
+        }
         Command::Secrets(args) => {
             let secrets = list_secret_refs(args.resolve()).await?;
             print_secret_refs(&secrets);
