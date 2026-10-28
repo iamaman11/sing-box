@@ -2651,20 +2651,21 @@ fn inspect_retained_offline_bootstrap_intent(
     approval: &RetainedOfflineBootstrapSupersession,
     observed_current: &str,
 ) -> Result<VerifiedRetainedOfflineBootstrap, String> {
-    if !offline_bootstrap_identifiers_valid(
-        &approval.expected_current_release_set_sha256[..0],
-        &approval.expected_intent_sha256,
-    ) {
-        // The normal validator requires a 40-byte revision. Check the two
-        // independent SHA-256 identities explicitly, with no truncation.
-        if approval.expected_intent_sha256.len() != 64
-            || approval.expected_current_release_set_sha256.len() != 64
-            || ![&approval.expected_intent_sha256, &approval.expected_current_release_set_sha256]
-                .iter().all(|value| value.bytes().all(|b|
-                    b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
-        {
-            return Err("OFFLINE_BOOTSTRAP_SUPERSESSION_SHA_INVALID".to_owned());
-        }
+    // Both independent digests are exact lowercase SHA-256 identities.
+    if approval.expected_intent_sha256.len() != 64
+        || approval.expected_current_release_set_sha256.len() != 64
+        || ![
+            &approval.expected_intent_sha256,
+            &approval.expected_current_release_set_sha256,
+        ]
+        .iter()
+        .all(|value| {
+            value
+                .bytes()
+                .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        })
+    {
+        return Err("OFFLINE_BOOTSTRAP_SUPERSESSION_SHA_INVALID".to_owned());
     }
     if observed_current != approval.expected_current_release_set_sha256 {
         return Err("OFFLINE_BOOTSTRAP_SUPERSESSION_INSTALLED_RELEASE_DRIFT".to_owned());
@@ -2893,6 +2894,7 @@ fn require_explicit_local_administrator_first_use() -> Result<(), String> {
 #[cfg(windows)]
 fn read_only_windows_first_use_source(
     install_root: &Path,
+    approval: Option<&RetainedOfflineBootstrapSupersession>,
 ) -> Result<WindowsActivationState, String> {
     // A purely observational reuse of the SAME strict native pre-BEGIN
     // owner, old-doctor, task and pending-state guards as offline bootstrap.
@@ -2912,7 +2914,16 @@ fn read_only_windows_first_use_source(
     let old_readout = String::from_utf8_lossy(&old_doctor.stdout);
     require_offline_bootstrap_supported_source(&old_readout)?;
     verify_offline_bootstrap_dispatcher(&before.console_path, "Ready")?;
-    require_offline_bootstrap_quiescent(install_root)?;
+    if let Some(approval) = approval {
+        require_offline_bootstrap_other_pending_absent(install_root)?;
+        inspect_retained_offline_bootstrap_intent(
+            install_root,
+            approval,
+            &before.release_set_sha256,
+        )?;
+    } else {
+        require_offline_bootstrap_quiescent(install_root)?;
+    }
     require_no_running_legacy_dispatcher(&before.console_path)?;
     Ok(before)
 }
@@ -2921,6 +2932,7 @@ fn read_only_windows_first_use_source(
 fn offline_bootstrap_privileged_release(
     install_root: &Path,
     request: &WindowsPrivilegedRequest,
+    supersession: Option<&RetainedOfflineBootstrapSupersession>,
 ) -> Result<(String, String, Option<String>), String> {
     // One operator-authorized local admin invocation from the independently
     // verified NEW immutable console. The installed legacy SYSTEM dispatcher
@@ -2944,7 +2956,7 @@ fn offline_bootstrap_privileged_release(
     if desired.windows_datapath_mode != WindowsDatapathMode::ProxyOnly as i32 {
         return Err("OFFLINE_BOOTSTRAP_BLOCKED: canonical target is not ProxyOnly".to_owned());
     }
-    let before = read_only_windows_first_use_source(install_root)?;
+    let before = read_only_windows_first_use_source(install_root, supersession)?;
     if before.release_set_sha256 == target {
         return Err("OFFLINE_BOOTSTRAP_BLOCKED: exact distinct legacy release required".to_owned());
     }
@@ -3053,7 +3065,19 @@ fn offline_bootstrap_privileged_release(
     )?;
 
     verify_offline_bootstrap_dispatcher(&before.console_path, "Ready")?;
-    require_offline_bootstrap_quiescent(install_root)?;
+    require_no_running_legacy_dispatcher(&before.console_path)?;
+    if let Some(approval) = supersession {
+        // The prior BEGIN remains UNKNOWN_NO_REPLAY. After an independent
+        // explicit local Administrator decision, preserve its exact bytes
+        // in a deterministic immutable archive; never claim old SUCCESS.
+        archive_retained_offline_bootstrap_intent(
+            install_root,
+            approval,
+            &before.release_set_sha256,
+        )?;
+    } else {
+        require_offline_bootstrap_quiescent(install_root)?;
+    }
 
     // Create exactly one durable BEGIN before the first SCM mutation.
     // Never replay after a lost result, even if the old release was restored.
