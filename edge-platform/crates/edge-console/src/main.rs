@@ -2679,7 +2679,9 @@ fn change_offline_bootstrap_task_enabled(enable: bool) -> Result<(), String> {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map_err(|err| format!("OFFLINE_BOOTSTRAP_UNKNOWN: task state change failed: {err}; no replay"))?;
+        .map_err(|err| {
+            format!("OFFLINE_BOOTSTRAP_UNKNOWN: task state change failed: {err}; no replay")
+        })?;
     if !status.success() {
         return Err(format!(
             "OFFLINE_BOOTSTRAP_UNKNOWN: task state change exit={}; no replay",
@@ -2710,7 +2712,9 @@ foreach ($process in @(Get-CimInstance -ClassName Win32_Process -Filter "Name='e
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .status()
-        .map_err(|err| format!("OFFLINE_BOOTSTRAP_UNKNOWN: legacy process proof failed: {err}; no replay"))?;
+        .map_err(|err| {
+            format!("OFFLINE_BOOTSTRAP_UNKNOWN: legacy process proof failed: {err}; no replay")
+        })?;
     if !status.success() {
         return Err("OFFLINE_BOOTSTRAP_UNKNOWN: legacy dispatcher quiescence unproven; task remains disabled; no replay".to_owned());
     }
