@@ -451,6 +451,23 @@ assert "grep -Fxq false" not in router, "GitHub API bool must be decoded as JSON
 assert "jq -e '(.errors == null)" in router
 assert "needs.host.outputs.operation == 'STATUS'" in router
 
+# Native Windows first-use is a single local Administrator transaction.
+# It must never reactivate the old NetworkService-writable unsigned mutation
+# inlet while replacing the EXACT existing LocalSystem task.
+win_installer = Path("edge-platform/scripts/install-windows-release.ps1").read_text(encoding="utf-8")
+win_console = Path("edge-platform/crates/edge-console/src/main.rs").read_text(encoding="utf-8")
+assert "[string]$old['windows_datapath_mode'] -notin @('ManagedTun', 'ProxyOnly')" in win_installer
+assert "[string]$old['scm_start_type'] -cne 'OnDemand'" in win_installer
+assert "require_offline_bootstrap_supported_source(&old_readout)?;" in win_console
+assert "require_offline_bootstrap_quiescent(install_root)?;" in win_console
+assert "change_offline_bootstrap_task_enabled(false)?;" in win_console
+assert 'verify_offline_bootstrap_dispatcher(&before.console_path, "Disabled")?;' in win_console
+assert "require_no_running_legacy_dispatcher(&before.console_path)?;" in win_console
+assert "require_offline_bootstrap_request_queue_empty(install_root)?;" in win_console
+assert 'verify_offline_bootstrap_dispatcher(&post.console_path, "Disabled")?;' in win_console
+assert "change_offline_bootstrap_task_enabled(true)?;" in win_console
+assert 'verify_offline_bootstrap_dispatcher(&console.to_string_lossy(), "Ready")?;' in win_console
+
 # Compile-time native modules are part of the same agent, not extra owners.
 for name in ("runtime_environment", "runtime_templates", "mesh_runtime_state", "legacy_runtime_effects"):
     assert f"mod {name};" in agent_main

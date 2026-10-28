@@ -2426,7 +2426,7 @@ fn offline_activate_privileged_release_with_installer(
         .and_then(|_| {
             #[cfg(windows)]
             if verified_bootstrap_installer.is_some() {
-                verify_offline_bootstrap_dispatcher(&post.console_path)?;
+                verify_offline_bootstrap_dispatcher(&post.console_path, "Disabled")?;
             }
             Ok(())
         });
@@ -2542,7 +2542,10 @@ try {
 }
 
 #[cfg(windows)]
-fn verify_offline_bootstrap_dispatcher(exact_console: &str) -> Result<(), String> {
+fn verify_offline_bootstrap_dispatcher(
+    exact_console: &str,
+    expected_state: &str,
+) -> Result<(), String> {
     // Readback after retargeting the ONE existing task is required before
     // committing a successful offline handoff; never trust schtasks exit alone.
     let proof = r#"
@@ -2564,7 +2567,7 @@ try {
     throw 'existing SYSTEM dispatcher principal SID cannot be resolved'
 }
 if ($principalSid -cne 'S-1-5-18' -or
-    [string]$task.State -cne 'Ready' -or
+    [string]$task.State -cne $env:EDGE_BOOTSTRAP_EXPECTED_TASK_STATE -or
     [string]$task.Principal.RunLevel -cne 'Highest' -or
     [string]$task.Principal.LogonType -cne 'ServiceAccount' -or
     @($task.Actions).Count -ne 1) {
@@ -2579,6 +2582,7 @@ if ([string]$action.Execute.Trim('"') -cne $env:EDGE_BOOTSTRAP_EXPECTED_CONSOLE 
     let status = Command::new("powershell.exe")
         .args(["-NoProfile", "-NonInteractive", "-Command", proof])
         .env("EDGE_BOOTSTRAP_EXPECTED_CONSOLE", exact_console)
+        .env("EDGE_BOOTSTRAP_EXPECTED_TASK_STATE", expected_state)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
@@ -2588,6 +2592,131 @@ if ([string]$action.Execute.Trim('"') -cne $env:EDGE_BOOTSTRAP_EXPECTED_CONSOLE 
         return Err(
             "OFFLINE_BOOTSTRAP_BLOCKED: exact SYSTEM dispatcher readback failed".to_owned(),
         );
+    }
+    Ok(())
+}
+
+// Pure, testable source admission. Caller separately proves immutable doctor
+// identity, stopped SCM, zero processes and no managed TUN.
+fn require_offline_bootstrap_supported_source(doctor: &str) -> Result<(), String> {
+    let modes: Vec<_> = doctor
+        .lines()
+        .filter_map(|line| line.trim().strip_prefix("windows_datapath_mode="))
+        .collect();
+    if modes.len() != 1
+        || !matches!(modes[0], "ManagedTun" | "ProxyOnly")
+        || (modes[0] == "ProxyOnly"
+            && !doctor
+                .lines()
+                .any(|line| line.trim() == "scm_start_type=OnDemand"))
+    {
+        return Err(
+            "OFFLINE_BOOTSTRAP_BLOCKED: exact stopped ProxyOnly/ManagedTun source unproven"
+                .to_owned(),
+        );
+    }
+    Ok(())
+}
+
+// Never begin with a queued legacy mutation, signed request, torn activation,
+// or earlier first-use intent. ENOENT is the only accepted absence.
+fn require_offline_bootstrap_quiescent(install_root: &Path) -> Result<(), String> {
+    for relative in [
+        "offline-bootstrap-intent-v1",
+        "exchange/requests/request.pb",
+        "exchange/requests/host-intent.pb",
+        "current.pb.new",
+        "previous.pb.new",
+        "offline-recovery-proof.pb",
+    ] {
+        match fs::symlink_metadata(install_root.join(relative)) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Ok(_) => {
+                return Err(format!(
+                    "OFFLINE_BOOTSTRAP_BLOCKED: unresolved existing operation at {relative}; no replay"
+                ));
+            }
+            Err(_) => {
+                return Err(format!(
+                    "OFFLINE_BOOTSTRAP_BLOCKED: pending state cannot be read at {relative}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+// After BEGIN a native HostIntent and any old mutation are forbidden until
+// the SAME SYSTEM task has been retargeted to the new signed-capable owner.
+fn require_offline_bootstrap_request_queue_empty(install_root: &Path) -> Result<(), String> {
+    for relative in [
+        "exchange/requests/request.pb",
+        "exchange/requests/host-intent.pb",
+    ] {
+        match fs::symlink_metadata(install_root.join(relative)) {
+            Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+            Ok(_) => {
+                return Err(format!(
+                    "OFFLINE_BOOTSTRAP_UNKNOWN: request appeared during disabled handoff at {relative}; no replay"
+                ));
+            }
+            Err(_) => {
+                return Err(format!(
+                    "OFFLINE_BOOTSTRAP_UNKNOWN: request state unreadable at {relative}; no replay"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn change_offline_bootstrap_task_enabled(enable: bool) -> Result<(), String> {
+    let flag = if enable { "/ENABLE" } else { "/DISABLE" };
+    let status = Command::new("schtasks.exe")
+        .args(["/Change", "/TN", PRIVILEGED_TASK_NAME, flag])
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|err| {
+            format!("OFFLINE_BOOTSTRAP_UNKNOWN: task state change failed: {err}; no replay")
+        })?;
+    if !status.success() {
+        return Err(format!(
+            "OFFLINE_BOOTSTRAP_UNKNOWN: task state change exit={}; no replay",
+            status.code().unwrap_or(-1)
+        ));
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn require_no_running_legacy_dispatcher(legacy_console: &str) -> Result<(), String> {
+    // Disabled does not terminate already-running Task Scheduler instances.
+    // A local elevated process inventory must prove the outgoing console is
+    // gone before the first installer or SCM effect. No polling or blind sleep.
+    let proof = r#"
+$ErrorActionPreference = 'Stop'
+foreach ($process in @(Get-CimInstance -ClassName Win32_Process -Filter "Name='edge-console.exe'" -ErrorAction Stop)) {
+    if (-not $process.ExecutablePath -or
+        [string]$process.ExecutablePath -ieq $env:EDGE_BOOTSTRAP_OLD_CONSOLE) {
+        throw 'legacy dispatcher active or executable identity unreadable'
+    }
+}
+"#;
+    let status = Command::new("powershell.exe")
+        .args(["-NoProfile", "-NonInteractive", "-Command", proof])
+        .env("EDGE_BOOTSTRAP_OLD_CONSOLE", legacy_console)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .map_err(|err| {
+            format!("OFFLINE_BOOTSTRAP_UNKNOWN: legacy process proof failed: {err}; no replay")
+        })?;
+    if !status.success() {
+        return Err("OFFLINE_BOOTSTRAP_UNKNOWN: legacy dispatcher quiescence unproven; task remains disabled; no replay".to_owned());
     }
     Ok(())
 }
@@ -2643,14 +2772,7 @@ fn offline_bootstrap_privileged_release(
         .output()
         .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: old doctor missing: {err}"))?;
     let old_readout = String::from_utf8_lossy(&old_doctor.stdout);
-    if !old_readout
-        .lines()
-        .any(|line| line == "windows_datapath_mode=ManagedTun")
-    {
-        return Err(
-            "OFFLINE_BOOTSTRAP_BLOCKED: exact stopped old ManagedTun source unproven".to_owned(),
-        );
-    }
+    require_offline_bootstrap_supported_source(&old_readout)?;
 
     let candidate = install_root.join("releases").join(target);
     let console = candidate.join("bin").join("edge-console.exe");
@@ -2755,7 +2877,8 @@ fn offline_bootstrap_privileged_release(
         &stage_installer,
     )?;
 
-    verify_offline_bootstrap_dispatcher(&before.console_path)?;
+    verify_offline_bootstrap_dispatcher(&before.console_path, "Ready")?;
+    require_offline_bootstrap_quiescent(install_root)?;
 
     // Create exactly one durable BEGIN before the first SCM mutation.
     // Never replay after a lost result, even if the old release was restored.
@@ -2777,11 +2900,27 @@ fn offline_bootstrap_privileged_release(
             format!("OFFLINE_BOOTSTRAP_UNKNOWN: durable intent failure: {err}; do not replay")
         })?;
     drop(file);
-    offline_activate_privileged_release_with_installer(
+
+    // A legacy LocalSystem task that polls an unsigned, NetworkService-writable
+    // request path MUST NOT remain scheduled while authority is being replaced.
+    // Disable the SAME task after durable BEGIN and prove no legacy console is
+    // still running. On any failure leave it disabled: UNKNOWN_NO_REPLAY.
+    change_offline_bootstrap_task_enabled(false)?;
+    verify_offline_bootstrap_dispatcher(&before.console_path, "Disabled")?;
+    require_no_running_legacy_dispatcher(&before.console_path)?;
+    require_offline_bootstrap_request_queue_empty(install_root)?;
+
+    let activated = offline_activate_privileged_release_with_installer(
         install_root,
         request,
         Some(&stage_installer),
-    )
+    )?;
+    // New main rejects legacy mutation opcodes; re-enable only after the
+    // exact immutable signed-capable replacement is installed and read back.
+    // If re-enable fails the one-shot marker remains; never replay.
+    change_offline_bootstrap_task_enabled(true)?;
+    verify_offline_bootstrap_dispatcher(&console.to_string_lossy(), "Ready")?;
+    Ok(activated)
 }
 
 fn offline_rollback_privileged_release(
