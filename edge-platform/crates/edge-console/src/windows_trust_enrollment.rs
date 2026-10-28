@@ -335,23 +335,23 @@ async fn fetch_exact_protected_git(
         .map_err(|_| "HOST_WINDOWS_TRUST_TLS_CLIENT_UNAVAILABLE")?;
     let base = "https://api.github.com/repos/iamaman11/sing-box";
     let tag = format!("edge-release-{}", active.release_set_sha256);
+    let main_url = format!("{base}/git/ref/heads/main");
+    let release_url = format!("{base}/releases/tags/{tag}");
+    let tag_url = format!("{base}/git/ref/tags/{tag}");
     let (head, release, tag_ref) = tokio::try_join!(
-        fetch_json(&client, &format!("{base}/git/ref/heads/main")),
-        fetch_json(&client, &format!("{base}/releases/tags/{tag}")),
-        fetch_json(&client, &format!("{base}/git/ref/tags/{tag}")),
+        fetch_json(&client, &main_url),
+        fetch_json(&client, &release_url),
+        fetch_json(&client, &tag_url),
     )?;
     exact_github_provenance(&head, &release, &tag_ref, active).map_err(str::to_owned)?;
+    let spec_url = format!(
+        "https://raw.githubusercontent.com/iamaman11/sing-box/{}/{}",
+        active.source_revision, SPEC
+    );
     let (release_pb, registry_pb, spec) = tokio::try_join!(
         accepted_asset(&client, &release, &tag, "release-set.pb", MAX_RELEASE),
         accepted_asset(&client, &release, &tag, "fleet-registry.pb", MAX_REGISTRY),
-        fetch_bounded(
-            &client,
-            &format!(
-                "https://raw.githubusercontent.com/iamaman11/sing-box/{}/{}",
-                active.source_revision, SPEC
-            ),
-            MAX_SPEC
-        ),
+        fetch_bounded(&client, &spec_url, MAX_SPEC),
     )?;
     if sha_hex(&release_pb) != active.release_set_sha256 {
         return Err("HOST_WINDOWS_TRUST_RELEASE_DIGEST_MISMATCH".into());
