@@ -97,9 +97,8 @@ fn windows_process_primary_admin_member(
         return Err("HOST_WINDOWS_FIRST_USE_TOKEN_DUPLICATION_FAILED");
     }
     let mut enabled = 0i32;
-    let checked = unsafe {
-        CheckTokenMembership(impersonation, admin_sid.as_mut_ptr().cast(), &mut enabled)
-    };
+    let checked =
+        unsafe { CheckTokenMembership(impersonation, admin_sid.as_mut_ptr().cast(), &mut enabled) };
     unsafe { CloseHandle(impersonation) };
     if checked == 0 {
         return Err("HOST_WINDOWS_FIRST_USE_ADMIN_MEMBERSHIP_UNPROVEN");
@@ -121,7 +120,14 @@ pub fn require_windows_local_administrator_first_use() -> Result<(), &'static st
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     let mut token = std::ptr::null_mut();
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, &mut token) } == 0 {
+    if unsafe {
+        OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_QUERY | TOKEN_DUPLICATE,
+            &mut token,
+        )
+    } == 0
+    {
         return Err("HOST_WINDOWS_FIRST_USE_TOKEN_UNAVAILABLE");
     }
     let check = (|| {
