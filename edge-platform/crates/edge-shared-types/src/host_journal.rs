@@ -75,9 +75,9 @@ pub fn verify_native_journal_protection(path: &Path) -> Result<(), &'static str>
 pub fn require_windows_local_administrator_first_use() -> Result<(), &'static str> {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::Security::{
-        CheckTokenMembership, CreateWellKnownSid, GetTokenInformation, IsWellKnownSid,
-        TOKEN_QUERY, TOKEN_USER, TokenUser, WinBuiltinAdministratorsSid,
-        WinLocalServiceSid, WinLocalSystemSid, WinNetworkServiceSid,
+        CheckTokenMembership, CreateWellKnownSid, GetTokenInformation, IsWellKnownSid, TOKEN_QUERY,
+        TOKEN_USER, TokenUser, WinBuiltinAdministratorsSid, WinLocalServiceSid, WinLocalSystemSid,
+        WinNetworkServiceSid,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -102,7 +102,8 @@ pub fn require_windows_local_administrator_first_use() -> Result<(), &'static st
                 length,
                 &mut length,
             )
-        } == 0 {
+        } == 0
+        {
             return Err("HOST_WINDOWS_FIRST_USE_IDENTITY_UNPROVEN");
         }
         let identity: TOKEN_USER = unsafe { std::ptr::read_unaligned(bytes.as_ptr().cast()) };
@@ -124,7 +125,8 @@ pub fn require_windows_local_administrator_first_use() -> Result<(), &'static st
                 admin_sid.as_mut_ptr().cast(),
                 &mut admin_length,
             )
-        } == 0 {
+        } == 0
+        {
             return Err("HOST_WINDOWS_FIRST_USE_ADMIN_SID_UNAVAILABLE");
         }
         let mut enabled = 0i32;
