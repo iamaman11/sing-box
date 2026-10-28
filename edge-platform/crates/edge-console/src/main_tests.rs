@@ -329,7 +329,11 @@ fn retained_historical_begin_requires_exact_two_pins_and_never_claims_terminal()
             .contains("INSTALLED_RELEASE_DRIFT")
     );
     assert!(path.is_file());
-    assert!(root.join(format!("offline-bootstrap-intent-v1.historical-{digest}")).is_file() == false);
+    assert!(
+        root.join(format!("offline-bootstrap-intent-v1.historical-{digest}"))
+            .is_file()
+            == false
+    );
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -350,7 +354,11 @@ fn historical_begin_supersession_preserves_exact_bytes_and_replay_is_blocked() {
     assert!(require_offline_bootstrap_quiescent(&root).is_ok());
     assert!(archive_retained_offline_bootstrap_intent(&root, &pins, &installed).is_err());
     // The next operation owns a NEW exclusive BEGIN, never a replay of the old one.
-    let mut first_use = OpenOptions::new().write(true).create_new(true).open(&marker).unwrap();
+    let mut first_use = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&marker)
+        .unwrap();
     first_use.write_all(b"fresh-durable-BEGIN").unwrap();
     first_use.sync_all().unwrap();
     assert!(require_offline_bootstrap_quiescent(&root).is_err());
