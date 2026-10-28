@@ -152,7 +152,7 @@ pub(super) fn prepare(
 ) -> Result<(), String> {
     require_windows_local_administrator_first_use().map_err(str::to_owned)?;
     require_exact_immutable_activation_console(install_root)?;
-    let active = load_verified_activation(install_root)?;
+    let active = load_verified_activation(install_root).map_err(|err| err.to_string())?;
     if active.source_revision != accepted_revision || active.release_set_sha256 != release_sha256 {
         return Err("HOST_WINDOWS_RECEIPT_ENROLL_SOURCE_PIN_MISMATCH".into());
     }
@@ -229,7 +229,7 @@ pub(super) fn dispatch_if_present(install_root: &Path) -> Result<bool, String> {
     }
     require_exact_immutable_activation_console(install_root)?;
     verify_native_journal_protection(&root.join("journal")).map_err(str::to_owned)?;
-    let active = load_verified_activation(install_root)?;
+    let active = load_verified_activation(install_root).map_err(|err| err.to_string())?;
     require_offline_windows_owner(install_root, &active)?;
     read_marker(&marker, &active)?;
     if install_root
@@ -285,7 +285,7 @@ pub(super) fn observe(install_root: &Path) -> Result<(), String> {
     require_windows_local_administrator_first_use().map_err(str::to_owned)?;
     require_exact_immutable_activation_console(install_root)?;
     let root = native_root(install_root)?;
-    let active = load_verified_activation(install_root)?;
+    let active = load_verified_activation(install_root).map_err(|err| err.to_string())?;
     // After successful SYSTEM processing the original active marker is
     // archived: reading must not recreate it or assume missing means failure.
     if root.join(MARKER).exists() {
