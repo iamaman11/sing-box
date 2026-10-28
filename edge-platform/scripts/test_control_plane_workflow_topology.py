@@ -475,6 +475,10 @@ win_dispatch = Path("edge-platform/crates/edge-console/src/command_dispatch.rs")
 assert "OfflineBootstrap(PrivilegedActivateArgs)" in win_cli
 assert 'Self::OfflineBootstrap(_) => "offline-bootstrap"' in win_cli
 assert "if matches!(command, Command::OfflineBootstrap(_))" in win_console
+assert "require_explicit_local_administrator_first_use()?;" in win_console
+assert "WindowsIdentity]::GetCurrent()" in win_console
+assert "S-1-5-18','S-1-5-19','S-1-5-20" in win_console
+assert "WindowsBuiltInRole]::Administrator" in win_console
 assert "Command::OfflineBootstrap(args) =>" in win_dispatch
 assert "offline_bootstrap_privileged_release(&install_root, &request)" in win_dispatch
 assert "WindowsPrivilegedOperation::OfflineActivateRelease as i32" in win_dispatch
