@@ -492,6 +492,17 @@ assert '"/remove:g", "*S-1-5-32-544"' in identity_owner
 assert '"/setowner", "*S-1-5-18"' in identity_owner
 assert "HOST_WINDOWS_RECEIPT_ENROLL_COMPETING_REQUEST" in identity_owner
 assert "HOST_WINDOWS_RECEIPT_ENROLL_TRUST_ALREADY_PRESENT" in identity_owner
+trust_owner = Path("edge-platform/crates/edge-console/src/windows_trust_enrollment.rs").read_text(encoding="utf-8")
+assert "windows_trust_enrollment::dispatch_if_needed(install_root).await?" in win_console
+assert "verify_native_journal_protection(&root.join(\"journal\"))" in trust_owner
+assert 'pub(super) async fn dispatch_if_needed(install_root: &Path)' in trust_owner
+assert 'verify_windows_signed_git_prerequisites(host)' in trust_owner
+assert 'windows_signed_host::verify_system_trust(' in trust_owner
+assert 'HOST_WINDOWS_TRUST_GITHUB_MAIN_RELEASE_TAG_NOT_EXACT' in trust_owner
+assert 'create_new(true)' in trust_owner
+assert '"/remove:g", "*S-1-5-32-544"' in trust_owner
+assert 'HOST_WINDOWS_TRUST_RELEASE_ASSET_DIGEST_MISMATCH' in trust_owner
+
 assert "worker_trust=NOT_ENROLLED" in identity_owner
 assert "require_explicit_local_administrator_first_use()?;" in win_console
 assert "require_windows_local_administrator_first_use()" in win_console
