@@ -487,6 +487,11 @@ assert "require_windows_local_administrator_first_use()" in identity_owner
 assert "Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())" in identity_owner
 assert "create_only(&root.join(PRIVATE), secret.as_ref())" in identity_owner
 assert "complete_marker(&root)?" in identity_owner
+assert "seal_system_private(&root)?" in identity_owner
+assert '"/remove:g", "*S-1-5-32-544"' in identity_owner
+assert '"/setowner", "*S-1-5-18"' in identity_owner
+assert "HOST_WINDOWS_RECEIPT_ENROLL_COMPETING_REQUEST" in identity_owner
+assert "HOST_WINDOWS_RECEIPT_ENROLL_TRUST_ALREADY_PRESENT" in identity_owner
 assert "worker_trust=NOT_ENROLLED" in identity_owner
 assert "require_explicit_local_administrator_first_use()?;" in win_console
 assert "require_windows_local_administrator_first_use()" in win_console
