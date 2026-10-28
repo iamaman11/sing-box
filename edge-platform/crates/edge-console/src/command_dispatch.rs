@@ -212,7 +212,7 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
         Command::OfflineBootstrapPreflight(args) => {
             let root = PathBuf::from(args.install_root);
             let before =
-                read_only_windows_first_use_source(&root).map_err(ConsoleError::Command)?;
+                read_only_windows_first_use_source(&root, None).map_err(ConsoleError::Command)?;
             // JSON is used only at the LOCAL CLI boundary, not as a persisted
             // desired-state, native journal, or mutation contract. This proof
             // reports observation, not signed SYSTEM authority or authorization.
@@ -259,9 +259,29 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                 existing_join_intent_sha256: None,
                 existing_join_slot: None,
             };
-            let (code, _detail, active) =
-                offline_bootstrap_privileged_release(&install_root, &request)
-                    .map_err(ConsoleError::Command)?;
+            let supersession = match (
+                args.retained_intent_sha256,
+                args.expected_current_release_set_sha256,
+            ) {
+                (None, None) => None,
+                (Some(expected_intent_sha256), Some(expected_current_release_set_sha256)) => {
+                    Some(RetainedOfflineBootstrapSupersession {
+                        expected_intent_sha256,
+                        expected_current_release_set_sha256,
+                    })
+                }
+                _ => {
+                    return Err(ConsoleError::Command(
+                        "OFFLINE_BOOTSTRAP_SUPERSESSION_BOTH_PINS_REQUIRED".to_owned(),
+                    ));
+                }
+            };
+            let (code, _detail, active) = offline_bootstrap_privileged_release(
+                &install_root,
+                &request,
+                supersession.as_ref(),
+            )
+            .map_err(ConsoleError::Command)?;
             println!("status=PASS");
             println!("code={code}");
             if let Some(sha) = active {
