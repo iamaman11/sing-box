@@ -128,9 +128,8 @@ pub fn require_windows_local_administrator_first_use() -> Result<(), &'static st
             return Err("HOST_WINDOWS_FIRST_USE_ADMIN_SID_UNAVAILABLE");
         }
         let mut enabled = 0i32;
-        if unsafe {
-            CheckTokenMembership(token, admin_sid.as_mut_ptr().cast(), &mut enabled)
-        } == 0 {
+        if unsafe { CheckTokenMembership(token, admin_sid.as_mut_ptr().cast(), &mut enabled) } == 0
+        {
             return Err("HOST_WINDOWS_FIRST_USE_ADMIN_MEMBERSHIP_UNPROVEN");
         }
         if enabled == 0 {
