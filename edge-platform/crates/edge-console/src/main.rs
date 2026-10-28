@@ -2747,6 +2747,33 @@ fn require_explicit_local_administrator_first_use() -> Result<(), String> {
 }
 
 #[cfg(windows)]
+fn read_only_windows_first_use_source(
+    install_root: &Path,
+) -> Result<WindowsActivationState, String> {
+    // A purely observational reuse of the SAME strict native pre-BEGIN
+    // owner, old-doctor, task and pending-state guards as offline bootstrap.
+    // No file creation, task execution, SCM change or key enrollment.
+    require_explicit_local_administrator_first_use()?;
+    if install_root != Path::new(r"C:\sing-box") {
+        return Err("OFFLINE_BOOTSTRAP_BLOCKED: unexpected Windows root".to_owned());
+    }
+    let before = load_verified_activation(install_root).map_err(|err| err.to_string())?;
+    require_offline_windows_owner(install_root, &before)?;
+    let old_doctor = Command::new(&before.diagnostic_path)
+        .arg("doctor")
+        .arg(install_root.join("current.pb"))
+        .stdin(Stdio::null())
+        .output()
+        .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: old doctor missing: {err}"))?;
+    let old_readout = String::from_utf8_lossy(&old_doctor.stdout);
+    require_offline_bootstrap_supported_source(&old_readout)?;
+    verify_offline_bootstrap_dispatcher(&before.console_path, "Ready")?;
+    require_offline_bootstrap_quiescent(install_root)?;
+    require_no_running_legacy_dispatcher(&before.console_path)?;
+    Ok(before)
+}
+
+#[cfg(windows)]
 fn offline_bootstrap_privileged_release(
     install_root: &Path,
     request: &WindowsPrivilegedRequest,
@@ -2773,21 +2800,10 @@ fn offline_bootstrap_privileged_release(
     if desired.windows_datapath_mode != WindowsDatapathMode::ProxyOnly as i32 {
         return Err("OFFLINE_BOOTSTRAP_BLOCKED: canonical target is not ProxyOnly".to_owned());
     }
-    let before = load_verified_activation(install_root).map_err(|err| err.to_string())?;
+    let before = read_only_windows_first_use_source(install_root)?;
     if before.release_set_sha256 == target {
         return Err("OFFLINE_BOOTSTRAP_BLOCKED: exact distinct legacy release required".to_owned());
     }
-    require_offline_windows_owner(install_root, &before)?;
-    // Datapath mode belongs to the immutable release's compiled policy,
-    // not to WindowsActivationState. Prove the old binary's exact doctor.
-    let old_doctor = Command::new(&before.diagnostic_path)
-        .arg("doctor")
-        .arg(install_root.join("current.pb"))
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: old doctor missing: {err}"))?;
-    let old_readout = String::from_utf8_lossy(&old_doctor.stdout);
-    require_offline_bootstrap_supported_source(&old_readout)?;
 
     let candidate = install_root.join("releases").join(target);
     let console = candidate.join("bin").join("edge-console.exe");
