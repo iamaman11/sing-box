@@ -193,6 +193,7 @@ fn legacy_console_entrypoint_allowed(command: &cli::Command) -> bool {
             | Command::OfflineBootstrapPreflight(_)
             | Command::OfflineReceiptIdentityPrepare(_)
             | Command::OfflineReceiptIdentityObserve(_)
+            | Command::OfflineHostTrustPrepare(_)
     ) {
         return true;
     }
