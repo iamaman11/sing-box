@@ -183,7 +183,10 @@ async fn main() -> ExitCode {
 fn legacy_console_entrypoint_allowed(command: &cli::Command) -> bool {
     use cli::Command;
     #[cfg(windows)]
-    if matches!(command, Command::OfflineBootstrap(_)) {
+    if matches!(
+        command,
+        Command::OfflineBootstrap(_) | Command::OfflineBootstrapPreflight(_)
+    ) {
         return true;
     }
     matches!(
