@@ -36,17 +36,17 @@ pub(crate) enum Command {
     // but read-only, without a ReleaseSet install or any SCM/task mutation.
     #[cfg(windows)]
     OfflineBootstrapPreflight(InstallRootArgs),
-    // W4 only: locally elevated Administrator reserves an exact source-pinned
-    // identity request; the existing periodic SYSTEM task generates the key.
+    // W4 first-use: owner derives exact immutable source and ReleaseSet from
+    // verified current.pb. A human cannot confuse candidate source and merge.
     #[cfg(windows)]
-    OfflineReceiptIdentityPrepare(ReceiptIdentityPrepareArgs),
+    OfflineReceiptIdentityPrepare(InstallRootArgs),
     // Read back PUBLIC identity only. Never export/inspect private PKCS8.
     #[cfg(windows)]
     OfflineReceiptIdentityObserve(InstallRootArgs),
-    // Exact installed release only. Administrator can request a SYSTEM-owned
-    // Git trust snapshot, never pass Worker or receipt keys from the runner.
+    // Local Administrator does not select commit or signer: the installed
+    // owner binds the request and SYSTEM resolves published Git trust.
     #[cfg(windows)]
-    OfflineHostTrustPrepare(ReceiptIdentityPrepareArgs),
+    OfflineHostTrustPrepare(InstallRootArgs),
     VerifyRuntime,
     QualityLine1,
     Secrets(EndpointArgs),
@@ -104,15 +104,6 @@ impl EndpointArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct InstallRootArgs {
-    #[arg(long, default_value = r"C:\sing-box")]
-    pub install_root: String,
-}
-
-#[cfg(windows)]
-#[derive(Debug, Args)]
-pub(crate) struct ReceiptIdentityPrepareArgs {
-    pub accepted_revision: String,
-    pub release_set_sha256: String,
     #[arg(long, default_value = r"C:\sing-box")]
     pub install_root: String,
 }

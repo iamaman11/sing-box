@@ -162,17 +162,10 @@ fn existing_private_public(root: &Path) -> Result<Option<[u8; 32]>, String> {
 
 /// Local elevated Administrator: create ONE immutable, typed request in the
 /// existing protected root. No receipt PRIVATE key is generated here.
-pub(super) fn prepare(
-    install_root: &Path,
-    accepted_revision: &str,
-    release_sha256: &str,
-) -> Result<(), String> {
+pub(super) fn prepare(install_root: &Path) -> Result<(), String> {
     require_windows_local_administrator_first_use().map_err(str::to_owned)?;
     require_exact_immutable_activation_console(install_root)?;
     let active = load_verified_activation(install_root).map_err(|err| err.to_string())?;
-    if active.source_revision != accepted_revision || active.release_set_sha256 != release_sha256 {
-        return Err("HOST_WINDOWS_RECEIPT_ENROLL_SOURCE_PIN_MISMATCH".into());
-    }
     require_offline_windows_owner(install_root, &active)?;
     verify_offline_bootstrap_dispatcher(&active.console_path, "Ready")?;
     let root = native_root(install_root)?;
@@ -193,8 +186,8 @@ pub(super) fn prepare(
     let request = FleetWindowsReceiptIdentityEnrollment {
         schema_version: 1,
         machine_id: MACHINE.into(),
-        source_revision: accepted_revision.into(),
-        release_set_sha256: release_sha256.into(),
+        source_revision: active.source_revision.clone(),
+        release_set_sha256: active.release_set_sha256.clone(),
     };
     request_valid(&request, &active).map_err(str::to_owned)?;
     create_only(&root.join(MARKER), &request.encode_to_vec())?;

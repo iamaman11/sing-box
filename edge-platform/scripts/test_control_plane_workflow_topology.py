@@ -505,6 +505,12 @@ assert '"/remove:g", "*S-1-5-32-544"' in identity_owner
 assert '"/setowner", "*S-1-5-18"' in identity_owner
 assert "HOST_WINDOWS_RECEIPT_ENROLL_COMPETING_REQUEST" in identity_owner
 assert "HOST_WINDOWS_RECEIPT_ENROLL_TRUST_ALREADY_PRESENT" in identity_owner
+# Operator supplies no manually copied Git/candidate hash: the exact signed
+# installation itself owns both values, and immutable marker remains typed.
+assert "OfflineReceiptIdentityPrepare(InstallRootArgs)" in Path("edge-platform/crates/edge-console/src/cli.rs").read_text(encoding="utf-8")
+assert "OfflineHostTrustPrepare(InstallRootArgs)" in Path("edge-platform/crates/edge-console/src/cli.rs").read_text(encoding="utf-8")
+assert "active.source_revision.clone()" in identity_owner
+assert "active.release_set_sha256.clone()" in identity_owner
 trust_owner = Path("edge-platform/crates/edge-console/src/windows_trust_enrollment.rs").read_text(encoding="utf-8")
 assert "windows_trust_enrollment::dispatch_if_needed(install_root).await?" in win_console
 assert "verify_native_journal_protection(&root.join(\"journal\"))" in trust_owner
@@ -522,6 +528,10 @@ assert 'HOST_WINDOWS_TRUST_EXISTING_MISMATCH_NO_REPLAY' in trust_owner
 assert 'HOST_WINDOWS_TRUST_ENROLL_COMPETING_REQUEST' in trust_owner
 assert 'HOST_WINDOWS_TRUST_ENROLL_ALREADY_COMPLETED' in trust_owner
 assert 'FleetWindowsTrustEnrollment::decode(bytes)' in trust_owner
+assert "active.source_revision.clone()" in trust_owner
+assert "active.release_set_sha256.clone()" in trust_owner
+assert 'let protected_main = head["object"]["sha"].as_str();' in trust_owner
+assert 'release["target_commitish"].as_str() != protected_main' in trust_owner
 
 assert "worker_trust=NOT_ENROLLED" in identity_owner
 assert "require_explicit_local_administrator_first_use()?;" in win_console
