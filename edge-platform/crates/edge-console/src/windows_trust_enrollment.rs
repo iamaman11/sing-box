@@ -410,6 +410,55 @@ pub(super) async fn dispatch_if_needed(install_root: &Path) -> Result<(), String
 mod tests {
     use super::*;
     #[test]
+    fn trust_marker_binds_exact_host_and_installed_release() {
+        let active = WindowsActivationState {
+            source_revision: "a".repeat(40),
+            release_set_sha256: "b".repeat(64),
+            ..Default::default()
+        };
+        let req = FleetWindowsTrustEnrollment {
+            schema_version: 1,
+            machine_id: HOST.into(),
+            source_revision: active.source_revision.clone(),
+            release_set_sha256: active.release_set_sha256.clone(),
+        };
+        let bytes = req.encode_to_vec();
+        assert_eq!(verify_enrollment_marker(&bytes, &active), Ok(()));
+        let mut wrong = req.clone();
+        wrong.machine_id = "foreign-host".into();
+        assert!(verify_enrollment_marker(&wrong.encode_to_vec(), &active).is_err());
+        wrong = req.clone();
+        wrong.release_set_sha256 = "c".repeat(64);
+        assert!(verify_enrollment_marker(&wrong.encode_to_vec(), &active).is_err());
+        wrong = req.clone();
+        wrong.source_revision = "d".repeat(40);
+        assert!(verify_enrollment_marker(&wrong.encode_to_vec(), &active).is_err());
+        wrong = req;
+        wrong.schema_version = 2;
+        assert!(verify_enrollment_marker(&wrong.encode_to_vec(), &active).is_err());
+        assert!(verify_enrollment_marker(b"not-protobuf", &active).is_err());
+        assert!(verify_enrollment_marker(&[], &active).is_err());
+    }
+
+    #[test]
+    fn completed_trust_request_is_archived_once_without_replay() {
+        let dir = std::env::temp_dir().join(format!("w4-trust-marker-{}", std::process::id()));
+        std::fs::create_dir(&dir).unwrap();
+        std::fs::write(dir.join(MARKER), b"exact durable marker").unwrap();
+        complete_trust_marker(&dir).unwrap();
+        assert!(!dir.join(MARKER).exists());
+        assert_eq!(std::fs::read(dir.join(DONE)).unwrap(), b"exact durable marker");
+        std::fs::hard_link(dir.join(DONE), dir.join(MARKER)).unwrap();
+        complete_trust_marker(&dir).unwrap();
+        assert!(dir.join(DONE).exists());
+        assert!(!dir.join(MARKER).exists());
+        std::fs::write(dir.join(MARKER), b"foreign marker").unwrap();
+        assert!(complete_trust_marker(&dir).is_err());
+        assert!(dir.join(MARKER).exists());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn trust_rejects_stale_main_unpublished_release_and_wrong_tag() {
         let active = WindowsActivationState {
             source_revision: "a".repeat(40),
