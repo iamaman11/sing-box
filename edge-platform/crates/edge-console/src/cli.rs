@@ -36,6 +36,13 @@ pub(crate) enum Command {
     // but read-only, without a ReleaseSet install or any SCM/task mutation.
     #[cfg(windows)]
     OfflineBootstrapPreflight(InstallRootArgs),
+    // W4 only: locally elevated Administrator reserves an exact source-pinned
+    // identity request; the existing periodic SYSTEM task generates the key.
+    #[cfg(windows)]
+    OfflineReceiptIdentityPrepare(ReceiptIdentityPrepareArgs),
+    // Read back PUBLIC identity only. Never export/inspect private PKCS8.
+    #[cfg(windows)]
+    OfflineReceiptIdentityObserve(InstallRootArgs),
     VerifyRuntime,
     QualityLine1,
     Secrets(EndpointArgs),
@@ -61,6 +68,10 @@ impl Command {
             Self::OfflineBootstrap(_) => "offline-bootstrap",
             #[cfg(windows)]
             Self::OfflineBootstrapPreflight(_) => "offline-bootstrap-preflight",
+            #[cfg(windows)]
+            Self::OfflineReceiptIdentityPrepare(_) => "offline-receipt-identity-prepare",
+            #[cfg(windows)]
+            Self::OfflineReceiptIdentityObserve(_) => "offline-receipt-identity-observe",
             Self::VerifyRuntime => "verify-runtime",
             Self::QualityLine1 => "quality-line1",
             Self::Secrets(_) => "secrets",
@@ -87,6 +98,15 @@ impl EndpointArgs {
 
 #[derive(Debug, Args)]
 pub(crate) struct InstallRootArgs {
+    #[arg(long, default_value = r"C:\sing-box")]
+    pub install_root: String,
+}
+
+#[cfg(windows)]
+#[derive(Debug, Args)]
+pub(crate) struct ReceiptIdentityPrepareArgs {
+    pub accepted_revision: String,
+    pub release_set_sha256: String,
     #[arg(long, default_value = r"C:\sing-box")]
     pub install_root: String,
 }
