@@ -476,9 +476,13 @@ assert "OfflineBootstrap(PrivilegedActivateArgs)" in win_cli
 assert 'Self::OfflineBootstrap(_) => "offline-bootstrap"' in win_cli
 assert "if matches!(command, Command::OfflineBootstrap(_))" in win_console
 assert "require_explicit_local_administrator_first_use()?;" in win_console
-assert "WindowsIdentity]::GetCurrent()" in win_console
-assert "S-1-5-18','S-1-5-19','S-1-5-20" in win_console
-assert "WindowsBuiltInRole]::Administrator" in win_console
+assert "require_windows_local_administrator_first_use()" in win_console
+native_journal = Path("edge-platform/crates/edge-shared-types/src/host_journal.rs").read_text(encoding="utf-8")
+assert "pub fn require_windows_local_administrator_first_use()" in native_journal
+assert "CheckTokenMembership(token, admin_sid.as_mut_ptr().cast(), &mut enabled)" in native_journal
+assert "WinLocalSystemSid" in native_journal
+assert "WinLocalServiceSid" in native_journal
+assert "WinNetworkServiceSid" in native_journal
 assert "Command::OfflineBootstrap(args) =>" in win_dispatch
 assert "offline_bootstrap_privileged_release(&install_root, &request)" in win_dispatch
 assert "WindowsPrivilegedOperation::OfflineActivateRelease as i32" in win_dispatch
