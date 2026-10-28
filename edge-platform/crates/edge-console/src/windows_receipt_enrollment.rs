@@ -368,6 +368,32 @@ mod tests {
     }
 
     #[test]
+    fn completed_identity_marker_never_blocks_future_signed_dispatch() {
+        let dir = std::env::temp_dir().join(format!(
+            "w4-receipt-marker-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let marker = dir.join(MARKER);
+        let completed = dir.join(COMPLETED);
+        create_only(&marker, b"exact immutable typed protobuf marker").unwrap();
+        complete_marker(&dir).unwrap();
+        assert!(!marker.exists());
+        assert_eq!(
+            std::fs::read(&completed).unwrap(),
+            b"exact immutable typed protobuf marker"
+        );
+        // Simulate a crash after hard-link creation but BEFORE unlink:
+        // completing the same marker may only remove its ACTIVE name.
+        std::fs::hard_link(&completed, &marker).unwrap();
+        complete_marker(&dir).unwrap();
+        assert!(!marker.exists());
+        assert!(completed.exists());
+        assert!(create_only(&completed, b"replacement").is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn protected_identity_never_replaces_existing_private_key() {
         let test_dir =
             std::env::temp_dir().join(format!("w4-receipt-identity-{}", std::process::id()));
