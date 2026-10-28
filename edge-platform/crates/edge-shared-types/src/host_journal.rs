@@ -67,7 +67,46 @@ pub fn verify_native_journal_protection(path: &Path) -> Result<(), &'static str>
     Ok(())
 }
 
-/// The sole unsiged FIRST-USE exception requires a genuinely elevated
+/// Use the exact calling-process primary token for Administrator checks.
+/// CheckTokenMembership requires an IMPERSONATION token, not a primary token.
+/// Never pass NULL: that could select a different impersonating thread identity.
+#[cfg(windows)]
+fn windows_process_primary_admin_member(
+    primary: windows_sys::Win32::Foundation::HANDLE,
+) -> Result<bool, &'static str> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Security::{
+        CheckTokenMembership, CreateWellKnownSid, DuplicateToken, SecurityImpersonation,
+        WinBuiltinAdministratorsSid,
+    };
+    let mut admin_sid = [0u8; 68];
+    let mut admin_length = admin_sid.len() as u32;
+    if unsafe {
+        CreateWellKnownSid(
+            WinBuiltinAdministratorsSid,
+            std::ptr::null_mut(),
+            admin_sid.as_mut_ptr().cast(),
+            &mut admin_length,
+        )
+    } == 0
+    {
+        return Err("HOST_WINDOWS_FIRST_USE_ADMIN_SID_UNAVAILABLE");
+    }
+    let mut impersonation = std::ptr::null_mut();
+    if unsafe { DuplicateToken(primary, SecurityImpersonation, &mut impersonation) } == 0 {
+        return Err("HOST_WINDOWS_FIRST_USE_TOKEN_DUPLICATION_FAILED");
+    }
+    let mut enabled = 0i32;
+    let checked =
+        unsafe { CheckTokenMembership(impersonation, admin_sid.as_mut_ptr().cast(), &mut enabled) };
+    unsafe { CloseHandle(impersonation) };
+    if checked == 0 {
+        return Err("HOST_WINDOWS_FIRST_USE_ADMIN_MEMBERSHIP_UNPROVEN");
+    }
+    Ok(enabled != 0)
+}
+
+/// The sole unsigned FIRST-USE exception requires a genuinely elevated
 /// local Administrator token. A permissive SCM DACL is NOT sufficient:
 /// NetworkService, LocalService, SYSTEM and UAC-filtered tokens fail even
 /// when a process can query or change the Windows service.
@@ -75,14 +114,20 @@ pub fn verify_native_journal_protection(path: &Path) -> Result<(), &'static str>
 pub fn require_windows_local_administrator_first_use() -> Result<(), &'static str> {
     use windows_sys::Win32::Foundation::CloseHandle;
     use windows_sys::Win32::Security::{
-        CheckTokenMembership, CreateWellKnownSid, GetTokenInformation, IsWellKnownSid, TOKEN_QUERY,
-        TOKEN_USER, TokenUser, WinBuiltinAdministratorsSid, WinLocalServiceSid, WinLocalSystemSid,
-        WinNetworkServiceSid,
+        GetTokenInformation, IsWellKnownSid, TOKEN_DUPLICATE, TOKEN_QUERY, TOKEN_USER, TokenUser,
+        WinLocalServiceSid, WinLocalSystemSid, WinNetworkServiceSid,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
     let mut token = std::ptr::null_mut();
-    if unsafe { OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY, &mut token) } == 0 {
+    if unsafe {
+        OpenProcessToken(
+            GetCurrentProcess(),
+            TOKEN_QUERY | TOKEN_DUPLICATE,
+            &mut token,
+        )
+    } == 0
+    {
         return Err("HOST_WINDOWS_FIRST_USE_TOKEN_UNAVAILABLE");
     }
     let check = (|| {
@@ -114,27 +159,8 @@ pub fn require_windows_local_administrator_first_use() -> Result<(), &'static st
         {
             return Err("HOST_WINDOWS_FIRST_USE_SERVICE_TOKEN_FORBIDDEN");
         }
-        // Win32 makes UAC membership depend on the actual ENABLED group,
-        // not on membership of the same principal in the directory.
-        let mut admin_sid = [0u8; 68];
-        let mut admin_length = admin_sid.len() as u32;
-        if unsafe {
-            CreateWellKnownSid(
-                WinBuiltinAdministratorsSid,
-                std::ptr::null_mut(),
-                admin_sid.as_mut_ptr().cast(),
-                &mut admin_length,
-            )
-        } == 0
-        {
-            return Err("HOST_WINDOWS_FIRST_USE_ADMIN_SID_UNAVAILABLE");
-        }
-        let mut enabled = 0i32;
-        if unsafe { CheckTokenMembership(token, admin_sid.as_mut_ptr().cast(), &mut enabled) } == 0
-        {
-            return Err("HOST_WINDOWS_FIRST_USE_ADMIN_MEMBERSHIP_UNPROVEN");
-        }
-        if enabled == 0 {
+        // A UAC-filtered token cannot pass: Administrators must be ENABLED.
+        if !windows_process_primary_admin_member(token)? {
             return Err("HOST_WINDOWS_FIRST_USE_ELEVATED_ADMIN_REQUIRED");
         }
         Ok(())
@@ -2548,6 +2574,37 @@ mod tests {
         let outcome = verify_native_journal_protection(&dir);
         assert!(outcome.is_err());
         fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn windows_administrator_membership_queries_exact_process_primary_token() {
+        use windows_sys::Win32::Foundation::CloseHandle;
+        use windows_sys::Win32::Security::{TOKEN_DUPLICATE, TOKEN_QUERY};
+        use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
+
+        // Any ordinary Windows CI token may be an admin or non-admin. Both
+        // boolean results are valid; API failure is the regression.
+        let mut primary = std::ptr::null_mut();
+        assert_ne!(
+            unsafe {
+                OpenProcessToken(
+                    GetCurrentProcess(),
+                    TOKEN_QUERY | TOKEN_DUPLICATE,
+                    &mut primary,
+                )
+            },
+            0,
+        );
+        let member = windows_process_primary_admin_member(primary);
+        unsafe { CloseHandle(primary) };
+        assert!(matches!(member, Ok(true) | Ok(false)), "{member:?}");
+
+        // Missing token must fail closed, not select a thread/runner token.
+        assert_eq!(
+            windows_process_primary_admin_member(std::ptr::null_mut()),
+            Err("HOST_WINDOWS_FIRST_USE_TOKEN_DUPLICATION_FAILED"),
+        );
     }
 
     #[cfg(windows)]
