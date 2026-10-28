@@ -209,12 +209,18 @@ fn offline_bootstrap_identifiers_require_exact_lowercase_immutable_values() {
 
 #[test]
 fn offline_bootstrap_accepts_only_exact_stopped_native_mode_evidence() {
-    assert!(require_offline_bootstrap_supported_source(
-        "windows_datapath_mode=ProxyOnly\nscm_start_type=OnDemand\n"
-    ).is_ok());
-    assert!(require_offline_bootstrap_supported_source(
-        "windows_datapath_mode=ManagedTun\nscm_start_type=OnDemand\n"
-    ).is_ok());
+    assert!(
+        require_offline_bootstrap_supported_source(
+            "windows_datapath_mode=ProxyOnly\nscm_start_type=OnDemand\n"
+        )
+        .is_ok()
+    );
+    assert!(
+        require_offline_bootstrap_supported_source(
+            "windows_datapath_mode=ManagedTun\nscm_start_type=OnDemand\n"
+        )
+        .is_ok()
+    );
     for bad in [
         "",
         "windows_datapath_mode=ProxyOnly\nscm_start_type=AutoStart\n",
@@ -222,7 +228,10 @@ fn offline_bootstrap_accepts_only_exact_stopped_native_mode_evidence() {
         "windows_datapath_mode=Other\nscm_start_type=OnDemand\n",
         "windows_datapath_mode=ProxyOnly\nwindows_datapath_mode=ManagedTun\nscm_start_type=OnDemand\n",
     ] {
-        assert!(require_offline_bootstrap_supported_source(bad).is_err(), "{bad:?}");
+        assert!(
+            require_offline_bootstrap_supported_source(bad).is_err(),
+            "{bad:?}"
+        );
     }
 }
 
@@ -256,7 +265,10 @@ fn offline_bootstrap_prebegin_blocks_legacy_request_signed_intent_and_uncertain_
 fn offline_bootstrap_disabled_phase_refuses_any_new_request() {
     let root = offline_test_root("bootstrap-disabled-gate");
     assert!(require_offline_bootstrap_request_queue_empty(&root).is_ok());
-    for relative in ["exchange/requests/request.pb", "exchange/requests/host-intent.pb"] {
+    for relative in [
+        "exchange/requests/request.pb",
+        "exchange/requests/host-intent.pb",
+    ] {
         let request = root.join(relative);
         fs::create_dir_all(request.parent().unwrap()).unwrap();
         fs::write(&request, b"pending").unwrap();
