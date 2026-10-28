@@ -261,6 +261,128 @@ fn offline_bootstrap_prebegin_blocks_legacy_request_signed_intent_and_uncertain_
     fs::remove_dir_all(root).unwrap();
 }
 
+fn offline_legacy_intent_fixture() -> (Vec<u8>, String, String) {
+    // Historical marker shape is immutable; the actual 242-byte October
+    // sample is verified byte-for-byte in the separate known-hash test.
+    let from = "a".repeat(64);
+    let to = "b".repeat(64);
+    let revision = "c".repeat(40);
+    let bytes = format!(
+        "schema=sing-box.windows-offline-bootstrap/v1\\nfrom={from}\\nto={to}\\naccepted_revision={revision}\\n"
+    )
+    .replace("\\n", "\n")
+    .into_bytes();
+    let digest: String = ring::digest::digest(&ring::digest::SHA256, &bytes)
+        .as_ref()
+        .iter()
+        .map(|v| format!("{v:02x}"))
+        .collect();
+    (bytes, digest, "d".repeat(64))
+}
+
+#[test]
+fn old_offline_bootstrap_marker_exact_historical_sha_matches_independent_report() {
+    let marker = format!(
+        "schema=sing-box.windows-offline-bootstrap/v1\nfrom={}\nto={}\naccepted_revision={}\n",
+        "15990b33ebb40a44d13a844d9d6462d9015bf995af0b46b858cd52e66512ea36",
+        "e1c1d0f39d055a40612b5b813cc6579097d5a10586e5b6eea86778ea657365ce",
+        "d35a0cddfa54933bfbd65bae1c9a2b76d0526baf",
+    );
+    assert_eq!(marker.len(), 242);
+    let digest = ring::digest::digest(&ring::digest::SHA256, marker.as_bytes());
+    let hex: String = digest.as_ref().iter().map(|v| format!("{v:02x}")).collect();
+    assert_eq!(
+        hex,
+        "bf7a091a4c3b0a61ead3d3cf1388f599baeed8803c5f1edfcd0289029e53327b"
+    );
+}
+
+#[test]
+fn retained_historical_begin_requires_exact_two_pins_and_never_claims_terminal() {
+    let root = offline_test_root("retained-historical");
+    let (bytes, digest, installed) = offline_legacy_intent_fixture();
+    let path = root.join("offline-bootstrap-intent-v1");
+    fs::write(&path, &bytes).unwrap();
+    assert!(require_offline_bootstrap_quiescent(&root).is_err());
+    let pins = RetainedOfflineBootstrapSupersession {
+        expected_intent_sha256: digest.clone(),
+        expected_current_release_set_sha256: installed.clone(),
+    };
+    let decoded = inspect_retained_offline_bootstrap_intent(&root, &pins, &installed).unwrap();
+    assert_eq!(decoded.original_bytes, bytes);
+    assert_eq!(decoded.sha256, digest);
+    assert_eq!(decoded.from, "a".repeat(64));
+    assert_eq!(decoded.to, "b".repeat(64));
+    assert_eq!(decoded.accepted_revision, "c".repeat(40));
+    let mut bad = pins.clone();
+    bad.expected_intent_sha256 = "0".repeat(64);
+    assert!(
+        inspect_retained_offline_bootstrap_intent(&root, &bad, &installed)
+            .unwrap_err()
+            .contains("SHA_MISMATCH")
+    );
+    bad = pins.clone();
+    bad.expected_current_release_set_sha256 = "0".repeat(64);
+    assert!(
+        inspect_retained_offline_bootstrap_intent(&root, &bad, &installed)
+            .unwrap_err()
+            .contains("INSTALLED_RELEASE_DRIFT")
+    );
+    assert!(path.is_file());
+    assert!(root.join(format!("offline-bootstrap-intent-v1.historical-{digest}")).is_file() == false);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn historical_begin_supersession_preserves_exact_bytes_and_replay_is_blocked() {
+    let root = offline_test_root("historical-supersede");
+    let (bytes, digest, installed) = offline_legacy_intent_fixture();
+    let marker = root.join("offline-bootstrap-intent-v1");
+    fs::write(&marker, &bytes).unwrap();
+    let pins = RetainedOfflineBootstrapSupersession {
+        expected_intent_sha256: digest.clone(),
+        expected_current_release_set_sha256: installed.clone(),
+    };
+    archive_retained_offline_bootstrap_intent(&root, &pins, &installed).unwrap();
+    let archive = root.join(format!("offline-bootstrap-intent-v1.historical-{digest}"));
+    assert_eq!(fs::read(&archive).unwrap(), bytes);
+    assert!(!marker.exists());
+    assert!(require_offline_bootstrap_quiescent(&root).is_ok());
+    assert!(archive_retained_offline_bootstrap_intent(&root, &pins, &installed).is_err());
+    // The next operation owns a NEW exclusive BEGIN, never a replay of the old one.
+    let mut first_use = OpenOptions::new().write(true).create_new(true).open(&marker).unwrap();
+    first_use.write_all(b"fresh-durable-BEGIN").unwrap();
+    first_use.sync_all().unwrap();
+    assert!(require_offline_bootstrap_quiescent(&root).is_err());
+    assert_eq!(fs::read(&archive).unwrap(), bytes);
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn historical_intent_reconciliation_refuses_malformed_marker_other_pending_and_archive_collision() {
+    let root = offline_test_root("historical-negative");
+    let (bytes, digest, installed) = offline_legacy_intent_fixture();
+    let marker = root.join("offline-bootstrap-intent-v1");
+    let pins = RetainedOfflineBootstrapSupersession {
+        expected_intent_sha256: digest.clone(),
+        expected_current_release_set_sha256: installed.clone(),
+    };
+    fs::write(&marker, b"not canonical").unwrap();
+    assert!(inspect_retained_offline_bootstrap_intent(&root, &pins, &installed).is_err());
+    fs::write(&marker, &bytes).unwrap();
+    fs::create_dir_all(root.join("exchange/requests")).unwrap();
+    fs::write(root.join("exchange/requests/host-intent.pb"), b"pending").unwrap();
+    assert!(archive_retained_offline_bootstrap_intent(&root, &pins, &installed).is_err());
+    assert!(marker.exists());
+    fs::remove_file(root.join("exchange/requests/host-intent.pb")).unwrap();
+    let archive = root.join(format!("offline-bootstrap-intent-v1.historical-{digest}"));
+    fs::write(&archive, b"foreign history").unwrap();
+    assert!(archive_retained_offline_bootstrap_intent(&root, &pins, &installed).is_err());
+    assert_eq!(fs::read(&archive).unwrap(), b"foreign history");
+    assert_eq!(fs::read(&marker).unwrap(), bytes);
+    fs::remove_dir_all(root).unwrap();
+}
+
 #[test]
 fn offline_bootstrap_disabled_phase_refuses_any_new_request() {
     let root = offline_test_root("bootstrap-disabled-gate");
