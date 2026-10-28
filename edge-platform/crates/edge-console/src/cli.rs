@@ -32,6 +32,10 @@ pub(crate) enum Command {
     // immutable candidate, SCM privileges and durable no-replay marker.
     #[cfg(windows)]
     OfflineBootstrap(PrivilegedActivateArgs),
+    // Exact same stopped-source / pending / task proof used by first-use,
+    // but read-only, without a ReleaseSet install or any SCM/task mutation.
+    #[cfg(windows)]
+    OfflineBootstrapPreflight(InstallRootArgs),
     VerifyRuntime,
     QualityLine1,
     Secrets(EndpointArgs),
@@ -55,6 +59,8 @@ impl Command {
             Self::PrivilegedDispatch(_) => "privileged-dispatch",
             #[cfg(windows)]
             Self::OfflineBootstrap(_) => "offline-bootstrap",
+            #[cfg(windows)]
+            Self::OfflineBootstrapPreflight(_) => "offline-bootstrap-preflight",
             Self::VerifyRuntime => "verify-runtime",
             Self::QualityLine1 => "quality-line1",
             Self::Secrets(_) => "secrets",
@@ -277,6 +283,17 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn only_exact_explicit_local_first_use_command_is_parseable() {
+        assert!(matches!(
+            Cli::try_parse_from([
+                "edge-console",
+                "offline-bootstrap-preflight",
+                "--install-root",
+                r"C:\sing-box",
+            ])
+            .unwrap()
+            .command,
+            Some(Command::OfflineBootstrapPreflight(_))
+        ));
         let command = Cli::try_parse_from([
             "edge-console",
             "offline-bootstrap",
