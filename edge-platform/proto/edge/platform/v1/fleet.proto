@@ -814,3 +814,13 @@ message FleetWindowsReceiptIdentityEnrollment {
   string source_revision = 3;
   string release_set_sha256 = 4;
 }
+
+// Local Administrator may request ONLY the exact installed Windows Git-trust
+// snapshot from the existing SYSTEM owner. Caller cannot pass keys, registry,
+// spec, trust bytes, or a network/SCM resource operation.
+message FleetWindowsTrustEnrollment {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  string source_revision = 3;
+  string release_set_sha256 = 4;
+}

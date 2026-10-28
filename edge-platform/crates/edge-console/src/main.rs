@@ -13,6 +13,8 @@ mod initial_line1_witness;
 mod windows_receipt_enrollment;
 #[cfg(windows)]
 mod windows_signed_host;
+#[cfg(windows)]
+mod windows_trust_enrollment;
 
 use clap::Parser;
 use command_dispatch::run;
@@ -191,6 +193,7 @@ fn legacy_console_entrypoint_allowed(command: &cli::Command) -> bool {
             | Command::OfflineBootstrapPreflight(_)
             | Command::OfflineReceiptIdentityPrepare(_)
             | Command::OfflineReceiptIdentityObserve(_)
+            | Command::OfflineHostTrustPrepare(_)
     ) {
         return true;
     }
@@ -547,6 +550,11 @@ async fn dispatch_privileged_request(
     if windows_receipt_enrollment::dispatch_if_present(install_root)? {
         return Ok(());
     }
+    // Git is the only trusted source. This optional first-use stage runs in
+    // the same SYSTEM dispatcher and creates trust.pb once, without a runner
+    // supplied key, alternate task, or network resource effect.
+    #[cfg(windows)]
+    windows_trust_enrollment::dispatch_if_needed(install_root).await?;
     // The SAME installed SYSTEM Task accepts bounded Worker-signed native
     // HostIntent, never a runner's legacy mutation code or arbitrary PowerShell.
     #[cfg(windows)]

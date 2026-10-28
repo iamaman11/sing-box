@@ -44,7 +44,7 @@ fn lowercase_sha(bytes: &[u8]) -> String {
 /// release and public signer. No runner-provided trust fields are accepted.
 /// A Windows trust snapshot uses the existing FleetNativeTrustSnapshot without
 /// VM bundle bytes; VM first-use retains its own stricter VM-only decoder.
-fn verify_system_trust(
+pub(super) fn verify_system_trust(
     bytes: &[u8],
     intent: &FleetHostIntent,
     installed_release_sha256: &str,

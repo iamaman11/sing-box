@@ -43,6 +43,10 @@ pub(crate) enum Command {
     // Read back PUBLIC identity only. Never export/inspect private PKCS8.
     #[cfg(windows)]
     OfflineReceiptIdentityObserve(InstallRootArgs),
+    // Exact installed release only. Administrator can request a SYSTEM-owned
+    // Git trust snapshot, never pass Worker or receipt keys from the runner.
+    #[cfg(windows)]
+    OfflineHostTrustPrepare(ReceiptIdentityPrepareArgs),
     VerifyRuntime,
     QualityLine1,
     Secrets(EndpointArgs),
@@ -72,6 +76,8 @@ impl Command {
             Self::OfflineReceiptIdentityPrepare(_) => "offline-receipt-identity-prepare",
             #[cfg(windows)]
             Self::OfflineReceiptIdentityObserve(_) => "offline-receipt-identity-observe",
+            #[cfg(windows)]
+            Self::OfflineHostTrustPrepare(_) => "offline-host-trust-prepare",
             Self::VerifyRuntime => "verify-runtime",
             Self::QualityLine1 => "quality-line1",
             Self::Secrets(_) => "secrets",
