@@ -447,6 +447,21 @@ assert "Start-ScheduledTask" not in native
 assert "SYSTEM task or immutable action mismatched" in Path(
     "edge-platform/scripts/windows-first-use-offline-handoff.ps1"
 ).read_text(encoding="utf-8")
+# The official one-time Windows bootstrap can repair only its pre-existing
+# SYSTEM task, while returning BEFORE install/credentials/runner operations.
+bootstrap_task_source = Path(
+    "edge-platform/scripts/bootstrap-windows-runner.ps1"
+).read_text(encoding="utf-8")
+assert "RepairPrivilegedTaskOnly" in bootstrap_task_source
+assert "ExpectedInstalledReleaseSetSha256" in bootstrap_task_source
+assert "WINDOWS_FIRST_USE_STABLE_STOPPED_OWNER_REQUIRED" in bootstrap_task_source
+assert "WINDOWS_FIRST_USE_CANONICAL_RELEASE_UNPROVEN" in bootstrap_task_source
+assert "windows_privileged_task_first_use=NOOP_EXISTING_EXACT" in bootstrap_task_source
+assert "windows_privileged_task_first_use=CREATED_SYSTEM_OWNER_ONLY" in bootstrap_task_source
+assert "Register-PrivilegedDispatcher -ExactInstalledReleaseSetSha256 $ExpectedInstalledReleaseSetSha256 -CreateOnly" in bootstrap_task_source
+assert "if (-not $CreateOnly) { $register.Force = $true }" in bootstrap_task_source
+assert bootstrap_task_source.index("if ($RepairPrivilegedTaskOnly) {") < bootstrap_task_source.rindex("Install-InitialApplicationAuthority")
+assert "WINDOWS_FIRST_USE_TASK_POSTSTATE_UNKNOWN_NO_REPLAY" in bootstrap_task_source
 assert "grep -Fxq false" not in router, "GitHub API bool must be decoded as JSON"
 assert "jq -e '(.errors == null)" in router
 assert "needs.host.outputs.operation == 'STATUS'" in router
