@@ -225,6 +225,16 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             Ok(())
         }
         #[cfg(windows)]
+        Command::OfflineHostTrustPrepare(args) => {
+            windows_trust_enrollment::prepare(
+                Path::new(&args.install_root),
+                &args.accepted_revision,
+                &args.release_set_sha256,
+            )
+            .map_err(ConsoleError::Command)?;
+            Ok(())
+        }
+        #[cfg(windows)]
         Command::OfflineBootstrapPreflight(args) => {
             let root = PathBuf::from(args.install_root);
             let before =
