@@ -2740,35 +2740,10 @@ fn offline_bootstrap_identifiers_valid(revision: &str, digest: &str) -> bool {
 
 #[cfg(windows)]
 fn require_explicit_local_administrator_first_use() -> Result<(), String> {
-    // CHANGE_CONFIG alone is not an authentication boundary: a wrongly
-    // configured service DACL could grant it to the NetworkService runner.
-    // Verify the actual enabled, elevated Administrators group in the OS
-    // token and reject every well-known service identity, even SYSTEM.
-    // A fixed local read-only token probe: no credentials/paths in output.
-    let script = r#"
-$ErrorActionPreference = 'Stop'
-$id = [Security.Principal.WindowsIdentity]::GetCurrent()
-if ($null -eq $id.User -or $id.User.Value -in @('S-1-5-18','S-1-5-19','S-1-5-20')) { exit 91 }
-$principal = [Security.Principal.WindowsPrincipal]::new($id)
-if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) { exit 92 }
-"#;
-    let status = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", script])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|_| {
-            "OFFLINE_BOOTSTRAP_BLOCKED: native local Administrator token proof unavailable"
-                .to_owned()
-        })?;
-    if !status.success() {
-        return Err(
-            "OFFLINE_BOOTSTRAP_BLOCKED: explicitly elevated local Administrator required; runner/SYSTEM denied"
-                .to_owned(),
-        );
-    }
-    Ok(())
+    // Use the actual kernel token, not a PowerShell child or SCM DACL.
+    // A NetworkService runner cannot spoof a local elevated Administrator.
+    edge_shared_types::host_journal::require_windows_local_administrator_first_use()
+        .map_err(str::to_owned)
 }
 
 #[cfg(windows)]
