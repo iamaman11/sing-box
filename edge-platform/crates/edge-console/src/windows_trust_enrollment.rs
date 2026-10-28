@@ -533,7 +533,10 @@ mod tests {
             "published_at":"2026-10-28T00:00:00Z"
         });
         let git_tag = serde_json::json!({"object":{"type":"commit","sha":merged_main}});
-        assert_eq!(exact_github_provenance(&head, &release, &git_tag, &active), Ok(()));
+        assert_eq!(
+            exact_github_provenance(&head, &release, &git_tag, &active),
+            Ok(())
+        );
         let mut stale = head.clone();
         stale["object"]["sha"] = serde_json::json!("d".repeat(40));
         assert!(exact_github_provenance(&stale, &release, &git_tag, &active).is_err());
@@ -553,21 +556,37 @@ mod tests {
 
     #[test]
     fn local_first_use_cli_never_accepts_a_human_source_revision() {
-        use clap::Parser as _;
         use crate::cli::{Cli, Command};
+        use clap::Parser as _;
         let identity = Cli::try_parse_from(["edge-console", "offline-receipt-identity-prepare"])
             .expect("identity enrollment only requires installed immutable owner");
-        assert!(matches!(identity.command, Some(Command::OfflineReceiptIdentityPrepare(_))));
+        assert!(matches!(
+            identity.command,
+            Some(Command::OfflineReceiptIdentityPrepare(_))
+        ));
         let trust = Cli::try_parse_from(["edge-console", "offline-host-trust-prepare"])
             .expect("trust enrollment only requires installed immutable owner");
-        assert!(matches!(trust.command, Some(Command::OfflineHostTrustPrepare(_))));
-        assert!(Cli::try_parse_from([
-            "edge-console", "offline-receipt-identity-prepare", &"a".repeat(40),
-            &"b".repeat(64)
-        ]).is_err());
-        assert!(Cli::try_parse_from([
-            "edge-console", "offline-host-trust-prepare", &"a".repeat(40),
-            &"b".repeat(64)
-        ]).is_err());
+        assert!(matches!(
+            trust.command,
+            Some(Command::OfflineHostTrustPrepare(_))
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "edge-console",
+                "offline-receipt-identity-prepare",
+                &"a".repeat(40),
+                &"b".repeat(64)
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "edge-console",
+                "offline-host-trust-prepare",
+                &"a".repeat(40),
+                &"b".repeat(64)
+            ])
+            .is_err()
+        );
     }
 }

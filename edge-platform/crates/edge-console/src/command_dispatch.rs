@@ -211,7 +211,7 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
         #[cfg(windows)]
         Command::OfflineReceiptIdentityPrepare(args) => {
             windows_receipt_enrollment::prepare(Path::new(&args.install_root))
-            .map_err(ConsoleError::Command)?;
+                .map_err(ConsoleError::Command)?;
             Ok(())
         }
         #[cfg(windows)]
@@ -223,7 +223,7 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
         #[cfg(windows)]
         Command::OfflineHostTrustPrepare(args) => {
             windows_trust_enrollment::prepare(Path::new(&args.install_root))
-            .map_err(ConsoleError::Command)?;
+                .map_err(ConsoleError::Command)?;
             Ok(())
         }
         #[cfg(windows)]
