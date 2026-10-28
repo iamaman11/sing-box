@@ -2753,17 +2753,13 @@ fn require_offline_bootstrap_other_pending_absent(install_root: &Path) -> Result
 // must NEVER look like a clean install. The SHA-addressed immutable archive
 // itself proves that a supersession was attempted. A normal new bootstrap
 // cannot consume it or infer that the earlier operation finished.
-fn require_no_historical_bootstrap_supersession(
-    install_root: &Path,
-) -> Result<(), String> {
+fn require_no_historical_bootstrap_supersession(install_root: &Path) -> Result<(), String> {
     let entries = fs::read_dir(install_root).map_err(|_| {
-        "OFFLINE_BOOTSTRAP_BLOCKED: historical archive inventory unreadable; no replay"
-            .to_owned()
+        "OFFLINE_BOOTSTRAP_BLOCKED: historical archive inventory unreadable; no replay".to_owned()
     })?;
     for entry in entries {
         let entry = entry.map_err(|_| {
-            "OFFLINE_BOOTSTRAP_BLOCKED: historical archive entry unreadable; no replay"
-                .to_owned()
+            "OFFLINE_BOOTSTRAP_BLOCKED: historical archive entry unreadable; no replay".to_owned()
         })?;
         if entry
             .file_name()
