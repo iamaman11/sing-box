@@ -502,6 +502,13 @@ assert 'HOST_WINDOWS_TRUST_GITHUB_MAIN_RELEASE_TAG_NOT_EXACT' in trust_owner
 assert 'create_new(true)' in trust_owner
 assert '"/remove:g", "*S-1-5-32-544"' in trust_owner
 assert 'HOST_WINDOWS_TRUST_RELEASE_ASSET_DIGEST_MISMATCH' in trust_owner
+assert 'Command::OfflineHostTrustPrepare(_)' in win_console
+assert 'verify_enrollment_marker(&marker_bytes, &active)' in trust_owner
+assert 'complete_trust_marker(&root)?' in trust_owner
+assert 'HOST_WINDOWS_TRUST_EXISTING_MISMATCH_NO_REPLAY' in trust_owner
+assert 'HOST_WINDOWS_TRUST_ENROLL_COMPETING_REQUEST' in trust_owner
+assert 'HOST_WINDOWS_TRUST_ENROLL_ALREADY_COMPLETED' in trust_owner
+assert 'FleetWindowsTrustEnrollment::decode(bytes)' in trust_owner
 
 assert "worker_trust=NOT_ENROLLED" in identity_owner
 assert "require_explicit_local_administrator_first_use()?;" in win_console
