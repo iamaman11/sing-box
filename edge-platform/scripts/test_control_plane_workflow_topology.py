@@ -468,6 +468,21 @@ assert 'verify_offline_bootstrap_dispatcher(&post.console_path, "Disabled")?;' i
 assert "change_offline_bootstrap_task_enabled(true)?;" in win_console
 assert 'verify_offline_bootstrap_dispatcher(&console.to_string_lossy(), "Ready")?;' in win_console
 
+# The existing native first-use must actually be reachable from the
+# installed console CLI. Source-only helper functions do not satisfy W6.
+win_cli = Path("edge-platform/crates/edge-console/src/cli.rs").read_text(encoding="utf-8")
+win_dispatch = Path("edge-platform/crates/edge-console/src/command_dispatch.rs").read_text(encoding="utf-8")
+assert "OfflineBootstrap(PrivilegedActivateArgs)" in win_cli
+assert 'Self::OfflineBootstrap(_) => "offline-bootstrap"' in win_cli
+assert "if matches!(command, Command::OfflineBootstrap(_))" in win_console
+assert "Command::OfflineBootstrap(args) =>" in win_dispatch
+assert "offline_bootstrap_privileged_release(&install_root, &request)" in win_dispatch
+assert "WindowsPrivilegedOperation::OfflineActivateRelease as i32" in win_dispatch
+assert '"privileged-offline-activate",' in win_cli
+assert "fn legacy_console_mutation_ingress_is_unparseable()" in win_cli
+assert "HOST_WINDOWS_LEGACY_PRIVILEGED_MUTATION_DISABLED" in win_console
+assert "require_offline_bootstrap_quiescent(install_root)?;" in win_console
+
 # Compile-time native modules are part of the same agent, not extra owners.
 for name in ("runtime_environment", "runtime_templates", "mesh_runtime_state", "legacy_runtime_effects"):
     assert f"mod {name};" in agent_main
