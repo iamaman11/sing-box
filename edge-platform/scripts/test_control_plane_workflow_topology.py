@@ -481,6 +481,19 @@ assert "Command::OfflineBootstrapPreflight(_)" in win_console
 assert "Command::OfflineReceiptIdentityPrepare(_)" in win_console
 assert "Command::OfflineReceiptIdentityObserve(_)" in win_console
 assert "windows_receipt_enrollment::dispatch_if_present(install_root)?" in win_console
+# W4 clean physical bootstrap must work with STOPPED / ProxyOnly and
+# missing native-host from the old W6 install. The one authorized offline
+# transaction itself prepares the protected SYSTEM journal before re-enabling
+# the existing scheduled task; service START or a runner script is forbidden.
+offline_handoff = win_console.split(
+    "fn offline_activate_privileged_release_with_installer(", 1
+)[1].split("fn encoded_powershell_command(", 1)[0]
+assert "converge_native_host_acl(install_root)?;" in offline_handoff
+assert offline_handoff.index("converge_native_host_acl(install_root)") < offline_handoff.index("retarget_privileged_task(")
+assert "fn converge_native_host_acl(install_root: &Path)" in win_console
+assert "HOST_WINDOWS_SYSTEM_NATIVE_ROOT_REPARSE_OR_NOT_DIR" in win_console
+assert "run_icacls(&path, &[\"/remove:g\", \"*S-1-5-20\", \"/Q\"])" in win_console
+assert "converge_native_host_acl(install_root)?;" in win_console
 identity_owner = Path("edge-platform/crates/edge-console/src/windows_receipt_enrollment.rs").read_text(encoding="utf-8")
 assert "verify_native_journal_protection(&root.join(\"journal\"))" in identity_owner
 assert "require_windows_local_administrator_first_use()" in identity_owner
