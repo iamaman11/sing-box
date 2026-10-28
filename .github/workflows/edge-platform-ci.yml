@@ -1040,6 +1040,11 @@ jobs:
           cargo test --locked -p edge-local-runtime -p edge-controller -p edge-console -p edge-diagnostic
           if ($LASTEXITCODE -ne 0) { throw "Stage 4B Windows-only ownership/rollback/diagnostic tests failed" }
 
+          # This Windows-only Win32 token API regression must run on Windows,
+          # not merely compile transitively in the Windows candidate binary.
+          cargo test --locked -p edge-shared-types --lib windows_administrator_membership_queries_exact_process_primary_token -- --nocapture
+          if ($LASTEXITCODE -ne 0) { throw "Windows primary/impersonation token membership contract failed" }
+
       # WINDOWS_CANDIDATE_BUILD_CONTRACT_BEGIN
       - name: Build exact Windows control binaries
         if: needs.dependencies.outputs.windows_reuse != 'true'
