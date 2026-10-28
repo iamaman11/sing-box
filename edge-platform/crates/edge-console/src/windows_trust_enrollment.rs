@@ -54,17 +54,10 @@ fn verify_enrollment_marker(
 /// One local elevated Administrator request for exact current Git trust.
 /// Keys, registry and signer identity cannot be passed by the caller.
 /// Only the existing SYSTEM dispatcher is permitted to construct trust.pb.
-pub(super) fn prepare(
-    install_root: &Path,
-    source_revision: &str,
-    release_sha256: &str,
-) -> Result<(), String> {
+pub(super) fn prepare(install_root: &Path) -> Result<(), String> {
     require_windows_local_administrator_first_use().map_err(str::to_owned)?;
     require_exact_immutable_activation_console(install_root)?;
     let active = load_verified_activation(install_root).map_err(|e| e.to_string())?;
-    if active.source_revision != source_revision || active.release_set_sha256 != release_sha256 {
-        return Err("HOST_WINDOWS_TRUST_ENROLL_SOURCE_PIN_MISMATCH".into());
-    }
     require_offline_windows_owner(install_root, &active)?;
     verify_offline_bootstrap_dispatcher(&active.console_path, "Ready")?;
     let root = install_root.join("native-host");
@@ -88,8 +81,8 @@ pub(super) fn prepare(
     let request = FleetWindowsTrustEnrollment {
         schema_version: 1,
         machine_id: HOST.to_owned(),
-        source_revision: source_revision.to_owned(),
-        release_set_sha256: release_sha256.to_owned(),
+        source_revision: active.source_revision.clone(),
+        release_set_sha256: active.release_set_sha256.clone(),
     };
     let bytes = request.encode_to_vec();
     verify_enrollment_marker(&bytes, &active).map_err(str::to_owned)?;
@@ -147,15 +140,21 @@ fn exact_github_provenance(
     active: &WindowsActivationState,
 ) -> Result<(), &'static str> {
     let tag = format!("edge-release-{}", active.release_set_sha256);
+    // The immutable Windows package was built from a PR candidate SHA; its
+    // ReleaseSet is published later by a protected two-parent merge commit.
+    // The installed source MUST match the canonical release-set.pb (checked
+    // in exact_windows_registration), while Git main MUST match the release
+    // tag's own merge target. Those are different, independently pinned facts.
+    let protected_main = head["object"]["sha"].as_str();
     if head["object"]["type"].as_str() != Some("commit")
-        || head["object"]["sha"].as_str() != Some(active.source_revision.as_str())
-        || release["target_commitish"].as_str() != Some(active.source_revision.as_str())
+        || protected_main.is_none()
+        || release["target_commitish"].as_str() != protected_main
         || release["tag_name"].as_str() != Some(tag.as_str())
         || release["draft"].as_bool() != Some(false)
         || release["prerelease"].as_bool() != Some(false)
         || release["published_at"].as_str().is_none()
         || tag_ref["object"]["type"].as_str() != Some("commit")
-        || tag_ref["object"]["sha"].as_str() != Some(active.source_revision.as_str())
+        || tag_ref["object"]["sha"].as_str() != protected_main
     {
         return Err("HOST_WINDOWS_TRUST_GITHUB_MAIN_RELEASE_TAG_NOT_EXACT");
     }
@@ -517,32 +516,77 @@ mod tests {
     }
 
     #[test]
-    fn trust_rejects_stale_main_unpublished_release_and_wrong_tag() {
+    fn trust_distinguishes_protected_merge_from_compiled_source() {
         let active = WindowsActivationState {
+            // Source of the actual Windows binaries, before the protected merge.
             source_revision: "a".repeat(40),
             release_set_sha256: "b".repeat(64),
             ..Default::default()
         };
+        let merged_main = "c".repeat(40);
+        assert_ne!(merged_main, active.source_revision);
         let tag = format!("edge-release-{}", active.release_set_sha256);
-        let head = serde_json::json!({"object":{"type":"commit","sha":active.source_revision}});
+        let head = serde_json::json!({"object":{"type":"commit","sha":merged_main}});
         let release = serde_json::json!({
-            "target_commitish":active.source_revision,
+            "target_commitish":merged_main,
             "tag_name":tag,"draft":false,"prerelease":false,
             "published_at":"2026-10-28T00:00:00Z"
         });
-        let git_tag = serde_json::json!({"object":{"type":"commit","sha":active.source_revision}});
-        assert!(exact_github_provenance(&head, &release, &git_tag, &active).is_ok());
+        let git_tag = serde_json::json!({"object":{"type":"commit","sha":merged_main}});
+        assert_eq!(
+            exact_github_provenance(&head, &release, &git_tag, &active),
+            Ok(())
+        );
         let mut stale = head.clone();
-        stale["object"]["sha"] = serde_json::json!("c".repeat(40));
+        stale["object"]["sha"] = serde_json::json!("d".repeat(40));
         assert!(exact_github_provenance(&stale, &release, &git_tag, &active).is_err());
+        let mut wrong_release = release.clone();
+        wrong_release["target_commitish"] = serde_json::json!(active.source_revision);
+        assert!(exact_github_provenance(&head, &wrong_release, &git_tag, &active).is_err());
         let mut draft = release.clone();
         draft["draft"] = serde_json::json!(true);
         assert!(exact_github_provenance(&head, &draft, &git_tag, &active).is_err());
         let mut foreign = git_tag.clone();
-        foreign["object"]["sha"] = serde_json::json!("d".repeat(40));
+        foreign["object"]["sha"] = serde_json::json!("e".repeat(40));
         assert!(exact_github_provenance(&head, &release, &foreign, &active).is_err());
         let mut missing_published = release;
         missing_published["published_at"] = serde_json::Value::Null;
         assert!(exact_github_provenance(&head, &missing_published, &git_tag, &active).is_err());
+    }
+
+    #[test]
+    fn local_first_use_cli_never_accepts_a_human_source_revision() {
+        use crate::cli::{Cli, Command};
+        use clap::Parser as _;
+        let identity = Cli::try_parse_from(["edge-console", "offline-receipt-identity-prepare"])
+            .expect("identity enrollment only requires installed immutable owner");
+        assert!(matches!(
+            identity.command,
+            Some(Command::OfflineReceiptIdentityPrepare(_))
+        ));
+        let trust = Cli::try_parse_from(["edge-console", "offline-host-trust-prepare"])
+            .expect("trust enrollment only requires installed immutable owner");
+        assert!(matches!(
+            trust.command,
+            Some(Command::OfflineHostTrustPrepare(_))
+        ));
+        assert!(
+            Cli::try_parse_from([
+                "edge-console",
+                "offline-receipt-identity-prepare",
+                &"a".repeat(40),
+                &"b".repeat(64)
+            ])
+            .is_err()
+        );
+        assert!(
+            Cli::try_parse_from([
+                "edge-console",
+                "offline-host-trust-prepare",
+                &"a".repeat(40),
+                &"b".repeat(64)
+            ])
+            .is_err()
+        );
     }
 }
