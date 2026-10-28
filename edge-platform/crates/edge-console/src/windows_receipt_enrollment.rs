@@ -97,6 +97,23 @@ fn create_only(path: &Path, bytes: &[u8]) -> Result<(), String> {
         .map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_WRITE_UNCERTAIN_NO_REPLAY".to_owned())
 }
 
+// Even Administrators must not inherit ordinary read access to the
+// persisted PKCS8. The private signer belongs to the existing SYSTEM owner.
+// Re-apply this seal after a crash before reading a retained private key.
+// SYSTEM still verifies the protected ancestor/journal kernel ACL first.
+fn seal_system_private(root: &Path) -> Result<(), String> {
+    let private = root.join(PRIVATE);
+    let meta = fs::symlink_metadata(&private)
+        .map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_PRIVATE_METADATA_UNAVAILABLE")?;
+    if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 4096 {
+        return Err("HOST_WINDOWS_RECEIPT_ENROLL_PRIVATE_INVALID".into());
+    }
+    run_icacls(&private, &["/inheritance:r", "/Q"])?;
+    run_icacls(&private, &["/grant:r", "*S-1-5-18:F", "/Q"])?;
+    run_icacls(&private, &["/remove:g", "*S-1-5-32-544", "/Q"])?;
+    run_icacls(&private, &["/setowner", "*S-1-5-18", "/Q"])
+}
+
 fn existing_private_public(root: &Path) -> Result<Option<[u8; 32]>, String> {
     let private = root.join(PRIVATE);
     let public = root.join(PUBLIC);
@@ -244,6 +261,11 @@ pub(super) fn dispatch_if_present(install_root: &Path) -> Result<bool, String> {
     if root.join("trust.pb").exists() {
         return Err("HOST_WINDOWS_RECEIPT_ENROLL_TRUST_ALREADY_PRESENT".into());
     }
+    // Existing or newly generated keys must be SYSTEM-only on disk before
+    // public identity is published; a failed ACL change is not a success.
+    if root.join(PRIVATE).exists() {
+        seal_system_private(&root)?;
+    }
     let public = match existing_private_public(&root)? {
         Some(key) => key,
         None => {
@@ -259,6 +281,7 @@ pub(super) fn dispatch_if_present(install_root: &Path) -> Result<bool, String> {
             // Fail closed on ANY uncertain write: do not generate another key
             // to recover. Future dispatcher can only rederive public identity.
             create_only(&root.join(PRIVATE), secret.as_ref())?;
+            seal_system_private(&root)?;
             create_only(&root.join(PUBLIC), &key)?;
             key
         }
