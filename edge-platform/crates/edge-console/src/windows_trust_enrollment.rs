@@ -6,7 +6,8 @@
 use super::*;
 use edge_shared_types::{
     FleetHostAction, FleetHostIntent, FleetHostKind, FleetHostMode, FleetHostRunState,
-    FleetNativeTrustSnapshot, HostRegistry, ReleaseSet,
+    FleetNativeTrustSnapshot, FleetWindowsTrustEnrollment, HostRegistry, ReleaseSet,
+    host_journal::require_windows_local_administrator_first_use,
     host_journal::verify_native_journal_protection,
     host_lifecycle::{digest_host_desired, verify_windows_signed_git_prerequisites},
 };
@@ -23,10 +24,108 @@ const TRUST_FILE: &str = "trust.pb";
 const PUBLIC: &str = "receipt-public-key.bin";
 const PRIVATE: &str = "receipt-key.pk8";
 const COMPLETED: &str = "receipt-enrollment.completed.pb";
+const MARKER: &str = "trust-enrollment.pb";
+const DONE: &str = "trust-enrollment.completed.pb";
 const MAX_JSON: usize = 262_144;
 const MAX_RELEASE: usize = 65_536;
 const MAX_REGISTRY: usize = 65_536;
 const MAX_SPEC: usize = 65_536;
+
+fn verify_enrollment_marker(
+    bytes: &[u8],
+    active: &WindowsActivationState,
+) -> Result<(), &'static str> {
+    if bytes.is_empty() || bytes.len() > 512 {
+        return Err("HOST_WINDOWS_TRUST_ENROLL_MARKER_SIZE_INVALID");
+    }
+    let request = FleetWindowsTrustEnrollment::decode(bytes)
+        .map_err(|_| "HOST_WINDOWS_TRUST_ENROLL_MARKER_PROTO_INVALID")?;
+    if request.encode_to_vec() != bytes
+        || request.schema_version != 1
+        || request.machine_id != HOST
+        || request.source_revision != active.source_revision
+        || request.release_set_sha256 != active.release_set_sha256
+    {
+        return Err("HOST_WINDOWS_TRUST_ENROLL_MARKER_SOURCE_MISMATCH");
+    }
+    Ok(())
+}
+
+/// One local elevated Administrator request for exact current Git trust.
+/// Keys, registry and signer identity cannot be passed by the caller.
+/// Only the existing SYSTEM dispatcher is permitted to construct trust.pb.
+pub(super) fn prepare(
+    install_root: &Path,
+    source_revision: &str,
+    release_sha256: &str,
+) -> Result<(), String> {
+    require_windows_local_administrator_first_use().map_err(str::to_owned)?;
+    require_exact_immutable_activation_console(install_root)?;
+    let active = load_verified_activation(install_root).map_err(|e| e.to_string())?;
+    if active.source_revision != source_revision
+        || active.release_set_sha256 != release_sha256
+    {
+        return Err("HOST_WINDOWS_TRUST_ENROLL_SOURCE_PIN_MISMATCH".into());
+    }
+    require_offline_windows_owner(install_root, &active)?;
+    verify_offline_bootstrap_dispatcher(&active.console_path, "Ready")?;
+    let root = install_root.join("native-host");
+    let proof = fs::symlink_metadata(root.join(COMPLETED))
+        .map_err(|_| "HOST_WINDOWS_TRUST_ENROLL_RECEIPT_IDENTITY_UNPROVEN")?;
+    if !proof.file_type().is_file() || proof.len() == 0 || proof.len() > 512 {
+        return Err("HOST_WINDOWS_TRUST_ENROLL_RECEIPT_IDENTITY_INVALID".into());
+    }
+    if root.join(TRUST_FILE).exists() || root.join(DONE).exists() {
+        return Err("HOST_WINDOWS_TRUST_ENROLL_ALREADY_COMPLETED".into());
+    }
+    if install_root.join("exchange").join("requests").join("host-intent.pb").exists()
+        || privileged_request_path(install_root).exists()
+    {
+        return Err("HOST_WINDOWS_TRUST_ENROLL_COMPETING_REQUEST".into());
+    }
+    let request = FleetWindowsTrustEnrollment {
+        schema_version: 1,
+        machine_id: HOST.to_owned(),
+        source_revision: source_revision.to_owned(),
+        release_set_sha256: release_sha256.to_owned(),
+    };
+    let bytes = request.encode_to_vec();
+    verify_enrollment_marker(&bytes, &active).map_err(str::to_owned)?;
+    let mut file = OpenOptions::new().write(true).create_new(true)
+        .open(root.join(MARKER))
+        .map_err(|_| "HOST_WINDOWS_TRUST_ENROLL_ALREADY_REQUESTED")?;
+    file.write_all(&bytes).and_then(|_| file.sync_all())
+        .map_err(|_| "HOST_WINDOWS_TRUST_ENROLL_MARKER_UNCERTAIN_NO_REPLAY")?;
+    println!("native_trust=PREPARED_EXACT_LOCAL_ADMIN");
+    println!("native_trust_next=EXISTING_LOCALSYSTEM_TASK");
+    println!("scm_mutations=0");
+    println!("network_mutations=0");
+    Ok(())
+}
+
+fn complete_trust_marker(root: &Path) -> Result<(), String> {
+    let marker = root.join(MARKER);
+    let completed = root.join(DONE);
+    match fs::symlink_metadata(&completed) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            fs::hard_link(&marker, &completed)
+                .map_err(|_| "HOST_WINDOWS_TRUST_ENROLL_ARCHIVE_UNCERTAIN_NO_REPLAY")?;
+        }
+        Err(_) => return Err("HOST_WINDOWS_TRUST_ENROLL_ARCHIVE_METADATA_UNAVAILABLE".into()),
+        Ok(meta) if !meta.file_type().is_file() => {
+            return Err("HOST_WINDOWS_TRUST_ENROLL_ARCHIVE_INVALID".into());
+        }
+        Ok(_) => {
+            if fs::read(&completed).map_err(|_| "HOST_WINDOWS_TRUST_ENROLL_ARCHIVE_UNREADABLE")?
+                != fs::read(&marker).map_err(|_| "HOST_WINDOWS_TRUST_ENROLL_MARKER_UNREADABLE")?
+            {
+                return Err("HOST_WINDOWS_TRUST_ENROLL_ARCHIVE_MISMATCH".into());
+            }
+        }
+    }
+    fs::remove_file(marker)
+        .map_err(|_| "HOST_WINDOWS_TRUST_ENROLL_UNLINK_UNCERTAIN_NO_REPLAY".into())
+}
 
 fn sha_hex(data: &[u8]) -> String {
     digest(&SHA256, data).as_ref().iter().map(|n| format!("{n:02x}")).collect()
@@ -239,8 +338,17 @@ pub(super) async fn dispatch_if_needed(install_root: &Path) -> Result<(), String
         return Err("HOST_WINDOWS_TRUST_ROOT_INVALID".into());
     }
     let root = install_root.join("native-host");
-    if root.join(TRUST_FILE).exists() || !root.join(COMPLETED).exists() {
-        return Ok(());
+    let marker = root.join(MARKER);
+    let marker_meta = match fs::symlink_metadata(&marker) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err("HOST_WINDOWS_TRUST_ENROLL_MARKER_METADATA_UNAVAILABLE".into()),
+        Ok(meta) => meta,
+    };
+    if !marker_meta.file_type().is_file() || marker_meta.len() == 0 || marker_meta.len() > 512 {
+        return Err("HOST_WINDOWS_TRUST_ENROLL_MARKER_INVALID".into());
+    }
+    if !root.join(COMPLETED).is_file() {
+        return Err("HOST_WINDOWS_TRUST_ENROLL_RECEIPT_IDENTITY_NOT_COMPLETED".into());
     }
     // Never synthesize authority when a pending native mutation exists.
     if install_root.join("exchange").join("requests").join("host-intent.pb").exists()
@@ -252,6 +360,9 @@ pub(super) async fn dispatch_if_needed(install_root: &Path) -> Result<(), String
     verify_native_journal_protection(&root.join("journal")).map_err(str::to_owned)?;
     let active = load_verified_activation(install_root).map_err(|err| err.to_string())?;
     require_offline_windows_owner(install_root, &active)?;
+    let marker_bytes = fs::read(&marker)
+        .map_err(|_| "HOST_WINDOWS_TRUST_ENROLL_MARKER_UNREADABLE")?;
+    verify_enrollment_marker(&marker_bytes, &active).map_err(str::to_owned)?;
     let public = fs::read(root.join(PUBLIC))
         .map_err(|_| "HOST_WINDOWS_TRUST_PUBLIC_IDENTITY_MISSING")?;
     let key_path = root.join(PRIVATE);
@@ -269,14 +380,23 @@ pub(super) async fn dispatch_if_needed(install_root: &Path) -> Result<(), String
     // The canonical native-host ACL already restricts write to SYSTEM and
     // BUILTIN Administrators. Trust is created ONCE and never overwritten by
     // periodic checks. The native signed handler revalidates it per request.
-    let mut file = OpenOptions::new().write(true).create_new(true).open(&dest)
-        .map_err(|_| "HOST_WINDOWS_TRUST_CREATE_ONLY_REFUSED")?;
-    file.write_all(&bytes).and_then(|_| file.sync_all())
-        .map_err(|_| "HOST_WINDOWS_TRUST_WRITE_UNCERTAIN_NO_REPLAY")?;
+    if dest.exists() {
+        let previous = fs::read(&dest)
+            .map_err(|_| "HOST_WINDOWS_TRUST_EXISTING_UNREADABLE")?;
+        if previous != bytes {
+            return Err("HOST_WINDOWS_TRUST_EXISTING_MISMATCH_NO_REPLAY".into());
+        }
+    } else {
+        let mut file = OpenOptions::new().write(true).create_new(true).open(&dest)
+            .map_err(|_| "HOST_WINDOWS_TRUST_CREATE_ONLY_REFUSED")?;
+        file.write_all(&bytes).and_then(|_| file.sync_all())
+            .map_err(|_| "HOST_WINDOWS_TRUST_WRITE_UNCERTAIN_NO_REPLAY")?;
+    }
     run_icacls(&dest, &["/inheritance:r", "/Q"])?;
     run_icacls(&dest, &["/grant:r", "*S-1-5-18:F", "/Q"])?;
     run_icacls(&dest, &["/remove:g", "*S-1-5-32-544", "/Q"])?;
     run_icacls(&dest, &["/setowner", "*S-1-5-18", "/Q"])?;
+    complete_trust_marker(&root)?;
     println!("native_trust=ENROLLED_EXACT_PROTECTED_GIT");
     println!("native_trust_machine={HOST}");
     println!("native_trust_release={}", active.release_set_sha256);
