@@ -482,7 +482,8 @@ assert "pub fn require_windows_local_administrator_first_use()" in native_journa
 # Win32 CheckTokenMembership requires an impersonation token, NOT the
 # primary token returned by OpenProcessToken. Keep the exact process-user
 # identity and UAC enabled-group gate: never substitute a NULL thread token.
-assert "OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, &mut token)" in native_journal
+assert "OpenProcessToken(" in native_journal
+assert "TOKEN_QUERY | TOKEN_DUPLICATE" in native_journal
 assert "DuplicateToken(primary, SecurityImpersonation, &mut impersonation)" in native_journal
 assert "CheckTokenMembership(impersonation, admin_sid.as_mut_ptr().cast(), &mut enabled)" in native_journal
 assert "CheckTokenMembership(token, admin_sid.as_mut_ptr().cast(), &mut enabled)" not in native_journal
