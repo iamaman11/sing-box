@@ -62,9 +62,7 @@ pub(super) fn prepare(
     require_windows_local_administrator_first_use().map_err(str::to_owned)?;
     require_exact_immutable_activation_console(install_root)?;
     let active = load_verified_activation(install_root).map_err(|e| e.to_string())?;
-    if active.source_revision != source_revision
-        || active.release_set_sha256 != release_sha256
-    {
+    if active.source_revision != source_revision || active.release_set_sha256 != release_sha256 {
         return Err("HOST_WINDOWS_TRUST_ENROLL_SOURCE_PIN_MISMATCH".into());
     }
     require_offline_windows_owner(install_root, &active)?;
@@ -78,7 +76,11 @@ pub(super) fn prepare(
     if root.join(TRUST_FILE).exists() || root.join(DONE).exists() {
         return Err("HOST_WINDOWS_TRUST_ENROLL_ALREADY_COMPLETED".into());
     }
-    if install_root.join("exchange").join("requests").join("host-intent.pb").exists()
+    if install_root
+        .join("exchange")
+        .join("requests")
+        .join("host-intent.pb")
+        .exists()
         || privileged_request_path(install_root).exists()
     {
         return Err("HOST_WINDOWS_TRUST_ENROLL_COMPETING_REQUEST".into());
@@ -91,10 +93,13 @@ pub(super) fn prepare(
     };
     let bytes = request.encode_to_vec();
     verify_enrollment_marker(&bytes, &active).map_err(str::to_owned)?;
-    let mut file = OpenOptions::new().write(true).create_new(true)
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
         .open(root.join(MARKER))
         .map_err(|_| "HOST_WINDOWS_TRUST_ENROLL_ALREADY_REQUESTED")?;
-    file.write_all(&bytes).and_then(|_| file.sync_all())
+    file.write_all(&bytes)
+        .and_then(|_| file.sync_all())
         .map_err(|_| "HOST_WINDOWS_TRUST_ENROLL_MARKER_UNCERTAIN_NO_REPLAY")?;
     println!("native_trust=PREPARED_EXACT_LOCAL_ADMIN");
     println!("native_trust_next=EXISTING_LOCALSYSTEM_TASK");
@@ -128,7 +133,11 @@ fn complete_trust_marker(root: &Path) -> Result<(), String> {
 }
 
 fn sha_hex(data: &[u8]) -> String {
-    digest(&SHA256, data).as_ref().iter().map(|n| format!("{n:02x}")).collect()
+    digest(&SHA256, data)
+        .as_ref()
+        .iter()
+        .map(|n| format!("{n:02x}"))
+        .collect()
 }
 
 fn exact_github_provenance(
@@ -158,23 +167,28 @@ async fn fetch_bounded(
     url: &str,
     limit: usize,
 ) -> Result<Vec<u8>, String> {
-    let parsed = reqwest::Url::parse(url)
-        .map_err(|_| "HOST_WINDOWS_TRUST_SOURCE_URL_INVALID")?;
+    let parsed = reqwest::Url::parse(url).map_err(|_| "HOST_WINDOWS_TRUST_SOURCE_URL_INVALID")?;
     if parsed.scheme() != "https" || !parsed.username().is_empty() || parsed.password().is_some() {
         return Err("HOST_WINDOWS_TRUST_SOURCE_URL_NOT_HTTPS".into());
     }
-    let mut reply = client.get(parsed)
+    let mut reply = client
+        .get(parsed)
         .header("User-Agent", "sing-box-windows-native-trust")
         .header("Accept", "application/vnd.github+json")
-        .send().await
+        .send()
+        .await
         .map_err(|_| "HOST_WINDOWS_TRUST_SOURCE_FETCH_FAILED")?;
     if !reply.status().is_success()
-        || reply.content_length().is_some_and(|n| n == 0 || n > limit as u64)
+        || reply
+            .content_length()
+            .is_some_and(|n| n == 0 || n > limit as u64)
     {
         return Err("HOST_WINDOWS_TRUST_SOURCE_RESPONSE_REJECTED".into());
     }
     let mut bytes = Vec::new();
-    while let Some(part) = reply.chunk().await
+    while let Some(part) = reply
+        .chunk()
+        .await
         .map_err(|_| "HOST_WINDOWS_TRUST_SOURCE_RESPONSE_INCOMPLETE")?
     {
         if part.len() > limit.saturating_sub(bytes.len()) {
@@ -188,10 +202,7 @@ async fn fetch_bounded(
     Ok(bytes)
 }
 
-async fn fetch_json(
-    client: &reqwest::Client,
-    url: &str,
-) -> Result<serde_json::Value, String> {
+async fn fetch_json(client: &reqwest::Client, url: &str) -> Result<serde_json::Value, String> {
     let bytes = fetch_bounded(client, url, MAX_JSON).await?;
     serde_json::from_slice(&bytes).map_err(|_| "HOST_WINDOWS_TRUST_SOURCE_JSON_INVALID".into())
 }
@@ -203,9 +214,13 @@ async fn accepted_asset(
     name: &str,
     limit: usize,
 ) -> Result<Vec<u8>, String> {
-    let assets = release["assets"].as_array()
+    let assets = release["assets"]
+        .as_array()
         .ok_or("HOST_WINDOWS_TRUST_RELEASE_ASSETS_MISSING")?;
-    let found: Vec<_> = assets.iter().filter(|a| a["name"].as_str() == Some(name)).collect();
+    let found: Vec<_> = assets
+        .iter()
+        .filter(|a| a["name"].as_str() == Some(name))
+        .collect();
     if found.len() != 1 {
         return Err("HOST_WINDOWS_TRUST_RELEASE_ASSET_NOT_UNIQUE".into());
     }
@@ -213,11 +228,14 @@ async fn accepted_asset(
     if found[0]["browser_download_url"].as_str() != Some(url.as_str()) {
         return Err("HOST_WINDOWS_TRUST_RELEASE_ASSET_URL_MISMATCH".into());
     }
-    let expected = found[0]["digest"].as_str()
+    let expected = found[0]["digest"]
+        .as_str()
         .and_then(|s| s.strip_prefix("sha256:"))
         .ok_or("HOST_WINDOWS_TRUST_RELEASE_DIGEST_MISSING")?;
     if expected.len() != 64
-        || !expected.bytes().all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        || !expected
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     {
         return Err("HOST_WINDOWS_TRUST_RELEASE_DIGEST_INVALID".into());
     }
@@ -236,25 +254,28 @@ fn exact_windows_registration(
     receipt_private: &[u8],
     receipt_public: &[u8],
 ) -> Result<FleetNativeTrustSnapshot, String> {
-    if registry_pb.is_empty() || registry_pb.len() > MAX_REGISTRY
-        || release_pb.is_empty() || release_pb.len() > MAX_RELEASE
-        || spec.is_empty() || spec.len() > MAX_SPEC
+    if registry_pb.is_empty()
+        || registry_pb.len() > MAX_REGISTRY
+        || release_pb.is_empty()
+        || release_pb.len() > MAX_RELEASE
+        || spec.is_empty()
+        || spec.len() > MAX_SPEC
     {
         return Err("HOST_WINDOWS_TRUST_ARTIFACT_SIZE_INVALID".into());
     }
     if sha_hex(release_pb) != active.release_set_sha256 {
         return Err("HOST_WINDOWS_TRUST_INSTALLED_RELEASE_MISMATCH".into());
     }
-    let release = ReleaseSet::decode(release_pb)
-        .map_err(|_| "HOST_WINDOWS_TRUST_RELEASE_PROTO_INVALID")?;
-    if release.encode_to_vec() != release_pb
-        || release.source_revision != active.source_revision
-    {
+    let release =
+        ReleaseSet::decode(release_pb).map_err(|_| "HOST_WINDOWS_TRUST_RELEASE_PROTO_INVALID")?;
+    if release.encode_to_vec() != release_pb || release.source_revision != active.source_revision {
         return Err("HOST_WINDOWS_TRUST_RELEASE_SOURCE_MISMATCH".into());
     }
     let registry: HostRegistry = edge_shared_types::decode_host_registry(registry_pb)
         .map_err(|_| "HOST_WINDOWS_TRUST_REGISTRY_INVALID")?;
-    let host = registry.hosts.iter()
+    let host = registry
+        .hosts
+        .iter()
         .find(|h| h.machine_id == HOST && h.kind == FleetHostKind::Windows as i32)
         .ok_or("HOST_WINDOWS_TRUST_MACHINE_NOT_REGISTERED")?;
     if host.desired_spec_path != SPEC
@@ -296,8 +317,12 @@ fn exact_windows_registration(
         pinned_worker_public_key: pinned,
     };
     windows_signed_host::verify_system_trust(
-        &trust.encode_to_vec(), &intent, &active.release_set_sha256, receipt_private
-    ).map_err(str::to_owned)?;
+        &trust.encode_to_vec(),
+        &intent,
+        &active.release_set_sha256,
+        receipt_private,
+    )
+    .map_err(str::to_owned)?;
     Ok(trust)
 }
 
@@ -319,9 +344,14 @@ async fn fetch_exact_protected_git(
     let (release_pb, registry_pb, spec) = tokio::try_join!(
         accepted_asset(&client, &release, &tag, "release-set.pb", MAX_RELEASE),
         accepted_asset(&client, &release, &tag, "fleet-registry.pb", MAX_REGISTRY),
-        fetch_bounded(&client,
-            &format!("https://raw.githubusercontent.com/iamaman11/sing-box/{}/{}", active.source_revision, SPEC),
-            MAX_SPEC),
+        fetch_bounded(
+            &client,
+            &format!(
+                "https://raw.githubusercontent.com/iamaman11/sing-box/{}/{}",
+                active.source_revision, SPEC
+            ),
+            MAX_SPEC
+        ),
     )?;
     if sha_hex(&release_pb) != active.release_set_sha256 {
         return Err("HOST_WINDOWS_TRUST_RELEASE_DIGEST_MISMATCH".into());
@@ -351,7 +381,11 @@ pub(super) async fn dispatch_if_needed(install_root: &Path) -> Result<(), String
         return Err("HOST_WINDOWS_TRUST_ENROLL_RECEIPT_IDENTITY_NOT_COMPLETED".into());
     }
     // Never synthesize authority when a pending native mutation exists.
-    if install_root.join("exchange").join("requests").join("host-intent.pb").exists()
+    if install_root
+        .join("exchange")
+        .join("requests")
+        .join("host-intent.pb")
+        .exists()
         || privileged_request_path(install_root).exists()
     {
         return Ok(());
@@ -360,36 +394,40 @@ pub(super) async fn dispatch_if_needed(install_root: &Path) -> Result<(), String
     verify_native_journal_protection(&root.join("journal")).map_err(str::to_owned)?;
     let active = load_verified_activation(install_root).map_err(|err| err.to_string())?;
     require_offline_windows_owner(install_root, &active)?;
-    let marker_bytes = fs::read(&marker)
-        .map_err(|_| "HOST_WINDOWS_TRUST_ENROLL_MARKER_UNREADABLE")?;
+    let marker_bytes =
+        fs::read(&marker).map_err(|_| "HOST_WINDOWS_TRUST_ENROLL_MARKER_UNREADABLE")?;
     verify_enrollment_marker(&marker_bytes, &active).map_err(str::to_owned)?;
-    let public = fs::read(root.join(PUBLIC))
-        .map_err(|_| "HOST_WINDOWS_TRUST_PUBLIC_IDENTITY_MISSING")?;
+    let public =
+        fs::read(root.join(PUBLIC)).map_err(|_| "HOST_WINDOWS_TRUST_PUBLIC_IDENTITY_MISSING")?;
     let key_path = root.join(PRIVATE);
     let key_meta = fs::symlink_metadata(&key_path)
         .map_err(|_| "HOST_WINDOWS_TRUST_PRIVATE_IDENTITY_MISSING")?;
     if !key_meta.file_type().is_file() || key_meta.len() == 0 || key_meta.len() > 4096 {
         return Err("HOST_WINDOWS_TRUST_PRIVATE_IDENTITY_INVALID".into());
     }
-    let private = fs::read(&key_path)
-        .map_err(|_| "HOST_WINDOWS_TRUST_PRIVATE_IDENTITY_UNREADABLE")?;
+    let private =
+        fs::read(&key_path).map_err(|_| "HOST_WINDOWS_TRUST_PRIVATE_IDENTITY_UNREADABLE")?;
     let (release_pb, registry_pb, spec) = fetch_exact_protected_git(&active).await?;
-    let trust = exact_windows_registration(&registry_pb, &release_pb, &spec, &active, &private, &public)?;
+    let trust =
+        exact_windows_registration(&registry_pb, &release_pb, &spec, &active, &private, &public)?;
     let bytes = trust.encode_to_vec();
     let dest = root.join(TRUST_FILE);
     // The canonical native-host ACL already restricts write to SYSTEM and
     // BUILTIN Administrators. Trust is created ONCE and never overwritten by
     // periodic checks. The native signed handler revalidates it per request.
     if dest.exists() {
-        let previous = fs::read(&dest)
-            .map_err(|_| "HOST_WINDOWS_TRUST_EXISTING_UNREADABLE")?;
+        let previous = fs::read(&dest).map_err(|_| "HOST_WINDOWS_TRUST_EXISTING_UNREADABLE")?;
         if previous != bytes {
             return Err("HOST_WINDOWS_TRUST_EXISTING_MISMATCH_NO_REPLAY".into());
         }
     } else {
-        let mut file = OpenOptions::new().write(true).create_new(true).open(&dest)
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&dest)
             .map_err(|_| "HOST_WINDOWS_TRUST_CREATE_ONLY_REFUSED")?;
-        file.write_all(&bytes).and_then(|_| file.sync_all())
+        file.write_all(&bytes)
+            .and_then(|_| file.sync_all())
             .map_err(|_| "HOST_WINDOWS_TRUST_WRITE_UNCERTAIN_NO_REPLAY")?;
     }
     run_icacls(&dest, &["/inheritance:r", "/Q"])?;
@@ -400,7 +438,10 @@ pub(super) async fn dispatch_if_needed(install_root: &Path) -> Result<(), String
     println!("native_trust=ENROLLED_EXACT_PROTECTED_GIT");
     println!("native_trust_machine={HOST}");
     println!("native_trust_release={}", active.release_set_sha256);
-    println!("native_trust_worker_key_sha256={}", sha_hex(&trust.pinned_worker_public_key));
+    println!(
+        "native_trust_worker_key_sha256={}",
+        sha_hex(&trust.pinned_worker_public_key)
+    );
     println!("scm_mutations=0");
     println!("network_mutations=0");
     Ok(())
@@ -447,7 +488,10 @@ mod tests {
         std::fs::write(dir.join(MARKER), b"exact durable marker").unwrap();
         complete_trust_marker(&dir).unwrap();
         assert!(!dir.join(MARKER).exists());
-        assert_eq!(std::fs::read(dir.join(DONE)).unwrap(), b"exact durable marker");
+        assert_eq!(
+            std::fs::read(dir.join(DONE)).unwrap(),
+            b"exact durable marker"
+        );
         std::fs::hard_link(dir.join(DONE), dir.join(MARKER)).unwrap();
         complete_trust_marker(&dir).unwrap();
         assert!(dir.join(DONE).exists());
@@ -473,18 +517,18 @@ mod tests {
             "published_at":"2026-10-28T00:00:00Z"
         });
         let git_tag = serde_json::json!({"object":{"type":"commit","sha":active.source_revision}});
-        assert!(exact_github_provenance(&head,&release,&git_tag,&active).is_ok());
+        assert!(exact_github_provenance(&head, &release, &git_tag, &active).is_ok());
         let mut stale = head.clone();
         stale["object"]["sha"] = serde_json::json!("c".repeat(40));
-        assert!(exact_github_provenance(&stale,&release,&git_tag,&active).is_err());
+        assert!(exact_github_provenance(&stale, &release, &git_tag, &active).is_err());
         let mut draft = release.clone();
         draft["draft"] = serde_json::json!(true);
-        assert!(exact_github_provenance(&head,&draft,&git_tag,&active).is_err());
+        assert!(exact_github_provenance(&head, &draft, &git_tag, &active).is_err());
         let mut foreign = git_tag.clone();
         foreign["object"]["sha"] = serde_json::json!("d".repeat(40));
-        assert!(exact_github_provenance(&head,&release,&foreign,&active).is_err());
+        assert!(exact_github_provenance(&head, &release, &foreign, &active).is_err());
         let mut missing_published = release;
         missing_published["published_at"] = serde_json::Value::Null;
-        assert!(exact_github_provenance(&head,&missing_published,&git_tag,&active).is_err());
+        assert!(exact_github_provenance(&head, &missing_published, &git_tag, &active).is_err());
     }
 }
