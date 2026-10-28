@@ -802,3 +802,15 @@ message FleetVmHostDesired {
   ProductionApplication application = 5;
   string firewall_profile = 6;
 }
+
+
+// Local Administrator -> existing Windows LocalSystem task, one-shot first-use
+// receipt IDENTITY ONLY. This is not a Worker authorization, SCM operation,
+// signed HostIntent, trust snapshot or permission to change any network state.
+// The private receipt signer never leaves the protected native SYSTEM owner.
+message FleetWindowsReceiptIdentityEnrollment {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  string source_revision = 3;
+  string release_set_sha256 = 4;
+}

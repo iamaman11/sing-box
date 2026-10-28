@@ -474,7 +474,25 @@ win_cli = Path("edge-platform/crates/edge-console/src/cli.rs").read_text(encodin
 win_dispatch = Path("edge-platform/crates/edge-console/src/command_dispatch.rs").read_text(encoding="utf-8")
 assert "OfflineBootstrap(PrivilegedActivateArgs)" in win_cli
 assert 'Self::OfflineBootstrap(_) => "offline-bootstrap"' in win_cli
-assert "Command::OfflineBootstrap(_) | Command::OfflineBootstrapPreflight(_)" in win_console
+# A narrow W4 locally elevated first-use identity reservation and public
+# readback are permitted, but no unsigned SCM/Worker/remote mutation.
+assert "Command::OfflineBootstrap(_)" in win_console
+assert "Command::OfflineBootstrapPreflight(_)" in win_console
+assert "Command::OfflineReceiptIdentityPrepare(_)" in win_console
+assert "Command::OfflineReceiptIdentityObserve(_)" in win_console
+assert "windows_receipt_enrollment::dispatch_if_present(install_root)?" in win_console
+identity_owner = Path("edge-platform/crates/edge-console/src/windows_receipt_enrollment.rs").read_text(encoding="utf-8")
+assert "verify_native_journal_protection(&root.join(\"journal\"))" in identity_owner
+assert "require_windows_local_administrator_first_use()" in identity_owner
+assert "Ed25519KeyPair::generate_pkcs8(&SystemRandom::new())" in identity_owner
+assert "create_only(&root.join(PRIVATE), secret.as_ref())" in identity_owner
+assert "complete_marker(&root)?" in identity_owner
+assert "seal_system_private(&root)?" in identity_owner
+assert '"/remove:g", "*S-1-5-32-544"' in identity_owner
+assert '"/setowner", "*S-1-5-18"' in identity_owner
+assert "HOST_WINDOWS_RECEIPT_ENROLL_COMPETING_REQUEST" in identity_owner
+assert "HOST_WINDOWS_RECEIPT_ENROLL_TRUST_ALREADY_PRESENT" in identity_owner
+assert "worker_trust=NOT_ENROLLED" in identity_owner
 assert "require_explicit_local_administrator_first_use()?;" in win_console
 assert "require_windows_local_administrator_first_use()" in win_console
 native_journal = Path("edge-platform/crates/edge-shared-types/src/host_journal.rs").read_text(encoding="utf-8")
