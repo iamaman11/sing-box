@@ -2712,12 +2712,15 @@ fn inspect_retained_offline_bootstrap_intent(
     {
         return Err("OFFLINE_BOOTSTRAP_SUPERSESSION_LEGACY_IDENTITY_INVALID".to_owned());
     }
+    let from = from.to_owned();
+    let to = to.to_owned();
+    let accepted_revision = revision.to_owned();
     Ok(VerifiedRetainedOfflineBootstrap {
         original_bytes: bytes,
         sha256,
-        from: from.to_owned(),
-        to: to.to_owned(),
-        accepted_revision: revision.to_owned(),
+        from,
+        to,
+        accepted_revision,
     })
 }
 
