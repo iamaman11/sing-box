@@ -474,7 +474,7 @@ win_cli = Path("edge-platform/crates/edge-console/src/cli.rs").read_text(encodin
 win_dispatch = Path("edge-platform/crates/edge-console/src/command_dispatch.rs").read_text(encoding="utf-8")
 assert "OfflineBootstrap(PrivilegedActivateArgs)" in win_cli
 assert 'Self::OfflineBootstrap(_) => "offline-bootstrap"' in win_cli
-assert "if matches!(command, Command::OfflineBootstrap(_))" in win_console
+assert "Command::OfflineBootstrap(_) | Command::OfflineBootstrapPreflight(_)" in win_console
 assert "require_explicit_local_administrator_first_use()?;" in win_console
 assert "require_windows_local_administrator_first_use()" in win_console
 native_journal = Path("edge-platform/crates/edge-shared-types/src/host_journal.rs").read_text(encoding="utf-8")
@@ -490,6 +490,34 @@ assert '"privileged-offline-activate",' in win_cli
 assert "fn legacy_console_mutation_ingress_is_unparseable()" in win_cli
 assert "HOST_WINDOWS_LEGACY_PRIVILEGED_MUTATION_DISABLED" in win_console
 assert "require_offline_bootstrap_quiescent(install_root)?;" in win_console
+
+# The elevated read-only diagnostic must use the SAME verified
+# current owner, native doctor, task and no-replay gates as mutation pre-BEGIN.
+# No staged installer, filesystem write, SCM operation or task state changes
+# may appear in this exact helper. Output is local JSON boundary only.
+assert "OfflineBootstrapPreflight(InstallRootArgs)" in win_cli
+assert 'Self::OfflineBootstrapPreflight(_) => "offline-bootstrap-preflight"' in win_cli
+assert "Command::OfflineBootstrapPreflight(args) =>" in win_dispatch
+assert "read_only_windows_first_use_source(&root)" in win_dispatch
+assert '"w4_signer_and_receipt_enrollment": "NOT_PROVEN"' in win_dispatch
+start = win_console.index("fn read_only_windows_first_use_source(")
+end = win_console.index("fn offline_bootstrap_privileged_release(", start)
+helper = win_console[start:end]
+for gate in (
+    "require_explicit_local_administrator_first_use()?;",
+    "load_verified_activation(install_root)",
+    "require_offline_windows_owner(install_root, &before)?;",
+    "require_offline_bootstrap_supported_source(&old_readout)?;",
+    'verify_offline_bootstrap_dispatcher(&before.console_path, "Ready")?;',
+    "require_offline_bootstrap_quiescent(install_root)?;",
+    "require_no_running_legacy_dispatcher(&before.console_path)?;",
+):
+    assert gate in helper, gate
+for mutation in ("write_atomic(", "create_new(", "offline_activate_privileged_release_with_installer(",
+                 "change_offline_bootstrap_task_enabled(", "retarget_privileged_task(",
+                 "change_config(", "remove_file("):
+    assert mutation not in helper, mutation
+assert "let before = read_only_windows_first_use_source(install_root)?;" in win_console
 
 # Compile-time native modules are part of the same agent, not extra owners.
 for name in ("runtime_environment", "runtime_templates", "mesh_runtime_state", "legacy_runtime_effects"):
