@@ -479,7 +479,15 @@ assert "require_explicit_local_administrator_first_use()?;" in win_console
 assert "require_windows_local_administrator_first_use()" in win_console
 native_journal = Path("edge-platform/crates/edge-shared-types/src/host_journal.rs").read_text(encoding="utf-8")
 assert "pub fn require_windows_local_administrator_first_use()" in native_journal
-assert "CheckTokenMembership(token, admin_sid.as_mut_ptr().cast(), &mut enabled)" in native_journal
+# Win32 CheckTokenMembership requires an impersonation token, NOT the
+# primary token returned by OpenProcessToken. Keep the exact process-user
+# identity and UAC enabled-group gate: never substitute a NULL thread token.
+assert "OpenProcessToken(GetCurrentProcess(), TOKEN_QUERY | TOKEN_DUPLICATE, &mut token)" in native_journal
+assert "DuplicateToken(primary, SecurityImpersonation, &mut impersonation)" in native_journal
+assert "CheckTokenMembership(impersonation, admin_sid.as_mut_ptr().cast(), &mut enabled)" in native_journal
+assert "CheckTokenMembership(token, admin_sid.as_mut_ptr().cast(), &mut enabled)" not in native_journal
+assert "windows_process_primary_admin_member(token)?" in native_journal
+assert "HOST_WINDOWS_FIRST_USE_ELEVATED_ADMIN_REQUIRED" in native_journal
 assert "WinLocalSystemSid" in native_journal
 assert "WinLocalServiceSid" in native_journal
 assert "WinNetworkServiceSid" in native_journal
