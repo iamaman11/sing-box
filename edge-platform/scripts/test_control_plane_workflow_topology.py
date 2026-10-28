@@ -484,7 +484,8 @@ assert "WinLocalSystemSid" in native_journal
 assert "WinLocalServiceSid" in native_journal
 assert "WinNetworkServiceSid" in native_journal
 assert "Command::OfflineBootstrap(args) =>" in win_dispatch
-assert "offline_bootstrap_privileged_release(&install_root, &request)" in win_dispatch
+assert "offline_bootstrap_privileged_release(" in win_dispatch
+assert "supersession.as_ref()," in win_dispatch
 assert "WindowsPrivilegedOperation::OfflineActivateRelease as i32" in win_dispatch
 assert '"privileged-offline-activate",' in win_cli
 assert "fn legacy_console_mutation_ingress_is_unparseable()" in win_cli
@@ -498,7 +499,7 @@ assert "require_offline_bootstrap_quiescent(install_root)?;" in win_console
 assert "OfflineBootstrapPreflight(InstallRootArgs)" in win_cli
 assert 'Self::OfflineBootstrapPreflight(_) => "offline-bootstrap-preflight"' in win_cli
 assert "Command::OfflineBootstrapPreflight(args) =>" in win_dispatch
-assert "read_only_windows_first_use_source(&root)" in win_dispatch
+assert "read_only_windows_first_use_source(&root, None)" in win_dispatch
 assert '"w4_signer_and_receipt_enrollment": "NOT_PROVEN"' in win_dispatch
 start = win_console.index("fn read_only_windows_first_use_source(")
 end = win_console.index("fn offline_bootstrap_privileged_release(", start)
@@ -517,7 +518,16 @@ for mutation in ("write_atomic(", "create_new(", "offline_activate_privileged_re
                  "change_offline_bootstrap_task_enabled(", "retarget_privileged_task(",
                  "change_config(", "remove_file("):
     assert mutation not in helper, mutation
-assert "let before = read_only_windows_first_use_source(install_root)?;" in win_console
+assert "let before = read_only_windows_first_use_source(install_root, supersession)?;" in win_console
+assert "archive_retained_offline_bootstrap_intent(" in win_console
+assert "retained_intent_sha256: Option<String>" in win_cli
+assert "expected_current_release_set_sha256: Option<String>" in win_cli
+assert '"offline-bootstrap-intent-v1.historical-{}"' in win_console
+assert "require_offline_bootstrap_other_pending_absent(install_root)?;" in win_console
+assert "fs::rename(install_root.join(\"offline-bootstrap-intent-v1\"), &archive)" in win_console
+assert "OFFLINE_BOOTSTRAP_SUPERSESSION_INSTALLED_RELEASE_DRIFT" in win_console
+assert "OFFLINE_BOOTSTRAP_SUPERSESSION_LEGACY_INTENT_SHA_MISMATCH" in win_console
+assert "OFFLINE_BOOTSTRAP_SUPERSESSION_ARCHIVE_ALREADY_EXISTS_NO_REPLAY" in win_console
 
 # Compile-time native modules are part of the same agent, not extra owners.
 for name in ("runtime_environment", "runtime_templates", "mesh_runtime_state", "legacy_runtime_effects"):
