@@ -419,8 +419,8 @@ pub(super) async fn dispatch_if_needed(install_root: &Path) -> Result<(), String
     }
     require_offline_windows_owner(install_root, &current)?;
     verify_native_journal_protection(&root.join("journal")).map_err(str::to_owned)?;
-    let request_now = fs::read(&marker)
-        .map_err(|_| "HOST_WINDOWS_TRUST_ENROLL_MARKER_CHANGED_BEFORE_WRITE")?;
+    let request_now =
+        fs::read(&marker).map_err(|_| "HOST_WINDOWS_TRUST_ENROLL_MARKER_CHANGED_BEFORE_WRITE")?;
     if request_now != marker_bytes {
         return Err("HOST_WINDOWS_TRUST_ENROLL_MARKER_CHANGED_BEFORE_WRITE".into());
     }
