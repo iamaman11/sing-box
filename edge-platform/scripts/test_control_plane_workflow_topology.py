@@ -488,7 +488,7 @@ assert "windows_receipt_enrollment::dispatch_if_present(install_root)?" in win_c
 offline_handoff = win_console.split(
     "fn offline_activate_privileged_release_with_installer(", 1
 )[1].split("fn encoded_powershell_command(", 1)[0]
-assert ".and_then(|_| converge_native_host_acl(install_root))" in offline_handoff
+assert "converge_native_host_acl(install_root)?;" in offline_handoff
 assert offline_handoff.index("converge_native_host_acl(install_root)") < offline_handoff.index("retarget_privileged_task(")
 assert "fn converge_native_host_acl(install_root: &Path)" in win_console
 assert "HOST_WINDOWS_SYSTEM_NATIVE_ROOT_REPARSE_OR_NOT_DIR" in win_console

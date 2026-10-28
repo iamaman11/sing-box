@@ -2453,7 +2453,11 @@ fn offline_activate_privileged_release_with_installer(
     let handoff = offline_retarget_controller_service(install_root, &before, &post)
         // The new signed dispatcher assumes this protected native host root,
         // even when ProxyOnly is STOPPED and SCM is never started.
-        .and_then(|_| converge_native_host_acl(install_root))
+        .and_then(|_| {
+            #[cfg(windows)]
+            converge_native_host_acl(install_root)?;
+            Ok(())
+        })
         .and_then(|_| retarget_privileged_task(install_root, &post.console_path))
         .and_then(|_| {
             #[cfg(windows)]
