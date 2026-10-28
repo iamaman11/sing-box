@@ -315,9 +315,17 @@ mod tests {
             Some(Command::OfflineBootstrap(_))
         ));
         assert!(Cli::try_parse_from(["edge-console", "offline-bootstrap"]).is_err());
-        assert!(Cli::try_parse_from([
-            "edge-console", "offline-bootstrap", "a", "b", "--retained-intent-sha256", "c",
-        ]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "edge-console",
+                "offline-bootstrap",
+                "a",
+                "b",
+                "--retained-intent-sha256",
+                "c",
+            ])
+            .is_err()
+        );
         let recovered = Cli::try_parse_from([
             "edge-console",
             "offline-bootstrap",
