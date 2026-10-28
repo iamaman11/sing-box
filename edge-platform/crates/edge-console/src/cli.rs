@@ -32,6 +32,10 @@ pub(crate) enum Command {
     // immutable candidate, SCM privileges and durable no-replay marker.
     #[cfg(windows)]
     OfflineBootstrap(PrivilegedActivateArgs),
+    // Exact same stopped-source / pending / task proof used by first-use,
+    // but read-only, without a ReleaseSet install or any SCM/task mutation.
+    #[cfg(windows)]
+    OfflineBootstrapPreflight(InstallRootArgs),
     VerifyRuntime,
     QualityLine1,
     Secrets(EndpointArgs),
@@ -55,6 +59,8 @@ impl Command {
             Self::PrivilegedDispatch(_) => "privileged-dispatch",
             #[cfg(windows)]
             Self::OfflineBootstrap(_) => "offline-bootstrap",
+            #[cfg(windows)]
+            Self::OfflineBootstrapPreflight(_) => "offline-bootstrap-preflight",
             Self::VerifyRuntime => "verify-runtime",
             Self::QualityLine1 => "quality-line1",
             Self::Secrets(_) => "secrets",
@@ -142,6 +148,13 @@ pub(crate) struct PrivilegedActivateArgs {
     pub release_set_sha256: String,
     #[arg(long, default_value = r"C:\sing-box")]
     pub install_root: String,
+    // An old fsynced BEGIN may remain after successful physical upgrades.
+    // Superseding it is a separate explicit operator decision, never inferred
+    // from its age or the presence of an unrelated newer binary.
+    #[arg(long, requires = "expected_current_release_set_sha256")]
+    pub retained_intent_sha256: Option<String>,
+    #[arg(long, requires = "retained_intent_sha256")]
+    pub expected_current_release_set_sha256: Option<String>,
 }
 
 #[derive(Debug, Args)]
@@ -277,6 +290,17 @@ mod tests {
     #[cfg(windows)]
     #[test]
     fn only_exact_explicit_local_first_use_command_is_parseable() {
+        assert!(matches!(
+            Cli::try_parse_from([
+                "edge-console",
+                "offline-bootstrap-preflight",
+                "--install-root",
+                r"C:\sing-box",
+            ])
+            .unwrap()
+            .command,
+            Some(Command::OfflineBootstrapPreflight(_))
+        ));
         let command = Cli::try_parse_from([
             "edge-console",
             "offline-bootstrap",
@@ -291,6 +315,36 @@ mod tests {
             Some(Command::OfflineBootstrap(_))
         ));
         assert!(Cli::try_parse_from(["edge-console", "offline-bootstrap"]).is_err());
+        assert!(
+            Cli::try_parse_from([
+                "edge-console",
+                "offline-bootstrap",
+                "a",
+                "b",
+                "--retained-intent-sha256",
+                "c",
+            ])
+            .is_err()
+        );
+        let recovered = Cli::try_parse_from([
+            "edge-console",
+            "offline-bootstrap",
+            "a82d4b6049c63b329d153626f0a143ae5b7e5618",
+            "c16c1eec3f29c8d5e00a9969952d12c4807c798a37edcd8f79fd5fc13ef8a680",
+            "--retained-intent-sha256",
+            "bf7a091a4c3b0a61ead3d3cf1388f599baeed8803c5f1edfcd0289029e53327b",
+            "--expected-current-release-set-sha256",
+            "08f86d8fb3619f47f2a3b2434f66bbf54b6f5358fed5eb6d99b6a5f913d93730",
+        ])
+        .unwrap();
+        assert!(matches!(
+            recovered.command,
+            Some(Command::OfflineBootstrap(PrivilegedActivateArgs {
+                retained_intent_sha256: Some(_),
+                expected_current_release_set_sha256: Some(_),
+                ..
+            }))
+        ));
         assert!(Cli::try_parse_from(["edge-console", "privileged-offline-activate"]).is_err());
     }
 

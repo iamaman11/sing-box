@@ -209,6 +209,32 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             Ok(())
         }
         #[cfg(windows)]
+        Command::OfflineBootstrapPreflight(args) => {
+            let root = PathBuf::from(args.install_root);
+            let before =
+                read_only_windows_first_use_source(&root, None).map_err(ConsoleError::Command)?;
+            // JSON is used only at the LOCAL CLI boundary, not as a persisted
+            // desired-state, native journal, or mutation contract. This proof
+            // reports observation, not signed SYSTEM authority or authorization.
+            println!(
+                "{}",
+                serde_json::json!({
+                    "schema": "sing-box.windows-first-use-preflight/v1",
+                    "status": "PASS",
+                    "installed_release_set_sha256": before.release_set_sha256,
+                    "source": "EXACT_STOPPED_PROXY_ONLY_OR_MANAGED_TUN",
+                    "task": "EXACT_READY",
+                    "pending": "NONE_OBSERVED_AT_THIS_INSTANT",
+                    "old_dispatcher_running": false,
+                    "w4_signer_and_receipt_enrollment": "NOT_PROVEN",
+                    "native_signed_authority": false,
+                    "host_mutations": 0,
+                    "replay_authorized": false
+                })
+            );
+            Ok(())
+        }
+        #[cfg(windows)]
         Command::OfflineBootstrap(args) => {
             // One locally elevated Administrator invocation against the exact
             // preverified immutable candidate. This NEVER writes request.pb
@@ -233,9 +259,29 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                 existing_join_intent_sha256: None,
                 existing_join_slot: None,
             };
-            let (code, _detail, active) =
-                offline_bootstrap_privileged_release(&install_root, &request)
-                    .map_err(ConsoleError::Command)?;
+            let supersession = match (
+                args.retained_intent_sha256,
+                args.expected_current_release_set_sha256,
+            ) {
+                (None, None) => None,
+                (Some(expected_intent_sha256), Some(expected_current_release_set_sha256)) => {
+                    Some(RetainedOfflineBootstrapSupersession {
+                        expected_intent_sha256,
+                        expected_current_release_set_sha256,
+                    })
+                }
+                _ => {
+                    return Err(ConsoleError::Command(
+                        "OFFLINE_BOOTSTRAP_SUPERSESSION_BOTH_PINS_REQUIRED".to_owned(),
+                    ));
+                }
+            };
+            let (code, _detail, active) = offline_bootstrap_privileged_release(
+                &install_root,
+                &request,
+                supersession.as_ref(),
+            )
+            .map_err(ConsoleError::Command)?;
             println!("status=PASS");
             println!("code={code}");
             if let Some(sha) = active {
