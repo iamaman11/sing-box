@@ -2627,11 +2627,98 @@ fn require_offline_bootstrap_supported_source(doctor: &str) -> Result<(), String
     Ok(())
 }
 
-// Never begin with a queued legacy mutation, signed request, torn activation,
-// or earlier first-use intent. ENOENT is the only accepted absence.
-fn require_offline_bootstrap_quiescent(install_root: &Path) -> Result<(), String> {
+// A historical first-use BEGIN is a real durable transaction record.
+// In normal mode it blocks forever, even when the current owner is healthy.
+// Explicit local Administrator supersession can archive exact old bytes as
+// UNKNOWN_SUPERSEDED, never as a fabricated terminal success or replay proof.
+#[derive(Debug, Clone)]
+struct RetainedOfflineBootstrapSupersession {
+    expected_intent_sha256: String,
+    expected_current_release_set_sha256: String,
+}
+
+#[derive(Debug)]
+struct VerifiedRetainedOfflineBootstrap {
+    original_bytes: Vec<u8>,
+    sha256: String,
+    from: String,
+    to: String,
+    accepted_revision: String,
+}
+
+fn inspect_retained_offline_bootstrap_intent(
+    install_root: &Path,
+    approval: &RetainedOfflineBootstrapSupersession,
+    observed_current: &str,
+) -> Result<VerifiedRetainedOfflineBootstrap, String> {
+    if !offline_bootstrap_identifiers_valid(
+        &approval.expected_current_release_set_sha256[..0],
+        &approval.expected_intent_sha256,
+    ) {
+        // The normal validator requires a 40-byte revision. Check the two
+        // independent SHA-256 identities explicitly, with no truncation.
+        if approval.expected_intent_sha256.len() != 64
+            || approval.expected_current_release_set_sha256.len() != 64
+            || ![&approval.expected_intent_sha256, &approval.expected_current_release_set_sha256]
+                .iter().all(|value| value.bytes().all(|b|
+                    b.is_ascii_digit() || (b'a'..=b'f').contains(&b)))
+        {
+            return Err("OFFLINE_BOOTSTRAP_SUPERSESSION_SHA_INVALID".to_owned());
+        }
+    }
+    if observed_current != approval.expected_current_release_set_sha256 {
+        return Err("OFFLINE_BOOTSTRAP_SUPERSESSION_INSTALLED_RELEASE_DRIFT".to_owned());
+    }
+    let path = install_root.join("offline-bootstrap-intent-v1");
+    let metadata = fs::symlink_metadata(&path).map_err(|err| {
+        format!("OFFLINE_BOOTSTRAP_SUPERSESSION_LEGACY_INTENT_MISSING_OR_UNPROVEN: {err}")
+    })?;
+    if !metadata.file_type().is_file() || metadata.len() == 0 || metadata.len() > 512 {
+        return Err("OFFLINE_BOOTSTRAP_SUPERSESSION_LEGACY_INTENT_NOT_REGULAR_BOUNDED".to_owned());
+    }
+    let bytes = fs::read(&path)
+        .map_err(|_| "OFFLINE_BOOTSTRAP_SUPERSESSION_LEGACY_INTENT_UNREADABLE".to_owned())?;
+    if bytes.len() as u64 != metadata.len() {
+        return Err("OFFLINE_BOOTSTRAP_SUPERSESSION_LEGACY_INTENT_CHANGED".to_owned());
+    }
+    let sha256: String = ring::digest::digest(&ring::digest::SHA256, &bytes)
+        .as_ref().iter().map(|v| format!("{v:02x}")).collect();
+    if sha256 != approval.expected_intent_sha256 {
+        return Err("OFFLINE_BOOTSTRAP_SUPERSESSION_LEGACY_INTENT_SHA_MISMATCH".to_owned());
+    }
+    let text = std::str::from_utf8(&bytes)
+        .map_err(|_| "OFFLINE_BOOTSTRAP_SUPERSESSION_LEGACY_INTENT_NOT_UTF8".to_owned())?;
+    let lines: Vec<_> = text.split('\n').collect();
+    let [schema, from_line, to_line, revision_line, ""] = lines.as_slice() else {
+        return Err("OFFLINE_BOOTSTRAP_SUPERSESSION_LEGACY_INTENT_NONCANONICAL".to_owned());
+    };
+    if *schema != "schema=sing-box.windows-offline-bootstrap/v1" {
+        return Err("OFFLINE_BOOTSTRAP_SUPERSESSION_LEGACY_SCHEMA_INVALID".to_owned());
+    }
+    let (Some(from), Some(to), Some(revision)) = (
+        from_line.strip_prefix("from="),
+        to_line.strip_prefix("to="),
+        revision_line.strip_prefix("accepted_revision="),
+    ) else {
+        return Err("OFFLINE_BOOTSTRAP_SUPERSESSION_LEGACY_FIELDS_INVALID".to_owned());
+    };
+    if !offline_bootstrap_identifiers_valid(revision, from)
+        || !offline_bootstrap_identifiers_valid(revision, to)
+        || from == to
+    {
+        return Err("OFFLINE_BOOTSTRAP_SUPERSESSION_LEGACY_IDENTITY_INVALID".to_owned());
+    }
+    Ok(VerifiedRetainedOfflineBootstrap {
+        original_bytes: bytes,
+        sha256,
+        from: from.to_owned(),
+        to: to.to_owned(),
+        accepted_revision: revision.to_owned(),
+    })
+}
+
+fn require_offline_bootstrap_other_pending_absent(install_root: &Path) -> Result<(), String> {
     for relative in [
-        "offline-bootstrap-intent-v1",
         "exchange/requests/request.pb",
         "exchange/requests/host-intent.pb",
         "current.pb.new",
@@ -2652,6 +2739,60 @@ fn require_offline_bootstrap_quiescent(install_root: &Path) -> Result<(), String
             }
         }
     }
+    Ok(())
+}
+
+// Never begin with a queued legacy mutation, signed request, torn activation,
+// or earlier first-use intent. ENOENT is the only accepted absence.
+fn require_offline_bootstrap_quiescent(install_root: &Path) -> Result<(), String> {
+    require_offline_bootstrap_other_pending_absent(install_root)?;
+    let path = install_root.join("offline-bootstrap-intent-v1");
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => Err(
+            "OFFLINE_BOOTSTRAP_BLOCKED: unresolved existing operation at offline-bootstrap-intent-v1; no replay"
+                .to_owned(),
+        ),
+        Err(_) => Err(
+            "OFFLINE_BOOTSTRAP_BLOCKED: pending state cannot be read at offline-bootstrap-intent-v1"
+                .to_owned(),
+        ),
+    }
+}
+
+// The archiving step is an explicitly approved, non-replaying supersession
+// of a historical UNKNOWN, not a claim that the old operation was VERIFIED.
+// It is performed only after the same local read-only owner proof and exact
+// candidate preflight as the new transaction. Archive is immutable by
+// deterministic digest and never silently overwritten or removed.
+fn archive_retained_offline_bootstrap_intent(
+    install_root: &Path,
+    approval: &RetainedOfflineBootstrapSupersession,
+    observed_current: &str,
+) -> Result<(), String> {
+    require_offline_bootstrap_other_pending_absent(install_root)?;
+    let verified = inspect_retained_offline_bootstrap_intent(
+        install_root, approval, observed_current,
+    )?;
+    let archive = install_root.join(format!(
+        "offline-bootstrap-intent-v1.historical-{}", verified.sha256
+    ));
+    match fs::symlink_metadata(&archive) {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        Ok(_) => return Err("OFFLINE_BOOTSTRAP_SUPERSESSION_ARCHIVE_ALREADY_EXISTS_NO_REPLAY".to_owned()),
+        Err(_) => return Err("OFFLINE_BOOTSTRAP_SUPERSESSION_ARCHIVE_STATE_UNPROVEN".to_owned()),
+    }
+    fs::rename(install_root.join("offline-bootstrap-intent-v1"), &archive)
+        .map_err(|_| "OFFLINE_BOOTSTRAP_UNKNOWN: historical intent archive failed; no replay".to_owned())?;
+    let readback = fs::read(&archive)
+        .map_err(|_| "OFFLINE_BOOTSTRAP_UNKNOWN: archived intent unreadable; no replay".to_owned())?;
+    if readback != verified.original_bytes {
+        return Err("OFFLINE_BOOTSTRAP_UNKNOWN: archived intent changed; no replay".to_owned());
+    }
+    File::open(&archive)
+        .and_then(|file| file.sync_all())
+        .map_err(|_| "OFFLINE_BOOTSTRAP_UNKNOWN: archived intent durability unproven; no replay".to_owned())?;
+    require_offline_bootstrap_quiescent(install_root)?;
     Ok(())
 }
 
