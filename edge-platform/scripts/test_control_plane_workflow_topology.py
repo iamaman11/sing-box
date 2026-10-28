@@ -524,7 +524,11 @@ assert "retained_intent_sha256: Option<String>" in win_cli
 assert "expected_current_release_set_sha256: Option<String>" in win_cli
 assert '"offline-bootstrap-intent-v1.historical-{}"' in win_console
 assert "require_offline_bootstrap_other_pending_absent(install_root)?;" in win_console
-assert "fs::rename(install_root.join(\"offline-bootstrap-intent-v1\"), &archive)" in win_console
+assert "fs::hard_link(&original, &archive)" in win_console
+assert "fs::remove_file(&original)" in win_console
+assert "require_no_historical_bootstrap_supersession(install_root)?;" in win_console
+assert "historical supersession record exists; no replay" in win_console
+assert "fs::rename(install_root.join(\"offline-bootstrap-intent-v1\"), &archive)" not in win_console
 assert "OFFLINE_BOOTSTRAP_SUPERSESSION_INSTALLED_RELEASE_DRIFT" in win_console
 assert "OFFLINE_BOOTSTRAP_SUPERSESSION_LEGACY_INTENT_SHA_MISMATCH" in win_console
 assert "OFFLINE_BOOTSTRAP_SUPERSESSION_ARCHIVE_ALREADY_EXISTS_NO_REPLAY" in win_console
