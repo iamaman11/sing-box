@@ -141,6 +141,15 @@ mod tests {
                 .as_nanos()
         ));
         std::fs::create_dir(&root).unwrap();
+        // A Windows CI runner may expose TEMP through a lexical alias
+        // (including a short name). Use the actual canonical native path
+        // for this positive fixture; the negative junction fixture below
+        // still proves that replacement/alias paths are rejected.
+        let resolved = root.canonicalize().unwrap();
+        let resolved = resolved.to_str().unwrap();
+        let root = std::path::PathBuf::from(
+            resolved.strip_prefix(r"\\?\").unwrap_or(resolved),
+        );
         let path = root.join("selected.exe");
         std::fs::write(&path, b"synthetic routing identity, never executed").unwrap();
         let mut policy = WindowsApplicationRouting {
