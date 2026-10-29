@@ -29,6 +29,9 @@ fn canonical_destination(spec: &FleetVmManagedKernelRoute) -> bool {
     let Ok(ip) = spec.destination.parse::<IpAddr>() else {
         return false;
     };
+    if spec.destination != ip.to_string() {
+        return false;
+    }
     match (Family::try_from(spec.family), ip) {
         (Ok(Family::V4), IpAddr::V4(ip)) if (8..=32).contains(&spec.prefix_length) => {
             ip != Ipv4Addr::UNSPECIFIED
@@ -62,6 +65,7 @@ fn canonical_scope(host: &FleetHost, path: &str, spec: &FleetVmManagedKernelRout
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
         && spec.schema_version == 1
+        && host.kind == edge_shared_types::FleetHostKind::Vm as i32
         && spec.machine_id == host.machine_id
         && spec.resource_name == format!("sb-{}-{suffix}", host.machine_id)
         && spec.resource_name.len() <= 112
@@ -347,6 +351,48 @@ mod tests {
         invalid = v4;
         invalid.machine_id = "foreign-vm".into();
         assert!(!canonical_scope(&host(), path, &invalid));
+    }
+
+    #[test]
+    fn kernel_route_snapshot_rejects_foreign_table_and_cas_drift() {
+        let spec = route(Family::V4, "10.31.0.0", 16);
+        let mut kernel = edge_shared_types::FleetVmDualStackNetwork {
+            links: vec![edge_shared_types::Ipv4LinkObservation {
+                interface_index: 11,
+                name: "sblab0".into(),
+                up: true,
+                lower_up: true,
+                loopback: false,
+            }],
+            ipv4_route_dump_complete: true,
+            ipv6_route_dump_complete: true,
+            ipv4_rule_dump_complete: true,
+            ipv6_rule_dump_complete: true,
+            ..Default::default()
+        };
+        assert_eq!(route_in_owned_table(&kernel, &spec).unwrap().0, 11);
+        assert!(route_in_owned_table(&kernel, &spec).unwrap().1.is_empty());
+        let expected = FleetVmKernelRoute {
+            family: Family::V4 as i32,
+            destination: spec.destination.clone(),
+            prefix_length: spec.prefix_length,
+            table_id: spec.table_id,
+            output_interface_index: 11,
+            ..Default::default()
+        };
+        kernel.routes.push(expected.clone());
+        assert_eq!(route_in_owned_table(&kernel, &spec).unwrap().1, vec![expected.clone()]);
+        kernel.routes[0].table_id = 254;
+        assert!(route_in_owned_table(&kernel, &spec).unwrap().1.is_empty());
+        kernel.routes[0].table_id = spec.table_id;
+        kernel.routes[0].output_interface_index = 12;
+        assert!(route_in_owned_table(&kernel, &spec).is_err());
+        kernel.routes[0].output_interface_index = 11;
+        kernel.routes[0].gateway = "10.0.0.1".into();
+        assert!(route_in_owned_table(&kernel, &spec).is_err());
+        kernel.routes[0].gateway.clear();
+        kernel.routes.push(expected);
+        assert!(route_in_owned_table(&kernel, &spec).is_err());
     }
 
     #[test]

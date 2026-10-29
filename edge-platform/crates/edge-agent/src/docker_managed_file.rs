@@ -271,6 +271,19 @@ pub(crate) async fn apply_native_vm_managed_file_once(
             return Err("HOST_VM_MANAGED_NEIGHBOUR_DRIFT_NO_REPLAY".into());
         }
     }
+    // Re-check the exact target manifest before any native side effect.
+    // The neighbor digests alone do not prove that this resource has retained
+    // the pre-BEGIN state under the privileged owner lock.
+    let target_path = stack_dir.join(&plan.path);
+    if fs::symlink_metadata(stack_dir.join("managed")).is_ok() {
+        checked_managed_directory(stack_dir, false).map_err(str::to_owned)?;
+    }
+    if checked_managed_existing_file(&target_path, 0)
+        .map_err(str::to_owned)?
+        .as_deref() != plan.before.as_deref()
+    {
+        return Err("HOST_VM_MANAGED_TARGET_CAS_CHANGED_NO_REPLAY".into());
+    }
     // Creating the private managed directory is itself an effect and occurs
     // only after journal BEGIN; failure leaves UNKNOWN_NO_REPLAY.
     // The Docker effect is independently CAS-checked under the existing signed BEGIN.
