@@ -800,7 +800,9 @@ pub(crate) async fn capture_partial_vm_resource_evidence(
     match classify_managed_network_recovery(&report) {
         ManagedNetworkRecovery::Converged => {}
         ManagedNetworkRecovery::KnownRecoverable => {
-            return Err("HOST_VM_MANAGED_NETWORK_KNOWN_RECOVERABLE_NEW_SIGNED_APPLY_REQUIRED".into());
+            return Err(
+                "HOST_VM_MANAGED_NETWORK_KNOWN_RECOVERABLE_NEW_SIGNED_APPLY_REQUIRED".into(),
+            );
         }
         ManagedNetworkRecovery::UnknownNoReplay => {
             return Err("HOST_VM_MANAGED_NETWORK_UNKNOWN_NO_REPLAY".into());
@@ -4996,34 +4998,40 @@ mod managed_network_recovery_tests {
             classify_managed_network_recovery(&report),
             ManagedNetworkRecovery::Converged
         );
-        report.managed_kernel_routes.push(FleetVmManagedKernelRouteReadback {
-            present: false,
-            converged: false,
-            resource_name: "sb-vmtest-lab".into(),
-            manifest_sha256: vec![1; 32],
-            reason_code: "ROUTE_MISSING".into(),
-            ..Default::default()
-        });
+        report
+            .managed_kernel_routes
+            .push(FleetVmManagedKernelRouteReadback {
+                present: false,
+                converged: false,
+                resource_name: "sb-vmtest-lab".into(),
+                manifest_sha256: vec![1; 32],
+                reason_code: "ROUTE_MISSING".into(),
+                ..Default::default()
+            });
         assert_eq!(
             classify_managed_network_recovery(&report),
             ManagedNetworkRecovery::KnownRecoverable
         );
-        report.managed_firewall.push(FleetVmManagedFirewallReadback {
-            present: false,
-            converged: false,
-            resource_name: "sb-vmtest-lab".into(),
-            manifest_sha256: vec![2; 32],
-            reason_code: "MANAGED_FIREWALL_TABLE_MISSING".into(),
-            ..Default::default()
-        });
-        report.managed_system_dns.push(FleetVmManagedSystemDnsReadback {
-            present: false,
-            converged: false,
-            resource_name: "sb-vmtest-lab".into(),
-            manifest_sha256: vec![3; 32],
-            reason_code: "MANAGED_SYSTEM_DNS_DRIFT".into(),
-            ..Default::default()
-        });
+        report
+            .managed_firewall
+            .push(FleetVmManagedFirewallReadback {
+                present: false,
+                converged: false,
+                resource_name: "sb-vmtest-lab".into(),
+                manifest_sha256: vec![2; 32],
+                reason_code: "MANAGED_FIREWALL_TABLE_MISSING".into(),
+                ..Default::default()
+            });
+        report
+            .managed_system_dns
+            .push(FleetVmManagedSystemDnsReadback {
+                present: false,
+                converged: false,
+                resource_name: "sb-vmtest-lab".into(),
+                manifest_sha256: vec![3; 32],
+                reason_code: "MANAGED_SYSTEM_DNS_DRIFT".into(),
+                ..Default::default()
+            });
         assert_eq!(
             classify_managed_network_recovery(&report),
             ManagedNetworkRecovery::KnownRecoverable
@@ -5046,14 +5054,16 @@ mod managed_network_recovery_tests {
     fn known_network_state_requires_full_convergence_for_recovery() {
         use edge_shared_types::{FleetVmManagedSystemDnsReadback, FleetVmResourceReport};
         let mut report = FleetVmResourceReport::default();
-        report.managed_system_dns.push(FleetVmManagedSystemDnsReadback {
-            present: true,
-            converged: true,
-            resource_name: "sb-vmtest-lab".into(),
-            manifest_sha256: vec![4; 32],
-            reason_code: "DESIRED_PRESENT".into(),
-            ..Default::default()
-        });
+        report
+            .managed_system_dns
+            .push(FleetVmManagedSystemDnsReadback {
+                present: true,
+                converged: true,
+                resource_name: "sb-vmtest-lab".into(),
+                manifest_sha256: vec![4; 32],
+                reason_code: "DESIRED_PRESENT".into(),
+                ..Default::default()
+            });
         assert_eq!(
             classify_managed_network_recovery(&report),
             ManagedNetworkRecovery::Converged

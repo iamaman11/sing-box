@@ -154,13 +154,7 @@ async fn select_exact_missing_managed_network(
         if converged && reason == "DESIRED_PRESENT" {
             return Ok(());
         }
-        if !known_missing_network_row(
-            present,
-            converged,
-            reason,
-            missing_code,
-            manifest_sha256,
-        ) {
+        if !known_missing_network_row(present, converged, reason, missing_code, manifest_sha256) {
             return Err("HOST_VM_MANAGED_REPAIR_UNKNOWN_OR_FOREIGN_NO_REPLAY".into());
         }
         let prefix = format!("sb-{}-", host.machine_id);
@@ -169,7 +163,9 @@ async fn select_exact_missing_managed_network(
             .ok_or("HOST_VM_MANAGED_REPAIR_FOREIGN_RESOURCE")?;
         if suffix.is_empty()
             || suffix.len() > 24
-            || !suffix.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+            || !suffix
+                .bytes()
+                .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
         {
             return Err("HOST_VM_MANAGED_REPAIR_FOREIGN_RESOURCE".into());
         }
@@ -742,7 +738,12 @@ mod tests {
         for (present, converged, reason, digest) in [
             (true, false, "ROUTE_MISSING", proof.to_vec()),
             (false, true, "ROUTE_MISSING", proof.to_vec()),
-            (false, false, "HOST_VM_DNS_NETWORK_OWNER_UNPROVEN", proof.to_vec()),
+            (
+                false,
+                false,
+                "HOST_VM_DNS_NETWORK_OWNER_UNPROVEN",
+                proof.to_vec(),
+            ),
             (false, false, "ROUTE_MISSING", vec![]),
             (false, false, "ROUTE_MISSING", vec![0; 32]),
         ] {
