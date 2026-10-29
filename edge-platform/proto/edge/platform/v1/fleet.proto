@@ -359,6 +359,9 @@ message FleetVmManagedDockerResource {
   string ipv6_gateway = 10;
   // Exact ordered DNS resolvers for CONTAINER only. No host DNS effects.
   repeated string dns_servers = 11;
+  // For an owned bridge only: exact Linux bridge name, "sb..." and <=15 bytes.
+  // Enables a Git-owned route to attest the link via Docker's native owner.
+  string bridge_interface_name = 12;
 }
 
 // Git-owned, single-table isolated IPv4/IPv6 route. Its manifest is a

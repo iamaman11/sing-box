@@ -104,16 +104,11 @@ fn canonical_owned_interface_alias(spec: &FleetVmManagedKernelRoute, alias: &str
     alias == format!("sing-box:{}:{}", spec.machine_id, spec.resource_name)
 }
 
-fn prove_managed_interface_owner(
+async fn prove_managed_interface_owner(
     spec: &FleetVmManagedKernelRoute,
     expected_index: u32,
 ) -> Result<(), String> {
     let link = Path::new("/sys/class/net").join(&spec.interface_name);
-    let alias = fs::read_to_string(link.join("ifalias"))
-        .map_err(|_| "HOST_VM_MANAGED_ROUTE_LINK_ALIAS_UNAVAILABLE")?;
-    if !canonical_owned_interface_alias(spec, alias.trim_end_matches('\n')) {
-        return Err("HOST_VM_MANAGED_ROUTE_LINK_OWNER_UNPROVEN".into());
-    }
     let index = fs::read_to_string(link.join("ifindex"))
         .map_err(|_| "HOST_VM_MANAGED_ROUTE_LINK_INDEX_UNAVAILABLE")?
         .trim()
@@ -121,6 +116,42 @@ fn prove_managed_interface_owner(
         .map_err(|_| "HOST_VM_MANAGED_ROUTE_LINK_INDEX_INVALID")?;
     if expected_index != index {
         return Err("HOST_VM_MANAGED_ROUTE_LINK_IDENTITY_CHANGED".into());
+    }
+    // A root-owned explicitly labelled link remains supported; ordinary
+    // "sb" prefixes or a reused interface index never establish ownership.
+    let alias = fs::read_to_string(link.join("ifalias")).unwrap_or_default();
+    if canonical_owned_interface_alias(spec, alias.trim_end_matches('\n')) {
+        return Ok(());
+    }
+    // The existing Docker owner can alternatively prove a Linux bridge.
+    // Require an exact same-name Git-owned Docker resource, matching bridge
+    // option, bridge kernel type and full owner labels. This avoids creating
+    // a second native link lifecycle engine for Docker-managed interfaces.
+    if !link.join("bridge").is_dir() {
+        return Err("HOST_VM_MANAGED_ROUTE_LINK_OWNER_UNPROVEN".into());
+    }
+    let docker = super::super::docker_connection()
+        .await
+        .map_err(|_| "HOST_VM_MANAGED_ROUTE_DOCKER_OWNER_UNAVAILABLE")?;
+    let network = docker
+        .inspect_network(&spec.resource_name, None)
+        .await
+        .map_err(|_| "HOST_VM_MANAGED_ROUTE_DOCKER_NETWORK_UNPROVEN")?;
+    let options = network.options.as_ref();
+    let labels = network.labels.as_ref();
+    if network.name.as_deref() != Some(spec.resource_name.as_str())
+        || network.driver.as_deref() != Some("bridge")
+        || network.internal != Some(true)
+        || network.attachable != Some(false)
+        || options
+            .and_then(|value| value.get("com.docker.network.bridge.name"))
+            != Some(&spec.interface_name)
+        || labels.and_then(|value| value.get("io.github.iamaman11.singbox.machine"))
+            != Some(&spec.machine_id)
+        || labels.and_then(|value| value.get("io.github.iamaman11.singbox.resource"))
+            != Some(&spec.resource_name)
+    {
+        return Err("HOST_VM_MANAGED_ROUTE_DOCKER_LINK_FOREIGN".into());
     }
     Ok(())
 }
@@ -193,7 +224,7 @@ pub(super) async fn preflight_managed_route(
         .await
         .map_err(str::to_owned)?;
     let (index, routes) = route_in_owned_table(&kernel, &spec)?;
-    prove_managed_interface_owner(&spec, index)?;
+    prove_managed_interface_owner(&spec, index).await?;
     if (create && !routes.is_empty()) || (!create && routes.len() != 1) {
         return Err("HOST_VM_MANAGED_ROUTE_PRESTATE_DRIFT".into());
     }
@@ -221,7 +252,7 @@ pub(super) async fn apply_managed_route_once(
         .await
         .map_err(|_| "HOST_VM_MANAGED_ROUTE_PRE_EFFECT_UNPROVEN_NO_REPLAY")?;
     let (index, old) = route_in_owned_table(&before, &plan.spec)?;
-    prove_managed_interface_owner(&plan.spec, index)?;
+    prove_managed_interface_owner(&plan.spec, index).await?;
     if index != plan.interface_index || old != plan.before {
         return Err("HOST_VM_MANAGED_ROUTE_CAS_CHANGED_NO_REPLAY".into());
     }
@@ -266,7 +297,7 @@ pub(super) async fn apply_managed_route_once(
         .await
         .map_err(|_| "HOST_VM_MANAGED_ROUTE_POST_EFFECT_UNPROVEN_NO_REPLAY")?;
     let (after_index, new) = route_in_owned_table(&post, &plan.spec)?;
-    prove_managed_interface_owner(&plan.spec, after_index)?;
+    prove_managed_interface_owner(&plan.spec, after_index).await?;
     if after_index != plan.interface_index || !transition_matches(&plan.before, &new, plan.create)
     {
         return Err("HOST_VM_MANAGED_ROUTE_POSTSTATE_UNPROVEN_NO_REPLAY".into());
@@ -339,7 +370,7 @@ pub(crate) async fn collect_native_managed_kernel_routes(
             .as_ref().to_vec();
         match kernel.as_ref() {
             Ok(snapshot) => match route_in_owned_table(snapshot, &spec) {
-                Ok((index, routes)) => match prove_managed_interface_owner(&spec, index) {
+                Ok((index, routes)) => match prove_managed_interface_owner(&spec, index).await {
                     Ok(()) => {
                         row.present = routes.len() == 1;
                         row.converged = row.present;
