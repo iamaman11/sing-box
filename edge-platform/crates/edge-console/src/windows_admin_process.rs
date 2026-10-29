@@ -548,41 +548,69 @@ mod tests {
         assert_eq!(quote("a\"b"), "\"a\\\"b\"");
         assert_eq!(quote("c:\\a\\"), "\"c:\\a\\\\\"");
     }
+    // Use this same native Rust test executable as the pipe fixture.
+    // PowerShell startup/output redirection is not part of the ADMIN pipe
+    // contract and can time out independently of the Windows JobObject.
+    #[test]
+    fn admin_pipe_io_helper() {
+        if std::env::var_os("EDGE_ADMIN_PIPE_IO_FIXTURE").is_none() {
+            return;
+        }
+        let stdout_payload = vec![b'o'; 1048576];
+        let stderr_payload = vec![b'e'; 1048576];
+        let mut stdout = std::io::stdout();
+        let mut stderr = std::io::stderr();
+        stdout.write_all(&stdout_payload).unwrap();
+        stdout.flush().unwrap();
+        stderr.write_all(&stderr_payload).unwrap();
+        stderr.flush().unwrap();
+        let mut input = Vec::new();
+        std::io::stdin().read_to_end(&mut input).unwrap();
+        assert_eq!(input, vec![b'x'; 8192]);
+    }
+
     #[test]
     fn admin_pipes_are_bounded_and_concurrent() {
         let root = std::env::temp_dir().join(format!("edge-admin-native-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
-        let script = r"$ErrorActionPreference='Stop';$o=[Console]::OpenStandardOutput();$e=[Console]::OpenStandardError();$b=New-Object byte[] 1048576;$o.Write($b,0,$b.Length);$e.Write($b,0,$b.Length);[Console]::In.ReadToEnd() > $null";
-        let request = FleetNativeAdminRequest {
-            schema_version: 1,
-            machine_id: "test".into(),
-            source_comment_id: 1,
-            release_set_sha256: vec![1; 32],
-            comment_sha256: vec![2; 32],
-            requested_at_unix: 1,
-            argv: vec![
-                r"C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe".into(),
-                "-NoProfile".into(),
-                "-NonInteractive".into(),
-                "-Command".into(),
-                script.into(),
-            ],
-            stdin_bytes: vec![b'x'; 8192],
-            timeout_seconds: 30,
-            ..Default::default()
-        };
+        let mut request = command("unused", 30);
+        request.argv = vec![
+            std::env::current_exe()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            "--exact".into(),
+            "windows_admin::process::tests::admin_pipe_io_helper".into(),
+            "--nocapture".into(),
+        ];
+        request
+            .environment
+            .push("EDGE_ADMIN_PIPE_IO_FIXTURE=1".into());
+        request.stdin_bytes = vec![b'x'; 8192];
+        request.publish_output = false;
         let result = run(
             &request,
             File::create(root.join("out")).unwrap(),
             File::create(root.join("err")).unwrap(),
         )
         .unwrap();
-        assert_eq!(result.exit_code, 0);
-        assert_eq!(result.stdout_total_bytes, 1048576);
+        assert_eq!(result.exit_code, 0, "native pipe fixture failed or timed out");
+        assert!(result.process_exited);
+        assert!(result.stdout_total_bytes >= 1048576);
         assert_eq!(result.stderr_total_bytes, 1048576);
+        assert_eq!(result.stderr_sha256, sha(&vec![b'e'; 1048576]));
+        assert_eq!(result.stdin_bytes_written, 8192);
         assert!(result.stdin_input_complete);
         assert!(result.stdout_stream_eof && result.stderr_stream_eof);
-        assert!(result.stdout_preview.is_empty());
+        assert!(result.stdout_capture_complete && result.stderr_capture_complete);
+        assert_eq!(result.stdout_capture_bytes, result.stdout_total_bytes);
+        assert_eq!(result.stderr_capture_bytes, result.stderr_total_bytes);
+        assert!(result.stdout_preview.is_empty() && result.stderr_preview.is_empty());
+        let stdout = std::fs::read(root.join("out")).unwrap();
+        let stderr = std::fs::read(root.join("err")).unwrap();
+        assert_eq!(result.stdout_total_bytes, stdout.len() as u64);
+        assert_eq!(stderr, vec![b'e'; 1048576]);
+        assert!(stdout.iter().filter(|&&byte| byte == b'o').count() >= 1048576);
         std::fs::remove_dir_all(root).unwrap();
     }
 }
