@@ -30,11 +30,14 @@ for admission in (
     "--source-comment-id",
     'witness-line2 "${machine}"',
     "line2_g5_full_policy_matrix=UNPROVEN",
+    "line2_authenticated_doh_a_and_nxdomain=VERIFIED_ALL_SIX_PROXY_PATHS",
+    "line2_local_dns_leak_absence=UNPROVEN_NEEDS_EXTERNAL_CAPTURE",
 ):
     assert admission in line2, f"Line2 protected witness is missing {admission}"
 assert "issues: write" in line2, "single correlated report cannot be posted"
 assert "gh api -X POST" in line2 and "issues/1/comments" in line2
 assert "SOURCE_COMMENT_ID" in line2 and "G5_FULL_NETWORK_MATRIX=UNPROVEN" in line2
+assert "PROXIED_DOH_A_AND_NXDOMAIN=${report}" in line2
 assert "NATIVE_SIGNED_VM_READBACK=NOT_SUBSTITUTED" in line2
 assert "id: witness" in line2 and "if: ${{ always() }}" in line2
 assert "group: sing-box-line2-independent-readonly-${{ github.event.comment.id }}" in line2
