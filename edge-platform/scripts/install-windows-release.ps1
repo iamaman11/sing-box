@@ -583,8 +583,11 @@ if ($hasRetained -ne $hasCurrent) {
     throw 'OFFLINE_BOOTSTRAP_SUPERSESSION_BOTH_PINS_REQUIRED'
 }
 if ($hasRetained) {
-    if (-not $Offline -or -not $BootstrapNow -or $StageOnly -or $ForceRematerialize) {
-        throw 'OFFLINE_BOOTSTRAP_SUPERSESSION_ONLY_EXACT_OFFLINE_BOOTSTRAP_NOW'
+    # Both read-only StageOnly and the final BootstrapNow must carry the
+    # SAME exact pins; a disabled task never bypasses the stage proof.
+    if (-not $Offline -or (-not $BootstrapNow -and -not $StageOnly) -or
+        $ForceRematerialize -or $InstallRoot -cne 'C:\sing-box') {
+        throw 'OFFLINE_BOOTSTRAP_SUPERSESSION_ONLY_EXACT_OFFLINE_FIRST_USE'
     }
     Assert-HexSha256 -Value $RetainedIntentSha256 -Name 'RetainedIntentSha256'
     Assert-HexSha256 -Value $ExpectedCurrentReleaseSetSha256 -Name 'ExpectedCurrentReleaseSetSha256'
@@ -761,8 +764,42 @@ if ($StageOnly -or $BootstrapNow) {
     } catch {
         throw 'OFFLINE_BOOTSTRAP_BLOCKED: task principal SID cannot be resolved'
     }
+    # For one separately approved distinct successor, a compensated UNKNOWN
+    # may have left this SAME exact LocalSystem task Disabled. The old BEGIN
+    # must be pinned, canonical and bound to this installed owner; neither
+    # the same attempted ReleaseSet nor the same revision may be replayed.
+    $disabledSuccessorProven = $false
+    if ($hasRetained -and [string]$dispatch.State -ceq 'Disabled') {
+        if ([string]$old['release_set_sha256'] -cne $ExpectedCurrentReleaseSetSha256) {
+            throw 'OFFLINE_BOOTSTRAP_DISABLED_PREDECESSOR_RELEASE_MISMATCH'
+        }
+        $retainedPath = Join-Path $InstallRoot 'offline-bootstrap-intent-v1'
+        $retainedFile = Get-Item -LiteralPath $retainedPath -Force -ErrorAction Stop
+        if ($retainedFile.PSIsContainer -or
+            ($retainedFile.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            $retainedFile.Length -lt 1 -or $retainedFile.Length -gt 512) {
+            throw 'OFFLINE_BOOTSTRAP_DISABLED_PREDECESSOR_NOT_REGULAR'
+        }
+        $retainedBytes = [IO.File]::ReadAllBytes($retainedPath)
+        if ($retainedBytes.Length -ne $retainedFile.Length -or
+            (Get-FileHash -LiteralPath $retainedPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $RetainedIntentSha256) {
+            throw 'OFFLINE_BOOTSTRAP_DISABLED_PREDECESSOR_SHA_MISMATCH'
+        }
+        $retainedText = [Text.UTF8Encoding]::new($false, $true).GetString($retainedBytes)
+        $retainedMatch = [regex]::Match(
+            $retainedText,
+            '\Aschema=sing-box\.windows-offline-bootstrap/v1\nfrom=(?<from>[0-9a-f]{64})\nto=(?<to>[0-9a-f]{64})\naccepted_revision=(?<revision>[0-9a-f]{40})\n\z'
+        )
+        if (-not $retainedMatch.Success -or
+            $retainedMatch.Groups['from'].Value -cne [string]$old['release_set_sha256'] -or
+            $retainedMatch.Groups['to'].Value -ceq $ReleaseSetSha256 -or
+            $retainedMatch.Groups['revision'].Value -ceq $AcceptedRevision) {
+            throw 'OFFLINE_BOOTSTRAP_DISABLED_PREDECESSOR_NOT_DISTINCT_NO_REPLAY'
+        }
+        $disabledSuccessorProven = $true
+    }
     if ($principalSid -cne 'S-1-5-18' -or
-        [string]$dispatch.State -cne 'Ready' -or
+        ([string]$dispatch.State -cne 'Ready' -and -not $disabledSuccessorProven) -or
         [string]$dispatch.Principal.RunLevel -cne 'Highest' -or
         [string]$dispatch.Principal.LogonType -cne 'ServiceAccount' -or
         @($dispatch.Actions).Count -ne 1 -or
