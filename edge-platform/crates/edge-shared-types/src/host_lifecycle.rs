@@ -79,6 +79,7 @@ pub fn build_native_observation(
         runtime_ready_proven: runtime_ready.is_some(),
         reason_codes: reason_codes.iter().map(|s| (*s).to_owned()).collect(),
         vm_recovery_resources: None,
+        windows_config_sha256: Vec::new(),
     };
     validate_native_observation(&observation)?;
     Ok(observation)
@@ -111,6 +112,8 @@ pub fn validate_native_observation(
         || (!observed.observed_release_sha256.is_empty()
             && observed.observed_release_sha256.len() != 32)
         || (observed.runtime_ready && !observed.runtime_ready_proven)
+        || (!observed.windows_config_sha256.is_empty()
+            && (kind != FleetHostKind::Windows || !sha(&observed.windows_config_sha256)))
         || observed.reason_codes.len() > 12
         || observed.reason_codes.iter().any(|code| {
             code.is_empty()
@@ -1675,6 +1678,7 @@ mod partial_vm_recovery_tests {
             runtime_ready: false,
             reason_codes: vec!["CONTAINER_NOT_RUNNING".into()],
             vm_recovery_resources: Some(report),
+            windows_config_sha256: Vec::new(),
         };
         (host, observed)
     }

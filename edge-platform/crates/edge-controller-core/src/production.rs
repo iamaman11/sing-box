@@ -109,6 +109,8 @@ impl ProductionComposition {
 
     pub fn from_proto(root: &ProductionDesiredState) -> Result<Self, ProductionSpecError> {
         validate_root_identity(root)?;
+        edge_shared_types::windows_routing::validate(root.windows_application_routing.as_ref())
+            .map_err(|err| validation(err))?;
 
         let machine = root
             .machine

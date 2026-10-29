@@ -35,7 +35,9 @@ pub fn validate(request: &Request) -> Result<(), &'static str> {
             .any(|arg| arg.is_empty() || arg.len() > 8192 || arg.contains('\0'))
         || request.working_directory.len() > 2048
         || request.working_directory.contains('\0')
-        || (!request.working_directory.is_empty() && !request.working_directory.starts_with('/'))
+        || (!request.working_directory.is_empty()
+            && !request.working_directory.starts_with('/')
+            && !windows_absolute_path(&request.working_directory))
         || request.environment.len() > 128
         || request.environment.iter().any(|item| {
             item.len() > 8192
@@ -49,6 +51,70 @@ pub fn validate(request: &Request) -> Result<(), &'static str> {
         || request.encoded_len() > MAX_BYTES
     {
         return Err("HOST_ADMIN_REQUEST_INVALID");
+    }
+    Ok(())
+}
+
+/// Address validation only; never a functional executable allowlist. The
+/// privileged owner supplies kind from independently verified Git, not wire.
+pub fn windows_absolute_path(path: &str) -> bool {
+    let b = path.as_bytes();
+    b.len() >= 3
+        && b[0].is_ascii_alphabetic()
+        && b[1] == b':'
+        && b[2] == b'\\'
+        && !path.contains(['\0', '/', '*', '?', '"'])
+        && !path
+            .chars()
+            .any(|c| c.is_control() || matches!(c, '<' | '>' | '|'))
+        && !path[2..].contains(':')
+        && (path.len() == 3
+            || !path[3..]
+                .split('\\')
+                .any(|p| p.is_empty() || matches!(p, "." | "..") || p.ends_with(['.', ' '])))
+}
+
+pub fn validate_for_kind(
+    request: &Request,
+    kind: crate::FleetHostKind,
+) -> Result<(), &'static str> {
+    validate(request)?;
+    let cwd = &request.working_directory;
+    let valid = match kind {
+        crate::FleetHostKind::Windows => {
+            // CreateProcessW's command line bound includes CRT quoting and
+            // UTF-16 terminator. Reject before BEGIN, not after admission.
+            let command_units: usize = request
+                .argv
+                .iter()
+                .map(|s| {
+                    let mut n = 2 + s.encode_utf16().count();
+                    let mut slashes = 0;
+                    for c in s.chars() {
+                        if c == '\\' {
+                            slashes += 1;
+                        } else {
+                            if c == '"' {
+                                n += slashes + 1;
+                            }
+                            slashes = 0;
+                        }
+                    }
+                    n + slashes
+                })
+                .sum::<usize>()
+                + request.argv.len();
+            if command_units > 32767 {
+                return Err("HOST_ADMIN_WINDOWS_COMMAND_LINE_TOO_LONG");
+            }
+            windows_absolute_path(&request.argv[0])
+                && (cwd.is_empty() || windows_absolute_path(cwd))
+        }
+        crate::FleetHostKind::Vm => cwd.is_empty() || cwd.starts_with('/'),
+        _ => false,
+    };
+    if !valid {
+        return Err("HOST_ADMIN_PLATFORM_PATH_INVALID");
     }
     Ok(())
 }
@@ -196,6 +262,29 @@ pub fn verify_receipt(
 mod tests {
     use super::*;
     use ring::{rand::SystemRandom, signature::KeyPair};
+    #[test]
+    fn admin_cwd_matches_git_host_kind() {
+        let mut r = request();
+        assert!(validate_for_kind(&r, crate::FleetHostKind::Vm).is_ok());
+        assert!(validate_for_kind(&r, crate::FleetHostKind::Windows).is_err());
+        r.argv = vec![r"C:\Windows\System32\cmd.exe".into()];
+        r.working_directory = r"C:\Windows".into();
+        assert!(validate_for_kind(&r, crate::FleetHostKind::Windows).is_ok());
+        assert!(validate_for_kind(&r, crate::FleetHostKind::Vm).is_err());
+        for p in [
+            r"C:relative",
+            r"\\server\share",
+            r"\\?\C:\Windows",
+            r"C:\a\..\b",
+            "C:\\a\0b",
+        ] {
+            r.working_directory = p.into();
+            assert!(
+                validate_for_kind(&r, crate::FleetHostKind::Windows).is_err(),
+                "{p:?}"
+            );
+        }
+    }
     fn request() -> Request {
         Request {
             schema_version: 1,

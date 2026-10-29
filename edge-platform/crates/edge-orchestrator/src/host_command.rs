@@ -355,9 +355,12 @@ pub(crate) fn run(
             for host in selected {
                 let kind = ManagedHostKind::try_from(host.kind)
                     .map_err(|_| "HOST_KIND_INVALID".to_owned())?;
-                if (diagnostic.is_some() || administrative.is_some()) && kind != ManagedHostKind::Vm
-                {
+                if diagnostic.is_some() && kind != ManagedHostKind::Vm {
                     return Err("HOST_DIAG_VM_ONLY_UNTIL_WINDOWS_NATIVE_ACCEPTANCE".to_owned());
+                }
+                if let Some(request) = &administrative {
+                    edge_shared_types::host_admin::validate_for_kind(request, kind)
+                        .map_err(str::to_owned)?;
                 }
                 let owner = match host.owner.as_ref() {
                     Some(managed_host::Owner::WindowsRunnerName(name)) => name,
@@ -1275,9 +1278,7 @@ pub(crate) fn run(
             let selected = desired
                 .hosts
                 .iter()
-                .find(|host| {
-                    host.machine_id == machine_id && host.kind == ManagedHostKind::Vm as i32
-                })
+                .find(|host| host.machine_id == machine_id)
                 .ok_or("BOOTSTRAP_GIT_MACHINE_NOT_REGISTERED")?;
             if !selected.native_receipt_public_key.is_empty() {
                 return Err("BOOTSTRAP_GIT_RECEIPT_ALREADY_REGISTERED".into());
@@ -1411,6 +1412,12 @@ pub(crate) fn run(
                     host.machine_id == machine_id && host.kind == ManagedHostKind::Vm as i32
                 })
                 .ok_or("HOST_ADMIN_GIT_MACHINE_NOT_REGISTERED")?;
+            host_admin::validate_for_kind(
+                &request,
+                ManagedHostKind::try_from(selected.kind)
+                    .map_err(|_| "HOST_ADMIN_GIT_HOST_KIND_INVALID")?,
+            )
+            .map_err(str::to_owned)?;
             if request.machine_id != machine_id
                 || request.release_set_sha256
                     != exact_hex_sha256(&release.release().release_set_sha256)?
@@ -3061,6 +3068,7 @@ mod tests {
             runtime_ready_proven: true,
             reason_codes: vec![],
             vm_recovery_resources: None,
+            windows_config_sha256: Vec::new(),
         };
         assert_eq!(
             validate_readback_scope(&host, &o, &"a".repeat(64), None, 1000).unwrap(),

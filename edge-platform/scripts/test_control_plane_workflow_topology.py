@@ -508,7 +508,24 @@ assert "&installed_runtime_sha256," in win_system
 journal_source = Path(
     "edge-platform/crates/edge-shared-types/src/host_journal.rs"
 ).read_text(encoding="utf-8")
-assert "expected_windows_installed_release: Option<&[u8]>" in journal_source
+assert "expected_windows_installed_release: Option<WindowsExecutionBinding<'_>>" in journal_source
+assert "expected_config_sha256" in journal_source
+assert "HOST_WINDOWS_RECOVERY_CONFIGURATION_NOT_CONVERGED_NO_REPLAY" in journal_source
+admin_system = Path("edge-platform/crates/edge-console/src/windows_admin.rs").read_text(encoding="utf-8")
+assert "request_canonical_native_admin_authorization" in admin_system
+assert "host_admin::verify_authorization" in admin_system
+assert "TransportRequest::open" in admin_system
+assert "host_admin::sign_receipt" in admin_system
+assert "HOST_ADMIN_PENDING_GATE_NO_REPLAY" in admin_system
+assert admin_system.index("request_available(&journal") < admin_system.index("request_canonical_native_admin_authorization")
+assert "windows_native_runtime::execute" in Path("edge-platform/crates/edge-controller/src/controller_rpc.rs").read_text(encoding="utf-8")
+effect_contract=Path("edge-platform/crates/edge-shared-types/src/windows_runtime_effect.rs").read_text(encoding="utf-8")
+assert "verify_host_authorization" in effect_contract
+assert "HOST_WINDOWS_EFFECT_ALREADY_CONSUMED_NO_REPLAY" in effect_contract
+assert "effect.challenge.as_ref() != Some(challenge)" in effect_contract
+assert "host_admin_native_result=SYSTEM_SIGNED_PROOF_PENDING_INDEPENDENT_VERIFICATION" in native
+assert "HOST_WINDOWS_ADMIN_RECEIPT_UNKNOWN_NO_REPLAY" in native
+assert 'if [[ "${HOST_OPERATION}" = ADMIN ]]; then' in native
 assert "HOST_WINDOWS_INSTALLED_RUNTIME_READBACK_MISMATCH" in journal_source
 assert "verify_native_journal_protection(protected_journal_dir)?;" in journal_source
 assert "SYSTEM task or immutable action mismatched" in Path(

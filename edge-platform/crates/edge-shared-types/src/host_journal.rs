@@ -29,7 +29,38 @@ fn create_private_native_record(path: &Path) -> std::io::Result<File> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // Windows flushes file metadata with write-through + FlushFileBuffers.
+        // Opening a directory with std::File::open (Unix fsync) is invalid.
+        options.custom_flags(0x8000_0000); // FILE_FLAG_WRITE_THROUGH
+    }
     options.open(path)
+}
+
+fn sync_native_journal_directory(path: &Path) -> Result<(), &'static str> {
+    #[cfg(not(windows))]
+    {
+        fs::File::open(path)
+            .map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNAVAILABLE")?
+            .sync_all()
+            .map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNCERTAIN_NO_REPLAY")
+    }
+    #[cfg(windows)]
+    {
+        // All newly created journal files have WRITE_THROUGH and are synced
+        // before this point (including their metadata). Completed operation
+        // records are permanent. A removed scope reappearing after power loss
+        // blocks admission; it can NEVER permit duplicate execution.
+        if !fs::symlink_metadata(path)
+            .map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNAVAILABLE")?
+            .is_dir()
+        {
+            return Err("HOST_JOURNAL_DIR_SYNC_UNAVAILABLE");
+        }
+        Ok(())
+    }
 }
 
 #[cfg(unix)]
@@ -238,6 +269,31 @@ fn windows_trusted_installer_sid(sid: windows_sys::Win32::Security::PSID) -> boo
 // current.pb) are checked. The volume-root exception never applies elsewhere.
 #[cfg(windows)]
 pub fn verify_windows_protected_path_acl(path: &Path, leaf_file: bool) -> Result<(), &'static str> {
+    if !path.is_absolute() || !path.starts_with(Path::new(r"C:\sing-box")) {
+        return Err("HOST_WINDOWS_JOURNAL_ABSOLUTE_PATH_REQUIRED");
+    }
+    verify_windows_acl_chain(path, leaf_file, false)
+}
+
+/// Read-only verification of an installed OS/vendor executable used by the
+/// canonical owner. TrustedInstaller is a privileged writer here, while the
+/// stricter application/journal owner policy above is unchanged.
+#[cfg(windows)]
+pub fn verify_windows_system_executable_acl(path: &Path) -> Result<(), &'static str> {
+    if !path.is_absolute()
+        || !(path.starts_with(r"C:\Windows") || path.starts_with(r"C:\Program Files"))
+    {
+        return Err("HOST_WINDOWS_SYSTEM_EXECUTABLE_SCOPE_INVALID");
+    }
+    verify_windows_acl_chain(path, true, true)
+}
+
+#[cfg(windows)]
+fn verify_windows_acl_chain(
+    path: &Path,
+    leaf_file: bool,
+    system_executable: bool,
+) -> Result<(), &'static str> {
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::fs::MetadataExt;
     use windows_sys::Win32::Foundation::LocalFree;
@@ -246,9 +302,6 @@ pub fn verify_windows_protected_path_acl(path: &Path, leaf_file: bool) -> Result
         ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION, GetAce, IsWellKnownSid,
         OWNER_SECURITY_INFORMATION, WinBuiltinAdministratorsSid, WinLocalSystemSid,
     };
-    if !path.is_absolute() || !path.starts_with(Path::new(r"C:\sing-box")) {
-        return Err("HOST_WINDOWS_JOURNAL_ABSOLUTE_PATH_REQUIRED");
-    }
     for (index, ancestor) in path.ancestors().enumerate() {
         let meta = fs::symlink_metadata(ancestor)
             .map_err(|_| "HOST_WINDOWS_JOURNAL_ANCESTOR_UNAVAILABLE")?;
@@ -288,6 +341,7 @@ pub fn verify_windows_protected_path_acl(path: &Path, leaf_file: bool) -> Result
             let privileged = |sid| unsafe {
                 IsWellKnownSid(sid, WinLocalSystemSid) != 0
                     || IsWellKnownSid(sid, WinBuiltinAdministratorsSid) != 0
+                    || (system_executable && windows_trusted_installer_sid(sid))
             };
             if !windows_acl_owner_safe(
                 privileged(owner),
@@ -499,11 +553,7 @@ fn admit_after_protected_owner_check_once(
     scope
         .sync_all()
         .map_err(|_| "HOST_SCOPE_SYNC_UNCERTAIN_NO_REPLAY")?;
-    let parent =
-        fs::File::open(protected_journal_dir).map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNAVAILABLE")?;
-    parent
-        .sync_all()
-        .map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNCERTAIN_NO_REPLAY")?;
+    sync_native_journal_directory(protected_journal_dir)?;
     let mut recorded = FleetHostResult {
         schema_version: 1,
         machine_id: intent.machine_id.clone(),
@@ -534,10 +584,7 @@ fn admit_after_protected_owner_check_once(
         .map_err(|_| "HOST_JOURNAL_SYNC_UNCERTAIN_NO_REPLAY")?;
     // Do not return an authorization if the platform cannot durably sync the
     // directory entry. This is conservative on Windows too.
-    let dir =
-        fs::File::open(protected_journal_dir).map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNAVAILABLE")?;
-    dir.sync_all()
-        .map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNCERTAIN_NO_REPLAY")?;
+    sync_native_journal_directory(protected_journal_dir)?;
     Ok(recorded)
 }
 
@@ -587,8 +634,9 @@ fn validate_native_action_step(
 /// durable admission followed by at most one native invocation.
 ///
 /// The closure may use only existing typed Controller/Agent operations. In
-/// particular, it must not spawn an installer, hand arbitrary shell text to
-/// root/SYSTEM, or retry a partial action. An execution failure deliberately
+/// particular, it must not run an operator-supplied installer or shell text.
+/// A release transition uses only its native adapter and independently verified
+/// canonical release installer. It cannot retry a partial action. Failure deliberately
 /// retains the per-resource gate as UNKNOWN_NO_REPLAY.
 pub fn execute_native_host_once<Observe, Allow, Apply>(
     intent: &FleetHostIntent,
@@ -637,6 +685,12 @@ where
 /// Windows SYSTEM supplies this digest only after verifying the exact installed
 /// activation. Git ReleaseSet authenticates the intent; installed runtime
 /// authenticates the physical planner. VM semantics remain unchanged.
+#[derive(Clone, Copy)]
+pub struct WindowsExecutionBinding<'a> {
+    pub installed_release_sha256: &'a [u8],
+    pub expected_config_sha256: Option<&'a [u8]>,
+}
+
 pub fn execute_native_windows_host_once<Observe, Allow, Apply>(
     intent: &FleetHostIntent,
     authorization: &FleetHostAuthorization,
@@ -651,6 +705,7 @@ pub fn execute_native_windows_host_once<Observe, Allow, Apply>(
     native_machine_id: &str,
     native_owner_kind: i32,
     installed_release_sha256: &[u8],
+    expected_config_sha256: Option<&[u8]>,
     now_unix: u64,
     protected_journal_dir: &Path,
     observe: Observe,
@@ -664,7 +719,10 @@ where
 {
     verify_native_journal_protection(protected_journal_dir)?;
     execute_after_protected_owner_check_once(
-        Some(installed_release_sha256),
+        Some(WindowsExecutionBinding {
+            installed_release_sha256,
+            expected_config_sha256,
+        }),
         intent,
         authorization,
         registry_pb,
@@ -685,7 +743,7 @@ where
 /// Private testable core; only the external entry point can authorize a
 /// real mutation after checking kernel owner and protected journal ancestry.
 fn execute_after_protected_owner_check_once<Observe, Allow, Apply>(
-    expected_windows_installed_release: Option<&[u8]>,
+    expected_windows_installed_release: Option<WindowsExecutionBinding<'_>>,
     intent: &FleetHostIntent,
     authorization: &FleetHostAuthorization,
     registry_pb: &[u8],
@@ -709,7 +767,6 @@ where
     use crate::host_lifecycle::{
         bind_native_host_artifacts, validate_intent_against_target, validate_native_observation,
     };
-    use crate::host_planner::propose_host_transition;
     use crate::{FleetHostAction, FleetHostPlannedStep, FleetHostResultState};
 
     // Authentication and owner identity must precede even readback-driven
@@ -724,7 +781,14 @@ where
         release_set_pb,
         vm_bundle_pb,
     )?;
-    if let Some(installed) = expected_windows_installed_release {
+    if let Some(binding) = expected_windows_installed_release {
+        let installed = binding.installed_release_sha256;
+        if binding
+            .expected_config_sha256
+            .is_some_and(|sha| sha.len() != 32 || sha.iter().all(|b| *b == 0))
+        {
+            return Err("HOST_WINDOWS_EXPECTED_CONFIG_DIGEST_INVALID");
+        }
         if native_owner_kind != crate::FleetHostKind::Windows as i32
             || intent.kind != native_owner_kind
             || installed.len() != 32
@@ -732,7 +796,9 @@ where
         {
             return Err("HOST_WINDOWS_INSTALLED_RUNTIME_PROOF_INVALID");
         }
-        bound.runtime_release_sha256 = installed.to_vec();
+        if intent.action != crate::FleetHostAction::Apply as i32 {
+            bound.runtime_release_sha256 = installed.to_vec();
+        }
     }
     validate_intent_against_target(intent, &registry)?;
     // Windows SYSTEM must use the public signer identity from its own
@@ -766,7 +832,9 @@ where
             .map_err(|_| "HOST_RESOURCE_PENDING_DIRECTORY_UNAVAILABLE")?
             .file_name();
         let name = name.to_string_lossy();
-        if name.starts_with("resource-") && name.ends_with(".pending.pb") {
+        if (name.starts_with("resource-") || name.starts_with("admin-"))
+            && name.ends_with(".pending.pb")
+        {
             let path = protected_journal_dir.join(name.as_ref());
             if path != current_scope {
                 return Err("HOST_OTHER_RESOURCE_PENDING_UNKNOWN_NO_REPLAY");
@@ -797,6 +865,14 @@ where
     match fs::symlink_metadata(native_scope_pending_path(protected_journal_dir, intent)) {
         Ok(_) if intent.action == FleetHostAction::Recover as i32 => {
             let observed = observe()?;
+            if kind == crate::FleetHostKind::Windows {
+                let expected = expected_windows_installed_release
+                    .and_then(|b| b.expected_config_sha256)
+                    .ok_or("HOST_WINDOWS_RECOVERY_CONFIGURATION_UNPROVEN_NO_REPLAY")?;
+                if observed.windows_config_sha256 != expected {
+                    return Err("HOST_WINDOWS_RECOVERY_CONFIGURATION_NOT_CONVERGED_NO_REPLAY");
+                }
+            }
             return resolve_pending_native_recovery_once(
                 intent,
                 authorization,
@@ -817,16 +893,18 @@ where
     }
     let before = observe()?;
     validate_native_observation(&before)?;
-    if let Some(installed) = expected_windows_installed_release {
+    if let Some(binding) = expected_windows_installed_release {
+        let installed = binding.installed_release_sha256;
         if before.release_proof != crate::FleetNativeReleaseProof::ActivationRecord as i32
             || before.observed_release_sha256.as_slice() != installed
         {
             return Err("HOST_WINDOWS_INSTALLED_RUNTIME_READBACK_MISMATCH");
         }
     }
-    let plan = propose_host_transition(
+    let mut plan = crate::host_planner::propose_signed_host_transition(
         selected,
-        Some(&before),
+        &before,
+        action,
         if expected_windows_installed_release.is_some() {
             &bound.runtime_release_sha256
         } else {
@@ -835,6 +913,20 @@ where
         &bound.runtime_release_sha256,
         now_unix,
     );
+    let config = expected_windows_installed_release.and_then(|b| b.expected_config_sha256);
+    if action == FleetHostAction::Apply
+        && plan.step == FleetHostPlannedStep::Noop as i32
+        && config.is_some_and(|sha| before.windows_config_sha256 != sha)
+    {
+        if kind != crate::FleetHostKind::Windows
+            || before.owner_state != crate::FleetNativeOwnerState::Stopped as i32
+        {
+            return Err("HOST_WINDOWS_CONFIGURATION_REQUIRES_STOPPED_OWNER");
+        }
+        plan.step = FleetHostPlannedStep::Configure as i32;
+        plan.reason = crate::FleetHostPlanReason::StoppedConfigurationDrift as i32;
+        plan.reason_code = "STOPPED_CONFIGURATION_DRIFT".into();
+    }
     crate::host_planner::validate_host_transition_plan(&plan, selected)?;
     let step =
         FleetHostPlannedStep::try_from(plan.step).map_err(|_| "HOST_NATIVE_PLAN_STEP_INVALID")?;
@@ -891,6 +983,7 @@ where
             | FleetHostPlannedStep::Stop
             | FleetHostPlannedStep::Install
             | FleetHostPlannedStep::ReplaceRelease
+            | FleetHostPlannedStep::Configure
     ) {
         return Err("HOST_NATIVE_PLAN_UNSUPPORTED");
     }
@@ -914,6 +1007,7 @@ where
     )?;
     // From this point ANY failure is an uncertain operation. The durable
     // resource gate must remain; no replay, no unapproved compensation.
+    let effect_started = std::time::Instant::now();
     apply_once(step)?;
     finish_after_protected_owner_check_once(
         intent,
@@ -923,9 +1017,17 @@ where
         &bound.runtime_release_sha256,
         step,
         &before.observed_release_sha256,
-        now_unix,
+        now_unix.saturating_add(effect_started.elapsed().as_secs()),
         protected_journal_dir,
-        observe,
+        || {
+            let observed = observe()?;
+            if action == FleetHostAction::Apply
+                && config.is_some_and(|sha| observed.windows_config_sha256 != sha)
+            {
+                return Err("HOST_WINDOWS_CONFIG_POSTSTATE_MISMATCH");
+            }
+            Ok(observed)
+        },
     )
 }
 
@@ -1218,9 +1320,7 @@ fn resolve_pending_native_recovery_once(
                 return Err("HOST_NATIVE_RECOVERY_TERMINAL_MISMATCH");
             }
             fs::remove_file(&scope).map_err(|_| "HOST_RECOVERY_SCOPE_UNCERTAIN_NO_REPLAY")?;
-            fs::File::open(journal_dir)
-                .and_then(|directory| directory.sync_all())
-                .map_err(|_| "HOST_RECOVERY_SCOPE_SYNC_UNCERTAIN_NO_REPLAY")?;
+            sync_native_journal_directory(journal_dir)?;
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             store_native_terminal_and_unlock_once(
@@ -1437,12 +1537,9 @@ fn store_native_terminal_and_unlock_once(
     writer
         .sync_all()
         .map_err(|_| "HOST_TERMINAL_RECEIPT_SYNC_UNCERTAIN")?;
-    let dir = fs::File::open(journal_dir).map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNAVAILABLE")?;
-    dir.sync_all()
-        .map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNCERTAIN_NO_REPLAY")?;
+    sync_native_journal_directory(journal_dir)?;
     fs::remove_file(&scope).map_err(|_| "HOST_SCOPE_RELEASE_UNCERTAIN_NO_REPLAY")?;
-    dir.sync_all()
-        .map_err(|_| "HOST_JOURNAL_DIR_SYNC_UNCERTAIN_NO_REPLAY")?;
+    sync_native_journal_directory(journal_dir)?;
     Ok(())
 }
 
@@ -1530,6 +1627,7 @@ mod tests {
             runtime_ready_proven: true,
             reason_codes: vec![],
             vm_recovery_resources: None,
+            windows_config_sha256: Vec::new(),
         };
         assert_eq!(
             verify_read_only_recovery_state(&host, &observed, &[1; 32], 1000),
@@ -1982,6 +2080,7 @@ mod tests {
         assert_eq!(files.len(), 2); // authorized journal + durable per-resource gate
         let stopped_observation = crate::FleetNativeObservation {
             vm_recovery_resources: None,
+            windows_config_sha256: Vec::new(),
             schema_version: 1,
             host_kind: FleetHostKind::Vm as i32,
             observed_at_unix: 1020,
@@ -2142,6 +2241,7 @@ mod tests {
         .unwrap();
         let post = crate::FleetNativeObservation {
             vm_recovery_resources: None,
+            windows_config_sha256: Vec::new(),
             schema_version: 1,
             host_kind: FleetHostKind::Vm as i32,
             observed_at_unix: 1020,
@@ -2713,7 +2813,10 @@ mod tests {
         let stale_installed = vec![7_u8; 32];
         assert_eq!(
             execute_after_protected_owner_check_once(
-                Some(&stale_installed),
+                Some(WindowsExecutionBinding {
+                    installed_release_sha256: &stale_installed,
+                    expected_config_sha256: None
+                }),
                 &intent,
                 &auth,
                 &registry_pb,
@@ -2732,6 +2835,151 @@ mod tests {
             .unwrap_err(),
             "HOST_WINDOWS_INSTALLED_RUNTIME_READBACK_MISMATCH"
         );
+        // A Git-only configuration change is a journaled CONFIGURE, never a
+        // fabricated NOOP or implicit service START. Verify exact poststate.
+        let mut configuration_intent = intent.clone();
+        configuration_intent.action = FleetHostAction::Apply as i32;
+        configuration_intent.operation_id = "issue1-comment-882".into();
+        let mut configuration_auth = auth.clone();
+        configuration_auth.operation_id = configuration_intent.operation_id.clone();
+        configuration_auth.ed25519_signature = signer
+            .sign(&host_authorization_payload(
+                &configuration_intent,
+                &configuration_auth,
+            ))
+            .as_ref()
+            .to_vec();
+        let applied = std::cell::Cell::new(false);
+        let calls = std::cell::Cell::new(0);
+        let cfg_observe = || {
+            let mut o = observe()?;
+            o.owner_state = FleetNativeOwnerState::Stopped as i32;
+            o.windows_config_sha256 = if applied.get() {
+                vec![4; 32]
+            } else {
+                vec![3; 32]
+            };
+            Ok(o)
+        };
+        let binding = WindowsExecutionBinding {
+            installed_release_sha256: &intent.release_set_sha256,
+            expected_config_sha256: Some(&[4; 32]),
+        };
+        let cfg_result = execute_after_protected_owner_check_once(
+            Some(binding),
+            &configuration_intent,
+            &configuration_auth,
+            &registry_pb,
+            spec,
+            &release_pb,
+            None,
+            signer.public_key().as_ref(),
+            "windows-exact",
+            FleetHostKind::Windows as i32,
+            1020,
+            &dir,
+            cfg_observe,
+            |s| {
+                assert_eq!(s, FleetHostPlannedStep::Configure);
+                Ok(())
+            },
+            |s| {
+                assert_eq!(s, FleetHostPlannedStep::Configure);
+                calls.set(calls.get() + 1);
+                applied.set(true);
+                Ok(())
+            },
+        )
+        .unwrap();
+        assert!(cfg_result.physical_readback);
+        assert_eq!(calls.get(), 1);
+        assert!(
+            execute_after_protected_owner_check_once(
+                Some(binding),
+                &configuration_intent,
+                &configuration_auth,
+                &registry_pb,
+                spec,
+                &release_pb,
+                None,
+                signer.public_key().as_ref(),
+                "windows-exact",
+                FleetHostKind::Windows as i32,
+                1020,
+                &dir,
+                cfg_observe,
+                |_| panic!("replay admission"),
+                |_| panic!("replay effect")
+            )
+            .is_err()
+        );
+
+        // An interrupted CONFIGURE cannot be resolved by observing SCM only.
+        configuration_intent.operation_id = "issue1-comment-883".into();
+        configuration_auth.operation_id = configuration_intent.operation_id.clone();
+        configuration_auth.ed25519_signature = signer
+            .sign(&host_authorization_payload(
+                &configuration_intent,
+                &configuration_auth,
+            ))
+            .as_ref()
+            .to_vec();
+        applied.set(false);
+        assert_eq!(
+            execute_after_protected_owner_check_once(
+                Some(binding),
+                &configuration_intent,
+                &configuration_auth,
+                &registry_pb,
+                spec,
+                &release_pb,
+                None,
+                signer.public_key().as_ref(),
+                "windows-exact",
+                FleetHostKind::Windows as i32,
+                1020,
+                &dir,
+                cfg_observe,
+                |_| Ok(()),
+                |_| Err("INJECTED_CONFIG_UNKNOWN")
+            )
+            .unwrap_err(),
+            "INJECTED_CONFIG_UNKNOWN"
+        );
+        let pending = native_scope_pending_path(&dir, &configuration_intent);
+        let original = fs::read(&pending).unwrap();
+        let mut recovery = configuration_intent.clone();
+        recovery.action = FleetHostAction::Recover as i32;
+        recovery.operation_id = "issue1-comment-884".into();
+        let mut recovery_auth = configuration_auth.clone();
+        recovery_auth.operation_id = recovery.operation_id.clone();
+        recovery_auth.ed25519_signature = signer
+            .sign(&host_authorization_payload(&recovery, &recovery_auth))
+            .as_ref()
+            .to_vec();
+        assert_eq!(
+            execute_after_protected_owner_check_once(
+                Some(binding),
+                &recovery,
+                &recovery_auth,
+                &registry_pb,
+                spec,
+                &release_pb,
+                None,
+                signer.public_key().as_ref(),
+                "windows-exact",
+                FleetHostKind::Windows as i32,
+                1020,
+                &dir,
+                cfg_observe,
+                |_| panic!("unknown recovery admission"),
+                |_| panic!("unknown recovery effect")
+            )
+            .unwrap_err(),
+            "HOST_WINDOWS_RECOVERY_CONFIGURATION_NOT_CONVERGED_NO_REPLAY"
+        );
+        assert_eq!(fs::read(&pending).unwrap(), original);
+
         use crate::host_planner::propose_host_transition;
         let stopped = FleetNativeObservation {
             owner_state: FleetNativeOwnerState::Stopped as i32,
@@ -2760,8 +3008,12 @@ mod tests {
             .step,
             FleetHostPlannedStep::Noop as i32,
         );
-        assert!(!native_scope_pending_path(&dir, &intent).exists());
-        assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
+        // The injected unknown CONFIGURE deliberately retains this SAME
+        // resource gate; the earlier STOP admission failures created none.
+        assert_eq!(
+            fs::read(native_scope_pending_path(&dir, &intent)).unwrap(),
+            original
+        );
         fs::remove_dir_all(dir).unwrap();
     }
 
@@ -2872,7 +3124,13 @@ mod tests {
     fn windows_requires_native_acl_acceptance() {
         assert_eq!(
             verify_native_journal_protection(Path::new(r"C:\sing-box\state\host")),
-            Err("HOST_WINDOWS_OWNER_ACL_NOT_ACCEPTED")
+            // The native suite runs as user/Administrator, not SYSTEM.
+            // Refuse the token before attempting any filesystem ACL test.
+            Err("HOST_WINDOWS_LOCALSYSTEM_REQUIRED")
+        );
+        assert_eq!(
+            verify_native_journal_protection(Path::new("relative")),
+            Err("HOST_WINDOWS_JOURNAL_ABSOLUTE_PATH_REQUIRED")
         );
     }
 }

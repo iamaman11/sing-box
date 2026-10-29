@@ -4223,7 +4223,8 @@ function ADMIN_INFO(b){
     typeof m!=="string"||!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(m)||
     argv.length<1||argv.length>128||argv.some(x=>!x||x.length>8192||x.includes(String.fromCharCode(0)))||
     !/^[0-9a-f]{64}$/.test(release||"")||!/^[0-9a-f]{64}$/.test(comment||"")||
-    cwd.length>2048||cwd.includes(String.fromCharCode(0))||(cwd&&!cwd.startsWith("/"))||
+    cwd.length>2048||cwd.includes(String.fromCharCode(0))||
+    (cwd&&!cwd.startsWith("/")&&!/^[A-Za-z]:\\/.test(cwd))||
     env.length>128||env.some(x=>x.length>8192||!x.match(/^[A-Za-z0-9_]+=/))||
     !Number.isInteger(timeout)||timeout<1||timeout>3600||
     b.length>32768||[1,2,3,4,5,6,7,11].some(n=>!seen.has(n)))

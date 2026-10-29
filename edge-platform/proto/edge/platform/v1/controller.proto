@@ -50,6 +50,8 @@ message DestroyResponse {
 }
 
 service ControllerService {
+  // Public read-only process challenge, never an administrative authorization.
+  rpc GetNativeRuntimeChallenge(Empty) returns (FleetWindowsRuntimeChallenge);
   rpc GetStatus(Empty) returns (ControllerStatus);
   rpc Doctor(DoctorRequest) returns (DoctorResponse);
   rpc GetSecretRef(GetSecretRefRequest) returns (SecretRefEntry);
