@@ -618,7 +618,7 @@ mod tests {
             .unwrap()
             .push(serde_json::json!({"chain": {"name":"foreign"}}));
         assert!(decode_ruleset(&spec, &foreign).is_err());
-        foreign = good;
+        foreign = good.clone();
         foreign["nftables"][3]["rule"]["expr"][1] = serde_json::json!({"reject":null});
         assert!(decode_ruleset(&spec, &foreign).is_err());
         // A legitimate typed ALLOW verdict must be accepted, while an
