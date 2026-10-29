@@ -1042,6 +1042,27 @@ pub(crate) fn run(
                         managed.reason_code,
                     );
                 }
+                println!(
+                    "host_vm_managed_kernel_routes_count={}",
+                    report.managed_kernel_routes.len()
+                );
+                println!("host_vm_managed_kernel_routes_origin=RUNNER_COPIED_UNAUTHENTICATED");
+                for row in &report.managed_kernel_routes {
+                    println!(
+                        "host_vm_managed_kernel_route={} family={:?} table={} present={} converged={} reason={}",
+                        if row.resource_name.is_empty() {
+                            "UNPROVEN"
+                        } else {
+                            row.resource_name.as_str()
+                        },
+                        edge_shared_types::FleetVmIpFamily::try_from(row.family)
+                            .unwrap_or(edge_shared_types::FleetVmIpFamily::Unspecified),
+                        row.table_id,
+                        row.present,
+                        row.converged,
+                        row.reason_code
+                    );
+                }
                 println!("host_vm_resources_schema=1");
                 println!(
                     "host_vm_installed_policy_hierarchy_origin={}",

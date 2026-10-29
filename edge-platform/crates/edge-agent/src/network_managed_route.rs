@@ -34,6 +34,7 @@ fn canonical_destination(spec: &FleetVmManagedKernelRoute) -> bool {
             ip != Ipv4Addr::UNSPECIFIED
                 && ip != Ipv4Addr::BROADCAST
                 && !ip.is_multicast()
+                && !ip.is_loopback()
                 && u32::from(ip) & ((1_u32 << (32 - spec.prefix_length)) - 1) == 0
         }
         (Ok(Family::V6), IpAddr::V6(ip)) if (16..=128).contains(&spec.prefix_length) => {

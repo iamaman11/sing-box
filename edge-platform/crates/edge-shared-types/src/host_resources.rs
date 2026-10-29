@@ -762,6 +762,43 @@ pub fn validate_vm_resource_report(
             return Err("VM_MANAGED_DOCKER_RESOURCE_SCOPE_INVALID");
         }
     }
+    if report.managed_kernel_routes.len() > 32 {
+        return Err("VM_MANAGED_ROUTE_REPORT_OVERSIZE");
+    }
+    let mut route_names = std::collections::BTreeSet::new();
+    for row in &report.managed_kernel_routes {
+        if row.reason_code.is_empty()
+            || row.reason_code.len() > 96
+            || !row
+                .reason_code
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+            || (row.converged != (row.present && row.reason_code == "DESIRED_PRESENT"))
+        {
+            return Err("VM_MANAGED_ROUTE_EVIDENCE_INVALID");
+        }
+        if row.resource_name.is_empty() {
+            if row.family != 0
+                || row.table_id != 0
+                || !row.manifest_sha256.is_empty()
+                || row.present
+                || row.converged
+            {
+                return Err("VM_MANAGED_ROUTE_UNSCOPED_EVIDENCE");
+            }
+        } else if !row.resource_name.starts_with(&format!("sb-{}-", host.machine_id))
+            || row.resource_name.len() > 112
+            || !route_names.insert(row.resource_name.as_str())
+            || row.manifest_sha256.len() != 32
+            || !matches!(
+                crate::FleetVmIpFamily::try_from(row.family),
+                Ok(crate::FleetVmIpFamily::V4 | crate::FleetVmIpFamily::V6)
+            )
+            || !(20_000..=20_999).contains(&row.table_id)
+        {
+            return Err("VM_MANAGED_ROUTE_SCOPE_INVALID");
+        }
+    }
     for (row, expected) in report.resources.iter().zip(host.vm_containers.iter()) {
         if row.resource.as_ref() != Some(expected)
             || row.image.len() > 256
@@ -1088,6 +1125,7 @@ mod tests {
             bootstrap_phase: crate::FleetVmBootstrapPhase::Unspecified as i32,
             processes: None,
             managed_docker: Vec::new(),
+            managed_kernel_routes: Vec::new(),
             machine_id: "vm-a".into(),
             observed_at_unix: 100,
             resources: vec![FleetVmResourceReadback {
@@ -1322,6 +1360,37 @@ mod tests {
         assert!(validate_vm_resource_report(&report, &host).is_err());
         report.resources[0].observed_reason = 999;
         assert!(validate_vm_resource_report(&report, &host).is_err());
+    }
+
+    #[test]
+    fn managed_route_readback_must_be_scoped_to_git_host_and_not_forge_convergence() {
+        let (host, mut report) = fixture();
+        let mut row = crate::FleetVmManagedKernelRouteReadback {
+            resource_name: "sb-vm-a-test".into(),
+            family: crate::FleetVmIpFamily::V4 as i32,
+            table_id: 20_100,
+            manifest_sha256: vec![42; 32],
+            present: true,
+            converged: true,
+            reason_code: "DESIRED_PRESENT".into(),
+        };
+        report.managed_kernel_routes.push(row.clone());
+        assert!(validate_vm_resource_report(&report, &host).is_ok());
+        row.table_id = 254;
+        report.managed_kernel_routes[0] = row.clone();
+        assert!(validate_vm_resource_report(&report, &host).is_err());
+        row.table_id = 20_100;
+        row.resource_name = "sb-foreign-host-route".into();
+        report.managed_kernel_routes[0] = row.clone();
+        assert!(validate_vm_resource_report(&report, &host).is_err());
+        row.resource_name = "sb-vm-a-test".into();
+        row.converged = false;
+        report.managed_kernel_routes[0] = row.clone();
+        assert!(validate_vm_resource_report(&report, &host).is_err());
+        row.present = false;
+        row.reason_code = "ROUTE_MISSING".into();
+        report.managed_kernel_routes[0] = row;
+        assert!(validate_vm_resource_report(&report, &host).is_ok());
     }
 
     #[test]

@@ -5,6 +5,9 @@ use super::*;
 #[path = "docker_managed_object.rs"]
 mod managed_object;
 use managed_object::*;
+#[path = "network_managed_route.rs"]
+mod managed_route;
+use managed_route::*;
 use std::io::Write;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
@@ -17,6 +20,7 @@ pub(crate) struct NativeVmManagedFilePlan {
     installed_graph: edge_shared_types::FleetVmDesiredGraph,
     pub(super) target_graph: edge_shared_types::FleetVmDesiredGraph,
     docker: Option<PreparedManagedDocker>,
+    route: Option<PreparedManagedRoute>,
     release: edge_shared_types::ApplicationBundleReleaseState,
 }
 
@@ -187,8 +191,16 @@ pub(crate) async fn preflight_native_vm_managed_file(
     } else {
         None
     };
+    let route = if is_managed_route_manifest(&path) {
+        Some(
+            preflight_managed_route(host, &path, before.as_deref(), after.as_deref()).await?,
+        )
+    } else {
+        None
+    };
     Ok(NativeVmManagedFilePlan {
         docker,
+        route,
         path,
         before,
         after,
@@ -265,6 +277,9 @@ pub(crate) async fn apply_native_vm_managed_file_once(
     // Any ambiguous Docker acknowledgement preserves UNKNOWN_NO_REPLAY.
     if let Some(prepared) = plan.docker.as_ref() {
         apply_managed_docker_object_once(prepared).await?;
+    }
+    if let Some(prepared) = plan.route.as_ref() {
+        apply_managed_route_once(prepared).await?;
     }
     checked_managed_directory(stack_dir, plan.before.is_none() && plan.after.is_some())?;
     let path = stack_dir.join(&plan.path);
