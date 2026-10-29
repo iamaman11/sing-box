@@ -4,7 +4,9 @@
 use edge_secrets::{
     fetch_canonical_credential_bundle, fetch_canonical_credential_bundle_with_service_identity,
 };
-use edge_shared_types::{CredentialDeliveryBundle, CredentialProjectionKind, credential_delivery_bundle};
+use edge_shared_types::{
+    CredentialDeliveryBundle, CredentialProjectionKind, credential_delivery_bundle,
+};
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::net::Ipv4Addr;

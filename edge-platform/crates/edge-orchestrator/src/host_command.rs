@@ -1818,6 +1818,9 @@ pub(crate) fn run(
             println!("host_mutations=0");
             Ok(())
         }
+        HostCommand::WitnessLine2 { .. } => {
+            Err("HOST_VM_LINE2_WITNESS_MUST_USE_PROTECTED_READONLY_OWNER".to_owned())
+        }
         HostCommand::Diagnose { .. } => Err("HOST_DIAG_DISPATCH_INVARIANT_FAILED".to_owned()),
         HostCommand::Admin { .. } => Err("HOST_ADMIN_DISPATCH_INVARIANT_FAILED".to_owned()),
         HostCommand::VmWorkerAuthorizerUpgrade { .. } => {

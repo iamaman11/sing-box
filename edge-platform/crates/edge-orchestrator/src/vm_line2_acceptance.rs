@@ -153,10 +153,22 @@ mod tests {
             "acceptance",
             38503639351,
         );
-        assert!(validate_witness_scope(args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7).is_ok());
-        assert!(validate_witness_scope(args.0, args.1, args.2, args.3, "foreign.example", args.5, args.6, args.7).is_err());
-        assert!(validate_witness_scope(args.0, args.1, args.2, args.3, args.4, "foreign.example", args.6, args.7).is_err());
-        assert!(validate_witness_scope(args.0, args.1, args.2, args.3, args.4, args.5, "root", args.7).is_err());
-        assert!(validate_witness_scope(args.0, args.1, args.2, args.3, args.4, args.5, args.6, 0).is_err());
+        assert!(
+            validate_witness_scope(args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7)
+                .is_ok()
+        );
+        for (line1, line2, username, generation) in [
+            ("foreign.example", args.5, args.6, args.7),
+            (args.4, "foreign.example", args.6, args.7),
+            (args.4, args.5, "root", args.7),
+            (args.4, args.5, args.6, 0),
+        ] {
+            assert!(
+                validate_witness_scope(
+                    args.0, args.1, args.2, args.3, line1, line2, username, generation,
+                )
+                .is_err()
+            );
+        }
     }
 }
