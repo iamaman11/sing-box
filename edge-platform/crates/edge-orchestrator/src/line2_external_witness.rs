@@ -17,6 +17,10 @@ const CURL: &str = "/usr/bin/curl";
 const HTTPS_204: &str = "https://www.gstatic.com/generate_204";
 const EGRESS: &str = "https://api.ipify.org";
 const SECOND_EGRESS: &str = "https://www.cloudflare.com/cdn-cgi/trace";
+// The reserved .invalid TLD must not resolve or reach an HTTP origin.
+// SOCKS5h, unlike SOCKS5, delegates name resolution to the remote proxy.
+const DNS_NEGATIVE: &str = "https://sing-box-never-resolve.invalid/";
+const MAX_PUBLIC_REPLY_BYTES: usize = 16_384;
 const PROXIES: [(&str, &str, u16); 6] = [
     ("http-direct", "http", 4128),
     ("socks5-direct", "socks5h", 4080),
@@ -122,6 +126,10 @@ fn query_proxy(
         "=https",
         "--connect-timeout",
         "4",
+        "--max-filesize",
+        "16384",
+        "--proto-redir",
+        "=https",
         "--max-time",
         "12",
         "--noproxy",
@@ -160,18 +168,68 @@ fn query_proxy(
     if !written {
         return Err("Line2 witness could not feed proxy identity".to_owned());
     }
+    if output.stdout.len() > MAX_PUBLIC_REPLY_BYTES {
+        return Err("HOST_VM_LINE2_WITNESS_HTTP_REPLY_OVERSIZE".to_owned());
+    }
     let text = String::from_utf8(output.stdout)
         .map_err(|_| "Line2 witness response is not UTF8".to_owned())?;
     let (body, statuses) = text
         .rsplit_once("\nHTTP:")
         .ok_or("Line2 witness curl did not return statuses")?;
+    if statuses.len() != 7
+        || statuses.as_bytes()[3] != b';'
+        || !statuses
+            .bytes()
+            .enumerate()
+            .all(|(i, b)| i == 3 || b.is_ascii_digit())
+    {
+        return Err("HOST_VM_LINE2_WITNESS_STATUS_NONCANONICAL".to_owned());
+    }
     Ok((output.status.code(), body.to_owned(), statuses.to_owned()))
 }
-fn require_204(result: (Option<i32>, String, String)) -> Result<(), String> {
-    if result.0 != Some(0) || result.2.split(';').nth(1) != Some("204") || !result.1.is_empty() {
-        return Err("external authenticated proxy HTTPS 204 not proven".to_owned());
+
+fn require_authenticated_https_status(
+    protocol: &str,
+    result: &(Option<i32>, String, String),
+    expected_status: &str,
+) -> Result<(), &'static str> {
+    let (connect, origin) = result
+        .2
+        .split_once(';')
+        .ok_or("HOST_VM_LINE2_WITNESS_STATUS_INVALID")?;
+    // The HTTPS origin must never be counted after a proxy authentication
+    // rejection (407), or after an unintended direct/bypassed connection.
+    let expected_connect = match protocol {
+        "http" | "https" => "200",
+        "socks5h" => "000",
+        _ => return Err("HOST_VM_LINE2_WITNESS_PROTOCOL_INVALID"),
+    };
+    if result.0 != Some(0) || connect != expected_connect || origin != expected_status {
+        return Err("HOST_VM_LINE2_WITNESS_PROXY_ORIGIN_PROOF_FAILED");
     }
     Ok(())
+}
+
+fn require_204(protocol: &str, result: (Option<i32>, String, String)) -> Result<(), String> {
+    require_authenticated_https_status(protocol, &result, "204")
+        .map_err(str::to_owned)?;
+    if !result.1.is_empty() {
+        return Err("HOST_VM_LINE2_WITNESS_204_BODY_UNEXPECTED".into());
+    }
+    Ok(())
+}
+
+fn remote_nxdomain_has_no_successful_origin(
+    protocol: &str,
+    result: &(Option<i32>, String, String),
+) -> bool {
+    // Only a positive SOCKS5h request followed by this negative request can
+    // attribute the name-resolution failure to a functioning remote proxy.
+    // This is a no-origin proof, not an authoritative DNS RCODE proof.
+    protocol == "socks5h"
+        && matches!(result.0, Some(5 | 6 | 97))
+        && result.1.is_empty()
+        && result.2 == "000;000"
 }
 fn negative_rejected(protocol: &str, (exit, _, codes): &(Option<i32>, String, String)) -> bool {
     let (connect, status) = match codes.split_once(';') {
@@ -279,7 +337,8 @@ fn verify_bundle_and_probe(
         // public port. A loopback-only service cannot satisfy this check.
         for _ in 0..5 {
             let result = query_proxy(protocol, ip, domain, port, HTTPS_204, username, &password)?;
-            require_204(result).map_err(|_| format!("{name} external HTTPS 204 failed"))?;
+            require_204(protocol, result)
+                .map_err(|_| format!("{name} external HTTPS 204 failed"))?;
         }
         let negative = query_proxy(
             protocol,
@@ -296,9 +355,8 @@ fn verify_bundle_and_probe(
             ));
         }
         let response = query_proxy(protocol, ip, domain, port, EGRESS, username, &password)?;
-        if response.0 != Some(0) || response.2.split(';').nth(1) != Some("200") {
-            return Err(format!("{name} external public egress endpoint failed"));
-        }
+        require_authenticated_https_status(protocol, &response, "200")
+            .map_err(|_| format!("{name} external public egress endpoint failed"))?;
         let observed: Ipv4Addr = response
             .1
             .trim()
@@ -319,12 +377,25 @@ fn verify_bundle_and_probe(
             username,
             &password,
         )?;
-        if trace.0 != Some(0) || trace.2.split(';').nth(1) != Some("200") {
-            return Err(format!("{name} second independent egress witness failed"));
-        }
+        require_authenticated_https_status(protocol, &trace, "200")
+            .map_err(|_| format!("{name} second independent egress witness failed"))?;
         secondary_ips.push(cloudflare_trace_ipv4(&trace.1)?);
         if cloudflare_trace_warp(&trace.1)? != name.ends_with("-warp") {
             return Err(format!("{name} Cloudflare trace contradicts declared DIRECT/WARP route"));
+        }
+        if protocol == "socks5h" {
+            let nxdomain = query_proxy(
+                protocol,
+                ip,
+                domain,
+                port,
+                DNS_NEGATIVE,
+                username,
+                &password,
+            )?;
+            if !remote_nxdomain_has_no_successful_origin(protocol, &nxdomain) {
+                return Err(format!("{name} SOCKS5h negative remote-DNS proof missing"));
+            }
         }
         println!(
             "line2_external_endpoint={name} samples=5 HTTPS=PASS TLS=VERIFIED AUTH_NEGATIVE=REJECTED EGRESS_WITNESSES=2"
@@ -342,6 +413,8 @@ fn verify_bundle_and_probe(
     println!("line2_g5_full_policy_matrix=UNPROVEN");
     println!("line2_direct_warp_egress_distinct=true");
     println!("line2_external_warp_identity=TRACE_CONFIRMED");
+    println!("line2_socks_remote_dns_negative_origin=REJECTED");
+    println!("line2_dns_authoritative_nxdomain_rcode=UNPROVEN");
     println!("line2_credential_projection=VM_CANONICAL_WORKER_V2");
     println!("line2_witness_vantage=INDEPENDENT_GITHUB_RUNNER");
     println!("provider_mutations=0");
@@ -430,8 +503,33 @@ mod tests {
             "socks5h",
             &(Some(97), String::new(), "000;000".into())
         ));
-        assert!(require_204((Some(0), String::new(), "200;204".into())).is_ok());
-        assert!(require_204((Some(0), "body".into(), "200;204".into())).is_err());
-        assert!(require_204((Some(0), String::new(), "407;204".into())).is_ok());
+        assert!(require_204("http", (Some(0), String::new(), "200;204".into())).is_ok());
+        assert!(require_204("socks5h", (Some(0), String::new(), "000;204".into())).is_ok());
+        assert!(require_204("http", (Some(0), "body".into(), "200;204".into())).is_err());
+        assert!(require_204("http", (Some(0), String::new(), "407;204".into())).is_err());
+        assert!(require_204("http", (Some(0), String::new(), "000;204".into())).is_err());
+        assert!(require_204("socks5h", (Some(0), String::new(), "200;204".into())).is_err());
+        assert!(require_204("http", (Some(0), String::new(), "200;407".into())).is_err());
+        assert!(require_204("invalid", (Some(0), String::new(), "200;204".into())).is_err());
+    }
+
+    #[test]
+    fn negative_remote_dns_does_not_infer_nxdomain_from_transport_timeout() {
+        assert!(remote_nxdomain_has_no_successful_origin(
+            "socks5h",
+            &(Some(97), String::new(), "000;000".into())
+        ));
+        for candidate in [
+            (Some(0), String::new(), "200;200".into()),
+            (Some(28), String::new(), "000;000".into()),
+            (Some(97), "origin response".into(), "000;000".into()),
+            (Some(97), String::new(), "200;000".into()),
+        ] {
+            assert!(!remote_nxdomain_has_no_successful_origin("socks5h", &candidate));
+        }
+        assert!(!remote_nxdomain_has_no_successful_origin(
+            "http",
+            &(Some(97), String::new(), "000;000".into())
+        ));
     }
 }

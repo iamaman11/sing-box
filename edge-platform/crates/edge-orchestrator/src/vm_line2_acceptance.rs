@@ -2,7 +2,54 @@
 //! The GitHub runner is the independent traffic vantage, not a Docker or VM
 //! mutation owner. No operator-supplied IP, TLS name or credential is trusted.
 use edge_shared_types::canonical_production_desired_state;
+use std::collections::BTreeSet;
+use std::net::{IpAddr, Ipv4Addr};
 use std::path::Path;
+use std::time::Duration;
+
+/// Git-owned hostname against the independently provider-observed exact VM IP.
+/// DNS configuration observation on the VM is NOT a substitute for public
+/// resolution from the GitHub-hosted runner.
+fn validate_public_dns(
+    addresses: &BTreeSet<IpAddr>,
+    expected_ipv4: Ipv4Addr,
+    vm_ipv6_enabled: bool,
+) -> Result<(), &'static str> {
+    if addresses.is_empty()
+        || !addresses.contains(&IpAddr::V4(expected_ipv4))
+        || addresses.iter().any(|address| match address {
+            IpAddr::V4(ip) => *ip != expected_ipv4,
+            IpAddr::V6(ip) => !vm_ipv6_enabled || ip.is_loopback() || ip.is_unspecified(),
+        })
+    {
+        return Err("HOST_VM_LINE2_WITNESS_PUBLIC_DNS_IP_MISMATCH");
+    }
+    // An IPv6-enabled VM still needs a provider-owned public v6 and exact AAAA
+    // expectation before claiming dual-stack Internet PASS.
+    if vm_ipv6_enabled {
+        return Err("HOST_VM_LINE2_WITNESS_IPV6_PROVIDER_PIN_UNPROVEN");
+    }
+    Ok(())
+}
+
+async fn check_public_dns(
+    hostname: &str,
+    expected_ipv4: &str,
+    vm_ipv6_enabled: bool,
+) -> Result<(), String> {
+    let expected = expected_ipv4
+        .parse::<Ipv4Addr>()
+        .map_err(|_| "HOST_VM_LINE2_WITNESS_PROVIDER_IPV4_INVALID")?;
+    let resolved = tokio::time::timeout(
+        Duration::from_secs(8),
+        tokio::net::lookup_host((hostname, 443)),
+    )
+    .await
+    .map_err(|_| "HOST_VM_LINE2_WITNESS_DNS_TIMEOUT")?
+    .map_err(|_| "HOST_VM_LINE2_WITNESS_DNS_RESOLUTION_UNAVAILABLE")?;
+    let answers = resolved.map(|address| address.ip()).collect::<BTreeSet<_>>();
+    validate_public_dns(&answers, expected, vm_ipv6_enabled).map_err(str::to_owned)
+}
 
 fn validate_witness_scope(
     machine_id: &str,
@@ -89,6 +136,13 @@ pub(crate) async fn run(
     let ip = observed
         .main_ip
         .ok_or("HOST_VM_LINE2_WITNESS_VULTR_PUBLIC_IP_UNPROVEN")?;
+    let vm_ipv6_enabled = machine
+        .machines
+        .first()
+        .ok_or("HOST_VM_LINE2_WITNESS_MACHINE_SPEC_MISSING")?
+        .provider
+        .enable_ipv6;
+    check_public_dns(&dns.record_name, &ip, vm_ipv6_enabled).await?;
     let client_id = std::env::var("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID")
         .map_err(|_| "HOST_VM_LINE2_WITNESS_ACCESS_CLIENT_ID_MISSING")?;
     let client_secret = std::env::var("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET")
@@ -122,6 +176,8 @@ pub(crate) async fn run(
         release.release().release_set_sha256
     );
     println!("host_vm_line2_witness_worker=VERIFIED_GIT_PINNED_ED25519");
+    println!("host_vm_line2_public_dns_a=EXACT_PROVIDER_IP");
+    println!("host_vm_line2_public_dns_aaaa=EXACT_DISABLED_VM_POLICY");
     println!("host_vm_line2_witness_mutations=0");
     Ok(())
 }
@@ -155,6 +211,22 @@ mod tests {
         ] {
             assert!(admit(bad).is_err());
         }
+    }
+
+    #[test]
+    fn public_dns_uses_provider_ip_and_blocks_unscoped_aaaa() {
+        let provider = Ipv4Addr::new(64, 176, 76, 2);
+        let a = IpAddr::V4(provider);
+        assert!(validate_public_dns(&BTreeSet::from([a]), provider, false).is_ok());
+        for answers in [
+            BTreeSet::new(),
+            BTreeSet::from([IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))]),
+            BTreeSet::from([a, IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))]),
+            BTreeSet::from([a, IpAddr::V6("2001:4860:4860::8888".parse().unwrap())]),
+        ] {
+            assert!(validate_public_dns(&answers, provider, false).is_err());
+        }
+        assert!(validate_public_dns(&BTreeSet::from([a]), provider, true).is_err());
     }
 
     #[test]
