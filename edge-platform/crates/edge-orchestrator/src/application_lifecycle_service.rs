@@ -328,7 +328,17 @@ fn compile_git_managed_protobuf_sources(files: &mut Vec<BundleFile>) -> Result<(
     let mut compiled = Vec::with_capacity(files.len());
     for file in files.drain(..) {
         match managed_textproto_type(&file.relative_path).map_err(str::to_owned)? {
-            None => compiled.push(file),
+            None => {
+                // Only the canonical build-time compiler may introduce native
+                // protobuf manifests. A checked-in .pb would be opaque Git
+                // desired and could evade human review of exact typed fields.
+                if file.relative_path.starts_with("managed/")
+                    && file.relative_path.ends_with(".pb")
+                {
+                    return Err("HOST_VM_MANAGED_RAW_PROTOBUF_SOURCE_FORBIDDEN".into());
+                }
+                compiled.push(file);
+            }
             Some((kind, output_path)) => {
                 // Compiling a Git textproto must not silently strip a
                 // sensitive/executable file's original security metadata.
@@ -392,6 +402,27 @@ table_id: 20100
         assert_eq!(record.machine_id, "vm-test");
         assert_eq!(record.table_id, 20100);
         assert_eq!(record.encode_to_vec(), files[0].content);
+    }
+
+    #[test]
+    fn managed_git_rejects_opaque_binary_desired_instead_of_compiling_it() {
+        for path in [
+            "managed/host-route-lab.pb",
+            "managed/docker-network-lab.pb",
+            "managed/docker-container-lab.pb",
+            "managed/unknown.pb",
+        ] {
+            let mut files = vec![BundleFile {
+                relative_path: path.into(),
+                content: vec![8, 1],
+                executable: false,
+                sensitive: false,
+            }];
+            assert_eq!(
+                compile_git_managed_protobuf_sources(&mut files),
+                Err("HOST_VM_MANAGED_RAW_PROTOBUF_SOURCE_FORBIDDEN".into())
+            );
+        }
     }
 
     #[test]
