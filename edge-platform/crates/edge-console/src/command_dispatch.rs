@@ -259,8 +259,8 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
         #[cfg(windows)]
         Command::OfflineBootstrapPreflight(args) => {
             let root = PathBuf::from(args.install_root);
-            let before =
-                read_only_windows_first_use_source(&root, None).map_err(ConsoleError::Command)?;
+            let (before, _) = read_only_windows_first_use_source(&root, None, "", "")
+                .map_err(ConsoleError::Command)?;
             // JSON is used only at the LOCAL CLI boundary, not as a persisted
             // desired-state, native journal, or mutation contract. This proof
             // reports observation, not signed SYSTEM authority or authorization.
