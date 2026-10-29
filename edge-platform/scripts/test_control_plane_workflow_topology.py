@@ -519,7 +519,20 @@ assert "seal_system_private(&root)?" in identity_owner
 assert '"/remove:g", "*S-1-5-32-544"' in identity_owner
 assert '"/setowner", "*S-1-5-18"' in identity_owner
 assert "HOST_WINDOWS_RECEIPT_ENROLL_COMPETING_REQUEST" in identity_owner
-assert "preflight_fresh_identity_slot(install_root)?" in win_console
+# Fresh first-use still denies keys/trust; ONLY an explicitly approved
+# retained-BEGIN supersession may transfer two exact unconsumed requests.
+assert "preflight_fresh_identity_slot(install_root)" in win_console
+assert "HOST_WINDOWS_FIRST_USE_REBIND_EXPLICIT_BEGIN_APPROVAL_REQUIRED" in win_console
+assert "preflight_pending_rebind(" in win_console
+assert "rebind_pending_after_offline_handoff(" in win_console
+assert "verify_offline_bootstrap_dispatcher(&current.console_path, \"Disabled\")" in identity_owner
+assert "pending_rebind_snapshot(&root, predecessor)?" in identity_owner
+assert "HOST_WINDOWS_FIRST_USE_REBIND_SLOT_ALREADY_USED_NO_REKEY" in identity_owner
+assert "fs::hard_link(root.join(name), &saved)" in identity_owner
+assert "create_only(&root.join(MARKER), &new_receipt.encode_to_vec())?" in identity_owner
+assert '        &root.join("trust-enrollment.pb"),' in identity_owner
+assert "        &new_trust.encode_to_vec()," in identity_owner
+assert "HOST_WINDOWS_FIRST_USE_REBIND_TRUST_READBACK_UNAVAILABLE" in identity_owner
 assert 'windows_trust_enrollment::prepare_pending(install_root)' in win_console
 assert 'windows_trust_enrollment::prepare_pending(root)' in Path("edge-platform/crates/edge-console/src/command_dispatch.rs").read_text(encoding="utf-8")
 assert 'Command::OfflineFirstUseStatus(args)' in Path("edge-platform/crates/edge-console/src/command_dispatch.rs").read_text(encoding="utf-8")

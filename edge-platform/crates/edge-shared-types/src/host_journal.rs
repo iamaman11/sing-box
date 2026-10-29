@@ -170,14 +170,226 @@ pub fn require_windows_local_administrator_first_use() -> Result<(), &'static st
 }
 
 #[cfg(windows)]
-pub fn verify_native_journal_protection(path: &Path) -> Result<(), &'static str> {
+fn windows_acl_owner_safe(privileged: bool, volume_root: bool, trusted_installer: bool) -> bool {
+    privileged || (volume_root && trusted_installer)
+}
+
+// A normal Windows volume root can allow unprivileged users to CREATE a
+// new sibling directory. That does not authorize DELETE_CHILD, rename, or
+// alteration of the already protected C:\\sing-box subtree.
+#[cfg(windows)]
+fn windows_acl_grant_safe(
+    mask: u32,
+    privileged: bool,
+    volume_root: bool,
+    inherit_only_creator_owner: bool,
+) -> bool {
+    if privileged || (volume_root && inherit_only_creator_owner) {
+        // The Windows volume's CREATOR_OWNER template is effective only on
+        // objects subsequently created by their creator. It grants no right
+        // to modify/replace the pre-existing, inheritance-blocked app root.
+        // No other inherit-only ACE bypasses the mutation-rights check.
+        return true;
+    }
+    const WRITE: u32 = 0x0000_0002 // FILE_ADD_FILE
+        | 0x0000_0004 // FILE_ADD_SUBDIRECTORY
+        | 0x0000_0010 // FILE_WRITE_EA
+        | 0x0000_0040 // FILE_DELETE_CHILD
+        | 0x0000_0100 // FILE_WRITE_ATTRIBUTES
+        | 0x0001_0000 // DELETE
+        | 0x0004_0000 // WRITE_DAC
+        | 0x0008_0000 // WRITE_OWNER
+        | 0x1000_0000 // GENERIC_ALL
+        | 0x4000_0000; // GENERIC_WRITE
+    let forbidden = if volume_root {
+        WRITE & !0x0000_0004
+    } else {
+        WRITE
+    };
+    mask & forbidden == 0
+}
+
+#[cfg(windows)]
+fn windows_trusted_installer_sid(sid: windows_sys::Win32::Security::PSID) -> bool {
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::ConvertStringSidToSidW;
+    use windows_sys::Win32::Security::EqualSid;
+    // NT SERVICE\\TrustedInstaller: a fixed service SID, never a localized name.
+    const TRUSTED_INSTALLER: &str =
+        "S-1-5-80-956008885-3418522649-1831038044-1853292631-2271478464";
+    let wide: Vec<u16> = TRUSTED_INSTALLER
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
+    let mut expected = std::ptr::null_mut();
+    if unsafe { ConvertStringSidToSidW(wide.as_ptr(), &mut expected) } == 0 {
+        return false;
+    }
+    let equal = unsafe { EqualSid(sid, expected) } != 0;
+    unsafe { LocalFree(expected) };
+    equal
+}
+
+// This is an ACL-only readback, not permission to run a SYSTEM operation.
+// The caller still needs the exact LocalSystem token / signed intent gates.
+// Both directory ancestors AND the supplied leaf (including an EXE or
+// current.pb) are checked. The volume-root exception never applies elsewhere.
+#[cfg(windows)]
+pub fn verify_windows_protected_path_acl(path: &Path, leaf_file: bool) -> Result<(), &'static str> {
     use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Foundation::{CloseHandle, LocalFree};
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Foundation::LocalFree;
     use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
     use windows_sys::Win32::Security::{
-        ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION, GetAce, GetTokenInformation,
-        IsWellKnownSid, OWNER_SECURITY_INFORMATION, TOKEN_QUERY, TOKEN_USER, TokenUser,
-        WinBuiltinAdministratorsSid, WinLocalSystemSid,
+        ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION, GetAce, IsWellKnownSid,
+        OWNER_SECURITY_INFORMATION, WinBuiltinAdministratorsSid, WinLocalSystemSid,
+    };
+    if !path.is_absolute() || !path.starts_with(Path::new(r"C:\sing-box")) {
+        return Err("HOST_WINDOWS_JOURNAL_ABSOLUTE_PATH_REQUIRED");
+    }
+    for (index, ancestor) in path.ancestors().enumerate() {
+        let meta = fs::symlink_metadata(ancestor)
+            .map_err(|_| "HOST_WINDOWS_JOURNAL_ANCESTOR_UNAVAILABLE")?;
+        let is_leaf_file = index == 0 && leaf_file;
+        if (is_leaf_file && !meta.file_type().is_file())
+            || (!is_leaf_file && !meta.file_type().is_dir())
+            || meta.file_type().is_symlink()
+            || meta.file_attributes() & 0x400 != 0
+        {
+            return Err("HOST_WINDOWS_JOURNAL_REPARSE_OR_NOT_DIRECTORY");
+        }
+        let volume_root = ancestor == Path::new(r"C:\");
+        let mut wide: Vec<u16> = ancestor.as_os_str().encode_wide().collect();
+        wide.push(0);
+        let mut owner = std::ptr::null_mut();
+        let mut dacl: *mut ACL = std::ptr::null_mut();
+        let mut descriptor = std::ptr::null_mut();
+        let status = unsafe {
+            GetNamedSecurityInfoW(
+                wide.as_mut_ptr(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                &mut owner,
+                std::ptr::null_mut(),
+                &mut dacl,
+                std::ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        if status != 0 {
+            return Err("HOST_WINDOWS_JOURNAL_SECURITY_UNAVAILABLE");
+        }
+        let safe = (|| {
+            if owner.is_null() || dacl.is_null() {
+                return false;
+            }
+            let privileged = |sid| unsafe {
+                IsWellKnownSid(sid, WinLocalSystemSid) != 0
+                    || IsWellKnownSid(sid, WinBuiltinAdministratorsSid) != 0
+            };
+            if !windows_acl_owner_safe(
+                privileged(owner),
+                volume_root,
+                windows_trusted_installer_sid(owner),
+            ) {
+                return false;
+            }
+            let acl = unsafe { &*dacl };
+            for index in 0..acl.AceCount {
+                let mut ace = std::ptr::null_mut();
+                if unsafe { GetAce(dacl, index as u32, &mut ace) } == 0 || ace.is_null() {
+                    return false;
+                }
+                let header = unsafe { &*(ace as *const windows_sys::Win32::Security::ACE_HEADER) };
+                if header.AceType != 0 && header.AceType != 1 {
+                    // Unknown/object-specific ACE layouts are never guessed.
+                    return false;
+                }
+                if header.AceType == 0 {
+                    let grant = unsafe { &*(ace as *const ACCESS_ALLOWED_ACE) };
+                    let sid = (&grant.SidStart as *const u32).cast_mut().cast();
+                    let creator_owner_template = volume_root
+                        && header.AceFlags & 0x08 != 0 // INHERIT_ONLY_ACE
+                        && unsafe {
+                            IsWellKnownSid(sid, windows_sys::Win32::Security::WinCreatorOwnerSid)
+                                != 0
+                        };
+                    if !windows_acl_grant_safe(
+                        grant.Mask,
+                        privileged(sid) || (volume_root && windows_trusted_installer_sid(sid)),
+                        volume_root,
+                        creator_owner_template,
+                    ) {
+                        return false;
+                    }
+                }
+            }
+            true
+        })();
+        unsafe { LocalFree(descriptor) };
+        if !safe {
+            return Err("HOST_WINDOWS_JOURNAL_DACL_NOT_PROTECTED");
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+pub fn windows_native_acl_owner_sid(path: &Path) -> Result<String, &'static str> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSidToStringSidW, GetNamedSecurityInfoW, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::OWNER_SECURITY_INFORMATION;
+    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    wide.push(0);
+    let mut owner = std::ptr::null_mut();
+    let mut descriptor = std::ptr::null_mut();
+    let status = unsafe {
+        GetNamedSecurityInfoW(
+            wide.as_mut_ptr(),
+            SE_FILE_OBJECT,
+            OWNER_SECURITY_INFORMATION,
+            &mut owner,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if status != 0 || owner.is_null() {
+        if !descriptor.is_null() {
+            unsafe { LocalFree(descriptor) };
+        }
+        return Err("HOST_WINDOWS_JOURNAL_SECURITY_UNAVAILABLE");
+    }
+    let mut string_ptr: *mut u16 = std::ptr::null_mut();
+    let converted = unsafe { ConvertSidToStringSidW(owner, &mut string_ptr) };
+    unsafe { LocalFree(descriptor) };
+    if converted == 0 || string_ptr.is_null() {
+        return Err("HOST_WINDOWS_JOURNAL_SECURITY_UNAVAILABLE");
+    }
+    let mut len = 0usize;
+    while len < 128 && unsafe { *string_ptr.add(len) } != 0 {
+        len += 1;
+    }
+    let result = if len == 128 {
+        Err("HOST_WINDOWS_JOURNAL_SECURITY_UNAVAILABLE")
+    } else {
+        Ok(String::from_utf16_lossy(unsafe {
+            std::slice::from_raw_parts(string_ptr, len)
+        }))
+    };
+    unsafe { LocalFree(string_ptr.cast()) };
+    result
+}
+
+#[cfg(windows)]
+pub fn verify_native_journal_protection(path: &Path) -> Result<(), &'static str> {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::Security::{
+        GetTokenInformation, IsWellKnownSid, TOKEN_QUERY, TOKEN_USER, TokenUser, WinLocalSystemSid,
     };
     use windows_sys::Win32::System::Threading::{GetCurrentProcess, OpenProcessToken};
 
@@ -221,91 +433,7 @@ pub fn verify_native_journal_protection(path: &Path) -> Result<(), &'static str>
         return Err("HOST_WINDOWS_LOCALSYSTEM_REQUIRED");
     }
 
-    // Examine the actual kernel DACL on every ancestor, not text output
-    // from icacls, inherited assumptions, or the runner's self-report.
-    // Fail closed on NULL DACL and every unknown write-capable principal.
-    for ancestor in path.ancestors() {
-        let meta = fs::symlink_metadata(ancestor)
-            .map_err(|_| "HOST_WINDOWS_JOURNAL_ANCESTOR_UNAVAILABLE")?;
-        if !meta.file_type().is_dir() || meta.file_type().is_symlink() {
-            return Err("HOST_WINDOWS_JOURNAL_REPARSE_OR_NOT_DIRECTORY");
-        }
-        let mut wide: Vec<u16> = ancestor.as_os_str().encode_wide().collect();
-        wide.push(0);
-        let mut owner = std::ptr::null_mut();
-        let mut dacl: *mut ACL = std::ptr::null_mut();
-        let mut descriptor = std::ptr::null_mut();
-        let status = unsafe {
-            GetNamedSecurityInfoW(
-                wide.as_mut_ptr(),
-                SE_FILE_OBJECT,
-                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
-                &mut owner,
-                std::ptr::null_mut(),
-                &mut dacl,
-                std::ptr::null_mut(),
-                &mut descriptor,
-            )
-        };
-        if status != 0 {
-            return Err("HOST_WINDOWS_JOURNAL_SECURITY_UNAVAILABLE");
-        }
-        let safe = (|| {
-            if owner.is_null() || dacl.is_null() {
-                return false;
-            }
-            let privileged = |sid| unsafe {
-                IsWellKnownSid(sid, WinLocalSystemSid) != 0
-                    || IsWellKnownSid(sid, WinBuiltinAdministratorsSid) != 0
-            };
-            if !privileged(owner) {
-                return false;
-            }
-            // File/dir creation, append, DELETE_CHILD, EA, ATTRIBUTES,
-            // DELETE, WRITE_DAC/WRITE_OWNER and generic write/all. Bit 1
-            // (list directory/read data) and bit 8 (read EA) are NOT writes.
-            const WRITE_MASK: u32 = 0x0000_0002
-                | 0x0000_0004
-                | 0x0000_0010
-                | 0x0000_0040
-                | 0x0000_0100
-                | 0x0001_0000
-                | 0x0004_0000
-                | 0x0008_0000
-                | 0x1000_0000
-                | 0x4000_0000;
-            let acl = unsafe { &*dacl };
-            for index in 0..acl.AceCount {
-                let mut ace = std::ptr::null_mut();
-                if unsafe { GetAce(dacl, index as u32, &mut ace) } == 0 || ace.is_null() {
-                    return false;
-                }
-                let header = unsafe { &*(ace as *const windows_sys::Win32::Security::ACE_HEADER) };
-                // Reject unsupported ACE structures, which could grant
-                // rights not correctly interpreted by this narrow verifier.
-                if header.AceType != 0 && header.AceType != 1 {
-                    return false;
-                }
-                if header.AceType == 0 {
-                    let allowed = unsafe { &*(ace as *const ACCESS_ALLOWED_ACE) };
-                    if allowed.Mask & WRITE_MASK != 0 {
-                        let sid = (&allowed.SidStart as *const u32).cast_mut().cast();
-                        if !privileged(sid) {
-                            return false;
-                        }
-                    }
-                }
-            }
-            true
-        })();
-        unsafe {
-            LocalFree(descriptor);
-        }
-        if !safe {
-            return Err("HOST_WINDOWS_JOURNAL_DACL_NOT_PROTECTED");
-        }
-    }
-    Ok(())
+    verify_windows_protected_path_acl(path, false)
 }
 
 #[cfg(not(any(unix, windows)))]
@@ -2614,5 +2742,59 @@ mod tests {
             verify_native_journal_protection(Path::new(r"C:\sing-box\state\host")),
             Err("HOST_WINDOWS_OWNER_ACL_NOT_ACCEPTED")
         );
+    }
+}
+
+// Real Windows W4 projection: TrustedInstaller-owned C:\\ with an
+// Authenticated Users create-directory ACE is safe ONLY if delete/replace,
+// WRITE_DAC/WRITE_OWNER, and all other mutation rights remain absent.
+// A user-owned application root is independently denied by the owner check.
+#[cfg(all(test, windows))]
+mod windows_w4_acl_tests {
+    use super::{windows_acl_grant_safe, windows_acl_owner_safe};
+
+    #[test]
+    fn only_the_volume_root_accepts_trusted_installer_as_owner() {
+        assert!(windows_acl_owner_safe(true, false, false));
+        assert!(windows_acl_owner_safe(false, true, true));
+        // Actual initial app-root owner was a normal user. The verifier
+        // rejects that owner even if nested journal ACLs look protected.
+        assert!(!windows_acl_owner_safe(false, false, false));
+        assert!(!windows_acl_owner_safe(false, false, true));
+        assert!(!windows_acl_owner_safe(false, true, false));
+    }
+
+    #[test]
+    fn volume_root_create_directory_does_not_grant_replace() {
+        assert!(windows_acl_grant_safe(0x0000_0004, false, true, false));
+        assert!(!windows_acl_grant_safe(0x0000_0004, false, false, false));
+        for bad in [
+            0x0000_0002,
+            0x0000_0010,
+            0x0000_0040,
+            0x0000_0100,
+            0x0001_0000,
+            0x0004_0000,
+            0x0008_0000,
+            0x1000_0000,
+            0x4000_0000,
+        ] {
+            assert!(!windows_acl_grant_safe(
+                0x0000_0004 | bad,
+                false,
+                true,
+                false
+            ));
+        }
+        assert!(windows_acl_grant_safe(u32::MAX, true, false, false));
+        // Inherit-only is NOT proof of safety: arbitrary unprivileged
+        // full-control inherited onto the journal or executable is unsafe.
+        assert!(!windows_acl_grant_safe(u32::MAX, false, false, false));
+        assert!(!windows_acl_grant_safe(u32::MAX, false, true, false));
+        // Only the owner-template on the volume root may be inherited:
+        // this app-root verifier separately requires non-inheriting protected
+        // ACLs for every descendant in the existing canonical directory.
+        assert!(windows_acl_grant_safe(u32::MAX, false, true, true));
+        assert!(!windows_acl_grant_safe(u32::MAX, false, false, true));
     }
 }

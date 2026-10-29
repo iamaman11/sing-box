@@ -98,6 +98,9 @@ if ($controller.Count -ne 0) {
         .set_config_service_sid_info(ServiceSidType::Unrestricted)
         .map_err(|_| "HOST_WINDOWS_CLEAN_INSTALL_SERVICE_SID_UNCERTAIN_NO_REPLAY")?;
     converge_application_acl(install_root)?;
+    // The new SYSTEM task must never execute a binary under a user-writable
+    // installation root, even if native-host/journal themselves are protected.
+    converge_windows_system_authority_acl(install_root, Path::new(&active.console_path))?;
     let state = service
         .query_status()
         .map_err(|_| "HOST_WINDOWS_CLEAN_INSTALL_SCM_STATE_UNAVAILABLE")?;

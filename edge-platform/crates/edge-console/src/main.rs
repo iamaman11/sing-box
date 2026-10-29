@@ -2459,7 +2459,10 @@ fn offline_activate_privileged_release_with_installer(
         // even when ProxyOnly is STOPPED and SCM is never started.
         .and_then(|_| {
             #[cfg(windows)]
-            converge_native_host_acl(install_root)?;
+            {
+                converge_native_host_acl(install_root)?;
+                converge_windows_system_authority_acl(install_root, Path::new(&post.console_path))?;
+            }
             Ok(())
         })
         .and_then(|_| retarget_privileged_task(install_root, &post.console_path))
@@ -3050,9 +3053,41 @@ fn offline_bootstrap_privileged_release(
         return Err("OFFLINE_BOOTSTRAP_BLOCKED: canonical target is not ProxyOnly".to_owned());
     }
     let before = read_only_windows_first_use_source(install_root, supersession)?;
-    if enroll_receipt {
-        windows_receipt_enrollment::preflight_fresh_identity_slot(install_root)?;
-    }
+    let pending_identity_rebind = if enroll_receipt {
+        match windows_receipt_enrollment::preflight_fresh_identity_slot(install_root) {
+            Ok(()) => None,
+            Err(refused) if refused == "HOST_WINDOWS_RECEIPT_ENROLL_SLOT_NOT_EMPTY_NO_REKEY" => {
+                if supersession.is_none() {
+                    return Err(
+                        "HOST_WINDOWS_FIRST_USE_REBIND_EXPLICIT_BEGIN_APPROVAL_REQUIRED".into(),
+                    );
+                }
+                Some(windows_receipt_enrollment::preflight_pending_rebind(
+                    install_root,
+                    &before,
+                )?)
+            }
+            Err(reason) => return Err(reason),
+        }
+    } else {
+        // A direct owner upgrade must not abandon either pending first-use
+        // request by silently replacing its exact-release executable.
+        // Metadata errors are UNKNOWN, not proof of an empty slot.
+        for marker in ["receipt-enrollment.pb", "trust-enrollment.pb"] {
+            match fs::symlink_metadata(install_root.join("native-host").join(marker)) {
+                Ok(_) => {
+                    return Err(
+                        "HOST_WINDOWS_FIRST_USE_PENDING_REQUIRES_EXPLICIT_APPROVED_REBIND".into(),
+                    );
+                }
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(_) => {
+                    return Err("HOST_WINDOWS_FIRST_USE_PENDING_METADATA_UNPROVEN_NO_REPLAY".into());
+                }
+            }
+        }
+        None
+    };
     if before.release_set_sha256 == target {
         return Err("OFFLINE_BOOTSTRAP_BLOCKED: exact distinct legacy release required".to_owned());
     }
@@ -3210,17 +3245,29 @@ fn offline_bootstrap_privileged_release(
         request,
         Some(&stage_installer),
     )?;
+    // Both predecessor intents are still durable and unconsumed. Preserve
+    // their exact bytes and write the new exact-release typed pair only while
+    // the ORIGINAL SYSTEM task is Disabled, before it can observe either
+    // intermediate state. A failure is UNKNOWN/NO-REPLAY, never an implicit
+    // instruction to generate another key.
+    if let Some(ref pending) = pending_identity_rebind {
+        windows_receipt_enrollment::rebind_pending_after_offline_handoff(
+            install_root,
+            pending,
+            &before,
+        )
+        .map_err(|reason| {
+            format!("OFFLINE_BOOTSTRAP_PENDING_IDENTITY_REBIND_UNKNOWN_NO_REPLAY: {reason}")
+        })?;
+    }
     // New main rejects legacy mutation opcodes; re-enable only after the
-    // exact immutable signed-capable replacement is installed and read back.
-    // If re-enable fails the one-shot marker remains; never replay.
+    // exact immutable signed-capable replacement and pending requests pass
+    // readback. If re-enable fails the one-shot marker remains; never replay.
     change_offline_bootstrap_task_enabled(true)?;
     verify_offline_bootstrap_dispatcher(&console.to_string_lossy(), "Ready")?;
-    if enroll_receipt {
-        // One explicitly scoped local Administrator transaction: after the
-        // exact immutable SYSTEM task has been verified, persist the same
-        // typed enrollment marker. Only SYSTEM generates the PRIVATE key.
-        // The release is already activated; an uncertain marker must not
-        // trigger a second bootstrap or an automatic key regeneration.
+    if enroll_receipt && pending_identity_rebind.is_none() {
+        // First-use on an empty identity slot: the already installed task
+        // alone creates the PRIVATE key; local Administrator writes requests.
         windows_receipt_enrollment::prepare(install_root).map_err(|reason| {
             format!("OFFLINE_BOOTSTRAP_IDENTITY_STEP_UNCERTAIN_NO_REPLAY: {reason}; installed release may already be active; inspect current.pb and native identity status before any new authorization")
         })?;
@@ -3966,9 +4013,10 @@ fn converge_application_acl(install_root: &Path) -> Result<(), String> {
         ],
     )?;
     run_icacls(install_root, &["/inheritance:r", "/Q"])?;
-    let descendants = install_root.join("*");
-    run_icacls(&descendants, &["/reset", "/T", "/Q"])?;
-
+    // Never recursively reset all descendants: native-host may already hold
+    // a SYSTEM-only Ed25519 PKCS8 whose sealed DACL must survive routine SCM
+    // convergence. The scoped controller directories below and immutable
+    // SYSTEM authority paths have independent, explicit ACL convergence.
     for path in [
         install_root.join("state"),
         install_root.join("runtime"),
@@ -4004,6 +4052,185 @@ fn existing_native_host_directory_is_safe(meta: &fs::Metadata) -> bool {
     use std::os::windows::fs::MetadataExt;
     // Windows junctions/reparse points are not trusted filesystem roots.
     meta.file_type().is_dir() && meta.file_attributes() & 0x400 == 0
+}
+
+// Protect the ACTUAL executable chain used by the pre-existing SYSTEM task,
+// not only native-host/journal. A user-owned installation root with FullControl
+// is not trusted even when the journal's two leaf directories look protected.
+// This does not create a second owner or enrollment marker.
+#[cfg(windows)]
+fn harden_system_authority_path(
+    path: &Path,
+    recursive: bool,
+    directory: bool,
+) -> Result<(), String> {
+    use std::os::windows::fs::MetadataExt;
+    let meta =
+        fs::symlink_metadata(path).map_err(|_| "HOST_WINDOWS_SYSTEM_AUTHORITY_PATH_MISSING")?;
+    if meta.file_type().is_symlink()
+        || meta.file_attributes() & 0x400 != 0
+        || (directory && !meta.file_type().is_dir())
+        || (!directory && !meta.file_type().is_file())
+    {
+        return Err("HOST_WINDOWS_SYSTEM_AUTHORITY_REPARSE_OR_WRONG_TYPE".into());
+    }
+    // Hold non-DELETE-sharing Windows HANDLEs for the whole immutable tree
+    // throughout the existing icacls operations and final kernel readback.
+    // Path-only metadata checks followed by icacls permit a rename/junction
+    // swap. Sharing READ/WRITE but NOT DELETE protects each opened pathname
+    // against delete/rename without blocking the security descriptor update.
+    use std::os::windows::fs::OpenOptionsExt;
+    fn guard_tree(path: &Path, recursive: bool, handles: &mut Vec<File>) -> Result<(), String> {
+        use std::os::windows::fs::MetadataExt;
+        let meta = fs::symlink_metadata(path)
+            .map_err(|_| "HOST_WINDOWS_SYSTEM_AUTHORITY_TREE_UNREADABLE")?;
+        if meta.file_type().is_symlink()
+            || meta.file_attributes() & 0x400 != 0
+            || (!meta.file_type().is_dir() && !meta.file_type().is_file())
+        {
+            return Err("HOST_WINDOWS_SYSTEM_AUTHORITY_TREE_REPARSE".into());
+        }
+        let guard = OpenOptions::new()
+            .read(true)
+            .share_mode(0x0000_0001 | 0x0000_0002) // FILE_SHARE_READ | FILE_SHARE_WRITE; NOT DELETE
+            .custom_flags(0x0200_0000 | 0x0020_0000) // BACKUP_SEMANTICS | OPEN_REPARSE_POINT
+            .open(path)
+            .map_err(|_| "HOST_WINDOWS_SYSTEM_AUTHORITY_HANDLE_UNAVAILABLE")?;
+        let guarded = guard
+            .metadata()
+            .map_err(|_| "HOST_WINDOWS_SYSTEM_AUTHORITY_HANDLE_METADATA_UNAVAILABLE")?;
+        if guarded.file_attributes() & 0x400 != 0
+            || guarded.file_type().is_dir() != meta.file_type().is_dir()
+        {
+            return Err("HOST_WINDOWS_SYSTEM_AUTHORITY_HANDLE_CHANGED".into());
+        }
+        handles.push(guard);
+        if recursive && meta.file_type().is_dir() {
+            for entry in
+                fs::read_dir(path).map_err(|_| "HOST_WINDOWS_SYSTEM_AUTHORITY_TREE_UNREADABLE")?
+            {
+                let entry = entry.map_err(|_| "HOST_WINDOWS_SYSTEM_AUTHORITY_TREE_UNREADABLE")?;
+                guard_tree(&entry.path(), true, handles)?;
+            }
+        }
+        Ok(())
+    }
+    let mut _protected_handles = Vec::new();
+    guard_tree(path, recursive, &mut _protected_handles)?;
+    let original_owner = edge_shared_types::host_journal::windows_native_acl_owner_sid(path)
+        .map_err(str::to_owned)?;
+    // Keep existing NetworkService read access; no NetworkService write
+    // access is granted to the SYSTEM console, release, current.pb or root.
+    let system = if directory {
+        "*S-1-5-18:(OI)(CI)F"
+    } else {
+        "*S-1-5-18:F"
+    };
+    let admins = if directory {
+        "*S-1-5-32-544:(OI)(CI)F"
+    } else {
+        "*S-1-5-32-544:F"
+    };
+    let reader = if directory {
+        "*S-1-5-20:(OI)(CI)RX"
+    } else {
+        "*S-1-5-20:RX"
+    };
+    run_icacls(path, &["/grant:r", system, admins, reader, "/Q"])?;
+    run_icacls(path, &["/inheritance:r", "/Q"])?;
+    if original_owner != "S-1-5-18" && original_owner != "S-1-5-32-544" {
+        let sid = format!("*{original_owner}");
+        if recursive {
+            run_icacls(path, &["/remove:g", &sid, "/T", "/Q"])?;
+        } else {
+            run_icacls(path, &["/remove:g", &sid, "/Q"])?;
+        }
+    }
+    if recursive {
+        // Only the immutable releases/ and stable bin/bootstrap trees enter
+        // this branch. There are NO identity keys or journals beneath them.
+        // Reset inherited child DACLs from an already protected parent,
+        // rather than allowing an older explicit user-writable DLL/script.
+        run_icacls(path, &["/reset", "/T", "/Q"])?;
+        run_icacls(path, &["/setowner", "*S-1-5-32-544", "/T", "/Q"])?;
+    } else {
+        run_icacls(path, &["/setowner", "*S-1-5-32-544", "/Q"])?;
+    }
+    edge_shared_types::host_journal::verify_windows_protected_path_acl(path, !directory)
+        .map_err(str::to_owned)?;
+    if recursive {
+        fn verify_immutable_tree(path: &Path) -> Result<(), String> {
+            for entry in
+                fs::read_dir(path).map_err(|_| "HOST_WINDOWS_SYSTEM_AUTHORITY_TREE_UNREADABLE")?
+            {
+                let entry = entry.map_err(|_| "HOST_WINDOWS_SYSTEM_AUTHORITY_TREE_UNREADABLE")?;
+                let child = entry.path();
+                let meta = fs::symlink_metadata(&child)
+                    .map_err(|_| "HOST_WINDOWS_SYSTEM_AUTHORITY_TREE_UNREADABLE")?;
+                let dir = meta.file_type().is_dir();
+                edge_shared_types::host_journal::verify_windows_protected_path_acl(&child, !dir)
+                    .map_err(str::to_owned)?;
+                if dir {
+                    verify_immutable_tree(&child)?;
+                }
+            }
+            Ok(())
+        }
+        verify_immutable_tree(path)?;
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn converge_windows_system_authority_acl(
+    install_root: &Path,
+    immutable_console: &Path,
+) -> Result<(), String> {
+    if install_root != Path::new(r"C:\sing-box")
+        || !immutable_console.starts_with(install_root.join("releases"))
+        || immutable_console.file_name().and_then(|x| x.to_str()) != Some("edge-console.exe")
+    {
+        return Err("HOST_WINDOWS_SYSTEM_AUTHORITY_SCOPE_INVALID".into());
+    }
+    harden_system_authority_path(install_root, false, true)?;
+    let releases = install_root.join("releases");
+    let console_owner =
+        edge_shared_types::host_journal::windows_native_acl_owner_sid(immutable_console)
+            .map_err(str::to_owned)?;
+    harden_system_authority_path(&releases, true, true)?;
+    // A new release may have been staged by a local Administrator even when
+    // the releases/ directory already has an Administrators owner.
+    if console_owner != "S-1-5-18" && console_owner != "S-1-5-32-544" {
+        let sid = format!("*{console_owner}");
+        run_icacls(&releases, &["/remove:g", &sid, "/T", "/Q"])?;
+    }
+    for directory in [install_root.join("bin"), install_root.join("bootstrap")] {
+        if directory.is_dir() {
+            harden_system_authority_path(&directory, true, true)?;
+        }
+    }
+    for file in [
+        install_root.join("current.pb"),
+        install_root.join("previous.pb"),
+        install_root.join("offline-bootstrap-intent-v1"),
+    ] {
+        if file.exists() {
+            harden_system_authority_path(&file, false, false)?;
+        }
+    }
+    edge_shared_types::host_journal::verify_windows_protected_path_acl(immutable_console, true)
+        .map_err(str::to_owned)?;
+    let diagnostic = install_root.join("bin").join("edge-diagnostic.exe");
+    if diagnostic.is_file() {
+        edge_shared_types::host_journal::verify_windows_protected_path_acl(&diagnostic, true)
+            .map_err(str::to_owned)?;
+    }
+    edge_shared_types::host_journal::verify_windows_protected_path_acl(
+        &install_root.join("native-host").join("journal"),
+        false,
+    )
+    .map_err(str::to_owned)?;
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -4530,6 +4757,9 @@ fn converge_controller_service(install_root: &Path, controller_path: &Path) -> R
         .map_err(|err| format!("failed to limit controller recovery to crash failures: {err}"))?;
 
     converge_application_acl(install_root)?;
+    // Only a verified immutable SYSTEM executable path may be bound to SCM.
+    let active = load_verified_activation(install_root).map_err(|err| err.to_string())?;
+    converge_windows_system_authority_acl(install_root, Path::new(&active.console_path))?;
 
     service
         .start::<&str>(&[])

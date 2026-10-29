@@ -31,7 +31,7 @@ const MAX_RELEASE: usize = 65_536;
 const MAX_REGISTRY: usize = 65_536;
 const MAX_SPEC: usize = 65_536;
 
-fn verify_enrollment_marker(
+pub(super) fn verify_enrollment_marker(
     bytes: &[u8],
     active: &WindowsActivationState,
 ) -> Result<(), &'static str> {
