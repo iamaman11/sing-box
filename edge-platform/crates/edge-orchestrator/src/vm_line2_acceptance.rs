@@ -154,8 +154,10 @@ mod tests {
             38503639351,
         );
         assert!(
-            validate_witness_scope(args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7)
-                .is_ok()
+            validate_witness_scope(
+                args.0, args.1, args.2, args.3, args.4, args.5, args.6, args.7
+            )
+            .is_ok()
         );
         for (line1, line2, username, generation) in [
             ("foreign.example", args.5, args.6, args.7),

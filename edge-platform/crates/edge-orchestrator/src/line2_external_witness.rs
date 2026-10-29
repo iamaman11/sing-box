@@ -197,9 +197,7 @@ pub(crate) async fn witness_with_service_identity(
     if generation == 0 || !valid_domain(domain) || username != "acceptance" {
         return Err("HOST_VM_WITNESS_TARGET_INVALID".to_owned());
     }
-    let ip: Ipv4Addr = vm_ip
-        .parse()
-        .map_err(|_| "HOST_VM_WITNESS_IP_INVALID")?;
+    let ip: Ipv4Addr = vm_ip.parse().map_err(|_| "HOST_VM_WITNESS_IP_INVALID")?;
     if !public_ipv4(ip) || ip.to_string() != vm_ip {
         return Err("HOST_VM_WITNESS_NOT_PUBLIC_IPV4".to_owned());
     }
