@@ -1718,6 +1718,9 @@ pub(crate) fn run(
         HostCommand::VmCredentialProof { .. } => {
             Err("HOST_VM_CREDENTIAL_PROOF_MUST_USE_PROTECTED_OWNER".to_owned())
         }
+        HostCommand::VmWorkerSignerProof { .. } => {
+            Err("HOST_VM_SIGNER_PROOF_MUST_USE_PROTECTED_OWNER".to_owned())
+        }
         HostCommand::VmWorkerSignerPrepare { .. } | HostCommand::VmWorkerSignerCommit { .. } => {
             Err("HOST_VM_SIGNER_MUST_USE_PROTECTED_WORKER_OWNER".to_owned())
         }
