@@ -642,6 +642,26 @@ assert "fn legacy_console_mutation_ingress_is_unparseable()" in win_cli
 assert "HOST_WINDOWS_LEGACY_PRIVILEGED_MUTATION_DISABLED" in win_console
 assert "require_offline_bootstrap_quiescent(install_root)?;" in win_console
 
+# The real W4 failure occurred BEFORE native owner handoff: the offline
+# PowerShell StageOnly gate still required Ready, while Rust admitted exact
+# Disabled+retained-BEGIN recovery. Both StageOnly and BootstrapNow must
+# receive the same exact pinned old BEGIN and current-release pair; do not
+# broaden task-state admission for ordinary or unpinned installations.
+installer = Path("edge-platform/scripts/install-windows-release.ps1").read_text(encoding="utf-8")
+assert '(-not $BootstrapNow -and -not $StageOnly)' in installer
+assert "$disabledSuccessorProven = $false" in installer
+assert "$hasRetained -and [string]$dispatch.State -ceq 'Disabled'" in installer
+assert "(Get-FileHash -LiteralPath $retainedPath -Algorithm SHA256)" in installer
+assert "$retainedMatch.Groups['from'].Value -cne [string]$old['release_set_sha256']" in installer
+assert "$retainedMatch.Groups['to'].Value -ceq $ReleaseSetSha256" in installer
+assert "$retainedMatch.Groups['revision'].Value -ceq $AcceptedRevision" in installer
+assert "([string]$dispatch.State -cne 'Ready' -and -not $disabledSuccessorProven)" in installer
+assert 'if let Some(approval) = supersession {' in win_console
+assert '.arg("-RetainedIntentSha256")' in win_console
+assert '.arg(&approval.expected_intent_sha256)' in win_console
+assert '.arg("-ExpectedCurrentReleaseSetSha256")' in win_console
+assert '.arg(&approval.expected_current_release_set_sha256)' in win_console
+
 # The elevated read-only diagnostic must use the SAME verified
 # current owner, native doctor, task and no-replay gates as mutation pre-BEGIN.
 # No staged installer, filesystem write, SCM operation or task state changes

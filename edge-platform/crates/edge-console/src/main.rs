@@ -3198,7 +3198,8 @@ fn offline_bootstrap_privileged_release(
     // The canonical offline installer requires PowerShell 7 -NoProxy.
     // Reject an unavailable pwsh before its irreversible BEGIN, never fall
     // back to Windows PowerShell 5.1 or the broken ambient proxy path.
-    let preflight = Command::new("pwsh.exe")
+    let mut preflight = Command::new("pwsh.exe");
+    preflight
         .args([
             "-NoProfile",
             "-NonInteractive",
@@ -3216,12 +3217,17 @@ fn offline_bootstrap_privileged_release(
             root,
             "-Offline",
             "-StageOnly",
-        ])
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|err| {
-            format!("OFFLINE_BOOTSTRAP_BLOCKED: release preflight unavailable: {err}")
-        })?;
+        ]);
+    if let Some(approval) = supersession {
+        preflight
+            .arg("-RetainedIntentSha256")
+            .arg(&approval.expected_intent_sha256)
+            .arg("-ExpectedCurrentReleaseSetSha256")
+            .arg(&approval.expected_current_release_set_sha256);
+    }
+    let preflight = preflight.stdin(Stdio::null()).output().map_err(|err| {
+        format!("OFFLINE_BOOTSTRAP_BLOCKED: release preflight unavailable: {err}")
+    })?;
     if !preflight.status.success() {
         return Err(format!(
             "OFFLINE_BOOTSTRAP_BLOCKED: accepted release preflight failed: {}",
