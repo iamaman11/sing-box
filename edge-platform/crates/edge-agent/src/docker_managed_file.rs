@@ -221,6 +221,39 @@ async fn select_exact_missing_managed_network(
         .ok_or("HOST_VM_MANAGED_REPAIR_NOT_EXACTLY_ONE_KNOWN_MISSING".into())
 }
 
+/// A per-handler ACK is not a completed VM network repair. All managed
+/// dependencies and native route/firewall/DNS objects must be re-observed
+/// after the effect, before the existing journal can commit a signed receipt.
+fn classify_scoped_network_repair_poststate(
+    docker_rows: &[edge_shared_types::FleetVmManagedDockerReadback],
+    network: ManagedNetworkRecovery,
+) -> Result<(), &'static str> {
+    if docker_rows.iter().any(|row| !row.converged) {
+        return Err("HOST_VM_MANAGED_REPAIR_DOCKER_POSTSTATE_UNPROVEN_NO_REPLAY");
+    }
+    match network {
+        ManagedNetworkRecovery::Converged => Ok(()),
+        ManagedNetworkRecovery::KnownRecoverable => {
+            Err("HOST_VM_MANAGED_REPAIR_NETWORK_POSTSTATE_MISSING_NO_REPLAY")
+        }
+        ManagedNetworkRecovery::UnknownNoReplay => {
+            Err("HOST_VM_MANAGED_REPAIR_NETWORK_POSTSTATE_UNKNOWN_NO_REPLAY")
+        }
+    }
+}
+
+async fn verify_scoped_network_repair_poststate(
+    stack_dir: &Path,
+    host: &FleetHost,
+) -> Result<(), String> {
+    let docker = super::docker_connection()
+        .await
+        .map_err(|_| "HOST_VM_MANAGED_REPAIR_DOCKER_POSTSTATE_UNPROVEN_NO_REPLAY")?;
+    let docker_rows = collect_native_managed_docker_readback(stack_dir, host, Some(&docker)).await;
+    let network = super::observe_vm_managed_network_recovery(stack_dir, host).await;
+    classify_scoped_network_repair_poststate(&docker_rows, network).map_err(str::to_owned)
+}
+
 /// A same-ReleaseSet START may restore exactly one proven-lost
 /// ephemeral network resource. The installed manifest is read-only, and
 /// the existing native journal/Worker authorization owns the single effect.
@@ -271,6 +304,7 @@ pub(crate) async fn preflight_scoped_network_repair(
 
 pub(crate) async fn apply_scoped_network_repair_once(
     stack_dir: &Path,
+    host: &FleetHost,
     plan: &PreparedScopedNetworkRepair,
 ) -> Result<(), String> {
     let path = stack_dir.join(&plan.path);
@@ -295,6 +329,7 @@ pub(crate) async fn apply_scoped_network_repair_once(
     {
         return Err("HOST_VM_MANAGED_REPAIR_MANIFEST_POSTSTATE_NO_REPLAY".into());
     }
+    verify_scoped_network_repair_poststate(stack_dir, host).await?;
     Ok(())
 }
 
@@ -567,6 +602,7 @@ pub(crate) async fn apply_native_vm_managed_file_once(
         {
             return Err("HOST_VM_MANAGED_REPAIR_MANIFEST_CHANGED_NO_REPLAY".into());
         }
+        verify_scoped_network_repair_poststate(stack_dir, host).await?;
     } else {
         atomic_managed_file_change(&path, plan.before.as_deref(), plan.after.as_deref(), 0)
             .map_err(str::to_owned)?;
@@ -785,6 +821,45 @@ mod tests {
                 Some("opaque|S|timestamp")
             ),
             ("DESIRED_STOPPED", true)
+        );
+    }
+
+    #[test]
+    fn scoped_network_repair_requires_fresh_physical_poststate() {
+        let healthy = edge_shared_types::FleetVmManagedDockerReadback {
+            converged: true,
+            ..Default::default()
+        };
+        assert_eq!(
+            classify_scoped_network_repair_poststate(
+                &[healthy.clone()],
+                ManagedNetworkRecovery::Converged,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            classify_scoped_network_repair_poststate(
+                &[healthy.clone()],
+                ManagedNetworkRecovery::KnownRecoverable,
+            ),
+            Err("HOST_VM_MANAGED_REPAIR_NETWORK_POSTSTATE_MISSING_NO_REPLAY")
+        );
+        assert_eq!(
+            classify_scoped_network_repair_poststate(
+                &[healthy],
+                ManagedNetworkRecovery::UnknownNoReplay,
+            ),
+            Err("HOST_VM_MANAGED_REPAIR_NETWORK_POSTSTATE_UNKNOWN_NO_REPLAY")
+        );
+        assert_eq!(
+            classify_scoped_network_repair_poststate(
+                &[edge_shared_types::FleetVmManagedDockerReadback {
+                    converged: false,
+                    ..Default::default()
+                }],
+                ManagedNetworkRecovery::Converged,
+            ),
+            Err("HOST_VM_MANAGED_REPAIR_DOCKER_POSTSTATE_UNPROVEN_NO_REPLAY")
         );
     }
 
