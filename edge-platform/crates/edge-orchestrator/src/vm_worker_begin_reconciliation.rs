@@ -121,7 +121,6 @@ fn prior_run_matches_owner(
         && run.pointer("/triggering_actor/id").and_then(Value::as_u64) == Some(ACTOR_ID)
         && run.get("path").and_then(Value::as_str)
             == Some(".github/workflows/edge-control-plane.yml")
-        && run.get("name").and_then(Value::as_str) == Some(exact_command.as_str())
 }
 
 fn matching_worker_jobs<'a>(jobs: &'a Value, prior: &PriorBegin) -> Vec<&'a Value> {
@@ -589,13 +588,35 @@ mod tests {
             "conclusion":"success","event":"issue_comment","run_attempt":1,
             "actor":{"id":ACTOR_ID},"triggering_actor":{"id":ACTOR_ID},
             "path":".github/workflows/edge-control-plane.yml",
-            "name":"/host apply application-acceptance-3"});
+            "name":"Host operator 6426933127"});
+        // GitHub Actions run display names can change without changing the
+        // immutable operator comment, owner run, or protected workflow.
+        // Display labels are NOT sources of authorization.
         let jobs = serde_json::json!({"total_count":1,"jobs":[{"name":"host_worker_authorizer",
             "run_id":23,"status":"completed","conclusion":"success"}]});
         assert!(prior_run_is_terminal(
             &prior,
             "application-acceptance-3",
             &operator,
+            &run,
+            &jobs
+        ));
+        // A differently titled run cannot change actual GitHub authority.
+        let mut renamed_run = run.clone();
+        renamed_run["name"] = Value::String("untrusted UI title".into());
+        assert!(prior_run_is_terminal(
+            &prior,
+            "application-acceptance-3",
+            &operator,
+            &renamed_run,
+            &jobs
+        ));
+        let mut wrong_comment = operator.clone();
+        wrong_comment["body"] = Value::String("/host apply wrong-machine".into());
+        assert!(!prior_run_is_terminal(
+            &prior,
+            "application-acceptance-3",
+            &wrong_comment,
             &run,
             &jobs
         ));
