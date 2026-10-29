@@ -147,9 +147,7 @@ mod tests {
         // still proves that replacement/alias paths are rejected.
         let resolved = root.canonicalize().unwrap();
         let resolved = resolved.to_str().unwrap();
-        let root = std::path::PathBuf::from(
-            resolved.strip_prefix(r"\\?\").unwrap_or(resolved),
-        );
+        let root = std::path::PathBuf::from(resolved.strip_prefix(r"\\?\").unwrap_or(resolved));
         let path = root.join("selected.exe");
         std::fs::write(&path, b"synthetic routing identity, never executed").unwrap();
         let mut policy = WindowsApplicationRouting {
