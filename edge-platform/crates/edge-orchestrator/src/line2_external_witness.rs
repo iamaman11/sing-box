@@ -312,10 +312,9 @@ fn verify_bundle_and_probe(
             "line2_external_endpoint={name} samples=5 HTTPS=PASS TLS=VERIFIED AUTH_NEGATIVE=REJECTED EGRESS_WITNESSES=2"
         );
     }
-    if !(0..3).all(|i| {
-        external_ips[i] != external_ips[i + 3]
-            && secondary_ips[i] != secondary_ips[i + 3]
-    }) {
+    if !(0..3)
+        .all(|i| external_ips[i] != external_ips[i + 3] && secondary_ips[i] != secondary_ips[i + 3])
+    {
         return Err("Line2 direct/WARP public egress identities indistinguishable".to_owned());
     }
     println!("operation=INITIAL_LINE2_EXTERNAL_WITNESS");

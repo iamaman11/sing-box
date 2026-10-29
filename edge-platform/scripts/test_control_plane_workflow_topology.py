@@ -12,6 +12,31 @@ assert required <= actual, f"native workflow missing: {required-actual}"
 assert not (legacy & actual), f"legacy mutation workflow present: {legacy&actual}"
 router=(root/"edge-control-plane.yml").read_text(encoding="utf-8")
 native=(root/"host-native-observe.yml").read_text(encoding="utf-8")
+# The single /host namespace also owns a strictly read-only external Line2
+# witness; it can use protected credentials only on the GitHub-hosted vantage.
+# This job MUST NOT acquire native root, a new transport, or a provider write.
+line2 = router.split("  host_line2_external_witness:\n",1)[1].split("\n  host_project_dns:",1)[0]
+for admission in (
+    "github.event.issue.number == 1",
+    "github.actor_id == '44100369'",
+    "github.run_attempt == 1",
+    "startsWith(github.event.comment.body, '/host witness-line2 ')",
+    "name: production-vultr",
+    "contents: read",
+    "bash edge-platform/scripts/resolve_durable_release.sh",
+    'test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"',
+    "EDGE_RELEASE_CONTEXT_PATH=",
+    "compile_vm_host_desired.sh",
+    "--source-comment-id",
+    'witness-line2 "${machine}"',
+    "line2_g5_full_policy_matrix=UNPROVEN",
+):
+    assert admission in line2, f"Line2 protected witness is missing {admission}"
+assert "issues: write" not in line2
+assert "sudo " not in line2 and "docker " not in line2
+assert "CLOUDFLARE_CONTROL_TOKEN:" not in line2
+assert "IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN:" not in line2
+assert "uses: ./.github/workflows/host-native-observe.yml" not in line2
 ci=(root/"edge-platform-ci.yml").read_text(encoding="utf-8")
 # Release publication authenticates GitHub's exact two-parent merge and
 # merged PR identity, not the human commit message. This must support
