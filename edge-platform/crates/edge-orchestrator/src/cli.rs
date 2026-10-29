@@ -86,6 +86,10 @@ pub(crate) enum HostCommand {
         #[arg(long)]
         deep: bool,
     },
+    /// Protected GitHub-hosted read-only acceptance of the six public Line2
+    /// endpoints. All credentials, machine address and DNS policy are resolved
+    /// from existing authoritative owners; caller supplies only machine ID.
+    WitnessLine2 { machine_id: String },
     /// Bounded VM diagnostic, validated by Rust on both ends.
     Diagnose {
         machine_id: String,

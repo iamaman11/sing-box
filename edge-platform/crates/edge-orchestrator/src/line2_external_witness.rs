@@ -1,8 +1,10 @@
 //! Independent GitHub-hosted Line2 public-port witness. Read-only VM
 //! projection via canonical Cloudflare Worker; never opens a VM/SSH channel,
 //! starts a service or emits a secret. Production control remains elsewhere.
-use edge_secrets::fetch_canonical_credential_bundle;
-use edge_shared_types::{CredentialProjectionKind, credential_delivery_bundle};
+use edge_secrets::{
+    fetch_canonical_credential_bundle, fetch_canonical_credential_bundle_with_service_identity,
+};
+use edge_shared_types::{CredentialDeliveryBundle, CredentialProjectionKind, credential_delivery_bundle};
 use std::collections::BTreeSet;
 use std::io::Write;
 use std::net::Ipv4Addr;
@@ -177,6 +179,48 @@ pub(crate) async fn witness(
         access_identity_path,
     )
     .await?;
+    verify_bundle_and_probe(generation, ip, domain, username, bundle)
+}
+
+/// The independent GitHub-hosted witness reuses the protected VM Access
+/// identity directly, rather than copying a secret to a new credential file.
+pub(crate) async fn witness_with_service_identity(
+    generation: u64,
+    vm_ip: &str,
+    domain: &str,
+    username: &str,
+    access_client_id: &str,
+    access_client_secret: &str,
+) -> Result<(), String> {
+    if generation == 0 || !valid_domain(domain) || username != "acceptance" {
+        return Err("HOST_VM_WITNESS_TARGET_INVALID".to_owned());
+    }
+    let ip: Ipv4Addr = vm_ip
+        .parse()
+        .map_err(|_| "HOST_VM_WITNESS_IP_INVALID")?;
+    if !public_ipv4(ip) || ip.to_string() != vm_ip {
+        return Err("HOST_VM_WITNESS_NOT_PUBLIC_IPV4".to_owned());
+    }
+    if !Path::new(CURL).is_file() {
+        return Err("HOST_VM_WITNESS_CURL_UNAVAILABLE".to_owned());
+    }
+    let bundle = fetch_canonical_credential_bundle_with_service_identity(
+        CredentialProjectionKind::Vm,
+        generation,
+        access_client_id,
+        access_client_secret,
+    )
+    .await?;
+    verify_bundle_and_probe(generation, ip, domain, username, bundle)
+}
+
+fn verify_bundle_and_probe(
+    generation: u64,
+    ip: Ipv4Addr,
+    domain: &str,
+    username: &str,
+    bundle: CredentialDeliveryBundle,
+) -> Result<(), String> {
     if bundle.generation != generation || bundle.dummy_non_secret {
         return Err("Line2 witness refuses dummy or stale VM credential generation".to_owned());
     }
@@ -239,6 +283,9 @@ pub(crate) async fn witness(
     }
     println!("operation=INITIAL_LINE2_EXTERNAL_WITNESS");
     println!("line2_external_6_of_6=PASS");
+    // Six public port probes are NOT the entire #538 G5 matrix. Separate
+    // DNS positive/NXDOMAIN, IPv6 and UDP policy cases remain independent.
+    println!("line2_g5_full_policy_matrix=UNPROVEN");
     println!("line2_direct_warp_egress_distinct=true");
     println!("line2_credential_projection=VM_CANONICAL_WORKER_V2");
     println!("line2_witness_vantage=INDEPENDENT_GITHUB_RUNNER");

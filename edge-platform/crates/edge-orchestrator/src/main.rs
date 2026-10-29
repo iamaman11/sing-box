@@ -17,6 +17,7 @@ mod host_dispatch;
 mod line2_external_witness;
 mod production_command;
 mod vm_host_desired;
+mod vm_line2_acceptance;
 mod vm_worker_begin_reconciliation;
 mod vultr_host_bootstrap;
 mod vultr_host_substrate_service;
