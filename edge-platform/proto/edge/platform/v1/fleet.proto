@@ -377,22 +377,29 @@ message FleetVmManagedKernelRoute {
   string interface_name = 7;
   uint32 table_id = 8;
 }
-// Git-declared input deny rules in an isolated nftables inet table.
-// No implicit default-drop, forward/output hook or provider firewall write.
+// Git-declared explicit TCP/UDP allow/deny in an isolated nftables inet
+// table. Default accept protects the host control path; no global default
+// drop, forward/output hook or provider firewall write.
 enum FleetVmFirewallTransport {
   FLEET_VM_FIREWALL_TRANSPORT_UNSPECIFIED = 0;
   FLEET_VM_FIREWALL_TRANSPORT_TCP = 1;
   FLEET_VM_FIREWALL_TRANSPORT_UDP = 2;
 }
-message FleetVmFirewallDeny {
+enum FleetVmFirewallAction {
+  FLEET_VM_FIREWALL_ACTION_UNSPECIFIED = 0;
+  FLEET_VM_FIREWALL_ACTION_ALLOW = 1;
+  FLEET_VM_FIREWALL_ACTION_DENY = 2;
+}
+message FleetVmFirewallRule {
   FleetVmFirewallTransport transport = 1;
   uint32 destination_port = 2;
+  FleetVmFirewallAction action = 3;
 }
 message FleetVmManagedFirewall {
   uint32 schema_version = 1;
   string machine_id = 2;
   string resource_name = 3;
-  repeated FleetVmFirewallDeny denied_ingress = 4;
+  repeated FleetVmFirewallRule ingress_rules = 4;
 }
 message FleetVmManagedFirewallReadback {
   string resource_name = 1;

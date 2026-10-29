@@ -416,13 +416,15 @@ table_id: 20100
         let source = br#"schema_version: 1
 machine_id: "vmtest"
 resource_name: "sb-vmtest-lab"
-denied_ingress {
+ingress_rules {
   transport: FLEET_VM_FIREWALL_TRANSPORT_TCP
   destination_port: 22555
+  action: FLEET_VM_FIREWALL_ACTION_DENY
 }
-denied_ingress {
+ingress_rules {
   transport: FLEET_VM_FIREWALL_TRANSPORT_UDP
   destination_port: 22556
+  action: FLEET_VM_FIREWALL_ACTION_ALLOW
 }
 "#;
         let make = || vec![BundleFile {
@@ -438,7 +440,7 @@ denied_ingress {
         assert_eq!(first[0].relative_path, "managed/host-firewall-lab.pb");
         assert_eq!(first[0].content, second[0].content);
         let typed = FleetVmManagedFirewall::decode(first[0].content.as_slice()).unwrap();
-        assert_eq!(typed.denied_ingress.len(), 2);
+        assert_eq!(typed.ingress_rules.len(), 2);
         assert_eq!(typed.encode_to_vec(), first[0].content);
     }
 

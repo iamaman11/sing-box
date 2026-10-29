@@ -4,7 +4,7 @@
 //! netlink batch. Unknown acknowledgement keeps UNKNOWN_NO_REPLAY.
 use super::*;
 use edge_shared_types::{
-    FleetHost, FleetHostKind, FleetVmFirewallTransport, FleetVmManagedFirewall,
+    FleetHost, FleetHostKind, FleetVmFirewallTransport, FleetVmFirewallAction, FleetVmManagedFirewall,
     FleetVmManagedFirewallReadback,
 };
 use prost::Message;
@@ -18,7 +18,7 @@ const RULES_MAX: usize = 16;
 pub(super) struct PreparedManagedFirewall {
     before: Option<FleetVmManagedFirewall>,
     after: Option<FleetVmManagedFirewall>,
-    before_rules: Option<Vec<(i32, u16)>>,
+    before_rules: Option<Vec<(i32, u16, i32)>>,
     script: String,
 }
 
@@ -26,22 +26,29 @@ pub(super) fn is_managed_firewall_manifest(path: &str) -> bool {
     path.starts_with("managed/host-firewall-") && path.ends_with(".pb")
 }
 
-fn canonical_rules(spec: &FleetVmManagedFirewall) -> Option<Vec<(i32, u16)>> {
-    if spec.denied_ingress.is_empty() || spec.denied_ingress.len() > RULES_MAX {
+fn canonical_rules(spec: &FleetVmManagedFirewall) -> Option<Vec<(i32, u16, i32)>> {
+    if spec.ingress_rules.is_empty() || spec.ingress_rules.len() > RULES_MAX {
         return None;
     }
-    let mut ordered = Vec::with_capacity(spec.denied_ingress.len());
-    for rule in &spec.denied_ingress {
+    let mut ordered = Vec::with_capacity(spec.ingress_rules.len());
+    for rule in &spec.ingress_rules {
         if !matches!(
             FleetVmFirewallTransport::try_from(rule.transport),
             Ok(FleetVmFirewallTransport::Tcp | FleetVmFirewallTransport::Udp)
         ) || !(1025..=65535).contains(&rule.destination_port)
+            || !matches!(
+                FleetVmFirewallAction::try_from(rule.action),
+                Ok(FleetVmFirewallAction::Allow | FleetVmFirewallAction::Deny)
+            )
         {
             return None;
         }
-        ordered.push((rule.transport, rule.destination_port as u16));
+        ordered.push((rule.transport, rule.destination_port as u16, rule.action));
     }
-    if ordered.windows(2).any(|pair| pair[0] >= pair[1]) {
+    // Conflicting allow/deny for the same protocol/port could silently
+    // short-circuit; never depend on nft rule ordering to resolve it.
+    if ordered.windows(2).any(|pair| pair[0] >= pair[1]
+        || (pair[0].0, pair[0].1) == (pair[1].0, pair[1].1)) {
         return None;
     }
     Some(ordered)
@@ -123,13 +130,18 @@ fn render_batch(
         }
         (None, None) => unreachable!(),
     }
-    for (protocol, port) in canonical_rules(after.expect("present rules")).unwrap() {
+    for (protocol, port, action) in canonical_rules(after.expect("present rules")).unwrap() {
         let label = if protocol == FleetVmFirewallTransport::Tcp as i32 {
             "tcp"
         } else {
             "udp"
         };
-        batch.push_str(&format!("add rule inet {table} ingress {label} dport {port} drop\n"));
+        let verdict = if action == FleetVmFirewallAction::Allow as i32 {
+            "accept"
+        } else {
+            "drop"
+        };
+        batch.push_str(&format!("add rule inet {table} ingress {label} dport {port} {verdict}\n"));
     }
     batch
 }
@@ -173,7 +185,7 @@ async fn nft(args: Vec<String>, stdin: Option<String>) -> Result<String, String>
 fn decode_ruleset(
     spec: &FleetVmManagedFirewall,
     root: &Value,
-) -> Result<Vec<(i32, u16)>, String> {
+) -> Result<Vec<(i32, u16, i32)>, String> {
     let objects = root["nftables"]
         .as_array()
         .ok_or("HOST_VM_FIREWALL_JSON_SHAPE_INVALID")?;
@@ -216,7 +228,6 @@ fn decode_ruleset(
             let expressions = rule["expr"].as_array()
                 .ok_or("HOST_VM_FIREWALL_RULE_EXPRESSION_UNPROVEN")?;
             if expressions.len() != 2
-                || expressions[1].get("drop").is_none()
                 || expressions[0]["match"]["op"].as_str() != Some("==")
                 || expressions[0]["match"]["left"]["payload"]["field"].as_str() != Some("dport")
             {
@@ -230,7 +241,17 @@ fn decode_ruleset(
             let port = expressions[0]["match"]["right"].as_u64()
                 .and_then(|number| u16::try_from(number).ok())
                 .ok_or("HOST_VM_FIREWALL_RULE_PORT_INVALID")?;
-            rules.push((protocol, port));
+            let action = if expressions[1].get("accept").is_some() {
+                FleetVmFirewallAction::Allow as i32
+            } else if expressions[1].get("drop").is_some() {
+                FleetVmFirewallAction::Deny as i32
+            } else {
+                return Err("HOST_VM_FIREWALL_RULE_VERDICT_FOREIGN".into());
+            };
+            if expressions[1].as_object().is_none_or(|obj| obj.len() != 1) {
+                return Err("HOST_VM_FIREWALL_RULE_VERDICT_EXTRA".into());
+            }
+            rules.push((protocol, port, action));
         } else {
             return Err("HOST_VM_FIREWALL_TABLE_OBJECT_FOREIGN".into());
         }
@@ -288,7 +309,7 @@ pub(super) async fn preflight_managed_firewall(
     if let (Some(prior), Some(next)) = (&prior, &next) {
         if prior.machine_id != next.machine_id
             || prior.resource_name != next.resource_name
-            || prior.denied_ingress == next.denied_ingress
+            || prior.ingress_rules == next.ingress_rules
         {
             return Err("HOST_VM_FIREWALL_NO_EFFECT_OR_IDENTITY_CHANGE".into());
         }
@@ -415,9 +436,10 @@ mod tests {
             schema_version: 1,
             machine_id: "vmtest".into(),
             resource_name: "sb-vmtest-lab".into(),
-            denied_ingress: vec![edge_shared_types::FleetVmFirewallDeny {
+            ingress_rules: vec![edge_shared_types::FleetVmFirewallRule {
                 transport: FleetVmFirewallTransport::Tcp as i32,
                 destination_port: 22555,
+                action: FleetVmFirewallAction::Deny as i32,
             }],
         };
         (host, spec)
@@ -445,10 +467,10 @@ mod tests {
         spec.machine_id = "foreign".into();
         assert!(decode_scope(&host, "managed/host-firewall-lab.pb", &spec.encode_to_vec()).is_err());
         let (_, mut spec) = fixture();
-        spec.denied_ingress[0].destination_port = 22;
+        spec.ingress_rules[0].destination_port = 22;
         assert!(decode_scope(&host, "managed/host-firewall-lab.pb", &spec.encode_to_vec()).is_err());
-        spec.denied_ingress[0].destination_port = 22555;
-        spec.denied_ingress.push(spec.denied_ingress[0].clone());
+        spec.ingress_rules[0].destination_port = 22555;
+        spec.ingress_rules.push(spec.ingress_rules[0].clone());
         assert!(decode_scope(&host, "managed/host-firewall-lab.pb", &spec.encode_to_vec()).is_err());
         assert!(decode_scope(&host, "managed/host-firewall-../x.pb", &spec.encode_to_vec()).is_err());
         let mut injected = host;
@@ -472,12 +494,32 @@ mod tests {
         assert!(!created.contains("delete table inet filter"));
         let deleted = render_batch(Some(&spec), None);
         assert_eq!(deleted, "delete table inet sb_lab\n");
-        spec.denied_ingress[0].destination_port = 22556;
+        spec.ingress_rules[0].destination_port = 22556;
         let (_, previous) = fixture();
         let edited = render_batch(Some(&previous), Some(&spec));
         assert!(edited.starts_with("flush chain inet sb_lab ingress\n"));
         assert!(edited.contains("tcp dport 22556 drop"));
         assert!(!edited.contains("add table"));
+    }
+
+    #[test]
+    fn explicit_allow_and_deny_are_canonical_and_conflicts_rejected() {
+        let (_, mut spec) = fixture();
+        spec.ingress_rules[0].action = FleetVmFirewallAction::Allow as i32;
+        let batch = render_batch(None, Some(&spec));
+        assert!(batch.contains("tcp dport 22555 accept"));
+        spec.ingress_rules.push(edge_shared_types::FleetVmFirewallRule {
+            transport: FleetVmFirewallTransport::Udp as i32,
+            destination_port: 22556,
+            action: FleetVmFirewallAction::Deny as i32,
+        });
+        assert_eq!(canonical_rules(&spec).unwrap().len(), 2);
+        spec.ingress_rules[1].transport = FleetVmFirewallTransport::Tcp as i32;
+        spec.ingress_rules[1].destination_port = 22555;
+        assert!(canonical_rules(&spec).is_none());
+        spec.ingress_rules[1].destination_port = 22556;
+        spec.ingress_rules[1].action = 0;
+        assert!(canonical_rules(&spec).is_none());
     }
 
     #[test]
@@ -507,7 +549,7 @@ mod tests {
         });
         assert_eq!(
             decode_ruleset(&spec, &good).unwrap(),
-            vec![(FleetVmFirewallTransport::Tcp as i32, 22555)]
+            vec![(FleetVmFirewallTransport::Tcp as i32, 22555, FleetVmFirewallAction::Deny as i32)]
         );
         let mut foreign = good.clone();
         foreign["nftables"][2]["chain"]["hook"] = Value::String("output".into());
