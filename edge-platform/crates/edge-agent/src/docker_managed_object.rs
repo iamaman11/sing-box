@@ -283,6 +283,9 @@ pub(super) async fn observe_managed_docker_object(
                 if network.name.as_deref() != Some(spec.resource_name.as_str())
                     || network.driver.as_deref() != Some("bridge")
                     || network.internal != Some(true)
+                    || network.attachable != Some(false)
+                    || network.ingress == Some(true)
+                    || network.config_only == Some(true)
                     || (check_ipam
                         && !exact_network_ipv6_ipam(
                             spec,
@@ -818,6 +821,19 @@ mod tests {
         };
         assert!(exact_network_ipv6_ipam(&spec, Some(true), Some(&ipam)));
         assert!(!exact_network_ipv6_ipam(&spec, Some(false), Some(&ipam)));
+        let mut altered_ipam = ipam.clone();
+        altered_ipam.config.as_mut().unwrap()[0].gateway =
+            Some("fd45:1234:abcd::2".into());
+        assert!(!exact_network_ipv6_ipam(&spec, Some(true), Some(&altered_ipam)));
+        altered_ipam = ipam.clone();
+        altered_ipam.config.as_mut().unwrap().push(
+            bollard::models::IpamConfig {
+                subnet: Some("fd56:1234:abcd::/64".into()),
+                gateway: Some("fd56:1234:abcd::1".into()),
+                ..Default::default()
+            },
+        );
+        assert!(!exact_network_ipv6_ipam(&spec, Some(true), Some(&altered_ipam)));
         for (subnet, gateway) in [
             ("2001:db8::/64", "2001:db8::1"),
             ("2001:4860::/64", "2001:4860::1"),
@@ -854,6 +870,43 @@ mod tests {
         assert!(exact_attached_networks("none", Vec::<&str>::new()));
         assert!(exact_attached_networks("none", ["none"]));
         assert!(!exact_attached_networks("none", ["bridge"]));
+    }
+
+    #[test]
+    fn docker_network_ipv6_is_only_for_scoped_bridge_resources() {
+        let host = FleetHost {
+            machine_id: "vm-test".into(),
+            ..Default::default()
+        };
+        let path = "managed/docker-network-lab.pb";
+        let mut network = FleetVmManagedDockerResource {
+            schema_version: 1,
+            machine_id: host.machine_id.clone(),
+            resource_name: "sb-vm-test-lab".into(),
+            kind: Kind::BridgeNetwork as i32,
+            desired_state: Desired::Present as i32,
+            ipv6_subnet: "fd45:1234:abcd::/64".into(),
+            ipv6_gateway: "fd45:1234:abcd::1".into(),
+            ..Default::default()
+        };
+        assert!(resource_path_expected(&host, path, &network));
+        assert!(decode_exact_spec(&host, path, &network.encode_to_vec()).is_ok());
+        network.ipv6_gateway.clear();
+        assert!(!resource_path_expected(&host, path, &network));
+        network.ipv6_gateway = "fd45:1234:abcd::1".into();
+        network.kind = Kind::LocalVolume as i32;
+        assert!(!resource_path_expected(
+            &host,
+            "managed/docker-volume-lab.pb",
+            &network,
+        ));
+        network.kind = Kind::Container as i32;
+        network.image_ref = format!("ghcr.io/iamaman11/test@sha256:{}", "a".repeat(64));
+        assert!(!resource_path_expected(
+            &host,
+            "managed/docker-container-lab.pb",
+            &network,
+        ));
     }
 
     #[test]

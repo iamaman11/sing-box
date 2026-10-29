@@ -375,7 +375,9 @@ fn compile_git_managed_protobuf_sources(files: &mut Vec<BundleFile>) -> Result<(
 #[cfg(test)]
 mod managed_textproto_tests {
     use super::*;
-    use edge_shared_types::{FleetVmIpFamily, FleetVmManagedKernelRoute};
+    use edge_shared_types::{
+        FleetVmIpFamily, FleetVmManagedDockerResource, FleetVmManagedKernelRoute,
+    };
 
     #[test]
     fn managed_git_route_produces_only_typed_protobuf_and_no_textproto_runtime_file() {
@@ -402,6 +404,35 @@ table_id: 20100
         assert_eq!(record.machine_id, "vm-test");
         assert_eq!(record.table_id, 20100);
         assert_eq!(record.encode_to_vec(), files[0].content);
+    }
+
+    #[test]
+    fn managed_git_ipv6_bridge_builds_deterministic_typed_bundle() {
+        let source = br#"schema_version: 1
+machine_id: "vm-test"
+resource_name: "sb-vm-test-lab"
+kind: FLEET_VM_MANAGED_DOCKER_KIND_BRIDGE_NETWORK
+desired_state: FLEET_VM_MANAGED_DOCKER_DESIRED_STATE_PRESENT
+ipv6_subnet: "fd45:1234:abcd::/64"
+ipv6_gateway: "fd45:1234:abcd::1"
+"#;
+        let fresh = || vec![BundleFile {
+            relative_path: "managed/docker-network-lab.textproto".into(),
+            content: source.to_vec(),
+            executable: false,
+            sensitive: false,
+        }];
+        let mut first = fresh();
+        let mut second = fresh();
+        compile_git_managed_protobuf_sources(&mut first).unwrap();
+        compile_git_managed_protobuf_sources(&mut second).unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].relative_path, "managed/docker-network-lab.pb");
+        assert_eq!(first[0].content, second[0].content);
+        let spec = FleetVmManagedDockerResource::decode(first[0].content.as_slice()).unwrap();
+        assert_eq!(spec.ipv6_subnet, "fd45:1234:abcd::/64");
+        assert_eq!(spec.ipv6_gateway, "fd45:1234:abcd::1");
+        assert_eq!(spec.encode_to_vec(), first[0].content);
     }
 
     #[test]
