@@ -274,7 +274,7 @@ fn decode_ruleset(
     Ok(rules)
 }
 
-async fn inspect(spec: &FleetVmManagedFirewall) -> Result<Option<Vec<(i32, u16)>>, String> {
+async fn inspect(spec: &FleetVmManagedFirewall) -> Result<Option<Vec<(i32, u16, i32)>>, String> {
     let all = nft(vec!["-j".into(), "list".into(), "tables".into()], None).await?;
     let parsed: Value =
         serde_json::from_str(&all).map_err(|_| "HOST_VM_FIREWALL_TABLES_JSON_INVALID")?;

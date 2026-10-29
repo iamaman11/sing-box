@@ -79,7 +79,7 @@ fn decode_scope(
             || ip.is_loopback()
             || ip.is_unspecified()
             || ip.is_multicast()
-            || previous.as_ref().is_some_and(|p| p >= addr)
+            || previous.as_ref().is_some_and(|p| *p >= addr)
         {
             return Err("HOST_VM_DNS_SERVER_NONCANONICAL".into());
         }
