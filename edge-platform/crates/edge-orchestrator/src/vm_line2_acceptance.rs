@@ -93,6 +93,17 @@ pub(crate) async fn run(
         .map_err(|_| "HOST_VM_LINE2_WITNESS_ACCESS_CLIENT_ID_MISSING")?;
     let client_secret = std::env::var("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET")
         .map_err(|_| "HOST_VM_LINE2_WITNESS_ACCESS_CLIENT_SECRET_MISSING")?;
+    // Active Worker signer is proved using a fresh nonce against EXACT Git
+    // authority, not inferred from the Access GET or provider metadata.
+    if host.worker_authority_public_key.len() != 32 {
+        return Err("HOST_VM_LINE2_WITNESS_WORKER_SIGNER_PIN_MISSING".to_owned());
+    }
+    edge_secrets::prove_canonical_host_signer_with_service_identity(
+        &client_id,
+        &client_secret,
+        &host.worker_authority_public_key,
+    )
+    .await?;
     // Never print either Access value, retrieved proxy password or raw body.
     crate::line2_external_witness::witness_with_service_identity(
         generation,
@@ -110,7 +121,7 @@ pub(crate) async fn run(
         "host_vm_line2_witness_release={}",
         release.release().release_set_sha256
     );
-    println!("host_vm_line2_witness_worker=VM_PROTECTED_ACCESS_READ_ONLY");
+    println!("host_vm_line2_witness_worker=VERIFIED_GIT_PINNED_ED25519");
     println!("host_vm_line2_witness_mutations=0");
     Ok(())
 }

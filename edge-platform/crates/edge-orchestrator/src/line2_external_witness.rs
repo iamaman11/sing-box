@@ -77,6 +77,21 @@ fn cloudflare_trace_ipv4(body: &str) -> Result<Ipv4Addr, String> {
     Ok(ip)
 }
 
+fn cloudflare_trace_warp(body: &str) -> Result<bool, String> {
+    let value = body
+        .lines()
+        .filter_map(|line| line.strip_prefix("warp="))
+        .collect::<Vec<_>>();
+    if value.len() != 1 {
+        return Err("HOST_VM_LINE2_WITNESS_TRACE_WARP_MISSING_OR_DUPLICATE".to_owned());
+    }
+    match value[0] {
+        "on" | "plus" => Ok(true),
+        "off" => Ok(false),
+        _ => Err("HOST_VM_LINE2_WITNESS_TRACE_WARP_UNPROVEN".to_owned()),
+    }
+}
+
 fn proxy_address(protocol: &str, ip: Ipv4Addr, domain: &str, port: u16) -> String {
     if protocol == "https" {
         format!("https://{domain}:{port}")
@@ -308,6 +323,9 @@ fn verify_bundle_and_probe(
             return Err(format!("{name} second independent egress witness failed"));
         }
         secondary_ips.push(cloudflare_trace_ipv4(&trace.1)?);
+        if cloudflare_trace_warp(&trace.1)? != name.ends_with("-warp") {
+            return Err(format!("{name} Cloudflare trace contradicts declared DIRECT/WARP route"));
+        }
         println!(
             "line2_external_endpoint={name} samples=5 HTTPS=PASS TLS=VERIFIED AUTH_NEGATIVE=REJECTED EGRESS_WITNESSES=2"
         );
@@ -323,6 +341,7 @@ fn verify_bundle_and_probe(
     // DNS positive/NXDOMAIN, IPv6 and UDP policy cases remain independent.
     println!("line2_g5_full_policy_matrix=UNPROVEN");
     println!("line2_direct_warp_egress_distinct=true");
+    println!("line2_external_warp_identity=TRACE_CONFIRMED");
     println!("line2_credential_projection=VM_CANONICAL_WORKER_V2");
     println!("line2_witness_vantage=INDEPENDENT_GITHUB_RUNNER");
     println!("provider_mutations=0");
@@ -347,6 +366,21 @@ mod tests {
             "ip=not-an-ip\n",
         ] {
             assert!(cloudflare_trace_ipv4(bad).is_err());
+        }
+    }
+
+    #[test]
+    fn trace_warp_requires_one_explicit_signed_route_identity() {
+        assert_eq!(cloudflare_trace_warp("ip=8.8.8.8\nwarp=off\n"), Ok(false));
+        assert_eq!(cloudflare_trace_warp("ip=8.8.8.8\nwarp=on\n"), Ok(true));
+        assert_eq!(cloudflare_trace_warp("ip=8.8.8.8\nwarp=plus\n"), Ok(true));
+        for bad in [
+            "",
+            "warp=\n",
+            "warp=unknown\n",
+            "warp=on\nwarp=off\n",
+        ] {
+            assert!(cloudflare_trace_warp(bad).is_err());
         }
     }
 
