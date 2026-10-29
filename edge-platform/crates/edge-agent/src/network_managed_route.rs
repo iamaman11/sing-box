@@ -204,13 +204,30 @@ pub(super) async fn apply_managed_route_once(
     let table = plan.spec.table_id.to_string();
     // No shell, user argv, default route, provider write, retry or second
     // service. Only project-reserved isolated table and sb* link are touched.
-    let status = OsCommand::new("/usr/bin/timeout")
-        .args([
-            "--kill-after=2s", "8s", "/usr/sbin/ip", family, "route",
-            op, &destination, "dev", &plan.spec.interface_name, "table", &table,
-        ])
-        .status()
-        .map_err(|_| "HOST_VM_MANAGED_ROUTE_EFFECT_START_UNKNOWN_NO_REPLAY")?;
+    // iproute2 is bounded by timeout, but even a bounded synchronous wait
+    // must not block the single Tokio runtime that owns native control.
+    // Run it on the existing Tokio blocking pool; no new daemon/scheduler.
+    let interface_name = plan.spec.interface_name.clone();
+    let status = tokio::task::spawn_blocking(move || {
+        OsCommand::new("/usr/bin/timeout")
+            .args([
+                "--kill-after=2s",
+                "8s",
+                "/usr/sbin/ip",
+                family,
+                "route",
+                op,
+                &destination,
+                "dev",
+                &interface_name,
+                "table",
+                &table,
+            ])
+            .status()
+    })
+    .await
+    .map_err(|_| "HOST_VM_MANAGED_ROUTE_EFFECT_TASK_UNKNOWN_NO_REPLAY")?
+    .map_err(|_| "HOST_VM_MANAGED_ROUTE_EFFECT_START_UNKNOWN_NO_REPLAY")?;
     if !status.success() {
         return Err("HOST_VM_MANAGED_ROUTE_EFFECT_UNCERTAIN_NO_REPLAY".into());
     }
