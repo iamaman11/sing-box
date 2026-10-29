@@ -356,6 +356,29 @@ message FleetVmManagedDockerResource {
   uint64 restart_generation = 8;
 }
 
+// Git-owned, single-table isolated IPv4/IPv6 route. Its manifest is a
+// private managed/<name>.pb file in the immutable ReleaseSet, executed by the
+// existing VM root owner after the same signed durable BEGIN as Docker.
+message FleetVmManagedKernelRoute {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  string resource_name = 3;
+  FleetVmIpFamily family = 4;
+  string destination = 5;
+  uint32 prefix_length = 6;
+  string interface_name = 7;
+  uint32 table_id = 8;
+}
+message FleetVmManagedKernelRouteReadback {
+  string resource_name = 1;
+  FleetVmIpFamily family = 2;
+  uint32 table_id = 3;
+  bytes manifest_sha256 = 4;
+  bool present = 5;
+  bool converged = 6;
+  string reason_code = 7;
+}
+
 // One bounded, native Docker readback for EACH Git-owned managed object.
 // Daemon fingerprints are SHA256 only. No object IDs, tokens or raw logs.
 // UNKNOWN/FOREIGN never becomes a successful CONVERGED.
@@ -416,6 +439,7 @@ message FleetVmResourceReport {
   // process names, raw errors or kernel stack content are transported.
   FleetVmProcessSnapshot processes = 12;
   repeated FleetVmManagedDockerReadback managed_docker = 13;
+  repeated FleetVmManagedKernelRouteReadback managed_kernel_routes = 14;
 }
 
 enum FleetHostRunState {
