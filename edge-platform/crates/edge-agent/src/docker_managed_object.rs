@@ -471,8 +471,16 @@ fn bridge_routes_are_safe_to_remove(
         .routes
         .iter()
         .all(|route| {
+            // A route in main/local is not automatically disposable. Only
+            // kernel-generated directly connected/local routes are expected
+            // to disappear with the Docker-owned bridge. A static foreign
+            // route in main MUST block deletion just like one in a custom
+            // table; table number alone is never an ownership proof.
             route.output_interface_index != link.interface_index
-                || matches!(route.table_id, 254 | 255)
+                || (matches!(route.table_id, 254 | 255)
+                    && route.kernel_protocol
+                    && route.gateway.is_empty()
+                    && (route.table_id == 255 || route.link_scope))
         })
 }
 
@@ -933,9 +941,21 @@ mod tests {
         kernel.routes.push(edge_shared_types::FleetVmKernelRoute {
             output_interface_index: 12,
             table_id: 254,
+            kernel_protocol: true,
+            link_scope: true,
             ..Default::default()
         });
         assert!(bridge_routes_are_safe_to_remove(&kernel, "sblab0"));
+        // A foreign static route in main is NOT owned by the bridge and
+        // must survive: never silently delete its kernel interface.
+        kernel.routes.push(edge_shared_types::FleetVmKernelRoute {
+            output_interface_index: 12,
+            table_id: 254,
+            kernel_protocol: false,
+            ..Default::default()
+        });
+        assert!(!bridge_routes_are_safe_to_remove(&kernel, "sblab0"));
+        kernel.routes.pop();
         kernel.routes.push(edge_shared_types::FleetVmKernelRoute {
             output_interface_index: 12,
             table_id: 20100,
