@@ -30,6 +30,24 @@ enum ManagedDockerEffect {
     Replace,
 }
 
+/// Only an exact host-owned private network may be referenced by a managed
+/// container. An attacker-controlled "sb-host-..." prefix is not sufficient.
+fn exact_owned_network_name(machine_id: &str, name: &str) -> bool {
+    let Some(suffix) = name.strip_prefix(&format!("sb-{machine_id}-")) else {
+        return false;
+    };
+    !suffix.is_empty()
+        && suffix.len() <= 40
+        && suffix
+            .bytes()
+            .next()
+            .is_some_and(|ch| ch.is_ascii_alphanumeric())
+        && suffix
+            .bytes()
+            .all(|ch| ch.is_ascii_alphanumeric() || ch == b'-')
+        && !suffix.ends_with('-')
+}
+
 fn resource_path_expected(
     host: &FleetHost,
     path: &str,
@@ -82,11 +100,9 @@ fn resource_path_expected(
                     && digest
                         .bytes()
                         .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+                    && !digest.bytes().all(|b| b == b'0')
                     && (spec.network_name.is_empty()
-                        || (spec
-                            .network_name
-                            .starts_with(&format!("sb-{}-", host.machine_id))
-                            && spec.network_name.len() <= 112))
+                        || exact_owned_network_name(&host.machine_id, &spec.network_name))
             }
             Ok(Kind::LocalVolume | Kind::BridgeNetwork) => {
                 spec.image_ref.is_empty()
@@ -638,6 +654,69 @@ mod tests {
         assert_eq!(
             plan_effect(Some(&old), None).unwrap(),
             ManagedDockerEffect::Delete
+        );
+    }
+
+    #[test]
+    fn container_network_requires_exact_owned_canonical_name() {
+        let host = FleetHost {
+            machine_id: "application-test".into(),
+            ..Default::default()
+        };
+        let mut container = FleetVmManagedDockerResource {
+            schema_version: 1,
+            machine_id: host.machine_id.clone(),
+            resource_name: "sb-application-test-worker1".into(),
+            kind: Kind::Container as i32,
+            desired_state: Desired::Present as i32,
+            image_ref: "ghcr.io/iamaman11/test@sha256:".to_owned() + &"a".repeat(64),
+            network_name: "sb-application-test-internal".into(),
+            ..Default::default()
+        };
+        let path = "managed/docker-container-worker1.pb";
+        assert!(resource_path_expected(&host, path, &container));
+        assert!(decode_exact_spec(&host, path, &container.encode_to_vec()).is_ok());
+        for bad in [
+            "sb-application-test-",
+            "sb-application-test-.",
+            "sb-application-test-../external",
+            "sb-application-test-network_name",
+            "sb-application-test-contains space",
+            "sb-foreign-internal",
+            "sb-application-test-12345678901234567890123456789012345678901",
+            "sb-application-test-internal-",
+        ] {
+            container.network_name = bad.into();
+            assert!(!resource_path_expected(&host, path, &container), "{bad}");
+        }
+        container.network_name.clear();
+        assert!(resource_path_expected(&host, path, &container));
+        container.image_ref = "ghcr.io/iamaman11/test@sha256:".to_owned() + &"0".repeat(64);
+        assert!(!resource_path_expected(&host, path, &container));
+    }
+
+    #[test]
+    fn managed_docker_noops_or_resource_identity_churn_cannot_become_effect() {
+        let base = FleetVmManagedDockerResource {
+            schema_version: 1,
+            kind: Kind::Container as i32,
+            desired_state: Desired::Present as i32,
+            image_ref: "ghcr.io/iamaman11/test@sha256:".to_owned() + &"a".repeat(64),
+            ..Default::default()
+        };
+        assert!(plan_effect(Some(&base), Some(&base)).is_err());
+        let mut invalid = base.clone();
+        invalid.restart_generation = 3;
+        assert!(plan_effect(Some(&base), Some(&invalid)).is_err());
+        invalid.restart_generation = 1;
+        assert_eq!(
+            plan_effect(Some(&base), Some(&invalid)).unwrap(),
+            ManagedDockerEffect::Restart
+        );
+        invalid.image_ref = "ghcr.io/iamaman11/test@sha256:".to_owned() + &"b".repeat(64);
+        assert_eq!(
+            plan_effect(Some(&base), Some(&invalid)).unwrap(),
+            ManagedDockerEffect::Replace
         );
     }
 
