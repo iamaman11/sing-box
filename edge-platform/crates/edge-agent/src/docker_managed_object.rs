@@ -808,7 +808,11 @@ pub(super) async fn apply_managed_docker_object_once(
                     .map_err(|_| "HOST_VM_DOCKER_VOLUME_DELETE_UNCERTAIN_NO_REPLAY")?;
             }
             Ok(Kind::BridgeNetwork) => {
-                preflight_bridge_removal(&plan.spec).await
+                // Deletion must verify the OLD owned bridge identity: a
+                // target ABSENT manifest may legally omit link/IPAM fields.
+                let installed = plan.previous.as_ref()
+                    .ok_or("HOST_VM_DOCKER_BRIDGE_PREVIOUS_SPEC_MISSING_NO_REPLAY")?;
+                preflight_bridge_removal(installed).await
                     .map_err(|_| "HOST_VM_DOCKER_BRIDGE_ROUTE_CAS_CHANGED_NO_REPLAY")?;
                 docker
                     .remove_network(name)
