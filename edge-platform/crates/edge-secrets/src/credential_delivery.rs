@@ -655,7 +655,15 @@ async fn prove_canonical_host_signer_with_identity(
         .await
         .map_err(|_| "HOST_SIGNER_PROOF_TRANSPORT_UNAVAILABLE")?;
     if response.status() != StatusCode::OK {
-        return Err("HOST_SIGNER_PROOF_WORKER_REJECTED".into());
+        return Err(match response.status() {
+            StatusCode::UNAUTHORIZED => "HOST_SIGNER_PROOF_HTTP_401",
+            StatusCode::FORBIDDEN => "HOST_SIGNER_PROOF_HTTP_403",
+            StatusCode::NOT_FOUND => "HOST_SIGNER_PROOF_HTTP_404",
+            StatusCode::TOO_MANY_REQUESTS => "HOST_SIGNER_PROOF_HTTP_429",
+            StatusCode::SERVICE_UNAVAILABLE => "HOST_SIGNER_PROOF_HTTP_503",
+            _ => "HOST_SIGNER_PROOF_HTTP_OTHER",
+        }
+        .into());
     }
     if response
         .headers()

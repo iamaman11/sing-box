@@ -885,6 +885,9 @@ jobs:
           bin="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
           fleet="${OUTPUT_DIR}/fleet-registry.pb"
           printf '%s  %s\n' "${EDGE_ORCHESTRATOR_SHA256}" "${bin}" | sha256sum --check --status
+          # Every Actions step has a separate shell; the export in the prior
+          # credential step cannot supply this exact immutable release context.
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
           if "${bin}" host --hosts-pb "${fleet}" \
             --hosts-sha256 "$(sha256sum "${fleet}" | cut -d' ' -f1)" \
             vm-worker-signer-proof "${TARGET_MACHINE}" \
@@ -895,8 +898,14 @@ jobs:
             echo 'status=VERIFIED_GIT_PINNED_ED25519' >> "${GITHUB_OUTPUT}"
             echo 'reason=NONE' >> "${GITHUB_OUTPUT}"
           else
-            reason="$(tail -n 1 "${RUNNER_TEMP}/host-signer-readonly.err" | tr -d '\r\n')"
-            [[ "${reason}" =~ ^[A-Z][A-Z0-9_]{3,119}$ ]] || reason=HOST_SIGNER_PROOF_UNCLASSIFIED
+            reason="$(grep -E '^HOST_[A-Z0-9_]{4,119}$' "${RUNNER_TEMP}/host-signer-readonly.err" | tail -n 1 || true)"
+            if [[ -z "${reason}" ]]; then
+              if grep -Fxq 'EDGE_RELEASE_CONTEXT_PATH is required for edge-orchestrator' "${RUNNER_TEMP}/host-signer-readonly.err"; then
+                reason=HOST_SIGNER_PROOF_RELEASE_CONTEXT_UNAVAILABLE
+              else
+                reason=HOST_SIGNER_PROOF_UNCLASSIFIED
+              fi
+            fi
             echo "host_vm_worker_signed_identity=UNPROVEN"
             echo "host_vm_worker_signer_reason=${reason}"
             echo 'status=UNPROVEN' >> "${GITHUB_OUTPUT}"
