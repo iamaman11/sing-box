@@ -285,12 +285,13 @@ jobs:
       name: production-vultr
       deployment: false
     concurrency:
-      group: sing-box-line2-independent-readonly
+      group: sing-box-line2-independent-readonly-${{ github.event.comment.id }}
       cancel-in-progress: false
     timeout-minutes: 22
     permissions:
       contents: read
       actions: read
+      issues: write
     env:
       COMMAND_BODY: ${{ github.event.comment.body }}
       GH_TOKEN: ${{ github.token }}
@@ -299,6 +300,7 @@ jobs:
       EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET }}
     steps:
       - name: Verify Git selection and exact published ReleaseSet
+        id: witness
         shell: bash
         run: |
           set -euo pipefail
@@ -348,6 +350,38 @@ jobs:
             cat "${RUNNER_TEMP}/line2-independent-result.txt"
             echo '~~~'
           } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Report one correlated independent Line2 verdict
+        if: ${{ always() }}
+        shell: bash
+        env:
+          SOURCE_COMMENT_ID: ${{ github.event.comment.id }}
+          WITNESS_STEP_OUTCOME: ${{ steps.witness.outcome }}
+        run: |
+          set -euo pipefail
+          [[ "${SOURCE_COMMENT_ID}" =~ ^[0-9]{1,19}$ ]] || {
+            echo HOST_VM_LINE2_REPORT_SOURCE_COMMENT_INVALID >&2
+            exit 2
+          }
+          # A green hosted job alone is not native proof. Only exact Rust
+          # witnesses may yield a narrow six-TCP-endpoint PASS.
+          report="UNPROVEN"
+          reason="HOST_VM_LINE2_HOSTED_WITNESS_INCOMPLETE"
+          result="${RUNNER_TEMP}/line2-independent-result.txt"
+          if [[ "${WITNESS_STEP_OUTCOME}" == success ]] &&
+             [[ -f "${result}" ]] &&
+             grep -Fxq 'line2_external_6_of_6=PASS' "${result}" &&
+             grep -Fxq 'host_vm_line2_witness_worker=VERIFIED_GIT_PINNED_ED25519' "${result}" &&
+             grep -Fxq 'line2_g5_full_policy_matrix=UNPROVEN' "${result}" &&
+             grep -Fxq 'host_vm_line2_witness_mutations=0' "${result}"; then
+            report="PASS"
+            reason="HOST_VM_LINE2_SIX_TCP_ENDPOINTS_INDEPENDENTLY_PROVEN"
+          elif [[ "${WITNESS_STEP_OUTCOME}" == failure ]]; then
+            report="FAIL"
+            reason="HOST_VM_LINE2_PROTECTED_WITNESS_STEP_FAILED"
+          fi
+          body="$(printf '%s\n'             "HOST_VM_LINE2_EXTERNAL_WITNESS_V1"             "SOURCE_COMMENT_ID=${SOURCE_COMMENT_ID}"             "GIT_SHA=${GITHUB_SHA}"             "RUN_ID=${GITHUB_RUN_ID}"             "SIX_TCP_ENDPOINTS=${report}"             "G5_FULL_NETWORK_MATRIX=UNPROVEN"             "NATIVE_SIGNED_VM_READBACK=NOT_SUBSTITUTED"             "MUTATIONS=0"             "REASON=${reason}"             "OWNER=GITHUB_HOSTED_INDEPENDENT_WITNESS"             "NEXT_ACTION=CHECK_EXACT_RUN_AND_MISSING_ACCEPTANCE_GATES")"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/1/comments"             -f "body=${body}" >/dev/null
 
   host_project_dns:
     # Same operator ingress and protected Environment; existing Rust Cloudflare

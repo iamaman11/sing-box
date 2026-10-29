@@ -32,7 +32,12 @@ for admission in (
     "line2_g5_full_policy_matrix=UNPROVEN",
 ):
     assert admission in line2, f"Line2 protected witness is missing {admission}"
-assert "issues: write" not in line2
+assert "issues: write" in line2, "single correlated report cannot be posted"
+assert "gh api -X POST" in line2 and "issues/1/comments" in line2
+assert "SOURCE_COMMENT_ID" in line2 and "G5_FULL_NETWORK_MATRIX=UNPROVEN" in line2
+assert "NATIVE_SIGNED_VM_READBACK=NOT_SUBSTITUTED" in line2
+assert "id: witness" in line2 and "if: ${{ always() }}" in line2
+assert "group: sing-box-line2-independent-readonly-${{ github.event.comment.id }}" in line2
 assert "sudo " not in line2 and "docker " not in line2
 assert "CLOUDFLARE_CONTROL_TOKEN:" not in line2
 assert "IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN:" not in line2
