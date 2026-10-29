@@ -453,37 +453,76 @@ mod tests {
         assert!(!sentinel.exists());
         std::fs::remove_dir_all(root).unwrap();
     }
+    // The native test executable is its own deterministic child fixture.
+    // Neither PowerShell startup nor ShellExecute may hide a broken Job
+    // assignment; all descendants must be killed by the real Windows Job.
+    #[test]
+    fn admin_job_descendant_helper() {
+        match std::env::var("EDGE_ADMIN_JOB_TEST_STAGE").as_deref() {
+            Ok("parent") => {
+                let child = std::process::Command::new(std::env::current_exe().unwrap())
+                    .args([
+                        "--exact",
+                        "windows_admin::process::tests::admin_job_descendant_helper",
+                        "--nocapture",
+                    ])
+                    .env("EDGE_ADMIN_JOB_TEST_STAGE", "descendant")
+                    .spawn()
+                    .unwrap();
+                println!("EDGE_ADMIN_DESCENDANT_PID={}", child.id());
+                std::io::stdout().flush().unwrap();
+                std::thread::sleep(Duration::from_secs(60));
+            }
+            Ok("descendant") => {
+                println!("EDGE_ADMIN_DESCENDANT_READY");
+                std::io::stdout().flush().unwrap();
+                std::thread::sleep(Duration::from_secs(60));
+            }
+            _ => {}
+        }
+    }
     #[test]
     fn admin_timeout_terminates_descendant_tree() {
         let root =
             std::env::temp_dir().join(format!("edge-admin-job-timeout-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
-        // A cold Windows CI runner may need more than five seconds to
-        // initialize both PowerShell processes. Time out AFTER allowing the
-        // descendant to start, otherwise an empty PID only tests startup
-        // latency and never proves JobObject descendant termination.
-        let script = r#"$ErrorActionPreference='Stop';$p=Start-Process -WindowStyle Hidden -FilePath "$PSHOME\powershell.exe" -ArgumentList '-NoProfile -NonInteractive -Command Start-Sleep -Seconds 60' -PassThru -ErrorAction Stop;[Console]::WriteLine($p.Id);[Console]::Out.Flush();Start-Sleep -Seconds 60"#;
+        let mut request = command("unused", 10);
+        request.argv = vec![
+            std::env::current_exe()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+            "--exact".into(),
+            "windows_admin::process::tests::admin_job_descendant_helper".into(),
+            "--nocapture".into(),
+        ];
+        request.environment.push("EDGE_ADMIN_JOB_TEST_STAGE=parent".into());
         let began = Instant::now();
         let result = run(
-            &command(script, 20),
+            &request,
             File::create(root.join("out")).unwrap(),
             File::create(root.join("err")).unwrap(),
         )
         .unwrap();
-        assert!(began.elapsed() < Duration::from_secs(30));
+        assert!(began.elapsed() < Duration::from_secs(20));
         assert_eq!(result.exit_code, 124);
-        let id: u32 = String::from_utf8_lossy(&result.stdout_preview)
-            .trim()
-            .parse()
-            .unwrap_or_else(|_| {
+        let stdout = String::from_utf8_lossy(&result.stdout_preview);
+        let id: u32 = stdout
+            .lines()
+            .find_map(|line| line.trim().strip_prefix("EDGE_ADMIN_DESCENDANT_PID="))
+            .unwrap_or_else(|| {
                 panic!(
-                    "descendant PID missing or invalid before timeout; stdout={:?}; stderr={:?}; stdout_eof={}; stderr_eof={}",
-                    String::from_utf8_lossy(&result.stdout_preview),
-                    String::from_utf8_lossy(&result.stderr_preview),
-                    result.stdout_stream_eof,
-                    result.stderr_stream_eof
+                    "native descendant PID not observed; stdout={stdout:?}; stderr={:?}",
+                    String::from_utf8_lossy(&result.stderr_preview)
                 )
-            });
+            })
+            .parse()
+            .unwrap();
+        assert!(
+            stdout.contains("EDGE_ADMIN_DESCENDANT_READY"),
+            "native descendant never ran; stdout={stdout:?}; stderr={:?}",
+            String::from_utf8_lossy(&result.stderr_preview)
+        );
         let child = unsafe {
             OpenProcess(
                 PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
