@@ -343,10 +343,13 @@ fn compile_git_managed_protobuf_sources(files: &mut Vec<BundleFile>) -> Result<(
             }
         }
     }
-    compiled.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    // Preserve the exact historical ordered BundleFile list when no new
+    // managed source is present. Reordering an existing bundle would change
+    // ReleaseSet digests and cause an unnecessary VM replacement.
+    let mut seen = BTreeSet::new();
     if compiled
-        .windows(2)
-        .any(|pair| pair[0].relative_path == pair[1].relative_path)
+        .iter()
+        .any(|file| !seen.insert(file.relative_path.as_str()))
     {
         return Err("HOST_VM_MANAGED_TEXTPROTO_DUPLICATE_PATH".into());
     }
