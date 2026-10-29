@@ -217,6 +217,10 @@ pub(super) async fn observe_managed_docker_object(
                 if network.name.as_deref() != Some(spec.resource_name.as_str())
                     || network.driver.as_deref() != Some("bridge")
                     || network.internal != Some(true)
+                    // This v1 manifest has no IPv6 IPAM contract. An
+                    // externally IPv6-enabled bridge is foreign drift, not
+                    // an implicit successful dual-stack configuration.
+                    || network.enable_ipv6 == Some(true)
                     || network.labels.as_ref().and_then(|l| l.get(LABEL_OWNER))
                         != Some(&spec.machine_id)
                     || network.labels.as_ref().and_then(|l| l.get(LABEL_RESOURCE))
