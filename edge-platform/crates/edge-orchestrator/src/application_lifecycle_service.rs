@@ -292,12 +292,12 @@ fn encode_managed_textproto(
     }
     let compiler = protoc_bin_vendored::protoc_bin_path()
         .map_err(|_| "HOST_VM_MANAGED_TEXTPROTO_COMPILER_MISSING")?;
+    let proto_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../proto");
+    let input = proto_root.join("edge/platform/v1/fleet.proto");
     let mut child = BuildCommand::new(compiler)
-        .args([
-            "--proto_path=edge-platform/proto",
-            &format!("--encode={kind}"),
-            "edge-platform/proto/edge/platform/v1/fleet.proto",
-        ])
+        .arg(format!("--proto_path={}", proto_root.display()))
+        .arg(format!("--encode={kind}"))
+        .arg(input)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -323,7 +323,7 @@ fn encode_managed_textproto(
 fn compile_git_managed_protobuf_sources(files: &mut Vec<BundleFile>) -> Result<(), String> {
     let existing = files
         .iter()
-        .map(|file| file.relative_path.as_str())
+        .map(|file| file.relative_path.clone())
         .collect::<BTreeSet<_>>();
     let mut compiled = Vec::with_capacity(files.len());
     for file in files.drain(..) {
