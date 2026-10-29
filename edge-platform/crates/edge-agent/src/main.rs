@@ -312,8 +312,7 @@ async fn capture_local_host_observation(
         proof,
         digest.as_deref(),
         ownership_proven.then_some(
-            state.ready
-                && managed_network == docker_observation::ManagedNetworkRecovery::Converged,
+            state.ready && managed_network == docker_observation::ManagedNetworkRecovery::Converged,
         ),
         observed_at,
         &reasons,

@@ -5037,7 +5037,11 @@ mod managed_network_recovery_tests {
 
     #[test]
     fn signed_start_network_repair_never_coexists_with_other_effects() {
-        assert!(start_can_repair_only_network(FleetHostPlannedStep::Start, 0, 0));
+        assert!(start_can_repair_only_network(
+            FleetHostPlannedStep::Start,
+            0,
+            0
+        ));
         for (step, changes, aliases) in [
             (FleetHostPlannedStep::Stop, 0, 0),
             (FleetHostPlannedStep::ReplaceRelease, 0, 0),

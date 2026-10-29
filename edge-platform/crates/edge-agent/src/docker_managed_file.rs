@@ -245,7 +245,10 @@ pub(crate) async fn preflight_scoped_network_repair(
         None
     };
     let firewall = if managed_firewall::is_managed_firewall_manifest(&path) {
-        Some(managed_firewall::preflight_managed_firewall(host, &path, None, Some(&manifest)).await?)
+        Some(
+            managed_firewall::preflight_managed_firewall(host, &path, None, Some(&manifest))
+                .await?,
+        )
     } else {
         None
     };

@@ -541,7 +541,8 @@ mod tests {
             FleetHostPlannedStep::Blocked as i32
         );
         live.runtime_ready_proven = true;
-        live.reason_codes.push("VM_MANAGED_NETWORK_UNKNOWN_NO_REPLAY".into());
+        live.reason_codes
+            .push("VM_MANAGED_NETWORK_UNKNOWN_NO_REPLAY".into());
         assert_eq!(
             propose_host_transition(&vm, Some(&live), &[1; 32], &[1; 32], 1000).step,
             FleetHostPlannedStep::Blocked as i32
