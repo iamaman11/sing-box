@@ -71,7 +71,12 @@ fn decode_scope(host: &FleetHost, path: &str, raw: &[u8]) -> Result<FleetVmManag
     }
     let spec = FleetVmManagedFirewall::decode(raw)
         .map_err(|_| "HOST_VM_FIREWALL_MANIFEST_DECODE_INVALID")?;
-    if spec.encode_to_vec() != raw
+    if host.machine_id.is_empty()
+        || host.machine_id.len() > 64
+        || !host.machine_id.bytes().all(|b| {
+            b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'
+        })
+        || spec.encode_to_vec() != raw
         || spec.schema_version != 1
         || host.kind != FleetHostKind::Vm as i32
         || spec.machine_id != host.machine_id
@@ -428,6 +433,33 @@ mod tests {
         spec.denied_ingress.push(spec.denied_ingress[0].clone());
         assert!(decode_scope(&host, "managed/host-firewall-lab.pb", &spec.encode_to_vec()).is_err());
         assert!(decode_scope(&host, "managed/host-firewall-../x.pb", &spec.encode_to_vec()).is_err());
+        let mut injected = host;
+        injected.machine_id = "vm\";delete table inet filter;#".into();
+        assert!(decode_scope(
+            &injected,
+            "managed/host-firewall-lab.pb",
+            &spec.encode_to_vec()
+        ).is_err());
+    }
+
+    #[test]
+    fn generated_nft_batch_is_atomic_scoped_and_never_defaults_to_drop() {
+        let (_, mut spec) = fixture();
+        let created = render_batch(None, Some(&spec));
+        assert!(created.starts_with("add table inet sb_lab\n"));
+        assert!(created.contains("hook input priority 10; policy accept;"));
+        assert!(created.contains("tcp dport 22555 drop"));
+        assert!(!created.contains("policy drop"));
+        assert!(!created.contains("flush ruleset"));
+        assert!(!created.contains("delete table inet filter"));
+        let deleted = render_batch(Some(&spec), None);
+        assert_eq!(deleted, "delete table inet sb_lab\n");
+        spec.denied_ingress[0].destination_port = 22556;
+        let (_, previous) = fixture();
+        let edited = render_batch(Some(&previous), Some(&spec));
+        assert!(edited.starts_with("flush chain inet sb_lab ingress\n"));
+        assert!(edited.contains("tcp dport 22556 drop"));
+        assert!(!edited.contains("add table"));
     }
 
     #[test]

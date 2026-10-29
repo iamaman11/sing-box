@@ -1393,6 +1393,34 @@ mod tests {
     }
 
     #[test]
+    fn managed_firewall_readback_cannot_forge_success_or_foreign_owner() {
+        let (host, mut report) = fixture();
+        let mut row = crate::FleetVmManagedFirewallReadback {
+            resource_name: "sb-vm-a-lab".into(),
+            manifest_sha256: vec![12; 32],
+            present: true,
+            converged: true,
+            reason_code: "DESIRED_PRESENT".into(),
+        };
+        report.managed_firewall.push(row.clone());
+        assert!(validate_vm_resource_report(&report, &host).is_ok());
+        row.reason_code = "MANAGED_FIREWALL_TABLE_MISSING".into();
+        report.managed_firewall[0] = row.clone();
+        assert!(validate_vm_resource_report(&report, &host).is_err());
+        row.converged = false;
+        row.present = false;
+        report.managed_firewall[0] = row.clone();
+        assert!(validate_vm_resource_report(&report, &host).is_ok());
+        row.resource_name = "sb-another-host-lab".into();
+        report.managed_firewall[0] = row.clone();
+        assert!(validate_vm_resource_report(&report, &host).is_err());
+        row.resource_name = "sb-vm-a-lab".into();
+        row.manifest_sha256.clear();
+        report.managed_firewall[0] = row;
+        assert!(validate_vm_resource_report(&report, &host).is_err());
+    }
+
+    #[test]
     fn managed_route_readback_must_be_scoped_to_git_host_and_not_forge_convergence() {
         let (host, mut report) = fixture();
         let mut row = crate::FleetVmManagedKernelRouteReadback {

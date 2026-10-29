@@ -378,7 +378,8 @@ fn compile_git_managed_protobuf_sources(files: &mut Vec<BundleFile>) -> Result<(
 mod managed_textproto_tests {
     use super::*;
     use edge_shared_types::{
-        FleetVmIpFamily, FleetVmManagedDockerResource, FleetVmManagedKernelRoute,
+        FleetVmIpFamily, FleetVmManagedDockerResource, FleetVmManagedFirewall,
+        FleetVmManagedKernelRoute,
     };
 
     #[test]
@@ -406,6 +407,37 @@ table_id: 20100
         assert_eq!(record.machine_id, "vm-test");
         assert_eq!(record.table_id, 20100);
         assert_eq!(record.encode_to_vec(), files[0].content);
+    }
+
+    #[test]
+    fn managed_git_firewall_is_only_protobuf_and_is_deterministic() {
+        let source = br#"schema_version: 1
+machine_id: "vmtest"
+resource_name: "sb-vmtest-lab"
+denied_ingress {
+  transport: FLEET_VM_FIREWALL_TRANSPORT_TCP
+  destination_port: 22555
+}
+denied_ingress {
+  transport: FLEET_VM_FIREWALL_TRANSPORT_UDP
+  destination_port: 22556
+}
+"#;
+        let make = || vec![BundleFile {
+            relative_path: "managed/host-firewall-lab.textproto".into(),
+            content: source.to_vec(),
+            sensitive: false,
+            executable: false,
+        }];
+        let mut first = make();
+        let mut second = make();
+        compile_git_managed_protobuf_sources(&mut first).unwrap();
+        compile_git_managed_protobuf_sources(&mut second).unwrap();
+        assert_eq!(first[0].relative_path, "managed/host-firewall-lab.pb");
+        assert_eq!(first[0].content, second[0].content);
+        let typed = FleetVmManagedFirewall::decode(first[0].content.as_slice()).unwrap();
+        assert_eq!(typed.denied_ingress.len(), 2);
+        assert_eq!(typed.encode_to_vec(), first[0].content);
     }
 
     #[test]
