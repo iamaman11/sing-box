@@ -799,6 +799,35 @@ pub fn validate_vm_resource_report(
             return Err("VM_MANAGED_ROUTE_SCOPE_INVALID");
         }
     }
+    if report.managed_firewall.len() > 32 {
+        return Err("VM_MANAGED_FIREWALL_READBACK_OVERSIZE");
+    }
+    let mut firewall_names = std::collections::BTreeSet::new();
+    for row in &report.managed_firewall {
+        if row.reason_code.is_empty()
+            || row.reason_code.len() > 96
+            || !row
+                .reason_code
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+            || (row.converged != (row.present && row.reason_code == "DESIRED_PRESENT"))
+        {
+            return Err("VM_MANAGED_FIREWALL_EVIDENCE_INVALID");
+        }
+        if row.resource_name.is_empty() {
+            if row.present || row.converged || !row.manifest_sha256.is_empty() {
+                return Err("VM_MANAGED_FIREWALL_UNSCOPED_EVIDENCE");
+            }
+        } else if !row
+            .resource_name
+            .starts_with(&format!("sb-{}-", host.machine_id))
+            || row.resource_name.len() > 112
+            || !firewall_names.insert(row.resource_name.as_str())
+            || row.manifest_sha256.len() != 32
+        {
+            return Err("VM_MANAGED_FIREWALL_RESOURCE_SCOPE_INVALID");
+        }
+    }
     for (row, expected) in report.resources.iter().zip(host.vm_containers.iter()) {
         if row.resource.as_ref() != Some(expected)
             || row.image.len() > 256
@@ -1126,6 +1155,7 @@ mod tests {
             processes: None,
             managed_docker: Vec::new(),
             managed_kernel_routes: Vec::new(),
+            managed_firewall: Vec::new(),
             machine_id: "vm-a".into(),
             observed_at_unix: 100,
             resources: vec![FleetVmResourceReadback {
@@ -2187,6 +2217,7 @@ mod resource_planning_tests {
             processes: None,
             managed_docker: Vec::new(),
             managed_kernel_routes: Vec::new(),
+            managed_firewall: Vec::new(),
             machine_id: host.machine_id.clone(),
             observed_at_unix: 100,
             resources: vec![FleetVmResourceReadback {

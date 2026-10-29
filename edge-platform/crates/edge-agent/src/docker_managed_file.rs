@@ -7,7 +7,10 @@ mod managed_object;
 use managed_object::*;
 #[path = "network_managed_route.rs"]
 mod managed_route;
+#[path = "network_managed_firewall.rs"]
+mod managed_firewall;
 pub(crate) use managed_route::collect_native_managed_kernel_routes;
+pub(crate) use managed_firewall::collect_native_managed_firewall;
 use managed_route::{
     PreparedManagedRoute, apply_managed_route_once, is_managed_route_manifest,
     preflight_managed_route,
@@ -25,6 +28,7 @@ pub(crate) struct NativeVmManagedFilePlan {
     pub(super) target_graph: edge_shared_types::FleetVmDesiredGraph,
     docker: Option<PreparedManagedDocker>,
     route: Option<PreparedManagedRoute>,
+    firewall: Option<managed_firewall::PreparedManagedFirewall>,
     release: edge_shared_types::ApplicationBundleReleaseState,
 }
 
@@ -202,9 +206,17 @@ pub(crate) async fn preflight_native_vm_managed_file(
     } else {
         None
     };
+    let firewall = if managed_firewall::is_managed_firewall_manifest(&path) {
+        Some(
+            managed_firewall::preflight_managed_firewall(host, &path, before.as_deref(), after.as_deref()).await?,
+        )
+    } else {
+        None
+    };
     Ok(NativeVmManagedFilePlan {
         docker,
         route,
+        firewall,
         path,
         before,
         after,
@@ -297,6 +309,9 @@ pub(crate) async fn apply_native_vm_managed_file_once(
     }
     if let Some(prepared) = plan.route.as_ref() {
         apply_managed_route_once(prepared).await?;
+    }
+    if let Some(prepared) = plan.firewall.as_ref() {
+        managed_firewall::apply_managed_firewall_once(prepared).await?;
     }
     checked_managed_directory(stack_dir, plan.before.is_none() && plan.after.is_some())?;
     let path = stack_dir.join(&plan.path);

@@ -377,6 +377,30 @@ message FleetVmManagedKernelRoute {
   string interface_name = 7;
   uint32 table_id = 8;
 }
+// Git-declared input deny rules in an isolated nftables inet table.
+// No implicit default-drop, forward/output hook or provider firewall write.
+enum FleetVmFirewallTransport {
+  FLEET_VM_FIREWALL_TRANSPORT_UNSPECIFIED = 0;
+  FLEET_VM_FIREWALL_TRANSPORT_TCP = 1;
+  FLEET_VM_FIREWALL_TRANSPORT_UDP = 2;
+}
+message FleetVmFirewallDeny {
+  FleetVmFirewallTransport transport = 1;
+  uint32 destination_port = 2;
+}
+message FleetVmManagedFirewall {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  string resource_name = 3;
+  repeated FleetVmFirewallDeny denied_ingress = 4;
+}
+message FleetVmManagedFirewallReadback {
+  string resource_name = 1;
+  bytes manifest_sha256 = 2;
+  bool present = 3;
+  bool converged = 4;
+  string reason_code = 5;
+}
 message FleetVmManagedKernelRouteReadback {
   string resource_name = 1;
   FleetVmIpFamily family = 2;
@@ -448,6 +472,7 @@ message FleetVmResourceReport {
   FleetVmProcessSnapshot processes = 12;
   repeated FleetVmManagedDockerReadback managed_docker = 13;
   repeated FleetVmManagedKernelRouteReadback managed_kernel_routes = 14;
+  repeated FleetVmManagedFirewallReadback managed_firewall = 15;
 }
 
 enum FleetHostRunState {

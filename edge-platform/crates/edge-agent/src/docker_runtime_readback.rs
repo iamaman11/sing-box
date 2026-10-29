@@ -430,6 +430,7 @@ pub(crate) async fn observe_vm_resource_report(
         managed_docker: collect_native_managed_docker_readback(stack_dir, host, docker.as_ref())
             .await,
         managed_kernel_routes: collect_native_managed_kernel_routes(stack_dir, host).await,
+        managed_firewall: collect_native_managed_firewall(stack_dir, host).await,
     };
     edge_shared_types::host_resources::validate_vm_resource_report(&report, host)
         .map_err(str::to_owned)?;
