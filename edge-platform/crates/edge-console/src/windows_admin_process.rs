@@ -496,7 +496,9 @@ mod tests {
             "windows_admin::process::tests::admin_job_descendant_helper".into(),
             "--nocapture".into(),
         ];
-        request.environment.push("EDGE_ADMIN_JOB_TEST_STAGE=parent".into());
+        request
+            .environment
+            .push("EDGE_ADMIN_JOB_TEST_STAGE=parent".into());
         let began = Instant::now();
         let result = run(
             &request,
