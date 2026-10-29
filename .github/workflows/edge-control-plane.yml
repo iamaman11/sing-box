@@ -342,6 +342,8 @@ jobs:
           grep -Fxq 'line2_g5_full_policy_matrix=UNPROVEN' "${RUNNER_TEMP}/line2-independent-result.txt"
           grep -Fxq 'line2_external_warp_identity=TRACE_CONFIRMED' "${RUNNER_TEMP}/line2-independent-result.txt"
           grep -Fxq 'host_vm_line2_witness_worker=VERIFIED_GIT_PINNED_ED25519' "${RUNNER_TEMP}/line2-independent-result.txt"
+          grep -Fxq 'host_vm_line2_native_installed_release=UNPROVEN_SIGNED_VM_READBACK_REQUIRED' "${RUNNER_TEMP}/line2-independent-result.txt"
+          grep -Fxq 'host_vm_line2_warp_udp=GIT_OUTBOUND_TCP_ONLY_NOT_SUPPORTED' "${RUNNER_TEMP}/line2-independent-result.txt"
           grep -Fxq 'host_vm_line2_witness_mutations=0' "${RUNNER_TEMP}/line2-independent-result.txt"
           {
             echo '### VM Line2 independent read-only witness'

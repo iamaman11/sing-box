@@ -24,7 +24,7 @@
 
 **Административный интерфейс:** `/host admin <machine_id> <base64url-json>`, где JSON имеет типизированные поля в порядке `{"argv":["/usr/bin/id"],"cwd":"/","environment":[],"stdin_base64":"","timeout_seconds":60,"publish_output":true}`. При `publish_output=false` публично возвращаются только хеши и размер. Запросы и исходный JSON присутствуют в открытом Issue #1, поэтому вводить туда секреты запрещено: использовать существующий Worker/Vault. При запуске Root Agent сохраняет до 16 МиБ каждого потока в приватных файлах журнала с `0600`; подписанный результат указывает точные пути и степень полноты. Последующие части вывода читаются **новым точно авторизованным `/host admin`** с `dd` по подписанному пути и offset, а не через второй канал; для объёма больше 16 МиБ исполнитель может явно направить вывод в выбранный системный файл. Никаких ограничений на команды/interpreter/root-полномочия эти границы диагностического вывода не создают.
 
-**Статус исполнения:** PR #489 реализует универсальный административный вход Root Agent без функционального белого списка программ: `/host admin` → точное разрешение GitHub actor/Worker → root Agent → durable no-replay → подписанный результат. **До прохождения CI, merge, Worker activation и физической приёмки на новой VM это CODE_CANDIDATE, не FULL_CONTROL.** Общий root-shell или Docker socket самому GitHub runner не выдаётся. План/критерии — [issue #484](https://github.com/iamaman11/sing-box/issues/484); предметный resource CRUD — [issue #480](https://github.com/iamaman11/sing-box/issues/480).
+**Статус исполнения:** универсальный административный Root Agent из PR #489 находится в защищённом Git и прошёл историческую физическую проверку файлов, процессов, systemd и изолированной сети на VM5 (#480/#517). `/host admin` → точное разрешение GitHub actor/Worker → root Agent → durable no-replay → подписанный результат. **Это не доказательство актуального ReleaseSet, всей VM сети, воспроизводимости новых декларативных конфигураций или полной приёмки #538.** Общий root-shell или Docker socket самому GitHub runner не выдаётся. План/критерии — [issue #484](https://github.com/iamaman11/sing-box/issues/484); предметный resource CRUD — [issue #480](https://github.com/iamaman11/sing-box/issues/480).
 
 ## Неизменяемый контракт иерархии ресурсов
 
@@ -45,12 +45,15 @@
 
 Единственный `FleetDesiredState` задаёт `FleetHostTarget`: `STOPPED|RUNNING`, для Windows `PROXY_ONLY|MANAGED_TUN`. Отсутствие target → только OBSERVE, не запуск. Сейчас Windows намеренно `STOPPED/ProxyOnly`: SYSTEM SCM не запускать, TUN не включать. Cloudflare One независимо владеет собственным туннелем/DNS; Mesh другого проекта не трогать.
 
-Только четыре внешние операции (три lifecycle и одна read-only диагностическая):
+Внешний операторский API — одна семья команд `/host` в существующем issue #1, а не четыре отдельных транспорта. Взаимно проверяемые функции:
 
 - `host diagnose <id> <approved read-only argv>` — VM only: Rust/Protobuf validated fixed unprivileged OS tools over existing GitHub runner; does not authorize native mutations or attest signed physical receipt;
 - `host status <id> [--deep]` — bounded read-only status/причина/предлагаемый шаг;
 - `host apply <id>` — подписанный одноразовый переход к Git desired и ReleaseSet;
-- `host recover <id>` — VM: защищённый root `host-refresh` **только бинарник/trust текущего canonical ReleaseSet** + read-only post-refresh диагностика под прежним owner lock; не меняет resource journal, контейнеры или сеть и не снимает pending. Windows: пока read-only. Любой resource rollback/repair/replay — отдельный signed handler и приёмка, никогда неизвестный replay.
+- `host recover <id>` — VM: защищённый root `host-refresh` **только бинарник/trust текущего canonical ReleaseSet** + read-only post-refresh диагностика под прежним owner lock; не меняет resource journal, контейнеры или сеть и не снимает pending. Windows: пока read-only. Любой resource rollback/repair/replay — отдельный signed handler и приёмка, никогда неизвестный replay;
+- `host admin <id> <base64url-json>` — Worker-authorized root administrative `argv/cwd/env/stdin` through the same native journal and signed receipt, without another scheduler or shell authority on the runner;
+- `host witness-line2 <id>` — read-only six-public-TCP-port acceptance at the independently hosted GitHub vantage, exact protected VM signer, public DNS and Git sing-box routing policy. One correlated report in issue #1. `SIX_TCP_ENDPOINTS=PASS` is **not** G5 PASS: VM signed installed-release readback, IPv6 and UDP are independent;
+- `host start|stop|set-mode <windows-id>` — typed Windows target operations, implemented and accepted only through the parallel SYSTEM owner and its own physical acceptance; never conflate prepared intent with actual SCM/TUN effect.
 
 **Диагностический транспорт (#484):** один `/host diagnose` — отдельный read-only инструмент того же GitHub/runner/native owner, не MCP, SSH или root shell. Новый установленный бинарник и точное узкое sudoers разрешение `local host-probe` должны быть физически доказаны; source CI не означает deployed. Подписание mutating `HostIntent` этим маршрутом невозможно.
 

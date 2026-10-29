@@ -298,6 +298,7 @@ pub(crate) async fn run(
     println!("host_vm_line2_witness_operation=issue1-comment-{comment}");
     println!("host_vm_line2_witness_machine={machine_id}");
     println!("host_vm_line2_witness_source=PROTECTED_GIT_AND_VULTR_READ_ONLY");
+    println!("host_vm_line2_native_installed_release=UNPROVEN_SIGNED_VM_READBACK_REQUIRED");
     println!(
         "host_vm_line2_witness_release={}",
         release.release().release_set_sha256
