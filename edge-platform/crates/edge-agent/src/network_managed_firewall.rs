@@ -539,18 +539,18 @@ mod tests {
     fn generated_nft_batch_is_atomic_scoped_and_never_defaults_to_drop() {
         let (_, mut spec) = fixture();
         let created = render_batch(None, Some(&spec));
-        assert!(created.starts_with("add table inet sb_lab\n"));
+        assert!(created.starts_with(&format!("add table inet {}\n", table_id(&spec))));
         assert!(created.contains("hook input priority 10; policy accept;"));
         assert!(created.contains("tcp dport 22555 drop"));
         assert!(!created.contains("policy drop"));
         assert!(!created.contains("flush ruleset"));
         assert!(!created.contains("delete table inet filter"));
         let deleted = render_batch(Some(&spec), None);
-        assert_eq!(deleted, "delete table inet sb_lab\n");
+        assert_eq!(deleted, format!("delete table inet {}\n", table_id(&spec)));
         spec.ingress_rules[0].destination_port = 22556;
         let (_, previous) = fixture();
         let edited = render_batch(Some(&previous), Some(&spec));
-        assert!(edited.starts_with("flush chain inet sb_lab ingress\n"));
+        assert!(edited.starts_with(&format!("flush chain inet {} ingress\n", table_id(&spec))));
         assert!(edited.contains("tcp dport 22556 drop"));
         assert!(!edited.contains("add table"));
     }
@@ -589,7 +589,7 @@ mod tests {
                     "comment": "sing-box:vmtest:sb-vmtest-lab"
                 }},
                 {"rule": {
-                    "family": "inet", "table": "sb_lab", "chain": "ingress",
+                    "family": "inet", "table": table_id(&spec), "chain": "ingress",
                     "expr": [
                         {"match": {
                             "op": "==",
@@ -619,7 +619,15 @@ mod tests {
             .push(serde_json::json!({"chain": {"name":"foreign"}}));
         assert!(decode_ruleset(&spec, &foreign).is_err());
         foreign = good;
-        foreign["nftables"][3]["rule"]["expr"][1] = serde_json::json!({"accept":null});
+        foreign["nftables"][3]["rule"]["expr"][1] = serde_json::json!({"reject":null});
         assert!(decode_ruleset(&spec, &foreign).is_err());
+        // A legitimate typed ALLOW verdict must be accepted, while an
+        // ambiguous verdict or any foreign extra field must be rejected.
+        let mut allowed = good;
+        allowed["nftables"][3]["rule"]["expr"][1] = serde_json::json!({"accept":null});
+        assert_eq!(decode_ruleset(&spec, &allowed).unwrap(),
+            vec![(FleetVmFirewallTransport::Tcp as i32, 22555, FleetVmFirewallAction::Allow as i32)]);
+        allowed["nftables"][3]["rule"]["expr"][1] = serde_json::json!({"accept":null,"drop":null});
+        assert!(decode_ruleset(&spec, &allowed).is_err());
     }
 }
