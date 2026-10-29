@@ -625,8 +625,14 @@ mod tests {
         // ambiguous verdict or any foreign extra field must be rejected.
         let mut allowed = good;
         allowed["nftables"][3]["rule"]["expr"][1] = serde_json::json!({"accept":null});
-        assert_eq!(decode_ruleset(&spec, &allowed).unwrap(),
-            vec![(FleetVmFirewallTransport::Tcp as i32, 22555, FleetVmFirewallAction::Allow as i32)]);
+        assert_eq!(
+            decode_ruleset(&spec, &allowed).unwrap(),
+            vec![(
+                FleetVmFirewallTransport::Tcp as i32,
+                22555,
+                FleetVmFirewallAction::Allow as i32
+            )]
+        );
         allowed["nftables"][3]["rule"]["expr"][1] = serde_json::json!({"accept":null,"drop":null});
         assert!(decode_ruleset(&spec, &allowed).is_err());
     }
