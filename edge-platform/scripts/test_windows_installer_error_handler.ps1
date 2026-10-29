@@ -150,6 +150,90 @@ try {
     $env:HTTP_PROXY = $oldHttpProxy
     $env:HTTPS_PROXY = $oldHttpsProxy
 }
+# Exercise ACTUAL ConnectWindows argument constructors extracted from the
+# canonical installer AST. No installer call, filesystem mutation, or network.
+# This catches the original positional-array bug before a local BEGIN exists.
+$source = Get-Content -LiteralPath $installer -Raw
+$probe = {
+    param(
+        [string]$AcceptedRevision,
+        [string]$ReleaseSetSha256,
+        [string]$InstallRoot,
+        [switch]$Offline,
+        [switch]$BootstrapNow,
+        [switch]$EnrollReceipt,
+        [string]$RetainedIntentSha256,
+        [string]$ExpectedCurrentReleaseSetSha256,
+        [UInt64]$ArchivedAcceptanceSourceRunId = 0
+    )
+    [pscustomobject]@{
+        revision = $AcceptedRevision
+        digest = $ReleaseSetSha256
+        root = $InstallRoot
+        offline = [bool]$Offline
+        bootstrap = [bool]$BootstrapNow
+        enroll = [bool]$EnrollReceipt
+        old = $RetainedIntentSha256
+        installed = $ExpectedCurrentReleaseSetSha256
+        archive_id = $ArchivedAcceptanceSourceRunId
+    }
+}
+$branch = [pscustomobject]@{ commit = [pscustomobject]@{ sha = ('a' * 40) } }
+$selectedDigest = 'b' * 64
+$InstallRoot = 'C:\sing-box'
+$installed = @{ release_set_sha256 = 'c' * 64 }
+$oldDigest = 'd' * 64
+foreach ($kind in @('argsInitial', 'argsExact')) {
+    $all = @($ast.FindAll({
+        param($node)
+        $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
+        $node.Left.Extent.Text -ceq ('
+Write-Output 'windows_installer_missing_response=PASS'
+Write-Output 'windows_installer_http_status_classification=PASS'
+Write-Output 'windows_installer_original_transport_error=PASS'
+Write-Output 'windows_installer_no_network_mutation=PASS'
+ + $kind) -and
+        $node.Operator -eq [System.Management.Automation.Language.TokenKind]::Equals
+    }, $true))
+    if ($all.Count -ne 1) { throw "Expected ONE $kind constructor" }
+    # Evaluate only the isolated hashtable literal from the real source.
+    $expression = $all[0].Right.Extent.Text
+    if (-not $expression.TrimStart().StartsWith('@{')) {
+        throw "$kind must use named hashtable splatting, never string arrays"
+    }
+    $bound = & ([ScriptBlock]::Create($expression))
+    if ($bound -isnot [hashtable]) { throw "$kind constructor not a hashtable" }
+    if ($kind -eq 'argsExact') {
+        # Mirror only the two assignments that the original ConnectWindows
+        # path applies after hashing a retained historical BEGIN.
+        if ($source -cnotmatch [regex]::Escape("$" + "argsExact['RetainedIntentSha256']") -or
+            $source -cnotmatch [regex]::Escape("$" + "argsExact['ExpectedCurrentReleaseSetSha256']")) {
+            throw 'Canonical retained-BEGIN keys missing'
+        }
+        $bound['RetainedIntentSha256'] = $oldDigest
+        $bound['ExpectedCurrentReleaseSetSha256'] = [string]$installed['release_set_sha256']
+    }
+    $actual = & $probe @bound
+    if ($actual.revision -cne $branch.commit.sha -or $actual.digest -cne $selectedDigest -or
+        $actual.root -cne $InstallRoot -or -not $actual.offline -or $actual.archive_id -ne 0) {
+        throw "$kind PowerShell named binding mismatch"
+    }
+    if ($kind -eq 'argsExact') {
+        if (-not $actual.bootstrap -or -not $actual.enroll -or
+            $actual.old -cne $oldDigest -or
+            $actual.installed -cne $installed['release_set_sha256']) {
+            throw 'Retained BEGIN bound to wrong named parameter'
+        }
+    } elseif ($actual.bootstrap -or $actual.enroll -or $actual.old -or $actual.installed) {
+        throw 'Initial install must not receive bootstrap/supersession flags'
+    }
+}
+if ($source -cnotmatch [regex]::Escape('& $PSCommandPath @argsInitial') -or
+    $source -cnotmatch [regex]::Escape('& $PSCommandPath @argsExact')) {
+    throw 'Canonical installer is not invoking the verified named argument maps'
+}
+Write-Output 'windows_connect_powershell_named_binding=PASS'
+
 Write-Output 'windows_installer_offline_direct_github_transport=PASS'
 Write-Output 'windows_installer_missing_response=PASS'
 Write-Output 'windows_installer_http_status_classification=PASS'

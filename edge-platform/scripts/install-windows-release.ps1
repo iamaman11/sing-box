@@ -437,11 +437,14 @@ if ($ConnectWindows) {
         if (Test-Path -LiteralPath $InstallRoot) {
             throw 'WINDOWS_CONNECT_PARTIAL_ROOT_NO_REPLAY'
         }
-        $argsInitial = @(
-            '-AcceptedRevision', [string]$branch.commit.sha,
-            '-ReleaseSetSha256', $selectedDigest,
-            '-InstallRoot', $InstallRoot, '-Offline'
-        )
+        # Explicit named binding: an array of strings is POSITIONAL splatting
+        # in PowerShell and can bind InstallRoot to a UInt64 parameter.
+        $argsInitial = @{
+            AcceptedRevision = [string]$branch.commit.sha
+            ReleaseSetSha256 = $selectedDigest
+            InstallRoot = $InstallRoot
+            Offline = $true
+        }
         $global:LASTEXITCODE = 0
         & $PSCommandPath @argsInitial
         if ($LASTEXITCODE -ne 0) {
@@ -527,12 +530,14 @@ if ($ConnectWindows) {
             }
         }
     }
-    $argsExact = @(
-        '-AcceptedRevision', [string]$branch.commit.sha,
-        '-ReleaseSetSha256', $selectedDigest,
-        '-InstallRoot', $InstallRoot,
-        '-Offline', '-BootstrapNow', '-EnrollReceipt'
-    )
+    $argsExact = @{
+        AcceptedRevision = [string]$branch.commit.sha
+        ReleaseSetSha256 = $selectedDigest
+        InstallRoot = $InstallRoot
+        Offline = $true
+        BootstrapNow = $true
+        EnrollReceipt = $true
+    }
     $oldBegin = Join-Path $InstallRoot 'offline-bootstrap-intent-v1'
     if (Test-Path -LiteralPath $oldBegin) {
         if (-not $ApproveRetainedBegin) {
@@ -544,10 +549,8 @@ if ($ConnectWindows) {
             throw 'WINDOWS_CONNECT_RETAINED_BEGIN_NOT_BOUNDED_REGULAR: no replay'
         }
         $oldDigest = (Get-FileHash -LiteralPath $oldBegin -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
-        $argsExact += @(
-            '-RetainedIntentSha256', $oldDigest,
-            '-ExpectedCurrentReleaseSetSha256', [string]$installed['release_set_sha256']
-        )
+        $argsExact['RetainedIntentSha256'] = $oldDigest
+        $argsExact['ExpectedCurrentReleaseSetSha256'] = [string]$installed['release_set_sha256']
     } elseif ($ApproveRetainedBegin) {
         throw 'WINDOWS_CONNECT_SUPERSESSION_REQUEST_WITHOUT_RETAINED_BEGIN'
     }
