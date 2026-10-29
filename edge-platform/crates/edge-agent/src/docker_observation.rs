@@ -738,6 +738,7 @@ pub(crate) async fn capture_partial_vm_resource_evidence(
     report.managed_docker.clear();
     report.managed_kernel_routes.clear();
     report.managed_firewall.clear();
+    report.managed_system_dns.clear();
     edge_shared_types::host_resources::validate_vm_resource_report(&report, host)
         .map_err(str::to_owned)?;
     Ok(report)

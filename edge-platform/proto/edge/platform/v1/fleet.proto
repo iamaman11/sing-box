@@ -401,6 +401,23 @@ message FleetVmManagedFirewallReadback {
   bool converged = 4;
   string reason_code = 5;
 }
+// Scoped systemd-resolved per-link routing-only DNS. Never global/default
+// DNS; only an exact project-owned Docker bridge interface may be changed.
+message FleetVmManagedSystemDns {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  string resource_name = 3;
+  string interface_name = 4;
+  repeated string name_servers = 5;
+  string routing_domain = 6;
+}
+message FleetVmManagedSystemDnsReadback {
+  string resource_name = 1;
+  bytes manifest_sha256 = 2;
+  bool present = 3;
+  bool converged = 4;
+  string reason_code = 5;
+}
 message FleetVmManagedKernelRouteReadback {
   string resource_name = 1;
   FleetVmIpFamily family = 2;
@@ -473,6 +490,7 @@ message FleetVmResourceReport {
   repeated FleetVmManagedDockerReadback managed_docker = 13;
   repeated FleetVmManagedKernelRouteReadback managed_kernel_routes = 14;
   repeated FleetVmManagedFirewallReadback managed_firewall = 15;
+  repeated FleetVmManagedSystemDnsReadback managed_system_dns = 16;
 }
 
 enum FleetHostRunState {

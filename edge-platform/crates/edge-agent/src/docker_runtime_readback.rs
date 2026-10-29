@@ -431,6 +431,7 @@ pub(crate) async fn observe_vm_resource_report(
             .await,
         managed_kernel_routes: collect_native_managed_kernel_routes(stack_dir, host).await,
         managed_firewall: collect_native_managed_firewall(stack_dir, host).await,
+        managed_system_dns: collect_native_managed_system_dns(stack_dir, host).await,
     };
     edge_shared_types::host_resources::validate_vm_resource_report(&report, host)
         .map_err(str::to_owned)?;

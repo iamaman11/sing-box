@@ -263,6 +263,8 @@ fn managed_textproto_type(relative: &str) -> Result<Option<(&'static str, String
         ("edge.platform.v1.FleetVmManagedKernelRoute", name)
     } else if let Some(name) = stem.strip_prefix("host-firewall-") {
         ("edge.platform.v1.FleetVmManagedFirewall", name)
+    } else if let Some(name) = stem.strip_prefix("host-dns-") {
+        ("edge.platform.v1.FleetVmManagedSystemDns", name)
     } else if let Some(name) = stem.strip_prefix("docker-volume-") {
         ("edge.platform.v1.FleetVmManagedDockerResource", name)
     } else if let Some(name) = stem.strip_prefix("docker-network-") {

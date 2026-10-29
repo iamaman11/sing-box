@@ -104,7 +104,7 @@ fn canonical_owned_interface_alias(spec: &FleetVmManagedKernelRoute, alias: &str
     alias == format!("sing-box:{}:{}", spec.machine_id, spec.resource_name)
 }
 
-fn exact_docker_bridge_owner(
+pub(super) fn exact_docker_bridge_owner(
     spec: &FleetVmManagedKernelRoute,
     network: &bollard::models::NetworkInspect,
 ) -> bool {

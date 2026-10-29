@@ -799,6 +799,30 @@ pub fn validate_vm_resource_report(
             return Err("VM_MANAGED_ROUTE_SCOPE_INVALID");
         }
     }
+    if report.managed_system_dns.len() > 32 {
+        return Err("VM_MANAGED_SYSTEM_DNS_READBACK_OVERSIZE");
+    }
+    let mut dns_names = std::collections::BTreeSet::new();
+    for row in &report.managed_system_dns {
+        if row.reason_code.is_empty()
+            || row.reason_code.len() > 96
+            || !row.reason_code.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+            || (row.converged != (row.present && row.reason_code == "DESIRED_PRESENT"))
+        {
+            return Err("VM_MANAGED_SYSTEM_DNS_EVIDENCE_INVALID");
+        }
+        if row.resource_name.is_empty() {
+            if row.present || row.converged || !row.manifest_sha256.is_empty() {
+                return Err("VM_MANAGED_SYSTEM_DNS_UNSCOPED_EVIDENCE");
+            }
+        } else if !row.resource_name.starts_with(&format!("sb-{}-", host.machine_id))
+            || row.resource_name.len() > 112
+            || row.manifest_sha256.len() != 32
+            || !dns_names.insert(row.resource_name.as_str())
+        {
+            return Err("VM_MANAGED_SYSTEM_DNS_SCOPE_INVALID");
+        }
+    }
     if report.managed_firewall.len() > 32 {
         return Err("VM_MANAGED_FIREWALL_READBACK_OVERSIZE");
     }
@@ -1156,6 +1180,7 @@ mod tests {
             managed_docker: Vec::new(),
             managed_kernel_routes: Vec::new(),
             managed_firewall: Vec::new(),
+            managed_system_dns: Vec::new(),
             machine_id: "vm-a".into(),
             observed_at_unix: 100,
             resources: vec![FleetVmResourceReadback {
@@ -2246,6 +2271,7 @@ mod resource_planning_tests {
             managed_docker: Vec::new(),
             managed_kernel_routes: Vec::new(),
             managed_firewall: Vec::new(),
+            managed_system_dns: Vec::new(),
             machine_id: host.machine_id.clone(),
             observed_at_unix: 100,
             resources: vec![FleetVmResourceReadback {
