@@ -90,6 +90,40 @@ async function call(body= intent, settings=env, claims={}){
     {method:"POST",headers,body});
   return mod.default.fetch(req,settings);
 }
+// A live signing-key identity proof is deliberately not an authorization.
+// This must exercise the exact compiled Worker source with a random challenge.
+const identityNonce=Buffer.alloc(32,0x5c);
+async function identityProof(signerEnv=env,nonce=identityNonce,claims={}){
+ const token=await accessToken(claims);
+ const url="https://unit-test.workers.dev/v1/host/identity?challenge="+Buffer.from(nonce).toString("hex");
+ return mod.default.fetch(new Request(url,{headers:{"Cf-Access-Jwt-Assertion":token}}),signerEnv);
+}
+const identityResponse=await identityProof();
+requireTest(identityResponse.status===200,"active signer identity cannot be attested");
+requireTest(identityResponse.headers.get("X-Host-Authorization-Scope")==="SIGNED_IDENTITY_NO_MUTATION",
+ "signed identity is not a non-mutating scope");
+const identity=fields(Buffer.from(await identityResponse.arrayBuffer()));
+const identityPublic=Buffer.from(identity.get(3));
+const expectedPublic=Buffer.from(await crypto.subtle.exportKey("raw",key.publicKey));
+requireTest(identity.get(1)===1n&&identityPublic.equals(expectedPublic),
+ "identity proof did not expose the ACTIVE signing key");
+requireTest(Buffer.from(identity.get(2)).equals(identityNonce),"challenge not bound");
+const identityKey=Buffer.from(identity.get(4));
+const identityPayload=combine(TE.encode("sing-box/host-signer-identity/v1:"),
+ identityNonce,identityPublic,u32(identityKey.length),identityKey,u64(identity.get(5)));
+requireTest(await crypto.subtle.verify("Ed25519",key.publicKey,identity.get(6),identityPayload),
+ "identity proof signature mismatch");
+requireTest(!(await crypto.subtle.verify("Ed25519",key.publicKey,identity.get(6),
+ combine(TE.encode("sing-box/host-signer-identity/v1:"),
+ Buffer.alloc(32,0x5d),identityPublic,u32(identityKey.length),identityKey,u64(identity.get(5))))),
+ "challenge replay accepted");
+requireTest((await identityProof(env,identityNonce,{aud:["wrong-audience"]})).status===403,
+ "foreign Cloudflare Access identity accepted");
+requireTest((await identityProof({...env,EDGE_HOST_SIGNING_PKCS8_BASE64:"invalid"})).status===503,
+ "identity proof accepted invalid signer");
+const missingNonce=await mod.default.fetch(
+ new Request("https://unit-test.workers.dev/v1/host/identity"),env);
+requireTest(missingNonce.status===404,"identity challenge is optional");
 const empty=await call(intent,{});
 requireTest(empty.status===404,"signer is not closed by default");
 const duplicateDigest=await call(combine(intent,field(7,Buffer.alloc(32,4))));

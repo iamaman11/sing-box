@@ -7,7 +7,7 @@ use super::*;
 use edge_shared_types::{
     FleetHostAction, FleetHostAuthorization, FleetHostIntent, FleetHostKind, FleetHostMode,
     FleetHostPlannedStep, FleetNativeObservation, FleetNativeTrustSnapshot,
-    host_journal::{execute_native_host_once, verify_native_journal_protection},
+    host_journal::verify_native_journal_protection,
     host_lifecycle::{bind_native_host_artifacts, decode_host_intent},
     host_receipt::{check_native_receipt_key, sign_native_receipt},
 };
@@ -196,19 +196,64 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
         bounded_regular_file(&protected.join(RECEIPT_KEY_FILE), 4096).map_err(str::to_owned)?;
     let installed = load_verified_activation(install_root)
         .map_err(|_| "HOST_WINDOWS_SYSTEM_ACTIVATION_UNPROVEN")?;
-    let trust = verify_system_trust(
+    // First verify the immutable, LocalSystem-created bootstrap trust against
+    // the physically installed historical release. It must never be replaced
+    // with runner-supplied registry, signer or release bytes.
+    let bootstrap = FleetNativeTrustSnapshot::decode(trust_bytes.as_slice())
+        .map_err(|_| "HOST_WINDOWS_SYSTEM_TRUST_PROTO_INVALID")?;
+    let bootstrap_registry = edge_shared_types::decode_host_registry(&bootstrap.registry_pb)?;
+    let bootstrap_host = bootstrap_registry
+        .hosts
+        .iter()
+        .find(|host| host.machine_id == intent.machine_id && host.kind == intent.kind)
+        .ok_or("HOST_WINDOWS_SYSTEM_HOST_NOT_REGISTERED")?;
+    let mut historic_intent = intent.clone();
+    historic_intent.registry_sha256 = digest(&SHA256, &bootstrap.registry_pb).as_ref().to_vec();
+    historic_intent.desired_sha256 = edge_shared_types::host_lifecycle::digest_host_desired(
+        bootstrap_host,
+        &bootstrap.selected_spec_bytes,
+    )
+    .map_err(str::to_owned)?;
+    historic_intent.release_set_sha256 =
+        digest(&SHA256, &bootstrap.release_set_pb).as_ref().to_vec();
+    let bootstrap = verify_system_trust(
         &trust_bytes,
-        &intent,
+        &historic_intent,
         &installed.release_set_sha256,
         &receipt_private,
     )
     .map_err(str::to_owned)?;
-    let registry = edge_shared_types::decode_host_registry(&trust.registry_pb)?;
+
+    // Every signed operation gets fresh exact protected Git/ReleaseSet evidence.
+    // Git-only registry or desired revisions do NOT impersonate an installed
+    // binary, and do NOT require repeating first-use/reinstalling Windows.
+    let (installed_pb, current_pb, registry_pb, spec) =
+        windows_trust_enrollment::fetch_exact_protected_git(&installed).await?;
+    if installed_pb != bootstrap.release_set_pb {
+        return Err("HOST_WINDOWS_SYSTEM_INSTALLED_GIT_RELEASE_CHANGED".into());
+    }
+    let (registry, _) = bind_native_host_artifacts(&intent, &registry_pb, &spec, &current_pb, None)
+        .map_err(str::to_owned)?;
     let selected = registry
         .hosts
         .iter()
         .find(|host| host.machine_id == intent.machine_id && host.kind == intent.kind)
         .ok_or("HOST_WINDOWS_SYSTEM_HOST_NOT_REGISTERED")?;
+    edge_shared_types::host_lifecycle::verify_windows_signed_git_prerequisites(selected)
+        .map_err(str::to_owned)?;
+    if selected.worker_authority_public_key != bootstrap.pinned_worker_public_key {
+        // A signer rotation requires separately proven authority, never
+        // silent trust-on-first-use from a Git-only update.
+        return Err("HOST_WINDOWS_SYSTEM_SIGNER_ROTATION_UNPROVEN".into());
+    }
+    check_native_receipt_key(selected, &receipt_private).map_err(str::to_owned)?;
+    let trust = FleetNativeTrustSnapshot {
+        registry_pb,
+        selected_spec_bytes: spec,
+        release_set_pb: current_pb,
+        ..bootstrap
+    };
+    let installed_runtime_sha256 = digest(&SHA256, &installed_pb).as_ref().to_vec();
     let mode = selected
         .target
         .as_ref()
@@ -235,7 +280,7 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
         .map_err(|_| "HOST_WINDOWS_SYSTEM_CLOCK_UNAVAILABLE")?
         .as_secs();
     let result = tokio::task::block_in_place(|| {
-        execute_native_host_once(
+        edge_shared_types::host_journal::execute_native_windows_host_once(
             &intent,
             &auth,
             &trust.registry_pb,
@@ -245,6 +290,7 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
             &trust.pinned_worker_public_key,
             &trust.machine_id,
             FleetHostKind::Windows as i32,
+            &installed_runtime_sha256,
             now,
             &journal,
             || system_native_observation(install_root),

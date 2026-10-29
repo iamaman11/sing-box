@@ -603,6 +603,77 @@ impl HostWorkerAuthorizationRejection {
     }
 }
 
+/// One bounded, Access-authenticated GET to the ACTIVE Worker, with a fresh
+/// nonce and a Git-pinned public key. It cannot authorize or execute actions.
+/// Do not treat Cloudflare binding metadata or self-claimed key bytes as trust.
+pub async fn prove_canonical_host_signer(
+    identity_path: &Path,
+    git_public_key: &[u8],
+) -> Result<(), String> {
+    use rand_core::{OsRng, RngCore};
+    let identity = read_access_service_identity(identity_path)?;
+    let mut url = reqwest::Url::parse(&canonical_credential_worker_url(
+        CredentialProjectionKind::Vm,
+        1,
+    )?)
+    .map_err(|_| "HOST_SIGNER_PROOF_URL_INVALID")?;
+    let mut challenge = [0u8; 32];
+    OsRng.fill_bytes(&mut challenge);
+    let hex = challenge
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect::<String>();
+    url.set_path("/v1/host/identity");
+    url.set_query(Some(&format!("challenge={hex}")));
+    let mut response = credential_worker_client(&identity)?
+        .get(url)
+        .send()
+        .await
+        .map_err(|_| "HOST_SIGNER_PROOF_TRANSPORT_UNAVAILABLE")?;
+    if response.status() != StatusCode::OK {
+        return Err("HOST_SIGNER_PROOF_WORKER_REJECTED".into());
+    }
+    if response
+        .headers()
+        .get(CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        != Some("application/x-protobuf")
+        || response
+            .headers()
+            .get("X-Host-Authorization-Scope")
+            .and_then(|v| v.to_str().ok())
+            != Some("SIGNED_IDENTITY_NO_MUTATION")
+    {
+        return Err("HOST_SIGNER_PROOF_RESPONSE_UNTRUSTED".into());
+    }
+    // Read with an exact upper bound, even if a compromised endpoint sends
+    // chunked data without Content-Length. This is not a credential download.
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response
+        .chunk()
+        .await
+        .map_err(|_| "HOST_SIGNER_PROOF_RESPONSE_UNAVAILABLE")?
+    {
+        if bytes.len().saturating_add(chunk.len())
+            > edge_shared_types::host_signer_attestation::MAX_ATTESTATION_BYTES
+        {
+            return Err("HOST_SIGNER_PROOF_RESPONSE_TOO_LARGE".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "HOST_SIGNER_PROOF_CLOCK_UNAVAILABLE")?
+        .as_secs();
+    edge_shared_types::host_signer_attestation::verify_active_worker_identity(
+        &bytes,
+        &challenge,
+        git_public_key,
+        now,
+    )
+    .map_err(str::to_owned)
+}
+
 /// A bounded GET-only proof of the same Access JWT that protects POST.
 /// No HostIntent, GitHub approval, signature, replay or native resource mutation.
 /// Return codes are safe to print from existing native read-only diagnostics.
