@@ -458,21 +458,32 @@ mod tests {
         let root =
             std::env::temp_dir().join(format!("edge-admin-job-timeout-{}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
-        let script = r#"$p=Start-Process -WindowStyle Hidden -FilePath "$PSHOME\powershell.exe" -ArgumentList '-NoProfile -NonInteractive -Command Start-Sleep -Seconds 60' -PassThru;[Console]::WriteLine($p.Id);Start-Sleep -Seconds 60"#;
+        // A cold Windows CI runner may need more than five seconds to
+        // initialize both PowerShell processes. Time out AFTER allowing the
+        // descendant to start, otherwise an empty PID only tests startup
+        // latency and never proves JobObject descendant termination.
+        let script = r#"$ErrorActionPreference='Stop';$p=Start-Process -WindowStyle Hidden -FilePath "$PSHOME\powershell.exe" -ArgumentList '-NoProfile -NonInteractive -Command Start-Sleep -Seconds 60' -PassThru -ErrorAction Stop;[Console]::WriteLine($p.Id);[Console]::Out.Flush();Start-Sleep -Seconds 60"#;
         let began = Instant::now();
         let result = run(
-            &command(script, 5),
+            &command(script, 20),
             File::create(root.join("out")).unwrap(),
             File::create(root.join("err")).unwrap(),
         )
         .unwrap();
-        assert!(began.elapsed() < Duration::from_secs(15));
+        assert!(began.elapsed() < Duration::from_secs(30));
         assert_eq!(result.exit_code, 124);
-        let id: u32 = String::from_utf8(result.stdout_preview)
-            .unwrap()
+        let id: u32 = String::from_utf8_lossy(&result.stdout_preview)
             .trim()
             .parse()
-            .unwrap();
+            .unwrap_or_else(|_| {
+                panic!(
+                    "descendant PID missing or invalid before timeout; stdout={:?}; stderr={:?}; stdout_eof={}; stderr_eof={}",
+                    String::from_utf8_lossy(&result.stdout_preview),
+                    String::from_utf8_lossy(&result.stderr_preview),
+                    result.stdout_stream_eof,
+                    result.stderr_stream_eof
+                )
+            });
         let child = unsafe {
             OpenProcess(
                 PROCESS_QUERY_LIMITED_INFORMATION | PROCESS_SYNCHRONIZE,
