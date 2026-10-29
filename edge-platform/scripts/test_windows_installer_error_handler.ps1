@@ -150,9 +150,8 @@ try {
     $env:HTTP_PROXY = $oldHttpProxy
     $env:HTTPS_PROXY = $oldHttpsProxy
 }
-# Exercise ACTUAL ConnectWindows argument constructors extracted from the
-# canonical installer AST. No installer call, filesystem mutation, or network.
-# This catches the original positional-array bug before a local BEGIN exists.
+# Exercise actual ConnectWindows argument constructors from the canonical
+# installer AST, never the installer itself. No host/network side effects.
 $source = Get-Content -LiteralPath $installer -Raw
 $probe = {
     param(
@@ -187,27 +186,20 @@ foreach ($kind in @('argsInitial', 'argsExact')) {
     $all = @($ast.FindAll({
         param($node)
         $node -is [System.Management.Automation.Language.AssignmentStatementAst] -and
-        $node.Left.Extent.Text -ceq ('
-Write-Output 'windows_installer_missing_response=PASS'
-Write-Output 'windows_installer_http_status_classification=PASS'
-Write-Output 'windows_installer_original_transport_error=PASS'
-Write-Output 'windows_installer_no_network_mutation=PASS'
- + $kind) -and
+        $node.Left.Extent.Text -ceq ('$' + $kind) -and
         $node.Operator -eq [System.Management.Automation.Language.TokenKind]::Equals
     }, $true))
     if ($all.Count -ne 1) { throw "Expected ONE $kind constructor" }
-    # Evaluate only the isolated hashtable literal from the real source.
     $expression = $all[0].Right.Extent.Text
     if (-not $expression.TrimStart().StartsWith('@{')) {
         throw "$kind must use named hashtable splatting, never string arrays"
     }
+    # Evaluate only the hashtable expression from the real installer.
     $bound = & ([ScriptBlock]::Create($expression))
     if ($bound -isnot [hashtable]) { throw "$kind constructor not a hashtable" }
     if ($kind -eq 'argsExact') {
-        # Mirror only the two assignments that the original ConnectWindows
-        # path applies after hashing a retained historical BEGIN.
-        if ($source -cnotmatch [regex]::Escape("$" + "argsExact['RetainedIntentSha256']") -or
-            $source -cnotmatch [regex]::Escape("$" + "argsExact['ExpectedCurrentReleaseSetSha256']")) {
+        if ($source -cnotmatch [regex]::Escape('$argsExact[' + "'RetainedIntentSha256']") -or
+            $source -cnotmatch [regex]::Escape('$argsExact[' + "'ExpectedCurrentReleaseSetSha256']")) {
             throw 'Canonical retained-BEGIN keys missing'
         }
         $bound['RetainedIntentSha256'] = $oldDigest
