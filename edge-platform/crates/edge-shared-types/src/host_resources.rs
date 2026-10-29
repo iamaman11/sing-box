@@ -2186,6 +2186,7 @@ mod resource_planning_tests {
             bootstrap_phase: crate::FleetVmBootstrapPhase::Unspecified as i32,
             processes: None,
             managed_docker: Vec::new(),
+            managed_kernel_routes: Vec::new(),
             machine_id: host.machine_id.clone(),
             observed_at_unix: 100,
             resources: vec![FleetVmResourceReadback {
