@@ -2,6 +2,23 @@ use super::*;
 
 #[tonic::async_trait]
 impl ControllerService for ControllerServerImpl {
+    async fn get_native_runtime_challenge(
+        &self,
+        _request: Request<Empty>,
+    ) -> Result<Response<edge_shared_types::FleetWindowsRuntimeChallenge>, Status> {
+        #[cfg(windows)]
+        {
+            return windows_native_runtime::challenge(&self.repo_root)
+                .map(Response::new)
+                .map_err(Status::permission_denied);
+        }
+        #[cfg(not(windows))]
+        {
+            Err(Status::unimplemented(
+                "HOST_WINDOWS_EFFECT_WINDOWS_REQUIRED",
+            ))
+        }
+    }
     async fn get_status(
         &self,
         _request: Request<Empty>,
@@ -205,6 +222,13 @@ impl ControllerService for ControllerServerImpl {
         &self,
         request: Request<StartLocalRuntimeRequest>,
     ) -> Result<Response<LocalRuntimeResponse>, Status> {
+        #[cfg(windows)]
+        if !request.get_ref().native_system_effect.is_empty() {
+            return windows_native_runtime::execute(&self.repo_root, request.into_inner())
+                .await
+                .map(Response::new)
+                .map_err(Status::permission_denied);
+        }
         Err(Status::permission_denied(
             "HOST_WINDOWS_LEGACY_RPC_MUTATION_DISABLED_USE_SIGNED_HOST_INTENT",
         ))

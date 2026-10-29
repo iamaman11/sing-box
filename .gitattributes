@@ -1,0 +1,5 @@
+# Embedded Linux scripts and cloud-init must have the same bytes on Windows
+# and Linux. include_str! and ReleaseSet digests consume these exact inputs.
+*.sh text eol=lf
+*.yaml text eol=lf
+*.yml text eol=lf

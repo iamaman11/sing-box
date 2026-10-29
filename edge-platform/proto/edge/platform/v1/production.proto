@@ -20,6 +20,25 @@ message ProductionDesiredState {
   ProductionCloudflare cloudflare = 12;
   WindowsDatapathMode windows_datapath_mode = 13;
   ProductionWindowsRoutePolicy windows_route_policy = 14;
+  // Absent preserves historical all-application routing. Explicit selected
+  // applications use exact executable paths, never process-name wildcards.
+  WindowsApplicationRouting windows_application_routing = 15;
+}
+
+message WindowsApplicationRouting {
+  WindowsApplicationScope scope = 1;
+  repeated WindowsApplicationRoute applications = 2;
+}
+
+enum WindowsApplicationScope {
+  WINDOWS_APPLICATION_SCOPE_UNSPECIFIED = 0;
+  WINDOWS_APPLICATION_SCOPE_ALL_APPLICATIONS = 1;
+  WINDOWS_APPLICATION_SCOPE_SELECTED_APPLICATIONS = 2;
+}
+
+message WindowsApplicationRoute {
+  string executable_path = 1;
+  WindowsDefaultRoute route = 2;
 }
 
 // Durable selector defaults belong only to protected Git production desired state.

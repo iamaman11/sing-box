@@ -16,10 +16,66 @@ use ring::digest::{SHA256, digest};
 
 const INTENT_FILE: &str = "host-intent.pb";
 const RECEIPT_FILE: &str = "host-receipt.pb";
-const TRUST_FILE: &str = "trust.pb";
 const RECEIPT_KEY_FILE: &str = "receipt-key.pk8";
 
-fn bounded_regular_file(path: &Path, max: u64) -> Result<Vec<u8>, &'static str> {
+/// Keep the exact exchange object non-writable and non-replaceable while
+/// authorizing/executing. Consume by handle, never unlink a swapped pathname.
+pub(super) struct TransportRequest {
+    file: File,
+    pub(super) bytes: Vec<u8>,
+}
+impl TransportRequest {
+    pub(super) fn open(path: &Path, max: u64) -> Result<Self, &'static str> {
+        use std::os::windows::fs::{MetadataExt, OpenOptionsExt};
+        let mut file = OpenOptions::new()
+            .read(true)
+            .access_mode(0x80000000 | 0x00010000)
+            .share_mode(1)
+            .custom_flags(0x00200000)
+            .open(path)
+            .map_err(|_| "HOST_WINDOWS_TRANSPORT_REQUEST_LOCK_UNAVAILABLE")?;
+        let meta = file
+            .metadata()
+            .map_err(|_| "HOST_WINDOWS_TRANSPORT_REQUEST_METADATA_UNAVAILABLE")?;
+        if !meta.is_file()
+            || meta.file_attributes() & 0x400 != 0
+            || meta.len() == 0
+            || meta.len() > max
+        {
+            return Err("HOST_WINDOWS_TRANSPORT_REQUEST_NOT_BOUNDED_REGULAR");
+        }
+        let mut bytes = Vec::new();
+        (&mut file)
+            .take(max + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "HOST_WINDOWS_TRANSPORT_REQUEST_READ_UNAVAILABLE")?;
+        if bytes.len() as u64 != meta.len() {
+            return Err("HOST_WINDOWS_TRANSPORT_REQUEST_CHANGED");
+        }
+        Ok(Self { file, bytes })
+    }
+    pub(super) fn consume(self) -> Result<(), &'static str> {
+        use std::os::windows::io::AsRawHandle;
+        use windows_sys::Win32::Storage::FileSystem::{
+            FILE_DISPOSITION_INFO, FileDispositionInfo, SetFileInformationByHandle,
+        };
+        let delete = FILE_DISPOSITION_INFO { DeleteFile: true };
+        if unsafe {
+            SetFileInformationByHandle(
+                self.file.as_raw_handle(),
+                FileDispositionInfo,
+                (&delete as *const FILE_DISPOSITION_INFO).cast(),
+                std::mem::size_of_val(&delete) as u32,
+            )
+        } == 0
+        {
+            return Err("HOST_WINDOWS_REQUEST_CONSUMPTION_UNKNOWN_NO_REPLAY");
+        }
+        Ok(())
+    }
+}
+
+pub(super) fn bounded_regular_file(path: &Path, max: u64) -> Result<Vec<u8>, &'static str> {
     let meta = fs::symlink_metadata(path).map_err(|_| "HOST_WINDOWS_NATIVE_FILE_MISSING")?;
     if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > max {
         return Err("HOST_WINDOWS_NATIVE_FILE_NOT_BOUNDED_REGULAR");
@@ -34,6 +90,105 @@ fn bounded_regular_file(path: &Path, max: u64) -> Result<Vec<u8>, &'static str> 
         return Err("HOST_WINDOWS_NATIVE_FILE_NOT_BOUNDED_REGULAR");
     }
     Ok(bytes)
+}
+
+/// Common authority loader for lifecycle and universal admin. The local
+/// bootstrap anchors the installed runtime; independently fetched protected
+/// Git anchors current authority. The binding intent is NEVER executed.
+pub(super) async fn current_authority(
+    install_root: &Path,
+    machine_id: &str,
+    operation_id: &str,
+    requested_at: u64,
+    private: &[u8],
+) -> Result<
+    (
+        FleetNativeTrustSnapshot,
+        edge_shared_types::FleetHost,
+        Vec<u8>,
+    ),
+    String,
+> {
+    let installed = load_verified_activation(install_root)
+        .map_err(|_| "HOST_WINDOWS_SYSTEM_ACTIVATION_UNPROVEN")?;
+    let trust_path = install_root.join("native-host/trust.pb");
+    edge_shared_types::host_journal::verify_windows_protected_path_acl(&trust_path, true)?;
+    let bytes = bounded_regular_file(&trust_path, 9 * 1024 * 1024)?;
+    let boot = FleetNativeTrustSnapshot::decode(bytes.as_slice())
+        .map_err(|_| "HOST_WINDOWS_SYSTEM_TRUST_PROTO_INVALID")?;
+    fn binding(
+        machine: &str,
+        op: &str,
+        when: u64,
+        registry: &[u8],
+        spec: &[u8],
+        release: &[u8],
+    ) -> Result<FleetHostIntent, String> {
+        let hosts = edge_shared_types::decode_host_registry(registry)?;
+        let host = hosts
+            .hosts
+            .iter()
+            .find(|h| h.machine_id == machine && h.kind == FleetHostKind::Windows as i32)
+            .ok_or("HOST_WINDOWS_SYSTEM_HOST_NOT_REGISTERED")?;
+        Ok(FleetHostIntent {
+            schema_version: 1,
+            machine_id: machine.into(),
+            kind: FleetHostKind::Windows as i32,
+            resource_id: "sing-box".into(),
+            operation_id: op.into(),
+            action: FleetHostAction::Stop as i32,
+            registry_sha256: digest(&SHA256, registry).as_ref().to_vec(),
+            desired_sha256: edge_shared_types::host_lifecycle::digest_host_desired(host, spec)?,
+            release_set_sha256: digest(&SHA256, release).as_ref().to_vec(),
+            requested_at_unix: when,
+            ..Default::default()
+        })
+    }
+    let historical = binding(
+        machine_id,
+        operation_id,
+        requested_at,
+        &boot.registry_pb,
+        &boot.selected_spec_bytes,
+        &boot.release_set_pb,
+    )?;
+    let boot = verify_system_trust(&bytes, &historical, &installed.release_set_sha256, private)?;
+    let (installed_pb, current_pb, registry_pb, spec) =
+        windows_trust_enrollment::fetch_exact_protected_git(&installed).await?;
+    if installed_pb != boot.release_set_pb {
+        return Err("HOST_WINDOWS_SYSTEM_INSTALLED_GIT_RELEASE_CHANGED".into());
+    }
+    let binding = binding(
+        machine_id,
+        operation_id,
+        requested_at,
+        &registry_pb,
+        &spec,
+        &current_pb,
+    )?;
+    let (registry, _) =
+        bind_native_host_artifacts(&binding, &registry_pb, &spec, &current_pb, None)?;
+    let selected = registry
+        .hosts
+        .iter()
+        .find(|h| h.machine_id == machine_id && h.kind == FleetHostKind::Windows as i32)
+        .ok_or("HOST_WINDOWS_SYSTEM_HOST_NOT_REGISTERED")?
+        .clone();
+    edge_shared_types::host_lifecycle::verify_windows_signed_git_prerequisites(&selected)?;
+    if selected.worker_authority_public_key != boot.pinned_worker_public_key {
+        return Err("HOST_WINDOWS_SYSTEM_SIGNER_ROTATION_UNPROVEN".into());
+    }
+    check_native_receipt_key(&selected, private)?;
+    Ok((
+        FleetNativeTrustSnapshot {
+            registry_pb,
+            selected_spec_bytes: spec,
+            release_set_pb: current_pb,
+            ..boot
+        },
+        selected,
+        digest(&SHA256, &installed_pb).as_ref().to_vec(),
+    ))
 }
 
 fn lowercase_sha(bytes: &[u8]) -> String {
@@ -102,20 +257,89 @@ fn system_native_observation(install_root: &Path) -> Result<FleetNativeObservati
     if !child.status.success() || child.stdout.is_empty() || child.stdout.len() > 4096 {
         return Err("HOST_WINDOWS_NATIVE_READBACK_UNPROVEN");
     }
-    let readback = FleetNativeObservation::decode(child.stdout.as_slice())
+    let mut readback = FleetNativeObservation::decode(child.stdout.as_slice())
         .map_err(|_| "HOST_WINDOWS_NATIVE_READBACK_PROTO_INVALID")?;
     if readback.encode_to_vec() != child.stdout {
         return Err("HOST_WINDOWS_NATIVE_READBACK_NONCANONICAL");
     }
+    readback.windows_config_sha256 = windows_config::observed_digest(install_root)?;
     edge_shared_types::host_lifecycle::validate_native_observation(&readback)?;
     if readback.host_kind != FleetHostKind::Windows as i32 {
         return Err("HOST_WINDOWS_NATIVE_READBACK_KIND_MISMATCH");
     }
+    if readback.owner_state == edge_shared_types::FleetNativeOwnerState::Running as i32 {
+        let config = local_singbox_config_path(install_root);
+        let processes = edge_local_runtime::exact_managed_runtime_processes(&config);
+        let manager = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
+            .map_err(|_| "HOST_WINDOWS_SCM_READBACK_UNAVAILABLE")?;
+        let service = manager
+            .open_service(WINDOWS_CONTROLLER_SERVICE_NAME, ServiceAccess::QUERY_STATUS)
+            .map_err(|_| "HOST_WINDOWS_SCM_READBACK_UNAVAILABLE")?;
+        let pid = service
+            .query_status()
+            .map_err(|_| "HOST_WINDOWS_SCM_READBACK_UNAVAILABLE")?
+            .process_id;
+        let owned = processes.len() == 1
+            && pid.is_some()
+            && processes[0].parent_pid == pid
+            && processes[0].executable_path.as_ref().is_some_and(|p| {
+                Path::new(p).canonicalize().ok()
+                    == Path::new(&active.sing_box_path).canonicalize().ok()
+            });
+        if owned {
+            let ready = tokio::runtime::Handle::current().block_on(proxy_traffic_ready());
+            readback.runtime_ready_proven = ready;
+            readback.runtime_ready = ready;
+        } else {
+            readback
+                .reason_codes
+                .push("WINDOWS_NATIVE_CHILD_OWNERSHIP_UNPROVEN".into());
+        }
+    }
     Ok(readback)
 }
 
+/// TLS+HTTPS through the actual local proxy, never a direct fallback. This is
+/// runtime connectivity proof only, not full Line1/Line2/IPv6/WARP acceptance.
+async fn proxy_traffic_ready() -> bool {
+    let proxy = match reqwest::Proxy::all(format!("http://127.0.0.1:{STAGE2_DESKTOP_PROXY_PORT}")) {
+        Ok(p) => p,
+        Err(_) => return false,
+    };
+    let client = match reqwest::Client::builder()
+        .no_proxy()
+        .proxy(proxy)
+        .https_only(true)
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(8))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return false,
+    };
+    for url in [
+        "https://www.gstatic.com/generate_204",
+        "https://cp.cloudflare.com/generate_204",
+    ] {
+        match client.get(url).send().await {
+            Ok(r) if r.status() == reqwest::StatusCode::NO_CONTENT => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
 #[cfg(windows)]
-fn apply_exact_proxyonly_scm_step(step: FleetHostPlannedStep) -> Result<(), &'static str> {
+fn apply_exact_proxyonly_scm_step(
+    step: FleetHostPlannedStep,
+    root: &Path,
+    intent: &FleetHostIntent,
+    authorization: &FleetHostAuthorization,
+    private: &[u8],
+    installed_sha: &[u8],
+    config: Option<&windows_config::Configuration>,
+    trust: &FleetNativeTrustSnapshot,
+) -> Result<(), &'static str> {
     let scm = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
         .map_err(|_| "HOST_WINDOWS_SYSTEM_SCM_UNAVAILABLE")?;
     let service = scm
@@ -126,6 +350,9 @@ fn apply_exact_proxyonly_scm_step(step: FleetHostPlannedStep) -> Result<(), &'st
         .map_err(|_| "HOST_WINDOWS_SYSTEM_CONTROLLER_UNAVAILABLE")?;
     match step {
         FleetHostPlannedStep::Start => {
+            let config = config.ok_or("HOST_WINDOWS_RUNTIME_CONFIGURATION_REQUIRED")?;
+            windows_config::apply(root, config, &intent.operation_id)?;
+            windows_config::prepare_runtime_logs(root)?;
             service
                 .start::<&str>(&[])
                 .map_err(|_| "HOST_WINDOWS_SYSTEM_START_FAILED")?;
@@ -135,6 +362,61 @@ fn apply_exact_proxyonly_scm_step(step: FleetHostPlannedStep) -> Result<(), &'st
                 Duration::from_secs(WINDOWS_CONTROLLER_SERVICE_START_TIMEOUT_SECS),
             )
             .map_err(|_| "HOST_WINDOWS_SYSTEM_START_POSTSTATE_UNPROVEN")?;
+            // SCM owns the persistent Controller; the scheduled task must not
+            // leave an unsupervised sing-box child behind when it exits.
+            let pid = service
+                .query_status()
+                .map_err(|_| "HOST_WINDOWS_CONTROLLER_PID_UNPROVEN")?
+                .process_id
+                .ok_or("HOST_WINDOWS_CONTROLLER_PID_UNPROVEN")?;
+            tokio::runtime::Handle::current().block_on(async {
+                let channel = tonic::transport::Endpoint::from_static(WINDOWS_CONTROLLER_ENDPOINT)
+                    .connect_timeout(Duration::from_secs(10))
+                    .timeout(Duration::from_secs(45))
+                    .connect()
+                    .await
+                    .map_err(|_| "HOST_WINDOWS_CONTROLLER_CHANNEL_UNAVAILABLE")?;
+                let mut client = ControllerServiceClient::new(channel);
+                let challenge = client
+                    .get_native_runtime_challenge(Empty {})
+                    .await
+                    .map_err(|_| "HOST_WINDOWS_CONTROLLER_CHALLENGE_UNAVAILABLE")?
+                    .into_inner();
+                if challenge.process_id != pid as u64
+                    || challenge.installed_release_sha256 != installed_sha
+                    || challenge.nonce.len() != 32
+                {
+                    return Err("HOST_WINDOWS_CONTROLLER_CHALLENGE_IDENTITY_MISMATCH");
+                }
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|_| "HOST_WINDOWS_EFFECT_CLOCK_INVALID")?
+                    .as_secs();
+                let mut effect = edge_shared_types::FleetWindowsRuntimeEffect {
+                    schema_version: 1,
+                    intent: Some(intent.clone()),
+                    authorization: Some(authorization.clone()),
+                    challenge: Some(challenge),
+                    config_sha256: config.digest.clone(),
+                    expires_at_unix: now.saturating_add(60).min(authorization.expires_at_unix),
+                    registry_pb: trust.registry_pb.clone(),
+                    selected_spec_bytes: trust.selected_spec_bytes.clone(),
+                    ..Default::default()
+                };
+                edge_shared_types::windows_runtime_effect::sign(&mut effect, private)?;
+                let response = client
+                    .start_local_runtime(StartLocalRuntimeRequest {
+                        native_system_effect: effect.encode_to_vec(),
+                        ..Default::default()
+                    })
+                    .await
+                    .map_err(|_| "HOST_WINDOWS_CONTROLLER_NATIVE_EFFECT_UNPROVEN")?
+                    .into_inner();
+                if !response.success || response.pid.is_none() {
+                    return Err("HOST_WINDOWS_CONTROLLER_NATIVE_CHILD_UNPROVEN");
+                }
+                Ok(())
+            })?;
         }
         FleetHostPlannedStep::Stop => {
             service
@@ -175,85 +457,52 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
     let protected = install_root.join("native-host");
     let journal = protected.join("journal");
     verify_native_journal_protection(&journal).map_err(str::to_owned)?;
-    let intent_bytes = bounded_regular_file(
+    let transport = TransportRequest::open(
         &request,
         edge_shared_types::host_lifecycle::MAX_HOST_INTENT_BYTES as u64,
     )
     .map_err(str::to_owned)?;
+    let intent_bytes = &transport.bytes;
     let intent = decode_host_intent(&intent_bytes).map_err(str::to_owned)?;
     if intent.kind != FleetHostKind::Windows as i32
         || intent.resource_id != "sing-box"
         || !matches!(
             FleetHostAction::try_from(intent.action),
-            Ok(FleetHostAction::Start | FleetHostAction::Stop)
+            Ok(FleetHostAction::Start
+                | FleetHostAction::Stop
+                | FleetHostAction::Apply
+                | FleetHostAction::Recover)
         )
     {
         return Err("HOST_WINDOWS_SYSTEM_ACTION_NOT_ACCEPTED".into());
     }
-    let trust_bytes = bounded_regular_file(&protected.join(TRUST_FILE), 9 * 1024 * 1024)
-        .map_err(str::to_owned)?;
+    windows_admin::request_available(
+        &journal,
+        &intent.operation_id,
+        false,
+        intent.action == FleetHostAction::Recover as i32,
+    )?;
+    edge_shared_types::host_journal::verify_windows_protected_path_acl(
+        &protected.join(RECEIPT_KEY_FILE),
+        true,
+    )?;
     let receipt_private =
         bounded_regular_file(&protected.join(RECEIPT_KEY_FILE), 4096).map_err(str::to_owned)?;
-    let installed = load_verified_activation(install_root)
-        .map_err(|_| "HOST_WINDOWS_SYSTEM_ACTIVATION_UNPROVEN")?;
-    // First verify the immutable, LocalSystem-created bootstrap trust against
-    // the physically installed historical release. It must never be replaced
-    // with runner-supplied registry, signer or release bytes.
-    let bootstrap = FleetNativeTrustSnapshot::decode(trust_bytes.as_slice())
-        .map_err(|_| "HOST_WINDOWS_SYSTEM_TRUST_PROTO_INVALID")?;
-    let bootstrap_registry = edge_shared_types::decode_host_registry(&bootstrap.registry_pb)?;
-    let bootstrap_host = bootstrap_registry
-        .hosts
-        .iter()
-        .find(|host| host.machine_id == intent.machine_id && host.kind == intent.kind)
-        .ok_or("HOST_WINDOWS_SYSTEM_HOST_NOT_REGISTERED")?;
-    let mut historic_intent = intent.clone();
-    historic_intent.registry_sha256 = digest(&SHA256, &bootstrap.registry_pb).as_ref().to_vec();
-    historic_intent.desired_sha256 = edge_shared_types::host_lifecycle::digest_host_desired(
-        bootstrap_host,
-        &bootstrap.selected_spec_bytes,
-    )
-    .map_err(str::to_owned)?;
-    historic_intent.release_set_sha256 =
-        digest(&SHA256, &bootstrap.release_set_pb).as_ref().to_vec();
-    let bootstrap = verify_system_trust(
-        &trust_bytes,
-        &historic_intent,
-        &installed.release_set_sha256,
+    let (trust, selected, installed_runtime_sha256) = current_authority(
+        install_root,
+        &intent.machine_id,
+        &intent.operation_id,
+        intent.requested_at_unix,
         &receipt_private,
     )
-    .map_err(str::to_owned)?;
-
-    // Every signed operation gets fresh exact protected Git/ReleaseSet evidence.
-    // Git-only registry or desired revisions do NOT impersonate an installed
-    // binary, and do NOT require repeating first-use/reinstalling Windows.
-    let (installed_pb, current_pb, registry_pb, spec) =
-        windows_trust_enrollment::fetch_exact_protected_git(&installed).await?;
-    if installed_pb != bootstrap.release_set_pb {
-        return Err("HOST_WINDOWS_SYSTEM_INSTALLED_GIT_RELEASE_CHANGED".into());
-    }
-    let (registry, _) = bind_native_host_artifacts(&intent, &registry_pb, &spec, &current_pb, None)
-        .map_err(str::to_owned)?;
-    let selected = registry
-        .hosts
-        .iter()
-        .find(|host| host.machine_id == intent.machine_id && host.kind == intent.kind)
-        .ok_or("HOST_WINDOWS_SYSTEM_HOST_NOT_REGISTERED")?;
-    edge_shared_types::host_lifecycle::verify_windows_signed_git_prerequisites(selected)
-        .map_err(str::to_owned)?;
-    if selected.worker_authority_public_key != bootstrap.pinned_worker_public_key {
-        // A signer rotation requires separately proven authority, never
-        // silent trust-on-first-use from a Git-only update.
-        return Err("HOST_WINDOWS_SYSTEM_SIGNER_ROTATION_UNPROVEN".into());
-    }
-    check_native_receipt_key(selected, &receipt_private).map_err(str::to_owned)?;
-    let trust = FleetNativeTrustSnapshot {
-        registry_pb,
-        selected_spec_bytes: spec,
-        release_set_pb: current_pb,
-        ..bootstrap
-    };
-    let installed_runtime_sha256 = digest(&SHA256, &installed_pb).as_ref().to_vec();
+    .await?;
+    bind_native_host_artifacts(
+        &intent,
+        &trust.registry_pb,
+        &trust.selected_spec_bytes,
+        &trust.release_set_pb,
+        None,
+    )?;
     let mode = selected
         .target
         .as_ref()
@@ -264,7 +513,25 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
         return Err("HOST_WINDOWS_SYSTEM_PROXY_ONLY_REQUIRED".into());
     }
     // A pre-BEGIN native SCM/readback failure never creates journal state.
-    system_native_observation(install_root).map_err(str::to_owned)?;
+    tokio::task::block_in_place(|| system_native_observation(install_root))
+        .map_err(str::to_owned)?;
+    let update = if intent.action == FleetHostAction::Apply as i32
+        && digest(&SHA256, &trust.release_set_pb).as_ref() != installed_runtime_sha256
+    {
+        windows_update::preflight(install_root)?;
+        Some(windows_update::prepare(&trust.release_set_pb).await?)
+    } else {
+        None
+    };
+    let config = if matches!(
+        FleetHostAction::try_from(intent.action),
+        Ok(FleetHostAction::Apply | FleetHostAction::Recover | FleetHostAction::Start)
+    ) && update.is_none()
+    {
+        windows_config::prepare(install_root, &trust.selected_spec_bytes)?
+    } else {
+        None
+    };
     let identity = install_root
         .join("state")
         .join("secrets")
@@ -275,10 +542,28 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
     // Worker POST is one-shot; no fallback to a runner-supplied signature.
     let auth: FleetHostAuthorization =
         edge_secrets::request_canonical_host_authorization(&intent_bytes, &identity).await?;
-    let now = SystemTime::now()
+    let mut now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| "HOST_WINDOWS_SYSTEM_CLOCK_UNAVAILABLE")?
         .as_secs();
+    edge_shared_types::host_lifecycle::verify_host_authorization(
+        &intent,
+        &auth,
+        &trust.pinned_worker_public_key,
+        now,
+    )?;
+    if let Some(config) = &config
+        && matches!(
+            FleetHostAction::try_from(intent.action),
+            Ok(FleetHostAction::Apply | FleetHostAction::Start)
+        )
+    {
+        windows_config::validate(install_root, config, &intent.operation_id)?;
+        now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| "HOST_WINDOWS_SYSTEM_CLOCK_UNAVAILABLE")?
+            .as_secs();
+    }
     let result = tokio::task::block_in_place(|| {
         edge_shared_types::host_journal::execute_native_windows_host_once(
             &intent,
@@ -291,27 +576,59 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
             &trust.machine_id,
             FleetHostKind::Windows as i32,
             &installed_runtime_sha256,
+            config.as_ref().map(|c| c.digest.as_slice()),
             now,
             &journal,
             || system_native_observation(install_root),
             |step| match step {
-                FleetHostPlannedStep::Start | FleetHostPlannedStep::Stop => Ok(()),
+                FleetHostPlannedStep::Start if config.is_some() => {
+                    windows_update::preflight(install_root).map(|_| ())
+                }
+                FleetHostPlannedStep::Stop => Ok(()),
+                FleetHostPlannedStep::ReplaceRelease if update.is_some() => {
+                    windows_update::preflight(install_root).map(|_| ())
+                }
+                FleetHostPlannedStep::Configure if config.is_some() => {
+                    windows_update::preflight(install_root).map(|_| ())
+                }
                 _ => Err("HOST_WINDOWS_SYSTEM_NATIVE_STEP_NOT_ACCEPTED"),
             },
-            apply_exact_proxyonly_scm_step,
+            |step| match step {
+                FleetHostPlannedStep::ReplaceRelease => windows_update::apply(
+                    install_root,
+                    update.as_ref().ok_or("HOST_WINDOWS_UPDATE_NOT_PREPARED")?,
+                    &trust,
+                    &intent.operation_id,
+                ),
+                FleetHostPlannedStep::Configure => windows_config::apply(
+                    install_root,
+                    config.as_ref().ok_or("HOST_WINDOWS_CONFIG_NOT_PREPARED")?,
+                    &intent.operation_id,
+                ),
+                _ => apply_exact_proxyonly_scm_step(
+                    step,
+                    install_root,
+                    &intent,
+                    &auth,
+                    &receipt_private,
+                    &installed_runtime_sha256,
+                    config.as_ref(),
+                    &trust,
+                ),
+            },
         )
     })
     .map_err(str::to_owned)?;
     // Native journal has already fsynced terminal before SYSTEM signs.
-    let signed =
-        sign_native_receipt(&intent, &result, selected, &receipt_private).map_err(str::to_owned)?;
+    let signed = sign_native_receipt(&intent, &result, &selected, &receipt_private)
+        .map_err(str::to_owned)?;
     let receipt_path = install_root
         .join("exchange")
         .join("results")
         .join(RECEIPT_FILE);
     write_atomic(&receipt_path, &signed.encode_to_vec())
         .map_err(|_| "HOST_WINDOWS_SYSTEM_RECEIPT_PUBLISH_UNCERTAIN")?;
-    fs::remove_file(request).map_err(|_| "HOST_WINDOWS_SYSTEM_REQUEST_CONSUMPTION_UNCERTAIN")?;
+    transport.consume()?;
     println!("status=PASS");
     println!("native_system_receipt=SIGNED_TERMINAL");
     println!("native_system_operation_id={}", intent.operation_id);
@@ -322,6 +639,22 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transport_request_cannot_be_swapped_during_execution() {
+        let dir =
+            std::env::temp_dir().join(format!("edge-transport-request-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("request.pb");
+        fs::write(&path, b"exact").unwrap();
+        let request = TransportRequest::open(&path, 32).unwrap();
+        assert_eq!(request.bytes, b"exact");
+        assert!(fs::write(&path, b"changed").is_err());
+        assert!(fs::rename(&path, dir.join("swapped")).is_err());
+        request.consume().unwrap();
+        assert!(!path.exists());
+        fs::remove_dir(dir).unwrap();
+    }
 
     #[test]
     fn no_system_trust_can_be_synthesized_from_a_runner_intent() {

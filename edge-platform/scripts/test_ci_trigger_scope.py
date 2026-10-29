@@ -10,7 +10,7 @@ def main() -> None:
     ci = Path(".github/workflows/edge-platform-ci.yml").read_text(encoding="utf-8")
     header = ci.split("\npermissions:\n", 1)[0]
     assert header.startswith("name: Edge Platform CI\n\non:\n")
-    expected = ["edge-platform/**", "infra/**", "win/**", ".github/workflows/**"]
+    expected = ["edge-platform/**", "infra/**", "win/**", ".github/workflows/**", ".gitattributes"]
     for event in ("pull_request", "push"):
         matched = re.search(
             rf"(?ms)^  {event}:\n(.*?)(?=^  (?:pull_request|push):|\Z)",
@@ -20,6 +20,7 @@ def main() -> None:
         paths = re.findall(r'^      - "([^"]+)"$', matched.group(1), re.M)
         assert paths == expected, f"{event} event excludes canonical inputs: {paths}"
         for filename in (
+            ".gitattributes",
             "infra/hosts/hosts.textproto",
             "infra/release/release-inputs.lock.json",
             "infra/production/production.textproto",

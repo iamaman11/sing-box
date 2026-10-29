@@ -78,7 +78,67 @@ fn read_marker(path: &Path, active: &WindowsActivationState) -> Result<(), Strin
     if request.encode_to_vec() != bytes {
         return Err("HOST_WINDOWS_RECEIPT_ENROLL_PROTO_NONCANONICAL".into());
     }
+    if request_valid(&request, active).is_ok() {
+        return Ok(());
+    }
+    // Completed first-use is historical identity evidence, not permission to
+    // enroll again after every update. Preserve its original exact bytes.
+    if path.file_name().and_then(|s| s.to_str()) == Some(COMPLETED) {
+        let root = path
+            .parent()
+            .and_then(Path::parent)
+            .ok_or("HOST_WINDOWS_IDENTITY_HISTORY_ROOT_INVALID")?;
+        let historical = historical_marker_activation(
+            root,
+            &request.source_revision,
+            &request.release_set_sha256,
+        )?;
+        return request_valid(&request, &historical).map_err(str::to_owned);
+    }
     request_valid(&request, active).map_err(str::to_owned)
+}
+
+pub(super) fn historical_marker_activation(
+    root: &Path,
+    source: &str,
+    release: &str,
+) -> Result<WindowsActivationState, String> {
+    if source.len() != 40
+        || release.len() != 64
+        || !source
+            .bytes()
+            .chain(release.bytes())
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err("HOST_WINDOWS_IDENTITY_HISTORY_DIGEST_INVALID".into());
+    }
+    let path = root.join("releases").join(release).join("release-set.pb");
+    edge_shared_types::host_journal::verify_windows_protected_path_acl(&path, true)?;
+    let bytes = windows_signed_host::bounded_regular_file(&path, 65536)?;
+    verify_historical_release_bytes(&bytes, source, release)?;
+    Ok(WindowsActivationState {
+        source_revision: source.into(),
+        release_set_sha256: release.into(),
+        ..Default::default()
+    })
+}
+
+fn verify_historical_release_bytes(
+    bytes: &[u8],
+    source: &str,
+    release: &str,
+) -> Result<(), &'static str> {
+    let pb = edge_shared_types::ReleaseSet::decode(bytes)
+        .map_err(|_| "HOST_WINDOWS_IDENTITY_HISTORY_RELEASE_INVALID")?;
+    let sha: String = ring::digest::digest(&ring::digest::SHA256, &bytes)
+        .as_ref()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    if sha != release || pb.source_revision != source || pb.encode_to_vec() != bytes {
+        return Err("HOST_WINDOWS_IDENTITY_HISTORY_RELEASE_MISMATCH");
+    }
+    Ok(())
 }
 
 fn create_only(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -631,6 +691,26 @@ pub(super) fn observe(install_root: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn completed_identity_history_requires_exact_original_release() {
+        let original = edge_shared_types::ReleaseSet {
+            schema_version: 7,
+            source_revision: "a".repeat(40),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let sha: String = ring::digest::digest(&ring::digest::SHA256, &original)
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        verify_historical_release_bytes(&original, &"a".repeat(40), &sha).unwrap();
+        assert!(verify_historical_release_bytes(&original, &"b".repeat(40), &sha).is_err());
+        assert!(
+            verify_historical_release_bytes(&original, &"a".repeat(40), &"0".repeat(64)).is_err()
+        );
+        assert!(verify_historical_release_bytes(b"invalid", &"a".repeat(40), &sha).is_err());
+    }
     #[test]
     fn pending_rebind_accepts_only_exact_unconsumed_pair() {
         let dir = std::env::temp_dir().join(format!("w4-rebind-pending-{}", std::process::id()));

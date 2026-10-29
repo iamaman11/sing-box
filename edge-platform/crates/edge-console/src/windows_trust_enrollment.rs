@@ -157,7 +157,19 @@ pub(super) fn read_only_first_use_trust_stage(
         }
     } else if has_done {
         let bytes = fs::read(&done).map_err(|_| "HOST_WINDOWS_FIRST_USE_TRUST_DONE_UNREADABLE")?;
-        verify_enrollment_marker(&bytes, active).map_err(str::to_owned)?;
+        if verify_enrollment_marker(&bytes, active).is_err() {
+            let marker = FleetWindowsTrustEnrollment::decode(bytes.as_slice())
+                .map_err(|_| "HOST_WINDOWS_TRUST_HISTORY_MARKER_INVALID")?;
+            let install = root
+                .parent()
+                .ok_or("HOST_WINDOWS_TRUST_HISTORY_ROOT_INVALID")?;
+            let historical = windows_receipt_enrollment::historical_marker_activation(
+                install,
+                &marker.source_revision,
+                &marker.release_set_sha256,
+            )?;
+            verify_enrollment_marker(&bytes, &historical)?;
+        }
     }
     if !has_trust && has_done {
         return Err("HOST_WINDOWS_FIRST_USE_TRUST_DONE_WITHOUT_SNAPSHOT".into());
@@ -302,7 +314,7 @@ fn exact_installed_git_ancestor(
     Ok(())
 }
 
-async fn fetch_bounded(
+pub(super) async fn fetch_bounded(
     client: &reqwest::Client,
     url: &str,
     limit: usize,
@@ -342,7 +354,10 @@ async fn fetch_bounded(
     Ok(bytes)
 }
 
-async fn fetch_json(client: &reqwest::Client, url: &str) -> Result<serde_json::Value, String> {
+pub(super) async fn fetch_json(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<serde_json::Value, String> {
     let bytes = fetch_bounded(client, url, MAX_JSON).await?;
     serde_json::from_slice(&bytes).map_err(|_| "HOST_WINDOWS_TRUST_SOURCE_JSON_INVALID".into())
 }

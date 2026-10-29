@@ -316,12 +316,46 @@ pub fn render_windows_config(state: &WindowsRuntimeState) -> Result<Vec<u8>, Str
     render_windows_config_for_mode(state, mode)
 }
 
+/// Parse only the external sing-box JSON boundary. Native callers never
+/// infer routing safety from a filename or an untrusted mode flag.
+pub fn require_proxy_only_config(bytes: &[u8]) -> Result<(), &'static str> {
+    if bytes.is_empty() || bytes.len() > 1024 * 1024 {
+        return Err("HOST_WINDOWS_EFFECT_CONFIG_SIZE_INVALID");
+    }
+    let config: Value =
+        serde_json::from_slice(bytes).map_err(|_| "HOST_WINDOWS_EFFECT_CONFIG_INVALID")?;
+    let rows = config
+        .get("inbounds")
+        .and_then(Value::as_array)
+        .ok_or("HOST_WINDOWS_EFFECT_CONFIG_INVALID")?;
+    if rows.is_empty()
+        || rows.iter().any(|r| {
+            !matches!(
+                r.get("type").and_then(Value::as_str),
+                Some("mixed" | "socks" | "http")
+            )
+        })
+    {
+        return Err("HOST_WINDOWS_EFFECT_ROUTE_CAPTURE_NOT_AUTHORIZED");
+    }
+    Ok(())
+}
+
 fn render_windows_config_for_mode(
     state: &WindowsRuntimeState,
     mode: WindowsDatapathMode,
 ) -> Result<Vec<u8>, String> {
-    edge_shared_types::encode_windows_runtime_state(state)?;
     let desired = canonical_production_desired_state()?;
+    render_windows_config_for_desired(state, mode, &desired)
+}
+
+pub fn render_windows_config_for_desired(
+    state: &WindowsRuntimeState,
+    mode: WindowsDatapathMode,
+    desired: &edge_shared_types::ProductionDesiredState,
+) -> Result<Vec<u8>, String> {
+    edge_shared_types::encode_windows_runtime_state(state)?;
+    edge_shared_types::windows_routing::validate(desired.windows_application_routing.as_ref())?;
     let routes = desired
         .windows_route_policy
         .as_ref()
@@ -495,6 +529,22 @@ fn render_windows_config_for_mode(
             "strategy": "ipv4_only"
         });
         sync_tun_route_excludes(&mut config, Some(state.server_ip.as_str()));
+        if let Some(policy) = desired.windows_application_routing.as_ref().filter(|p| {
+            p.scope == edge_shared_types::WindowsApplicationScope::SelectedApplications as i32
+        }) {
+            let rules = config["route"]["rules"]
+                .as_array_mut()
+                .ok_or("WINDOWS_ROUTE_RULES_INVALID")?;
+            // Restrict process rules to managed TUN. Explicit proxy/WSL clients
+            // retain their own selectors, even from the same executable.
+            for app in &policy.applications {
+                rules.push(
+                    json!({"inbound":["managed-tun-in"], "process_path":[app.executable_path],
+                    "outbound": production_windows_route_tag(app.route)?}),
+                );
+            }
+            rules.push(json!({"inbound":["managed-tun-in"], "outbound":"direct"}));
+        }
         sync_stable_bypass_rules(&mut config);
     }
 
@@ -1868,6 +1918,24 @@ mod tests {
     }
 
     #[test]
+    fn proxy_only_admission_rejects_route_capture_and_unknown_inbounds() {
+        let state = stage2_runtime_state();
+        let good = render_windows_config_for_mode(&state, WindowsDatapathMode::ProxyOnly).unwrap();
+        assert!(require_proxy_only_config(&good).is_ok());
+        let tun = render_windows_config_for_mode(&state, WindowsDatapathMode::ManagedTun).unwrap();
+        assert!(require_proxy_only_config(&tun).is_err());
+        for raw in [
+            b"{}".as_slice(),
+            br#"{"inbounds":[]}"#,
+            br#"{"inbounds":[{"type":"tun"}]}"#,
+            br#"{"inbounds":[{"type":"redirect"}]}"#,
+            b"invalid",
+        ] {
+            assert!(require_proxy_only_config(raw).is_err());
+        }
+    }
+
+    #[test]
     fn git_route_policy_defaults_are_rendered_for_both_selectors() {
         let desired = canonical_production_desired_state().unwrap();
         let routes = desired.windows_route_policy.unwrap();
@@ -1897,6 +1965,85 @@ mod tests {
         assert_eq!(
             production_windows_route_tag(6).unwrap(),
             "vless-reality-warp"
+        );
+    }
+
+    #[test]
+    fn stage4b_selected_apps_precede_tun_default_direct() {
+        let mut desired = canonical_production_desired_state().unwrap();
+        desired.windows_application_routing = Some(edge_shared_types::WindowsApplicationRouting {
+            scope: edge_shared_types::WindowsApplicationScope::SelectedApplications as i32,
+            applications: vec![edge_shared_types::WindowsApplicationRoute {
+                executable_path: r"C:\Apps\Selected\browser.exe".into(),
+                route: edge_shared_types::WindowsDefaultRoute::VlessRealityWarp as i32,
+            }],
+        });
+        let bytes = render_windows_config_for_desired(
+            &stage2_runtime_state(),
+            WindowsDatapathMode::ManagedTun,
+            &desired,
+        )
+        .unwrap();
+        let config: Value = serde_json::from_slice(&bytes).unwrap();
+        if let Some(binary) = std::env::var_os("EDGE_TEST_SING_BOX") {
+            let root = unique_test_dir();
+            fs::create_dir_all(&root).unwrap();
+            let path = root.join("selected-apps.json");
+            fs::write(&path, &bytes).unwrap();
+            let status = Command::new(binary)
+                .args(["check", "-c"])
+                .arg(path)
+                .status()
+                .unwrap();
+            fs::remove_dir_all(root).unwrap();
+            assert!(
+                status.success(),
+                "release-pinned sing-box rejected process_path configuration"
+            );
+        }
+        let rules = config["route"]["rules"].as_array().unwrap();
+        let process = rules
+            .iter()
+            .position(|r| r.get("process_path").is_some())
+            .unwrap();
+        let fallback = rules
+            .iter()
+            .position(|r| {
+                r["inbound"] == json!(["managed-tun-in"]) && r.get("process_path").is_none()
+            })
+            .unwrap();
+        assert!(process < fallback);
+        assert!(process > 1);
+        assert_eq!(rules[process]["outbound"], "vless-reality-warp");
+        assert_eq!(rules[fallback]["outbound"], "direct");
+        assert_eq!(rules[0]["outbound"], "direct");
+        assert_eq!(
+            rules
+                .iter()
+                .find(|r| r["inbound"] == json!([WSL_INBOUND_TAG]))
+                .unwrap()["outbound"],
+            WSL_SELECTOR_TAG
+        );
+        let bytes = render_windows_config_for_desired(
+            &stage2_runtime_state(),
+            WindowsDatapathMode::ProxyOnly,
+            &desired,
+        )
+        .unwrap();
+        let proxy: Value = serde_json::from_slice(&bytes).unwrap();
+        assert!(
+            !proxy["route"]["rules"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r.get("process_path").is_some())
+        );
+        assert!(
+            !proxy["inbounds"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|r| r["type"] == "tun")
         );
     }
 

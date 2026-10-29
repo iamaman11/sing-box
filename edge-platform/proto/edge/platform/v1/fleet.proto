@@ -649,6 +649,23 @@ message FleetHostAuthorization {
   bytes ed25519_signature = 6;
 }
 
+// SYSTEM delegates one already Worker-authorized effect to its existing
+// Controller child supervisor. No secret, second owner or persistent ledger.
+// Controller nonce changes on every process start and is consumed per operation.
+message FleetWindowsRuntimeEffect {
+  uint32 schema_version = 1;
+  FleetHostIntent intent = 2;
+  FleetHostAuthorization authorization = 3;
+  FleetWindowsRuntimeChallenge challenge = 4;
+  bytes config_sha256 = 5;
+  uint64 expires_at_unix = 6;
+  bytes system_signature = 7;
+  // Public Git context independently verified by SYSTEM before BEGIN. The
+  // Controller verifies SYSTEM's local protected receipt identity first.
+  bytes registry_pb = 8;
+  bytes selected_spec_bytes = 9;
+}
+
 
 // A bounded, local, non-secret physical readback. The observer reports its
 // actual source and proof scope; this message NEVER authorizes mutations or
@@ -687,6 +704,9 @@ message FleetNativeObservation {
   // Root-local resource evidence for signed historical RECOVER; this is
   // the already existing FleetVmResourceReport, not a second state store.
   FleetVmResourceReport vm_recovery_resources = 10;
+  // Actual configuration bytes, independently read by the Windows owner.
+  // Empty means absent/unproven, never "matches desired".
+  bytes windows_config_sha256 = 11;
 }
 
 
@@ -701,6 +721,7 @@ enum FleetHostPlannedStep {
   FLEET_HOST_PLANNED_STEP_STOP = 4;
   FLEET_HOST_PLANNED_STEP_REPLACE_RELEASE = 5;
   FLEET_HOST_PLANNED_STEP_INSTALL = 6;
+  FLEET_HOST_PLANNED_STEP_CONFIGURE = 7;
 }
 
 // Closed host-level planner reasons. CLI reason_code is a derived projection,
@@ -731,6 +752,7 @@ enum FleetHostPlanReason {
   FLEET_HOST_PLAN_REASON_RUNNING_MATCHES_LOCAL_NOT_EXTERNAL = 22;
   FLEET_HOST_PLAN_REASON_VM_DEGRADED_REQUIRES_SCOPED_CONTAINER_PREADMISSION = 23;
   FLEET_HOST_PLAN_REASON_RUNTIME_READINESS_UNPROVEN = 24;
+  FLEET_HOST_PLAN_REASON_STOPPED_CONFIGURATION_DRIFT = 25;
 }
 
 message FleetHostTransitionPlan {

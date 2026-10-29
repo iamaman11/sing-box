@@ -385,6 +385,8 @@ pub(super) async fn execute() -> Result<(), String> {
         .read_to_end(&mut raw)
         .map_err(|_| "HOST_ADMIN_REQUEST_STDIN_UNAVAILABLE")?;
     let request = host_admin::decode(&raw).map_err(str::to_owned)?;
+    host_admin::validate_for_kind(&request, edge_shared_types::FleetHostKind::Vm)
+        .map_err(str::to_owned)?;
     let _lock = host_native::owner_operation_lock()?;
     let journal = Path::new(host_native::TRUSTED_ROOT).join("journal");
     let metadata = fs::symlink_metadata(&journal).map_err(|_| "HOST_ADMIN_JOURNAL_UNAVAILABLE")?;

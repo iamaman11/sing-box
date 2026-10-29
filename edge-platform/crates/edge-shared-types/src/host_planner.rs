@@ -356,6 +356,34 @@ pub fn propose_host_transition(
 /* Host and per-resource plans obey the same fail-closed contract: one
  * Protobuf reason, one planned step, no inferred privilege from observation.
  */
+/// A freshly authorized APPLY may update a proven STOPPED Windows owner
+/// while keeping it STOPPED. STOP/START/RECOVER never acquire this authority.
+pub fn propose_signed_host_transition(
+    host: &FleetHost,
+    observed: &FleetNativeObservation,
+    action: crate::FleetHostAction,
+    expected_release: &[u8],
+    expected_bundle: &[u8],
+    now: u64,
+) -> FleetHostTransitionPlan {
+    let mut proposal =
+        propose_host_transition(host, Some(observed), expected_release, expected_bundle, now);
+    if host.kind == FleetHostKind::Windows as i32
+        && action == crate::FleetHostAction::Apply
+        && proposal.reason
+            == FleetHostPlanReason::StoppedReleaseMismatchRequiresInstallTarget as i32
+    {
+        proposal = plan(
+            host,
+            FleetHostPlannedStep::ReplaceRelease,
+            FleetHostPlanReason::ReleaseMismatchProposalOnly,
+            expected_release,
+            &observed.observed_release_sha256,
+        );
+    }
+    proposal
+}
+
 pub fn validate_host_transition_plan(
     proposal: &FleetHostTransitionPlan,
     host: &FleetHost,
@@ -406,6 +434,7 @@ pub fn validate_host_transition_plan(
         Reason::StartProposalOnly | Reason::VmDegradedRequiresScopedContainerPreadmission => {
             FleetHostPlannedStep::Start
         }
+        Reason::StoppedConfigurationDrift => FleetHostPlannedStep::Configure,
         Reason::Unspecified => return Err("HOST_PLAN_REASON_UNSPECIFIED"),
     };
     if proposal.step != expected_step as i32 {
@@ -417,6 +446,49 @@ pub fn validate_host_transition_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn signed_apply_updates_stopped_windows_without_implicitly_starting() {
+        let h = host(
+            FleetHostKind::Windows,
+            FleetHostMode::ProxyOnly,
+            FleetHostRunState::Stopped,
+        );
+        let o = observed(FleetHostKind::Windows, FleetNativeOwnerState::Stopped);
+        for action in [
+            crate::FleetHostAction::Start,
+            crate::FleetHostAction::Stop,
+            crate::FleetHostAction::Recover,
+        ] {
+            assert_eq!(
+                propose_signed_host_transition(&h, &o, action, &[2; 32], &[2; 32], 1000).step,
+                FleetHostPlannedStep::Blocked as i32
+            );
+        }
+        let p = propose_signed_host_transition(
+            &h,
+            &o,
+            crate::FleetHostAction::Apply,
+            &[2; 32],
+            &[2; 32],
+            1000,
+        );
+        assert_eq!(p.step, FleetHostPlannedStep::ReplaceRelease as i32);
+        validate_host_transition_plan(&p, &h).unwrap();
+        let mut bad = o;
+        bad.reason_codes.push("UNPROVEN".into());
+        assert_eq!(
+            propose_signed_host_transition(
+                &h,
+                &bad,
+                crate::FleetHostAction::Apply,
+                &[2; 32],
+                &[2; 32],
+                1000
+            )
+            .step,
+            FleetHostPlannedStep::Blocked as i32
+        );
+    }
     use crate::{FleetHostTarget, managed_host};
 
     fn host(kind: FleetHostKind, mode: FleetHostMode, run: FleetHostRunState) -> FleetHost {
@@ -460,6 +532,7 @@ mod tests {
             runtime_ready_proven: true,
             reason_codes: vec![],
             vm_recovery_resources: None,
+            windows_config_sha256: Vec::new(),
         }
     }
 

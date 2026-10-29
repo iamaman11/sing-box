@@ -43,6 +43,10 @@ fn main() {
     tonic_prost_build::configure()
         .build_client(true)
         .build_server(true)
+        .file_descriptor_set_path(
+            std::path::PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"))
+                .join("platform-descriptor.pb"),
+        )
         .compile_protos(&protos, &[proto_root.clone()])
         .expect("compile protobuf contracts");
 
@@ -78,4 +82,9 @@ fn main() {
     let out_dir = std::path::PathBuf::from(std::env::var("OUT_DIR").expect("OUT_DIR"));
     std::fs::write(out_dir.join("production-desired-state.pb"), output.stdout)
         .expect("write canonical production protobuf");
+    std::fs::write(
+        out_dir.join("production-desired-state.textproto"),
+        desired_text,
+    )
+    .expect("write production text fixture");
 }

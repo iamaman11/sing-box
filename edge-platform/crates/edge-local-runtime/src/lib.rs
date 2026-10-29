@@ -411,6 +411,32 @@ pub fn start_local_runtime(
     start_local_runtime_with_policy(paths, visible_window, false)
 }
 
+/// The existing Controller may supervise one SYSTEM-admitted ProxyOnly child.
+/// Configuration is already protected, rendered and validated by SYSTEM; this
+/// path NEVER rewrites it, adopts an orphan, captures routes or retries launch.
+pub fn start_native_verified_proxy(
+    paths: &LocalRuntimePaths,
+) -> Result<RuntimeOperationResult, String> {
+    let bytes =
+        fs::read(&paths.config_path).map_err(|_| "HOST_WINDOWS_EFFECT_CONFIG_UNREADABLE")?;
+    edge_singbox::require_proxy_only_config(&bytes)?;
+    let managed = exact_managed_runtime_processes(&paths.config_path);
+    if !managed.is_empty() {
+        return Err("HOST_WINDOWS_EFFECT_CHILD_ALREADY_EXISTS_NO_REPLAY".into());
+    }
+    validate_singbox_config(&paths.singbox_binary_path, &paths.config_path)?;
+    let mut child = launch_singbox(paths, false)?;
+    if let Err(e) = observe_startup(&mut child) {
+        return Err(format!("HOST_WINDOWS_EFFECT_START_POSTSTATE_UNPROVEN: {e}"));
+    }
+    Ok(RuntimeOperationResult {
+        pid: Some(child.id()),
+        note: "NATIVE_SYSTEM_ADMITTED_PROXY_STARTED".into(),
+        warnings: Vec::new(),
+        local_singbox: inspect_local_runtime(&paths.config_path),
+    })
+}
+
 fn existing_owner_for_noop(
     owner: Option<&ProcessObservation>,
     explicit_restart: bool,

@@ -1,4 +1,6 @@
 mod legacy_provider_support;
+#[cfg(windows)]
+mod windows_native_runtime;
 use legacy_provider_support::*;
 
 use std::env;
@@ -537,6 +539,9 @@ async fn supervise_windows_managed_child(repo_root: PathBuf) -> Result<(), Strin
         return Ok(());
     }
     let initial = exact_managed_runtime_processes(&config_path);
+    if initial.is_empty() {
+        return Ok(());
+    } // signed start arrives after SCM is Running
     if initial.len() != 1 || initial[0].parent_pid != Some(std::process::id()) {
         return Err(
             "SCM startup did not expose one exact child owned by this controller".to_owned(),
@@ -1213,6 +1218,7 @@ async fn start_local_runtime_via_controller(
             state_path: None,
             force_restart: false,
             visible_window: false,
+            native_system_effect: Vec::new(),
         }))
         .await?;
     Ok(response.into_inner())
