@@ -221,6 +221,80 @@ async fn select_exact_missing_managed_network(
         .ok_or("HOST_VM_MANAGED_REPAIR_NOT_EXACTLY_ONE_KNOWN_MISSING".into())
 }
 
+/// A same-ReleaseSet START may restore exactly one proven-lost
+/// ephemeral network resource. The installed manifest is read-only, and
+/// the existing native journal/Worker authorization owns the single effect.
+#[derive(Debug)]
+pub(crate) struct PreparedScopedNetworkRepair {
+    path: String,
+    manifest: Vec<u8>,
+    route: Option<PreparedManagedRoute>,
+    firewall: Option<managed_firewall::PreparedManagedFirewall>,
+    dns: Option<managed_dns::PreparedManagedDns>,
+}
+
+pub(crate) async fn preflight_scoped_network_repair(
+    stack_dir: &Path,
+    host: &FleetHost,
+) -> Result<PreparedScopedNetworkRepair, String> {
+    checked_managed_directory(stack_dir, false).map_err(str::to_owned)?;
+    let (path, manifest) = select_exact_missing_managed_network(stack_dir, host).await?;
+    let route = if is_managed_route_manifest(&path) {
+        Some(preflight_managed_route(host, &path, None, Some(&manifest)).await?)
+    } else {
+        None
+    };
+    let firewall = if managed_firewall::is_managed_firewall_manifest(&path) {
+        Some(managed_firewall::preflight_managed_firewall(host, &path, None, Some(&manifest)).await?)
+    } else {
+        None
+    };
+    let dns = if managed_dns::is_managed_dns_manifest(&path) {
+        Some(managed_dns::preflight_managed_dns(host, &path, None, Some(&manifest)).await?)
+    } else {
+        None
+    };
+    if route.is_none() && firewall.is_none() && dns.is_none() {
+        return Err("HOST_VM_MANAGED_REPAIR_UNSUPPORTED_RESOURCE".into());
+    }
+    Ok(PreparedScopedNetworkRepair {
+        path,
+        manifest,
+        route,
+        firewall,
+        dns,
+    })
+}
+
+pub(crate) async fn apply_scoped_network_repair_once(
+    stack_dir: &Path,
+    plan: &PreparedScopedNetworkRepair,
+) -> Result<(), String> {
+    let path = stack_dir.join(&plan.path);
+    checked_managed_directory(stack_dir, false).map_err(str::to_owned)?;
+    let original = checked_managed_existing_file(&path, 0).map_err(str::to_owned)?;
+    if original.as_deref() != Some(plan.manifest.as_slice()) {
+        return Err("HOST_VM_MANAGED_REPAIR_MANIFEST_CHANGED_NO_REPLAY".into());
+    }
+    if let Some(prepared) = &plan.route {
+        apply_managed_route_once(prepared).await?;
+    }
+    if let Some(prepared) = &plan.firewall {
+        managed_firewall::apply_managed_firewall_once(prepared).await?;
+    }
+    if let Some(prepared) = &plan.dns {
+        managed_dns::apply_managed_dns_once(prepared).await?;
+    }
+    if checked_managed_existing_file(&path, 0)
+        .map_err(str::to_owned)?
+        .as_deref()
+        != Some(plan.manifest.as_slice())
+    {
+        return Err("HOST_VM_MANAGED_REPAIR_MANIFEST_POSTSTATE_NO_REPLAY".into());
+    }
+    Ok(())
+}
+
 pub(crate) async fn preflight_native_vm_managed_file(
     stack_dir: &Path,
     host: &FleetHost,

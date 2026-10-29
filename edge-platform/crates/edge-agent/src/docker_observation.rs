@@ -306,6 +306,7 @@ pub(crate) struct NativeVmRunPlan {
     // not itself cover published ports and host mount sources.
     compose_sha256: Option<Vec<u8>>,
     edge_network_id: Option<String>,
+    network_repair: Option<managed_file::PreparedScopedNetworkRepair>,
 }
 
 fn check_owned_vm_snapshot(
@@ -720,7 +721,7 @@ async fn apply_owned_vm_service_aliases_once(
 /// its root-owned manifest and independently observed owner are proven.
 /// This never grants an effect or authorizes reuse of the old operation ID.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum ManagedNetworkRecovery {
+pub(crate) enum ManagedNetworkRecovery {
     Converged,
     KnownRecoverable,
     UnknownNoReplay,
@@ -779,6 +780,20 @@ fn classify_managed_network_recovery(
     if missing { KnownRecoverable } else { Converged }
 }
 
+/// Read-only native status of every installed managed network manifest.
+pub(crate) async fn observe_vm_managed_network_recovery(
+    stack_dir: &Path,
+    host: &FleetHost,
+) -> ManagedNetworkRecovery {
+    let report = edge_shared_types::FleetVmResourceReport {
+        managed_kernel_routes: collect_native_managed_kernel_routes(stack_dir, host).await,
+        managed_firewall: collect_native_managed_firewall(stack_dir, host).await,
+        managed_system_dns: collect_native_managed_system_dns(stack_dir, host).await,
+        ..Default::default()
+    };
+    classify_managed_network_recovery(&report)
+}
+
 /// recovery and the next fresh APPLY. The root caller owns the lock; this
 /// function performs NO effect. Validate network ownership and attachment
 /// separately from Docker names before trusting the report in the journal.
@@ -826,6 +841,14 @@ pub(crate) async fn capture_partial_vm_resource_evidence(
 /// Resolve the common typed resource planner against root-local Docker
 /// evidence BEFORE the journal BEGIN. A single absent owned gateway may
 /// use native Docker CREATE; other resources must be unchanged and ready.
+fn start_can_repair_only_network(
+    step: FleetHostPlannedStep,
+    docker_changes: usize,
+    alias_repairs: usize,
+) -> bool {
+    step == FleetHostPlannedStep::Start && docker_changes == 0 && alias_repairs == 0
+}
+
 pub(crate) async fn preflight_native_vm_run(
     stack_dir: &Path,
     host: &FleetHost,
@@ -909,7 +932,20 @@ pub(crate) async fn preflight_native_vm_run(
     } else {
         Vec::new()
     };
-    if changed == 0 && alias_repairs.is_empty() {
+    let network_repair = if start_can_repair_only_network(step, changed, alias_repairs.len()) {
+        Some(managed_file::preflight_scoped_network_repair(stack_dir, host).await?)
+    } else {
+        // Do not combine Docker/alias mutations with a missing or foreign
+        // managed route, nft table or DNS link in one signed transaction.
+        if step == FleetHostPlannedStep::Start
+            && observe_vm_managed_network_recovery(stack_dir, host).await
+                != ManagedNetworkRecovery::Converged
+        {
+            return Err("HOST_VM_START_MANAGED_NETWORK_DEPENDENCY_UNPROVEN".into());
+        }
+        None
+    };
+    if changed == 0 && alias_repairs.is_empty() && network_repair.is_none() {
         return Err("HOST_NATIVE_VM_RESOURCE_NO_MUTATION_REQUIRED".into());
     }
     if let Some(service) = create_missing.as_deref() {
@@ -961,6 +997,7 @@ pub(crate) async fn preflight_native_vm_run(
         desired_graph,
         create_missing,
         alias_repairs,
+        network_repair,
         prepared_create,
         compose_sha256,
         edge_network_id,
@@ -1002,6 +1039,15 @@ pub(crate) async fn apply_native_vm_run_once(
     } else {
         owned_vm_start_order(&owned)?
     };
+    if let Some(repair) = &plan.network_repair {
+        if plan.step != FleetHostPlannedStep::Start
+            || plan.create_missing.is_some()
+            || !plan.alias_repairs.is_empty()
+        {
+            return Err("HOST_VM_MANAGED_REPAIR_CONFLICTING_EFFECT_NO_REPLAY".into());
+        }
+        managed_file::apply_scoped_network_repair_once(stack_dir, repair).await?;
+    }
     // A missing service alias is an exact network resource transition.
     // Keep the immutable container ID/process/image; do not recreate images
     // or touch the daemon outside this Worker-signed root-owned journal.
@@ -1516,7 +1562,9 @@ fn verify_native_vm_run_poststate(
             _ => return Err("HOST_NATIVE_VM_POSTSTATE_OWNER_CHANGED_NO_REPLAY".into()),
         }
     }
-    if (changes == 0 && plan.alias_repairs.is_empty()) || after.len() > host.vm_containers.len() {
+    if (changes == 0 && plan.alias_repairs.is_empty() && plan.network_repair.is_none())
+        || after.len() > host.vm_containers.len()
+    {
         return Err("HOST_NATIVE_VM_POSTSTATE_CHANGE_UNPROVEN_NO_REPLAY".into());
     }
     Ok(())
@@ -4986,6 +5034,19 @@ mod native_vm_partial_image_reconcile_tests {
 #[cfg(test)]
 mod managed_network_recovery_tests {
     use super::*;
+
+    #[test]
+    fn signed_start_network_repair_never_coexists_with_other_effects() {
+        assert!(start_can_repair_only_network(FleetHostPlannedStep::Start, 0, 0));
+        for (step, changes, aliases) in [
+            (FleetHostPlannedStep::Stop, 0, 0),
+            (FleetHostPlannedStep::ReplaceRelease, 0, 0),
+            (FleetHostPlannedStep::Start, 1, 0),
+            (FleetHostPlannedStep::Start, 0, 1),
+        ] {
+            assert!(!start_can_repair_only_network(step, changes, aliases));
+        }
+    }
 
     #[test]
     fn reboot_missing_owned_network_is_not_verified_or_replayed() {

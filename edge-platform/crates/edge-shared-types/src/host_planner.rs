@@ -182,9 +182,23 @@ pub fn propose_host_transition(
         && observed.release_proof == FleetNativeReleaseProof::ApplicationBundle as i32
         && actual == expected
         && crate::host_lifecycle::known_runtime_only_historical_reasons(observed);
+    // An exact native readback of ONE lost owned network object may
+    // request the existing VM scoped START step. This is only a pure
+    // proposal; root preflight must independently prove the lost resource
+    // and a fresh Worker-signed APPLY must pass durable BEGIN.
+    let vm_known_same_release_network_loss = kind == FleetHostKind::Vm
+        && desired_run == FleetHostRunState::Running
+        && observed.owner_state == FleetNativeOwnerState::Running as i32
+        && observed.release_proof == FleetNativeReleaseProof::ApplicationBundle as i32
+        && actual == expected
+        && observed.runtime_ready_proven
+        && !observed.runtime_ready
+        && observed.reason_codes.len() == 1
+        && observed.reason_codes[0] == "VM_MANAGED_NETWORK_MISSING";
     if !observed.reason_codes.is_empty()
         && !vm_known_resource_bundle_drift
         && !vm_known_same_release_runtime_defect
+        && !vm_known_same_release_network_loss
     {
         return plan(
             host,
@@ -504,6 +518,38 @@ mod tests {
         assert_eq!(
             validate_host_transition_plan(&forged, &vm),
             Err("HOST_PLAN_SCOPE_OR_AUTHORITY_INVALID")
+        );
+    }
+
+    #[test]
+    fn same_release_network_loss_requires_exact_native_readiness_failure() {
+        let vm = host(
+            FleetHostKind::Vm,
+            FleetHostMode::Unspecified,
+            FleetHostRunState::Running,
+        );
+        let mut live = observed(FleetHostKind::Vm, FleetNativeOwnerState::Running);
+        live.runtime_ready = false;
+        live.reason_codes = vec!["VM_MANAGED_NETWORK_MISSING".into()];
+        let plan = propose_host_transition(&vm, Some(&live), &[1; 32], &[1; 32], 1000);
+        assert_eq!(plan.step, FleetHostPlannedStep::Start as i32);
+        assert!(!plan.owner_attested && !plan.mutation_authorized);
+
+        live.runtime_ready_proven = false;
+        assert_eq!(
+            propose_host_transition(&vm, Some(&live), &[1; 32], &[1; 32], 1000).step,
+            FleetHostPlannedStep::Blocked as i32
+        );
+        live.runtime_ready_proven = true;
+        live.reason_codes.push("VM_MANAGED_NETWORK_UNKNOWN_NO_REPLAY".into());
+        assert_eq!(
+            propose_host_transition(&vm, Some(&live), &[1; 32], &[1; 32], 1000).step,
+            FleetHostPlannedStep::Blocked as i32
+        );
+        live.reason_codes = vec!["VM_MANAGED_NETWORK_UNKNOWN_NO_REPLAY".into()];
+        assert_eq!(
+            propose_host_transition(&vm, Some(&live), &[1; 32], &[1; 32], 1000).step,
+            FleetHostPlannedStep::Blocked as i32
         );
     }
 
