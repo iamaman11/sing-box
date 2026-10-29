@@ -649,7 +649,7 @@ assert "require_offline_bootstrap_quiescent(install_root)?;" in win_console
 assert "OfflineBootstrapPreflight(InstallRootArgs)" in win_cli
 assert 'Self::OfflineBootstrapPreflight(_) => "offline-bootstrap-preflight"' in win_cli
 assert "Command::OfflineBootstrapPreflight(args) =>" in win_dispatch
-assert "read_only_windows_first_use_source(&root, None)" in win_dispatch
+assert 'read_only_windows_first_use_source(&root, None, "", "")' in win_dispatch
 assert '"w4_signer_and_receipt_enrollment": "NOT_PROVEN"' in win_dispatch
 start = win_console.index("fn read_only_windows_first_use_source(")
 end = win_console.index("fn offline_bootstrap_privileged_release(", start)
@@ -668,7 +668,10 @@ for mutation in ("write_atomic(", "create_new(", "offline_activate_privileged_re
                  "change_offline_bootstrap_task_enabled(", "retarget_privileged_task(",
                  "change_config(", "remove_file("):
     assert mutation not in helper, mutation
-assert "let before = read_only_windows_first_use_source(install_root, supersession)?;" in win_console
+assert "let (before, previously_disabled) =" in win_console
+assert "read_only_windows_first_use_source(install_root, supersession, revision, target)?;" in win_console
+assert "require_distinct_offline_bootstrap_successor(" in helper
+assert 'verify_offline_bootstrap_dispatcher(&before.console_path, "Disabled")?;' in helper
 assert "archive_retained_offline_bootstrap_intent(" in win_console
 assert "retained_intent_sha256: Option<String>" in win_cli
 assert "expected_current_release_set_sha256: Option<String>" in win_cli

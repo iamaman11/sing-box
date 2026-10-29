@@ -2758,6 +2758,26 @@ fn inspect_retained_offline_bootstrap_intent(
     })
 }
 
+// A new, separately approved release can supersede a previously compensated
+// UNKNOWN. It must never be the release/revision already named by the pending
+// BEGIN, and the BEGIN must originate from the still-installed old owner.
+// The existing task must independently prove its exact Disabled state.
+fn require_distinct_offline_bootstrap_successor(
+    retained: &VerifiedRetainedOfflineBootstrap,
+    installed_release: &str,
+    next_revision: &str,
+    next_target: &str,
+) -> Result<(), String> {
+    if retained.from != installed_release
+        || retained.to == next_target
+        || retained.accepted_revision == next_revision
+        || !offline_bootstrap_identifiers_valid(next_revision, next_target)
+    {
+        return Err("OFFLINE_BOOTSTRAP_DISABLED_SUCCESSOR_NOT_DISTINCT_NO_REPLAY".to_owned());
+    }
+    Ok(())
+}
+
 fn require_offline_bootstrap_other_pending_absent(install_root: &Path) -> Result<(), String> {
     for relative in [
         "exchange/requests/request.pb",
@@ -2990,7 +3010,9 @@ fn require_explicit_local_administrator_first_use() -> Result<(), String> {
 fn read_only_windows_first_use_source(
     install_root: &Path,
     approval: Option<&RetainedOfflineBootstrapSupersession>,
-) -> Result<WindowsActivationState, String> {
+    next_revision: &str,
+    next_target: &str,
+) -> Result<(WindowsActivationState, bool), String> {
     // A purely observational reuse of the SAME strict native pre-BEGIN
     // owner, old-doctor, task and pending-state guards as offline bootstrap.
     // No file creation, task execution, SCM change or key enrollment.
@@ -3008,19 +3030,36 @@ fn read_only_windows_first_use_source(
         .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: old doctor missing: {err}"))?;
     let old_readout = String::from_utf8_lossy(&old_doctor.stdout);
     require_offline_bootstrap_supported_source(&old_readout)?;
-    verify_offline_bootstrap_dispatcher(&before.console_path, "Ready")?;
-    if let Some(approval) = approval {
+    let previously_disabled = if let Some(approval) = approval {
         require_offline_bootstrap_other_pending_absent(install_root)?;
-        inspect_retained_offline_bootstrap_intent(
+        let retained = inspect_retained_offline_bootstrap_intent(
             install_root,
             approval,
             &before.release_set_sha256,
         )?;
+        if verify_offline_bootstrap_dispatcher(&before.console_path, "Ready").is_ok() {
+            false
+        } else {
+            // A compensated UNKNOWN handoff can leave the exact previous
+            // SYSTEM task Disabled. Accept ONLY a new, distinct canonical
+            // release (never the already-attempted operation), with the same
+            // exact task principal/action and pinned BEGIN readback.
+            verify_offline_bootstrap_dispatcher(&before.console_path, "Disabled")?;
+            require_distinct_offline_bootstrap_successor(
+                &retained,
+                &before.release_set_sha256,
+                next_revision,
+                next_target,
+            )?;
+            true
+        }
     } else {
         require_offline_bootstrap_quiescent(install_root)?;
-    }
+        verify_offline_bootstrap_dispatcher(&before.console_path, "Ready")?;
+        false
+    };
     require_no_running_legacy_dispatcher(&before.console_path)?;
-    Ok(before)
+    Ok((before, previously_disabled))
 }
 
 #[cfg(windows)]
@@ -3052,7 +3091,8 @@ fn offline_bootstrap_privileged_release(
     if desired.windows_datapath_mode != WindowsDatapathMode::ProxyOnly as i32 {
         return Err("OFFLINE_BOOTSTRAP_BLOCKED: canonical target is not ProxyOnly".to_owned());
     }
-    let before = read_only_windows_first_use_source(install_root, supersession)?;
+    let (before, previously_disabled) =
+        read_only_windows_first_use_source(install_root, supersession, revision, target)?;
     let pending_identity_rebind = if enroll_receipt {
         match windows_receipt_enrollment::preflight_fresh_identity_slot(install_root) {
             Ok(()) => None,
@@ -3195,7 +3235,14 @@ fn offline_bootstrap_privileged_release(
         &stage_installer,
     )?;
 
-    verify_offline_bootstrap_dispatcher(&before.console_path, "Ready")?;
+    verify_offline_bootstrap_dispatcher(
+        &before.console_path,
+        if previously_disabled {
+            "Disabled"
+        } else {
+            "Ready"
+        },
+    )?;
     require_no_running_legacy_dispatcher(&before.console_path)?;
     if let Some(approval) = supersession {
         // The prior BEGIN remains UNKNOWN_NO_REPLAY. After an independent
@@ -4840,3 +4887,59 @@ mod legacy_windows_privileged_ingress_tests {
 #[cfg(test)]
 #[path = "main_tests.rs"]
 mod tests;
+
+// The original W4 failed after an exact durable BEGIN and disabled its SYSTEM
+// task, but pointer compensation restored the old immutable ReleaseSet.
+// A DIFFERENT signed release may be explicitly approved as successor;
+// replaying the already-attempted target or accepting an unrelated BEGIN is
+// forbidden, even when the task is Disabled.
+#[cfg(test)]
+mod offline_disabled_successor_tests {
+    use super::{VerifiedRetainedOfflineBootstrap, require_distinct_offline_bootstrap_successor};
+
+    const INSTALLED: &str = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    const INTERRUPTED: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const NEXT: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    const OLD_REVISION: &str = "1111111111111111111111111111111111111111";
+    const NEXT_REVISION: &str = "2222222222222222222222222222222222222222";
+
+    fn pending() -> VerifiedRetainedOfflineBootstrap {
+        VerifiedRetainedOfflineBootstrap {
+            original_bytes: Vec::new(),
+            sha256: String::new(),
+            from: INSTALLED.to_owned(),
+            to: INTERRUPTED.to_owned(),
+            accepted_revision: OLD_REVISION.to_owned(),
+        }
+    }
+
+    #[test]
+    fn new_exact_successor_only_does_not_replay_interrupted_install() {
+        let p = pending();
+        assert!(
+            require_distinct_offline_bootstrap_successor(&p, INSTALLED, NEXT_REVISION, NEXT)
+                .is_ok()
+        );
+        assert_eq!(
+            require_distinct_offline_bootstrap_successor(&p, INSTALLED, NEXT_REVISION, INTERRUPTED),
+            Err("OFFLINE_BOOTSTRAP_DISABLED_SUCCESSOR_NOT_DISTINCT_NO_REPLAY".to_owned())
+        );
+        assert_eq!(
+            require_distinct_offline_bootstrap_successor(&p, INSTALLED, OLD_REVISION, NEXT),
+            Err("OFFLINE_BOOTSTRAP_DISABLED_SUCCESSOR_NOT_DISTINCT_NO_REPLAY".to_owned())
+        );
+        assert_eq!(
+            require_distinct_offline_bootstrap_successor(&p, INTERRUPTED, NEXT_REVISION, NEXT),
+            Err("OFFLINE_BOOTSTRAP_DISABLED_SUCCESSOR_NOT_DISTINCT_NO_REPLAY".to_owned())
+        );
+        assert!(
+            require_distinct_offline_bootstrap_successor(
+                &p,
+                INSTALLED,
+                NEXT_REVISION,
+                "not-a-release"
+            )
+            .is_err()
+        );
+    }
+}
