@@ -3,10 +3,10 @@ pub use credential_delivery::{
     ACCESS_IDENTITY_FILE_NAME, AccessServiceIdentity, InitialDummySlotProof,
     canonical_credential_worker_url, diagnose_canonical_host_access,
     fetch_canonical_credential_bundle, observe_canonical_credential_bundle,
-    prove_canonical_host_signer, read_access_service_identity,
-    request_canonical_host_authorization, request_canonical_native_admin_authorization,
-    verify_canonical_dummy_ab_slots, verify_initial_selected_dummy_slot,
-    write_access_service_identity,
+    prove_canonical_host_signer, prove_canonical_host_signer_with_service_identity,
+    read_access_service_identity, request_canonical_host_authorization,
+    request_canonical_native_admin_authorization, verify_canonical_dummy_ab_slots,
+    verify_initial_selected_dummy_slot, write_access_service_identity,
 };
 
 mod credential_store;

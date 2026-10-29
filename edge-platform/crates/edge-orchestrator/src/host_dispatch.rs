@@ -24,6 +24,27 @@ pub(super) async fn run(
             )
             .await
         }
+        cli::HostCommand::VmWorkerSignerProof { machine_id } => {
+            let host = release_context.verified_vm_first_use_host(&machine_id)?;
+            if host.worker_authority_public_key.len() != 32 {
+                return Err("HOST_VM_WORKER_SIGNER_GIT_PIN_REQUIRED".into());
+            }
+            let client_id = std::env::var("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID")
+                .map_err(|_| "HOST_VM_WORKER_ACCESS_ID_UNAVAILABLE")?;
+            let client_secret = std::env::var("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET")
+                .map_err(|_| "HOST_VM_WORKER_ACCESS_SECRET_UNAVAILABLE")?;
+            edge_secrets::prove_canonical_host_signer_with_service_identity(
+                &client_id,
+                &client_secret,
+                &host.worker_authority_public_key,
+            )
+            .await?;
+            println!("host_vm_worker_signed_identity=VERIFIED_GIT_PINNED_ED25519");
+            println!("host_vm_worker_signer_scope=READ_ONLY_NO_MUTATION");
+            println!("host_worker_mutations=0");
+            println!("host_provider_mutations=0");
+            Ok(())
+        }
         cli::HostCommand::VmCredentialProof {
             machine_id,
             generation,

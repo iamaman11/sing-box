@@ -219,6 +219,11 @@ pub(crate) enum HostCommand {
         #[arg(long)]
         bundle_sha256: Option<String>,
     },
+    /// Internal read-only proof of the ACTIVE VM Worker signing key, using
+    /// the existing protected Cloudflare Access service identity and Git pin.
+    /// Never authorizes HostIntent or writes a provider, key, or journal.
+    #[command(hide = true)]
+    VmWorkerSignerProof { machine_id: String },
     /// Internal continuation of one authenticated /host apply: update only
     /// the existing VM Worker code, inheriting all existing secret bindings.
     /// It never writes credentials, authorizes VM CREATE, or touches Windows.

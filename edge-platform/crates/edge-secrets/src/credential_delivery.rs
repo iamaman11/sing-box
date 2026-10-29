@@ -610,8 +610,32 @@ pub async fn prove_canonical_host_signer(
     identity_path: &Path,
     git_public_key: &[u8],
 ) -> Result<(), String> {
-    use rand_core::{OsRng, RngCore};
     let identity = read_access_service_identity(identity_path)?;
+    prove_canonical_host_signer_with_identity(&identity, git_public_key).await
+}
+
+/// Reuse the SAME Access identity that already proves protected VM credentials.
+/// No Vault import, temporary secret file or alternative identity owner.
+/// This function does exactly one read-only challenge GET.
+pub async fn prove_canonical_host_signer_with_service_identity(
+    access_client_id: &str,
+    access_client_secret: &str,
+    git_public_key: &[u8],
+) -> Result<(), String> {
+    let identity = AccessServiceIdentity::parse_env(&format!(
+        "CF_ACCESS_CLIENT_ID={access_client_id}\nCF_ACCESS_CLIENT_SECRET={access_client_secret}"
+    ))?;
+    prove_canonical_host_signer_with_identity(&identity, git_public_key).await
+}
+
+async fn prove_canonical_host_signer_with_identity(
+    identity: &AccessServiceIdentity,
+    git_public_key: &[u8],
+) -> Result<(), String> {
+    use rand_core::{OsRng, RngCore};
+    if git_public_key.len() != 32 {
+        return Err("HOST_SIGNER_PROOF_GIT_PIN_REQUIRED".into());
+    }
     let mut url = reqwest::Url::parse(&canonical_credential_worker_url(
         CredentialProjectionKind::Vm,
         1,
@@ -625,7 +649,7 @@ pub async fn prove_canonical_host_signer(
         .collect::<String>();
     url.set_path("/v1/host/identity");
     url.set_query(Some(&format!("challenge={hex}")));
-    let mut response = credential_worker_client(&identity)?
+    let mut response = credential_worker_client(identity)?
         .get(url)
         .send()
         .await
