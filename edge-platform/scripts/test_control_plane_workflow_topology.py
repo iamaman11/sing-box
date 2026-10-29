@@ -564,7 +564,14 @@ assert 'WINDOWS_CONNECT_AWAITING_EXACT_PROTECTED_MAIN_RELEASE' in install_script
 assert 'WINDOWS_CONNECT_RETAINED_BEGIN_REQUIRES_EXPLICIT_APPROVAL' in install_script
 assert 'WINDOWS_CONNECT_IDENTITY_RESULT_UNKNOWN_NO_REPLAY' in install_script
 assert "Assert-AcceptedReleaseAuthority -AcceptedRevision ([string]$branch.commit.sha) -Tag $tagName" in install_script
-assert "'-Offline', '-BootstrapNow', '-EnrollReceipt'" in install_script
+assert "BootstrapNow = $true" in install_script
+assert "EnrollReceipt = $true" in install_script
+assert "Offline = $true" in install_script
+assert "$argsInitial = @{" in install_script
+assert "$argsExact = @{" in install_script
+assert "$argsExact['RetainedIntentSha256'] = $oldDigest" in install_script
+assert "$argsExact['ExpectedCurrentReleaseSetSha256'] = [string]$installed['release_set_sha256']" in install_script
+assert "$argsExact += @(" not in install_script
 assert "if ($ApproveRetainedBegin)" in install_script
 assert "HOST_WINDOWS_RECEIPT_ENROLL_TRUST_ALREADY_PRESENT" in identity_owner
 # Operator supplies no manually copied Git/candidate hash: the exact signed
