@@ -17,6 +17,8 @@ pub(super) struct PreparedManagedDocker {
     spec: FleetVmManagedDockerResource,
     previous: Option<FleetVmManagedDockerResource>,
     original_fingerprint: Option<String>,
+    // The exact labeled Docker network ID admitted before BEGIN.
+    target_network_fingerprint: Option<String>,
     effect: ManagedDockerEffect,
 }
 
@@ -134,6 +136,24 @@ pub(super) fn decode_exact_spec(
         return Err("HOST_VM_DOCKER_MANIFEST_CANONICAL_OR_SCOPE_INVALID".into());
     }
     Ok(spec)
+}
+
+fn managed_network_spec(machine: &str, name: &str) -> FleetVmManagedDockerResource {
+    FleetVmManagedDockerResource {
+        schema_version: 1,
+        machine_id: machine.to_owned(),
+        resource_name: name.to_owned(),
+        kind: Kind::BridgeNetwork as i32,
+        desired_state: Desired::Present as i32,
+        ..Default::default()
+    }
+}
+
+fn exact_network_cas(expected: Option<&str>, current: Option<&str>) -> Result<(), &'static str> {
+    if expected.is_some() && expected != current {
+        return Err("HOST_VM_DOCKER_CONTAINER_NETWORK_CAS_CHANGED_NO_REPLAY");
+    }
+    Ok(())
 }
 
 fn expected_labels(spec: &FleetVmManagedDockerResource) -> HashMap<String, String> {
@@ -365,31 +385,28 @@ pub(super) async fn preflight_managed_docker_object(
             }
         }
     }
-    if let Some(target) = next
+    let target_network_fingerprint = if let Some(target) = next
         .as_ref()
         .filter(|s| s.kind == Kind::Container as i32 && present(s))
     {
-        if !target.network_name.is_empty() {
-            let network_spec = FleetVmManagedDockerResource {
-                schema_version: 1,
-                machine_id: host.machine_id.clone(),
-                resource_name: target.network_name.clone(),
-                kind: Kind::BridgeNetwork as i32,
-                desired_state: Desired::Present as i32,
-                ..Default::default()
-            };
-            if observe_managed_docker_object(&docker, &network_spec, false)
-                .await?
-                .is_none()
-            {
-                return Err("HOST_VM_DOCKER_CONTAINER_NETWORK_NOT_OWNED".into());
-            }
+        if target.network_name.is_empty() {
+            None
+        } else {
+            let network_spec = managed_network_spec(&target.machine_id, &target.network_name);
+            Some(
+                observe_managed_docker_object(&docker, &network_spec, false)
+                    .await?
+                    .ok_or("HOST_VM_DOCKER_CONTAINER_NETWORK_NOT_OWNED")?,
+            )
         }
-    }
+    } else {
+        None
+    };
     Ok(PreparedManagedDocker {
         spec: next.unwrap_or_else(|| previous.clone().expect("previous spec")),
         previous,
         original_fingerprint: physical,
+        target_network_fingerprint,
         effect,
     })
 }
@@ -482,6 +499,13 @@ pub(super) async fn apply_managed_docker_object_once(
     .await?;
     if actual != plan.original_fingerprint {
         return Err("HOST_VM_DOCKER_OBJECT_CAS_CHANGED_NO_REPLAY".into());
+    }
+    // Re-attest network ID/labels after journal BEGIN, before any Docker
+    // effect. A name reused by a foreign network must never be adopted.
+    if let Some(expected) = plan.target_network_fingerprint.as_deref() {
+        let spec = managed_network_spec(&plan.spec.machine_id, &plan.spec.network_name);
+        let observed = observe_managed_docker_object(&docker, &spec, false).await?;
+        exact_network_cas(Some(expected), observed.as_deref()).map_err(str::to_owned)?;
     }
     let name = &plan.spec.resource_name;
     match plan.effect {
@@ -594,6 +618,11 @@ pub(super) async fn apply_managed_docker_object_once(
     if now.is_some() != should_exist {
         return Err("HOST_VM_DOCKER_POSTSTATE_UNPROVEN_NO_REPLAY".into());
     }
+    if let Some(expected) = plan.target_network_fingerprint.as_deref() {
+        let spec = managed_network_spec(&plan.spec.machine_id, &plan.spec.network_name);
+        let observed = observe_managed_docker_object(&docker, &spec, false).await?;
+        exact_network_cas(Some(expected), observed.as_deref()).map_err(str::to_owned)?;
+    }
     if plan.spec.kind == Kind::Container as i32 && should_exist {
         let fingerprint = now
             .as_deref()
@@ -655,6 +684,18 @@ mod tests {
             plan_effect(Some(&old), None).unwrap(),
             ManagedDockerEffect::Delete
         );
+    }
+
+    #[test]
+    fn owned_network_id_cannot_change_between_prebegin_and_poststate() {
+        assert!(exact_network_cas(None, None).is_ok());
+        assert!(exact_network_cas(Some("network-id-a"), Some("network-id-a")).is_ok());
+        assert!(exact_network_cas(Some("network-id-a"), None).is_err());
+        assert!(exact_network_cas(Some("network-id-a"), Some("network-id-b")).is_err());
+        let scoped = managed_network_spec("application-test", "sb-application-test-internal");
+        assert_eq!(scoped.machine_id, "application-test");
+        assert_eq!(scoped.resource_name, "sb-application-test-internal");
+        assert_eq!(scoped.kind, Kind::BridgeNetwork as i32);
     }
 
     #[test]
