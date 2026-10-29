@@ -3,8 +3,8 @@
 //! managed Docker resource; a runner never supplies iproute2 argv.
 use super::*;
 use edge_shared_types::{
-    FleetHost, FleetVmIpFamily as Family, FleetVmKernelRoute,
-    FleetVmManagedKernelRoute, FleetVmManagedKernelRouteReadback,
+    FleetHost, FleetVmIpFamily as Family, FleetVmKernelRoute, FleetVmManagedKernelRoute,
+    FleetVmManagedKernelRouteReadback,
 };
 use prost::Message;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
@@ -114,8 +114,7 @@ pub(super) fn exact_docker_bridge_owner(
         && network.driver.as_deref() == Some("bridge")
         && network.internal == Some(true)
         && network.attachable == Some(false)
-        && options
-            .and_then(|value| value.get("com.docker.network.bridge.name"))
+        && options.and_then(|value| value.get("com.docker.network.bridge.name"))
             == Some(&spec.interface_name)
         && labels.and_then(|value| value.get("io.github.iamaman11.singbox.machine"))
             == Some(&spec.machine_id)
@@ -223,7 +222,9 @@ pub(super) async fn preflight_managed_route(
     let spec = decode_route(
         host,
         path,
-        before.or(after).ok_or("HOST_VM_MANAGED_ROUTE_MISSING_MANIFEST")?,
+        before
+            .or(after)
+            .ok_or("HOST_VM_MANAGED_ROUTE_MISSING_MANIFEST")?,
     )?;
     let create = after.is_some();
     let kernel = crate::network_observation::observe_dual_stack()
@@ -247,13 +248,10 @@ fn transition_matches(
     new: &[FleetVmKernelRoute],
     create: bool,
 ) -> bool {
-    (create && old.is_empty() && new.len() == 1)
-        || (!create && old.len() == 1 && new.is_empty())
+    (create && old.is_empty() && new.len() == 1) || (!create && old.len() == 1 && new.is_empty())
 }
 
-pub(super) async fn apply_managed_route_once(
-    plan: &PreparedManagedRoute,
-) -> Result<(), String> {
+pub(super) async fn apply_managed_route_once(plan: &PreparedManagedRoute) -> Result<(), String> {
     let before = crate::network_observation::observe_dual_stack()
         .await
         .map_err(|_| "HOST_VM_MANAGED_ROUTE_PRE_EFFECT_UNPROVEN_NO_REPLAY")?;
@@ -304,8 +302,7 @@ pub(super) async fn apply_managed_route_once(
         .map_err(|_| "HOST_VM_MANAGED_ROUTE_POST_EFFECT_UNPROVEN_NO_REPLAY")?;
     let (after_index, new) = route_in_owned_table(&post, &plan.spec)?;
     prove_managed_interface_owner(&plan.spec, after_index).await?;
-    if after_index != plan.interface_index || !transition_matches(&plan.before, &new, plan.create)
-    {
+    if after_index != plan.interface_index || !transition_matches(&plan.before, &new, plan.create) {
         return Err("HOST_VM_MANAGED_ROUTE_POSTSTATE_UNPROVEN_NO_REPLAY".into());
     }
     Ok(())
@@ -373,15 +370,20 @@ pub(crate) async fn collect_native_managed_kernel_routes(
         row.family = spec.family;
         row.table_id = spec.table_id;
         row.manifest_sha256 = ring::digest::digest(&ring::digest::SHA256, &bytes)
-            .as_ref().to_vec();
+            .as_ref()
+            .to_vec();
         match kernel.as_ref() {
             Ok(snapshot) => match route_in_owned_table(snapshot, &spec) {
                 Ok((index, routes)) => match prove_managed_interface_owner(&spec, index).await {
                     Ok(()) => {
                         row.present = routes.len() == 1;
                         row.converged = row.present;
-                        row.reason_code =
-                            if row.present { "DESIRED_PRESENT" } else { "ROUTE_MISSING" }.into();
+                        row.reason_code = if row.present {
+                            "DESIRED_PRESENT"
+                        } else {
+                            "ROUTE_MISSING"
+                        }
+                        .into();
                     }
                     Err(reason) => row.reason_code = reason,
                 },
@@ -433,8 +435,14 @@ mod tests {
                 spec.interface_name.clone(),
             )])),
             labels: Some(HashMap::from([
-                ("io.github.iamaman11.singbox.machine".into(), spec.machine_id.clone()),
-                ("io.github.iamaman11.singbox.resource".into(), spec.resource_name.clone()),
+                (
+                    "io.github.iamaman11.singbox.machine".into(),
+                    spec.machine_id.clone(),
+                ),
+                (
+                    "io.github.iamaman11.singbox.resource".into(),
+                    spec.resource_name.clone(),
+                ),
             ])),
             ..Default::default()
         };
@@ -448,10 +456,11 @@ mod tests {
             "io.github.iamaman11.singbox.machine".into(),
             spec.machine_id.clone(),
         );
-        network.options.as_mut().unwrap().insert(
-            "com.docker.network.bridge.name".into(),
-            "sbforeign0".into(),
-        );
+        network
+            .options
+            .as_mut()
+            .unwrap()
+            .insert("com.docker.network.bridge.name".into(), "sbforeign0".into());
         assert!(!exact_docker_bridge_owner(&spec, &network));
         network.options.as_mut().unwrap().insert(
             "com.docker.network.bridge.name".into(),
@@ -465,7 +474,8 @@ mod tests {
     fn route_requires_exact_resource_owned_ifalias_not_just_sb_prefix() {
         let first = route(Family::V4, "10.31.0.0", 16);
         assert!(canonical_owned_interface_alias(
-            &first, "sing-box:vm-test:sb-vm-test-lab"
+            &first,
+            "sing-box:vm-test:sb-vm-test-lab"
         ));
         for forged in [
             "",
@@ -493,11 +503,7 @@ mod tests {
         ] {
             assert!(!canonical_destination(&route(Family::V4, dst, prefix)));
         }
-        for (dst, prefix) in [
-            ("::", 0),
-            ("fd12:3456::1", 48),
-            ("ff00::", 16),
-        ] {
+        for (dst, prefix) in [("::", 0), ("fd12:3456::1", 48), ("ff00::", 16)] {
             assert!(!canonical_destination(&route(Family::V6, dst, prefix)));
         }
         let mut invalid = v4.clone();
@@ -539,7 +545,10 @@ mod tests {
             ..Default::default()
         };
         kernel.routes.push(expected.clone());
-        assert_eq!(route_in_owned_table(&kernel, &spec).unwrap().1, vec![expected.clone()]);
+        assert_eq!(
+            route_in_owned_table(&kernel, &spec).unwrap().1,
+            vec![expected.clone()]
+        );
         kernel.routes[0].table_id = 254;
         assert!(route_in_owned_table(&kernel, &spec).unwrap().1.is_empty());
         kernel.routes[0].table_id = spec.table_id;
@@ -552,12 +561,14 @@ mod tests {
         kernel.routes.push(expected);
         assert!(route_in_owned_table(&kernel, &spec).is_err());
         kernel.routes.clear();
-        kernel.policy_rules.push(edge_shared_types::FleetVmKernelPolicyRule {
-            family: Family::V4 as i32,
-            table_id: spec.table_id,
-            priority: 12_345,
-            ..Default::default()
-        });
+        kernel
+            .policy_rules
+            .push(edge_shared_types::FleetVmKernelPolicyRule {
+                family: Family::V4 as i32,
+                table_id: spec.table_id,
+                priority: 12_345,
+                ..Default::default()
+            });
         assert!(route_in_owned_table(&kernel, &spec).is_err());
     }
 

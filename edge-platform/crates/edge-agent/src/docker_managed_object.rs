@@ -63,9 +63,10 @@ fn canonical_private_ipv6_ipam(spec: &FleetVmManagedDockerResource) -> bool {
     let Some(prefix) = spec.ipv6_subnet.strip_suffix("/64") else {
         return false;
     };
-    let (Ok(subnet), Ok(gateway)) =
-        (prefix.parse::<Ipv6Addr>(), spec.ipv6_gateway.parse::<Ipv6Addr>())
-    else {
+    let (Ok(subnet), Ok(gateway)) = (
+        prefix.parse::<Ipv6Addr>(),
+        spec.ipv6_gateway.parse::<Ipv6Addr>(),
+    ) else {
         return false;
     };
     let network = u128::from(subnet);
@@ -95,7 +96,12 @@ fn exact_network_ipv6_ipam(
         .and_then(|value| value.config.as_ref())
         .into_iter()
         .flatten()
-        .filter(|entry| entry.subnet.as_deref().is_some_and(|subnet| subnet.contains(':')))
+        .filter(|entry| {
+            entry
+                .subnet
+                .as_deref()
+                .is_some_and(|subnet| subnet.contains(':'))
+        })
         .collect::<Vec<_>>();
     if !desired {
         return ipv6.is_empty();
@@ -104,15 +110,16 @@ fn exact_network_ipv6_ipam(
         && ipv6[0].subnet.as_deref() == Some(spec.ipv6_subnet.as_str())
         && ipv6[0].gateway.as_deref() == Some(spec.ipv6_gateway.as_str())
         && ipv6[0].ip_range.as_deref().unwrap_or("").is_empty()
-        && ipv6[0].auxiliary_addresses.as_ref().is_none_or(HashMap::is_empty)
+        && ipv6[0]
+            .auxiliary_addresses
+            .as_ref()
+            .is_none_or(HashMap::is_empty)
 }
 
 // Only explicit, canonical IP literals, no hostnames, search paths or
 // implicit Docker daemon DNS. Sorted unique entries yield a stable bundle.
 fn canonical_container_dns(addresses: &[String]) -> bool {
-    if addresses.len() > 4
-        || !addresses.windows(2).all(|pair| pair[0] < pair[1])
-    {
+    if addresses.len() > 4 || !addresses.windows(2).all(|pair| pair[0] < pair[1]) {
         return false;
     }
     addresses.iter().all(|raw| match raw.parse::<IpAddr>() {
@@ -144,9 +151,7 @@ fn canonical_bridge_interface_name(name: &str) -> bool {
             && !name.ends_with('-')
             && name
                 .bytes()
-                .all(|byte| byte.is_ascii_lowercase()
-                    || byte.is_ascii_digit()
-                    || byte == b'-'))
+                .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-'))
 }
 
 fn resource_path_expected(
@@ -274,10 +279,7 @@ fn exact_network_cas(expected: Option<&str>, current: Option<&str>) -> Result<()
 
 // Docker allows a container to be attached to extra networks after its
 // creation. HostConfig.network_mode alone does NOT prove the live graph.
-fn exact_attached_networks<'a>(
-    expected: &str,
-    names: impl IntoIterator<Item = &'a str>,
-) -> bool {
+fn exact_attached_networks<'a>(expected: &str, names: impl IntoIterator<Item = &'a str>) -> bool {
     let names = names.into_iter().collect::<Vec<_>>();
     if expected == "none" {
         names.is_empty() || names == ["none"]
@@ -340,11 +342,15 @@ pub(super) async fn observe_managed_docker_object(
                             network.enable_ipv6,
                             network.ipam.as_ref(),
                         ) || (if spec.bridge_interface_name.is_empty() {
-                            network.options.as_ref()
+                            network
+                                .options
+                                .as_ref()
                                 .and_then(|options| options.get("com.docker.network.bridge.name"))
                                 .is_some_and(|name| !name.is_empty())
                         } else {
-                            network.options.as_ref()
+                            network
+                                .options
+                                .as_ref()
                                 .and_then(|options| options.get("com.docker.network.bridge.name"))
                                 != Some(&spec.bridge_interface_name)
                         })))
@@ -467,21 +473,18 @@ fn bridge_routes_are_safe_to_remove(
     let Some(link) = kernel.links.iter().find(|link| link.name == bridge) else {
         return false;
     };
-    kernel
-        .routes
-        .iter()
-        .all(|route| {
-            // A route in main/local is not automatically disposable. Only
-            // kernel-generated directly connected/local routes are expected
-            // to disappear with the Docker-owned bridge. A static foreign
-            // route in main MUST block deletion just like one in a custom
-            // table; table number alone is never an ownership proof.
-            route.output_interface_index != link.interface_index
-                || (matches!(route.table_id, 254 | 255)
-                    && route.kernel_protocol
-                    && route.gateway.is_empty()
-                    && (route.table_id == 255 || route.link_scope))
-        })
+    kernel.routes.iter().all(|route| {
+        // A route in main/local is not automatically disposable. Only
+        // kernel-generated directly connected/local routes are expected
+        // to disappear with the Docker-owned bridge. A static foreign
+        // route in main MUST block deletion just like one in a custom
+        // table; table number alone is never an ownership proof.
+        route.output_interface_index != link.interface_index
+            || (matches!(route.table_id, 254 | 255)
+                && route.kernel_protocol
+                && route.gateway.is_empty()
+                && (route.table_id == 255 || route.link_scope))
+    })
 }
 
 async fn preflight_bridge_removal(spec: &FleetVmManagedDockerResource) -> Result<(), String> {
@@ -575,9 +578,13 @@ pub(super) async fn preflight_managed_docker_object(
     let expected_pre = previous.as_ref().is_some_and(present);
     let docker = super::super::docker_connection().await?;
     let old_spec = previous.as_ref().filter(|_| expected_pre).unwrap_or(spec);
-    let physical =
-        observe_managed_docker_object(&docker, old_spec, effect == ManagedDockerEffect::Delete, true)
-            .await?;
+    let physical = observe_managed_docker_object(
+        &docker,
+        old_spec,
+        effect == ManagedDockerEffect::Delete,
+        true,
+    )
+    .await?;
     if physical.is_some() != expected_pre {
         return Err("HOST_VM_DOCKER_PRESTATE_NOT_CONVERGED".into());
     }
@@ -818,9 +825,12 @@ pub(super) async fn apply_managed_docker_object_once(
             Ok(Kind::BridgeNetwork) => {
                 // Deletion must verify the OLD owned bridge identity: a
                 // target ABSENT manifest may legally omit link/IPAM fields.
-                let installed = plan.previous.as_ref()
+                let installed = plan
+                    .previous
+                    .as_ref()
                     .ok_or("HOST_VM_DOCKER_BRIDGE_PREVIOUS_SPEC_MISSING_NO_REPLAY")?;
-                preflight_bridge_removal(installed).await
+                preflight_bridge_removal(installed)
+                    .await
                     .map_err(|_| "HOST_VM_DOCKER_BRIDGE_ROUTE_CAS_CHANGED_NO_REPLAY")?;
                 docker
                     .remove_network(name)
@@ -984,18 +994,27 @@ mod tests {
         assert!(exact_network_ipv6_ipam(&spec, Some(true), Some(&ipam)));
         assert!(!exact_network_ipv6_ipam(&spec, Some(false), Some(&ipam)));
         let mut altered_ipam = ipam.clone();
-        altered_ipam.config.as_mut().unwrap()[0].gateway =
-            Some("fd45:1234:abcd::2".into());
-        assert!(!exact_network_ipv6_ipam(&spec, Some(true), Some(&altered_ipam)));
+        altered_ipam.config.as_mut().unwrap()[0].gateway = Some("fd45:1234:abcd::2".into());
+        assert!(!exact_network_ipv6_ipam(
+            &spec,
+            Some(true),
+            Some(&altered_ipam)
+        ));
         altered_ipam = ipam.clone();
-        altered_ipam.config.as_mut().unwrap().push(
-            bollard::models::IpamConfig {
+        altered_ipam
+            .config
+            .as_mut()
+            .unwrap()
+            .push(bollard::models::IpamConfig {
                 subnet: Some("fd56:1234:abcd::/64".into()),
                 gateway: Some("fd56:1234:abcd::1".into()),
                 ..Default::default()
-            },
-        );
-        assert!(!exact_network_ipv6_ipam(&spec, Some(true), Some(&altered_ipam)));
+            });
+        assert!(!exact_network_ipv6_ipam(
+            &spec,
+            Some(true),
+            Some(&altered_ipam)
+        ));
         for (subnet, gateway) in [
             ("2001:db8::/64", "2001:db8::1"),
             ("2001:4860::/64", "2001:4860::1"),
@@ -1019,16 +1038,19 @@ mod tests {
 
     #[test]
     fn container_live_network_graph_rejects_foreign_extra_attachments() {
-        assert!(exact_attached_networks("sb-vm-test-private", ["sb-vm-test-private"]));
+        assert!(exact_attached_networks(
+            "sb-vm-test-private",
+            ["sb-vm-test-private"]
+        ));
         assert!(!exact_attached_networks(
             "sb-vm-test-private",
             ["sb-vm-test-private", "bridge"],
         ));
+        assert!(!exact_attached_networks("sb-vm-test-private", ["bridge"],));
         assert!(!exact_attached_networks(
             "sb-vm-test-private",
-            ["bridge"],
+            Vec::<&str>::new()
         ));
-        assert!(!exact_attached_networks("sb-vm-test-private", Vec::<&str>::new()));
         assert!(exact_attached_networks("none", Vec::<&str>::new()));
         assert!(exact_attached_networks("none", ["none"]));
         assert!(!exact_attached_networks("none", ["bridge"]));
@@ -1061,7 +1083,14 @@ mod tests {
     fn managed_bridge_interface_is_scoped_for_native_route_ownership() {
         assert!(canonical_bridge_interface_name(""));
         assert!(canonical_bridge_interface_name("sblab0"));
-        for name in ["br0", "eth0", "sb", "sb-", "sbUpper", "sblab-extra-extra-long"] {
+        for name in [
+            "br0",
+            "eth0",
+            "sb",
+            "sb-",
+            "sbUpper",
+            "sblab-extra-extra-long",
+        ] {
             assert!(!canonical_bridge_interface_name(name), "{name}");
         }
         let host = FleetHost {
@@ -1077,9 +1106,17 @@ mod tests {
             bridge_interface_name: "sblab0".into(),
             ..Default::default()
         };
-        assert!(resource_path_expected(&host, "managed/docker-network-lab.pb", &network));
+        assert!(resource_path_expected(
+            &host,
+            "managed/docker-network-lab.pb",
+            &network
+        ));
         network.bridge_interface_name = "foreign0".into();
-        assert!(!resource_path_expected(&host, "managed/docker-network-lab.pb", &network));
+        assert!(!resource_path_expected(
+            &host,
+            "managed/docker-network-lab.pb",
+            &network
+        ));
     }
 
     #[test]

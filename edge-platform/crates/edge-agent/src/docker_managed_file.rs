@@ -5,15 +5,15 @@ use super::*;
 #[path = "docker_managed_object.rs"]
 mod managed_object;
 use managed_object::*;
-#[path = "network_managed_route.rs"]
-mod managed_route;
-#[path = "network_managed_firewall.rs"]
-mod managed_firewall;
 #[path = "network_managed_dns.rs"]
 mod managed_dns;
-pub(crate) use managed_route::collect_native_managed_kernel_routes;
-pub(crate) use managed_firewall::collect_native_managed_firewall;
+#[path = "network_managed_firewall.rs"]
+mod managed_firewall;
+#[path = "network_managed_route.rs"]
+mod managed_route;
 pub(crate) use managed_dns::collect_native_managed_system_dns;
+pub(crate) use managed_firewall::collect_native_managed_firewall;
+pub(crate) use managed_route::collect_native_managed_kernel_routes;
 use managed_route::{
     PreparedManagedRoute, apply_managed_route_once, is_managed_route_manifest,
     preflight_managed_route,
@@ -204,22 +204,27 @@ pub(crate) async fn preflight_native_vm_managed_file(
         None
     };
     let route = if is_managed_route_manifest(&path) {
-        Some(
-            preflight_managed_route(host, &path, before.as_deref(), after.as_deref()).await?,
-        )
+        Some(preflight_managed_route(host, &path, before.as_deref(), after.as_deref()).await?)
     } else {
         None
     };
     let firewall = if managed_firewall::is_managed_firewall_manifest(&path) {
         Some(
-            managed_firewall::preflight_managed_firewall(host, &path, before.as_deref(), after.as_deref()).await?,
+            managed_firewall::preflight_managed_firewall(
+                host,
+                &path,
+                before.as_deref(),
+                after.as_deref(),
+            )
+            .await?,
         )
     } else {
         None
     };
     let dns = if managed_dns::is_managed_dns_manifest(&path) {
         Some(
-            managed_dns::preflight_managed_dns(host, &path, before.as_deref(), after.as_deref()).await?,
+            managed_dns::preflight_managed_dns(host, &path, before.as_deref(), after.as_deref())
+                .await?,
         )
     } else {
         None
@@ -308,7 +313,8 @@ pub(crate) async fn apply_native_vm_managed_file_once(
     }
     if checked_managed_existing_file(&target_path, 0)
         .map_err(str::to_owned)?
-        .as_deref() != plan.before.as_deref()
+        .as_deref()
+        != plan.before.as_deref()
     {
         return Err("HOST_VM_MANAGED_TARGET_CAS_CHANGED_NO_REPLAY".into());
     }
@@ -455,11 +461,11 @@ pub(crate) async fn collect_native_managed_docker_readback(
                     != edge_shared_types::FleetVmManagedDockerDesiredState::Absent as i32
                 && !spec.network_name.is_empty()
             {
-                let network = managed_object::managed_network_spec(
-                    &spec.machine_id,
-                    &spec.network_name,
-                );
-                match managed_object::observe_managed_docker_object(docker, &network, false, false).await {
+                let network =
+                    managed_object::managed_network_spec(&spec.machine_id, &spec.network_name);
+                match managed_object::observe_managed_docker_object(docker, &network, false, false)
+                    .await
+                {
                     Ok(Some(_)) => {}
                     Ok(None) => {
                         row.reason_code = "MANAGED_CONTAINER_NETWORK_MISSING".into();

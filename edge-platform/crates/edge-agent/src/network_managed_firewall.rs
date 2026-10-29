@@ -4,8 +4,8 @@
 //! netlink batch. Unknown acknowledgement keeps UNKNOWN_NO_REPLAY.
 use super::*;
 use edge_shared_types::{
-    FleetHost, FleetHostKind, FleetVmFirewallTransport, FleetVmFirewallAction, FleetVmManagedFirewall,
-    FleetVmManagedFirewallReadback,
+    FleetHost, FleetHostKind, FleetVmFirewallAction, FleetVmFirewallTransport,
+    FleetVmManagedFirewall, FleetVmManagedFirewallReadback,
 };
 use prost::Message;
 use serde_json::Value;
@@ -47,21 +47,29 @@ fn canonical_rules(spec: &FleetVmManagedFirewall) -> Option<Vec<(i32, u16, i32)>
     }
     // Conflicting allow/deny for the same protocol/port could silently
     // short-circuit; never depend on nft rule ordering to resolve it.
-    if ordered.windows(2).any(|pair| pair[0] >= pair[1]
-        || (pair[0].0, pair[0].1) == (pair[1].0, pair[1].1)) {
+    if ordered
+        .windows(2)
+        .any(|pair| pair[0] >= pair[1] || (pair[0].0, pair[0].1) == (pair[1].0, pair[1].1))
+    {
         return None;
     }
     Some(ordered)
 }
 
-fn decode_scope(host: &FleetHost, path: &str, raw: &[u8]) -> Result<FleetVmManagedFirewall, String> {
+fn decode_scope(
+    host: &FleetHost,
+    path: &str,
+    raw: &[u8],
+) -> Result<FleetVmManagedFirewall, String> {
     let suffix = path
         .strip_prefix("managed/host-firewall-")
         .and_then(|rest| rest.strip_suffix(".pb"))
         .ok_or("HOST_VM_FIREWALL_MANIFEST_PATH_INVALID")?;
     if suffix.is_empty()
         || suffix.len() > 24
-        || !suffix.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        || !suffix
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
     {
         return Err("HOST_VM_FIREWALL_TABLE_NAME_INVALID".into());
     }
@@ -72,9 +80,10 @@ fn decode_scope(host: &FleetHost, path: &str, raw: &[u8]) -> Result<FleetVmManag
         .map_err(|_| "HOST_VM_FIREWALL_MANIFEST_DECODE_INVALID")?;
     if host.machine_id.is_empty()
         || host.machine_id.len() > 64
-        || !host.machine_id.bytes().all(|b| {
-            b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-'
-        })
+        || !host
+            .machine_id
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
         || spec.encode_to_vec() != raw
         || spec.schema_version != 1
         || host.kind != FleetHostKind::Vm as i32
@@ -141,7 +150,9 @@ fn render_batch(
         } else {
             "drop"
         };
-        batch.push_str(&format!("add rule inet {table} ingress {label} dport {port} {verdict}\n"));
+        batch.push_str(&format!(
+            "add rule inet {table} ingress {label} dport {port} {verdict}\n"
+        ));
     }
     batch
 }
@@ -175,8 +186,7 @@ async fn nft(args: Vec<String>, stdin: Option<String>) -> Result<String, String>
         if output.stdout.len() > 65536 {
             return Err("HOST_VM_FIREWALL_OUTPUT_OVERSIZE".into());
         }
-        String::from_utf8(output.stdout)
-            .map_err(|_| "HOST_VM_FIREWALL_OUTPUT_UTF8_INVALID".into())
+        String::from_utf8(output.stdout).map_err(|_| "HOST_VM_FIREWALL_OUTPUT_UTF8_INVALID".into())
     })
     .await
     .map_err(|_| "HOST_VM_FIREWALL_EXEC_TASK_UNCERTAIN_NO_REPLAY")?
@@ -225,7 +235,8 @@ fn decode_ruleset(
             {
                 return Err("HOST_VM_FIREWALL_RULE_FOREIGN".into());
             }
-            let expressions = rule["expr"].as_array()
+            let expressions = rule["expr"]
+                .as_array()
                 .ok_or("HOST_VM_FIREWALL_RULE_EXPRESSION_UNPROVEN")?;
             if expressions.len() != 2
                 || expressions[0]["match"]["op"].as_str() != Some("==")
@@ -238,7 +249,8 @@ fn decode_ruleset(
                 Some("udp") => FleetVmFirewallTransport::Udp as i32,
                 _ => return Err("HOST_VM_FIREWALL_RULE_PROTOCOL_INVALID".into()),
             };
-            let port = expressions[0]["match"]["right"].as_u64()
+            let port = expressions[0]["match"]["right"]
+                .as_u64()
                 .and_then(|number| u16::try_from(number).ok())
                 .ok_or("HOST_VM_FIREWALL_RULE_PORT_INVALID")?;
             let action = if expressions[1].get("accept").is_some() {
@@ -264,8 +276,8 @@ fn decode_ruleset(
 
 async fn inspect(spec: &FleetVmManagedFirewall) -> Result<Option<Vec<(i32, u16)>>, String> {
     let all = nft(vec!["-j".into(), "list".into(), "tables".into()], None).await?;
-    let parsed: Value = serde_json::from_str(&all)
-        .map_err(|_| "HOST_VM_FIREWALL_TABLES_JSON_INVALID")?;
+    let parsed: Value =
+        serde_json::from_str(&all).map_err(|_| "HOST_VM_FIREWALL_TABLES_JSON_INVALID")?;
     let records = parsed["nftables"]
         .as_array()
         .ok_or("HOST_VM_FIREWALL_TABLES_SHAPE_INVALID")?;
@@ -288,11 +300,18 @@ async fn inspect(spec: &FleetVmManagedFirewall) -> Result<Option<Vec<(i32, u16)>
         return Ok(None);
     }
     let exact = nft(
-        vec!["-j".into(), "list".into(), "table".into(), "inet".into(), table_id(spec)],
+        vec![
+            "-j".into(),
+            "list".into(),
+            "table".into(),
+            "inet".into(),
+            table_id(spec),
+        ],
         None,
-    ).await?;
-    let parsed: Value = serde_json::from_str(&exact)
-        .map_err(|_| "HOST_VM_FIREWALL_INSPECT_JSON_INVALID")?;
+    )
+    .await?;
+    let parsed: Value =
+        serde_json::from_str(&exact).map_err(|_| "HOST_VM_FIREWALL_INSPECT_JSON_INVALID")?;
     Ok(Some(decode_ruleset(spec, &parsed)?))
 }
 
@@ -302,9 +321,15 @@ pub(super) async fn preflight_managed_firewall(
     before: Option<&[u8]>,
     after: Option<&[u8]>,
 ) -> Result<PreparedManagedFirewall, String> {
-    let prior = before.map(|bytes| decode_scope(host, path, bytes)).transpose()?;
-    let next = after.map(|bytes| decode_scope(host, path, bytes)).transpose()?;
-    let spec = next.as_ref().or(prior.as_ref())
+    let prior = before
+        .map(|bytes| decode_scope(host, path, bytes))
+        .transpose()?;
+    let next = after
+        .map(|bytes| decode_scope(host, path, bytes))
+        .transpose()?;
+    let spec = next
+        .as_ref()
+        .or(prior.as_ref())
         .ok_or("HOST_VM_FIREWALL_TRANSITION_EMPTY")?;
     if let (Some(prior), Some(next)) = (&prior, &next) {
         if prior.machine_id != next.machine_id
@@ -323,9 +348,12 @@ pub(super) async fn preflight_managed_firewall(
         return Err("HOST_VM_FIREWALL_FOREIGN_TABLE_EXISTS".into());
     }
     let script = render_batch(prior.as_ref(), next.as_ref());
-    nft(vec!["-c".into(), "-f".into(), "-".into()], Some(script.clone()))
-        .await
-        .map_err(|_| "HOST_VM_FIREWALL_PREFLIGHT_SYNTAX_OR_RUNTIME_BLOCKED")?;
+    nft(
+        vec!["-c".into(), "-f".into(), "-".into()],
+        Some(script.clone()),
+    )
+    .await
+    .map_err(|_| "HOST_VM_FIREWALL_PREFLIGHT_SYNTAX_OR_RUNTIME_BLOCKED")?;
     Ok(PreparedManagedFirewall {
         before: prior,
         after: next,
@@ -334,8 +362,13 @@ pub(super) async fn preflight_managed_firewall(
     })
 }
 
-pub(super) async fn apply_managed_firewall_once(plan: &PreparedManagedFirewall) -> Result<(), String> {
-    let spec = plan.after.as_ref().or(plan.before.as_ref())
+pub(super) async fn apply_managed_firewall_once(
+    plan: &PreparedManagedFirewall,
+) -> Result<(), String> {
+    let spec = plan
+        .after
+        .as_ref()
+        .or(plan.before.as_ref())
         .ok_or("HOST_VM_FIREWALL_PLAN_EMPTY")?;
     if inspect(spec).await? != plan.before_rules {
         return Err("HOST_VM_FIREWALL_CAS_CHANGED_NO_REPLAY".into());
@@ -344,8 +377,10 @@ pub(super) async fn apply_managed_firewall_once(plan: &PreparedManagedFirewall) 
         .await
         .map_err(|_| "HOST_VM_FIREWALL_EFFECT_UNKNOWN_NO_REPLAY")?;
     let expected = plan.after.as_ref().and_then(canonical_rules);
-    if inspect(spec).await
-        .map_err(|_| "HOST_VM_FIREWALL_POSTSTATE_UNKNOWN_NO_REPLAY")? != expected
+    if inspect(spec)
+        .await
+        .map_err(|_| "HOST_VM_FIREWALL_POSTSTATE_UNKNOWN_NO_REPLAY")?
+        != expected
     {
         return Err("HOST_VM_FIREWALL_POSTSTATE_UNPROVEN_NO_REPLAY".into());
     }
@@ -404,7 +439,9 @@ pub(crate) async fn collect_native_managed_firewall(
             }
         };
         row.resource_name = spec.resource_name.clone();
-        row.manifest_sha256 = ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref().to_vec();
+        row.manifest_sha256 = ring::digest::digest(&ring::digest::SHA256, &bytes)
+            .as_ref()
+            .to_vec();
         match inspect(&spec).await {
             Ok(Some(live)) if Some(live) == canonical_rules(&spec) => {
                 row.present = true;
@@ -465,21 +502,37 @@ mod tests {
         let (host, mut spec) = fixture();
         assert!(decode_scope(&host, "managed/host-firewall-lab.pb", &spec.encode_to_vec()).is_ok());
         spec.machine_id = "foreign".into();
-        assert!(decode_scope(&host, "managed/host-firewall-lab.pb", &spec.encode_to_vec()).is_err());
+        assert!(
+            decode_scope(&host, "managed/host-firewall-lab.pb", &spec.encode_to_vec()).is_err()
+        );
         let (_, mut spec) = fixture();
         spec.ingress_rules[0].destination_port = 22;
-        assert!(decode_scope(&host, "managed/host-firewall-lab.pb", &spec.encode_to_vec()).is_err());
+        assert!(
+            decode_scope(&host, "managed/host-firewall-lab.pb", &spec.encode_to_vec()).is_err()
+        );
         spec.ingress_rules[0].destination_port = 22555;
         spec.ingress_rules.push(spec.ingress_rules[0].clone());
-        assert!(decode_scope(&host, "managed/host-firewall-lab.pb", &spec.encode_to_vec()).is_err());
-        assert!(decode_scope(&host, "managed/host-firewall-../x.pb", &spec.encode_to_vec()).is_err());
+        assert!(
+            decode_scope(&host, "managed/host-firewall-lab.pb", &spec.encode_to_vec()).is_err()
+        );
+        assert!(
+            decode_scope(
+                &host,
+                "managed/host-firewall-../x.pb",
+                &spec.encode_to_vec()
+            )
+            .is_err()
+        );
         let mut injected = host;
         injected.machine_id = "vm\";delete table inet filter;#".into();
-        assert!(decode_scope(
-            &injected,
-            "managed/host-firewall-lab.pb",
-            &spec.encode_to_vec()
-        ).is_err());
+        assert!(
+            decode_scope(
+                &injected,
+                "managed/host-firewall-lab.pb",
+                &spec.encode_to_vec()
+            )
+            .is_err()
+        );
     }
 
     #[test]
@@ -508,11 +561,12 @@ mod tests {
         spec.ingress_rules[0].action = FleetVmFirewallAction::Allow as i32;
         let batch = render_batch(None, Some(&spec));
         assert!(batch.contains("tcp dport 22555 accept"));
-        spec.ingress_rules.push(edge_shared_types::FleetVmFirewallRule {
-            transport: FleetVmFirewallTransport::Udp as i32,
-            destination_port: 22556,
-            action: FleetVmFirewallAction::Deny as i32,
-        });
+        spec.ingress_rules
+            .push(edge_shared_types::FleetVmFirewallRule {
+                transport: FleetVmFirewallTransport::Udp as i32,
+                destination_port: 22556,
+                action: FleetVmFirewallAction::Deny as i32,
+            });
         assert_eq!(canonical_rules(&spec).unwrap().len(), 2);
         spec.ingress_rules[1].transport = FleetVmFirewallTransport::Tcp as i32;
         spec.ingress_rules[1].destination_port = 22555;
@@ -549,15 +603,20 @@ mod tests {
         });
         assert_eq!(
             decode_ruleset(&spec, &good).unwrap(),
-            vec![(FleetVmFirewallTransport::Tcp as i32, 22555, FleetVmFirewallAction::Deny as i32)]
+            vec![(
+                FleetVmFirewallTransport::Tcp as i32,
+                22555,
+                FleetVmFirewallAction::Deny as i32
+            )]
         );
         let mut foreign = good.clone();
         foreign["nftables"][2]["chain"]["hook"] = Value::String("output".into());
         assert!(decode_ruleset(&spec, &foreign).is_err());
         foreign = good.clone();
-        foreign["nftables"].as_array_mut().unwrap().push(
-            serde_json::json!({"chain": {"name":"foreign"}})
-        );
+        foreign["nftables"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({"chain": {"name":"foreign"}}));
         assert!(decode_ruleset(&spec, &foreign).is_err());
         foreign = good;
         foreign["nftables"][3]["rule"]["expr"][1] = serde_json::json!({"accept":null});

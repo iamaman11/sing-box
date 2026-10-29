@@ -3,8 +3,8 @@
 //! The existing signed BEGIN / UNKNOWN_NO_REPLAY journal owns the effect.
 use super::*;
 use edge_shared_types::{
-    FleetHost, FleetHostKind, FleetVmManagedSystemDns, FleetVmManagedSystemDnsReadback,
-    FleetVmManagedKernelRoute,
+    FleetHost, FleetHostKind, FleetVmManagedKernelRoute, FleetVmManagedSystemDns,
+    FleetVmManagedSystemDnsReadback,
 };
 use prost::Message;
 use std::net::IpAddr;
@@ -36,17 +36,22 @@ fn decode_scope(
     path: &str,
     bytes: &[u8],
 ) -> Result<FleetVmManagedSystemDns, String> {
-    let suffix = path.strip_prefix("managed/host-dns-")
+    let suffix = path
+        .strip_prefix("managed/host-dns-")
         .and_then(|s| s.strip_suffix(".pb"))
         .ok_or("HOST_VM_DNS_MANIFEST_PATH_INVALID")?;
-    if suffix.is_empty() || suffix.len() > 24
-        || !suffix.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
-        || bytes.is_empty() || bytes.len() > 2048
+    if suffix.is_empty()
+        || suffix.len() > 24
+        || !suffix
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        || bytes.is_empty()
+        || bytes.len() > 2048
     {
         return Err("HOST_VM_DNS_MANIFEST_BOUNDS_INVALID".into());
     }
-    let spec = FleetVmManagedSystemDns::decode(bytes)
-        .map_err(|_| "HOST_VM_DNS_PROTOBUF_INVALID")?;
+    let spec =
+        FleetVmManagedSystemDns::decode(bytes).map_err(|_| "HOST_VM_DNS_PROTOBUF_INVALID")?;
     if spec.encode_to_vec() != bytes
         || spec.schema_version != 1
         || host.kind != FleetHostKind::Vm as i32
@@ -67,10 +72,14 @@ fn decode_scope(
     }
     let mut previous = None;
     for addr in &spec.name_servers {
-        let ip = addr.parse::<IpAddr>()
+        let ip = addr
+            .parse::<IpAddr>()
             .map_err(|_| "HOST_VM_DNS_SERVER_INVALID")?;
-        if ip.to_string() != *addr || ip.is_loopback() || ip.is_unspecified()
-            || ip.is_multicast() || previous.as_ref().is_some_and(|p| p >= addr)
+        if ip.to_string() != *addr
+            || ip.is_loopback()
+            || ip.is_unspecified()
+            || ip.is_multicast()
+            || previous.as_ref().is_some_and(|p| p >= addr)
         {
             return Err("HOST_VM_DNS_SERVER_NONCANONICAL".into());
         }
@@ -95,28 +104,31 @@ async fn owned_bridge(spec: &FleetVmManagedSystemDns) -> Result<(u32, String), S
     }
     let index = fs::read_to_string(link.join("ifindex"))
         .map_err(|_| "HOST_VM_DNS_LINK_INDEX_UNAVAILABLE")?
-        .trim().parse::<u32>()
+        .trim()
+        .parse::<u32>()
         .map_err(|_| "HOST_VM_DNS_LINK_INDEX_INVALID")?;
-    let docker = super::super::docker_connection().await
+    let docker = super::super::docker_connection()
+        .await
         .map_err(|_| "HOST_VM_DNS_DOCKER_UNAVAILABLE")?;
-    let net = docker.inspect_network(&spec.resource_name, None).await
+    let net = docker
+        .inspect_network(&spec.resource_name, None)
+        .await
         .map_err(|_| "HOST_VM_DNS_NETWORK_UNAVAILABLE")?;
     if !super::managed_route::exact_docker_bridge_owner(&owner_route(spec), &net) {
         return Err("HOST_VM_DNS_NETWORK_OWNER_UNPROVEN".into());
     }
-    let id = net.id.filter(|v| !v.is_empty())
+    let id = net
+        .id
+        .filter(|v| !v.is_empty())
         .ok_or("HOST_VM_DNS_NETWORK_ID_UNPROVEN")?;
     Ok((index, id))
 }
 
-fn parse_link_values(
-    raw: &str,
-    index: u32,
-    interface_name: &str,
-) -> Result<Vec<String>, String> {
+fn parse_link_values(raw: &str, index: u32, interface_name: &str) -> Result<Vec<String>, String> {
     let prefix = format!("Link {index} ({interface_name}):");
     let line = raw.trim_end_matches('\n');
-    let remainder = line.strip_prefix(&prefix)
+    let remainder = line
+        .strip_prefix(&prefix)
         .ok_or("HOST_VM_DNS_LINK_OUTPUT_UNPROVEN")?;
     if remainder.contains('\n') || remainder.contains('\r') {
         return Err("HOST_VM_DNS_LINK_OUTPUT_AMBIGUOUS".into());
@@ -128,7 +140,10 @@ async fn resolvectl(args: Vec<String>) -> Result<String, String> {
     tokio::task::spawn_blocking(move || {
         let result = OsCommand::new("/usr/bin/timeout")
             .args(["--kill-after=2s", "8s", "/usr/bin/resolvectl"])
-            .args(args).stdin(Stdio::null()).stderr(Stdio::null()).output()
+            .args(args)
+            .stdin(Stdio::null())
+            .stderr(Stdio::null())
+            .output()
             .map_err(|_| "HOST_VM_DNS_RESOLVECTL_START_UNAVAILABLE".to_owned())?;
         if !result.status.success() {
             return Err("HOST_VM_DNS_RESOLVECTL_FAILED_OR_TIMEOUT".into());
@@ -136,8 +151,11 @@ async fn resolvectl(args: Vec<String>) -> Result<String, String> {
         if result.stdout.len() > 16384 {
             return Err("HOST_VM_DNS_RESOLVECTL_OUTPUT_OVERSIZE".into());
         }
-        String::from_utf8(result.stdout).map_err(|_| "HOST_VM_DNS_RESOLVECTL_OUTPUT_UTF8_INVALID".into())
-    }).await.map_err(|_| "HOST_VM_DNS_RESOLVECTL_TASK_UNKNOWN_NO_REPLAY".to_owned())?
+        String::from_utf8(result.stdout)
+            .map_err(|_| "HOST_VM_DNS_RESOLVECTL_OUTPUT_UTF8_INVALID".into())
+    })
+    .await
+    .map_err(|_| "HOST_VM_DNS_RESOLVECTL_TASK_UNKNOWN_NO_REPLAY".to_owned())?
 }
 
 async fn inspect(spec: &FleetVmManagedSystemDns, index: u32) -> Result<LinkDnsState, String> {
@@ -152,7 +170,9 @@ async fn inspect(spec: &FleetVmManagedSystemDns, index: u32) -> Result<LinkDnsSt
 fn expected_state(spec: Option<&FleetVmManagedSystemDns>) -> LinkDnsState {
     LinkDnsState {
         nameservers: spec.map(|s| s.name_servers.clone()).unwrap_or_default(),
-        domains: spec.map(|s| vec![s.routing_domain.clone()]).unwrap_or_default(),
+        domains: spec
+            .map(|s| vec![s.routing_domain.clone()])
+            .unwrap_or_default(),
     }
 }
 
@@ -164,13 +184,17 @@ pub(super) async fn preflight_managed_dns(
 ) -> Result<PreparedManagedDns, String> {
     let old = before.map(|s| decode_scope(host, path, s)).transpose()?;
     let next = after.map(|s| decode_scope(host, path, s)).transpose()?;
-    let spec = next.as_ref().or(old.as_ref())
+    let spec = next
+        .as_ref()
+        .or(old.as_ref())
         .ok_or("HOST_VM_DNS_TRANSITION_EMPTY")?;
     if old.as_ref().is_some_and(|p| {
-        next.as_ref().is_some_and(|n| p.machine_id != n.machine_id
-            || p.resource_name != n.resource_name
-            || p.interface_name != n.interface_name
-            || p == n)
+        next.as_ref().is_some_and(|n| {
+            p.machine_id != n.machine_id
+                || p.resource_name != n.resource_name
+                || p.interface_name != n.interface_name
+                || p == n
+        })
     }) {
         return Err("HOST_VM_DNS_IDENTITY_CHANGE_OR_NOOP".into());
     }
@@ -180,16 +204,22 @@ pub(super) async fn preflight_managed_dns(
         return Err("HOST_VM_DNS_PRESTATE_FOREIGN_OR_DRIFT".into());
     }
     Ok(PreparedManagedDns {
-        spec: spec.clone(), after: next, previous: current,
-        interface_index: index, network_id: id,
+        spec: spec.clone(),
+        after: next,
+        previous: current,
+        interface_index: index,
+        network_id: id,
     })
 }
 
 pub(super) async fn apply_managed_dns_once(plan: &PreparedManagedDns) -> Result<(), String> {
     let (index, id) = owned_bridge(&plan.spec).await?;
-    if index != plan.interface_index || id != plan.network_id
-        || inspect(&plan.spec, index).await
-            .map_err(|_| "HOST_VM_DNS_CAS_UNPROVEN_NO_REPLAY")? != plan.previous
+    if index != plan.interface_index
+        || id != plan.network_id
+        || inspect(&plan.spec, index)
+            .await
+            .map_err(|_| "HOST_VM_DNS_CAS_UNPROVEN_NO_REPLAY")?
+            != plan.previous
     {
         return Err("HOST_VM_DNS_CAS_CHANGED_NO_REPLAY".into());
     }
@@ -199,21 +229,32 @@ pub(super) async fn apply_managed_dns_once(plan: &PreparedManagedDns) -> Result<
     // Separate native calls are NOT atomic. Any uncertain result is retained
     // in the existing journal as UNKNOWN_NO_REPLAY, never blindly retried.
     let commands: Vec<(&str, Vec<String>)> = if plan.after.is_some() {
-        vec![("domain", target.domains.clone()), ("dns", target.nameservers.clone())]
+        vec![
+            ("domain", target.domains.clone()),
+            ("dns", target.nameservers.clone()),
+        ]
     } else {
-        vec![("dns", vec![String::new()]), ("domain", vec![String::new()])]
+        vec![
+            ("dns", vec![String::new()]),
+            ("domain", vec![String::new()]),
+        ]
     };
     for (command, values) in commands {
         let mut args = vec![command.to_owned(), plan.spec.interface_name.clone()];
         args.extend(values);
-        resolvectl(args).await.map_err(|_| "HOST_VM_DNS_EFFECT_UNKNOWN_NO_REPLAY")?;
+        resolvectl(args)
+            .await
+            .map_err(|_| "HOST_VM_DNS_EFFECT_UNKNOWN_NO_REPLAY")?;
     }
-    if inspect(&plan.spec, index).await
-        .map_err(|_| "HOST_VM_DNS_POSTSTATE_UNKNOWN_NO_REPLAY")? != target
+    if inspect(&plan.spec, index)
+        .await
+        .map_err(|_| "HOST_VM_DNS_POSTSTATE_UNKNOWN_NO_REPLAY")?
+        != target
     {
         return Err("HOST_VM_DNS_POSTSTATE_UNPROVEN_NO_REPLAY".into());
     }
-    let (after_index, after_id) = owned_bridge(&plan.spec).await
+    let (after_index, after_id) = owned_bridge(&plan.spec)
+        .await
         .map_err(|_| "HOST_VM_DNS_POST_OWNER_UNKNOWN_NO_REPLAY")?;
     if after_index != index || after_id != id {
         return Err("HOST_VM_DNS_POST_OWNER_CHANGED_NO_REPLAY".into());
@@ -222,7 +263,10 @@ pub(super) async fn apply_managed_dns_once(plan: &PreparedManagedDns) -> Result<
 }
 
 fn failure(code: &str) -> FleetVmManagedSystemDnsReadback {
-    FleetVmManagedSystemDnsReadback { reason_code: code.into(), ..Default::default() }
+    FleetVmManagedSystemDnsReadback {
+        reason_code: code.into(),
+        ..Default::default()
+    }
 }
 
 pub(crate) async fn collect_native_managed_system_dns(
@@ -240,7 +284,9 @@ pub(crate) async fn collect_native_managed_system_dns(
     }
     let mut names = Vec::new();
     for entry in entries {
-        let Ok(entry) = entry else { return vec![failure("MANAGED_SYSTEM_DNS_ENTRY_INVALID")]; };
+        let Ok(entry) = entry else {
+            return vec![failure("MANAGED_SYSTEM_DNS_ENTRY_INVALID")];
+        };
         let Ok(name) = entry.file_name().into_string() else {
             return vec![failure("MANAGED_SYSTEM_DNS_NAME_INVALID")];
         };
@@ -260,11 +306,16 @@ pub(crate) async fn collect_native_managed_system_dns(
         };
         let spec = match decode_scope(host, &format!("managed/{name}"), &bytes) {
             Ok(v) => v,
-            Err(code) => { rows.push(failure(&code)); continue; }
+            Err(code) => {
+                rows.push(failure(&code));
+                continue;
+            }
         };
         let mut row = failure("MANAGED_SYSTEM_DNS_STATE_UNPROVEN");
         row.resource_name = spec.resource_name.clone();
-        row.manifest_sha256 = ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref().to_vec();
+        row.manifest_sha256 = ring::digest::digest(&ring::digest::SHA256, &bytes)
+            .as_ref()
+            .to_vec();
         match owned_bridge(&spec).await {
             Ok((index, _)) => match inspect(&spec, index).await {
                 Ok(actual) if actual == expected_state(Some(&spec)) => {
@@ -291,11 +342,13 @@ mod tests {
 
     fn fixture() -> (FleetHost, FleetVmManagedSystemDns) {
         let host = FleetHost {
-            machine_id: "vmtest".into(), kind: FleetHostKind::Vm as i32,
+            machine_id: "vmtest".into(),
+            kind: FleetHostKind::Vm as i32,
             ..Default::default()
         };
         let spec = FleetVmManagedSystemDns {
-            schema_version: 1, machine_id: "vmtest".into(),
+            schema_version: 1,
+            machine_id: "vmtest".into(),
             resource_name: "sb-vmtest-lab".into(),
             interface_name: "sblab0".into(),
             routing_domain: "~lab.singbox.internal".into(),
@@ -308,7 +361,13 @@ mod tests {
     fn scoped_dns_rejects_foreign_host_global_catchall_and_noncanonical() {
         let (host, mut spec) = fixture();
         assert!(decode_scope(&host, "managed/host-dns-lab.pb", &spec.encode_to_vec()).is_ok());
-        for domain in ["~.", "~github.com", "~cloudflare.com", "~internal", "lab.singbox.internal"] {
+        for domain in [
+            "~.",
+            "~github.com",
+            "~cloudflare.com",
+            "~internal",
+            "lab.singbox.internal",
+        ] {
             spec.routing_domain = domain.into();
             assert!(decode_scope(&host, "managed/host-dns-lab.pb", &spec.encode_to_vec()).is_err());
         }
@@ -337,8 +396,17 @@ mod tests {
     #[test]
     fn expected_readback_is_exact_and_removal_clears_only_our_lists() {
         let (_, spec) = fixture();
-        assert_eq!(expected_state(None), LinkDnsState { nameservers: vec![], domains: vec![] });
-        assert_eq!(expected_state(Some(&spec)).domains, vec!["~lab.singbox.internal"]);
+        assert_eq!(
+            expected_state(None),
+            LinkDnsState {
+                nameservers: vec![],
+                domains: vec![]
+            }
+        );
+        assert_eq!(
+            expected_state(Some(&spec)).domains,
+            vec!["~lab.singbox.internal"]
+        );
         assert_eq!(expected_state(Some(&spec)).nameservers, spec.name_servers);
     }
 }

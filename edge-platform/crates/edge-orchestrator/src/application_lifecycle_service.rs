@@ -287,10 +287,7 @@ fn managed_textproto_type(relative: &str) -> Result<Option<(&'static str, String
     Ok(Some((kind, format!("managed/{stem}.pb"))))
 }
 
-fn encode_managed_textproto(
-    kind: &str,
-    raw: &[u8],
-) -> Result<Vec<u8>, String> {
+fn encode_managed_textproto(kind: &str, raw: &[u8]) -> Result<Vec<u8>, String> {
     if raw.is_empty() || raw.len() > 2048 {
         return Err("HOST_VM_MANAGED_TEXTPROTO_SIZE_INVALID".into());
     }
@@ -336,8 +333,7 @@ fn compile_git_managed_protobuf_sources(files: &mut Vec<BundleFile>) -> Result<(
                 // Only the canonical build-time compiler may introduce native
                 // protobuf manifests. A checked-in .pb would be opaque Git
                 // desired and could evade human review of exact typed fields.
-                if file.relative_path.starts_with("managed/")
-                    && file.relative_path.ends_with(".pb")
+                if file.relative_path.starts_with("managed/") && file.relative_path.ends_with(".pb")
                 {
                     return Err("HOST_VM_MANAGED_RAW_PROTOBUF_SOURCE_FORBIDDEN".into());
                 }
@@ -427,12 +423,14 @@ ingress_rules {
   action: FLEET_VM_FIREWALL_ACTION_ALLOW
 }
 "#;
-        let make = || vec![BundleFile {
-            relative_path: "managed/host-firewall-lab.textproto".into(),
-            content: source.to_vec(),
-            sensitive: false,
-            executable: false,
-        }];
+        let make = || {
+            vec![BundleFile {
+                relative_path: "managed/host-firewall-lab.textproto".into(),
+                content: source.to_vec(),
+                sensitive: false,
+                executable: false,
+            }]
+        };
         let mut first = make();
         let mut second = make();
         compile_git_managed_protobuf_sources(&mut first).unwrap();
@@ -473,12 +471,14 @@ desired_state: FLEET_VM_MANAGED_DOCKER_DESIRED_STATE_PRESENT
 ipv6_subnet: "fd45:1234:abcd::/64"
 ipv6_gateway: "fd45:1234:abcd::1"
 "#;
-        let fresh = || vec![BundleFile {
-            relative_path: "managed/docker-network-lab.textproto".into(),
-            content: source.to_vec(),
-            executable: false,
-            sensitive: false,
-        }];
+        let fresh = || {
+            vec![BundleFile {
+                relative_path: "managed/docker-network-lab.textproto".into(),
+                content: source.to_vec(),
+                executable: false,
+                sensitive: false,
+            }]
+        };
         let mut first = fresh();
         let mut second = fresh();
         compile_git_managed_protobuf_sources(&mut first).unwrap();
@@ -539,10 +539,13 @@ ipv6_gateway: "fd45:1234:abcd::1"
         ] {
             assert!(managed_textproto_type(name).is_err(), "{name}");
         }
-        assert!(encode_managed_textproto(
-            "edge.platform.v1.FleetVmManagedKernelRoute",
-            b"not valid protobuf text",
-        ).is_err());
+        assert!(
+            encode_managed_textproto(
+                "edge.platform.v1.FleetVmManagedKernelRoute",
+                b"not valid protobuf text",
+            )
+            .is_err()
+        );
         let mut duplicate = vec![
             BundleFile {
                 relative_path: "managed/host-route-lab.textproto".into(),

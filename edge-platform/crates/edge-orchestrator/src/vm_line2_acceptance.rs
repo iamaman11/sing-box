@@ -84,10 +84,9 @@ fn validate_git_line2_template(bytes: &[u8]) -> Result<(), &'static str> {
     for (tag, kind) in [("direct", "direct"), ("block", "block")] {
         if outbounds
             .iter()
-            .filter(|item| {
-                item["tag"].as_str() == Some(tag) && item["type"].as_str() == Some(kind)
-            })
-            .count() != 1
+            .filter(|item| item["tag"].as_str() == Some(tag) && item["type"].as_str() == Some(kind))
+            .count()
+            != 1
         {
             return Err("HOST_VM_LINE2_GIT_DIRECT_BLOCK_OUTBOUND_DRIFT");
         }
@@ -112,11 +111,7 @@ fn validate_git_line2_template(bytes: &[u8]) -> Result<(), &'static str> {
         .filter_map(|item| item.as_str())
         .collect::<BTreeSet<_>>();
     if warp_inbounds.len() != 3
-        || names != BTreeSet::from([
-            "http-proxy-auth",
-            "socks-proxy-auth",
-            "https-proxy-auth",
-        ])
+        || names != BTreeSet::from(["http-proxy-auth", "socks-proxy-auth", "https-proxy-auth"])
     {
         return Err("HOST_VM_LINE2_GIT_WARP_INGRESS_SCOPE_DRIFT");
     }
@@ -187,7 +182,9 @@ async fn check_public_dns(
     .await
     .map_err(|_| "HOST_VM_LINE2_WITNESS_DNS_TIMEOUT")?
     .map_err(|_| "HOST_VM_LINE2_WITNESS_DNS_RESOLUTION_UNAVAILABLE")?;
-    let answers = resolved.map(|address| address.ip()).collect::<BTreeSet<_>>();
+    let answers = resolved
+        .map(|address| address.ip())
+        .collect::<BTreeSet<_>>();
     validate_public_dns(&answers, expected, v6).map_err(str::to_owned)
 }
 
@@ -401,8 +398,7 @@ mod tests {
         let v6: Ipv6Addr = "2606:4700::1111".parse().unwrap();
         assert!(validate_public_dns(&BTreeSet::from([a]), provider, None).is_ok());
         assert!(
-            validate_public_dns(&BTreeSet::from([a, IpAddr::V6(v6)]), provider, Some(v6))
-                .is_ok()
+            validate_public_dns(&BTreeSet::from([a, IpAddr::V6(v6)]), provider, Some(v6)).is_ok()
         );
         for answers in [
             BTreeSet::new(),

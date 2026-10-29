@@ -218,8 +218,7 @@ fn require_authenticated_https_status(
 }
 
 fn require_204(protocol: &str, result: (Option<i32>, String, String)) -> Result<(), String> {
-    require_authenticated_https_status(protocol, &result, "204")
-        .map_err(str::to_owned)?;
+    require_authenticated_https_status(protocol, &result, "204").map_err(str::to_owned)?;
     if !result.1.is_empty() {
         return Err("HOST_VM_LINE2_WITNESS_204_BODY_UNEXPECTED".into());
     }
@@ -232,8 +231,8 @@ fn dns_over_https_rcode(
     expected_status: u64,
 ) -> Result<(), &'static str> {
     require_authenticated_https_status(protocol, result, "200")?;
-    let data: serde_json::Value = serde_json::from_str(&result.1)
-        .map_err(|_| "HOST_VM_LINE2_DOH_JSON_INVALID")?;
+    let data: serde_json::Value =
+        serde_json::from_str(&result.1).map_err(|_| "HOST_VM_LINE2_DOH_JSON_INVALID")?;
     let expected_question = match expected_status {
         0 => "www.gstatic.com.",
         3 => "sing-box-never-resolve.invalid.",
@@ -261,9 +260,10 @@ fn dns_over_https_rcode(
         }) {
             return Err("HOST_VM_LINE2_DOH_POSITIVE_A_MISSING");
         }
-    } else if expected_status == 3 && data["Answer"]
-        .as_array()
-        .is_some_and(|answers| !answers.is_empty())
+    } else if expected_status == 3
+        && data["Answer"]
+            .as_array()
+            .is_some_and(|answers| !answers.is_empty())
     {
         return Err("HOST_VM_LINE2_DOH_NXDOMAIN_WITH_ANSWER");
     }
@@ -446,24 +446,15 @@ fn verify_bundle_and_probe(
             .map_err(|_| format!("{name} second independent egress witness failed"))?;
         secondary_ips.push(cloudflare_trace_ipv4(&trace.1)?);
         if cloudflare_trace_warp(&trace.1)? != name.ends_with("-warp") {
-            return Err(format!("{name} Cloudflare trace contradicts declared DIRECT/WARP route"));
+            return Err(format!(
+                "{name} Cloudflare trace contradicts declared DIRECT/WARP route"
+            ));
         }
         // Positive A and negative NXDOMAIN are both observed as DNS RCODEs
         // over HTTPS INSIDE each authenticated proxy, not inferred from a
         // timeout, missing body, runner getaddrinfo or a TCP handshake.
-        for (target, expected_rcode) in [
-            (DNS_DOH_POSITIVE, 0_u64),
-            (DNS_DOH_NEGATIVE, 3_u64),
-        ] {
-            let dns = query_proxy(
-                protocol,
-                ip,
-                domain,
-                port,
-                target,
-                username,
-                &password,
-            )?;
+        for (target, expected_rcode) in [(DNS_DOH_POSITIVE, 0_u64), (DNS_DOH_NEGATIVE, 3_u64)] {
+            let dns = query_proxy(protocol, ip, domain, port, target, username, &password)?;
             dns_over_https_rcode(&dns, protocol, expected_rcode)
                 .map_err(|reason| format!("{name} external DoH RCODE proof failed: {reason}"))?;
         }
@@ -533,12 +524,7 @@ mod tests {
         assert_eq!(cloudflare_trace_warp("ip=8.8.8.8\nwarp=off\n"), Ok(false));
         assert_eq!(cloudflare_trace_warp("ip=8.8.8.8\nwarp=on\n"), Ok(true));
         assert_eq!(cloudflare_trace_warp("ip=8.8.8.8\nwarp=plus\n"), Ok(true));
-        for bad in [
-            "",
-            "warp=\n",
-            "warp=unknown\n",
-            "warp=on\nwarp=off\n",
-        ] {
+        for bad in ["", "warp=\n", "warp=unknown\n", "warp=on\nwarp=off\n"] {
             assert!(cloudflare_trace_warp(bad).is_err());
         }
     }
@@ -660,7 +646,9 @@ mod tests {
             (Some(97), "origin response".into(), "000;000".into()),
             (Some(97), String::new(), "200;000".into()),
         ] {
-            assert!(!remote_nxdomain_has_no_successful_origin("socks5h", &candidate));
+            assert!(!remote_nxdomain_has_no_successful_origin(
+                "socks5h", &candidate
+            ));
         }
         assert!(!remote_nxdomain_has_no_successful_origin(
             "http",
