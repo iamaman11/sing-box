@@ -466,9 +466,9 @@ fn exact_windows_registration(
     Ok(trust)
 }
 
-async fn fetch_exact_protected_git(
+pub(super) async fn fetch_exact_protected_git(
     active: &WindowsActivationState,
-) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), String> {
+) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>), String> {
     let client = reqwest::Client::builder()
         .timeout(Duration::from_secs(25))
         .build()
@@ -552,13 +552,20 @@ async fn fetch_exact_protected_git(
     {
         return Err("HOST_WINDOWS_TRUST_RELEASE_DIGEST_MISMATCH".into());
     }
+    let current_provenance = ReleaseSet::decode(current_release_pb.as_slice())
+        .map_err(|_| "HOST_WINDOWS_TRUST_CURRENT_RELEASE_PROTO_INVALID")?;
+    if current_provenance.encode_to_vec() != current_release_pb
+        || current_provenance.source_revision != current_main
+    {
+        return Err("HOST_WINDOWS_TRUST_CURRENT_RELEASE_SOURCE_MISMATCH".into());
+    }
     // Fail closed if protected main moved during the multi-source fetch.
     // A later SYSTEM tick can evaluate the new state; no bytes are committed.
     let current_head_again = fetch_json(&client, &main_url).await?;
     if current_head_again != head {
         return Err("HOST_WINDOWS_TRUST_GIT_CHANGED_DURING_FETCH".into());
     }
-    Ok((installed_release_pb, registry_pb, spec))
+    Ok((installed_release_pb, current_release_pb, registry_pb, spec))
 }
 
 /// Called ONLY from the existing periodic LocalSystem task, never a new
@@ -616,7 +623,8 @@ pub(super) async fn dispatch_if_needed(install_root: &Path) -> Result<(), String
     }
     let private =
         fs::read(&key_path).map_err(|_| "HOST_WINDOWS_TRUST_PRIVATE_IDENTITY_UNREADABLE")?;
-    let (release_pb, registry_pb, spec) = fetch_exact_protected_git(&active).await?;
+    let (release_pb, _current_release_pb, registry_pb, spec) =
+        fetch_exact_protected_git(&active).await?;
     let trust = match exact_windows_registration(
         &registry_pb,
         &release_pb,

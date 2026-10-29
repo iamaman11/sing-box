@@ -458,7 +458,18 @@ assert "require_exact_immutable_activation_console(install_root)?;" in win_syste
 assert "verify_native_journal_protection(&journal).map_err(str::to_owned)?;" in win_system
 assert "verify_system_trust(" in win_system
 assert "edge_secrets::request_canonical_host_authorization(&intent_bytes, &identity)" in win_system
-assert "execute_native_host_once(" in win_system
+# Git authority and installed physical runtime are distinct, but the
+# same protected SYSTEM journal and Worker signature must guard both.
+assert "execute_native_windows_host_once(" in win_system
+assert "windows_trust_enrollment::fetch_exact_protected_git(&installed).await?" in win_system
+assert "HOST_WINDOWS_SYSTEM_SIGNER_ROTATION_UNPROVEN" in win_system
+assert "&installed_runtime_sha256," in win_system
+journal_source = Path(
+    "edge-platform/crates/edge-shared-types/src/host_journal.rs"
+).read_text(encoding="utf-8")
+assert "expected_windows_installed_release: Option<&[u8]>" in journal_source
+assert "HOST_WINDOWS_INSTALLED_RUNTIME_READBACK_MISMATCH" in journal_source
+assert "verify_native_journal_protection(protected_journal_dir)?;" in journal_source
 assert "SYSTEM task or immutable action mismatched" in Path(
     "edge-platform/scripts/windows-first-use-offline-handoff.ps1"
 ).read_text(encoding="utf-8")

@@ -616,6 +616,55 @@ where
 {
     verify_native_journal_protection(protected_journal_dir)?;
     execute_after_protected_owner_check_once(
+        None,
+        intent,
+        authorization,
+        registry_pb,
+        selected_spec_bytes,
+        release_set_pb,
+        vm_bundle_pb,
+        pinned_worker_public_key,
+        native_machine_id,
+        native_owner_kind,
+        now_unix,
+        protected_journal_dir,
+        observe,
+        allow_step,
+        apply_once,
+    )
+}
+
+/// Windows SYSTEM supplies this digest only after verifying the exact installed
+/// activation. Git ReleaseSet authenticates the intent; installed runtime
+/// authenticates the physical planner. VM semantics remain unchanged.
+pub fn execute_native_windows_host_once<Observe, Allow, Apply>(
+    intent: &FleetHostIntent,
+    authorization: &FleetHostAuthorization,
+    // Inputs MUST originate from the native owner's independently
+    // authenticated canonical Git revision and published immutable release,
+    // never from runner-supplied arbitrary files.
+    registry_pb: &[u8],
+    selected_spec_bytes: &[u8],
+    release_set_pb: &[u8],
+    vm_bundle_pb: Option<&[u8]>,
+    pinned_worker_public_key: &[u8],
+    native_machine_id: &str,
+    native_owner_kind: i32,
+    installed_release_sha256: &[u8],
+    now_unix: u64,
+    protected_journal_dir: &Path,
+    observe: Observe,
+    allow_step: Allow,
+    apply_once: Apply,
+) -> Result<FleetHostResult, &'static str>
+where
+    Observe: FnMut() -> Result<crate::FleetNativeObservation, &'static str>,
+    Allow: Fn(crate::FleetHostPlannedStep) -> Result<(), &'static str>,
+    Apply: FnOnce(crate::FleetHostPlannedStep) -> Result<(), &'static str>,
+{
+    verify_native_journal_protection(protected_journal_dir)?;
+    execute_after_protected_owner_check_once(
+        Some(installed_release_sha256),
         intent,
         authorization,
         registry_pb,
@@ -636,6 +685,7 @@ where
 /// Private testable core; only the external entry point can authorize a
 /// real mutation after checking kernel owner and protected journal ancestry.
 fn execute_after_protected_owner_check_once<Observe, Allow, Apply>(
+    expected_windows_installed_release: Option<&[u8]>,
     intent: &FleetHostIntent,
     authorization: &FleetHostAuthorization,
     registry_pb: &[u8],
@@ -667,13 +717,23 @@ where
     if intent.machine_id != native_machine_id || intent.kind != native_owner_kind {
         return Err("HOST_LOCAL_OWNER_IDENTITY_MISMATCH");
     }
-    let (registry, bound) = bind_native_host_artifacts(
+    let (registry, mut bound) = bind_native_host_artifacts(
         intent,
         registry_pb,
         selected_spec_bytes,
         release_set_pb,
         vm_bundle_pb,
     )?;
+    if let Some(installed) = expected_windows_installed_release {
+        if native_owner_kind != crate::FleetHostKind::Windows as i32
+            || intent.kind != native_owner_kind
+            || installed.len() != 32
+            || installed.iter().all(|b| *b == 0)
+        {
+            return Err("HOST_WINDOWS_INSTALLED_RUNTIME_PROOF_INVALID");
+        }
+        bound.runtime_release_sha256 = installed.to_vec();
+    }
     validate_intent_against_target(intent, &registry)?;
     // Windows SYSTEM must use the public signer identity from its own
     // independently accepted Git registry, not the runner's choice of key.
@@ -757,10 +817,21 @@ where
     }
     let before = observe()?;
     validate_native_observation(&before)?;
+    if let Some(installed) = expected_windows_installed_release {
+        if before.release_proof != crate::FleetNativeReleaseProof::ActivationRecord as i32
+            || before.observed_release_sha256.as_slice() != installed
+        {
+            return Err("HOST_WINDOWS_INSTALLED_RUNTIME_READBACK_MISMATCH");
+        }
+    }
     let plan = propose_host_transition(
         selected,
         Some(&before),
-        &bound.release_set_sha256,
+        if expected_windows_installed_release.is_some() {
+            &bound.runtime_release_sha256
+        } else {
+            &bound.release_set_sha256
+        },
         &bound.runtime_release_sha256,
         now_unix,
     );
@@ -2221,6 +2292,7 @@ mod tests {
         // owner implementation, without touching the native mutation.
         assert_eq!(
             execute_after_protected_owner_check_once(
+                None,
                 &intent,
                 &auth,
                 &registry_pb,
@@ -2252,6 +2324,7 @@ mod tests {
         );
 
         let outcome = execute_after_protected_owner_check_once(
+            None,
             &intent,
             &auth,
             &registry_pb,
@@ -2281,6 +2354,7 @@ mod tests {
         // operation ID cannot be reused to conceal an executed mutation.
         assert_eq!(
             execute_after_protected_owner_check_once(
+                None,
                 &intent,
                 &auth,
                 &registry_pb,
@@ -2311,6 +2385,7 @@ mod tests {
             .as_ref()
             .to_vec();
         let noop = execute_after_protected_owner_check_once(
+            None,
             &intent,
             &auth,
             &registry_pb,
@@ -2345,6 +2420,7 @@ mod tests {
         assert!(!native_scope_pending_path(&dir, &intent).exists());
         assert_eq!(
             execute_after_protected_owner_check_once(
+                None,
                 &intent,
                 &auth,
                 &registry_pb,
@@ -2374,6 +2450,7 @@ mod tests {
             .to_vec();
         assert_eq!(
             execute_after_protected_owner_check_once(
+                None,
                 &intent,
                 &auth,
                 &registry_pb,
@@ -2405,6 +2482,7 @@ mod tests {
             .to_vec();
         assert_eq!(
             execute_after_protected_owner_check_once(
+                None,
                 &intent,
                 &auth,
                 &registry_pb,
@@ -2438,6 +2516,7 @@ mod tests {
             .to_vec();
         assert_eq!(
             execute_after_protected_owner_check_once(
+                None,
                 &intent,
                 &auth,
                 &registry_pb,
@@ -2462,6 +2541,7 @@ mod tests {
         // uncertain BEGIN without dispatching any additional mutation.
         running.set(true);
         let recovered = execute_after_protected_owner_check_once(
+            None,
             &intent,
             &auth,
             &registry_pb,
@@ -2491,6 +2571,7 @@ mod tests {
         );
         assert_eq!(
             execute_after_protected_owner_check_once(
+                None,
                 &intent,
                 &auth,
                 &registry_pb,
@@ -2598,6 +2679,7 @@ mod tests {
         };
         let call = |pin: &[u8]| {
             execute_after_protected_owner_check_once(
+                None,
                 &intent,
                 &auth,
                 &registry_pb,
@@ -2624,6 +2706,59 @@ mod tests {
         assert_eq!(
             call(signer.public_key().as_ref()).unwrap_err(),
             "HOST_WINDOWS_SIGNED_SYSTEM_HANDLER_MISSING"
+        );
+        // New published Git-only source cannot masquerade as the installed
+        // ActivationRecord. Exact SYSTEM runtime mismatch is a denial before
+        // BEGIN, even when the Worker signature and current Git are valid.
+        let stale_installed = vec![7_u8; 32];
+        assert_eq!(
+            execute_after_protected_owner_check_once(
+                Some(&stale_installed),
+                &intent,
+                &auth,
+                &registry_pb,
+                spec,
+                &release_pb,
+                None,
+                signer.public_key().as_ref(),
+                "windows-exact",
+                FleetHostKind::Windows as i32,
+                1020,
+                &dir,
+                observe,
+                |_| panic!("unverified installed runtime must not be planned"),
+                |_| panic!("unverified installed runtime must not mutate"),
+            )
+            .unwrap_err(),
+            "HOST_WINDOWS_INSTALLED_RUNTIME_READBACK_MISMATCH"
+        );
+        use crate::host_planner::propose_host_transition;
+        let stopped = FleetNativeObservation {
+            owner_state: FleetNativeOwnerState::Stopped as i32,
+            observed_release_sha256: stale_installed.clone(),
+            ..observe().unwrap()
+        };
+        assert_eq!(
+            propose_host_transition(
+                &host,
+                Some(&stopped),
+                &intent.release_set_sha256,
+                &intent.release_set_sha256,
+                1020
+            )
+            .step,
+            FleetHostPlannedStep::Blocked as i32,
+        );
+        assert_eq!(
+            propose_host_transition(
+                &host,
+                Some(&stopped),
+                &stale_installed,
+                &intent.release_set_sha256,
+                1020
+            )
+            .step,
+            FleetHostPlannedStep::Noop as i32,
         );
         assert!(!native_scope_pending_path(&dir, &intent).exists());
         assert_eq!(fs::read_dir(&dir).unwrap().count(), 0);
