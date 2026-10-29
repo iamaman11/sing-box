@@ -594,7 +594,10 @@ mod tests {
             File::create(root.join("err")).unwrap(),
         )
         .unwrap();
-        assert_eq!(result.exit_code, 0, "native pipe fixture failed or timed out");
+        assert_eq!(
+            result.exit_code, 0,
+            "native pipe fixture failed or timed out"
+        );
         assert!(result.process_exited);
         assert!(result.stdout_total_bytes >= 1048576);
         assert_eq!(result.stderr_total_bytes, 1048576);
