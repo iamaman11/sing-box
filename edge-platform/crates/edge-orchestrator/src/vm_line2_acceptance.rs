@@ -326,14 +326,18 @@ pub(crate) async fn run(
     );
     println!("host_vm_line2_witness_worker=VERIFIED_GIT_PINNED_ED25519");
     println!("host_vm_line2_public_dns_a=EXACT_PROVIDER_IP");
+    // getaddrinfo/lookup_host can filter AAAA when the hosted runner lacks
+    // a usable IPv6 interface. Only a separately authoritative A/AAAA
+    // witness may prove DNS absence; do not infer it from this local resolver.
     println!(
         "host_vm_line2_public_dns_aaaa={}",
         if vm_ipv6_enabled {
-            "MATCHES_GIT_ENABLED_VULTR_IPV6"
+            "VULTR_IPV6_PRESENT_IN_SYSTEM_RESOLVER_NOT_AUTHORITATIVE"
         } else {
-            "ABSENT_MATCHES_GIT_DISABLED_IPV6"
+            "SYSTEM_RESOLVER_NO_AAAA_NOT_AUTHORITATIVE"
         }
     );
+    println!("host_vm_line2_dns_authoritative_aaaa=UNPROVEN");
     println!("host_vm_line2_warp_udp=GIT_OUTBOUND_TCP_ONLY_NOT_SUPPORTED");
     println!("host_vm_line2_direct_udp=UNPROVEN_PUBLIC_UDP_WITNESS_MISSING");
     println!("host_vm_line2_witness_mutations=0");

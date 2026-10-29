@@ -111,6 +111,16 @@ fn route_in_owned_table(
         return Err("HOST_VM_MANAGED_ROUTE_INTERFACE_UNPROVEN".into());
     }
     let index = links[0].interface_index;
+    // A supposedly isolated table with ANY existing policy rule can already
+    // steer foreign traffic. Reserving its numeric ID is insufficient proof
+    // of owner isolation. Fail before BEGIN or further native effects.
+    if kernel
+        .policy_rules
+        .iter()
+        .any(|rule| rule.table_id == spec.table_id)
+    {
+        return Err("HOST_VM_MANAGED_ROUTE_TABLE_POLICY_RULE_CONFLICT".into());
+    }
     let routes = kernel
         .routes
         .iter()
@@ -392,6 +402,14 @@ mod tests {
         assert!(route_in_owned_table(&kernel, &spec).is_err());
         kernel.routes[0].gateway.clear();
         kernel.routes.push(expected);
+        assert!(route_in_owned_table(&kernel, &spec).is_err());
+        kernel.routes.clear();
+        kernel.policy_rules.push(edge_shared_types::FleetVmKernelPolicyRule {
+            family: Family::V4 as i32,
+            table_id: spec.table_id,
+            priority: 12_345,
+            ..Default::default()
+        });
         assert!(route_in_owned_table(&kernel, &spec).is_err());
     }
 
