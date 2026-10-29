@@ -26,14 +26,6 @@ pub(super) fn is_managed_firewall_manifest(path: &str) -> bool {
     path.starts_with("managed/host-firewall-") && path.ends_with(".pb")
 }
 
-fn table_name(spec: &FleetVmManagedFirewall) -> &str {
-    // The Git suffix is restricted to [a-z0-9]+ in decode_scope.
-    spec.resource_name
-        .rsplit_once('-')
-        .map(|(_, suffix)| suffix)
-        .unwrap_or("")
-}
-
 fn canonical_rules(spec: &FleetVmManagedFirewall) -> Option<Vec<(i32, u16)>> {
     if spec.denied_ingress.is_empty() || spec.denied_ingress.len() > RULES_MAX {
         return None;
@@ -90,7 +82,17 @@ fn decode_scope(host: &FleetHost, path: &str, raw: &[u8]) -> Result<FleetVmManag
 }
 
 fn table_id(spec: &FleetVmManagedFirewall) -> String {
-    format!("sb_{}", table_name(spec))
+    // The short Git suffix alone is NOT a global nftables namespace. The
+    // same suffix is valid for several Git-owned hosts, even if a later
+    // installation shares a kernel namespace. Hash BOTH exact identities
+    // rather than inheriting a global "sb_lab" table name.
+    let identity = format!("{}\\0{}", spec.machine_id, spec.resource_name);
+    let digest = ring::digest::digest(&ring::digest::SHA256, identity.as_bytes());
+    let mut name = String::from("sb_");
+    for byte in digest.as_ref() {
+        name.push_str(&format!("{byte:02x}"));
+    }
+    name
 }
 
 fn chain_comment(spec: &FleetVmManagedFirewall) -> String {
@@ -421,6 +423,22 @@ mod tests {
         (host, spec)
     }
     #[test]
+    fn firewall_table_is_unique_to_exact_host_and_resource() {
+        let (host, spec) = fixture();
+        let mut another_host = spec.clone();
+        another_host.machine_id = "other-vm".into();
+        another_host.resource_name = "sb-other-vm-lab".into();
+        let mut another_resource = spec.clone();
+        another_resource.resource_name = "sb-vmtest-next".into();
+        assert_ne!(table_id(&spec), table_id(&another_host));
+        assert_ne!(table_id(&spec), table_id(&another_resource));
+        assert_eq!(table_id(&spec), table_id(&spec.clone()));
+        assert!(table_id(&spec).starts_with("sb_"));
+        assert_eq!(table_id(&spec).len(), 67);
+        assert_eq!(host.kind, FleetHostKind::Vm as i32);
+    }
+
+    #[test]
     fn firewall_manifest_is_typed_bounded_and_scoped() {
         let (host, mut spec) = fixture();
         assert!(decode_scope(&host, "managed/host-firewall-lab.pb", &spec.encode_to_vec()).is_ok());
@@ -468,9 +486,9 @@ mod tests {
         let good = serde_json::json!({
             "nftables": [
                 {"metainfo": {"json_schema_version": 1}},
-                {"table": {"family": "inet", "name": "sb_lab"}},
+                {"table": {"family": "inet", "name": table_id(&spec)}},
                 {"chain": {
-                    "family": "inet", "table": "sb_lab", "name": "ingress",
+                    "family": "inet", "table": table_id(&spec), "name": "ingress",
                     "type": "filter", "hook": "input", "prio": 10, "policy": "accept",
                     "comment": "sing-box:vmtest:sb-vmtest-lab"
                 }},
