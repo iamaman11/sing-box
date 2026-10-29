@@ -1046,7 +1046,7 @@ pub(crate) async fn apply_native_vm_run_once(
         {
             return Err("HOST_VM_MANAGED_REPAIR_CONFLICTING_EFFECT_NO_REPLAY".into());
         }
-        managed_file::apply_scoped_network_repair_once(stack_dir, repair).await?;
+        managed_file::apply_scoped_network_repair_once(stack_dir, host, repair).await?;
     }
     // A missing service alias is an exact network resource transition.
     // Keep the immutable container ID/process/image; do not recreate images
