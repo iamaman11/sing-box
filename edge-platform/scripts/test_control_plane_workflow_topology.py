@@ -435,15 +435,30 @@ assert "[IO.FileMode]::CreateNew" in native
 assert "native-windows-receipt-" in native
 assert 'native-result "${TARGET_MACHINE}"' in native
 assert "host-native-windows-" in native
-# Exact Windows read-only preflight reuses the old SYSTEM owner and native
-# existing handoff; no runner-side installer or secondary first-use route.
+# NetworkService can receive a false ABSENT from the SYSTEM Task Scheduler.
+# STATUS must use installed native doctor / optional typed observation only.
+# Even signed-intent DELIVERY cannot rely on NetworkService's task enumeration:
+# existing LocalSystem exclusively owns native journal ACL, Worker authorization,
+# exact SCM effect and signed receipt. Administrator first-use still checks task.
 assert "release_set_sha256: ${{ needs.host.outputs.diagnostic_release_set_sha256 }}" in router
 assert "release_set_sha256:\n        required: false" in native
-assert "windows-first-use-offline-handoff.ps1" in native
-assert "-Preflight -ExistingActive" in native
-assert "host_windows_offline_preflight=PASS_READ_ONLY_NO_BEGIN" in native
-assert "actions/checkout@v4" in native
+assert "host_windows_system_task_visibility=UNPROVEN_NETWORKSERVICE" in native
+assert "host_windows_first_use_preflight=NOT_RUN_ADMIN_OR_SYSTEM_REQUIRED" in native
+assert "host_typed_readback=UNPROVEN_INSTALLED_VERSION_OR_EVIDENCE" in native
+assert "windows-first-use-offline-handoff.ps1" not in native
+assert "-Preflight -ExistingActive" not in native
+assert "Get-ScheduledTask" not in native
+assert "actions/checkout@v4" not in native
 assert "Start-ScheduledTask" not in native
+assert "HOST_WINDOWS_RUNNER_MUST_REMAIN_NETWORKSERVICE" in native
+win_system = Path(
+    "edge-platform/crates/edge-console/src/windows_signed_host.rs"
+).read_text(encoding="utf-8")
+assert "require_exact_immutable_activation_console(install_root)?;" in win_system
+assert "verify_native_journal_protection(&journal).map_err(str::to_owned)?;" in win_system
+assert "verify_system_trust(" in win_system
+assert "edge_secrets::request_canonical_host_authorization(&intent_bytes, &identity)" in win_system
+assert "execute_native_host_once(" in win_system
 assert "SYSTEM task or immutable action mismatched" in Path(
     "edge-platform/scripts/windows-first-use-offline-handoff.ps1"
 ).read_text(encoding="utf-8")
