@@ -21,6 +21,11 @@ for marker, value in {
 }.items():
     js = js.replace(marker, value)
 assert "__" not in js, "unexpanded Worker template placeholder"
+# Evaluate the EXACT production Worker router, not an isolated helper. The
+# local fixture has no network or Cloudflare credentials.
+route = "export default{async fetch(q,e){"
+assert js.count(route) == 1, "exactly one active Worker dispatch"
+js = js.replace(route, "const ACTIVE_VM_WORKER={async fetch(q,e){", 1)
 
 fixture = r"""
 import assert from 'node:assert/strict';
@@ -288,6 +293,69 @@ const pkcs8=await crypto.subtle.exportKey('pkcs8',ed.privateKey);
 const env={...accessEnv,...appEnv,
  EDGE_HOST_SIGNING_KEY_ID:'test-signer',
  EDGE_HOST_SIGNING_PKCS8_BASE64:Buffer.from(pkcs8).toString('base64url')};
+// End-to-end signed identity proof goes through the EXACT production Worker
+// fetch router, Access/JWKS verifier and the live signer secret binding.
+// It never reaches GitHub approval or creates a HostAuthorization.
+function proofFields(raw){
+ let p=0,out=new Map();
+ while(p<raw.length){
+  const k=V(raw,p);assert.ok(k,"identity proof truncated key");p=k[1];
+  const id=Number(k[0]>>3n),wire=Number(k[0]&7n);
+  assert.ok(id>=1&&id<=6&&!out.has(id),"identity proof unknown/duplicate field");
+  if(wire===0){const n=V(raw,p);assert.ok(n,"identity proof invalid integer");p=n[1];out.set(id,n[0]);}
+  else if(wire===2){
+   const n=V(raw,p);assert.ok(n,"identity proof invalid length");p=n[1];
+   const length=Number(n[0]);assert.ok(length<=raw.length-p,"identity proof exceeds length");
+   out.set(id,raw.slice(p,p+length));p+=length;
+  }else throw Error("identity proof non-protobuf wire type");
+ }
+ assert.deepEqual([...out.keys()],[1,2,3,4,5,6],"identity proof canonical fields");
+ return out;
+}
+const challenge=new Uint8Array(32).fill(0x5c);
+const identityUrl='https://vm-worker.example/v1/host/identity?challenge='+
+ Array.from(challenge,x=>x.toString(16).padStart(2,'0')).join('');
+async function identityCall(url=identityUrl,settings=env,claims={}){
+ return ACTIVE_VM_WORKER.fetch(new Request(url,{method:'GET',
+  headers:{'Cf-Access-Jwt-Assertion':await jwt(claims)}}),settings);
+}
+githubMode='offline';appMode='offline';
+let identityResponse=await identityCall();
+assert.equal(identityResponse.status,200,"active Worker must sign live identity with no GitHub requests");
+assert.equal(identityResponse.headers.get('X-Host-Authorization-Scope'),
+ 'SIGNED_IDENTITY_NO_MUTATION',"signed GET cannot grant host authority");
+assert.equal(identityResponse.headers.get('Cache-Control'),'no-store');
+const identityBody=new Uint8Array(await identityResponse.arrayBuffer());
+assert.ok(identityBody.length<512,"bounded signed Worker identity");
+const signedIdentity=proofFields(identityBody);
+assert.equal(signedIdentity.get(1),1n);
+assert.deepEqual(signedIdentity.get(2),challenge,"fresh challenge must bind exact bytes");
+const publicKey=new Uint8Array(await crypto.subtle.exportKey('raw',ed.publicKey));
+assert.deepEqual(signedIdentity.get(3),publicKey,"the live secret must derive this public key");
+const idBytes=signedIdentity.get(4);
+assert.equal(TD.decode(idBytes),'test-signer');
+const signedPayload=CAT(TE.encode('sing-box/host-signer-identity/v1:'),
+ challenge,publicKey,U32(idBytes.length),idBytes,U64(signedIdentity.get(5)));
+assert.equal(await crypto.subtle.verify('Ed25519',ed.publicKey,signedIdentity.get(6),signedPayload),
+ true,"signed challenge must verify against live public key");
+const wrongChallenge=CAT(TE.encode('sing-box/host-signer-identity/v1:'),
+ new Uint8Array(32).fill(0x5d),publicKey,U32(idBytes.length),idBytes,U64(signedIdentity.get(5)));
+assert.equal(await crypto.subtle.verify('Ed25519',ed.publicKey,signedIdentity.get(6),wrongChallenge),
+ false,"a different nonce must not accept replayed signedIdentity");
+assert.equal((await identityCall('https://vm-worker.example/v1/host/identity')).status,404,
+ "missing nonce must be rejected");
+assert.equal((await identityCall('https://vm-worker.example/v1/host/identity?challenge=xyz')).status,404,
+ "non-canonical nonce must be rejected");
+assert.equal((await identityCall(identityUrl+'&another=1')).status,404,
+ "multiple query params must fail closed");
+assert.equal((await identityCall(identityUrl,env,{aud:['foreign-app']})).status,403,
+ "foreign Cloudflare Access audience must be rejected");
+assert.equal((await identityCall(identityUrl,{...env,EDGE_HOST_SIGNING_PKCS8_BASE64:'invalid'})).status,503,
+ "malformed live secret must fail closed");
+const missingAccess=await ACTIVE_VM_WORKER.fetch(new Request(identityUrl),env);
+assert.equal(missingAccess.status,403,"signed identity requires Cloudflare Access");
+assert.equal(missingAccess.headers.get('X-Host-Authorization-Reason'),'JWT_MISSING');
+githubMode='approved';appMode='valid';
 const bytes=CAT(FNUM(1,1),FLD(2,TE.encode(info.m)),FNUM(3,2),
  FLD(4,TE.encode('sing-box')),FLD(5,TE.encode(info.id)),FNUM(6,2),
  FLD(7,new Uint8Array(32).fill(1)),FLD(8,new Uint8Array(32).fill(2)),

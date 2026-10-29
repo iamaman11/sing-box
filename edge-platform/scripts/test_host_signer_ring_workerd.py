@@ -43,6 +43,14 @@ export default {async fetch(q){
   const normalized=HOST_SIGNER_PKCS8(input);
   if(!normalized||normalized.v1.length!==48||!normalized.publicKey)return new Response(null,{status:500});
   if(!normalized.publicKey.every((v,i)=>v===publicKey[i]))return new Response(null,{status:500});
+  // The live identity endpoint must be able to derive ONLY the public key
+  // from the same ring PKCS8, on real pinned workerd (not just Node WebCrypto).
+  const pubKey=await crypto.subtle.importKey("pkcs8",normalized.v1,{name:"Ed25519"},true,["sign"]);
+  const jwk=await crypto.subtle.exportKey("jwk",pubKey);
+  if(jwk.kty!=="OKP"||jwk.crv!=="Ed25519"||!jwk.x)return new Response(null,{status:500});
+  const derived=B64(jwk.x);
+  if(!derived||derived.length!==32||!derived.every((v,i)=>v===publicKey[i]))
+    return new Response(null,{status:500});
   const payload=new TextEncoder().encode("sing-box/ring-workerd-test/v1");
   const result=await HOST_SIGNER_SIGN(f.ring_pkcs8_v2,payload);
   if(!result.signature||result.reason)return new Response(null,{status:500});

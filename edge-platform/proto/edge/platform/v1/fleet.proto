@@ -824,3 +824,15 @@ message FleetWindowsTrustEnrollment {
   string source_revision = 3;
   string release_set_sha256 = 4;
 }
+
+// The active Worker proves its actual signing secret without minting an
+// administrative authorization. The verifier must independently pin the
+// public_key through protected Git before admitting any host action.
+message FleetHostSignerAttestation {
+  uint32 schema_version = 1;
+  bytes challenge = 2;
+  bytes public_key = 3;
+  string key_id = 4;
+  uint64 issued_at_unix = 5;
+  bytes ed25519_signature = 6;
+}

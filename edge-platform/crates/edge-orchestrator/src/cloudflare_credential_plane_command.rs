@@ -4334,6 +4334,47 @@ async function ADMIN_AUTHORIZE(q,e,u){
  return new Response(output,{status:200,headers:{"Content-Type":"application/x-protobuf",
   "Cache-Control":"no-store","X-Content-Type-Options":"nosniff"}});
 }
+// Read-only cryptographic identity of this ACTIVE Worker process. A random
+// caller challenge is bound to the actual loaded signing secret. It is not a
+// HostAuthorization, never contacts GitHub and cannot execute host actions.
+async function HOST_SIGNER_IDENTITY(q,e,u){
+ if(P!==__HOST_SIGNER_PROJECTION__||q.method!=="GET"||
+    u.searchParams.size!==1)return new Response(null,{status:404,headers:NO});
+ const challengeHex=u.searchParams.get("challenge");
+ if(!/^[0-9a-f]{64}$/.test(challengeHex||""))return new Response(null,{status:404,headers:NO});
+ const access=await ACCESS_REASON(q,e);
+ if(access!=="OK")return new Response(null,{status:403,headers:{...NO,"X-Host-Authorization-Reason":access}});
+ const encoded=e.EDGE_HOST_SIGNING_PKCS8_BASE64,id=e.EDGE_HOST_SIGNING_KEY_ID;
+ if(typeof id!=="string"||!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id))
+  return new Response(null,{status:503,headers:{...NO,"X-Host-Authorization-Reason":"HOST_SIGNER_KEY_INVALID"}});
+ const raw=B64(encoded),parsed=raw===null?null:HOST_SIGNER_PKCS8(raw);
+ if(!parsed)return new Response(null,{status:503,headers:{...NO,"X-Host-Authorization-Reason":"HOST_SIGNER_KEY_INVALID"}});
+ // Export only inside the Worker to derive the Ed25519 PUBLIC key from the
+ // exact PKCS8 secret. Never emit, store or log the JWK private component d.
+ let publicKey;
+ try{
+  const privateKey=await crypto.subtle.importKey("pkcs8",parsed.v1,{name:"Ed25519"},true,["sign"]);
+  const jwk=await crypto.subtle.exportKey("jwk",privateKey);
+  if(jwk.kty!=="OKP"||jwk.crv!=="Ed25519"||typeof jwk.x!=="string")throw Error("not Ed25519");
+  publicKey=B64(jwk.x);
+  if(publicKey===null||publicKey.length!==32||
+     (parsed.publicKey!==null&&!publicKey.every((v,i)=>v===parsed.publicKey[i])))
+    throw Error("signer public identity mismatch");
+ }catch{
+  return new Response(null,{status:503,headers:{...NO,"X-Host-Authorization-Reason":"HOST_SIGNER_IDENTITY_UNAVAILABLE"}});
+ }
+ const challenge=Uint8Array.from(challengeHex.match(/../g),part=>parseInt(part,16));
+ const idBytes=TE.encode(id),issued=Math.floor(Date.now()/1000);
+ const message=CAT(TE.encode("sing-box/host-signer-identity/v1:"),challenge,
+   publicKey,U32(idBytes.length),idBytes,U64(issued));
+ const proof=await HOST_SIGNER_SIGN(encoded,message);
+ if(proof.reason)return new Response(null,{status:503,headers:{...NO,"X-Host-Authorization-Reason":proof.reason}});
+ const body=CAT(FNUM(1,1),FLD(2,challenge),FLD(3,publicKey),FLD(4,idBytes),
+   FNUM(5,issued),FLD(6,proof.signature));
+ return new Response(body,{status:200,headers:{"Content-Type":"application/x-protobuf",
+   "Cache-Control":"no-store","X-Host-Authorization-Scope":"SIGNED_IDENTITY_NO_MUTATION",
+   "X-Content-Type-Options":"nosniff"}});
+}
 async function AUTHORIZE(q,e,u){if(P!==__HOST_SIGNER_PROJECTION__)return new Response(null,{status:404,headers:NO});if(q.method!=="POST"||u.search||q.headers.get("Content-Type")!=="application/x-protobuf")return new Response(null,{status:404,headers:NO});
 const k=e.EDGE_HOST_SIGNING_PKCS8_BASE64,id=e.EDGE_HOST_SIGNING_KEY_ID,actor=String(e.EDGE_HOST_GITHUB_ACTOR_ID||"");
 if(typeof k!=="string"||typeof id!=="string"||!/^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(id)||!/^[1-9][0-9]{0,19}$/.test(actor))return new Response(null,{status:404,headers:NO});
@@ -4370,7 +4411,7 @@ if(signed.reason)return new Response(null,{status:503,headers:{...NO,"X-Host-Aut
 const signature=signed.signature;
 const out=CAT(FNUM(1,1),FLD(2,kid),FLD(3,oid),FNUM(4,issued),FNUM(5,expires),FLD(6,signature));
 return new Response(out,{status:200,headers:{"Content-Type":"application/x-protobuf","Cache-Control":"no-store","X-Content-Type-Options":"nosniff"}})}
-export default{async fetch(q,e){const u=new URL(q.url);if(u.pathname==="/v1/host/admin/authorize")return ADMIN_AUTHORIZE(q,e,u);if(u.pathname==="/v1/host/authorize")return q.method==="GET"?HOST_AUTH_DIAGNOSTIC(q,e,u):AUTHORIZE(q,e,u);const x=u.searchParams.get("generation");
+export default{async fetch(q,e){const u=new URL(q.url);if(u.pathname==="/v1/host/admin/authorize")return ADMIN_AUTHORIZE(q,e,u);if(u.pathname==="/v1/host/identity")return HOST_SIGNER_IDENTITY(q,e,u);if(u.pathname==="/v1/host/authorize")return q.method==="GET"?HOST_AUTH_DIAGNOSTIC(q,e,u):AUTHORIZE(q,e,u);const x=u.searchParams.get("generation");
 if(q.method==="GET"&&u.pathname==="/v1/proof-slot"){const k=u.searchParams.get("slot"),i=k==="a"?0:k==="b"?1:-1;if(u.searchParams.size!==2||i<0||x!==Q[i])return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}});const b=H(e[S[i]]);if(b===null)return new Response(null,{status:409,headers:{"Cache-Control":"no-store"}});const h=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",b))).map(x=>x.toString(16).padStart(2,"0")).join("");return new Response(null,{status:h===D[i]?204:409,headers:{"Cache-Control":"no-store"}})}
 if(q.method!=="GET"||u.pathname!=="/v1/credentials"||u.searchParams.size!==1||x===null||!/^(0|[1-9][0-9]*)$/.test(x))return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}});let n;try{n=BigInt(x)}catch{return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}})}const m=[];for(const s of S){const b=H(e[s]);if(b!==null&&G(b)===n)m.push(b)}if(m.length!==1)return new Response(null,{status:m.length?409:404,headers:{"Cache-Control":"no-store"}});return new Response(m[0],{status:200,headers:{"Content-Type":"application/x-protobuf","Cache-Control":"no-store"}})}};"#
         .replace("__PROJECTION__", &(projection_kind as i32).to_string())
