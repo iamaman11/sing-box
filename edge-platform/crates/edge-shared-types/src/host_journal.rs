@@ -177,18 +177,20 @@ fn windows_acl_owner_safe(privileged: bool, volume_root: bool, trusted_installer
 // A normal Windows volume root can allow unprivileged users to CREATE a
 // new sibling directory. That does not authorize DELETE_CHILD, rename, or
 // alteration of the already protected C:\\sing-box subtree.
+// INHERIT_ONLY templates on the volume root have no effective access there.
+// We must still reject any inherited write ACE on C:\\sing-box or below.
 #[cfg(windows)]
 fn windows_acl_grant_safe(
     mask: u32,
     privileged: bool,
     volume_root: bool,
-    inherit_only_creator_owner: bool,
+    inherit_only: bool,
 ) -> bool {
-    if privileged || (volume_root && inherit_only_creator_owner) {
-        // The Windows volume's CREATOR_OWNER template is effective only on
-        // objects subsequently created by their creator. It grants no right
-        // to modify/replace the pre-existing, inheritance-blocked app root.
-        // No other inherit-only ACE bypasses the mutation-rights check.
+    if privileged || (volume_root && inherit_only) {
+        // An INHERIT_ONLY ACE on the volume root is not effective on C:\\
+        // itself. Even if it applies to newly created child objects, the
+        // existing C:\\sing-box root and every executable/descendant are
+        // checked separately and cannot grant unprivileged write access.
         return true;
     }
     const WRITE: u32 = 0x0000_0002 // FILE_ADD_FILE
@@ -308,17 +310,12 @@ pub fn verify_windows_protected_path_acl(path: &Path, leaf_file: bool) -> Result
                 if header.AceType == 0 {
                     let grant = unsafe { &*(ace as *const ACCESS_ALLOWED_ACE) };
                     let sid = (&grant.SidStart as *const u32).cast_mut().cast();
-                    let creator_owner_template = volume_root
-                        && header.AceFlags & 0x08 != 0 // INHERIT_ONLY_ACE
-                        && unsafe {
-                            IsWellKnownSid(sid, windows_sys::Win32::Security::WinCreatorOwnerSid)
-                                != 0
-                        };
+                    let inherit_only = header.AceFlags & 0x08 != 0; // INHERIT_ONLY_ACE
                     if !windows_acl_grant_safe(
                         grant.Mask,
                         privileged(sid) || (volume_root && windows_trusted_installer_sid(sid)),
                         volume_root,
-                        creator_owner_template,
+                        inherit_only,
                     ) {
                         return false;
                     }
@@ -2791,9 +2788,31 @@ mod windows_w4_acl_tests {
         // full-control inherited onto the journal or executable is unsafe.
         assert!(!windows_acl_grant_safe(u32::MAX, false, false, false));
         assert!(!windows_acl_grant_safe(u32::MAX, false, true, false));
-        // Only the owner-template on the volume root may be inherited:
-        // this app-root verifier separately requires non-inheriting protected
-        // ACLs for every descendant in the existing canonical directory.
+        // Actual C:\\ root: Authenticated Users (S-1-5-11) may have
+        // ACCESS_ALLOWED OI|CI|INHERIT_ONLY, mask 0xE0010000. It grants
+        // no direct DELETE or GENERIC_WRITE on the volume root itself.
+        const AUTHENTICATED_USERS_TEMPLATE: u32 = 0xE001_0000;
+        assert!(windows_acl_grant_safe(
+            AUTHENTICATED_USERS_TEMPLATE,
+            false,
+            true,
+            true
+        ));
+        // An equivalent effective ACE on C:\\ is dangerous.
+        assert!(!windows_acl_grant_safe(
+            AUTHENTICATED_USERS_TEMPLATE,
+            false,
+            true,
+            false
+        ));
+        // And ANY unprivileged write template under C:\\sing-box remains
+        // prohibited, even if marked INHERIT_ONLY on the app directory.
+        assert!(!windows_acl_grant_safe(
+            AUTHENTICATED_USERS_TEMPLATE,
+            false,
+            false,
+            true
+        ));
         assert!(windows_acl_grant_safe(u32::MAX, false, true, true));
         assert!(!windows_acl_grant_safe(u32::MAX, false, false, true));
     }
