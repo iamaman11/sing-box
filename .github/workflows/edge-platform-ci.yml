@@ -1045,6 +1045,11 @@ jobs:
           cargo test --locked -p edge-shared-types --lib windows_administrator_membership_queries_exact_process_primary_token -- --nocapture
           if ($LASTEXITCODE -ne 0) { throw "Windows primary/impersonation token membership contract failed" }
 
+          # W4 inheritable ACE/CREATOR_OWNER regression must EXECUTE on a
+          # native Windows runner; the Linux source checks compile it out.
+          cargo test --locked -p edge-shared-types --lib windows_w4_acl_tests -- --nocapture
+          if ($LASTEXITCODE -ne 0) { throw "Windows W4 protected-volume ACL contract failed" }
+
       # WINDOWS_CANDIDATE_BUILD_CONTRACT_BEGIN
       - name: Build exact Windows control binaries
         if: needs.dependencies.outputs.windows_reuse != 'true'

@@ -7,7 +7,7 @@
 
 use super::*;
 use edge_shared_types::{
-    FleetWindowsReceiptIdentityEnrollment,
+    FleetWindowsReceiptIdentityEnrollment, FleetWindowsTrustEnrollment,
     host_journal::{
         require_windows_local_administrator_first_use, verify_native_journal_protection,
     },
@@ -196,6 +196,158 @@ fn preflight_fresh_identity_root(root: &Path) -> Result<(), String> {
             Ok(_) => return Err("HOST_WINDOWS_RECEIPT_ENROLL_SLOT_NOT_EMPTY_NO_REKEY".into()),
         }
     }
+    Ok(())
+}
+
+// An explicit retained-BEGIN supersession may carry forward ONLY an
+// unconsumed first-use request pair. No key, completed marker or trust may
+// already exist: this is not a credential rotation or journal replay.
+pub(super) struct PendingFirstUseRebind {
+    receipt_bytes: Vec<u8>,
+    trust_bytes: Vec<u8>,
+    predecessor_release: String,
+}
+
+fn absent_for_pending_rebind(path: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => Err("HOST_WINDOWS_FIRST_USE_REBIND_SLOT_ALREADY_USED_NO_REKEY".into()),
+        Err(_) => Err("HOST_WINDOWS_FIRST_USE_REBIND_SLOT_UNPROVEN".into()),
+    }
+}
+
+fn pending_rebind_snapshot(
+    root: &Path,
+    active: &WindowsActivationState,
+) -> Result<PendingFirstUseRebind, String> {
+    let identity = root.join(MARKER);
+    let trust = root.join("trust-enrollment.pb");
+    read_marker(&identity, active)?;
+    if !checked_regular_exists(&trust, 512)? {
+        return Err("HOST_WINDOWS_FIRST_USE_REBIND_TRUST_REQUEST_REQUIRED".into());
+    }
+    let receipt_bytes =
+        fs::read(&identity).map_err(|_| "HOST_WINDOWS_FIRST_USE_REBIND_RECEIPT_UNREADABLE")?;
+    let trust_bytes =
+        fs::read(&trust).map_err(|_| "HOST_WINDOWS_FIRST_USE_REBIND_TRUST_UNREADABLE")?;
+    windows_trust_enrollment::verify_enrollment_marker(&trust_bytes, active)
+        .map_err(str::to_owned)?;
+    for name in [
+        PRIVATE,
+        PUBLIC,
+        COMPLETED,
+        "trust.pb",
+        "trust-enrollment.completed.pb",
+    ] {
+        absent_for_pending_rebind(&root.join(name))?;
+    }
+    for name in [MARKER, "trust-enrollment.pb"] {
+        absent_for_pending_rebind(
+            &root.join(format!("{name}.predecessor-{}", active.release_set_sha256)),
+        )?;
+    }
+    Ok(PendingFirstUseRebind {
+        receipt_bytes,
+        trust_bytes,
+        predecessor_release: active.release_set_sha256.clone(),
+    })
+}
+
+/// Pure read-only admission to be executed BEFORE another durable native
+/// BEGIN. The administrator explicitly approved supersession of that BEGIN;
+/// this cannot be inferred from scheduled-task failure or missing public key.
+pub(super) fn preflight_pending_rebind(
+    install_root: &Path,
+    installed: &WindowsActivationState,
+) -> Result<PendingFirstUseRebind, String> {
+    require_windows_local_administrator_first_use().map_err(str::to_owned)?;
+    let root = native_root(install_root)?;
+    pending_rebind_snapshot(&root, installed)
+}
+
+/// Only the new exact immutable local Administrator owner, while the SAME
+/// SYSTEM task is Disabled, may consume one previously authorized old-release
+/// request pair. The old bytes remain preserved and are never interpreted as
+/// a new key or successful prior enrollment.
+pub(super) fn rebind_pending_after_offline_handoff(
+    install_root: &Path,
+    previously: &PendingFirstUseRebind,
+    predecessor: &WindowsActivationState,
+) -> Result<(), String> {
+    require_windows_local_administrator_first_use().map_err(str::to_owned)?;
+    require_exact_immutable_activation_console(install_root)?;
+    let current = load_verified_activation(install_root).map_err(|e| e.to_string())?;
+    if current.release_set_sha256 == predecessor.release_set_sha256
+        || previously.predecessor_release != predecessor.release_set_sha256
+    {
+        return Err("HOST_WINDOWS_FIRST_USE_REBIND_ACTIVATION_NOT_DISTINCT".into());
+    }
+    require_offline_windows_owner(install_root, &current)?;
+    verify_offline_bootstrap_dispatcher(&current.console_path, "Disabled")?;
+    let root = native_root(install_root)?;
+    let observed = pending_rebind_snapshot(&root, predecessor)?;
+    if observed.receipt_bytes != previously.receipt_bytes
+        || observed.trust_bytes != previously.trust_bytes
+    {
+        return Err("HOST_WINDOWS_FIRST_USE_REBIND_ORIGINAL_CHANGED_NO_REPLAY".into());
+    }
+    let new_receipt = FleetWindowsReceiptIdentityEnrollment {
+        schema_version: 1,
+        machine_id: MACHINE.to_owned(),
+        source_revision: current.source_revision.clone(),
+        release_set_sha256: current.release_set_sha256.clone(),
+    };
+    request_valid(&new_receipt, &current).map_err(str::to_owned)?;
+    let new_trust = FleetWindowsTrustEnrollment {
+        schema_version: 1,
+        machine_id: MACHINE.to_owned(),
+        source_revision: current.source_revision.clone(),
+        release_set_sha256: current.release_set_sha256.clone(),
+    };
+    windows_trust_enrollment::verify_enrollment_marker(&new_trust.encode_to_vec(), &current)
+        .map_err(str::to_owned)?;
+    // Archive BOTH complete predecessor requests before replacing either.
+    for (name, original) in [
+        (MARKER, previously.receipt_bytes.as_slice()),
+        ("trust-enrollment.pb", previously.trust_bytes.as_slice()),
+    ] {
+        let saved = root.join(format!(
+            "{name}.predecessor-{}",
+            previously.predecessor_release
+        ));
+        absent_for_pending_rebind(&saved)?;
+        fs::hard_link(root.join(name), &saved)
+            .map_err(|_| "HOST_WINDOWS_FIRST_USE_REBIND_ARCHIVE_UNCERTAIN_NO_REPLAY")?;
+        let saved_bytes = fs::read(&saved)
+            .map_err(|_| "HOST_WINDOWS_FIRST_USE_REBIND_ARCHIVE_UNREADABLE_NO_REPLAY")?;
+        if saved_bytes != original {
+            return Err("HOST_WINDOWS_FIRST_USE_REBIND_ARCHIVE_CHANGED_NO_REPLAY".into());
+        }
+        let file = OpenOptions::new()
+            .write(true)
+            .open(&saved)
+            .map_err(|_| "HOST_WINDOWS_FIRST_USE_REBIND_ARCHIVE_SYNC_UNAVAILABLE_NO_REPLAY")?;
+        file.sync_all()
+            .map_err(|_| "HOST_WINDOWS_FIRST_USE_REBIND_ARCHIVE_SYNC_UNCERTAIN_NO_REPLAY")?;
+    }
+    // Unlink/create-only is intentionally fail-closed: if the host stops
+    // between steps, never retry under a different ID or generate a key.
+    fs::remove_file(root.join(MARKER))
+        .map_err(|_| "HOST_WINDOWS_FIRST_USE_REBIND_UNLINK_UNCERTAIN_NO_REPLAY")?;
+    create_only(&root.join(MARKER), &new_receipt.encode_to_vec())?;
+    fs::remove_file(root.join("trust-enrollment.pb"))
+        .map_err(|_| "HOST_WINDOWS_FIRST_USE_REBIND_UNLINK_UNCERTAIN_NO_REPLAY")?;
+    create_only(
+        &root.join("trust-enrollment.pb"),
+        &new_trust.encode_to_vec(),
+    )?;
+    read_marker(&root.join(MARKER), &current)?;
+    windows_trust_enrollment::verify_enrollment_marker(
+        &fs::read(root.join("trust-enrollment.pb"))
+            .map_err(|_| "HOST_WINDOWS_FIRST_USE_REBIND_TRUST_READBACK_UNAVAILABLE")?,
+        &current,
+    )
+    .map_err(str::to_owned)?;
     Ok(())
 }
 
@@ -479,6 +631,56 @@ pub(super) fn observe(install_root: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn pending_rebind_accepts_only_exact_unconsumed_pair() {
+        let dir = std::env::temp_dir().join(format!("w4-rebind-pending-{}", std::process::id()));
+        if dir.exists() {
+            std::fs::remove_dir_all(&dir).unwrap();
+        }
+        std::fs::create_dir(&dir).unwrap();
+        let previous = WindowsActivationState {
+            schema_version: 1,
+            release_set_sha256: "a".repeat(64),
+            source_revision: "b".repeat(40),
+            ..Default::default()
+        };
+        let receipt = FleetWindowsReceiptIdentityEnrollment {
+            schema_version: 1,
+            machine_id: MACHINE.into(),
+            release_set_sha256: previous.release_set_sha256.clone(),
+            source_revision: previous.source_revision.clone(),
+        };
+        let trust = FleetWindowsTrustEnrollment {
+            schema_version: 1,
+            machine_id: MACHINE.into(),
+            release_set_sha256: previous.release_set_sha256.clone(),
+            source_revision: previous.source_revision.clone(),
+        };
+        create_only(&dir.join(MARKER), &receipt.encode_to_vec()).unwrap();
+        assert!(pending_rebind_snapshot(&dir, &previous).is_err());
+        create_only(&dir.join("trust-enrollment.pb"), &trust.encode_to_vec()).unwrap();
+        let accepted = pending_rebind_snapshot(&dir, &previous).unwrap();
+        assert_eq!(accepted.receipt_bytes, receipt.encode_to_vec());
+        assert_eq!(accepted.trust_bytes, trust.encode_to_vec());
+        assert_eq!(accepted.predecessor_release, previous.release_set_sha256);
+        let mut wrong_revision = previous.clone();
+        wrong_revision.source_revision = "f".repeat(40);
+        assert!(pending_rebind_snapshot(&dir, &wrong_revision).is_err());
+        create_only(&dir.join(PRIVATE), b"sealed-secret-not-for-rebind").unwrap();
+        assert!(pending_rebind_snapshot(&dir, &previous).is_err());
+        std::fs::remove_file(dir.join(PRIVATE)).unwrap();
+        create_only(
+            &dir.join(format!(
+                "{MARKER}.predecessor-{}",
+                previous.release_set_sha256
+            )),
+            &receipt.encode_to_vec(),
+        )
+        .unwrap();
+        assert!(pending_rebind_snapshot(&dir, &previous).is_err());
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
     #[test]
     fn enrollment_is_exact_host_release_and_revision_only() {
         let active = WindowsActivationState {
