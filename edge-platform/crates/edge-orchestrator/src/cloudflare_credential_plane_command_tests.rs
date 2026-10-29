@@ -870,26 +870,27 @@ fn worker_proof_begin_is_exact_one_shot_and_rejects_unknown_history() {
 }
 
 #[test]
-fn vm_worker_predecessor_requires_exact_version_binding_and_source() {
+fn worker_code_reconcile_is_version_agnostic_but_exact_owner_and_binding_fenced() {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
     let d = desired();
     let mut obs = observation(&d);
     make_terminal(&mut obs, "vm");
     let vm = projection_desired(&d, "vm").unwrap();
-    let source = "73964c87f436adc5de8ab0c34513413e0328ede6a99727a844aa3af9e643b5e1";
     let original = obs
         .projections
         .iter_mut()
         .find(|p| p.projection == "vm")
         .unwrap();
-    original.worker_version_tag = Some(format!("sing-box-phase6-ab-vm-{}", &source[..16]));
+    original.worker_version_tag = Some("older-valid-worker-version".into());
     original.worker_latest_version_tag = original.worker_version_tag.clone();
-    original.worker_binding_count = Some(7);
+    original.worker_binding_count = Some(8);
     original.worker_secret_bindings = [
         SLOT_A,
         SLOT_B,
         "EDGE_HOST_ACCESS_AUD",
         "EDGE_HOST_ACCESS_ISSUER",
         "EDGE_HOST_GITHUB_ACTOR_ID",
+        "EDGE_HOST_GITHUB_APP_PKCS8_BASE64",
         "EDGE_HOST_SIGNING_KEY_ID",
         "EDGE_HOST_SIGNING_PKCS8_BASE64",
     ]
@@ -899,17 +900,43 @@ fn vm_worker_predecessor_requires_exact_version_binding_and_source() {
         binding_type: "secret_text".to_owned(),
     })
     .collect();
-    let current = super::projection_observation(&obs, "vm").unwrap();
-    assert!(verify_vm_worker_predecessor(&vm, current, source).is_ok());
-    assert!(verify_vm_worker_predecessor(&vm, current, &"0".repeat(64)).is_err());
+    let current = super::projection_observation(&obs, "vm").unwrap().clone();
+    assert!(verify_vm_worker_reconcilable_current(&vm, &current).is_ok());
+    let raw = b"observed old but valid code";
+    let exact = cloudflare::CloudflareWorkerExactModule {
+        id: current.worker_active_version_ids[0].clone(),
+        created_on: "2026-10-29T14:20:00Z".into(),
+        version_tag: "different-old-version-tag".into(),
+        content_base64: STANDARD.encode(raw),
+        secret_bindings: current.worker_secret_bindings.clone(),
+    };
+    assert_eq!(
+        verified_vm_worker_active_code(&vm, &current, &exact),
+        Ok(raw.to_vec())
+    );
     let mut drift = current.clone();
-    drift.worker_active_version_ids = vec!["foreign".to_owned()];
-    assert!(verify_vm_worker_predecessor(&vm, &drift, source).is_err());
+    drift.worker_active_version_ids = vec!["foreign".into()];
+    assert!(verify_vm_worker_reconcilable_current(&vm, &drift).is_err());
+    drift = current.clone();
+    drift.worker_binding_count = Some(7);
+    assert!(verify_vm_worker_reconcilable_current(&vm, &drift).is_err());
     drift = current.clone();
     drift.worker_secret_bindings.pop();
-    assert!(verify_vm_worker_predecessor(&vm, &drift, source).is_err());
+    assert!(verify_vm_worker_reconcilable_current(&vm, &drift).is_err());
+    drift = current.clone();
+    drift.worker_active_deployment_id = None;
+    assert!(verify_vm_worker_reconcilable_current(&vm, &drift).is_err());
     let windows = projection_desired(&d, "windows").unwrap();
-    assert!(verify_vm_worker_predecessor(&windows, current, source).is_err());
+    assert!(verify_vm_worker_reconcilable_current(&windows, &current).is_err());
+    let mut invalid = exact.clone();
+    invalid.id = "foreign-version".into();
+    assert!(verified_vm_worker_active_code(&vm, &current, &invalid).is_err());
+    invalid = exact.clone();
+    invalid.secret_bindings.pop();
+    assert!(verified_vm_worker_active_code(&vm, &current, &invalid).is_err());
+    invalid = exact;
+    invalid.content_base64 = "not-base64".into();
+    assert!(verified_vm_worker_active_code(&vm, &current, &invalid).is_err());
 }
 
 #[test]
@@ -1192,6 +1219,34 @@ fn pending_vm_worker_reconciliation_refuses_unbound_or_drifted_code() {
     assert!(
         verify_pending_vm_worker_exact_modules(&vm, &current, &accepted, &material, &old, &pending)
             .is_ok()
+    );
+    // Legitimate deployed predecessor may be an older accepted release.
+    // Only active version ID, bindings and pending desired bytes matter.
+    let mut arbitrary_old = old.clone();
+    arbitrary_old.version_tag = "older-registered-worker".into();
+    assert!(
+        verify_pending_vm_worker_exact_modules(
+            &vm,
+            &current,
+            &accepted,
+            &material,
+            &arbitrary_old,
+            &pending
+        )
+        .is_ok()
+    );
+    let mut foreign_old = old.clone();
+    foreign_old.content_base64 = "!!!".into();
+    assert!(
+        verify_pending_vm_worker_exact_modules(
+            &vm,
+            &current,
+            &accepted,
+            &material,
+            &foreign_old,
+            &pending
+        )
+        .is_err()
     );
     let mut foreign = pending.clone();
     foreign.id = "foreign-version".into();

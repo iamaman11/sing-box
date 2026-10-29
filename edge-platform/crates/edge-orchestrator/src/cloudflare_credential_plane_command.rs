@@ -1356,37 +1356,55 @@ fn accepted_vm_worker_source(
     })
 }
 
-fn verify_vm_worker_predecessor(
+/// Worker is observed state, not a Git predecessor. A clean reconcile only
+/// requires the exact selected Cloudflare account/Worker, sole active==latest
+/// deployment and preserved opaque bindings. Desired bytes come from the
+/// protected immutable ReleaseSet; version labels are never authorities.
+fn verify_vm_worker_reconcilable_current(
     desired: &ProjectionDesired,
     current: &ProjectionObservation,
-    digest: &str,
 ) -> Result<(), String> {
     if desired.projection != "vm"
         || desired.worker_name != "sing-box-credentials-vm"
         || current.worker_name != desired.worker_name
-        || digest.len() != 64
-        || !digest
-            .bytes()
-            .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
-    {
-        return Err("HOST_VM_WORKER_PREDECESSOR_INVALID".to_owned());
-    }
-    let tag = format!("sing-box-phase6-ab-vm-{}", &digest[..16]);
-    if current.worker_version_tag.as_deref() != Some(tag.as_str())
-        || current.worker_latest_version_tag.as_deref() != Some(tag.as_str())
+        || current.worker_id.is_none()
         || current.worker_latest_version_id.is_none()
         || current.worker_active_version_ids.as_slice()
             != [current.worker_latest_version_id.as_deref().unwrap_or("")]
         || current.worker_active_deployment_id.is_none()
-        || !matches!(current.worker_binding_count, Some(7 | 8))
+        || current.worker_binding_count != Some(8)
+        || current.worker_secret_bindings.len() != 8
     {
-        return Err("HOST_VM_WORKER_PREDECESSOR_STATE_MISMATCH".to_owned());
+        return Err("HOST_VM_WORKER_CURRENT_OWNER_OR_DEPLOYMENT_UNPROVEN".to_owned());
     }
     require_exact_secret_bindings(
         &desired.worker_name,
         &desired.projection,
         &current.worker_secret_bindings,
     )
+}
+
+/// The exact active Version API is the ONLY observed code, not content/v2
+/// (which may return latest pending code instead of 100% traffic).
+fn verified_vm_worker_active_code(
+    desired: &ProjectionDesired,
+    current: &ProjectionObservation,
+    active: &cloudflare::CloudflareWorkerExactModule,
+) -> Result<Vec<u8>, String> {
+    use base64::{Engine as _, engine::general_purpose::STANDARD};
+    verify_vm_worker_reconcilable_current(desired, current)?;
+    if current.worker_active_version_ids.first() != Some(&active.id)
+        || active.secret_bindings != current.worker_secret_bindings
+    {
+        return Err("HOST_VM_WORKER_ACTIVE_VERSION_OR_BINDINGS_UNPROVEN".into());
+    }
+    let bytes = STANDARD
+        .decode(active.content_base64.as_bytes())
+        .map_err(|_| "HOST_VM_WORKER_ACTIVE_CODE_NOT_BASE64")?;
+    if bytes.is_empty() || bytes.len() > 1_048_576 {
+        return Err("HOST_VM_WORKER_ACTIVE_CODE_BOUNDS_INVALID".into());
+    }
+    Ok(bytes)
 }
 
 /// The only admitted outcomes after exact Worker source and identity verification.
@@ -1455,7 +1473,6 @@ fn verify_pending_vm_worker_exact_modules(
         || before.worker_binding_count != Some(8)
         || active.id != *active_id
         || pending.id != latest_id
-        || active.version_tag != format!("sing-box-phase6-ab-vm-{}", &accepted.predecessor[..16])
         || pending.version_tag != material.version_tag
         || before.worker_latest_version_tag.as_deref() != Some(material.version_tag.as_str())
         || active.secret_bindings != pending.secret_bindings
@@ -1470,7 +1487,8 @@ fn verify_pending_vm_worker_exact_modules(
     let actual_pending = STANDARD
         .decode(pending.content_base64.as_bytes())
         .map_err(|_| denied)?;
-    if sha256_hex(&actual_active) != accepted.predecessor
+    if actual_active.is_empty()
+        || actual_active.len() > 1_048_576
         || sha256_hex(&actual_pending) != accepted.desired
         || actual_pending != material.source.as_bytes()
     {
@@ -1657,27 +1675,28 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
     {
         return Err("HOST_VM_WORKER_SPLIT_DEPLOYMENT_UNPROVEN_NO_REPLAY".into());
     }
-    let raw = cloudflare::get_worker_active_module_bytes(
+    verify_vm_worker_reconcilable_current(&vm, original)?;
+    let exact_active = cloudflare::get_worker_exact_version_module(
         &read_token,
         &desired.target_account_id,
-        &vm.worker_name,
+        original
+            .worker_id
+            .as_deref()
+            .ok_or("HOST_VM_WORKER_ID_UNPROVEN")?,
+        original
+            .worker_active_version_ids
+            .first()
+            .ok_or("HOST_VM_WORKER_ACTIVE_VERSION_UNPROVEN")?,
     )
     .await?;
+    let raw = verified_vm_worker_active_code(&vm, original, &exact_active)?;
     let actual_sha256 = sha256_hex(&raw);
+    // Git desired owns the target bytes; Cloudflare's exact active version
+    // is simply measured runtime state. Any authenticated drift converges
+    // via one fenced upload+deploy, never through predecessor-tag guessing.
     let state = if actual_sha256 == accepted_source.desired {
-        if projection_delivery_state(desired, &vm, &before)? != ProjectionDeliveryState::FixedAb
-            || original.worker_binding_count != Some(8)
-        {
-            // New Worker bytes without the exact GitHub App secret cannot
-            // authorize GitHub; accepting this state would strand every /host apply.
-            return Err("HOST_VM_WORKER_GITHUB_APP_BINDING_REQUIRED".to_owned());
-        }
         ProjectionDeliveryState::FixedAb
     } else {
-        verify_vm_worker_predecessor(&vm, original, &accepted_source.predecessor)?;
-        if actual_sha256 != accepted_source.predecessor {
-            return Err("HOST_VM_WORKER_PREDECESSOR_SOURCE_MISMATCH".to_owned());
-        }
         ProjectionDeliveryState::FixedAbProofUpgradeRequired
     };
     let after_source = observe(&read_token, desired).await?;
@@ -1717,61 +1736,9 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
         println!("host_signed_install=NOT_AUTHORIZED");
         return Ok(());
     }
-    // Complete the 7-to-8 transition and code-only upgrade inside the
-    // SAME authorized /host apply owner, after the durable GitHub BEGIN.
-    // The Environment secret never enters HostIntent, logs or ReleaseSet.
-    let code_baseline = if original.worker_binding_count == Some(7) {
-        let secret = required_env("EDGE_HOST_GITHUB_APP_PKCS8_BASE64")?;
-        validate_host_github_app_private_key(&secret)?;
-        let predecessor_tag = format!(
-            "sing-box-phase6-ab-vm-{}",
-            &accepted_source.predecessor[..16]
-        );
-        let patched_version = cloudflare::patch_latest_worker_version_secrets(
-            &write_token,
-            &desired.target_account_id,
-            &vm.worker_name,
-            &predecessor_tag,
-            &[("EDGE_HOST_GITHUB_APP_PKCS8_BASE64", secret.as_str())],
-        )
-        .await
-        .map_err(|_| "HOST_VM_GITHUB_APP_SECRET_PATCH_UNCERTAIN_NO_REPLAY".to_owned())?;
-        let patched = observe(&read_token, desired)
-            .await
-            .map_err(|_| "HOST_VM_GITHUB_APP_PATCH_READBACK_UNCERTAIN_NO_REPLAY".to_owned())?;
-        validate_access_boundary(desired, &patched)?;
-        let patched_vm = projection_observation(&patched, "vm")?;
-        if projection_observation(&before, "windows")?
-            != projection_observation(&patched, "windows")?
-            || patched_version == original.worker_latest_version_id.as_deref().unwrap_or("")
-            || patched_vm.worker_latest_version_id.as_deref() != Some(patched_version.as_str())
-            || patched_vm.worker_active_version_ids != original.worker_active_version_ids
-            || patched_vm.worker_active_deployment_id != original.worker_active_deployment_id
-            || patched_vm.worker_id != original.worker_id
-            || patched_vm.worker_binding_count != Some(8)
-            || patched_vm.worker_secret_bindings.len() != 8
-            || patched_vm.worker_version_tag.as_deref() != Some(predecessor_tag.as_str())
-            || patched_vm.worker_latest_version_tag.as_deref() != Some(predecessor_tag.as_str())
-        {
-            return Err("HOST_VM_GITHUB_APP_PATCH_POSTSTATE_UNPROVEN_NO_REPLAY".to_owned());
-        }
-        require_exact_secret_bindings(&vm.worker_name, "vm", &patched_vm.worker_secret_bindings)?;
-        let source_after_patch = cloudflare::get_worker_active_module_bytes(
-            &read_token,
-            &desired.target_account_id,
-            &vm.worker_name,
-        )
-        .await
-        .map_err(|_| "HOST_VM_GITHUB_APP_PATCH_SOURCE_UNAVAILABLE_NO_REPLAY".to_owned())?;
-        if sha256_hex(&source_after_patch) != accepted_source.predecessor {
-            return Err("HOST_VM_GITHUB_APP_PATCH_ACTIVE_SOURCE_DRIFT_NO_REPLAY".to_owned());
-        }
-        patched
-    } else if original.worker_binding_count == Some(8) {
-        before.clone()
-    } else {
-        return Err("HOST_VM_WORKER_BINDINGS_INCOMPLETE".to_owned());
-    };
+    // All eight existing opaque bindings are inherited strictly. An
+    // incompletely enrolled Worker is not silently repaired or rekeyed.
+    let code_baseline = before.clone();
     // Code upload STRICTLY inherits all eight verified Worker secret names
     // from the current latest version (including the pending secret patch).
     let code_original = projection_observation(&code_baseline, "vm")?;
@@ -1821,12 +1788,18 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
         return Err("HOST_VM_WORKER_DEPLOYMENT_NOT_PROVEN_STOP_NO_REPLAY".to_owned());
     }
     // The live bytes, not Cloudflare's version label, prove the deployment.
-    let deployed = cloudflare::get_worker_active_module_bytes(
+    let final_vm = projection_observation(&after, "vm")?;
+    let exact_deployed = cloudflare::get_worker_exact_version_module(
         &read_token,
         &desired.target_account_id,
-        &vm.worker_name,
+        final_vm
+            .worker_id
+            .as_deref()
+            .ok_or("HOST_VM_WORKER_FINAL_ID_UNPROVEN")?,
+        &version_id,
     )
     .await?;
+    let deployed = verified_vm_worker_active_code(&vm, final_vm, &exact_deployed)?;
     if sha256_hex(&deployed) != accepted_source.desired {
         return Err("HOST_VM_WORKER_ACTIVE_BYTES_MISMATCH_NO_REPLAY".to_owned());
     }
