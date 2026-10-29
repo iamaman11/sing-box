@@ -234,15 +234,17 @@ fn dns_over_https_rcode(
     require_authenticated_https_status(protocol, result, "200")?;
     let data: serde_json::Value = serde_json::from_str(&result.1)
         .map_err(|_| "HOST_VM_LINE2_DOH_JSON_INVALID")?;
+    let expected_question = match expected_status {
+        0 => "www.gstatic.com.",
+        3 => "sing-box-never-resolve.invalid.",
+        _ => return Err("HOST_VM_LINE2_DOH_UNSUPPORTED_RCODE"),
+    };
     if data["Status"].as_u64() != Some(expected_status)
         || data["Question"]
             .as_array()
             .is_none_or(|entries| entries.len() != 1)
         || data["Question"][0]["type"].as_u64() != Some(1)
-        || !matches!(
-            data["Question"][0]["name"].as_str(),
-            Some("www.gstatic.com.") | Some("sing-box-never-resolve.invalid.")
-        )
+        || data["Question"][0]["name"].as_str() != Some(expected_question)
     {
         return Err("HOST_VM_LINE2_DOH_RCODE_OR_QUESTION_MISMATCH");
     }
@@ -624,6 +626,14 @@ mod tests {
         assert!(dns_over_https_rcode(&invalid, "http", 0).is_err());
         assert!(dns_over_https_rcode(&yes, "http", 3).is_err());
         assert!(dns_over_https_rcode(&no, "http", 0).is_err());
+        let wrong_positive_question = make(
+            "sing-box-never-resolve.invalid.",
+            0,
+            serde_json::json!([{"type": 1, "data": "8.8.8.8"}]),
+        );
+        assert!(dns_over_https_rcode(&wrong_positive_question, "http", 0).is_err());
+        let wrong_negative_question = make("www.gstatic.com.", 3, serde_json::json!([]));
+        assert!(dns_over_https_rcode(&wrong_negative_question, "http", 3).is_err());
         let private = make(
             "www.gstatic.com.",
             0,
