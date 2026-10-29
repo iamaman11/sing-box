@@ -893,12 +893,14 @@ jobs:
             grep -Fxq 'host_vm_worker_signed_identity=VERIFIED_GIT_PINNED_ED25519' "${RUNNER_TEMP}/host-signer-readonly.out"
             echo 'host_vm_worker_signed_identity=VERIFIED_GIT_PINNED_ED25519'
             echo 'status=VERIFIED_GIT_PINNED_ED25519' >> "${GITHUB_OUTPUT}"
+            echo 'reason=NONE' >> "${GITHUB_OUTPUT}"
           else
             reason="$(tail -n 1 "${RUNNER_TEMP}/host-signer-readonly.err" | tr -d '\r\n')"
             [[ "${reason}" =~ ^[A-Z][A-Z0-9_]{3,119}$ ]] || reason=HOST_SIGNER_PROOF_UNCLASSIFIED
             echo "host_vm_worker_signed_identity=UNPROVEN"
             echo "host_vm_worker_signer_reason=${reason}"
             echo 'status=UNPROVEN' >> "${GITHUB_OUTPUT}"
+            echo "reason=${reason}" >> "${GITHUB_OUTPUT}"
           fi
           echo 'host_worker_mutations=0'
           echo 'host_provider_mutations=0'
@@ -908,6 +910,7 @@ jobs:
         env:
           VM_BUNDLE_STATUS: ${{ steps.vm_credential.outputs.status || 'UNPROVEN_WORKER_PROOF_STEP_FAILED' }}
           SIGNER_STATUS: ${{ steps.active_signer.outputs.status || 'UNPROVEN' }}
+          SIGNER_REASON: ${{ steps.active_signer.outputs.reason || 'HOST_SIGNER_PROOF_STEP_FAILED' }}
         run: |
           set -euo pipefail
           [[ "${REPORT_COMMENT_ID}" =~ ^[1-9][0-9]{0,19}$ ]]
@@ -920,6 +923,7 @@ jobs:
             VERIFIED_GIT_PINNED_ED25519|UNPROVEN) ;;
             *) echo HOST_DIAGNOSTIC_SIGNER_PROOF_INVALID >&2; exit 1 ;;
           esac
+          [[ "${SIGNER_REASON}" =~ ^[A-Z][A-Z0-9_]{2,119}$ ]] || exit 1
           diagnostic="$(python3 edge-platform/scripts/host_diagnostic_summary.py \
             < "${RUNNER_TEMP}/host-capabilities.json")"
           # Reject any accidental sensitive material or false acceptance.
@@ -934,7 +938,7 @@ jobs:
           # thread, no duplicate state store and no new operator command.
           original="$(gh api "repos/${GITHUB_REPOSITORY}/issues/comments/${REPORT_COMMENT_ID}" --jq '.body')"
           (( ${#original} > 0 && ${#original} < 16000 ))
-          appendix="$(printf '\n\n### Unified deep diagnosis — read only\n\n```json\n%s\n```\n\nSigned native receipt: **UNPROVEN** until the existing runner returns an independently verified root result.\n' "${diagnostic}")"
+          appendix="$(printf '\n\n### Unified deep diagnosis — read only\n\n```json\n%s\n```\n\nWorker signed identity: **%s**; reason: `%s`.\n\nSigned native receipt: **UNPROVEN** until the existing runner returns an independently verified root result.\n' "${diagnostic}" "${SIGNER_STATUS}" "${SIGNER_REASON}")"
           gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${REPORT_COMMENT_ID}" \
             -f "body=${original}${appendix}" >/dev/null
           echo "host_vm_worker_signed_identity=${SIGNER_STATUS}"
