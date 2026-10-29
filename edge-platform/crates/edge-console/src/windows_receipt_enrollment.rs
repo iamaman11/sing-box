@@ -160,6 +160,90 @@ fn existing_private_public(root: &Path) -> Result<Option<[u8; 32]>, String> {
     Ok(Some(key))
 }
 
+/// Pure filesystem preflight for the opt-in combined offline install/enroll.
+/// Before a native bootstrap the protected directory may not exist yet; any
+/// existing identity, in-flight marker, completed marker or trust file denies
+/// the enrollment option BEFORE the irreversible installer BEGIN. Absence is
+/// not a permission to rekey a previously enrolled machine.
+pub(super) fn preflight_fresh_identity_slot(install_root: &Path) -> Result<(), String> {
+    if install_root != Path::new(r"C:\sing-box") {
+        return Err("HOST_WINDOWS_RECEIPT_ENROLL_ROOT_INVALID".into());
+    }
+    preflight_fresh_identity_root(&install_root.join("native-host"))
+}
+
+fn preflight_fresh_identity_root(root: &Path) -> Result<(), String> {
+    match fs::symlink_metadata(root) {
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err("HOST_WINDOWS_RECEIPT_ENROLL_ROOT_METADATA_UNAVAILABLE".into()),
+        Ok(meta) if !meta.file_type().is_dir() || meta.file_type().is_symlink() => {
+            return Err("HOST_WINDOWS_RECEIPT_ENROLL_ROOT_REPARSE_OR_NOT_DIR".into());
+        }
+        Ok(_) => {}
+    }
+    for name in [
+        MARKER,
+        COMPLETED,
+        PRIVATE,
+        PUBLIC,
+        "trust.pb",
+        "trust-enrollment.pb",
+        "trust-enrollment.completed.pb",
+    ] {
+        match fs::symlink_metadata(root.join(name)) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return Err("HOST_WINDOWS_RECEIPT_ENROLL_SLOT_METADATA_UNAVAILABLE".into()),
+            Ok(_) => return Err("HOST_WINDOWS_RECEIPT_ENROLL_SLOT_NOT_EMPTY_NO_REKEY".into()),
+        }
+    }
+    Ok(())
+}
+
+/// A single first-use authorization may stage trust before SYSTEM has
+/// completed its receipt key. Only the existing canonical typed identity
+/// marker (active or completed) proves the intent; no caller supplies a key.
+pub(super) fn require_identity_request_for_trust(
+    install_root: &Path,
+    active: &WindowsActivationState,
+) -> Result<(), String> {
+    let root = native_root(install_root)?;
+    let active_marker = root.join(MARKER);
+    match fs::symlink_metadata(&active_marker) {
+        Ok(_) => read_marker(&active_marker, active),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
+            read_marker(&root.join(COMPLETED), active)
+        }
+        Err(_) => Err("HOST_WINDOWS_RECEIPT_ENROLL_MARKER_METADATA_UNAVAILABLE".into()),
+    }
+}
+
+/// Before creating the FIRST service/task on a clean Windows host, reserve
+/// the SAME typed identity marker as a durable local-authorized BEGIN. The
+/// existing SYSTEM task eventually completes it. A crash cannot be treated
+/// as a fresh enrollment; no other first-use store is introduced.
+pub(super) fn prepare_clean_before_scm(install_root: &Path) -> Result<(), String> {
+    require_windows_local_administrator_first_use().map_err(str::to_owned)?;
+    require_exact_immutable_activation_console(install_root)?;
+    let active = load_verified_activation(install_root).map_err(|err| err.to_string())?;
+    preflight_fresh_identity_slot(install_root)?;
+    // This first-use entrypoint executes with an explicitly elevated LOCAL
+    // ADMINISTRATOR token. verify_native_journal_protection is intentionally
+    // LocalSystem-only and must NOT run here: the existing SYSTEM dispatcher
+    // verifies the kernel journal owner/DACL before consuming this marker.
+    // The parent native-host/journal directories were prepared with the
+    // canonical SYSTEM/Administrators ACL by converge_native_host_acl.
+    let root = native_root(install_root)?;
+    let request = FleetWindowsReceiptIdentityEnrollment {
+        schema_version: 1,
+        machine_id: MACHINE.into(),
+        source_revision: active.source_revision.clone(),
+        release_set_sha256: active.release_set_sha256.clone(),
+    };
+    request_valid(&request, &active).map_err(str::to_owned)?;
+    create_only(&root.join(MARKER), &request.encode_to_vec())?;
+    Ok(())
+}
+
 /// Local elevated Administrator: create ONE immutable, typed request in the
 /// existing protected root. No receipt PRIVATE key is generated here.
 pub(super) fn prepare(install_root: &Path) -> Result<(), String> {
@@ -295,6 +379,70 @@ pub(super) fn dispatch_if_present(install_root: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
+/// Local read-only first-use projection: classify canonical typed markers,
+/// never read PKCS8 or interpret old diagnostic stdout as authority.
+pub(super) fn read_only_first_use_stage(install_root: &Path) -> Result<&'static str, String> {
+    require_windows_local_administrator_first_use().map_err(str::to_owned)?;
+    require_exact_immutable_activation_console(install_root)?;
+    let active = load_verified_activation(install_root).map_err(|e| e.to_string())?;
+    require_offline_windows_owner(install_root, &active)?;
+    let root = native_root(install_root)?;
+    let marker = root.join(MARKER);
+    let completed = root.join(COMPLETED);
+    let active_present = checked_regular_exists(&marker, 512)?;
+    let completed_present = checked_regular_exists(&completed, 512)?;
+    if active_present {
+        read_marker(&marker, &active)?;
+    }
+    if completed_present {
+        read_marker(&completed, &active)?;
+    }
+    if active_present
+        && completed_present
+        && fs::read(&marker).map_err(|_| "HOST_WINDOWS_FIRST_USE_MARKER_UNREADABLE")?
+            != fs::read(&completed).map_err(|_| "HOST_WINDOWS_FIRST_USE_COMPLETED_UNREADABLE")?
+    {
+        return Err("HOST_WINDOWS_FIRST_USE_CRASH_MARKERS_DIFFER_NO_REPLAY".into());
+    }
+    let has_public = checked_regular_exists(&root.join(PUBLIC), 32)?;
+    if !active_present && !completed_present {
+        if has_public
+            || checked_regular_exists(&root.join(PRIVATE), 4096)?
+            || windows_trust_enrollment::first_use_trust_present(&root)?
+        {
+            return Err("HOST_WINDOWS_FIRST_USE_ORPHAN_IDENTITY_NO_REPLAY".into());
+        }
+        return Ok("NOT_STARTED");
+    }
+    if active_present {
+        // Even if a public key exists, the SYSTEM archive has not been
+        // completed. It is never permissible to start a second enrollment.
+        return Ok("SYSTEM_PENDING");
+    }
+    if !has_public {
+        return Err("HOST_WINDOWS_FIRST_USE_COMPLETED_WITHOUT_PUBLIC_NO_REPLAY".into());
+    }
+    windows_trust_enrollment::read_only_first_use_trust_stage(&root, &active)
+}
+
+pub(super) fn checked_regular_exists(path: &Path, max_size: u64) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(_) => Err("HOST_WINDOWS_FIRST_USE_METADATA_UNREADABLE".into()),
+        Ok(meta) => {
+            if !meta.file_type().is_file()
+                || meta.file_type().is_symlink()
+                || meta.len() == 0
+                || meta.len() > max_size
+            {
+                Err("HOST_WINDOWS_FIRST_USE_PROTECTED_FILE_INVALID".into())
+            } else {
+                Ok(true)
+            }
+        }
+    }
+}
+
 /// Local elevated Administrator read-only: publish public identity ONLY.
 /// Never open, read or copy the SYSTEM private signer from this command.
 pub(super) fn observe(install_root: &Path) -> Result<(), String> {
@@ -358,6 +506,49 @@ mod tests {
         altered = request.clone();
         altered.schema_version = 2;
         assert!(request_valid(&altered, &active).is_err());
+    }
+
+    #[test]
+    fn combined_first_use_rejects_preexisting_identity_or_trust_before_begin() {
+        let root = std::env::temp_dir().join(format!(
+            "w4-fresh-enrollment-preflight-{}",
+            std::process::id()
+        ));
+        assert!(preflight_fresh_identity_root(&root).is_ok());
+        std::fs::create_dir(&root).unwrap();
+        assert!(preflight_fresh_identity_root(&root).is_ok());
+        for name in [
+            MARKER,
+            COMPLETED,
+            PRIVATE,
+            PUBLIC,
+            "trust.pb",
+            "trust-enrollment.pb",
+            "trust-enrollment.completed.pb",
+        ] {
+            let path = root.join(name);
+            std::fs::write(&path, b"existing protected state").unwrap();
+            assert_eq!(
+                preflight_fresh_identity_root(&root),
+                Err("HOST_WINDOWS_RECEIPT_ENROLL_SLOT_NOT_EMPTY_NO_REKEY".into()),
+                "{name}"
+            );
+            std::fs::remove_file(path).unwrap();
+        }
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn read_only_first_use_file_probe_rejects_uncertain_and_empty_state() {
+        let path =
+            std::env::temp_dir().join(format!("windows-first-use-readonly-{}", std::process::id()));
+        assert_eq!(checked_regular_exists(&path, 512), Ok(false));
+        std::fs::write(&path, b"").unwrap();
+        assert!(checked_regular_exists(&path, 512).is_err());
+        std::fs::write(&path, b"bounded").unwrap();
+        assert_eq!(checked_regular_exists(&path, 512), Ok(true));
+        assert!(checked_regular_exists(&path, 1).is_err());
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

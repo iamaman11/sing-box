@@ -504,6 +504,53 @@ assert "seal_system_private(&root)?" in identity_owner
 assert '"/remove:g", "*S-1-5-32-544"' in identity_owner
 assert '"/setowner", "*S-1-5-18"' in identity_owner
 assert "HOST_WINDOWS_RECEIPT_ENROLL_COMPETING_REQUEST" in identity_owner
+assert "preflight_fresh_identity_slot(install_root)?" in win_console
+assert 'windows_trust_enrollment::prepare_pending(install_root)' in win_console
+assert 'windows_trust_enrollment::prepare_pending(root)' in Path("edge-platform/crates/edge-console/src/command_dispatch.rs").read_text(encoding="utf-8")
+assert 'Command::OfflineFirstUseStatus(args)' in Path("edge-platform/crates/edge-console/src/command_dispatch.rs").read_text(encoding="utf-8")
+assert 'OfflineFirstUseStatus(InstallRootArgs)' in Path("edge-platform/crates/edge-console/src/cli.rs").read_text(encoding="utf-8")
+assert "TRUST_RECORDED_UNVERIFIED" in Path("edge-platform/crates/edge-console/src/windows_trust_enrollment.rs").read_text(encoding="utf-8")
+assert "require_identity_request_for_trust(" in identity_owner
+
+assert "windows_receipt_enrollment::prepare(install_root).map_err(|reason|" in win_console
+assert "OFFLINE_BOOTSTRAP_IDENTITY_STEP_UNCERTAIN_NO_REPLAY" in win_console
+assert "HOST_WINDOWS_RECEIPT_ENROLL_SLOT_NOT_EMPTY_NO_REKEY" in identity_owner
+install_script = Path("edge-platform/scripts/install-windows-release.ps1").read_text(encoding="utf-8")
+assert "WINDOWS_CONNECT_FIRST_USE_STATE_UNPROVEN" in install_script
+assert "WINDOWS_CONNECT_FIRST_USE_UNKNOWN_STAGE_NO_REPLAY" in install_script
+assert "WINDOWS_CONNECT_INITIAL_SCM_OR_TASK_UNKNOWN_NO_REPLAY" in install_script
+assert "WINDOWS_CONNECT_PARTIAL_INITIAL_INSTALL_NO_REPLAY" in install_script
+assert "OfflineCleanInstall(InstallRootArgs)" in Path("edge-platform/crates/edge-console/src/cli.rs").read_text(encoding="utf-8")
+clean_install = Path("edge-platform/crates/edge-console/src/windows_clean_install.rs").read_text(encoding="utf-8")
+assert "prepare_clean_before_scm(install_root)?" in clean_install
+# The first-use Administrator must NEVER run the SYSTEM-only journal
+# primary-token gate; the dispatcher performs that check after enrolment.
+identity_clean_prepare = identity_owner.split(
+    "pub(super) fn prepare_clean_before_scm(", 1
+)[1].split("pub(super) fn prepare(", 1)[0]
+assert "require_windows_local_administrator_first_use()" in identity_clean_prepare
+assert "verify_native_journal_protection(&" not in identity_clean_prepare
+assert "start_type: ServiceStartType::OnDemand" in clean_install
+assert '"/RU",\n            "SYSTEM",' in clean_install
+assert '"/SC",\n            "MINUTE",' in clean_install
+assert "verify_offline_bootstrap_dispatcher(&active.console_path, \"Ready\")?" in clean_install
+assert "Get-ScheduledTask -ErrorAction Stop" in clean_install
+assert 'Get-CimInstance -ClassName Win32_Service -Filter "Name=\'EdgePlatformController\'"' in clean_install
+assert "HOST_WINDOWS_CLEAN_INSTALL_SCM_ALREADY_EXISTS" in clean_install
+assert "HOST_WINDOWS_CLEAN_INSTALL_TASK_ABSENCE_UNPROVEN" in clean_install
+assert '"/Create",' in clean_install and '"/RU",' in clean_install
+assert '"/F",' not in clean_install
+assert "windows_trust_enrollment::prepare_pending(install_root)?" in clean_install
+assert "OFFLINE_BOOTSTRAP_ENROLL_BLOCKED" in install_script
+assert '--enroll-receipt' in install_script
+# No handwritten SHA / no duplicate downloader for the public Windows entry.
+assert '[switch]$ConnectWindows' in install_script
+assert 'WINDOWS_CONNECT_AWAITING_EXACT_PROTECTED_MAIN_RELEASE' in install_script
+assert 'WINDOWS_CONNECT_RETAINED_BEGIN_REQUIRES_EXPLICIT_APPROVAL' in install_script
+assert 'WINDOWS_CONNECT_IDENTITY_RESULT_UNKNOWN_NO_REPLAY' in install_script
+assert "Assert-AcceptedReleaseAuthority -AcceptedRevision ([string]$branch.commit.sha) -Tag $tagName" in install_script
+assert "'-Offline', '-BootstrapNow', '-EnrollReceipt'" in install_script
+assert "if ($ApproveRetainedBegin)" in install_script
 assert "HOST_WINDOWS_RECEIPT_ENROLL_TRUST_ALREADY_PRESENT" in identity_owner
 # Operator supplies no manually copied Git/candidate hash: the exact signed
 # installation itself owns both values, and immutable marker remains typed.

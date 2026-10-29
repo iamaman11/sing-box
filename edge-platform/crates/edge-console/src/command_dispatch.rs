@@ -209,15 +209,45 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             Ok(())
         }
         #[cfg(windows)]
-        Command::OfflineReceiptIdentityPrepare(args) => {
-            windows_receipt_enrollment::prepare(Path::new(&args.install_root))
+        Command::OfflineCleanInstall(args) => {
+            windows_clean_install::install(Path::new(&args.install_root))
                 .map_err(ConsoleError::Command)?;
+            Ok(())
+        }
+        #[cfg(windows)]
+        Command::OfflineReceiptIdentityPrepare(args) => {
+            let root = Path::new(&args.install_root);
+            windows_receipt_enrollment::prepare(root).map_err(ConsoleError::Command)?;
+            windows_trust_enrollment::prepare_pending(root).map_err(|reason| {
+                ConsoleError::Command(format!(
+                    "HOST_WINDOWS_FIRST_USE_TRUST_MARKER_UNKNOWN_NO_REPLAY: {reason}"
+                ))
+            })?;
             Ok(())
         }
         #[cfg(windows)]
         Command::OfflineReceiptIdentityObserve(args) => {
             windows_receipt_enrollment::observe(Path::new(&args.install_root))
                 .map_err(ConsoleError::Command)?;
+            Ok(())
+        }
+        #[cfg(windows)]
+        Command::OfflineFirstUseStatus(args) => {
+            let root = Path::new(&args.install_root);
+            let stage = windows_receipt_enrollment::read_only_first_use_stage(root)
+                .map_err(ConsoleError::Command)?;
+            let active = load_verified_activation(root)?;
+            println!(
+                "{}",
+                serde_json::json!({
+                    "schema": "sing-box.windows-first-use-status/v1",
+                    "stage": stage,
+                    "machine_id": "sing-box-windows-lab",
+                    "installed_release_set_sha256": active.release_set_sha256,
+                    "trusted_remote_execution": false,
+                    "mutations": 0
+                })
+            );
             Ok(())
         }
         #[cfg(windows)]
@@ -298,6 +328,7 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                 &install_root,
                 &request,
                 supersession.as_ref(),
+                args.enroll_receipt,
             )
             .map_err(ConsoleError::Command)?;
             println!("status=PASS");
@@ -306,6 +337,10 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                 println!("active_release_set_sha256={sha}");
             }
             println!("native_owner=SYSTEM_TASK_RETARGETED");
+            if args.enroll_receipt {
+                println!("w4_receipt_identity=LOCAL_ADMIN_REQUEST_DURABLE");
+                println!("w4_next=EXISTING_SYSTEM_TASK_ONLY");
+            }
             println!("native_signed_trust=REQUIRES_SEPARATE_GIT_ENROLLMENT");
             println!("network_mutations=0");
             Ok(())

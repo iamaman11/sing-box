@@ -32,6 +32,10 @@ pub(crate) enum Command {
     // immutable candidate, SCM privileges and durable no-replay marker.
     #[cfg(windows)]
     OfflineBootstrap(PrivilegedActivateArgs),
+    // First installation only: local elevated verified immutable binary
+    // creates the existing stopped SCM owner and the ONE SYSTEM task.
+    #[cfg(windows)]
+    OfflineCleanInstall(InstallRootArgs),
     // Exact same stopped-source / pending / task proof used by first-use,
     // but read-only, without a ReleaseSet install or any SCM/task mutation.
     #[cfg(windows)]
@@ -43,6 +47,9 @@ pub(crate) enum Command {
     // Read back PUBLIC identity only. Never export/inspect private PKCS8.
     #[cfg(windows)]
     OfflineReceiptIdentityObserve(InstallRootArgs),
+    // Bounded read-only status for the ONE local first-use public entry.
+    #[cfg(windows)]
+    OfflineFirstUseStatus(InstallRootArgs),
     // Local Administrator does not select commit or signer: the installed
     // owner binds the request and SYSTEM resolves published Git trust.
     #[cfg(windows)]
@@ -71,11 +78,15 @@ impl Command {
             #[cfg(windows)]
             Self::OfflineBootstrap(_) => "offline-bootstrap",
             #[cfg(windows)]
+            Self::OfflineCleanInstall(_) => "offline-clean-install",
+            #[cfg(windows)]
             Self::OfflineBootstrapPreflight(_) => "offline-bootstrap-preflight",
             #[cfg(windows)]
             Self::OfflineReceiptIdentityPrepare(_) => "offline-receipt-identity-prepare",
             #[cfg(windows)]
             Self::OfflineReceiptIdentityObserve(_) => "offline-receipt-identity-observe",
+            #[cfg(windows)]
+            Self::OfflineFirstUseStatus(_) => "offline-first-use-status",
             #[cfg(windows)]
             Self::OfflineHostTrustPrepare(_) => "offline-host-trust-prepare",
             Self::VerifyRuntime => "verify-runtime",
@@ -172,6 +183,10 @@ pub(crate) struct PrivilegedActivateArgs {
     pub retained_intent_sha256: Option<String>,
     #[arg(long, requires = "retained_intent_sha256")]
     pub expected_current_release_set_sha256: Option<String>,
+    // Explicit local approval: the same verified offline install also reserves
+    // one SYSTEM-only receipt identity. No implicit authorization on upgrades.
+    #[arg(long)]
+    pub enroll_receipt: bool,
 }
 
 #[derive(Debug, Args)]
@@ -332,6 +347,27 @@ mod tests {
             Some(Command::OfflineBootstrap(_))
         ));
         assert!(Cli::try_parse_from(["edge-console", "offline-bootstrap"]).is_err());
+        assert!(matches!(
+            Cli::try_parse_from(["edge-console", "offline-clean-install"])
+                .unwrap()
+                .command,
+            Some(Command::OfflineCleanInstall(_))
+        ));
+        let combined = Cli::try_parse_from([
+            "edge-console",
+            "offline-bootstrap",
+            "a82d4b6049c63b329d153626f0a143ae5b7e5618",
+            "c16c1eec3f29c8d5e00a9969952d12c4807c798a37edcd8f79fd5fc13ef8a680",
+            "--enroll-receipt",
+        ])
+        .unwrap();
+        assert!(matches!(
+            combined.command,
+            Some(Command::OfflineBootstrap(PrivilegedActivateArgs {
+                enroll_receipt: true,
+                ..
+            }))
+        ));
         assert!(
             Cli::try_parse_from([
                 "edge-console",
