@@ -354,6 +354,9 @@ message FleetVmManagedDockerResource {
   string network_name = 7;
   // A monotonic signed revision requests one explicit restart without replay.
   uint64 restart_generation = 8;
+  // Optional project-scoped ULA /64 private bridge IPAM. Both or neither.
+  string ipv6_subnet = 9;
+  string ipv6_gateway = 10;
 }
 
 // Git-owned, single-table isolated IPv4/IPv6 route. Its manifest is a

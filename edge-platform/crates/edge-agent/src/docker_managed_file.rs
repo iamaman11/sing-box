@@ -429,7 +429,7 @@ pub(crate) async fn collect_native_managed_docker_readback(
                     &spec.machine_id,
                     &spec.network_name,
                 );
-                match managed_object::observe_managed_docker_object(docker, &network, false).await {
+                match managed_object::observe_managed_docker_object(docker, &network, false, false).await {
                     Ok(Some(_)) => {}
                     Ok(None) => {
                         row.reason_code = "MANAGED_CONTAINER_NETWORK_MISSING".into();
@@ -445,7 +445,7 @@ pub(crate) async fn collect_native_managed_docker_readback(
                     }
                 }
             }
-            match managed_object::observe_managed_docker_object(docker, &spec, false).await {
+            match managed_object::observe_managed_docker_object(docker, &spec, false, true).await {
                 Ok(fingerprint) => {
                     row.present = fingerprint.is_some();
                     row.ownership_proven = fingerprint.is_some();

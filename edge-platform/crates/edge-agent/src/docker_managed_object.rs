@@ -8,6 +8,7 @@ use edge_shared_types::{
 };
 use prost::Message;
 use std::collections::HashMap;
+use std::net::Ipv6Addr;
 
 const LABEL_OWNER: &str = "io.github.iamaman11.singbox.machine";
 const LABEL_RESOURCE: &str = "io.github.iamaman11.singbox.resource";
@@ -51,6 +52,59 @@ fn exact_owned_network_name(machine_id: &str, name: &str) -> bool {
             .bytes()
             .all(|ch| ch.is_ascii_alphanumeric() || ch == b'-')
         && !suffix.ends_with('-')
+}
+
+// Docker IPv6 is opt-in and only a canonical ULA /64 is supported.
+// A resource cannot implicitly adopt a global prefix or foreign gateway.
+fn canonical_private_ipv6_ipam(spec: &FleetVmManagedDockerResource) -> bool {
+    if spec.ipv6_subnet.is_empty() && spec.ipv6_gateway.is_empty() {
+        return true;
+    }
+    let Some(prefix) = spec.ipv6_subnet.strip_suffix("/64") else {
+        return false;
+    };
+    let (Ok(subnet), Ok(gateway)) =
+        (prefix.parse::<Ipv6Addr>(), spec.ipv6_gateway.parse::<Ipv6Addr>())
+    else {
+        return false;
+    };
+    let network = u128::from(subnet);
+    let next_hop = u128::from(gateway);
+    let mask = u128::MAX << 64;
+    subnet.to_string() == prefix
+        && gateway.to_string() == spec.ipv6_gateway
+        && subnet.octets()[0] == 0xfd
+        && network & !mask == 0
+        && next_hop & mask == network
+        && next_hop != network
+}
+
+// The resource's own manifest enforces exact IPAM. Container references
+// independently require the correct owner-labelled network ID, not the
+// network configuration, which is verified by its own managed resource.
+fn exact_network_ipv6_ipam(
+    spec: &FleetVmManagedDockerResource,
+    enabled: Option<bool>,
+    ipam: Option<&bollard::models::Ipam>,
+) -> bool {
+    let desired = !spec.ipv6_subnet.is_empty();
+    if !canonical_private_ipv6_ipam(spec) || enabled.unwrap_or(false) != desired {
+        return false;
+    }
+    let ipv6 = ipam
+        .and_then(|value| value.config.as_ref())
+        .into_iter()
+        .flatten()
+        .filter(|entry| entry.subnet.as_deref().is_some_and(|subnet| subnet.contains(':')))
+        .collect::<Vec<_>>();
+    if !desired {
+        return ipv6.is_empty();
+    }
+    ipv6.len() == 1
+        && ipv6[0].subnet.as_deref() == Some(spec.ipv6_subnet.as_str())
+        && ipv6[0].gateway.as_deref() == Some(spec.ipv6_gateway.as_str())
+        && ipv6[0].ip_range.as_deref().unwrap_or("").is_empty()
+        && ipv6[0].auxiliary_addresses.as_ref().is_none_or(HashMap::is_empty)
 }
 
 fn resource_path_expected(
@@ -106,14 +160,25 @@ fn resource_path_expected(
                         .bytes()
                         .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
                     && !digest.bytes().all(|b| b == b'0')
+                    && spec.ipv6_subnet.is_empty()
+                    && spec.ipv6_gateway.is_empty()
                     && (spec.network_name.is_empty()
                         || exact_owned_network_name(&host.machine_id, &spec.network_name))
             }
-            Ok(Kind::LocalVolume | Kind::BridgeNetwork) => {
+            Ok(Kind::LocalVolume) => {
                 spec.image_ref.is_empty()
                     && spec.network_name.is_empty()
                     && spec.restart_generation == 0
                     && spec.desired_state != Desired::Stopped as i32
+                    && spec.ipv6_subnet.is_empty()
+                    && spec.ipv6_gateway.is_empty()
+            }
+            Ok(Kind::BridgeNetwork) => {
+                spec.image_ref.is_empty()
+                    && spec.network_name.is_empty()
+                    && spec.restart_generation == 0
+                    && spec.desired_state != Desired::Stopped as i32
+                    && canonical_private_ipv6_ipam(spec)
             }
             _ => false,
         }
@@ -186,6 +251,7 @@ pub(super) async fn observe_managed_docker_object(
     docker: &bollard::Docker,
     spec: &FleetVmManagedDockerResource,
     for_delete: bool,
+    check_ipam: bool,
 ) -> Result<Option<String>, String> {
     use bollard::errors::Error as DockerError;
     match Kind::try_from(spec.kind) {
@@ -217,10 +283,12 @@ pub(super) async fn observe_managed_docker_object(
                 if network.name.as_deref() != Some(spec.resource_name.as_str())
                     || network.driver.as_deref() != Some("bridge")
                     || network.internal != Some(true)
-                    // This v1 manifest has no IPv6 IPAM contract. An
-                    // externally IPv6-enabled bridge is foreign drift, not
-                    // an implicit successful dual-stack configuration.
-                    || network.enable_ipv6 == Some(true)
+                    || (check_ipam
+                        && !exact_network_ipv6_ipam(
+                            spec,
+                            network.enable_ipv6,
+                            network.ipam.as_ref(),
+                        ))
                     || network.labels.as_ref().and_then(|l| l.get(LABEL_OWNER))
                         != Some(&spec.machine_id)
                     || network.labels.as_ref().and_then(|l| l.get(LABEL_RESOURCE))
@@ -403,7 +471,7 @@ pub(super) async fn preflight_managed_docker_object(
     let docker = super::super::docker_connection().await?;
     let old_spec = previous.as_ref().filter(|_| expected_pre).unwrap_or(spec);
     let physical =
-        observe_managed_docker_object(&docker, old_spec, effect == ManagedDockerEffect::Delete)
+        observe_managed_docker_object(&docker, old_spec, effect == ManagedDockerEffect::Delete, true)
             .await?;
     if physical.is_some() != expected_pre {
         return Err("HOST_VM_DOCKER_PRESTATE_NOT_CONVERGED".into());
@@ -428,7 +496,7 @@ pub(super) async fn preflight_managed_docker_object(
     {
         let network_spec = managed_network_spec(&old.machine_id, &old.network_name);
         Some(
-            observe_managed_docker_object(&docker, &network_spec, false)
+            observe_managed_docker_object(&docker, &network_spec, false, false)
                 .await?
                 .ok_or("HOST_VM_DOCKER_CONTAINER_PREVIOUS_NETWORK_NOT_OWNED")?,
         )
@@ -444,7 +512,7 @@ pub(super) async fn preflight_managed_docker_object(
         } else {
             let network_spec = managed_network_spec(&target.machine_id, &target.network_name);
             Some(
-                observe_managed_docker_object(&docker, &network_spec, false)
+                observe_managed_docker_object(&docker, &network_spec, false, false)
                     .await?
                     .ok_or("HOST_VM_DOCKER_CONTAINER_NETWORK_NOT_OWNED")?,
             )
@@ -546,6 +614,7 @@ pub(super) async fn apply_managed_docker_object_once(
         &docker,
         old_spec,
         plan.effect == ManagedDockerEffect::Delete,
+        true,
     )
     .await?;
     if actual != plan.original_fingerprint {
@@ -560,14 +629,14 @@ pub(super) async fn apply_managed_docker_object_once(
             .as_ref()
             .ok_or("HOST_VM_DOCKER_PREVIOUS_NETWORK_SPEC_MISSING_NO_REPLAY")?;
         let spec = managed_network_spec(&old.machine_id, &old.network_name);
-        let observed = observe_managed_docker_object(&docker, &spec, false).await?;
+        let observed = observe_managed_docker_object(&docker, &spec, false, false).await?;
         exact_network_cas(Some(expected), observed.as_deref()).map_err(str::to_owned)?;
     }
     // Re-attest network ID/labels after journal BEGIN, before any Docker
     // effect. A name reused by a foreign network must never be adopted.
     if let Some(expected) = plan.target_network_fingerprint.as_deref() {
         let spec = managed_network_spec(&plan.spec.machine_id, &plan.spec.network_name);
-        let observed = observe_managed_docker_object(&docker, &spec, false).await?;
+        let observed = observe_managed_docker_object(&docker, &spec, false, false).await?;
         exact_network_cas(Some(expected), observed.as_deref()).map_err(str::to_owned)?;
     }
     let name = &plan.spec.resource_name;
@@ -587,12 +656,27 @@ pub(super) async fn apply_managed_docker_object_once(
                         .map_err(|_| "HOST_VM_DOCKER_VOLUME_CREATE_UNCERTAIN_NO_REPLAY")?;
                 }
                 Ok(Kind::BridgeNetwork) => {
+                    let ipam = if plan.spec.ipv6_subnet.is_empty() {
+                        None
+                    } else {
+                        Some(bollard::models::Ipam {
+                            driver: Some("default".into()),
+                            config: Some(vec![bollard::models::IpamConfig {
+                                subnet: Some(plan.spec.ipv6_subnet.clone()),
+                                gateway: Some(plan.spec.ipv6_gateway.clone()),
+                                ..Default::default()
+                            }]),
+                            ..Default::default()
+                        })
+                    };
                     docker
                         .create_network(bollard::models::NetworkCreateRequest {
                             name: name.clone(),
                             driver: Some("bridge".to_owned()),
                             internal: Some(true),
                             attachable: Some(false),
+                            enable_ipv6: Some(ipam.is_some()),
+                            ipam,
                             labels: Some(labels),
                             ..Default::default()
                         })
@@ -673,7 +757,7 @@ pub(super) async fn apply_managed_docker_object_once(
     }
     // An ACK alone is never terminal success. Verify exact owner, image,
     // desired running state and identity after a second independent inspect.
-    let now = observe_managed_docker_object(&docker, &plan.spec, false).await?;
+    let now = observe_managed_docker_object(&docker, &plan.spec, false, true).await?;
     let should_exist = match plan.effect {
         ManagedDockerEffect::Delete => false,
         _ => true,
@@ -683,7 +767,7 @@ pub(super) async fn apply_managed_docker_object_once(
     }
     if let Some(expected) = plan.target_network_fingerprint.as_deref() {
         let spec = managed_network_spec(&plan.spec.machine_id, &plan.spec.network_name);
-        let observed = observe_managed_docker_object(&docker, &spec, false).await?;
+        let observed = observe_managed_docker_object(&docker, &spec, false, false).await?;
         exact_network_cas(Some(expected), observed.as_deref()).map_err(str::to_owned)?;
     }
     if plan.spec.kind == Kind::Container as i32 && should_exist {
@@ -716,6 +800,45 @@ pub(super) async fn apply_managed_docker_object_once(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn private_bridge_ipv6_ipam_is_exact_and_fail_closed() {
+        let mut spec = FleetVmManagedDockerResource {
+            ipv6_subnet: "fd45:1234:abcd::/64".into(),
+            ipv6_gateway: "fd45:1234:abcd::1".into(),
+            ..Default::default()
+        };
+        assert!(canonical_private_ipv6_ipam(&spec));
+        let ipam = bollard::models::Ipam {
+            config: Some(vec![bollard::models::IpamConfig {
+                subnet: Some(spec.ipv6_subnet.clone()),
+                gateway: Some(spec.ipv6_gateway.clone()),
+                ..Default::default()
+            }]),
+            ..Default::default()
+        };
+        assert!(exact_network_ipv6_ipam(&spec, Some(true), Some(&ipam)));
+        assert!(!exact_network_ipv6_ipam(&spec, Some(false), Some(&ipam)));
+        for (subnet, gateway) in [
+            ("2001:db8::/64", "2001:db8::1"),
+            ("2001:4860::/64", "2001:4860::1"),
+            ("fe80::/64", "fe80::1"),
+            ("fd45:1234:abcd::1/64", "fd45:1234:abcd::2"),
+            ("fd45:1234:abcd::/48", "fd45:1234:abcd::1"),
+            ("fd45:1234:abcd::/64", "fd45:1234:abce::1"),
+            ("fd45:1234:abcd::/64", "fd45:1234:abcd::"),
+            ("fd45:1234:abcd::/64", ""),
+        ] {
+            spec.ipv6_subnet = subnet.into();
+            spec.ipv6_gateway = gateway.into();
+            assert!(!canonical_private_ipv6_ipam(&spec), "{subnet} {gateway}");
+        }
+        spec.ipv6_subnet.clear();
+        spec.ipv6_gateway.clear();
+        assert!(canonical_private_ipv6_ipam(&spec));
+        assert!(exact_network_ipv6_ipam(&spec, Some(false), None));
+        assert!(!exact_network_ipv6_ipam(&spec, Some(true), None));
+    }
+
     #[test]
     fn container_live_network_graph_rejects_foreign_extra_attachments() {
         assert!(exact_attached_networks("sb-vm-test-private", ["sb-vm-test-private"]));
