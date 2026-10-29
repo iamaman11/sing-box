@@ -339,13 +339,16 @@ pub(crate) async fn collect_native_managed_kernel_routes(
             .as_ref().to_vec();
         match kernel.as_ref() {
             Ok(snapshot) => match route_in_owned_table(snapshot, &spec) {
-                Ok((index, routes)) if prove_managed_interface_owner(&spec, index).is_ok() => {
-                    row.present = routes.len() == 1;
-                    row.converged = row.present;
-                    row.reason_code =
-                        if row.present { "DESIRED_PRESENT" } else { "ROUTE_MISSING" }.into();
-                }
-                Err(_) => row.reason_code = "ROUTE_FOREIGN_OR_UNPROVEN".into(),
+                Ok((index, routes)) => match prove_managed_interface_owner(&spec, index) {
+                    Ok(()) => {
+                        row.present = routes.len() == 1;
+                        row.converged = row.present;
+                        row.reason_code =
+                            if row.present { "DESIRED_PRESENT" } else { "ROUTE_MISSING" }.into();
+                    }
+                    Err(reason) => row.reason_code = reason,
+                },
+                Err(reason) => row.reason_code = reason,
             },
             Err(_) => row.reason_code = "ROUTE_KERNEL_DUMP_UNAVAILABLE".into(),
         }

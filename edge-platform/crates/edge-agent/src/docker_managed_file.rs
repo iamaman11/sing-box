@@ -429,13 +429,20 @@ pub(crate) async fn collect_native_managed_docker_readback(
                     &spec.machine_id,
                     &spec.network_name,
                 );
-                if !matches!(
-                    managed_object::observe_managed_docker_object(docker, &network, false).await,
-                    Ok(Some(_))
-                ) {
-                    row.reason_code = "MANAGED_CONTAINER_NETWORK_OWNERSHIP_UNPROVEN".into();
-                    rows.push(row);
-                    continue;
+                match managed_object::observe_managed_docker_object(docker, &network, false).await {
+                    Ok(Some(_)) => {}
+                    Ok(None) => {
+                        row.reason_code = "MANAGED_CONTAINER_NETWORK_MISSING".into();
+                        rows.push(row);
+                        continue;
+                    }
+                    Err(reason) => {
+                        // Preserve the bounded native cause (foreign driver,
+                        // wrong owner, daemon unavailable), not a catch-all.
+                        row.reason_code = reason;
+                        rows.push(row);
+                        continue;
+                    }
                 }
             }
             match managed_object::observe_managed_docker_object(docker, &spec, false).await {
