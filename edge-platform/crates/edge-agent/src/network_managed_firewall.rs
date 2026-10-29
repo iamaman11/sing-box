@@ -443,7 +443,7 @@ pub(crate) async fn collect_native_managed_firewall(
             .as_ref()
             .to_vec();
         match inspect(&spec).await {
-            Ok(Some(live)) if Some(live) == canonical_rules(&spec) => {
+            Ok(Some(ref live)) if Some(live) == canonical_rules(&spec).as_ref() => {
                 row.present = true;
                 row.converged = true;
                 row.reason_code = "DESIRED_PRESENT".into();
