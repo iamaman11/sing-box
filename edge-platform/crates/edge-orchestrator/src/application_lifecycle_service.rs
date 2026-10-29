@@ -330,6 +330,11 @@ fn compile_git_managed_protobuf_sources(files: &mut Vec<BundleFile>) -> Result<(
         match managed_textproto_type(&file.relative_path).map_err(str::to_owned)? {
             None => compiled.push(file),
             Some((kind, output_path)) => {
+                // Compiling a Git textproto must not silently strip a
+                // sensitive/executable file's original security metadata.
+                if file.sensitive || file.executable {
+                    return Err("HOST_VM_MANAGED_TEXTPROTO_METADATA_FORBIDDEN".into());
+                }
                 if existing.contains(output_path.as_str()) {
                     return Err("HOST_VM_MANAGED_TEXTPROTO_BINARY_DUPLICATE".into());
                 }
@@ -387,6 +392,22 @@ table_id: 20100
         assert_eq!(record.machine_id, "vm-test");
         assert_eq!(record.table_id, 20100);
         assert_eq!(record.encode_to_vec(), files[0].content);
+    }
+
+    #[test]
+    fn managed_git_textproto_cannot_drop_sensitive_or_executable_metadata() {
+        for (sensitive, executable) in [(true, false), (false, true), (true, true)] {
+            let mut files = vec![BundleFile {
+                relative_path: "managed/host-route-lab.textproto".into(),
+                content: b"schema_version: 1".to_vec(),
+                executable,
+                sensitive,
+            }];
+            assert_eq!(
+                compile_git_managed_protobuf_sources(&mut files),
+                Err("HOST_VM_MANAGED_TEXTPROTO_METADATA_FORBIDDEN".into())
+            );
+        }
     }
 
     #[test]

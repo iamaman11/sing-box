@@ -159,6 +159,20 @@ fn exact_network_cas(expected: Option<&str>, current: Option<&str>) -> Result<()
     Ok(())
 }
 
+// Docker allows a container to be attached to extra networks after its
+// creation. HostConfig.network_mode alone does NOT prove the live graph.
+fn exact_attached_networks<'a>(
+    expected: &str,
+    names: impl IntoIterator<Item = &'a str>,
+) -> bool {
+    let names = names.into_iter().collect::<Vec<_>>();
+    if expected == "none" {
+        names.is_empty() || names == ["none"]
+    } else {
+        names == [expected]
+    }
+}
+
 fn expected_labels(spec: &FleetVmManagedDockerResource) -> HashMap<String, String> {
     HashMap::from([
         (LABEL_OWNER.to_owned(), spec.machine_id.clone()),
@@ -255,6 +269,22 @@ pub(super) async fn observe_managed_docker_object(
                     || host_config.privileged != Some(false)
                     || host_config.readonly_rootfs != Some(true)
                     || host_config.network_mode.as_deref() != Some(expected_net)
+                    || host_config.auto_remove != Some(false)
+                    || host_config.pids_limit != Some(128)
+                    || host_config.memory != Some(512 * 1024 * 1024)
+                    || host_config
+                        .cap_add
+                        .as_ref()
+                        .is_some_and(|caps| !caps.is_empty())
+                    || !exact_attached_networks(
+                        expected_net,
+                        container
+                            .network_settings
+                            .as_ref()
+                            .and_then(|settings| settings.networks.as_ref())
+                            .into_iter()
+                            .flat_map(|networks| networks.keys().map(String::as_str)),
+                    )
                     || host_config
                         .cap_drop
                         .as_ref()
@@ -682,6 +712,23 @@ pub(super) async fn apply_managed_docker_object_once(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn container_live_network_graph_rejects_foreign_extra_attachments() {
+        assert!(exact_attached_networks("sb-vm-test-private", ["sb-vm-test-private"]));
+        assert!(!exact_attached_networks(
+            "sb-vm-test-private",
+            ["sb-vm-test-private", "bridge"],
+        ));
+        assert!(!exact_attached_networks(
+            "sb-vm-test-private",
+            ["bridge"],
+        ));
+        assert!(!exact_attached_networks("sb-vm-test-private", Vec::<&str>::new()));
+        assert!(exact_attached_networks("none", Vec::<&str>::new()));
+        assert!(exact_attached_networks("none", ["none"]));
+        assert!(!exact_attached_networks("none", ["bridge"]));
+    }
+
     #[test]
     fn container_lifecycle_is_typed_and_restart_requires_monotone_generation() {
         let mut old = FleetVmManagedDockerResource {
