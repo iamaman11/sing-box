@@ -17,6 +17,13 @@ const CURL: &str = "/usr/bin/curl";
 const HTTPS_204: &str = "https://www.gstatic.com/generate_204";
 const EGRESS: &str = "https://api.ipify.org";
 const SECOND_EGRESS: &str = "https://www.cloudflare.com/cdn-cgi/trace";
+// Both questions travel inside an authenticated HTTPS request through the
+// proxy itself, to a DNS-over-HTTPS resolver. This proves the proxy can
+// transport positive and NXDOMAIN RCODEs without relying on a runner-local
+// DNS lookup of the test name. It is not authoritative-zone verification.
+const DNS_DOH_POSITIVE: &str = "https://dns.google/resolve?name=www.gstatic.com&type=A";
+const DNS_DOH_NEGATIVE: &str =
+    "https://dns.google/resolve?name=sing-box-never-resolve.invalid&type=A";
 // The reserved .invalid TLD must not resolve or reach an HTTP origin.
 // SOCKS5h, unlike SOCKS5, delegates name resolution to the remote proxy.
 const DNS_NEGATIVE: &str = "https://sing-box-never-resolve.invalid/";
@@ -219,6 +226,48 @@ fn require_204(protocol: &str, result: (Option<i32>, String, String)) -> Result<
     Ok(())
 }
 
+fn dns_over_https_rcode(
+    result: &(Option<i32>, String, String),
+    protocol: &str,
+    expected_status: u64,
+) -> Result<(), &'static str> {
+    require_authenticated_https_status(protocol, result, "200")?;
+    let data: serde_json::Value = serde_json::from_str(&result.1)
+        .map_err(|_| "HOST_VM_LINE2_DOH_JSON_INVALID")?;
+    if data["Status"].as_u64() != Some(expected_status)
+        || data["Question"]
+            .as_array()
+            .is_none_or(|entries| entries.len() != 1)
+        || data["Question"][0]["type"].as_u64() != Some(1)
+        || !matches!(
+            data["Question"][0]["name"].as_str(),
+            Some("www.gstatic.com.") | Some("sing-box-never-resolve.invalid.")
+        )
+    {
+        return Err("HOST_VM_LINE2_DOH_RCODE_OR_QUESTION_MISMATCH");
+    }
+    if expected_status == 0 {
+        let answers = data["Answer"]
+            .as_array()
+            .ok_or("HOST_VM_LINE2_DOH_POSITIVE_ANSWER_MISSING")?;
+        if !answers.iter().any(|row| {
+            row["type"].as_u64() == Some(1)
+                && row["data"]
+                    .as_str()
+                    .and_then(|value| value.parse::<Ipv4Addr>().ok())
+                    .is_some_and(public_ipv4)
+        }) {
+            return Err("HOST_VM_LINE2_DOH_POSITIVE_A_MISSING");
+        }
+    } else if expected_status == 3 && data["Answer"]
+        .as_array()
+        .is_some_and(|answers| !answers.is_empty())
+    {
+        return Err("HOST_VM_LINE2_DOH_NXDOMAIN_WITH_ANSWER");
+    }
+    Ok(())
+}
+
 fn remote_nxdomain_has_no_successful_origin(
     protocol: &str,
     result: &(Option<i32>, String, String),
@@ -397,6 +446,25 @@ fn verify_bundle_and_probe(
         if cloudflare_trace_warp(&trace.1)? != name.ends_with("-warp") {
             return Err(format!("{name} Cloudflare trace contradicts declared DIRECT/WARP route"));
         }
+        // Positive A and negative NXDOMAIN are both observed as DNS RCODEs
+        // over HTTPS INSIDE each authenticated proxy, not inferred from a
+        // timeout, missing body, runner getaddrinfo or a TCP handshake.
+        for (target, expected_rcode) in [
+            (DNS_DOH_POSITIVE, 0_u64),
+            (DNS_DOH_NEGATIVE, 3_u64),
+        ] {
+            let dns = query_proxy(
+                protocol,
+                ip,
+                domain,
+                port,
+                target,
+                username,
+                &password,
+            )?;
+            dns_over_https_rcode(&dns, protocol, expected_rcode)
+                .map_err(|reason| format!("{name} external DoH RCODE proof failed: {reason}"))?;
+        }
         if protocol == "socks5h" {
             let nxdomain = query_proxy(
                 protocol,
@@ -412,7 +480,7 @@ fn verify_bundle_and_probe(
             }
         }
         println!(
-            "line2_external_endpoint={name} samples=5 HTTPS=PASS TLS=VERIFIED AUTH_NEGATIVE=REJECTED EGRESS_WITNESSES=2"
+            "line2_external_endpoint={name} samples=5 HTTPS=PASS TLS=VERIFIED AUTH_NEGATIVE=REJECTED DOH_A_AND_NXDOMAIN=PASS EGRESS_WITNESSES=2"
         );
     }
     if !(0..3)
@@ -428,6 +496,8 @@ fn verify_bundle_and_probe(
     println!("line2_direct_warp_egress_distinct=true");
     println!("line2_external_warp_identity=TRACE_CONFIRMED");
     println!("line2_socks_remote_dns_negative_origin=REJECTED");
+    println!("line2_authenticated_doh_a_and_nxdomain=VERIFIED_ALL_SIX_PROXY_PATHS");
+    println!("line2_local_dns_leak_absence=UNPROVEN_NEEDS_EXTERNAL_CAPTURE");
     println!("line2_dns_authoritative_nxdomain_rcode=UNPROVEN");
     println!("line2_credential_projection=VM_CANONICAL_WORKER_V2");
     println!("line2_witness_vantage=INDEPENDENT_GITHUB_RUNNER");
@@ -525,6 +595,47 @@ mod tests {
         assert!(require_204("socks5h", (Some(0), String::new(), "200;204".into())).is_err());
         assert!(require_204("http", (Some(0), String::new(), "200;407".into())).is_err());
         assert!(require_204("invalid", (Some(0), String::new(), "200;204".into())).is_err());
+    }
+
+    #[test]
+    fn doh_rcode_requires_authenticated_proxy_and_exact_dns_question() {
+        let make = |name: &str, status: u64, answers: serde_json::Value| {
+            (
+                Some(0),
+                serde_json::json!({
+                    "Status": status,
+                    "Question": [{"name": name, "type": 1}],
+                    "Answer": answers
+                })
+                .to_string(),
+                "200;200".to_owned(),
+            )
+        };
+        let yes = make(
+            "www.gstatic.com.",
+            0,
+            serde_json::json!([{"type": 1, "data": "8.8.8.8"}]),
+        );
+        assert!(dns_over_https_rcode(&yes, "http", 0).is_ok());
+        let no = make("sing-box-never-resolve.invalid.", 3, serde_json::json!([]));
+        assert!(dns_over_https_rcode(&no, "http", 3).is_ok());
+        let mut invalid = yes.clone();
+        invalid.2 = "407;200".into();
+        assert!(dns_over_https_rcode(&invalid, "http", 0).is_err());
+        assert!(dns_over_https_rcode(&yes, "http", 3).is_err());
+        assert!(dns_over_https_rcode(&no, "http", 0).is_err());
+        let private = make(
+            "www.gstatic.com.",
+            0,
+            serde_json::json!([{"type": 1, "data": "127.0.0.1"}]),
+        );
+        assert!(dns_over_https_rcode(&private, "http", 0).is_err());
+        let forged_question = make(
+            "unrelated.test.",
+            0,
+            serde_json::json!([{"type": 1, "data": "8.8.8.8"}]),
+        );
+        assert!(dns_over_https_rcode(&forged_question, "http", 0).is_err());
     }
 
     #[test]
