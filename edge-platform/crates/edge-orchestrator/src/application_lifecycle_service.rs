@@ -23,7 +23,9 @@ use ring::digest::{SHA256, digest};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
+use std::process::{Command as BuildCommand, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
 use tonic::Request;
@@ -211,6 +213,7 @@ pub(crate) fn prepare_application_bundle_with_image_environment(
 
     let mut stack_files = Vec::new();
     collect_bundle_files(&bundle_root, &bundle_root, &mut stack_files)?;
+    compile_git_managed_protobuf_sources(&mut stack_files)?;
     stack_files.retain(|file| file.relative_path != ".images.env");
     stack_files.push(BundleFile {
         relative_path: ".images.env".to_owned(),
@@ -241,6 +244,178 @@ pub(crate) fn prepare_application_bundle_with_image_environment(
         desired_release(desired, artifact, &bundle_digest).map_err(|err| err.to_string())?;
 
     Ok(PreparedApplicationBundle { request, release })
+}
+
+/// Human-reviewable native desired files are textproto in protected Git;
+/// the immutable bundle contains only canonical protobuf bytes. This is a
+/// build-time transform, NEVER a VM-side compiler, second runtime registry or
+/// JSON desired boundary. Protoc is the same vendored source used by shared
+/// contract build.rs, not a host-installed tool with mutable version.
+fn managed_textproto_type(relative: &str) -> Result<Option<(&'static str, String)>, &'static str> {
+    let Some(suffix) = relative.strip_prefix("managed/") else {
+        return Ok(None);
+    };
+    if !suffix.ends_with(".textproto") {
+        return Ok(None);
+    }
+    let stem = suffix.strip_suffix(".textproto").unwrap_or("");
+    let (kind, name) = if let Some(name) = stem.strip_prefix("host-route-") {
+        ("edge.platform.v1.FleetVmManagedKernelRoute", name)
+    } else if let Some(name) = stem.strip_prefix("docker-volume-") {
+        ("edge.platform.v1.FleetVmManagedDockerResource", name)
+    } else if let Some(name) = stem.strip_prefix("docker-network-") {
+        ("edge.platform.v1.FleetVmManagedDockerResource", name)
+    } else if let Some(name) = stem.strip_prefix("docker-container-") {
+        ("edge.platform.v1.FleetVmManagedDockerResource", name)
+    } else {
+        return Err("HOST_VM_MANAGED_TEXTPROTO_UNSUPPORTED_TYPE");
+    };
+    if name.is_empty()
+        || name.len() > 24
+        || name.starts_with('-')
+        || name.ends_with('-')
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        return Err("HOST_VM_MANAGED_TEXTPROTO_FILENAME_INVALID");
+    }
+    Ok(Some((kind, format!("managed/{stem}.pb"))))
+}
+
+fn encode_managed_textproto(
+    kind: &str,
+    raw: &[u8],
+) -> Result<Vec<u8>, String> {
+    if raw.is_empty() || raw.len() > 2048 {
+        return Err("HOST_VM_MANAGED_TEXTPROTO_SIZE_INVALID".into());
+    }
+    let compiler = protoc_bin_vendored::protoc_bin_path()
+        .map_err(|_| "HOST_VM_MANAGED_TEXTPROTO_COMPILER_MISSING")?;
+    let mut child = BuildCommand::new(compiler)
+        .args([
+            "--proto_path=edge-platform/proto",
+            &format!("--encode={kind}"),
+            "edge-platform/proto/edge/platform/v1/fleet.proto",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "HOST_VM_MANAGED_TEXTPROTO_COMPILER_UNAVAILABLE")?;
+    child
+        .stdin
+        .take()
+        .ok_or("HOST_VM_MANAGED_TEXTPROTO_STDIN_MISSING")?
+        .write_all(raw)
+        .map_err(|_| "HOST_VM_MANAGED_TEXTPROTO_WRITE_FAILED")?;
+    let output = child
+        .wait_with_output()
+        .map_err(|_| "HOST_VM_MANAGED_TEXTPROTO_COMPILE_UNAVAILABLE")?;
+    if !output.status.success() || output.stdout.is_empty() || output.stdout.len() > 2048 {
+        return Err("HOST_VM_MANAGED_TEXTPROTO_COMPILE_INVALID".into());
+    }
+    // The native owner performs a second, host-bound decode and EXACT
+    // encode check before any BEGIN. Do not trust runner or a file extension.
+    Ok(output.stdout)
+}
+
+fn compile_git_managed_protobuf_sources(files: &mut Vec<BundleFile>) -> Result<(), String> {
+    let existing = files
+        .iter()
+        .map(|file| file.relative_path.as_str())
+        .collect::<BTreeSet<_>>();
+    let mut compiled = Vec::with_capacity(files.len());
+    for file in files.drain(..) {
+        match managed_textproto_type(&file.relative_path).map_err(str::to_owned)? {
+            None => compiled.push(file),
+            Some((kind, output_path)) => {
+                if existing.contains(output_path.as_str()) {
+                    return Err("HOST_VM_MANAGED_TEXTPROTO_BINARY_DUPLICATE".into());
+                }
+                let bytes = encode_managed_textproto(kind, &file.content)?;
+                compiled.push(BundleFile {
+                    relative_path: output_path,
+                    content: bytes,
+                    executable: false,
+                    sensitive: false,
+                });
+            }
+        }
+    }
+    compiled.sort_by(|a, b| a.relative_path.cmp(&b.relative_path));
+    if compiled
+        .windows(2)
+        .any(|pair| pair[0].relative_path == pair[1].relative_path)
+    {
+        return Err("HOST_VM_MANAGED_TEXTPROTO_DUPLICATE_PATH".into());
+    }
+    *files = compiled;
+    Ok(())
+}
+
+#[cfg(test)]
+mod managed_textproto_tests {
+    use super::*;
+    use edge_shared_types::{FleetVmIpFamily, FleetVmManagedKernelRoute};
+
+    #[test]
+    fn managed_git_route_produces_only_typed_protobuf_and_no_textproto_runtime_file() {
+        let source = br#"schema_version: 1
+machine_id: "vm-test"
+resource_name: "sb-vm-test-lab"
+family: FLEET_VM_IP_FAMILY_V4
+destination: "10.31.0.0"
+prefix_length: 16
+interface_name: "sblab0"
+table_id: 20100
+"#;
+        let mut files = vec![BundleFile {
+            relative_path: "managed/host-route-lab.textproto".into(),
+            content: source.to_vec(),
+            executable: false,
+            sensitive: false,
+        }];
+        compile_git_managed_protobuf_sources(&mut files).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].relative_path, "managed/host-route-lab.pb");
+        let record = FleetVmManagedKernelRoute::decode(files[0].content.as_slice()).unwrap();
+        assert_eq!(record.family, FleetVmIpFamily::V4 as i32);
+        assert_eq!(record.machine_id, "vm-test");
+        assert_eq!(record.table_id, 20100);
+        assert_eq!(record.encode_to_vec(), files[0].content);
+    }
+
+    #[test]
+    fn managed_git_route_refuses_unknown_type_path_duplicate_and_malformed_source() {
+        for name in [
+            "managed/host-route-.textproto",
+            "managed/host-route-../bad.textproto",
+            "managed/host-route-BAD.textproto",
+            "managed/dns-unknown.textproto",
+        ] {
+            assert!(managed_textproto_type(name).is_err(), "{name}");
+        }
+        assert!(encode_managed_textproto(
+            "edge.platform.v1.FleetVmManagedKernelRoute",
+            b"not valid protobuf text",
+        ).is_err());
+        let mut duplicate = vec![
+            BundleFile {
+                relative_path: "managed/host-route-lab.textproto".into(),
+                content: b"schema_version: 1".to_vec(),
+                executable: false,
+                sensitive: false,
+            },
+            BundleFile {
+                relative_path: "managed/host-route-lab.pb".into(),
+                content: vec![1, 2, 3],
+                executable: false,
+                sensitive: false,
+            },
+        ];
+        assert!(compile_git_managed_protobuf_sources(&mut duplicate).is_err());
+    }
 }
 
 fn validate_application_bundle_root(bundle_root: &Path) -> Result<(), String> {
