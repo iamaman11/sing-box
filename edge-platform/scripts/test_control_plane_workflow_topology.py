@@ -298,6 +298,14 @@ assert 'HOST_ORIGINAL_COMMAND:' in capabilities
 assert 'EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET:' in capabilities
 assert 'first-use "' not in capabilities
 
+# GitHub runs each step in a fresh shell. A prior step's export cannot provide
+# the exact release context to the signer proof invocation.
+signer_step = capabilities.split('      - name: Verify fresh active Worker Ed25519 challenge', 1)[1].split('      - name: Publish one correlated deep diagnosis', 1)[0]
+assert 'export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"' in signer_step
+assert signer_step.index('export EDGE_RELEASE_CONTEXT_PATH=') < signer_step.index('vm-worker-signer-proof "${TARGET_MACHINE}"')
+assert 'HOST_SIGNER_PROOF_RELEASE_CONTEXT_UNAVAILABLE' in signer_step
+assert 'host_vm_worker_signed_identity=UNPROVEN' in signer_step
+
 
 
 # Rust native cloud-init is the only accepted CREATE renderer; the hosted
