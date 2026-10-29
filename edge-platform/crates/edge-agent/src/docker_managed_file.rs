@@ -417,6 +417,27 @@ pub(crate) async fn collect_native_managed_docker_readback(
             .as_ref()
             .to_vec();
         if let Some(docker) = docker {
+            // A labeled container on an unowned same-named bridge is NOT a
+            // converged managed resource. Check the target bridge identity
+            // separately, including for a stopped managed container.
+            if spec.kind == edge_shared_types::FleetVmManagedDockerKind::Container as i32
+                && spec.desired_state
+                    != edge_shared_types::FleetVmManagedDockerDesiredState::Absent as i32
+                && !spec.network_name.is_empty()
+            {
+                let network = managed_object::managed_network_spec(
+                    &spec.machine_id,
+                    &spec.network_name,
+                );
+                if !matches!(
+                    managed_object::observe_managed_docker_object(docker, &network, false).await,
+                    Ok(Some(_))
+                ) {
+                    row.reason_code = "MANAGED_CONTAINER_NETWORK_OWNERSHIP_UNPROVEN".into();
+                    rows.push(row);
+                    continue;
+                }
+            }
             match managed_object::observe_managed_docker_object(docker, &spec, false).await {
                 Ok(fingerprint) => {
                     row.present = fingerprint.is_some();

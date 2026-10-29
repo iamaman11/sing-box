@@ -96,6 +96,35 @@ fn decode_route(
     Ok(spec)
 }
 
+// A reserved interface prefix is NOT ownership.  The existing privileged
+// root owner must have assigned the exact per-resource Linux ifalias before a
+// Git-declared route can use that interface.  The ifindex additionally binds
+// the alias to the observed rtnetlink link, preventing name-only adoption.
+fn canonical_owned_interface_alias(spec: &FleetVmManagedKernelRoute, alias: &str) -> bool {
+    alias == format!("sing-box:{}:{}", spec.machine_id, spec.resource_name)
+}
+
+fn prove_managed_interface_owner(
+    spec: &FleetVmManagedKernelRoute,
+    expected_index: u32,
+) -> Result<(), String> {
+    let link = Path::new("/sys/class/net").join(&spec.interface_name);
+    let alias = fs::read_to_string(link.join("ifalias"))
+        .map_err(|_| "HOST_VM_MANAGED_ROUTE_LINK_ALIAS_UNAVAILABLE")?;
+    if !canonical_owned_interface_alias(spec, alias.trim_end_matches('\n')) {
+        return Err("HOST_VM_MANAGED_ROUTE_LINK_OWNER_UNPROVEN".into());
+    }
+    let index = fs::read_to_string(link.join("ifindex"))
+        .map_err(|_| "HOST_VM_MANAGED_ROUTE_LINK_INDEX_UNAVAILABLE")?
+        .trim()
+        .parse::<u32>()
+        .map_err(|_| "HOST_VM_MANAGED_ROUTE_LINK_INDEX_INVALID")?;
+    if expected_index != index {
+        return Err("HOST_VM_MANAGED_ROUTE_LINK_IDENTITY_CHANGED".into());
+    }
+    Ok(())
+}
+
 fn route_in_owned_table(
     kernel: &edge_shared_types::FleetVmDualStackNetwork,
     spec: &FleetVmManagedKernelRoute,
@@ -164,6 +193,7 @@ pub(super) async fn preflight_managed_route(
         .await
         .map_err(str::to_owned)?;
     let (index, routes) = route_in_owned_table(&kernel, &spec)?;
+    prove_managed_interface_owner(&spec, index)?;
     if (create && !routes.is_empty()) || (!create && routes.len() != 1) {
         return Err("HOST_VM_MANAGED_ROUTE_PRESTATE_DRIFT".into());
     }
@@ -191,6 +221,7 @@ pub(super) async fn apply_managed_route_once(
         .await
         .map_err(|_| "HOST_VM_MANAGED_ROUTE_PRE_EFFECT_UNPROVEN_NO_REPLAY")?;
     let (index, old) = route_in_owned_table(&before, &plan.spec)?;
+    prove_managed_interface_owner(&plan.spec, index)?;
     if index != plan.interface_index || old != plan.before {
         return Err("HOST_VM_MANAGED_ROUTE_CAS_CHANGED_NO_REPLAY".into());
     }
@@ -235,6 +266,7 @@ pub(super) async fn apply_managed_route_once(
         .await
         .map_err(|_| "HOST_VM_MANAGED_ROUTE_POST_EFFECT_UNPROVEN_NO_REPLAY")?;
     let (after_index, new) = route_in_owned_table(&post, &plan.spec)?;
+    prove_managed_interface_owner(&plan.spec, after_index)?;
     if after_index != plan.interface_index || !transition_matches(&plan.before, &new, plan.create)
     {
         return Err("HOST_VM_MANAGED_ROUTE_POSTSTATE_UNPROVEN_NO_REPLAY".into());
@@ -307,7 +339,7 @@ pub(crate) async fn collect_native_managed_kernel_routes(
             .as_ref().to_vec();
         match kernel.as_ref() {
             Ok(snapshot) => match route_in_owned_table(snapshot, &spec) {
-                Ok((_, routes)) => {
+                Ok((index, routes)) if prove_managed_interface_owner(&spec, index).is_ok() => {
                     row.present = routes.len() == 1;
                     row.converged = row.present;
                     row.reason_code =
@@ -344,6 +376,23 @@ mod tests {
             prefix_length: prefix,
             interface_name: "sblab0".into(),
             table_id: 20_100,
+        }
+    }
+
+    #[test]
+    fn route_requires_exact_resource_owned_ifalias_not_just_sb_prefix() {
+        let first = route(Family::V4, "10.31.0.0", 16);
+        assert!(canonical_owned_interface_alias(
+            &first, "sing-box:vm-test:sb-vm-test-lab"
+        ));
+        for forged in [
+            "",
+            "sblab0",
+            "sing-box:other-vm:sb-vm-test-lab",
+            "sing-box:vm-test:sb-vm-test-other",
+            "sing-box:vm-test:sb-vm-test-lab-extra",
+        ] {
+            assert!(!canonical_owned_interface_alias(&first, forged));
         }
     }
 

@@ -17,6 +17,9 @@ pub(super) struct PreparedManagedDocker {
     spec: FleetVmManagedDockerResource,
     previous: Option<FleetVmManagedDockerResource>,
     original_fingerprint: Option<String>,
+    // Never allow a pre-existing container to keep a reused or foreign
+    // network name, including on stop/delete/replace operations.
+    original_network_fingerprint: Option<String>,
     // The exact labeled Docker network ID admitted before BEGIN.
     target_network_fingerprint: Option<String>,
     effect: ManagedDockerEffect,
@@ -138,7 +141,7 @@ pub(super) fn decode_exact_spec(
     Ok(spec)
 }
 
-fn managed_network_spec(machine: &str, name: &str) -> FleetVmManagedDockerResource {
+pub(super) fn managed_network_spec(machine: &str, name: &str) -> FleetVmManagedDockerResource {
     FleetVmManagedDockerResource {
         schema_version: 1,
         machine_id: machine.to_owned(),
@@ -385,6 +388,19 @@ pub(super) async fn preflight_managed_docker_object(
             }
         }
     }
+    let original_network_fingerprint = if let Some(old) = previous
+        .as_ref()
+        .filter(|s| s.kind == Kind::Container as i32 && present(s) && !s.network_name.is_empty())
+    {
+        let network_spec = managed_network_spec(&old.machine_id, &old.network_name);
+        Some(
+            observe_managed_docker_object(&docker, &network_spec, false)
+                .await?
+                .ok_or("HOST_VM_DOCKER_CONTAINER_PREVIOUS_NETWORK_NOT_OWNED")?,
+        )
+    } else {
+        None
+    };
     let target_network_fingerprint = if let Some(target) = next
         .as_ref()
         .filter(|s| s.kind == Kind::Container as i32 && present(s))
@@ -406,6 +422,7 @@ pub(super) async fn preflight_managed_docker_object(
         spec: next.unwrap_or_else(|| previous.clone().expect("previous spec")),
         previous,
         original_fingerprint: physical,
+        original_network_fingerprint,
         target_network_fingerprint,
         effect,
     })
@@ -499,6 +516,18 @@ pub(super) async fn apply_managed_docker_object_once(
     .await?;
     if actual != plan.original_fingerprint {
         return Err("HOST_VM_DOCKER_OBJECT_CAS_CHANGED_NO_REPLAY".into());
+    }
+    // Re-attest both the existing network and the target before any Docker
+    // effect.  A swapped old bridge is not safe merely because the next
+    // configuration wants a different bridge (or removes the container).
+    if let Some(expected) = plan.original_network_fingerprint.as_deref() {
+        let old = plan
+            .previous
+            .as_ref()
+            .ok_or("HOST_VM_DOCKER_PREVIOUS_NETWORK_SPEC_MISSING_NO_REPLAY")?;
+        let spec = managed_network_spec(&old.machine_id, &old.network_name);
+        let observed = observe_managed_docker_object(&docker, &spec, false).await?;
+        exact_network_cas(Some(expected), observed.as_deref()).map_err(str::to_owned)?;
     }
     // Re-attest network ID/labels after journal BEGIN, before any Docker
     // effect. A name reused by a foreign network must never be adopted.

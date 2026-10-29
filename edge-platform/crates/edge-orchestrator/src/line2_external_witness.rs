@@ -272,7 +272,15 @@ pub(crate) async fn witness(
         access_identity_path,
     )
     .await?;
-    verify_bundle_and_probe(generation, ip, domain, username, bundle)
+    // Blocking curl probes are bounded but must never occupy a Tokio worker
+    // while the same runtime operates the typed control plane.
+    let domain = domain.to_owned();
+    let username = username.to_owned();
+    tokio::task::spawn_blocking(move || {
+        verify_bundle_and_probe(generation, ip, &domain, &username, bundle)
+    })
+    .await
+    .map_err(|_| "HOST_VM_LINE2_WITNESS_TASK_UNKNOWN")?
 }
 
 /// The independent GitHub-hosted witness reuses the protected VM Access
@@ -302,7 +310,13 @@ pub(crate) async fn witness_with_service_identity(
         access_client_secret,
     )
     .await?;
-    verify_bundle_and_probe(generation, ip, domain, username, bundle)
+    let domain = domain.to_owned();
+    let username = username.to_owned();
+    tokio::task::spawn_blocking(move || {
+        verify_bundle_and_probe(generation, ip, &domain, &username, bundle)
+    })
+    .await
+    .map_err(|_| "HOST_VM_LINE2_WITNESS_TASK_UNKNOWN")?
 }
 
 fn verify_bundle_and_probe(
