@@ -4,7 +4,7 @@
 use edge_shared_types::canonical_production_desired_state;
 use std::collections::BTreeSet;
 use std::fs;
-use std::net::{IpAddr, Ipv4Addr};
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::path::Path;
 use std::time::Duration;
 
@@ -136,24 +136,34 @@ fn check_git_line2_template(bundle_root: &str) -> Result<(), String> {
 /// Git-owned hostname against the independently provider-observed exact VM IP.
 /// DNS configuration observation on the VM is NOT a substitute for public
 /// resolution from the GitHub-hosted runner.
+fn public_provider_ipv6(value: &str) -> Result<Ipv6Addr, &'static str> {
+    let address = value
+        .parse::<Ipv6Addr>()
+        .map_err(|_| "HOST_VM_LINE2_WITNESS_PROVIDER_IPV6_INVALID")?;
+    // 2000::/3 is the IPv6 global unicast allocation. ULA, link-local,
+    // loopback, unspecified and test-local addresses are not public egress.
+    if address.segments()[0] & 0xe000 != 0x2000
+        || address.segments()[0] == 0x2001 && address.segments()[1] == 0x0db8
+    {
+        return Err("HOST_VM_LINE2_WITNESS_PROVIDER_IPV6_NOT_PUBLIC");
+    }
+    Ok(address)
+}
+
 fn validate_public_dns(
     addresses: &BTreeSet<IpAddr>,
     expected_ipv4: Ipv4Addr,
-    vm_ipv6_enabled: bool,
+    expected_ipv6: Option<Ipv6Addr>,
 ) -> Result<(), &'static str> {
     if addresses.is_empty()
         || !addresses.contains(&IpAddr::V4(expected_ipv4))
+        || expected_ipv6.is_some_and(|ip| !addresses.contains(&IpAddr::V6(ip)))
         || addresses.iter().any(|address| match address {
             IpAddr::V4(ip) => *ip != expected_ipv4,
-            IpAddr::V6(ip) => !vm_ipv6_enabled || ip.is_loopback() || ip.is_unspecified(),
+            IpAddr::V6(ip) => Some(*ip) != expected_ipv6,
         })
     {
         return Err("HOST_VM_LINE2_WITNESS_PUBLIC_DNS_IP_MISMATCH");
-    }
-    // An IPv6-enabled VM still needs a provider-owned public v6 and exact AAAA
-    // expectation before claiming dual-stack Internet PASS.
-    if vm_ipv6_enabled {
-        return Err("HOST_VM_LINE2_WITNESS_IPV6_PROVIDER_PIN_UNPROVEN");
     }
     Ok(())
 }
@@ -161,11 +171,15 @@ fn validate_public_dns(
 async fn check_public_dns(
     hostname: &str,
     expected_ipv4: &str,
-    vm_ipv6_enabled: bool,
+    expected_ipv6: Option<&str>,
 ) -> Result<(), String> {
     let expected = expected_ipv4
         .parse::<Ipv4Addr>()
         .map_err(|_| "HOST_VM_LINE2_WITNESS_PROVIDER_IPV4_INVALID")?;
+    let v6 = expected_ipv6
+        .map(public_provider_ipv6)
+        .transpose()
+        .map_err(str::to_owned)?;
     let resolved = tokio::time::timeout(
         Duration::from_secs(8),
         tokio::net::lookup_host((hostname, 443)),
@@ -174,7 +188,7 @@ async fn check_public_dns(
     .map_err(|_| "HOST_VM_LINE2_WITNESS_DNS_TIMEOUT")?
     .map_err(|_| "HOST_VM_LINE2_WITNESS_DNS_RESOLUTION_UNAVAILABLE")?;
     let answers = resolved.map(|address| address.ip()).collect::<BTreeSet<_>>();
-    validate_public_dns(&answers, expected, vm_ipv6_enabled).map_err(str::to_owned)
+    validate_public_dns(&answers, expected, v6).map_err(str::to_owned)
 }
 
 fn validate_witness_scope(
@@ -269,7 +283,14 @@ pub(crate) async fn run(
         .ok_or("HOST_VM_LINE2_WITNESS_MACHINE_SPEC_MISSING")?
         .provider
         .enable_ipv6;
-    check_public_dns(&dns.record_name, &ip, vm_ipv6_enabled).await?;
+    let observed_v6 = observed.v6_main_ip.as_deref().filter(|s| !s.is_empty());
+    if vm_ipv6_enabled && observed_v6.is_none() {
+        return Err("HOST_VM_LINE2_WITNESS_PROVIDER_IPV6_MISSING".into());
+    }
+    if !vm_ipv6_enabled && observed_v6.is_some() {
+        return Err("HOST_VM_LINE2_WITNESS_IPV6_PROVIDER_GIT_MISMATCH".into());
+    }
+    check_public_dns(&dns.record_name, &ip, observed_v6).await?;
     let client_id = std::env::var("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID")
         .map_err(|_| "HOST_VM_LINE2_WITNESS_ACCESS_CLIENT_ID_MISSING")?;
     let client_secret = std::env::var("EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET")
@@ -305,7 +326,14 @@ pub(crate) async fn run(
     );
     println!("host_vm_line2_witness_worker=VERIFIED_GIT_PINNED_ED25519");
     println!("host_vm_line2_public_dns_a=EXACT_PROVIDER_IP");
-    println!("host_vm_line2_public_dns_aaaa=EXACT_DISABLED_VM_POLICY");
+    println!(
+        "host_vm_line2_public_dns_aaaa={}",
+        if vm_ipv6_enabled {
+            "MATCHES_GIT_ENABLED_VULTR_IPV6"
+        } else {
+            "ABSENT_MATCHES_GIT_DISABLED_IPV6"
+        }
+    );
     println!("host_vm_line2_warp_udp=GIT_OUTBOUND_TCP_ONLY_NOT_SUPPORTED");
     println!("host_vm_line2_direct_udp=UNPROVEN_PUBLIC_UDP_WITNESS_MISSING");
     println!("host_vm_line2_witness_mutations=0");
@@ -366,16 +394,25 @@ mod tests {
     fn public_dns_uses_provider_ip_and_blocks_unscoped_aaaa() {
         let provider = Ipv4Addr::new(64, 176, 76, 2);
         let a = IpAddr::V4(provider);
-        assert!(validate_public_dns(&BTreeSet::from([a]), provider, false).is_ok());
+        let v6: Ipv6Addr = "2606:4700::1111".parse().unwrap();
+        assert!(validate_public_dns(&BTreeSet::from([a]), provider, None).is_ok());
+        assert!(
+            validate_public_dns(&BTreeSet::from([a, IpAddr::V6(v6)]), provider, Some(v6))
+                .is_ok()
+        );
         for answers in [
             BTreeSet::new(),
             BTreeSet::from([IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))]),
             BTreeSet::from([a, IpAddr::V4(Ipv4Addr::new(8, 8, 8, 8))]),
-            BTreeSet::from([a, IpAddr::V6("2001:4860:4860::8888".parse().unwrap())]),
+            BTreeSet::from([a, IpAddr::V6(v6)]),
         ] {
-            assert!(validate_public_dns(&answers, provider, false).is_err());
+            assert!(validate_public_dns(&answers, provider, None).is_err());
         }
-        assert!(validate_public_dns(&BTreeSet::from([a]), provider, true).is_err());
+        assert!(validate_public_dns(&BTreeSet::from([a]), provider, Some(v6)).is_err());
+        assert!(public_provider_ipv6("fd00::1").is_err());
+        assert!(public_provider_ipv6("fe80::1").is_err());
+        assert!(public_provider_ipv6("2001:db8::1").is_err());
+        assert!(public_provider_ipv6("2606:4700::1111").is_ok());
     }
 
     #[test]
