@@ -125,15 +125,42 @@ async fn owned_bridge(spec: &FleetVmManagedSystemDns) -> Result<(u32, String), S
 }
 
 fn parse_link_values(raw: &str, index: u32, interface_name: &str) -> Result<Vec<String>, String> {
-    let prefix = format!("Link {index} ({interface_name}):");
-    let line = raw.trim_end_matches('\n');
-    let remainder = line
-        .strip_prefix(&prefix)
-        .ok_or("HOST_VM_DNS_LINK_OUTPUT_UNPROVEN")?;
-    if remainder.contains('\n') || remainder.contains('\r') {
+    // resolvectl wraps multiple DNS servers/domains onto indented lines.
+    // Trust ONLY the exact link header and indented continuations, never
+    // another Link/Global section or a truncated/foreign readback.
+    if raw.len() > 4096 || raw.contains('\r') || raw.bytes().any(|b| b == 0) {
         return Err("HOST_VM_DNS_LINK_OUTPUT_AMBIGUOUS".into());
     }
-    Ok(remainder.split_whitespace().map(str::to_owned).collect())
+    let prefix = format!("Link {index} ({interface_name}):");
+    let mut lines = raw.lines();
+    let header = lines
+        .next()
+        .and_then(|line| line.strip_prefix(&prefix))
+        .ok_or("HOST_VM_DNS_LINK_OUTPUT_UNPROVEN")?;
+    let mut values = Vec::new();
+    values.extend(header.split_whitespace().map(str::to_owned));
+    for line in lines {
+        // A continuation always starts with ASCII indentation. Reject
+        // empty lines and any new section, including another Link header.
+        if line.is_empty()
+            || !(line.starts_with(' ') || line.starts_with('\t'))
+            || line.bytes().any(|b| b.is_ascii_control() && b != b'\t')
+        {
+            return Err("HOST_VM_DNS_LINK_OUTPUT_AMBIGUOUS".into());
+        }
+        let items = line.split_whitespace().collect::<Vec<_>>();
+        if items.is_empty() {
+            return Err("HOST_VM_DNS_LINK_OUTPUT_AMBIGUOUS".into());
+        }
+        values.extend(items.into_iter().map(str::to_owned));
+        if values.len() > DNS_LIMIT {
+            return Err("HOST_VM_DNS_LINK_OUTPUT_OVERSIZE".into());
+        }
+    }
+    if values.len() > DNS_LIMIT {
+        return Err("HOST_VM_DNS_LINK_OUTPUT_OVERSIZE".into());
+    }
+    Ok(values)
 }
 
 async fn resolvectl(args: Vec<String>) -> Result<String, String> {
@@ -391,6 +418,33 @@ mod tests {
         assert!(parse_link_values("Global: 1.1.1.1\n", 17, "sblab0").is_err());
         assert!(parse_link_values("Link 18 (sblab0):\n", 17, "sblab0").is_err());
         assert!(parse_link_values("Link 17 (sblab0): 1.1.1.1\nBAD", 17, "sblab0").is_err());
+    }
+
+    #[test]
+    fn wrapped_resolvectl_values_accept_only_exact_link_continuations() {
+        assert_eq!(
+            parse_link_values(
+                "Link 17 (sblab0): 1.1.1.1\n                   2606:4700:4700::1111\n",
+                17,
+                "sblab0",
+            )
+            .unwrap(),
+            vec!["1.1.1.1", "2606:4700:4700::1111"]
+        );
+        assert_eq!(
+            parse_link_values("Link 17 (sblab0):\n", 17, "sblab0").unwrap(),
+            Vec::<String>::new()
+        );
+        for input in [
+            "Link 17 (sblab0): 1.1.1.1\nLink 18 (other): 8.8.8.8\n",
+            "Link 17 (sblab0): 1.1.1.1\nGlobal: 8.8.8.8\n",
+            "Link 17 (sblab0): 1.1.1.1\n\n",
+            "Link 17 (sblab0): 1.1.1.1\n   \n",
+            "Link 17 (sblab0): 1.1.1.1\r\n",
+            "Link 17 (sblab0): 1.1.1.1\n  2.2.2.2 3.3.3.3 4.4.4.4 5.5.5.5\n",
+        ] {
+            assert!(parse_link_values(input, 17, "sblab0").is_err(), "{input:?}");
+        }
     }
 
     #[test]

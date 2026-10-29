@@ -34,6 +34,7 @@ pub(crate) struct NativeVmManagedFilePlan {
     firewall: Option<managed_firewall::PreparedManagedFirewall>,
     dns: Option<managed_dns::PreparedManagedDns>,
     release: edge_shared_types::ApplicationBundleReleaseState,
+    repair: bool,
 }
 
 fn managed_file_path(path: &str) -> bool {
@@ -108,6 +109,122 @@ fn checked_managed_existing_file(
     }
 }
 
+/// A fresh separately signed APPLY can repair ONE proven-lost ephemeral
+/// network object using exactly the already installed Git manifest. This
+/// never runs during RECOVER, never reuses a historical BEGIN and never
+/// adopts a foreign nft table, route, DNS link or Docker resource.
+fn known_missing_network_row(
+    present: bool,
+    converged: bool,
+    reason: &str,
+    expected: &str,
+    manifest_sha256: &[u8],
+) -> bool {
+    !present
+        && !converged
+        && reason == expected
+        && manifest_sha256.len() == 32
+        && manifest_sha256.iter().any(|byte| *byte != 0)
+}
+
+async fn select_exact_missing_managed_network(
+    stack_dir: &Path,
+    host: &FleetHost,
+) -> Result<(String, Vec<u8>), String> {
+    // Unknown Docker state or missing Docker bridge is not a network-only
+    // repair: its dependencies and ownership must first be independently
+    // restored by the existing Docker Resource Engine.
+    let docker = super::docker_connection().await?;
+    let docker_rows = collect_native_managed_docker_readback(stack_dir, host, Some(&docker)).await;
+    if docker_rows.iter().any(|row| !row.converged) {
+        return Err("HOST_VM_MANAGED_REPAIR_DOCKER_NOT_CONVERGED".into());
+    }
+    let routes = collect_native_managed_kernel_routes(stack_dir, host).await;
+    let firewall = collect_native_managed_firewall(stack_dir, host).await;
+    let dns = collect_native_managed_system_dns(stack_dir, host).await;
+    let mut missing: Vec<(String, Vec<u8>)> = Vec::new();
+    let mut inspect_row = |kind: &str,
+                           resource_name: &str,
+                           manifest_sha256: &[u8],
+                           present: bool,
+                           converged: bool,
+                           reason: &str,
+                           missing_code: &str|
+     -> Result<(), String> {
+        if converged && reason == "DESIRED_PRESENT" {
+            return Ok(());
+        }
+        if !known_missing_network_row(
+            present,
+            converged,
+            reason,
+            missing_code,
+            manifest_sha256,
+        ) {
+            return Err("HOST_VM_MANAGED_REPAIR_UNKNOWN_OR_FOREIGN_NO_REPLAY".into());
+        }
+        let prefix = format!("sb-{}-", host.machine_id);
+        let suffix = resource_name
+            .strip_prefix(&prefix)
+            .ok_or("HOST_VM_MANAGED_REPAIR_FOREIGN_RESOURCE")?;
+        if suffix.is_empty()
+            || suffix.len() > 24
+            || !suffix.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit())
+        {
+            return Err("HOST_VM_MANAGED_REPAIR_FOREIGN_RESOURCE".into());
+        }
+        let path = format!("managed/{kind}-{suffix}.pb");
+        let bytes = checked_managed_existing_file(&stack_dir.join(&path), 0)?
+            .ok_or("HOST_VM_MANAGED_REPAIR_MANIFEST_MISSING")?;
+        if ring::digest::digest(&ring::digest::SHA256, &bytes).as_ref() != manifest_sha256 {
+            return Err("HOST_VM_MANAGED_REPAIR_MANIFEST_CHANGED".into());
+        }
+        missing.push((path, bytes));
+        Ok(())
+    };
+    for row in &routes {
+        inspect_row(
+            "host-route",
+            &row.resource_name,
+            &row.manifest_sha256,
+            row.present,
+            row.converged,
+            &row.reason_code,
+            "ROUTE_MISSING",
+        )?;
+    }
+    for row in &firewall {
+        inspect_row(
+            "host-firewall",
+            &row.resource_name,
+            &row.manifest_sha256,
+            row.present,
+            row.converged,
+            &row.reason_code,
+            "MANAGED_FIREWALL_TABLE_MISSING",
+        )?;
+    }
+    for row in &dns {
+        inspect_row(
+            "host-dns",
+            &row.resource_name,
+            &row.manifest_sha256,
+            row.present,
+            row.converged,
+            &row.reason_code,
+            "MANAGED_SYSTEM_DNS_DRIFT",
+        )?;
+    }
+    if missing.len() != 1 {
+        // Zero missing means no effect; multiple missing require separate
+        // signed one-resource operations. No combined implicit host repair.
+        return Err("HOST_VM_MANAGED_REPAIR_NOT_EXACTLY_ONE_KNOWN_MISSING".into());
+    }
+    missing
+        .pop()
+        .ok_or("HOST_VM_MANAGED_REPAIR_NOT_EXACTLY_ONE_KNOWN_MISSING".into())
+}
+
 pub(crate) async fn preflight_native_vm_managed_file(
     stack_dir: &Path,
     host: &FleetHost,
@@ -179,7 +296,24 @@ pub(crate) async fn preflight_native_vm_managed_file(
         }
         changed = Some((name.to_owned(), current, target));
     }
-    let (path, before, after) = changed.ok_or("HOST_VM_MANAGED_FILE_NO_EXACT_CHANGE")?;
+    let repair = changed.is_none();
+    let (path, before, after) = match changed {
+        Some(change) => change,
+        None => {
+            // Same Git policy is not automatically an authorization to
+            // replay an old effect. This branch is reachable only for a
+            // FRESH signed ReplaceRelease and a different bundle digest.
+            let (path, bytes) = select_exact_missing_managed_network(stack_dir, host).await?;
+            if !desired
+                .get(path.as_str())
+                .is_some_and(|item| item.content == bytes)
+                || !installed.contains(&path)
+            {
+                return Err("HOST_VM_MANAGED_REPAIR_DESIRED_MISMATCH".into());
+            }
+            (path, Some(bytes.clone()), Some(bytes))
+        }
+    };
     let directory = stack_dir.join("managed");
     if directory.exists() {
         checked_managed_directory(stack_dir, false)?;
@@ -204,7 +338,15 @@ pub(crate) async fn preflight_native_vm_managed_file(
         None
     };
     let route = if is_managed_route_manifest(&path) {
-        Some(preflight_managed_route(host, &path, before.as_deref(), after.as_deref()).await?)
+        Some(
+            preflight_managed_route(
+                host,
+                &path,
+                if repair { None } else { before.as_deref() },
+                after.as_deref(),
+            )
+            .await?,
+        )
     } else {
         None
     };
@@ -213,7 +355,7 @@ pub(crate) async fn preflight_native_vm_managed_file(
             managed_firewall::preflight_managed_firewall(
                 host,
                 &path,
-                before.as_deref(),
+                if repair { None } else { before.as_deref() },
                 after.as_deref(),
             )
             .await?,
@@ -223,8 +365,13 @@ pub(crate) async fn preflight_native_vm_managed_file(
     };
     let dns = if managed_dns::is_managed_dns_manifest(&path) {
         Some(
-            managed_dns::preflight_managed_dns(host, &path, before.as_deref(), after.as_deref())
-                .await?,
+            managed_dns::preflight_managed_dns(
+                host,
+                &path,
+                if repair { None } else { before.as_deref() },
+                after.as_deref(),
+            )
+            .await?,
         )
     } else {
         None
@@ -245,6 +392,7 @@ pub(crate) async fn preflight_native_vm_managed_file(
             bundle_id,
             bundle_digest,
         },
+        repair,
     })
 }
 
@@ -336,8 +484,20 @@ pub(crate) async fn apply_native_vm_managed_file_once(
     }
     checked_managed_directory(stack_dir, plan.before.is_none() && plan.after.is_some())?;
     let path = stack_dir.join(&plan.path);
-    atomic_managed_file_change(&path, plan.before.as_deref(), plan.after.as_deref(), 0)
-        .map_err(str::to_owned)?;
+    if plan.repair {
+        // The installed signed Git manifest is unchanged. Native effects
+        // were independently verified; never rewrite the file during repair.
+        if checked_managed_existing_file(&path, 0)
+            .map_err(str::to_owned)?
+            .as_deref()
+            != plan.before.as_deref()
+        {
+            return Err("HOST_VM_MANAGED_REPAIR_MANIFEST_CHANGED_NO_REPLAY".into());
+        }
+    } else {
+        atomic_managed_file_change(&path, plan.before.as_deref(), plan.after.as_deref(), 0)
+            .map_err(str::to_owned)?;
+    }
     if super::compile_native_vm_desired_graph(stack_dir, host)? != plan.target_graph {
         return Err("HOST_VM_MANAGED_GRAPH_POSTSTATE_UNPROVEN_NO_REPLAY".into());
     }
@@ -553,6 +713,47 @@ mod tests {
             ),
             ("DESIRED_STOPPED", true)
         );
+    }
+
+    #[test]
+    fn signed_network_repair_must_be_one_proven_missing_object() {
+        let proof = [0xabu8; 32];
+        assert!(known_missing_network_row(
+            false,
+            false,
+            "ROUTE_MISSING",
+            "ROUTE_MISSING",
+            &proof,
+        ));
+        assert!(known_missing_network_row(
+            false,
+            false,
+            "MANAGED_FIREWALL_TABLE_MISSING",
+            "MANAGED_FIREWALL_TABLE_MISSING",
+            &proof,
+        ));
+        assert!(known_missing_network_row(
+            false,
+            false,
+            "MANAGED_SYSTEM_DNS_DRIFT",
+            "MANAGED_SYSTEM_DNS_DRIFT",
+            &proof,
+        ));
+        for (present, converged, reason, digest) in [
+            (true, false, "ROUTE_MISSING", proof.to_vec()),
+            (false, true, "ROUTE_MISSING", proof.to_vec()),
+            (false, false, "HOST_VM_DNS_NETWORK_OWNER_UNPROVEN", proof.to_vec()),
+            (false, false, "ROUTE_MISSING", vec![]),
+            (false, false, "ROUTE_MISSING", vec![0; 32]),
+        ] {
+            assert!(!known_missing_network_row(
+                present,
+                converged,
+                reason,
+                "ROUTE_MISSING",
+                &digest,
+            ));
+        }
     }
 
     #[test]
