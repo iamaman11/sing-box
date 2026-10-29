@@ -869,10 +869,45 @@ jobs:
           echo host_provider_mutations=0
 
 
+      - name: Verify fresh active Worker Ed25519 challenge against exact Git key
+        id: active_signer
+        continue-on-error: true
+        shell: bash
+        env:
+          TARGET_MACHINE: ${{ needs.host.outputs.machine_id }}
+          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID }}
+          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET }}
+          OUTPUT_DIR: ${{ runner.temp }}/host-credential-readonly
+        run: |
+          set -euo pipefail
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          bin="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          fleet="${OUTPUT_DIR}/fleet-registry.pb"
+          printf '%s  %s\n' "${EDGE_ORCHESTRATOR_SHA256}" "${bin}" | sha256sum --check --status
+          if "${bin}" host --hosts-pb "${fleet}" \
+            --hosts-sha256 "$(sha256sum "${fleet}" | cut -d' ' -f1)" \
+            vm-worker-signer-proof "${TARGET_MACHINE}" \
+            > "${RUNNER_TEMP}/host-signer-readonly.out" \
+            2> "${RUNNER_TEMP}/host-signer-readonly.err"; then
+            grep -Fxq 'host_vm_worker_signed_identity=VERIFIED_GIT_PINNED_ED25519' "${RUNNER_TEMP}/host-signer-readonly.out"
+            echo 'host_vm_worker_signed_identity=VERIFIED_GIT_PINNED_ED25519'
+            echo 'status=VERIFIED_GIT_PINNED_ED25519' >> "${GITHUB_OUTPUT}"
+          else
+            reason="$(tail -n 1 "${RUNNER_TEMP}/host-signer-readonly.err" | tr -d '\r\n')"
+            [[ "${reason}" =~ ^[A-Z][A-Z0-9_]{3,119}$ ]] || reason=HOST_SIGNER_PROOF_UNCLASSIFIED
+            echo "host_vm_worker_signed_identity=UNPROVEN"
+            echo "host_vm_worker_signer_reason=${reason}"
+            echo 'status=UNPROVEN' >> "${GITHUB_OUTPUT}"
+          fi
+          echo 'host_worker_mutations=0'
+          echo 'host_provider_mutations=0'
+
       - name: Publish one correlated deep diagnosis to original /host report
         shell: bash
         env:
           VM_BUNDLE_STATUS: ${{ steps.vm_credential.outputs.status || 'UNPROVEN_WORKER_PROOF_STEP_FAILED' }}
+          SIGNER_STATUS: ${{ steps.active_signer.outputs.status || 'UNPROVEN' }}
         run: |
           set -euo pipefail
           [[ "${REPORT_COMMENT_ID}" =~ ^[1-9][0-9]{0,19}$ ]]
@@ -880,6 +915,10 @@ jobs:
           case "${VM_BUNDLE_STATUS}" in
             GIT_PIN_EXACT_ACCESS_GET_PROVEN|BLOCKED|UNPROVEN_WORKER_PROOF_STEP_FAILED) ;;
             *) echo HOST_DIAGNOSTIC_WORKER_PROOF_INVALID >&2; exit 1 ;;
+          esac
+          case "${SIGNER_STATUS}" in
+            VERIFIED_GIT_PINNED_ED25519|UNPROVEN) ;;
+            *) echo HOST_DIAGNOSTIC_SIGNER_PROOF_INVALID >&2; exit 1 ;;
           esac
           diagnostic="$(python3 edge-platform/scripts/host_diagnostic_summary.py \
             < "${RUNNER_TEMP}/host-capabilities.json")"
@@ -898,6 +937,7 @@ jobs:
           appendix="$(printf '\n\n### Unified deep diagnosis — read only\n\n```json\n%s\n```\n\nSigned native receipt: **UNPROVEN** until the existing runner returns an independently verified root result.\n' "${diagnostic}")"
           gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${REPORT_COMMENT_ID}" \
             -f "body=${original}${appendix}" >/dev/null
+          echo "host_vm_worker_signed_identity=${SIGNER_STATUS}"
           echo HOST_DIAGNOSTIC=CORRELATED_ONE_REPORT_NO_MUTATION
   host_first_use:
     # Sole hosted CREATE owner; no SSH, no new service or runner root rights.
