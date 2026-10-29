@@ -8,7 +8,7 @@ use edge_shared_types::{
 };
 use prost::Message;
 use std::collections::HashMap;
-use std::net::Ipv6Addr;
+use std::net::{IpAddr, Ipv6Addr};
 
 const LABEL_OWNER: &str = "io.github.iamaman11.singbox.machine";
 const LABEL_RESOURCE: &str = "io.github.iamaman11.singbox.resource";
@@ -107,6 +107,35 @@ fn exact_network_ipv6_ipam(
         && ipv6[0].auxiliary_addresses.as_ref().is_none_or(HashMap::is_empty)
 }
 
+// Only explicit, canonical IP literals, no hostnames, search paths or
+// implicit Docker daemon DNS. Sorted unique entries yield a stable bundle.
+fn canonical_container_dns(addresses: &[String]) -> bool {
+    if addresses.len() > 4
+        || !addresses.windows(2).all(|pair| pair[0] < pair[1])
+    {
+        return false;
+    }
+    addresses.iter().all(|raw| match raw.parse::<IpAddr>() {
+        Ok(IpAddr::V4(ip)) => {
+            raw == &ip.to_string()
+                && !ip.is_unspecified()
+                && !ip.is_loopback()
+                && !ip.is_multicast()
+                && !ip.is_link_local()
+                && !ip.is_broadcast()
+        }
+        Ok(IpAddr::V6(ip)) => {
+            let first = ip.octets()[0];
+            raw == &ip.to_string()
+                && (first == 0xfd || first & 0xe0 == 0x20)
+                && !ip.is_multicast()
+                && !ip.is_loopback()
+                && !ip.is_unspecified()
+        }
+        Err(_) => false,
+    })
+}
+
 fn resource_path_expected(
     host: &FleetHost,
     path: &str,
@@ -162,6 +191,7 @@ fn resource_path_expected(
                     && !digest.bytes().all(|b| b == b'0')
                     && spec.ipv6_subnet.is_empty()
                     && spec.ipv6_gateway.is_empty()
+                    && canonical_container_dns(&spec.dns_servers)
                     && (spec.network_name.is_empty()
                         || exact_owned_network_name(&host.machine_id, &spec.network_name))
             }
@@ -172,6 +202,7 @@ fn resource_path_expected(
                     && spec.desired_state != Desired::Stopped as i32
                     && spec.ipv6_subnet.is_empty()
                     && spec.ipv6_gateway.is_empty()
+                    && spec.dns_servers.is_empty()
             }
             Ok(Kind::BridgeNetwork) => {
                 spec.image_ref.is_empty()
@@ -179,6 +210,7 @@ fn resource_path_expected(
                     && spec.restart_generation == 0
                     && spec.desired_state != Desired::Stopped as i32
                     && canonical_private_ipv6_ipam(spec)
+                    && spec.dns_servers.is_empty()
             }
             _ => false,
         }
@@ -344,6 +376,7 @@ pub(super) async fn observe_managed_docker_object(
                     || host_config.privileged != Some(false)
                     || host_config.readonly_rootfs != Some(true)
                     || host_config.network_mode.as_deref() != Some(expected_net)
+                    || host_config.dns.as_deref().unwrap_or(&[]) != spec.dns_servers.as_slice()
                     || host_config.auto_remove != Some(false)
                     || host_config.pids_limit != Some(128)
                     || host_config.memory != Some(512 * 1024 * 1024)
@@ -430,7 +463,10 @@ fn plan_effect(
     {
         return Err("HOST_VM_DOCKER_RESTART_REVISION_NOT_MONOTONIC".into());
     }
-    if old.image_ref != new.image_ref || old.network_name != new.network_name {
+    if old.image_ref != new.image_ref
+        || old.network_name != new.network_name
+        || old.dns_servers != new.dns_servers
+    {
         return Ok(ManagedDockerEffect::Replace);
     }
     if old.desired_state != new.desired_state {
@@ -554,6 +590,11 @@ async fn create_managed_container(
         network_disabled: Some(spec.network_name.is_empty()),
         host_config: Some(bollard::models::HostConfig {
             network_mode: Some(network),
+            dns: if spec.dns_servers.is_empty() {
+                None
+            } else {
+                Some(spec.dns_servers.clone())
+            },
             readonly_rootfs: Some(true),
             privileged: Some(false),
             auto_remove: Some(false),
@@ -873,6 +914,29 @@ mod tests {
     }
 
     #[test]
+    fn container_dns_is_exact_ordered_and_canonical() {
+        let good = vec!["1.1.1.1".to_owned(), "2606:4700:4700::1111".into()];
+        assert!(canonical_container_dns(&good));
+        assert!(canonical_container_dns(&[]));
+        for bad in [
+            vec!["127.0.0.1"],
+            vec!["0.0.0.0"],
+            vec!["255.255.255.255"],
+            vec!["224.0.0.1"],
+            vec!["fe80::1"],
+            vec!["::1"],
+            vec!["ff02::1"],
+            vec!["dns.example.com"],
+            vec!["1.1.1.1", "1.1.1.1"],
+            vec!["8.8.8.8", "1.1.1.1"],
+        ] {
+            assert!(!canonical_container_dns(
+                &bad.into_iter().map(str::to_owned).collect::<Vec<_>>(),
+            ));
+        }
+    }
+
+    #[test]
     fn docker_network_ipv6_is_only_for_scoped_bridge_resources() {
         let host = FleetHost {
             machine_id: "vm-test".into(),
@@ -1011,6 +1075,12 @@ mod tests {
             ManagedDockerEffect::Restart
         );
         invalid.image_ref = "ghcr.io/iamaman11/test@sha256:".to_owned() + &"b".repeat(64);
+        assert_eq!(
+            plan_effect(Some(&base), Some(&invalid)).unwrap(),
+            ManagedDockerEffect::Replace
+        );
+        invalid = base.clone();
+        invalid.dns_servers = vec!["1.1.1.1".into()];
         assert_eq!(
             plan_effect(Some(&base), Some(&invalid)).unwrap(),
             ManagedDockerEffect::Replace

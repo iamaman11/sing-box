@@ -357,6 +357,8 @@ message FleetVmManagedDockerResource {
   // Optional project-scoped ULA /64 private bridge IPAM. Both or neither.
   string ipv6_subnet = 9;
   string ipv6_gateway = 10;
+  // Exact ordered DNS resolvers for CONTAINER only. No host DNS effects.
+  repeated string dns_servers = 11;
 }
 
 // Git-owned, single-table isolated IPv4/IPv6 route. Its manifest is a

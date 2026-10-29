@@ -407,6 +407,25 @@ table_id: 20100
     }
 
     #[test]
+    fn managed_git_container_dns_stays_typed_in_immutable_bundle() {
+        let source = format!(
+            "schema_version: 1\nmachine_id: \"vm-test\"\nresource_name: \"sb-vm-test-lab\"\nkind: FLEET_VM_MANAGED_DOCKER_KIND_CONTAINER\ndesired_state: FLEET_VM_MANAGED_DOCKER_DESIRED_STATE_PRESENT\nimage_ref: \"ghcr.io/iamaman11/test@sha256:{}\"\ndns_servers: \"1.1.1.1\"\n",
+            "a".repeat(64)
+        );
+        let mut files = vec![BundleFile {
+            relative_path: "managed/docker-container-lab.textproto".into(),
+            content: source.into_bytes(),
+            executable: false,
+            sensitive: false,
+        }];
+        compile_git_managed_protobuf_sources(&mut files).unwrap();
+        assert_eq!(files.len(), 1);
+        let spec = FleetVmManagedDockerResource::decode(files[0].content.as_slice()).unwrap();
+        assert_eq!(spec.dns_servers, vec!["1.1.1.1"]);
+        assert_eq!(files[0].relative_path, "managed/docker-container-lab.pb");
+    }
+
+    #[test]
     fn managed_git_ipv6_bridge_builds_deterministic_typed_bundle() {
         let source = br#"schema_version: 1
 machine_id: "vm-test"
