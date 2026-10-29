@@ -14,7 +14,7 @@ pub(super) async fn run(
 ) -> Result<(), String> {
     match command {
         cli::HostCommand::WitnessLine2 { machine_id } => {
-            vm_line2_acceptance::run(&machine_id, release_context).await
+            vm_line2_acceptance::run(&machine_id, source_comment_id, release_context).await
         }
         cli::HostCommand::VmWorkerAuthorizerUpgrade {
             machine_id,

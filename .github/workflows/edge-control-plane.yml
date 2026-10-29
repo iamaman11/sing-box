@@ -334,6 +334,7 @@ jobs:
           export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
           "${bin}" host --hosts-pb "${OUTPUT_DIR}/fleet-registry.pb" \
             --hosts-sha256 "$(sha256sum "${OUTPUT_DIR}/fleet-registry.pb" | cut -d' ' -f1)" \
+            --source-comment-id "${{ github.event.comment.id }}" \
             witness-line2 "${machine}" | tee "${RUNNER_TEMP}/line2-independent-result.txt"
           grep -Fxq 'line2_external_6_of_6=PASS' "${RUNNER_TEMP}/line2-independent-result.txt"
           grep -Fxq 'line2_g5_full_policy_matrix=UNPROVEN' "${RUNNER_TEMP}/line2-independent-result.txt"

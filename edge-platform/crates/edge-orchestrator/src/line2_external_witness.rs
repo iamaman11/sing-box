@@ -16,6 +16,7 @@ use std::process::{Command, Stdio};
 const CURL: &str = "/usr/bin/curl";
 const HTTPS_204: &str = "https://www.gstatic.com/generate_204";
 const EGRESS: &str = "https://api.ipify.org";
+const SECOND_EGRESS: &str = "https://www.cloudflare.com/cdn-cgi/trace";
 const PROXIES: [(&str, &str, u16); 6] = [
     ("http-direct", "http", 4128),
     ("socks5-direct", "socks5h", 4080),
@@ -59,6 +60,23 @@ fn public_ipv4(ip: Ipv4Addr) -> bool {
         || (a == 198 && ((b == 18 || b == 19) || (b == 51 && c == 100)))
         || (a == 203 && b == 0 && c == 113))
 }
+fn cloudflare_trace_ipv4(body: &str) -> Result<Ipv4Addr, String> {
+    let value = body
+        .lines()
+        .filter_map(|line| line.strip_prefix("ip="))
+        .collect::<Vec<_>>();
+    if value.len() != 1 {
+        return Err("HOST_VM_LINE2_WITNESS_TRACE_IP_MISSING_OR_DUPLICATE".to_owned());
+    }
+    let ip: Ipv4Addr = value[0]
+        .parse()
+        .map_err(|_| "HOST_VM_LINE2_WITNESS_TRACE_IP_INVALID")?;
+    if !public_ipv4(ip) {
+        return Err("HOST_VM_LINE2_WITNESS_TRACE_IP_NONPUBLIC".to_owned());
+    }
+    Ok(ip)
+}
+
 fn proxy_address(protocol: &str, ip: Ipv4Addr, domain: &str, port: u16) -> String {
     if protocol == "https" {
         format!("https://{domain}:{port}")
@@ -236,6 +254,7 @@ fn verify_bundle_and_probe(
         return Err("Line2 witness refuses empty VM proxy secret".to_owned());
     }
     let mut external_ips = Vec::with_capacity(6);
+    let mut secondary_ips = Vec::with_capacity(6);
     let mut names = BTreeSet::new();
     for (name, protocol, port) in PROXIES {
         if !names.insert(name) || port == 0 {
@@ -274,11 +293,29 @@ fn verify_bundle_and_probe(
             return Err(format!("{name} egress is not a public IPv4"));
         }
         external_ips.push(observed);
+        // A second independent public network destination is mandatory: one
+        // external IP echo service alone cannot prove the intended route.
+        let trace = query_proxy(
+            protocol,
+            ip,
+            domain,
+            port,
+            SECOND_EGRESS,
+            username,
+            &password,
+        )?;
+        if trace.0 != Some(0) || trace.2.split(';').nth(1) != Some("200") {
+            return Err(format!("{name} second independent egress witness failed"));
+        }
+        secondary_ips.push(cloudflare_trace_ipv4(&trace.1)?);
         println!(
-            "line2_external_endpoint={name} samples=5 HTTPS=PASS TLS=VERIFIED AUTH_NEGATIVE=REJECTED"
+            "line2_external_endpoint={name} samples=5 HTTPS=PASS TLS=VERIFIED AUTH_NEGATIVE=REJECTED EGRESS_WITNESSES=2"
         );
     }
-    if !(0..3).all(|i| external_ips[i] != external_ips[i + 3]) {
+    if !(0..3).all(|i| {
+        external_ips[i] != external_ips[i + 3]
+            && secondary_ips[i] != secondary_ips[i + 3]
+    }) {
         return Err("Line2 direct/WARP public egress identities indistinguishable".to_owned());
     }
     println!("operation=INITIAL_LINE2_EXTERNAL_WITNESS");
@@ -297,6 +334,23 @@ fn verify_bundle_and_probe(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn cloudflare_trace_requires_exact_one_public_ipv4() {
+        assert_eq!(
+            cloudflare_trace_ipv4("warp=off\nip=8.8.8.8\nloc=DE\n").unwrap(),
+            "8.8.8.8".parse::<Ipv4Addr>().unwrap()
+        );
+        for bad in [
+            "",
+            "ip=192.168.0.1\n",
+            "ip=8.8.8.8\nip=1.1.1.1\n",
+            "ip=::1\n",
+            "ip=not-an-ip\n",
+        ] {
+            assert!(cloudflare_trace_ipv4(bad).is_err());
+        }
+    }
+
     #[test]
     fn named_port_set_matches_six_public_line2_endpoints() {
         assert_eq!(PROXIES.len(), 6);

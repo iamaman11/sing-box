@@ -37,8 +37,12 @@ fn validate_witness_scope(
 
 pub(crate) async fn run(
     machine_id: &str,
+    source_comment_id: Option<u64>,
     release: &edge_orchestrator::OrchestrationContext,
 ) -> Result<(), String> {
+    let comment = source_comment_id
+        .filter(|id| *id > 0)
+        .ok_or("HOST_VM_LINE2_WITNESS_OPERATOR_COMMENT_REQUIRED")?;
     // Same protected Git and exact release authority used by /host apply.
     // The witness MUST NOT create a VM or accept an operator-supplied IP.
     release.application_release_authority()?;
@@ -99,6 +103,7 @@ pub(crate) async fn run(
         &client_secret,
     )
     .await?;
+    println!("host_vm_line2_witness_operation=issue1-comment-{comment}");
     println!("host_vm_line2_witness_machine={machine_id}");
     println!("host_vm_line2_witness_source=PROTECTED_GIT_AND_VULTR_READ_ONLY");
     println!(
