@@ -222,7 +222,7 @@ fn failure(reason: &str) -> FleetVmManagedKernelRouteReadback {
     }
 }
 
-pub(super) async fn collect_native_managed_kernel_routes(
+pub(crate) async fn collect_native_managed_kernel_routes(
     stack_dir: &Path,
     host: &FleetHost,
 ) -> Vec<FleetVmManagedKernelRouteReadback> {

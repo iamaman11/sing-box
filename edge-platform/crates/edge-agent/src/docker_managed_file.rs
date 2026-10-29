@@ -7,7 +7,11 @@ mod managed_object;
 use managed_object::*;
 #[path = "network_managed_route.rs"]
 mod managed_route;
-use managed_route::*;
+pub(crate) use managed_route::collect_native_managed_kernel_routes;
+use managed_route::{
+    PreparedManagedRoute, apply_managed_route_once, is_managed_route_manifest,
+    preflight_managed_route,
+};
 use std::io::Write;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt, PermissionsExt};
 
