@@ -457,6 +457,40 @@ pub(super) async fn observe_managed_docker_object(
     }
 }
 
+// Removing a Docker-managed bridge also deletes its kernel interface.
+// A signed network deletion must not silently delete a different native
+// route, including a project route in the reserved isolated table.
+fn bridge_routes_are_safe_to_remove(
+    kernel: &edge_shared_types::FleetVmDualStackNetwork,
+    bridge: &str,
+) -> bool {
+    let Some(link) = kernel.links.iter().find(|link| link.name == bridge) else {
+        return false;
+    };
+    kernel
+        .routes
+        .iter()
+        .all(|route| {
+            route.output_interface_index != link.interface_index
+                || matches!(route.table_id, 254 | 255)
+        })
+}
+
+async fn preflight_bridge_removal(spec: &FleetVmManagedDockerResource) -> Result<(), String> {
+    if spec.bridge_interface_name.is_empty() {
+        return Ok(());
+    }
+    let snapshot = crate::network_observation::observe_dual_stack()
+        .await
+        .map_err(|_| "HOST_VM_DOCKER_BRIDGE_KERNEL_UNPROVEN")?;
+    edge_shared_types::host_resources::validate_vm_dual_stack_network(&snapshot)
+        .map_err(str::to_owned)?;
+    if !bridge_routes_are_safe_to_remove(&snapshot, &spec.bridge_interface_name) {
+        return Err("HOST_VM_DOCKER_BRIDGE_REFERENCED_BY_FOREIGN_OR_MANAGED_ROUTE".into());
+    }
+    Ok(())
+}
+
 fn present(spec: &FleetVmManagedDockerResource) -> bool {
     spec.desired_state == Desired::Present as i32
         || (spec.kind == Kind::Container as i32 && spec.desired_state == Desired::Stopped as i32)
@@ -538,6 +572,9 @@ pub(super) async fn preflight_managed_docker_object(
             .await?;
     if physical.is_some() != expected_pre {
         return Err("HOST_VM_DOCKER_PRESTATE_NOT_CONVERGED".into());
+    }
+    if effect == ManagedDockerEffect::Delete && old_spec.kind == Kind::BridgeNetwork as i32 {
+        preflight_bridge_removal(old_spec).await?;
     }
     if let (Some(old), Some(fingerprint)) = (previous.as_ref(), physical.as_deref()) {
         if old.kind == Kind::Container as i32 {
@@ -771,6 +808,8 @@ pub(super) async fn apply_managed_docker_object_once(
                     .map_err(|_| "HOST_VM_DOCKER_VOLUME_DELETE_UNCERTAIN_NO_REPLAY")?;
             }
             Ok(Kind::BridgeNetwork) => {
+                preflight_bridge_removal(&plan.spec).await
+                    .map_err(|_| "HOST_VM_DOCKER_BRIDGE_ROUTE_CAS_CHANGED_NO_REPLAY")?;
                 docker
                     .remove_network(name)
                     .await
@@ -876,6 +915,32 @@ pub(super) async fn apply_managed_docker_object_once(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn bridge_delete_rejects_live_nonmain_routes() {
+        let mut kernel = edge_shared_types::FleetVmDualStackNetwork {
+            links: vec![edge_shared_types::Ipv4LinkObservation {
+                interface_index: 12,
+                name: "sblab0".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(bridge_routes_are_safe_to_remove(&kernel, "sblab0"));
+        kernel.routes.push(edge_shared_types::FleetVmKernelRoute {
+            output_interface_index: 12,
+            table_id: 254,
+            ..Default::default()
+        });
+        assert!(bridge_routes_are_safe_to_remove(&kernel, "sblab0"));
+        kernel.routes.push(edge_shared_types::FleetVmKernelRoute {
+            output_interface_index: 12,
+            table_id: 20100,
+            ..Default::default()
+        });
+        assert!(!bridge_routes_are_safe_to_remove(&kernel, "sblab0"));
+        assert!(!bridge_routes_are_safe_to_remove(&kernel, "sbmissing"));
+    }
+
     #[test]
     fn private_bridge_ipv6_ipam_is_exact_and_fail_closed() {
         let mut spec = FleetVmManagedDockerResource {

@@ -104,6 +104,25 @@ fn canonical_owned_interface_alias(spec: &FleetVmManagedKernelRoute, alias: &str
     alias == format!("sing-box:{}:{}", spec.machine_id, spec.resource_name)
 }
 
+fn exact_docker_bridge_owner(
+    spec: &FleetVmManagedKernelRoute,
+    network: &bollard::models::NetworkInspect,
+) -> bool {
+    let options = network.options.as_ref();
+    let labels = network.labels.as_ref();
+    network.name.as_deref() == Some(spec.resource_name.as_str())
+        && network.driver.as_deref() == Some("bridge")
+        && network.internal == Some(true)
+        && network.attachable == Some(false)
+        && options
+            .and_then(|value| value.get("com.docker.network.bridge.name"))
+            == Some(&spec.interface_name)
+        && labels.and_then(|value| value.get("io.github.iamaman11.singbox.machine"))
+            == Some(&spec.machine_id)
+        && labels.and_then(|value| value.get("io.github.iamaman11.singbox.resource"))
+            == Some(&spec.resource_name)
+}
+
 async fn prove_managed_interface_owner(
     spec: &FleetVmManagedKernelRoute,
     expected_index: u32,
@@ -137,20 +156,7 @@ async fn prove_managed_interface_owner(
         .inspect_network(&spec.resource_name, None)
         .await
         .map_err(|_| "HOST_VM_MANAGED_ROUTE_DOCKER_NETWORK_UNPROVEN")?;
-    let options = network.options.as_ref();
-    let labels = network.labels.as_ref();
-    if network.name.as_deref() != Some(spec.resource_name.as_str())
-        || network.driver.as_deref() != Some("bridge")
-        || network.internal != Some(true)
-        || network.attachable != Some(false)
-        || options
-            .and_then(|value| value.get("com.docker.network.bridge.name"))
-            != Some(&spec.interface_name)
-        || labels.and_then(|value| value.get("io.github.iamaman11.singbox.machine"))
-            != Some(&spec.machine_id)
-        || labels.and_then(|value| value.get("io.github.iamaman11.singbox.resource"))
-            != Some(&spec.resource_name)
-    {
+    if !exact_docker_bridge_owner(spec, &network) {
         return Err("HOST_VM_MANAGED_ROUTE_DOCKER_LINK_FOREIGN".into());
     }
     Ok(())
@@ -411,6 +417,48 @@ mod tests {
             interface_name: "sblab0".into(),
             table_id: 20_100,
         }
+    }
+
+    #[test]
+    fn docker_bridge_route_rejects_foreign_owner_name_and_linux_interface() {
+        use std::collections::HashMap;
+        let spec = route(Family::V4, "10.31.0.0", 16);
+        let mut network = bollard::models::NetworkInspect {
+            name: Some(spec.resource_name.clone()),
+            driver: Some("bridge".into()),
+            internal: Some(true),
+            attachable: Some(false),
+            options: Some(HashMap::from([(
+                "com.docker.network.bridge.name".into(),
+                spec.interface_name.clone(),
+            )])),
+            labels: Some(HashMap::from([
+                ("io.github.iamaman11.singbox.machine".into(), spec.machine_id.clone()),
+                ("io.github.iamaman11.singbox.resource".into(), spec.resource_name.clone()),
+            ])),
+            ..Default::default()
+        };
+        assert!(exact_docker_bridge_owner(&spec, &network));
+        network.labels.as_mut().unwrap().insert(
+            "io.github.iamaman11.singbox.machine".into(),
+            "other-host".into(),
+        );
+        assert!(!exact_docker_bridge_owner(&spec, &network));
+        network.labels.as_mut().unwrap().insert(
+            "io.github.iamaman11.singbox.machine".into(),
+            spec.machine_id.clone(),
+        );
+        network.options.as_mut().unwrap().insert(
+            "com.docker.network.bridge.name".into(),
+            "sbforeign0".into(),
+        );
+        assert!(!exact_docker_bridge_owner(&spec, &network));
+        network.options.as_mut().unwrap().insert(
+            "com.docker.network.bridge.name".into(),
+            spec.interface_name.clone(),
+        );
+        network.internal = Some(false);
+        assert!(!exact_docker_bridge_owner(&spec, &network));
     }
 
     #[test]
