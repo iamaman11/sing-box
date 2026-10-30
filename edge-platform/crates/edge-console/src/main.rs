@@ -5115,8 +5115,14 @@ mod offline_disabled_successor_tests {
             require_distinct_offline_bootstrap_successor(&p, INSTALLED, OLD_REVISION, NEXT),
             Err("OFFLINE_BOOTSTRAP_DISABLED_SUCCESSOR_NOT_DISTINCT_NO_REPLAY".to_owned())
         );
+        // The prior target may already be installed after a compensated
+        // UNKNOWN; this does not claim a signed old terminal success.
+        assert!(
+            require_distinct_offline_bootstrap_successor(&p, INTERRUPTED, NEXT_REVISION, NEXT)
+                .is_ok()
+        );
         assert_eq!(
-            require_distinct_offline_bootstrap_successor(&p, INTERRUPTED, NEXT_REVISION, NEXT),
+            require_distinct_offline_bootstrap_successor(&p, NEXT, NEXT_REVISION, NEXT),
             Err("OFFLINE_BOOTSTRAP_DISABLED_SUCCESSOR_NOT_DISTINCT_NO_REPLAY".to_owned())
         );
         assert!(
