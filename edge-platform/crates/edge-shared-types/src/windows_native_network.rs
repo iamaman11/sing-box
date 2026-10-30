@@ -693,10 +693,16 @@ mod tests {
         };
         assert!(baseline.require_foreign_warp_up().is_ok());
         assert_eq!(baseline.require_restored(&baseline), Ok(()));
-        assert_eq!(baseline.signed_prebegin_digest(), baseline.clone().signed_prebegin_digest());
+        assert_eq!(
+            baseline.signed_prebegin_digest(),
+            baseline.clone().signed_prebegin_digest()
+        );
         let mut changed = baseline.clone();
         changed.routes[0].metric += 1;
-        assert_ne!(baseline.signed_prebegin_digest(), changed.signed_prebegin_digest());
+        assert_ne!(
+            baseline.signed_prebegin_digest(),
+            changed.signed_prebegin_digest()
+        );
         assert_eq!(
             baseline.require_restored(&changed),
             Err("HOST_WINDOWS_NETWORK_ROUTES_NOT_RESTORED")
@@ -727,14 +733,20 @@ mod tests {
         );
         changed = baseline.clone();
         changed.dns[0].order += 1;
-        assert_ne!(baseline.signed_prebegin_digest(), changed.signed_prebegin_digest());
+        assert_ne!(
+            baseline.signed_prebegin_digest(),
+            changed.signed_prebegin_digest()
+        );
         assert_eq!(
             baseline.require_restored(&changed),
             Err("HOST_WINDOWS_NETWORK_DNS_NOT_RESTORED")
         );
         changed = baseline.clone();
         changed.foreign_warp_adapters[0].oper_status = 2;
-        assert_ne!(baseline.signed_prebegin_digest(), changed.signed_prebegin_digest());
+        assert_ne!(
+            baseline.signed_prebegin_digest(),
+            changed.signed_prebegin_digest()
+        );
         assert_eq!(
             baseline.require_restored(&changed),
             Err("HOST_WINDOWS_NETWORK_CLOUDFLARE_ONE_CHANGED")
