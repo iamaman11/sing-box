@@ -34,6 +34,9 @@ pub fn validate_windows_mode_target_and_spec(
         .ok_or("HOST_TARGET_UNSET_OBSERVE_ONLY")?;
     let mode =
         FleetHostMode::try_from(target.windows_mode).map_err(|_| "HOST_TARGET_MODE_INVALID")?;
+    if mode == FleetHostMode::Unspecified {
+        return Err("HOST_TARGET_MODE_KIND_MISMATCH");
+    }
     let datapath = Datapath::try_from(desired.windows_datapath_mode)
         .map_err(|_| "HOST_WINDOWS_DATAPATH_MODE_INVALID")?;
     match (mode, datapath) {

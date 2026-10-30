@@ -2314,6 +2314,9 @@ fn host_lifecycle_admission(
         return Err("HOST_DESIRED_SPEC_INVALID_FILE".to_owned());
     }
     let spec_bytes = std::fs::read(spec_path).map_err(|_| "HOST_DESIRED_SPEC_UNREADABLE")?;
+    if kind == ManagedHostKind::Windows && selected.target.is_none() {
+        return Err("HOST_TARGET_UNSET_OBSERVE_ONLY".into());
+    }
     if kind == ManagedHostKind::Windows {
         let typed =
             edge_shared_types::parse_production_desired_text(&spec_bytes).map_err(str::to_owned)?;
@@ -3144,7 +3147,11 @@ mod tests {
     #[test]
     fn fresh_host_apply_and_recover_never_admit_historical_mutation() {
         let spec = std::env::temp_dir().join(format!("sing-box-host-spec-{}", std::process::id()));
-        std::fs::write(&spec, b"schema_version: 1\\n").unwrap();
+        std::fs::write(
+            &spec,
+            b"schema_version: 6\\nwindows_datapath_mode: WINDOWS_DATAPATH_MODE_PROXY_ONLY\\n",
+        )
+        .unwrap();
         let desired = HostRegistry {
             schema_version: 1,
             hosts: vec![ManagedHost {
