@@ -244,6 +244,82 @@ impl NativeNetworkIdentity {
         Ok(bytes)
     }
 
+    /// Decode only the canonical protected before-state of the same signed
+    /// operation. The digest binds native fields, not the journal filename.
+    pub fn decode_baseline(bytes: &[u8], operation: &str) -> Result<Self, &'static str> {
+        if bytes.is_empty() || bytes.len() > MAX_NATIVE_NETWORK_BASELINE_BYTES {
+            return Err("HOST_WINDOWS_NETWORK_BASELINE_SIZE_INVALID");
+        }
+        let record = FleetWindowsNetworkBaseline::decode(bytes)
+            .map_err(|_| "HOST_WINDOWS_NETWORK_BASELINE_PROTO_INVALID")?;
+        if record.encode_to_vec() != bytes
+            || record.schema_version != 1
+            || record.operation_id != operation
+            || record.before_sha256.len() != 32
+            || record.routes.len() > MAX_NATIVE_ROUTES
+            || record.addresses.len() > MAX_UNICAST_LINKS
+            || record.dns.len() > MAX_DNS_LINKS
+            || record.foreign_warp_adapters.len() > MAX_NATIVE_ADAPTERS
+        {
+            return Err("HOST_WINDOWS_NETWORK_BASELINE_NONCANONICAL");
+        }
+        let family = |n| u16::try_from(n)
+            .map_err(|_| "HOST_WINDOWS_NETWORK_BASELINE_FIELD_INVALID");
+        let octet = |n| u8::try_from(n)
+            .map_err(|_| "HOST_WINDOWS_NETWORK_BASELINE_FIELD_INVALID");
+        let decoded = Self {
+            routes: record.routes.into_iter().map(|r| {
+                Ok(RouteIdentity {
+                    interface_luid: r.interface_luid,
+                    family: family(r.family)?,
+                    prefix: r.prefix,
+                    prefix_length: octet(r.prefix_length)?,
+                    next_hop: r.next_hop,
+                    metric: r.metric,
+                    protocol: r.protocol,
+                    origin: r.origin,
+                    site_prefix_length: octet(r.site_prefix_length)?,
+                    loopback: r.loopback,
+                    published: r.published,
+                })
+            }).collect::<Result<Vec<_>, &'static str>>()?,
+            addresses: record.addresses.into_iter().map(|a| {
+                Ok(UnicastAddressIdentity {
+                    interface_luid: a.interface_luid,
+                    family: family(a.family)?,
+                    address: a.address,
+                    prefix_length: octet(a.prefix_length)?,
+                })
+            }).collect::<Result<Vec<_>, &'static str>>()?,
+            dns: record.dns.into_iter().map(|d| {
+                Ok(DnsIdentity {
+                    interface_luid: d.interface_luid,
+                    order: d.order,
+                    family: family(d.family)?,
+                    server: d.server,
+                })
+            }).collect::<Result<Vec<_>, &'static str>>()?,
+            foreign_warp_adapters: record.foreign_warp_adapters.into_iter().map(|a| {
+                ManagedAdapterIdentity {
+                    alias: a.alias,
+                    interface_luid: a.interface_luid,
+                    oper_status: a.oper_status,
+                }
+            }).collect(),
+        };
+        // Native witnesses use IP Helper's canonical ordered/unique sets.
+        if !decoded.routes.windows(2).all(|r| r[0] < r[1])
+            || !decoded.addresses.windows(2).all(|r| r[0] < r[1])
+            || !decoded.dns.windows(2).all(|r| r[0] < r[1])
+            || !decoded.foreign_warp_adapters.windows(2).all(|r| r[0] < r[1])
+            || decoded.signed_prebegin_digest() != record.before_sha256.as_slice()
+            || decoded.encode_baseline(operation)?.as_slice() != bytes
+        {
+            return Err("HOST_WINDOWS_NETWORK_BASELINE_DIGEST_MISMATCH");
+        }
+        Ok(decoded)
+    }
+
     /// One bounded, domain-separated digest of the actual typed kernel
     /// network. No alternative desired state or runner-provided observation.
     pub fn signed_prebegin_digest(&self) -> [u8; 32] {
@@ -1031,6 +1107,16 @@ mod tests {
         };
         assert!(baseline.require_foreign_warp_up().is_ok());
         assert_eq!(baseline.require_restored(&baseline), Ok(()));
+        let baseline_bytes = baseline.encode_baseline("issue1-comment-42").unwrap();
+        assert_eq!(
+            NativeNetworkIdentity::decode_baseline(&baseline_bytes, "issue1-comment-42").unwrap(),
+            baseline
+        );
+        assert!(NativeNetworkIdentity::decode_baseline(&baseline_bytes, "issue1-comment-43").is_err());
+        let mut corrupted = baseline_bytes.clone();
+        let len = corrupted.len();
+        corrupted[len - 1] ^= 1;
+        assert!(NativeNetworkIdentity::decode_baseline(&corrupted, "issue1-comment-42").is_err());
         assert_eq!(
             baseline.signed_prebegin_digest(),
             baseline.clone().signed_prebegin_digest()
