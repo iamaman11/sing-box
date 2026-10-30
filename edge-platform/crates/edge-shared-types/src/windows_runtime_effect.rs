@@ -2,7 +2,7 @@
 //! SYSTEM signs only after durable BEGIN; Controller cannot read the private
 //! receipt key. A process nonce + consumed operation ID prevent local RPC replay.
 use crate::{
-    FleetHostAction, FleetHostKind, FleetHostMode, FleetHostRunState,
+    FleetHostAction, FleetHostKind, FleetHostRunState,
     FleetWindowsRuntimeChallenge as Challenge, FleetWindowsRuntimeEffect as Effect, HostRegistry,
 };
 use prost::Message;
@@ -90,7 +90,11 @@ pub fn verify(
         .iter()
         .find(|h| h.machine_id == intent.machine_id && h.kind == intent.kind)
         .ok_or("HOST_WINDOWS_EFFECT_MACHINE_UNREGISTERED")?;
-    if !matches!(host.target.as_ref(),Some(t) if t.run_state == FleetHostRunState::Running as i32 && t.windows_mode == FleetHostMode::ProxyOnly as i32)
+    let desired = crate::parse_production_desired_text(spec)?;
+    let mode = crate::host_lifecycle::validate_windows_mode_target_and_spec(host, &desired)?;
+    if !matches!(host.target.as_ref(),
+        Some(t) if t.run_state == FleetHostRunState::Running as i32)
+        || mode != crate::WindowsDatapathMode::ProxyOnly
     {
         return Err("HOST_WINDOWS_EFFECT_PROXY_ONLY_RUNNING_TARGET_REQUIRED");
     }
@@ -162,7 +166,7 @@ mod tests {
             desired_spec_path: "infra/production/production.textproto".into(),
             target: Some(FleetHostTarget {
                 run_state: FleetHostRunState::Running as i32,
-                windows_mode: FleetHostMode::ProxyOnly as i32,
+                windows_mode: crate::FleetHostMode::Unspecified as i32,
             }),
             native_receipt_public_key: system.public_key().as_ref().to_vec(),
             worker_authority_public_key: worker.public_key().as_ref().to_vec(),
@@ -172,7 +176,7 @@ mod tests {
             schema_version: 1,
             hosts: vec![host.clone()],
         };
-        let spec = b"git-spec";
+        let spec = b"windows_datapath_mode: WINDOWS_DATAPATH_MODE_PROXY_ONLY\n";
         let registry_sha = sha(&registry.encode_to_vec());
         let intent = FleetHostIntent {
             schema_version: 1,

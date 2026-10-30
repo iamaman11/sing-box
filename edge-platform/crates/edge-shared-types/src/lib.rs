@@ -3385,14 +3385,19 @@ mod release_set_tests {
             "infra/hosts/specs/application-acceptance-1.textproto".to_owned();
         assert!(validate_host_registry(&typed_vm).is_err());
 
-        // Operator must explicitly set the single desired run state and,
-        // only on Windows, the desired ProxyOnly/TUN mode.
+        // Fleet target owns only RUNNING/STOPPED. Windows mode belongs to the
+        // typed production desired spec, never a duplicated registry field.
         invalid = expected.clone();
         invalid.hosts[2].target = Some(FleetHostTarget {
             run_state: FleetHostRunState::Stopped as i32,
-            windows_mode: FleetHostMode::ProxyOnly as i32,
+            windows_mode: FleetHostMode::Unspecified as i32,
         });
         assert!(validate_host_registry(&invalid).is_ok());
+        invalid.hosts[2].target.as_mut().unwrap().windows_mode =
+            FleetHostMode::ProxyOnly as i32;
+        assert!(validate_host_registry(&invalid).is_err());
+        invalid.hosts[2].target.as_mut().unwrap().windows_mode =
+            FleetHostMode::Unspecified as i32;
         invalid.hosts[2].target.as_mut().unwrap().run_state = FleetHostRunState::Unspecified as i32;
         assert!(validate_host_registry(&invalid).is_err());
         invalid = expected.clone();

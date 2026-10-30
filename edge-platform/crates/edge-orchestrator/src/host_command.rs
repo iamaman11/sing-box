@@ -784,14 +784,19 @@ pub(crate) fn run(
             // decision until Worker + native owner independently attest.
             // Reuse the same independently release-bound VM digest for the
             // detailed reconciliation proposal printed below.
-            let proposed = edge_shared_types::host_planner::propose_host_transition(
+            let planned_host = edge_shared_types::host_lifecycle::project_host_for_planner(
                 selected,
+                &read_bounded(Path::new(&selected.desired_spec_path), 1_048_576)?,
+            )
+            .map_err(str::to_owned)?;
+            let proposed = edge_shared_types::host_planner::propose_host_transition(
+                &planned_host,
                 Some(&observed),
                 &release_sha,
                 &native_bundle_sha,
                 now,
             );
-            edge_shared_types::host_planner::validate_host_transition_plan(&proposed, selected)
+            edge_shared_types::host_planner::validate_host_transition_plan(&proposed, &planned_host)
                 .map_err(str::to_owned)?;
             println!(
                 "host_reconcile_step={:?}",
@@ -2510,16 +2515,26 @@ fn print_host_target(host: &edge_shared_types::FleetHost) -> Result<(), String> 
             println!("host_desired_windows_mode=UNSET");
         }
         Some(target) => {
-            use edge_shared_types::{FleetHostMode, FleetHostRunState};
+            use edge_shared_types::{FleetHostKind, FleetHostRunState};
             let state = FleetHostRunState::try_from(target.run_state)
                 .map_err(|_| "HOST_TARGET_RUN_STATE_INVALID")?;
-            let mode = FleetHostMode::try_from(target.windows_mode)
-                .map_err(|_| "HOST_TARGET_MODE_INVALID")?;
             if state == FleetHostRunState::Unspecified {
                 return Err("HOST_TARGET_RUN_STATE_REQUIRED".to_owned());
             }
             println!("host_desired_run_state={state:?}");
-            println!("host_desired_windows_mode={mode:?}");
+            if host.kind == FleetHostKind::Windows as i32 {
+                let spec = read_bounded(Path::new(&host.desired_spec_path), 1_048_576)?;
+                let desired = edge_shared_types::parse_production_desired_text(&spec)
+                    .map_err(str::to_owned)?;
+                let mode =
+                    edge_shared_types::host_lifecycle::validate_windows_mode_target_and_spec(
+                        host, &desired,
+                    )
+                    .map_err(str::to_owned)?;
+                println!("host_desired_windows_mode={mode:?}");
+            } else {
+                println!("host_desired_windows_mode=UNSPECIFIED");
+            }
         }
     }
     Ok(())

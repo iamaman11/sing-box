@@ -901,8 +901,13 @@ where
             return Err("HOST_WINDOWS_INSTALLED_RUNTIME_READBACK_MISMATCH");
         }
     }
+    // Only the signed Git production spec owns the Windows datapath. The
+    // in-memory projection is for the existing pure planner; journal digests
+    // and receipts always use the original unmodified registry protobuf.
+    let planned_host =
+        crate::host_lifecycle::project_host_for_planner(selected, selected_spec_bytes)?;
     let mut plan = crate::host_planner::propose_signed_host_transition(
-        selected,
+        &planned_host,
         &before,
         action,
         if expected_windows_installed_release.is_some() {
@@ -927,7 +932,7 @@ where
         plan.reason = crate::FleetHostPlanReason::StoppedConfigurationDrift as i32;
         plan.reason_code = "STOPPED_CONFIGURATION_DRIFT".into();
     }
-    crate::host_planner::validate_host_transition_plan(&plan, selected)?;
+    crate::host_planner::validate_host_transition_plan(&plan, &planned_host)?;
     let step =
         FleetHostPlannedStep::try_from(plan.step).map_err(|_| "HOST_NATIVE_PLAN_STEP_INVALID")?;
     // The transaction does not allow a stale or untrusted observation to
@@ -1098,9 +1103,9 @@ fn verify_read_only_recovery_state(
         .map_err(|_| "HOST_NATIVE_RECOVERY_TARGET_INVALID")?;
     let mode = FleetHostMode::try_from(desired.windows_mode)
         .map_err(|_| "HOST_NATIVE_RECOVERY_MODE_INVALID")?;
-    if (kind == FleetHostKind::Windows && mode != FleetHostMode::ProxyOnly)
-        || (kind == FleetHostKind::Vm && mode != FleetHostMode::Unspecified)
-    {
+    // Historical recovery is read-only. Network mode comes from the signed
+    // production spec; raw registry mode is always absent for both host kinds.
+    if mode != FleetHostMode::Unspecified {
         return Err("HOST_NATIVE_RECOVERY_MODE_NOT_ACCEPTED");
     }
     let owner = FleetNativeOwnerState::try_from(observation.owner_state)
