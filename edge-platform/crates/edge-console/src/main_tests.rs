@@ -371,20 +371,26 @@ fn disabled_retained_begin_admits_both_historical_endpoints_but_never_replays() 
         accepted_revision: old_revision.clone(),
     };
     // Compensated UNKNOWN may leave its old source installed.
-    assert!(require_distinct_offline_bootstrap_successor(
-        &retained,
-        &old_from,
-        &new_revision,
-        &new_release
-    ).is_ok());
+    assert!(
+        require_distinct_offline_bootstrap_successor(
+            &retained,
+            &old_from,
+            &new_revision,
+            &new_release
+        )
+        .is_ok()
+    );
     // Physical October handoff: old to=... is already active. This is NOT
     // proof of old terminal SUCCESS, only permission for a distinct successor.
-    assert!(require_distinct_offline_bootstrap_successor(
-        &retained,
-        &old_to,
-        &new_revision,
-        &new_release
-    ).is_ok());
+    assert!(
+        require_distinct_offline_bootstrap_successor(
+            &retained,
+            &old_to,
+            &new_revision,
+            &new_release
+        )
+        .is_ok()
+    );
     for (installed, revision, next) in [
         ("f".repeat(64), new_revision.clone(), new_release.clone()),
         (old_from.clone(), old_revision.clone(), new_release.clone()),
@@ -394,12 +400,8 @@ fn disabled_retained_begin_admits_both_historical_endpoints_but_never_replays() 
         (old_to.clone(), new_revision.clone(), old_to.clone()),
         (old_to.clone(), new_revision.clone(), "bad".into()),
     ] {
-        let result = require_distinct_offline_bootstrap_successor(
-            &retained,
-            &installed,
-            &revision,
-            &next,
-        );
+        let result =
+            require_distinct_offline_bootstrap_successor(&retained, &installed, &revision, &next);
         assert!(
             result.unwrap_err().contains("NOT_DISTINCT_NO_REPLAY"),
             "retained operation admitted an unrelated/replayed successor"
