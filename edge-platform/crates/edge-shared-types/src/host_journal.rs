@@ -2986,6 +2986,9 @@ mod tests {
         assert_eq!(fs::read(&pending).unwrap(), original);
 
         use crate::host_planner::propose_host_transition;
+        // The pure planner consumes only the memory projection, never the
+        // raw signed Git registry, whose deprecated mode field is absent.
+        let planned_host = crate::host_lifecycle::project_host_for_planner(&host, spec).unwrap();
         let stopped = FleetNativeObservation {
             owner_state: FleetNativeOwnerState::Stopped as i32,
             observed_release_sha256: stale_installed.clone(),
@@ -2993,7 +2996,7 @@ mod tests {
         };
         assert_eq!(
             propose_host_transition(
-                &host,
+                &planned_host,
                 Some(&stopped),
                 &intent.release_set_sha256,
                 &intent.release_set_sha256,
@@ -3004,7 +3007,7 @@ mod tests {
         );
         assert_eq!(
             propose_host_transition(
-                &host,
+                &planned_host,
                 Some(&stopped),
                 &stale_installed,
                 &intent.release_set_sha256,
