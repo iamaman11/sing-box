@@ -391,9 +391,7 @@ fn verify_windows_acl_chain(
 // The caller removes unsafe allow-grants while holding no-DELETE-sharing
 // handles, then the canonical full ancestor/leaf verifier decides PASS.
 #[cfg(windows)]
-pub fn windows_unprivileged_write_grant_sids(
-    path: &Path,
-) -> Result<Vec<String>, &'static str> {
+pub fn windows_unprivileged_write_grant_sids(path: &Path) -> Result<Vec<String>, &'static str> {
     use std::collections::BTreeSet;
     use std::os::windows::ffi::OsStrExt;
     use std::os::windows::fs::MetadataExt;
@@ -408,8 +406,8 @@ pub fn windows_unprivileged_write_grant_sids(
     if !path.is_absolute() || !path.starts_with(Path::new(r"C:\sing-box")) {
         return Err("HOST_WINDOWS_JOURNAL_ABSOLUTE_PATH_REQUIRED");
     }
-    let meta = fs::symlink_metadata(path)
-        .map_err(|_| "HOST_WINDOWS_SYSTEM_AUTHORITY_ACL_UNAVAILABLE")?;
+    let meta =
+        fs::symlink_metadata(path).map_err(|_| "HOST_WINDOWS_SYSTEM_AUTHORITY_ACL_UNAVAILABLE")?;
     if meta.file_type().is_symlink() || meta.file_attributes() & 0x400 != 0 {
         return Err("HOST_WINDOWS_SYSTEM_AUTHORITY_ACL_REPARSE");
     }
@@ -3286,7 +3284,12 @@ mod windows_w4_acl_tests {
         assert!(windows_acl_grant_safe(0x0012_00a9, false, false, false)); // RX
         assert!(windows_acl_grant_safe(FULL_CONTROL, true, false, false)); // SYSTEM/Admin
         for rights in [0x0004_0000, 0x0008_0000, 0x0001_0000, 0x4000_0000] {
-            assert!(!windows_acl_grant_safe(0x0012_00a9 | rights, false, false, false));
+            assert!(!windows_acl_grant_safe(
+                0x0012_00a9 | rights,
+                false,
+                false,
+                false
+            ));
         }
     }
 
