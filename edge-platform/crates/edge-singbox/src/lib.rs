@@ -19,7 +19,8 @@ pub const STAGE2_WSL_PROXY_PORT: u32 = 17892;
 pub const STAGE2_CLASH_API_PORT: u32 = 19091;
 const DEFAULT_WSL_PROXY_PORT: u32 = STAGE2_WSL_PROXY_PORT;
 const WSL_INBOUND_BIND_HOST: &str = "0.0.0.0";
-const WARP_SERVICE_PROCESS: &str = "warp-svc.exe";
+const WARP_SERVICE_PROCESS: &str =
+    edge_shared_types::windows_routing::FOREIGN_WARP_SERVICE_BASENAME;
 const WARP_CONTROL_ENDPOINTS: &[&str] = &[
     "162.159.197.2/32",
     "162.159.197.3/32",
@@ -2037,6 +2038,23 @@ mod tests {
         assert!(render_windows_config_for_desired(&stage2_runtime_state(), &desired).is_err());
         desired.windows_datapath_mode = 9999;
         assert!(render_windows_config_for_desired(&stage2_runtime_state(), &desired).is_err());
+    }
+
+    #[test]
+    fn stage4b_rejects_selected_app_shadowed_by_foreign_warp_direct_rule() {
+        let mut desired = canonical_production_desired_state().unwrap();
+        desired.windows_datapath_mode = WindowsDatapathMode::ManagedTun as i32;
+        desired.windows_application_routing = Some(edge_shared_types::WindowsApplicationRouting {
+            scope: edge_shared_types::WindowsApplicationScope::SelectedApplications as i32,
+            applications: vec![edge_shared_types::WindowsApplicationRoute {
+                executable_path: r"C:\Apps\Selected\warp-svc.exe".into(),
+                route: edge_shared_types::WindowsDefaultRoute::VlessRealityWarp as i32,
+            }],
+        });
+        assert_eq!(
+            render_windows_config_for_desired(&stage2_runtime_state(), &desired).unwrap_err(),
+            "WINDOWS_APPLICATION_FOREIGN_WARP_BYPASS_FORBIDDEN"
+        );
     }
 
     #[test]

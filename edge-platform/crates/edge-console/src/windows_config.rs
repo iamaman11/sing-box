@@ -66,6 +66,25 @@ pub(super) fn observed_digest(root: &Path) -> Result<Vec<u8>, &'static str> {
     ))
 }
 
+/// A successful native check must have actually terminated and completely
+/// consumed its input and pipes. Default exit_code=0 in an incomplete result
+/// is NOT evidence that the release-pinned sing-box accepted the config.
+fn require_native_config_check_complete(
+    result: &edge_shared_types::FleetNativeAdminResult,
+) -> Result<(), &'static str> {
+    if !result.process_exited
+        || !result.stdin_input_complete
+        || !result.stdout_stream_eof
+        || !result.stderr_stream_eof
+    {
+        return Err("HOST_WINDOWS_CONFIG_NATIVE_VALIDATION_INCOMPLETE_NO_REPLAY");
+    }
+    if result.exit_code != 0 {
+        return Err("HOST_WINDOWS_CONFIG_NATIVE_VALIDATION_FAILED");
+    }
+    Ok(())
+}
+
 /// After signature verification, BEFORE native BEGIN. The exact pinned binary
 /// validates a protected candidate; it cannot modify live config or routes.
 pub(super) fn validate(root: &Path, config: &Configuration, operation: &str) -> Result<(), String> {
@@ -104,9 +123,7 @@ pub(super) fn validate(root: &Path, config: &Configuration, operation: &str) -> 
     let result = windows_admin::process::run(&request, capture("stdout")?, capture("stderr")?)?;
     // Keep the bounded candidate and diagnostic evidence in the SAME protected
     // journal; no secret output or extra log/transport is introduced.
-    if result.exit_code != 0 || !result.stdout_stream_eof || !result.stderr_stream_eof {
-        return Err("HOST_WINDOWS_CONFIG_NATIVE_VALIDATION_FAILED".into());
-    }
+    require_native_config_check_complete(&result)?;
     Ok(())
 }
 
@@ -239,4 +256,44 @@ pub(super) fn prepare_runtime_logs(root: &Path) -> Result<(), &'static str> {
             .map_err(|_| "HOST_WINDOWS_RUNTIME_LOG_ACL_UNPROVEN")?;
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_config_check_requires_complete_bounded_child_proof() {
+        let mut result = edge_shared_types::FleetNativeAdminResult {
+            exit_code: 0,
+            process_exited: true,
+            stdin_input_complete: true,
+            stdout_stream_eof: true,
+            stderr_stream_eof: true,
+            ..Default::default()
+        };
+        assert_eq!(require_native_config_check_complete(&result), Ok(()));
+        result.process_exited = false;
+        assert_eq!(
+            require_native_config_check_complete(&result),
+            Err("HOST_WINDOWS_CONFIG_NATIVE_VALIDATION_INCOMPLETE_NO_REPLAY")
+        );
+        result.process_exited = true;
+        result.stdin_input_complete = false;
+        assert!(require_native_config_check_complete(&result).is_err());
+        result.stdin_input_complete = true;
+        result.stdout_stream_eof = false;
+        assert!(require_native_config_check_complete(&result).is_err());
+        result.stdout_stream_eof = true;
+        result.stderr_stream_eof = false;
+        assert!(require_native_config_check_complete(&result).is_err());
+        result.stderr_stream_eof = true;
+        for code in [1, 124, 137] {
+            result.exit_code = code;
+            assert_eq!(
+                require_native_config_check_complete(&result),
+                Err("HOST_WINDOWS_CONFIG_NATIVE_VALIDATION_FAILED")
+            );
+        }
+    }
 }

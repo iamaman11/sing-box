@@ -1,6 +1,12 @@
 //! Git-owned application routing. This is routing, not process isolation:
 //! children need their own path and Windows shared DNS is system policy.
 use crate::{WindowsApplicationRouting, WindowsApplicationScope as Scope, WindowsDefaultRoute};
+
+/// The installed Cloudflare One service is bypassed by process NAME in the
+/// managed-TUN policy. Never allow that same basename as an explicitly
+/// selected proxied application: the earlier system DIRECT rule would win.
+/// One Rust constant owns both the route exception and its typed denial.
+pub const FOREIGN_WARP_SERVICE_BASENAME: &str = "warp-svc.exe";
 pub fn validate(policy: Option<&WindowsApplicationRouting>) -> Result<(), &'static str> {
     let Some(policy) = policy else {
         return Ok(());
@@ -19,6 +25,14 @@ pub fn validate(policy: Option<&WindowsApplicationRouting>) -> Result<(), &'stat
             || !seen.insert(app.executable_path.to_lowercase())
         {
             return Err("WINDOWS_APPLICATION_PATH_INVALID_OR_DUPLICATE");
+        }
+        if app
+            .executable_path
+            .rsplit('\\')
+            .next()
+            .is_some_and(|name| name.eq_ignore_ascii_case(FOREIGN_WARP_SERVICE_BASENAME))
+        {
+            return Err("WINDOWS_APPLICATION_FOREIGN_WARP_BYPASS_FORBIDDEN");
         }
         if !matches!(WindowsDefaultRoute::try_from(app.route), Ok(route) if route != WindowsDefaultRoute::Unspecified)
         {
@@ -127,6 +141,32 @@ mod tests {
         assert!(validate(Some(&p)).is_ok());
         p.applications.push(app);
         assert!(validate(Some(&p)).is_err());
+    }
+
+    #[test]
+    fn selected_app_cannot_silently_match_foreign_cloudflare_one_direct_bypass() {
+        let mut policy = WindowsApplicationRouting {
+            scope: Scope::SelectedApplications as i32,
+            applications: vec![WindowsApplicationRoute {
+                executable_path: r"C:\Apps\Selected\WARP-SVC.EXE".into(),
+                route: WindowsDefaultRoute::VlessRealityWarp as i32,
+            }],
+        };
+        assert_eq!(
+            validate(Some(&policy)),
+            Err("WINDOWS_APPLICATION_FOREIGN_WARP_BYPASS_FORBIDDEN")
+        );
+        policy.applications[0].executable_path = r"C:\Apps\Selected\warp-svc-helper.exe".into();
+        assert_eq!(validate(Some(&policy)), Ok(()));
+        policy.applications[0].executable_path = r"C:\Apps\Other\warp-svc.exe".into();
+        assert_eq!(
+            validate(Some(&policy)),
+            Err("WINDOWS_APPLICATION_FOREIGN_WARP_BYPASS_FORBIDDEN")
+        );
+        // ProxyOnly continues to have no selected-app override or TUN route.
+        policy.scope = Scope::AllApplications as i32;
+        policy.applications.clear();
+        assert_eq!(validate(Some(&policy)), Ok(()));
     }
 
     #[cfg(windows)]
