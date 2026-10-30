@@ -37,9 +37,10 @@ fn durable_create(path: &Path, data: &[u8]) -> Result<(), String> {
         .map_err(|_| "HOST_ADMIN_PARENT_SYNC_UNCERTAIN_NO_REPLAY")?;
     Ok(())
 }
-// A previous resource BEGIN is evidence to preserve, not a global veto on
-// an unrelated, freshly Worker-authorized root operation. Keep one journal
-// and one root owner; uniqueness is still enforced for this operation ID.
+// A new Worker signature authenticates arbitrary root execution; it does
+// NOT prove read-only behavior. No generic ADMIN may bypass a retained
+// resource or ADMIN BEGIN. The existing /host diagnose and signed RECOVER
+// paths remain the way to observe and reconcile an unknown mutation.
 fn independent_admin_operation_available(journal: &Path, operation_id: &str) -> Result<(), String> {
     let key = journal_key(operation_id);
     let own = [
@@ -47,6 +48,11 @@ fn independent_admin_operation_available(journal: &Path, operation_id: &str) -> 
         format!("admin-{key}.terminal.pb"),
         format!("{key}.pb"),
     ];
+    // Full protected scan rejects an untrusted later entry even when an
+    // earlier pending operation is found. Never normalize ACLs or delete it.
+    if host_native::protected_journal_has_pending(journal)? {
+        return Err("HOST_ADMIN_PENDING_UNKNOWN_NO_REPLAY".into());
+    }
     for name in own {
         match fs::symlink_metadata(journal.join(name)) {
             Ok(_) => return Err("HOST_ADMIN_SAME_OPERATION_EXISTS_NO_REPLAY".into()),
@@ -344,21 +350,37 @@ mod io_tests {
     }
 
     #[test]
-    fn foreign_resource_pending_does_not_block_independent_admin_or_allow_replay() {
+    fn arbitrary_vm_admin_never_bypasses_unknown_resource_or_other_admin() {
+        use std::os::unix::fs::PermissionsExt;
         let dir =
             std::env::temp_dir().join(format!("sing-box-independent-admin-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
+        std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700)).unwrap();
         let foreign = dir.join("resource-existing.pending.pb");
-        std::fs::write(&foreign, b"foreign-original").unwrap();
+        durable_create(&foreign, b"foreign-original").unwrap();
         let current = "issue1-comment-987654321";
-        assert!(independent_admin_operation_available(&dir, current).is_ok());
-        let own = dir.join(format!("admin-{}.pending.pb", journal_key(current)));
-        durable_create(&own, b"new-admin").unwrap();
-        assert!(independent_admin_operation_available(&dir, current).is_err());
+        assert_eq!(
+            independent_admin_operation_available(&dir, current),
+            Err("HOST_ADMIN_PENDING_UNKNOWN_NO_REPLAY".into())
+        );
         assert_eq!(std::fs::read(&foreign).unwrap(), b"foreign-original");
-        assert_eq!(std::fs::read(&own).unwrap(), b"new-admin");
+        std::fs::remove_file(&foreign).unwrap();
+        let other = dir.join("admin-other.pending.pb");
+        durable_create(&other, b"another operation").unwrap();
+        assert_eq!(
+            independent_admin_operation_available(&dir, current),
+            Err("HOST_ADMIN_PENDING_UNKNOWN_NO_REPLAY".into())
+        );
+        std::fs::remove_file(other).unwrap();
+        assert!(independent_admin_operation_available(&dir, current).is_ok());
+        let own = dir.join(format!("admin-{}.terminal.pb", journal_key(current)));
+        durable_create(&own, b"completed").unwrap();
+        assert_eq!(
+            independent_admin_operation_available(&dir, current),
+            Err("HOST_ADMIN_SAME_OPERATION_EXISTS_NO_REPLAY".into())
+        );
+        assert_eq!(std::fs::read(&own).unwrap(), b"completed");
         std::fs::remove_file(own).unwrap();
-        std::fs::remove_file(foreign).unwrap();
         std::fs::remove_dir(dir).unwrap();
     }
 
@@ -393,9 +415,10 @@ pub(super) async fn execute() -> Result<(), String> {
     if !metadata.is_dir() || metadata.uid() != 0 || metadata.permissions().mode() & 0o077 != 0 {
         return Err("HOST_ADMIN_JOURNAL_UNTRUSTED".into());
     }
-    // Scan ALL entries for forged ownership/mode; a foreign resource BEGIN
-    // does not prohibit a DIFFERENT newly signed administrative operation.
-    let _other_pending = host_native::protected_journal_has_pending(&journal)?;
+    // Refuse unknown effects BEFORE requesting a one-shot Worker signature.
+    // The existing root journal owns every mutating scope, including ADMIN.
+    let operation_id = host_admin::operation_id(&request);
+    independent_admin_operation_available(&journal, &operation_id)?;
     let root = Path::new(host_native::TRUSTED_ROOT);
     let bytes = host_native::root_file(&root.join("trust.pb"), 9 * 1024 * 1024)?;
     let trust = host_native::decode_native_trust_snapshot(&bytes)?;
@@ -448,9 +471,8 @@ pub(super) async fn execute() -> Result<(), String> {
     host_admin::verify_authorization(&request, &auth, &trust.pinned_worker_public_key, now)
         .map_err(str::to_owned)?;
 
-    // One BEGIN, sync before effects. A crash or ambiguous ACK never retries
-    // this exact operation; unrelated resource pending is left untouched.
-    let operation_id = host_admin::operation_id(&request);
+    // Recheck after authorization, immediately before durable BEGIN. A
+    // signature cannot turn a previously unknown mutation into a safe replay.
     independent_admin_operation_available(&journal, &operation_id)?;
     let key = journal_key(&operation_id);
     let pending = journal.join(format!("admin-{key}.pending.pb"));
