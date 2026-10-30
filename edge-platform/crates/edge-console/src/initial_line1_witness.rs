@@ -414,11 +414,7 @@ pub(crate) fn run(
     let bundle = store.read_bundle(candidate)?;
     let runtime =
         windows_runtime_state_from_attested_vm_bundle(&bundle, target_ipv4, target_domain)?;
-    let ips = run_isolated_external_line1(
-        &install_root.join("runtime"),
-        singbox_binary,
-        &runtime,
-    )?;
+    run_isolated_external_line1(&install_root.join("runtime"), singbox_binary, &runtime)?;
     // Never print the addresses or any credential to the GitHub job.
     println!("operation=CREDENTIAL_INITIAL_LINE1_EXTERNAL_WITNESS");
     println!("line1_external_4_of_4=PASS");
@@ -429,7 +425,6 @@ pub(crate) fn run(
     println!("windows_dns_mutations=0");
     println!("windows_routes_mutations=0");
     println!("windows_scm_mutations=0");
-    let _ = ips;
     Ok(())
 }
 
@@ -514,7 +509,7 @@ pub(crate) fn prove_serving_line1_before_tun(
         return Err("HOST_WINDOWS_LINE1_ADMISSION_ROOT_INVALID".into());
     }
     let journal = install_root.join("native-host/journal");
-    edge_shared_types::host_journal::verify_windows_protected_path_acl(&journal, true)?;
+    edge_shared_types::host_journal::verify_native_journal_protection(&journal)?;
     let (_, before) =
         edge_shared_types::windows_native_network::observe_native_network_identity()?;
     before.require_foreign_warp_up()?;

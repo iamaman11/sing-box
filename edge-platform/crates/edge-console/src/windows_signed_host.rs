@@ -534,6 +534,69 @@ fn system_native_observation(install_root: &Path) -> Result<FleetNativeObservati
     Ok(readback)
 }
 
+/// Independent, bounded pre-TUN control and DNS witness. This uses the
+/// machine's native resolver and DIRECT HTTPS without a proxy; a local
+/// sing-box listener is not proof that an unproxied Git/Cloudflare control
+/// path survives route capture. Output is only domain-separated evidence
+/// derived from real resolver answers and TLS-validated HTTP responses.
+async fn probe_pre_tun_native_control_dns()
+-> Result<([u8; 32], [u8; 32]), &'static str> {
+    use std::net::SocketAddr;
+    let hosts: Vec<SocketAddr> = tokio::net::lookup_host(("api.github.com", 443))
+        .await
+        .map_err(|_| "HOST_WINDOWS_NETWORK_DNS_POSITIVE_UNPROVEN")?
+        .take(64)
+        .collect();
+    if hosts.is_empty() {
+        return Err("HOST_WINDOWS_NETWORK_DNS_POSITIVE_UNPROVEN");
+    }
+    if tokio::net::lookup_host(("sing-box-pre-tun-witness.invalid", 443))
+        .await
+        .is_ok()
+    {
+        return Err("HOST_WINDOWS_NETWORK_DNS_NXDOMAIN_UNPROVEN");
+    }
+    let mut hosts = hosts;
+    hosts.sort_unstable();
+    hosts.dedup();
+    let mut dns_evidence = b"sing-box/windows-native-dns-witness/v1:".to_vec();
+    for host in hosts {
+        let encoded = host.to_string();
+        dns_evidence.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
+        dns_evidence.extend_from_slice(encoded.as_bytes());
+    }
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .https_only(true)
+        .user_agent("sing-box-native-control-witness/1")
+        .redirect(reqwest::redirect::Policy::none())
+        .timeout(Duration::from_secs(8))
+        .build()
+        .map_err(|_| "HOST_WINDOWS_NETWORK_CONTROL_CLIENT_UNAVAILABLE")?;
+    let mut control_evidence = b"sing-box/windows-native-control-witness/v1:".to_vec();
+    for (url, status) in [
+        ("https://api.github.com", reqwest::StatusCode::OK),
+        ("https://cp.cloudflare.com/generate_204", reqwest::StatusCode::NO_CONTENT),
+    ] {
+        let response = client
+            .get(url)
+            .send()
+            .await
+            .map_err(|_| "HOST_WINDOWS_NETWORK_CONTROL_TLS_UNREACHABLE")?;
+        if response.status() != status {
+            return Err("HOST_WINDOWS_NETWORK_CONTROL_RESPONSE_UNPROVEN");
+        }
+        control_evidence.extend_from_slice(&(url.len() as u32).to_be_bytes());
+        control_evidence.extend_from_slice(url.as_bytes());
+        control_evidence.extend_from_slice(&status.as_u16().to_be_bytes());
+    }
+    let mut dns = [0u8; 32];
+    dns.copy_from_slice(ring::digest::digest(&SHA256, &dns_evidence).as_ref());
+    let mut control = [0u8; 32];
+    control.copy_from_slice(ring::digest::digest(&SHA256, &control_evidence).as_ref());
+    Ok((dns, control))
+}
+
 /// TLS+HTTPS through the actual local proxy, never a direct fallback. This is
 /// runtime connectivity proof only, not full Line1/Line2/IPv6/WARP acceptance.
 async fn proxy_traffic_ready() -> bool {
@@ -810,6 +873,36 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
             &network_baseline.signed_prebegin_digest(),
             admission_now,
         )?;
+        // Independently re-run the exact Line1 credentials over a disposable
+        // ProxyOnly client and the direct DNS/HTTPS control path. Runner-held
+        // hashes or a past successful report cannot substitute these probes.
+        let active = load_verified_activation(install_root)
+            .map_err(|_| "HOST_WINDOWS_NETWORK_ADMISSION_RELEASE_UNPROVEN")?;
+        let state_file = windows_runtime_state_path(install_root);
+        edge_shared_types::host_journal::verify_windows_protected_path_acl(&state_file, true)?;
+        let runtime = decode_windows_runtime_state(
+            &bounded_regular_file(&state_file, 65536)?,
+        )?;
+        let line1 = initial_line1_witness::prove_serving_line1_before_tun(
+            install_root,
+            Path::new(&active.sing_box_path),
+            &runtime,
+        )
+        .map_err(|_| "HOST_WINDOWS_NETWORK_ADMISSION_LINE1_UNPROVEN")?;
+        let (dns, control) = probe_pre_tun_native_control_dns().await?;
+        let proof = intent
+            .network_admission
+            .as_ref()
+            .ok_or("HOST_WINDOWS_NETWORK_ADMISSION_MISSING")?;
+        if proof.line1_witness_sha256 != line1
+            || proof.dns_witness_sha256 != dns
+            || proof.control_witness_sha256 != control
+        {
+            return Err("HOST_WINDOWS_NETWORK_ADMISSION_WITNESS_DRIFT".into());
+        }
+        let (_, after_witness) =
+            edge_shared_types::windows_native_network::observe_native_network_identity()?;
+        network_baseline.require_restored(&after_witness)?;
         Some(candidate)
     } else {
         if intent.network_admission.is_some() {
