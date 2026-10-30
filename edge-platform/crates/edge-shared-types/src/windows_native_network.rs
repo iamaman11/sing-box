@@ -4,21 +4,24 @@
 //! This is a necessary but NOT sufficient prerequisite for future ManagedTun
 //! admission. It proves only that the exact sing-box-owned interface is
 //! absent from the live OS interface table. It also enumerates current
-//! IPv4/IPv6 routes and adapter DNS endpoints, but counting those facts does
+//! IPv4/IPv6 routes, assigned addresses and adapter DNS endpoints, but counts do
 //! not prove their restoration, WARP health, Line1, or future TUN safety.
 use std::collections::BTreeSet;
 use windows_sys::Win32::NetworkManagement::IpHelper::{
-    FreeMibTable, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST, GAA_FLAG_SKIP_UNICAST,
+    FreeMibTable, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST,
     GetAdaptersAddresses, GetIfTable2, GetIpForwardTable2, IP_ADAPTER_ADDRESSES_LH, MIB_IF_TABLE2,
     MIB_IPFORWARD_TABLE2,
 };
-use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6, AF_UNSPEC, SOCKADDR_INET};
+use windows_sys::Win32::Networking::WinSock::{
+    AF_INET, AF_INET6, AF_UNSPEC, SOCKADDR_IN, SOCKADDR_IN6, SOCKADDR_INET,
+};
 
 const OWNED_TUN_ALIAS: &str = "sing-box-tun";
 const MAX_NATIVE_INTERFACES: usize = 4096;
 const MAX_NATIVE_ROUTES: usize = 32768;
 const MAX_NATIVE_ADAPTERS: usize = 512;
 const MAX_DNS_LINKS: usize = 1024;
+const MAX_UNICAST_LINKS: usize = 4096;
 const MAX_ADAPTER_BUFFER_BYTES: usize = 1024 * 1024;
 
 /// Transient native observation only, never a Git value, persisted config,
@@ -30,6 +33,8 @@ pub struct NativeNetworkReadback {
     pub ipv6_routes: u32,
     pub ipv4_default_routes: u32,
     pub ipv6_default_routes: u32,
+    pub ipv4_unicast_addresses: u32,
+    pub ipv6_unicast_addresses: u32,
     pub ipv4_dns_servers: u32,
     pub ipv6_dns_servers: u32,
     pub active_dns_adapters: u32,
@@ -62,6 +67,14 @@ pub struct DnsIdentity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+pub struct UnicastAddressIdentity {
+    pub interface_luid: u64,
+    pub family: u16,
+    pub address: Vec<u8>,
+    pub prefix_length: u8,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ManagedAdapterIdentity {
     pub alias: String,
     pub interface_luid: u64,
@@ -73,6 +86,7 @@ pub struct ManagedAdapterIdentity {
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct NativeNetworkIdentity {
     pub routes: Vec<RouteIdentity>,
+    pub addresses: Vec<UnicastAddressIdentity>,
     pub dns: Vec<DnsIdentity>,
     pub foreign_warp_adapters: Vec<ManagedAdapterIdentity>,
 }
@@ -84,6 +98,9 @@ impl NativeNetworkIdentity {
     pub fn require_restored(&self, after: &Self) -> Result<(), &'static str> {
         if self.routes != after.routes {
             return Err("HOST_WINDOWS_NETWORK_ROUTES_NOT_RESTORED");
+        }
+        if self.addresses != after.addresses {
+            return Err("HOST_WINDOWS_NETWORK_ADDRESSES_NOT_RESTORED");
         }
         if self.dns != after.dns {
             return Err("HOST_WINDOWS_NETWORK_DNS_NOT_RESTORED");
@@ -162,6 +179,19 @@ fn add_dns(result: &mut NativeNetworkReadback, family: u16) -> Result<(), &'stat
     Ok(())
 }
 
+fn add_unicast(
+    result: &mut NativeNetworkReadback,
+    family: u16,
+    prefix_len: u8,
+) -> Result<(), &'static str> {
+    match family {
+        AF_INET if prefix_len <= 32 => result.ipv4_unicast_addresses += 1,
+        AF_INET6 if prefix_len <= 128 => result.ipv6_unicast_addresses += 1,
+        _ => return Err("HOST_WINDOWS_NETWORK_UNICAST_FAMILY_OR_PREFIX_INVALID"),
+    }
+    Ok(())
+}
+
 /// IP Helper allocates each routing table; FreeMibTable is its only owner.
 fn read_native_routes(
     result: &mut NativeNetworkReadback,
@@ -236,6 +266,7 @@ fn in_native_buffer<T>(buffer: &[u64], ptr: *const T) -> bool {
 fn read_native_dns(
     result: &mut NativeNetworkReadback,
     identity: &mut BTreeSet<DnsIdentity>,
+    addresses: &mut BTreeSet<UnicastAddressIdentity>,
 ) -> Result<(), &'static str> {
     let mut bytes = 15 * 1024;
     for _attempt in 0..3 {
@@ -250,7 +281,7 @@ fn read_native_dns(
         let status = unsafe {
             GetAdaptersAddresses(
                 AF_UNSPEC as u32,
-                GAA_FLAG_SKIP_UNICAST | GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST,
+                GAA_FLAG_SKIP_ANYCAST | GAA_FLAG_SKIP_MULTICAST,
                 std::ptr::null_mut(),
                 buffer.as_mut_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>(),
                 &mut size,
@@ -267,6 +298,7 @@ fn read_native_dns(
         let mut adapter = buffer.as_ptr().cast::<IP_ADAPTER_ADDRESSES_LH>();
         let mut count = 0usize;
         let mut links = 0usize;
+        let mut unicast_links = 0usize;
         while !adapter.is_null() {
             if count == MAX_NATIVE_ADAPTERS || !in_native_buffer(&buffer, adapter) {
                 return Err("HOST_WINDOWS_NETWORK_ADAPTER_CHAIN_INVALID");
@@ -277,6 +309,50 @@ fn read_native_dns(
             // IF_OPER_STATUS_UP == 1. Inactive adapter DNS is not evidence
             // for the effective physical network's resolver configuration.
             if entry.OperStatus == 1 {
+                let mut unicast = entry.FirstUnicastAddress;
+                while !unicast.is_null() {
+                    if unicast_links == MAX_UNICAST_LINKS
+                        || !in_native_buffer(&buffer, unicast)
+                    {
+                        return Err("HOST_WINDOWS_NETWORK_UNICAST_CHAIN_INVALID");
+                    }
+                    unicast_links += 1;
+                    // SAFETY: unicast row is inside the retained Win32 buffer.
+                    let row = unsafe { &*unicast };
+                    let socket = row.Address.lpSockaddr;
+                    if !in_native_buffer(&buffer, socket) || row.Address.iSockaddrLength < 16 {
+                        return Err("HOST_WINDOWS_NETWORK_UNICAST_SOCKET_INVALID");
+                    }
+                    // SAFETY: the minimum SOCKADDR is bounds- and alignment-checked.
+                    let family = unsafe { (*socket).sa_family };
+                    let address = match family {
+                        AF_INET if in_native_buffer(&buffer, socket.cast::<SOCKADDR_IN>()) => {
+                            // SAFETY: the complete IPv4 sockaddr is verified above.
+                            let native = unsafe { &*socket.cast::<SOCKADDR_IN>() };
+                            unsafe { native.sin_addr.S_un.S_addr }.to_ne_bytes().to_vec()
+                        }
+                        AF_INET6
+                            if row.Address.iSockaddrLength >= 28
+                                && in_native_buffer(&buffer, socket.cast::<SOCKADDR_IN6>()) =>
+                        {
+                            // SAFETY: the complete IPv6 sockaddr is verified above.
+                            let native = unsafe { &*socket.cast::<SOCKADDR_IN6>() };
+                            unsafe { native.sin6_addr.u.Byte }.to_vec()
+                        }
+                        _ => return Err("HOST_WINDOWS_NETWORK_UNICAST_SOCKET_INVALID"),
+                    };
+                    add_unicast(result, family, row.OnLinkPrefixLength)?;
+                    if !addresses.insert(UnicastAddressIdentity {
+                        // SAFETY: GetAdaptersAddresses initializes adapter NET_LUID.
+                        interface_luid: unsafe { entry.Luid.Value },
+                        family,
+                        address,
+                        prefix_length: row.OnLinkPrefixLength,
+                    }) {
+                        return Err("HOST_WINDOWS_NETWORK_DUPLICATE_UNICAST_IDENTITY");
+                    }
+                    unicast = row.Next;
+                }
                 let mut dns = entry.FirstDnsServerAddress;
                 let mut ordinal = 0u32;
                 if !dns.is_null() {
@@ -360,19 +436,21 @@ pub fn observe_native_route_dns() -> Result<NativeNetworkReadback, &'static str>
 }
 
 /// One exact native snapshot: counts for diagnostics and canonical route/DNS
-/// identities for restoration comparison. Does not capture routes or DNS.
+/// and assigned addresses for restoration comparison. Does not alter the OS.
 pub fn observe_native_network_identity()
 -> Result<(NativeNetworkReadback, NativeNetworkIdentity), &'static str> {
     let mut result = NativeNetworkReadback::default();
     let mut routes = BTreeSet::new();
     let mut dns = BTreeSet::new();
+    let mut addresses = BTreeSet::new();
     let warp = observe_owned_foreign_interfaces()?;
     read_native_routes(&mut result, &mut routes)?;
-    read_native_dns(&mut result, &mut dns)?;
+    read_native_dns(&mut result, &mut dns, &mut addresses)?;
     Ok((
         result,
         NativeNetworkIdentity {
             routes: routes.into_iter().collect(),
+            addresses: addresses.into_iter().collect(),
             dns: dns.into_iter().collect(),
             foreign_warp_adapters: warp,
         },
@@ -486,12 +564,22 @@ mod tests {
         add_route(&mut obs, AF_INET6, 128).unwrap();
         add_dns(&mut obs, AF_INET).unwrap();
         add_dns(&mut obs, AF_INET6).unwrap();
+        add_unicast(&mut obs, AF_INET, 24).unwrap();
+        add_unicast(&mut obs, AF_INET6, 64).unwrap();
         assert_eq!(obs.ipv4_routes, 2);
         assert_eq!(obs.ipv6_routes, 2);
         assert_eq!(obs.ipv4_default_routes, 1);
         assert_eq!(obs.ipv6_default_routes, 1);
         assert_eq!(obs.ipv4_dns_servers, 1);
         assert_eq!(obs.ipv6_dns_servers, 1);
+        assert_eq!(obs.ipv4_unicast_addresses, 1);
+        assert_eq!(obs.ipv6_unicast_addresses, 1);
+        for invalid in [(AF_INET, 33), (AF_INET6, 129), (AF_UNSPEC, 0)] {
+            assert_eq!(
+                add_unicast(&mut obs, invalid.0, invalid.1),
+                Err("HOST_WINDOWS_NETWORK_UNICAST_FAMILY_OR_PREFIX_INVALID")
+            );
+        }
         for invalid in [(AF_INET, 33), (AF_INET6, 129), (AF_UNSPEC, 0)] {
             assert_eq!(
                 add_route(&mut obs, invalid.0, invalid.1),
@@ -531,6 +619,20 @@ mod tests {
                 loopback: false,
                 published: false,
             }],
+            addresses: vec![
+                UnicastAddressIdentity {
+                    interface_luid: 8,
+                    family: AF_INET,
+                    address: vec![192, 0, 2, 44],
+                    prefix_length: 24,
+                },
+                UnicastAddressIdentity {
+                    interface_luid: 8,
+                    family: AF_INET6,
+                    address: vec![0x20; 16],
+                    prefix_length: 64,
+                },
+            ],
             dns: vec![DnsIdentity {
                 interface_luid: 8,
                 order: 0,
@@ -556,6 +658,24 @@ mod tests {
         assert_eq!(
             baseline.require_restored(&changed),
             Err("HOST_WINDOWS_NETWORK_ROUTES_NOT_RESTORED")
+        );
+        changed = baseline.clone();
+        changed.addresses[0].address[3] ^= 1;
+        assert_eq!(
+            baseline.require_restored(&changed),
+            Err("HOST_WINDOWS_NETWORK_ADDRESSES_NOT_RESTORED")
+        );
+        changed = baseline.clone();
+        changed.addresses[1].prefix_length += 1;
+        assert_eq!(
+            baseline.require_restored(&changed),
+            Err("HOST_WINDOWS_NETWORK_ADDRESSES_NOT_RESTORED")
+        );
+        changed = baseline.clone();
+        changed.addresses[0].interface_luid += 1;
+        assert_eq!(
+            baseline.require_restored(&changed),
+            Err("HOST_WINDOWS_NETWORK_ADDRESSES_NOT_RESTORED")
         );
         changed = baseline.clone();
         changed.dns[0].order += 1;
