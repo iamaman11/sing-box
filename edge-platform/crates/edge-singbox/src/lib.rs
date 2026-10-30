@@ -337,6 +337,56 @@ pub fn require_proxy_only_config(bytes: &[u8]) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Only the release-pinned native SYSTEM launch path may accept this exact
+/// dual-stack candidate. The producer remains the typed Git renderer; this
+/// check must reject an unsafe/stale installed file before route capture.
+pub fn require_managed_tun_config(bytes: &[u8]) -> Result<(), &'static str> {
+    if bytes.is_empty() || bytes.len() > 1024 * 1024 {
+        return Err("HOST_WINDOWS_TUN_CONFIG_SIZE_INVALID");
+    }
+    let config: Value =
+        serde_json::from_slice(bytes).map_err(|_| "HOST_WINDOWS_TUN_CONFIG_INVALID")?;
+    let inbounds = config
+        .get("inbounds")
+        .and_then(Value::as_array)
+        .ok_or("HOST_WINDOWS_TUN_CONFIG_INVALID")?;
+    let tun: Vec<_> = inbounds
+        .iter()
+        .filter(|inbound| inbound.get("type").and_then(Value::as_str) == Some("tun"))
+        .collect();
+    if tun.len() != 1
+        || inbounds.len() != 3
+        || inbounds.iter().any(|inbound| {
+            !matches!(inbound.get("type").and_then(Value::as_str), Some("tun" | "mixed"))
+        })
+    {
+        return Err("HOST_WINDOWS_TUN_CONFIG_UNEXPECTED_INBOUND");
+    }
+    let tun = tun[0];
+    if tun.get("tag").and_then(Value::as_str) != Some("managed-tun-in")
+        || tun.get("interface_name").and_then(Value::as_str) != Some("sing-box-tun")
+        || tun.get("auto_route").and_then(Value::as_bool) != Some(true)
+        || tun.get("strict_route").and_then(Value::as_bool) != Some(true)
+        || tun.get("dns_mode").and_then(Value::as_str) != Some("hijack")
+        || tun.get("address") != Some(&json!(["172.19.0.1/30", "fdfe:dcba:9876::1/126"]))
+        || config.pointer("/dns/final").and_then(Value::as_str) != Some("managed-dns")
+    {
+        return Err("HOST_WINDOWS_TUN_CONFIG_NATIVE_ROUTE_INVALID");
+    }
+    let excluded = tun
+        .get("route_exclude_address")
+        .and_then(Value::as_array)
+        .ok_or("HOST_WINDOWS_TUN_CONTROL_ROUTE_UNPROVEN")?;
+    if WARP_CONTROL_ENDPOINTS
+        .iter()
+        .chain(FOREIGN_CLOUDFLARE_MESH_CIDRS.iter())
+        .any(|cidr| !excluded.iter().any(|value| value.as_str() == Some(*cidr)))
+    {
+        return Err("HOST_WINDOWS_TUN_CONTROL_ROUTE_UNPROVEN");
+    }
+    Ok(())
+}
+
 /// Read-only classification of the ACTUAL installed Windows sing-box
 /// boundary, never the new desired Git value. Deny exotic inbounds and mixed
 /// route-capturing inputs before a native STOP/APPLY can cut live control.
@@ -2335,6 +2385,35 @@ mod tests {
                 "live TUN, exotic inbound, corrupt or missing proof must deny"
             );
         }
+    }
+
+    #[test]
+    fn native_managed_tun_executor_denies_missing_ipv6_or_foreign_control_routes() {
+        let state = stage2_runtime_state();
+        let bytes =
+            render_windows_config_for_mode(&state, WindowsDatapathMode::ManagedTun).unwrap();
+        assert_eq!(require_managed_tun_config(&bytes), Ok(()));
+        let proxy =
+            render_windows_config_for_mode(&state, WindowsDatapathMode::ProxyOnly).unwrap();
+        assert!(require_managed_tun_config(&proxy).is_err());
+        let mut candidate: Value = serde_json::from_slice(&bytes).unwrap();
+        candidate["inbounds"][2]["address"] = json!(["172.19.0.1/30"]);
+        assert_eq!(
+            require_managed_tun_config(&serde_json::to_vec(&candidate).unwrap()),
+            Err("HOST_WINDOWS_TUN_CONFIG_NATIVE_ROUTE_INVALID")
+        );
+        candidate = serde_json::from_slice(&bytes).unwrap();
+        candidate["inbounds"][2]["route_exclude_address"] = json!([]);
+        assert_eq!(
+            require_managed_tun_config(&serde_json::to_vec(&candidate).unwrap()),
+            Err("HOST_WINDOWS_TUN_CONTROL_ROUTE_UNPROVEN")
+        );
+        candidate = serde_json::from_slice(&bytes).unwrap();
+        candidate["inbounds"][2]["strict_route"] = json!(false);
+        assert_eq!(
+            require_managed_tun_config(&serde_json::to_vec(&candidate).unwrap()),
+            Err("HOST_WINDOWS_TUN_CONFIG_NATIVE_ROUTE_INVALID")
+        );
     }
 
     #[test]

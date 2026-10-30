@@ -437,6 +437,56 @@ pub fn start_native_verified_proxy(
     })
 }
 
+/// Native ManagedTun child executor, only for an already signed SYSTEM
+/// delegation. This is never exported through the legacy Windows controller
+/// RPC. The existing SCM supervisor owns the child after successful return.
+#[cfg(windows)]
+pub fn start_native_verified_managed_tun(
+    paths: &LocalRuntimePaths,
+) -> Result<RuntimeOperationResult, String> {
+    let bytes =
+        fs::read(&paths.config_path).map_err(|_| "HOST_WINDOWS_TUN_CONFIG_UNREADABLE")?;
+    edge_singbox::require_managed_tun_config(&bytes)?;
+    if !matches!(
+        classify_runtime_process(&paths.config_path),
+        RuntimeProcessClassification::Absent
+    ) {
+        return Err("HOST_WINDOWS_TUN_CONFLICTING_CHILD_OR_OWNER".into());
+    }
+    let (_, before) =
+        edge_shared_types::windows_native_network::observe_native_network_identity()?;
+    before.require_foreign_warp_up()?;
+    validate_singbox_config(&paths.singbox_binary_path, &paths.config_path)?;
+    let mut child = launch_singbox(paths, false)?;
+    let startup = observe_startup(&mut child);
+    let poststate = startup.and_then(|_| {
+        let (_, current) =
+            edge_shared_types::windows_native_network::observe_native_managed_tun()?;
+        current.require_foreign_network_preserved(&before)?;
+        Ok(())
+    });
+    if let Err(error) = poststate {
+        // We own ONLY this newly launched process. Stop it, never attempt
+        // to change another adapter/route/DNS owner. If the OS does not
+        // restore the exact network, leave the signed BEGIN unresolved.
+        let stopped = child.kill().and_then(|_| child.wait()).is_ok();
+        let restored = edge_shared_types::windows_native_network::observe_native_network_identity()
+            .and_then(|(_, after)| before.require_restored(&after))
+            .is_ok();
+        return Err(if stopped && restored {
+            format!("HOST_WINDOWS_TUN_START_REJECTED_RESTORED: {error}")
+        } else {
+            "HOST_WINDOWS_TUN_START_UNKNOWN_NO_REPLAY".into()
+        });
+    }
+    Ok(RuntimeOperationResult {
+        pid: Some(child.id()),
+        note: "NATIVE_SYSTEM_ADMITTED_MANAGED_TUN_STARTED".into(),
+        warnings: Vec::new(),
+        local_singbox: inspect_local_runtime(&paths.config_path),
+    })
+}
+
 fn existing_owner_for_noop(
     owner: Option<&ProcessObservation>,
     explicit_restart: bool,
