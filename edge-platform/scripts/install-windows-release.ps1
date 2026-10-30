@@ -158,6 +158,38 @@ function Assert-RootExecutionChain {
     }
 }
 
+
+function Protect-ReleaseStageBeforeExecution {
+    param([Parameter(Mandatory)] [string]$Stage)
+    $expectedPrefix = Join-Path $InstallRoot '.release-stage-'
+    if (-not $Stage.StartsWith($expectedPrefix, [StringComparison]::Ordinal)) {
+        throw 'WINDOWS_INSTALL_STAGE_SCOPE_INVALID'
+    }
+    # No extracted binary may be run while owned or writable by an ordinary
+    # SID, even when its verified source archive came from protected Git.
+    $items = @(Get-Item -LiteralPath $Stage -Force -ErrorAction Stop)
+    $items += @(Get-ChildItem -LiteralPath $Stage -Force -Recurse -ErrorAction Stop)
+    if ($items.Count -gt 12000) { throw 'WINDOWS_INSTALL_STAGE_TOO_LARGE' }
+    foreach ($entry in $items) {
+        if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'WINDOWS_INSTALL_STAGE_REPARSE_BLOCKED'
+        }
+    }
+    & icacls.exe $Stage /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-20:(OI)(CI)RX' /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_INSTALL_STAGE_ACL_FAILED' }
+    & icacls.exe $Stage /inheritance:r /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_INSTALL_STAGE_INHERITANCE_FAILED' }
+    & icacls.exe (Join-Path $Stage '*') /reset /T /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_INSTALL_STAGE_RESET_FAILED' }
+    & icacls.exe $Stage /setowner '*S-1-5-32-544' /T /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_INSTALL_STAGE_OWNER_FAILED' }
+    foreach ($entry in $items) {
+        if (@(Get-ProtectedAppAclReadback -Path $entry.FullName).Count -ne 0) {
+            throw 'WINDOWS_INSTALL_STAGE_UNPRIVILEGED_WRITER'
+        }
+    }
+}
+
 function Assert-OfflineWindow {
     if (-not $Offline) { return }
     if ($ForceRematerialize) {
@@ -725,8 +757,6 @@ $binDir = Join-Path $InstallRoot "bin"
 $releasesDir = Join-Path $InstallRoot "releases"
 $currentPath = Join-Path $InstallRoot "current.pb"
 $previousPath = Join-Path $InstallRoot "previous.pb"
-New-Item -ItemType Directory -Force -Path $binDir, $releasesDir | Out-Null
-
 Assert-HexSha256 -Value $ReleaseSetSha256 -Name "ReleaseSetSha256"
 $tag = "edge-release-$ReleaseSetSha256"
 Assert-AcceptedReleaseAuthority -AcceptedRevision $AcceptedRevision -Tag $tag -ArchivedAcceptanceSourceRunId $ArchivedAcceptanceSourceRunId
@@ -738,6 +768,9 @@ if (-not (Test-Path -LiteralPath $InstallRoot)) {
 } else {
     Assert-RootExecutionChain
 }
+# Directories are created only after the protected root has been proven or
+# provisioned. Creating them first could inherit writable volume-root ACEs.
+New-Item -ItemType Directory -Force -Path $binDir, $releasesDir | Out-Null
 $canonicalReleaseDir = Join-Path $releasesDir $ReleaseSetSha256
 $repairReleaseDir = Join-Path $releasesDir ($ReleaseSetSha256 + ".repair")
 $releaseDir = $canonicalReleaseDir
@@ -813,6 +846,7 @@ if ($needsInstall) {
             throw "Windows release package is missing bootstrap\install-windows-release.ps1"
         }
 
+        Protect-ReleaseStageBeforeExecution -Stage $stage
         $tool = Join-Path $unpacked "bin\edge-release-set.exe"
         $verifyArgs = @(
             "verify-windows", "--input", $stageReleaseSet, "--sha256-file", $stageReleaseSetSidecar,
