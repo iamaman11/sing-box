@@ -551,12 +551,112 @@ pub struct BoundNativeHostArtifacts {
     pub runtime_release_sha256: Vec<u8>,
 }
 
+
+/**
+ * Read the exact, previously enrolled Windows SYSTEM trust registry without
+ * changing a single signed/historical byte. The old stopped ProxyOnly target
+ * was once stored in FleetHostTarget.windows_mode. New Git desired MUST reject
+ * that field; only an installed, protected trust snapshot may be evaluated by
+ * this narrow historical reader. The privileged caller independently verifies
+ * the installed immutable release, protected trust ACL, private receipt key,
+ * Worker signer pin and fresh CURRENT Git authority before any signed effect.
+ *
+ * The in-memory clone is for structural validation only. Digests and receipts
+ * remain bound to the ORIGINAL stored protobuf bytes and original host.
+ */
+pub fn decode_historical_windows_trust_registry(
+    bytes: &[u8],
+    exact_spec_bytes: &[u8],
+    machine_id: &str,
+) -> Result<HostRegistry, &'static str> {
+    if bytes.is_empty() || bytes.len() > 65536 {
+        return Err("HOST_WINDOWS_HISTORICAL_REGISTRY_INVALID");
+    }
+    let original =
+        HostRegistry::decode(bytes).map_err(|_| "HOST_WINDOWS_HISTORICAL_REGISTRY_INVALID")?;
+    let mut checked = original.clone();
+    for host in &mut checked.hosts {
+        let Some(target) = host.target.as_mut() else {
+            continue;
+        };
+        if target.windows_mode == FleetHostMode::Unspecified as i32 {
+            continue;
+        }
+        // Historical trust from this installed Windows host is ONLY the old,
+        // explicitly stopped ProxyOnly owner. No ManagedTun, other host, or
+        // running-owner snapshot can gain a compatibility admission.
+        if host.kind != FleetHostKind::Windows as i32
+            || host.machine_id != machine_id
+            || target.windows_mode != FleetHostMode::ProxyOnly as i32
+            || target.run_state != crate::FleetHostRunState::Stopped as i32
+        {
+            return Err("HOST_WINDOWS_HISTORICAL_MODE_NOT_ACCEPTED");
+        }
+        let spec = crate::parse_production_desired_text(exact_spec_bytes)
+            .map_err(|_| "HOST_WINDOWS_HISTORICAL_SPEC_INVALID")?;
+        if spec.windows_datapath_mode != crate::WindowsDatapathMode::ProxyOnly as i32 {
+            return Err("HOST_WINDOWS_HISTORICAL_MODE_SPEC_MISMATCH");
+        }
+        target.windows_mode = FleetHostMode::Unspecified as i32;
+    }
+    crate::validate_host_registry(&checked)
+        .map_err(|_| "HOST_WINDOWS_HISTORICAL_REGISTRY_INVALID")?;
+    if !checked
+        .hosts
+        .iter()
+        .any(|host| host.kind == FleetHostKind::Windows as i32 && host.machine_id == machine_id)
+    {
+        return Err("HOST_WINDOWS_HISTORICAL_MACHINE_UNREGISTERED");
+    }
+    Ok(original)
+}
+
+/// This function is for verifying a LOCAL, protected, previously installed
+/// Windows trust snapshot only. Live HostIntent/Worker operations continue
+/// through bind_native_host_artifacts, which rejects all duplicate Git modes.
+pub fn bind_historical_windows_trust_artifacts(
+    intent: &FleetHostIntent,
+    registry_pb: &[u8],
+    exact_spec_bytes: &[u8],
+    release_set_pb: &[u8],
+) -> Result<(HostRegistry, BoundNativeHostArtifacts), &'static str> {
+    if intent.kind != FleetHostKind::Windows as i32 {
+        return Err("HOST_WINDOWS_HISTORICAL_KIND_INVALID");
+    }
+    bind_native_host_artifacts_inner(
+        intent,
+        registry_pb,
+        exact_spec_bytes,
+        release_set_pb,
+        None,
+        true,
+    )
+}
+
 pub fn bind_native_host_artifacts(
     intent: &FleetHostIntent,
     registry_pb: &[u8],
     exact_spec_bytes: &[u8],
     release_set_pb: &[u8],
     vm_bundle_pb: Option<&[u8]>,
+) -> Result<(HostRegistry, BoundNativeHostArtifacts), &'static str> {
+    bind_native_host_artifacts_inner(
+        intent,
+        registry_pb,
+        exact_spec_bytes,
+        release_set_pb,
+        vm_bundle_pb,
+        false,
+    )
+}
+
+fn bind_native_host_artifacts_inner(
+    intent: &FleetHostIntent,
+    registry_pb: &[u8],
+    exact_spec_bytes: &[u8],
+    release_set_pb: &[u8],
+    vm_bundle_pb: Option<&[u8]>,
+    historical_windows_trust: bool,
 ) -> Result<(HostRegistry, BoundNativeHostArtifacts), &'static str> {
     fn digest_bytes(bytes: &[u8]) -> Vec<u8> {
         ring::digest::digest(&ring::digest::SHA256, bytes)
@@ -570,8 +670,15 @@ pub fn bind_native_host_artifacts(
     {
         return Err("HOST_NATIVE_ARTIFACT_SIZE_INVALID");
     }
-    let registry =
-        crate::decode_host_registry(registry_pb).map_err(|_| "HOST_NATIVE_REGISTRY_INVALID")?;
+    let registry = if historical_windows_trust {
+        decode_historical_windows_trust_registry(
+            registry_pb,
+            exact_spec_bytes,
+            &intent.machine_id,
+        )?
+    } else {
+        crate::decode_host_registry(registry_pb).map_err(|_| "HOST_NATIVE_REGISTRY_INVALID")?
+    };
     let host = registry
         .hosts
         .iter()
@@ -1109,6 +1216,96 @@ mod tests {
 
     use super::*;
     use crate::{FleetHost, HostRegistry, encode_host_registry};
+
+    #[test]
+    fn installed_windows_historical_trust_is_read_only_and_proxyonly_scoped() {
+        use crate::release::v1::ReleaseSet;
+        use crate::{FleetHostRunState, FleetHostTarget};
+
+        let (mut registry, _, _, _, _) = fixture();
+        registry.hosts[0].target = Some(FleetHostTarget {
+            run_state: FleetHostRunState::Stopped as i32,
+            windows_mode: FleetHostMode::ProxyOnly as i32,
+        });
+        let stored = registry.encode_to_vec();
+        let spec = b"windows_datapath_mode: WINDOWS_DATAPATH_MODE_PROXY_ONLY\n";
+        let release = ReleaseSet {
+            schema_version: crate::RELEASE_SET_SCHEMA_VERSION,
+            source_revision: "a".repeat(40),
+            ..Default::default()
+        };
+        let release_pb = release.encode_to_vec();
+        let sha = |bytes: &[u8]| {
+            ring::digest::digest(&ring::digest::SHA256, bytes)
+                .as_ref()
+                .to_vec()
+        };
+        let intent = FleetHostIntent {
+            schema_version: 1,
+            machine_id: "windows-1".into(),
+            kind: FleetHostKind::Windows as i32,
+            resource_id: "sing-box".into(),
+            operation_id: "historical-trust".into(),
+            action: FleetHostAction::Stop as i32,
+            registry_sha256: sha(&stored),
+            desired_sha256: digest_host_desired(&registry.hosts[0], spec).unwrap(),
+            release_set_sha256: sha(&release_pb),
+            requested_at_unix: 123,
+            ..Default::default()
+        };
+
+        // The current Git reader and ALL new/remote admission reject the old
+        // field, even though the protected HISTORICAL trust may still use it.
+        assert!(crate::decode_host_registry(&stored).is_err());
+        assert_eq!(
+            bind_native_host_artifacts(&intent, &stored, spec, &release_pb, None).unwrap_err(),
+            "HOST_NATIVE_REGISTRY_INVALID"
+        );
+        let historic = decode_historical_windows_trust_registry(&stored, spec, "windows-1")
+            .unwrap();
+        assert_eq!(historic.encode_to_vec(), stored);
+        let (_, bound) =
+            bind_historical_windows_trust_artifacts(&intent, &stored, spec, &release_pb)
+                .unwrap();
+        assert_eq!(bound.registry_sha256, sha(&stored));
+        assert_eq!(bound.desired_sha256, intent.desired_sha256);
+        assert_eq!(bound.release_set_sha256, sha(&release_pb));
+
+        let mut forged = intent.clone();
+        forged.registry_sha256[0] ^= 1;
+        assert_eq!(
+            bind_historical_windows_trust_artifacts(&forged, &stored, spec, &release_pb)
+                .unwrap_err(),
+            "HOST_INTENT_DIGEST_MISMATCH"
+        );
+        assert_eq!(
+            decode_historical_windows_trust_registry(&stored, spec, "foreign-windows"),
+            Err("HOST_WINDOWS_HISTORICAL_MODE_NOT_ACCEPTED")
+        );
+        assert_eq!(
+            decode_historical_windows_trust_registry(
+                &stored,
+                b"windows_datapath_mode: WINDOWS_DATAPATH_MODE_MANAGED_TUN\n",
+                "windows-1",
+            ),
+            Err("HOST_WINDOWS_HISTORICAL_MODE_SPEC_MISMATCH")
+        );
+        let mut invalid = registry.clone();
+        invalid.hosts[0].target.as_mut().unwrap().windows_mode =
+            FleetHostMode::ManagedTun as i32;
+        assert_eq!(
+            decode_historical_windows_trust_registry(&invalid.encode_to_vec(), spec, "windows-1"),
+            Err("HOST_WINDOWS_HISTORICAL_MODE_NOT_ACCEPTED")
+        );
+        invalid.hosts[0].target.as_mut().unwrap().windows_mode =
+            FleetHostMode::ProxyOnly as i32;
+        invalid.hosts[0].target.as_mut().unwrap().run_state =
+            FleetHostRunState::Running as i32;
+        assert_eq!(
+            decode_historical_windows_trust_registry(&invalid.encode_to_vec(), spec, "windows-1"),
+            Err("HOST_WINDOWS_HISTORICAL_MODE_NOT_ACCEPTED")
+        );
+    }
 
     #[test]
     fn one_git_vm_first_use_gate_preserves_receipt_registration_boundary() {

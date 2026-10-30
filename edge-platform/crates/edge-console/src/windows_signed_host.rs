@@ -123,8 +123,16 @@ pub(super) async fn current_authority(
         registry: &[u8],
         spec: &[u8],
         release: &[u8],
+        historical_windows_trust: bool,
     ) -> Result<FleetHostIntent, String> {
-        let hosts = edge_shared_types::decode_host_registry(registry)?;
+        let hosts = if historical_windows_trust {
+            edge_shared_types::host_lifecycle::decode_historical_windows_trust_registry(
+                registry, spec, machine,
+            )
+            .map_err(str::to_owned)?
+        } else {
+            edge_shared_types::decode_host_registry(registry)?
+        };
         let host = hosts
             .hosts
             .iter()
@@ -151,6 +159,7 @@ pub(super) async fn current_authority(
         &boot.registry_pb,
         &boot.selected_spec_bytes,
         &boot.release_set_pb,
+        true,
     )?;
     let boot = verify_system_trust(&bytes, &historical, &installed.release_set_sha256, private)?;
     let (installed_pb, current_pb, registry_pb, spec) =
@@ -165,6 +174,7 @@ pub(super) async fn current_authority(
         &registry_pb,
         &spec,
         &current_pb,
+        false,
     )?;
     let (registry, _) =
         bind_native_host_artifacts(&binding, &registry_pb, &spec, &current_pb, None)?;
@@ -220,13 +230,13 @@ pub(super) fn verify_system_trust(
     {
         return Err("HOST_WINDOWS_SYSTEM_TRUST_IDENTITY_INVALID");
     }
-    let (registry, bound) = bind_native_host_artifacts(
-        intent,
-        &trust.registry_pb,
-        &trust.selected_spec_bytes,
-        &trust.release_set_pb,
-        None,
-    )?;
+    let (registry, bound) =
+        edge_shared_types::host_lifecycle::bind_historical_windows_trust_artifacts(
+            intent,
+            &trust.registry_pb,
+            &trust.selected_spec_bytes,
+            &trust.release_set_pb,
+        )?;
     let host = registry
         .hosts
         .iter()
