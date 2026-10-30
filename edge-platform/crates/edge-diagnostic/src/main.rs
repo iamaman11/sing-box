@@ -44,6 +44,9 @@ use windows_sys::Win32::System::Services::{
     SERVICE_PAUSED, SERVICE_RUNNING, SERVICE_START_PENDING, SERVICE_STATUS_PROCESS,
 };
 
+#[cfg(windows)]
+mod windows_app_audit;
+
 const WINDOWS_CONTROLLER_SERVICE_NAME: &str = "EdgePlatformController";
 const MANAGED_TUN_INTERFACE_NAME: &str = "sing-box-tun";
 
@@ -57,10 +60,27 @@ fn main() {
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let command = args.next().ok_or_else(usage)?;
-    if command != "doctor" && command != "host-observe" {
+    if command != "doctor"
+        && command != "host-observe"
+        && command != "app-inventory"
+        && command != "app-routes"
+    {
         return Err(usage());
     }
     let state_path = PathBuf::from(args.next().ok_or_else(usage)?);
+    if command == "app-inventory" || command == "app-routes" {
+        if args.next().is_some() {
+            return Err(usage());
+        }
+        #[cfg(windows)]
+        {
+            return windows_app_audit::run(&command, &state_path);
+        }
+        #[cfg(not(windows))]
+        {
+            return Err("HOST_WINDOWS_APP_AUDIT_REQUIRES_WINDOWS".to_owned());
+        }
+    }
     if command == "host-observe" {
         if args.next().is_some() {
             return Err(usage());
@@ -1338,7 +1358,7 @@ fn observe_udp6_listeners(projects: &BTreeMap<u32, String>) -> Result<usize, Str
 }
 
 fn usage() -> String {
-    "usage: edge-diagnostic doctor <current.pb> [--fast] | host-observe <current.pb>".to_owned()
+    "usage: edge-diagnostic doctor <current.pb> [--fast] | host-observe <current.pb> | app-inventory <current.pb> | app-routes <current.pb>".to_owned()
 }
 
 #[cfg(test)]
