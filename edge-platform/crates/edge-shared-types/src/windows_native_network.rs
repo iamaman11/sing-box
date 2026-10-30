@@ -98,7 +98,56 @@ pub struct ManagedTunNetworkObservation {
     pub owned_tun: ManagedAdapterIdentity,
 }
 
+fn native_default_capture_present(
+    routes: &[RouteIdentity],
+    luid: u64,
+    family: u16,
+) -> bool {
+    let bytes = match family {
+        AF_INET => 4,
+        AF_INET6 => 16,
+        _ => return false,
+    };
+    let zero = vec![0; bytes];
+    let mut high = zero.clone();
+    high[0] = 128;
+    let owned = |prefix: &[u8], length| {
+        routes.iter().any(|route| {
+            route.interface_luid == luid
+                && route.family == family
+                && route.prefix_length == length
+                && route.prefix == prefix
+        })
+    };
+    owned(&zero, 0) || (owned(&zero, 1) && owned(&high, 1))
+}
+
 impl ManagedTunNetworkObservation {
+    /// A signed ManagedTun START must capture both IP families through the
+    /// SAME observed kernel interface and must not borrow Cloudflare One's
+    /// LUID. A TUN named after sing-box but lacking routed IPv6 is not PASS.
+    pub fn require_native_dual_stack_route_capture(&self) -> Result<(), &'static str> {
+        let luid = self.owned_tun.interface_luid;
+        if luid == 0
+            || self.network.foreign_warp_adapters.iter().any(|warp| warp.interface_luid == luid)
+            || self.owned_tun.oper_status != 1
+        {
+            return Err("HOST_WINDOWS_MANAGED_TUN_NATIVE_OWNER_INVALID");
+        }
+        for (family, reason) in [
+            (AF_INET, "HOST_WINDOWS_MANAGED_TUN_IPV4_ROUTE_UNPROVEN"),
+            (AF_INET6, "HOST_WINDOWS_MANAGED_TUN_IPV6_ROUTE_UNPROVEN"),
+        ] {
+            if !self.network.addresses.iter().any(|address| {
+                address.interface_luid == luid && address.family == family
+            }) || !native_default_capture_present(&self.network.routes, luid, family)
+            {
+                return Err(reason);
+            }
+        }
+        Ok(())
+    }
+
     /// A controlled TUN may add only routes and addresses through its own
     /// LUID. It must not alter the caller's original foreign routes, address
     /// bindings, resolver ordering or Cloudflare One adapter. Fail closed
@@ -107,9 +156,7 @@ impl ManagedTunNetworkObservation {
         &self,
         before: &NativeNetworkIdentity,
     ) -> Result<(), &'static str> {
-        if self.owned_tun.oper_status != 1 {
-            return Err("HOST_WINDOWS_MANAGED_TUN_NOT_RUNNING");
-        }
+        self.require_native_dual_stack_route_capture()?;
         self.network.require_foreign_warp_up()?;
         let preserved = NativeNetworkIdentity {
             routes: self
@@ -560,8 +607,14 @@ pub fn observe_native_managed_tun()
     ))
 }
 
-fn read_native_network_snapshot()
--> Result<(NativeNetworkReadback, NativeNetworkIdentity, Vec<ManagedAdapterIdentity>), &'static str> {
+fn read_native_network_snapshot() -> Result<
+    (
+        NativeNetworkReadback,
+        NativeNetworkIdentity,
+        Vec<ManagedAdapterIdentity>,
+    ),
+    &'static str,
+> {
     let mut result = NativeNetworkReadback::default();
     let mut routes = BTreeSet::new();
     let mut dns = BTreeSet::new();
@@ -677,7 +730,6 @@ fn observe_owned_foreign_interfaces()
 mod tests {
     use super::*;
 
-
     #[test]
     fn managed_tun_native_poststate_may_only_add_owned_interface_resources() {
         let baseline = NativeNetworkIdentity {
@@ -722,6 +774,19 @@ mod tests {
         };
         after.network.routes.push(RouteIdentity {
             interface_luid: 42,
+            family: AF_INET,
+            prefix: vec![0; 4],
+            prefix_length: 0,
+            next_hop: vec![0; 4],
+            metric: 5,
+            protocol: 3,
+            origin: 2,
+            site_prefix_length: 0,
+            loopback: false,
+            published: false,
+        });
+        after.network.routes.push(RouteIdentity {
+            interface_luid: 42,
             family: AF_INET6,
             prefix: vec![0; 16],
             prefix_length: 0,
@@ -732,6 +797,12 @@ mod tests {
             site_prefix_length: 0,
             loopback: false,
             published: false,
+        });
+        after.network.addresses.push(UnicastAddressIdentity {
+            interface_luid: 42,
+            family: AF_INET,
+            address: vec![172, 19, 0, 1],
+            prefix_length: 30,
         });
         after.network.addresses.push(UnicastAddressIdentity {
             interface_luid: 42,
@@ -746,6 +817,25 @@ mod tests {
             server: vec![0xfd; 16],
         });
         assert_eq!(after.require_foreign_network_preserved(&baseline), Ok(()));
+        after.network.routes.retain(|route| route.family != AF_INET6);
+        assert_eq!(
+            after.require_native_dual_stack_route_capture(),
+            Err("HOST_WINDOWS_MANAGED_TUN_IPV6_ROUTE_UNPROVEN")
+        );
+        after.network.routes.push(RouteIdentity {
+            interface_luid: 42,
+            family: AF_INET6,
+            prefix: vec![0; 16],
+            prefix_length: 0,
+            next_hop: vec![0; 16],
+            metric: 5,
+            protocol: 3,
+            origin: 2,
+            site_prefix_length: 0,
+            loopback: false,
+            published: false,
+        });
+        assert_eq!(after.require_native_dual_stack_route_capture(), Ok(()));
         after.network.routes[0].metric = 11;
         assert_eq!(
             after.require_foreign_network_preserved(&baseline),
@@ -761,7 +851,7 @@ mod tests {
         after.owned_tun.oper_status = 2;
         assert_eq!(
             after.require_foreign_network_preserved(&baseline),
-            Err("HOST_WINDOWS_MANAGED_TUN_NOT_RUNNING")
+            Err("HOST_WINDOWS_MANAGED_TUN_NATIVE_OWNER_INVALID")
         );
         after.owned_tun.oper_status = 1;
         after.network.foreign_warp_adapters[0].oper_status = 2;
