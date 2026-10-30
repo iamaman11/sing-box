@@ -773,6 +773,7 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
             .map_err(|_| "HOST_WINDOWS_SYSTEM_CLOCK_UNAVAILABLE")?
             .as_secs();
     }
+    let effect_completed = std::cell::Cell::new(false);
     let result = tokio::task::block_in_place(|| {
         edge_shared_types::host_journal::execute_native_windows_host_once(
             &intent,
@@ -790,14 +791,16 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
             &journal,
             || {
                 let observed = system_native_observation(install_root)?;
-                // Both the pre-BEGIN observation and native poststate must
-                // retain the same exact routes, ordered DNS and Cloudflare
-                // One interface. A matching route COUNT is not sufficient.
-                // This protects ProxyOnly and inert ManagedTun staging only;
-                // route-capturing START remains independently blocked.
-                let (_, current) =
-                    edge_shared_types::windows_native_network::observe_native_network_identity()?;
-                network_baseline.require_restored(&current)?;
+                if mode == WindowsDatapathMode::ManagedTun
+                    && effect_completed.get()
+                    && observed.owner_state == edge_shared_types::FleetNativeOwnerState::Running as i32
+                {
+                    let (_, live) =
+                        edge_shared_types::windows_native_network::observe_native_managed_tun()?;
+                    live.require_foreign_network_preserved(network_baseline)?;
+                } else {
+                    network_preflight.require_current(effect_completed.get())?;
+                }
                 Ok(observed)
             },
             |step| match step {
@@ -813,7 +816,8 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
                 }
                 _ => Err("HOST_WINDOWS_SYSTEM_NATIVE_STEP_NOT_ACCEPTED"),
             },
-            |step| match step {
+            |step| {
+                let outcome = match step {
                 FleetHostPlannedStep::ReplaceRelease => windows_update::apply(
                     install_root,
                     update.as_ref().ok_or("HOST_WINDOWS_UPDATE_NOT_PREPARED")?,
@@ -834,8 +838,13 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
                     &installed_runtime_sha256,
                     config.as_ref(),
                     &trust,
-                    &network_baseline,
+                    network_baseline,
                 ),
+                };
+                if outcome.is_ok() {
+                    effect_completed.set(true);
+                }
+                outcome
             },
         )
     })
