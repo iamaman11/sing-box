@@ -12,9 +12,12 @@ use crate::{
 };
 use prost::Message;
 use std::collections::BTreeSet;
+use std::net::IpAddr;
 use windows_sys::Win32::NetworkManagement::IpHelper::{
     FreeMibTable, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST, GetAdaptersAddresses,
-    GetIfTable2, GetIpForwardTable2, IP_ADAPTER_ADDRESSES_LH, MIB_IF_TABLE2, MIB_IPFORWARD_TABLE2,
+    GetBestRoute2,
+    GetIfTable2, GetIpForwardTable2, IP_ADAPTER_ADDRESSES_LH, MIB_IF_TABLE2,
+    MIB_IPFORWARD_ROW2, MIB_IPFORWARD_TABLE2,
 };
 use windows_sys::Win32::Networking::WinSock::{
     AF_INET, AF_INET6, AF_UNSPEC, SOCKADDR_IN, SOCKADDR_IN6, SOCKADDR_INET,
@@ -102,6 +105,85 @@ pub struct NativeNetworkIdentity {
 pub struct ManagedTunNetworkObservation {
     pub network: NativeNetworkIdentity,
     pub owned_tun: ManagedAdapterIdentity,
+}
+
+/// The actual Windows routing owner, not an HTTPS success, proves whether
+/// a control destination can survive stopping the sing-box-owned TUN. The
+/// decision must be native GetBestRoute2, including route/interface metrics;
+/// longest-prefix guesses from the read-only route list are insufficient.
+fn reject_control_route_via_owned_tun(
+    selected_luid: u64,
+    owned_tun_luid: u64,
+) -> Result<(), &'static str> {
+    if selected_luid == 0 || owned_tun_luid == 0 {
+        return Err("HOST_WINDOWS_CONTROL_ROUTE_LUID_UNPROVEN");
+    }
+    if selected_luid == owned_tun_luid {
+        return Err("HOST_WINDOWS_CONTROL_ROUTE_CAPTURED_BY_TUN");
+    }
+    Ok(())
+}
+
+/// At least one current DNS answer for each independently checked control
+/// domain must be routable OUTSIDE the sole native owned TUN. All returned
+/// addresses are checked; an alternate IPv6 answer cannot silently leak
+/// through a route-capturing interface. Nothing is written to the network.
+pub fn require_control_destinations_outside_tun(
+    destinations: &[IpAddr],
+    owned_tun_luid: u64,
+) -> Result<(), &'static str> {
+    if destinations.is_empty() || destinations.len() > 64 || owned_tun_luid == 0 {
+        return Err("HOST_WINDOWS_CONTROL_ROUTE_DESTINATIONS_UNPROVEN");
+    }
+    for address in destinations {
+        let mut destination: SOCKADDR_INET = unsafe { std::mem::zeroed() };
+        match address {
+            IpAddr::V4(ip) => {
+                let native = unsafe { &mut destination.Ipv4 };
+                native.sin_family = AF_INET;
+                // WinSock IPv4 address is network byte order.
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        ip.octets().as_ptr(),
+                        (&mut native.sin_addr as *mut _).cast::<u8>(),
+                        4,
+                    );
+                }
+            }
+            IpAddr::V6(ip) => {
+                let native = unsafe { &mut destination.Ipv6 };
+                native.sin6_family = AF_INET6;
+                unsafe {
+                    std::ptr::copy_nonoverlapping(
+                        ip.octets().as_ptr(),
+                        (&mut native.sin6_addr as *mut _).cast::<u8>(),
+                        16,
+                    );
+                }
+            }
+        }
+        let mut route: MIB_IPFORWARD_ROW2 = unsafe { std::mem::zeroed() };
+        let mut source: SOCKADDR_INET = unsafe { std::mem::zeroed() };
+        let status = unsafe {
+            GetBestRoute2(
+                std::ptr::null(),
+                0,
+                std::ptr::null(),
+                &destination,
+                0,
+                &mut route,
+                &mut source,
+            )
+        };
+        if status != 0 {
+            return Err("HOST_WINDOWS_CONTROL_ROUTE_UNAVAILABLE");
+        }
+        reject_control_route_via_owned_tun(
+            unsafe { route.InterfaceLuid.Value },
+            owned_tun_luid,
+        )?;
+    }
+    Ok(())
 }
 
 fn native_default_capture_present(routes: &[RouteIdentity], luid: u64, family: u16) -> bool {
@@ -906,6 +988,20 @@ fn observe_owned_foreign_interfaces()
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_control_route_must_never_select_own_tun_luid() {
+        assert_eq!(reject_control_route_via_owned_tun(100, 100),
+            Err("HOST_WINDOWS_CONTROL_ROUTE_CAPTURED_BY_TUN"));
+        assert_eq!(reject_control_route_via_owned_tun(0, 100),
+            Err("HOST_WINDOWS_CONTROL_ROUTE_LUID_UNPROVEN"));
+        assert_eq!(reject_control_route_via_owned_tun(200, 0),
+            Err("HOST_WINDOWS_CONTROL_ROUTE_LUID_UNPROVEN"));
+        assert_eq!(reject_control_route_via_owned_tun(200, 100), Ok(()));
+        assert_eq!(require_control_destinations_outside_tun(&[], 100),
+            Err("HOST_WINDOWS_CONTROL_ROUTE_DESTINATIONS_UNPROVEN"));
+    }
+
+
     use super::*;
 
     #[test]
