@@ -783,8 +783,14 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
         edge_shared_types::host_lifecycle::MAX_HOST_INTENT_BYTES as u64,
     )
     .map_err(str::to_owned)?;
-    let intent_bytes = &transport.bytes;
-    let intent = decode_host_intent(&intent_bytes).map_err(str::to_owned)?;
+    // The runner supplies ONLY the base intent. SYSTEM owns the admission
+    // witness and, once native checks succeed, includes it in the exact bytes
+    // subsequently authorized by the existing Worker. No second command.
+    let mut intent_bytes = transport.bytes.clone();
+    let mut intent = decode_host_intent(&intent_bytes).map_err(str::to_owned)?;
+    if intent.network_admission.is_some() {
+        return Err("HOST_WINDOWS_RUNNER_NETWORK_ADMISSION_FORBIDDEN".into());
+    }
     if intent.kind != FleetHostKind::Windows as i32
         || intent.resource_id != "sing-box"
         || !matches!(
@@ -866,15 +872,10 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
             .duration_since(UNIX_EPOCH)
             .map_err(|_| "HOST_WINDOWS_SYSTEM_CLOCK_UNAVAILABLE")?
             .as_secs();
-        edge_shared_types::host_lifecycle::verify_windows_network_admission(
-            &intent,
-            &selected.native_receipt_public_key,
-            &installed_runtime_sha256,
-            &candidate.digest,
-            &network_baseline.signed_prebegin_digest(),
-            admission_now,
-        )?;
-        // Independently re-run the exact Line1 credentials over a disposable
+        // The native SYSTEM owner will mint the exact bound witness only
+        // after all actual read-only probes complete. The Worker never
+        // authorizes a runner-supplied pre-TUN readiness boolean.
+        // Independently prove the exact Line1 credentials over a disposable
         // ProxyOnly client and the direct DNS/HTTPS control path. Runner-held
         // hashes or a past successful report cannot substitute these probes.
         let active = load_verified_activation(install_root)
@@ -889,19 +890,32 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
         )
         .map_err(|_| "HOST_WINDOWS_NETWORK_ADMISSION_LINE1_UNPROVEN")?;
         let (dns, control) = probe_pre_tun_native_control_dns().await?;
-        let proof = intent
-            .network_admission
-            .as_ref()
-            .ok_or("HOST_WINDOWS_NETWORK_ADMISSION_MISSING")?;
-        if proof.line1_witness_sha256 != line1
-            || proof.dns_witness_sha256 != dns
-            || proof.control_witness_sha256 != control
-        {
-            return Err("HOST_WINDOWS_NETWORK_ADMISSION_WITNESS_DRIFT".into());
-        }
         let (_, after_witness) =
             edge_shared_types::windows_native_network::observe_native_network_identity()?;
         network_baseline.require_restored(&after_witness)?;
+        let admission = edge_shared_types::host_lifecycle::sign_windows_network_admission(
+            &intent,
+            &receipt_private,
+            &installed_runtime_sha256,
+            &candidate.digest,
+            &network_baseline.signed_prebegin_digest(),
+            &line1,
+            &control,
+            &dns,
+            admission_now,
+        )?;
+        intent.network_admission = Some(admission);
+        edge_shared_types::host_lifecycle::verify_windows_network_admission(
+            &intent,
+            &selected.native_receipt_public_key,
+            &installed_runtime_sha256,
+            &candidate.digest,
+            &network_baseline.signed_prebegin_digest(),
+            admission_now,
+        )?;
+        // The Worker must authenticate the same exact enriched Protobuf
+        // bytes, and local journal + Controller must recheck both signatures.
+        intent_bytes = intent.encode_to_vec();
         Some(candidate)
     } else {
         if intent.network_admission.is_some() {
