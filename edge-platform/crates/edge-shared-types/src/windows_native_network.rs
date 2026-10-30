@@ -8,9 +8,8 @@
 //! not prove their restoration, WARP health, Line1, or future TUN safety.
 use std::collections::BTreeSet;
 use windows_sys::Win32::NetworkManagement::IpHelper::{
-    FreeMibTable, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST,
-    GetAdaptersAddresses, GetIfTable2, GetIpForwardTable2, IP_ADAPTER_ADDRESSES_LH, MIB_IF_TABLE2,
-    MIB_IPFORWARD_TABLE2,
+    FreeMibTable, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST, GetAdaptersAddresses,
+    GetIfTable2, GetIpForwardTable2, IP_ADAPTER_ADDRESSES_LH, MIB_IF_TABLE2, MIB_IPFORWARD_TABLE2,
 };
 use windows_sys::Win32::Networking::WinSock::{
     AF_INET, AF_INET6, AF_UNSPEC, SOCKADDR_IN, SOCKADDR_IN6, SOCKADDR_INET,
@@ -311,9 +310,7 @@ fn read_native_dns(
             if entry.OperStatus == 1 {
                 let mut unicast = entry.FirstUnicastAddress;
                 while !unicast.is_null() {
-                    if unicast_links == MAX_UNICAST_LINKS
-                        || !in_native_buffer(&buffer, unicast)
-                    {
+                    if unicast_links == MAX_UNICAST_LINKS || !in_native_buffer(&buffer, unicast) {
                         return Err("HOST_WINDOWS_NETWORK_UNICAST_CHAIN_INVALID");
                     }
                     unicast_links += 1;
@@ -329,7 +326,9 @@ fn read_native_dns(
                         AF_INET if in_native_buffer(&buffer, socket.cast::<SOCKADDR_IN>()) => {
                             // SAFETY: the complete IPv4 sockaddr is verified above.
                             let native = unsafe { &*socket.cast::<SOCKADDR_IN>() };
-                            unsafe { native.sin_addr.S_un.S_addr }.to_ne_bytes().to_vec()
+                            unsafe { native.sin_addr.S_un.S_addr }
+                                .to_ne_bytes()
+                                .to_vec()
                         }
                         AF_INET6
                             if row.Address.iSockaddrLength >= 28
