@@ -671,8 +671,8 @@ pub(super) async fn verify_historical_windows_trust_ancestor(
     }
     // GitHub includes huge file patches on page 1. Page 2 retains exact
     // base/merge-base/status even when all commits fit on page 1.
-    let compare_url = bounded_git_ancestry_url(base, old_merge, installed_merge)
-        .map_err(str::to_owned)?;
+    let compare_url =
+        bounded_git_ancestry_url(base, old_merge, installed_merge).map_err(str::to_owned)?;
     let (ancestry, published) = tokio::try_join!(
         fetch_json(&client, &compare_url),
         accepted_asset(
@@ -735,8 +735,8 @@ pub(super) async fn fetch_exact_protected_git(
     // Neither the runner nor the Administrator supplies registry bytes.
     // The published latest release must point EXACTLY at protected Git main.
     let current_tag_url = format!("{base}/git/ref/tags/{current_tag}");
-    let compare_url = bounded_git_ancestry_url(base, installed_merge, current_main)
-        .map_err(str::to_owned)?;
+    let compare_url =
+        bounded_git_ancestry_url(base, installed_merge, current_main).map_err(str::to_owned)?;
     let (current_tag_ref, ancestry) = tokio::try_join!(
         fetch_json(&client, &current_tag_url),
         fetch_json(&client, &compare_url),
