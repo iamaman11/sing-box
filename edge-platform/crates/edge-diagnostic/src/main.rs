@@ -286,8 +286,8 @@ fn observe_pending_privileged_request_metadata(install_root: &Path) -> String {
 }
 
 /// Bounded read-only Fleet snapshot. It never starts a service, accesses private
-/// credential material, walks processes, probes DNS/routes or hashes release files.
-/// Read-only native Windows SCM + local activation record. This is not
+/// credential material, walks processes, changes DNS/routes or hashes release
+/// files. Read-only native Windows SCM, interface inventory and activation. Not
 /// a privileged service operation and can never issue a VERIFIED receipt.
 fn build_host_observation(state_path: &Path) -> Result<Vec<u8>, String> {
     use edge_shared_types::host_lifecycle::build_native_observation;
@@ -366,6 +366,14 @@ fn build_host_observation(state_path: &Path) -> Result<Vec<u8>, String> {
         reason_codes.push("WINDOWS_SCM_UNSUPPORTED_HOST");
         FleetNativeOwnerState::Unproven
     };
+    // A stale sing-box-owned TUN can outlive its child after an interruption.
+    // Observe the kernel adapter directly: stopped SCM is NOT proof that a
+    // previous route capture has been undone. Report uncertainty in the same
+    // existing read-only snapshot; never delete or adopt the interface here.
+    #[cfg(windows)]
+    if let Err(error) = edge_shared_types::windows_native_network::require_owned_tun_absent() {
+        reason_codes.push(error);
+    }
     // SCM state is not sing-box runtime readiness or proof of external DNS,
     // network, TLS or authentication. The typed runtime_ready_proven=false
     // already expresses this missing proof. Do NOT put an expected proof gap
