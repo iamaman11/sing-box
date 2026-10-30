@@ -376,7 +376,11 @@ pub fn require_managed_tun_config(bytes: &[u8]) -> Result<(), &'static str> {
     {
         return Err("HOST_WINDOWS_TUN_CONFIG_NATIVE_ROUTE_INVALID");
     }
-    if config.pointer("/route/find_process").and_then(Value::as_bool) != Some(true) {
+    if config
+        .pointer("/route/find_process")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
         return Err("HOST_WINDOWS_TUN_PROCESS_READBACK_NOT_ENABLED");
     }
     let excluded = tun
@@ -771,7 +775,11 @@ pub fn verify_managed_application_routes(
     }
     let config: Value =
         serde_json::from_slice(config_bytes).map_err(|_| "WINDOWS_SELECTED_APPS_CONFIG_INVALID")?;
-    if config.pointer("/route/find_process").and_then(Value::as_bool) != Some(true) {
+    if config
+        .pointer("/route/find_process")
+        .and_then(Value::as_bool)
+        != Some(true)
+    {
         return Err("WINDOWS_SELECTED_APPS_PROCESS_READBACK_NOT_ENABLED");
     }
     let rules = config
@@ -2375,7 +2383,10 @@ mod tests {
         assert_eq!(verify_managed_application_routes(&bytes, &desired), Ok(()));
         assert_eq!(require_managed_tun_config(&bytes), Ok(()));
         let mut corrupted: Value = serde_json::from_slice(&bytes).unwrap();
-        corrupted["route"].as_object_mut().unwrap().remove("find_process");
+        corrupted["route"]
+            .as_object_mut()
+            .unwrap()
+            .remove("find_process");
         let raw = serde_json::to_vec(&corrupted).unwrap();
         assert_eq!(
             verify_managed_application_routes(&raw, &desired),
@@ -2406,17 +2417,37 @@ mod tests {
         let config = render_windows_config_for_desired(&stage2_runtime_state(), &desired).unwrap();
         assert_eq!(verify_managed_application_routes(&config, &desired), Ok(()));
         let rendered: Value = serde_json::from_slice(&config).unwrap();
-        assert!(rendered["route"]["rules"].as_array().unwrap()
-            .iter().all(|rule| rule.get("process_path").is_none()));
-        assert_eq!(desired.windows_application_routing.as_ref().unwrap().applications,
-            vec![saved.clone()]);
+        assert!(
+            rendered["route"]["rules"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|rule| rule.get("process_path").is_none())
+        );
+        assert_eq!(
+            desired
+                .windows_application_routing
+                .as_ref()
+                .unwrap()
+                .applications,
+            vec![saved.clone()]
+        );
         desired.windows_application_routing.as_mut().unwrap().scope =
             WindowsApplicationScope::SelectedApplications as i32;
-        let selected = render_windows_config_for_desired(&stage2_runtime_state(), &desired).unwrap();
-        assert_eq!(verify_managed_application_routes(&selected, &desired), Ok(()));
+        let selected =
+            render_windows_config_for_desired(&stage2_runtime_state(), &desired).unwrap();
+        assert_eq!(
+            verify_managed_application_routes(&selected, &desired),
+            Ok(())
+        );
         let activated: Value = serde_json::from_slice(&selected).unwrap();
-        assert!(activated["route"]["rules"].as_array().unwrap()
-            .iter().any(|rule| rule.get("process_path") == Some(&json!([saved.executable_path]))));
+        assert!(
+            activated["route"]["rules"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|rule| rule.get("process_path") == Some(&json!([saved.executable_path])))
+        );
     }
 
     #[test]

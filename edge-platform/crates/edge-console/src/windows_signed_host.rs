@@ -602,9 +602,7 @@ async fn probe_pre_tun_native_control_dns() -> Result<([u8; 32], [u8; 32]), &'st
 /// Only a native Windows best-route lookup, rather than a successful HTTP
 /// request that might itself use the TUN, can prove control reachability is
 /// independent of this owned interface after route capture.
-async fn verify_control_egress_outside_native_tun(tun_luid: u64)
-    -> Result<(), &'static str>
-{
+async fn verify_control_egress_outside_native_tun(tun_luid: u64) -> Result<(), &'static str> {
     let mut answers = Vec::new();
     for name in ["api.github.com", "cp.cloudflare.com"] {
         let addresses = tokio::net::lookup_host((name, 443))
@@ -621,8 +619,7 @@ async fn verify_control_egress_outside_native_tun(tun_luid: u64)
     answers.sort_unstable();
     answers.dedup();
     edge_shared_types::windows_native_network::require_control_destinations_outside_tun(
-        &answers,
-        tun_luid,
+        &answers, tun_luid,
     )
 }
 

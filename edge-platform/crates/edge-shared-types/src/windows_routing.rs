@@ -63,9 +63,8 @@ pub fn verify_native_paths(
 
     validate(policy)?;
     let mut handles = Vec::new();
-    if let Some(policy) = policy.filter(|policy| {
-        policy.scope == Scope::SelectedApplications as i32
-    }) {
+    if let Some(policy) = policy.filter(|policy| policy.scope == Scope::SelectedApplications as i32)
+    {
         for app in &policy.applications {
             let path = Path::new(&app.executable_path);
             let mut chain: Vec<_> = path.ancestors().collect();

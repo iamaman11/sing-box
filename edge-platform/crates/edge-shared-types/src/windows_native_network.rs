@@ -15,8 +15,7 @@ use std::collections::BTreeSet;
 use std::net::IpAddr;
 use windows_sys::Win32::NetworkManagement::IpHelper::{
     FreeMibTable, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST, GetAdaptersAddresses,
-    GetBestRoute2,
-    GetIfTable2, GetIpForwardTable2, IP_ADAPTER_ADDRESSES_LH, MIB_IF_TABLE2,
+    GetBestRoute2, GetIfTable2, GetIpForwardTable2, IP_ADAPTER_ADDRESSES_LH, MIB_IF_TABLE2,
     MIB_IPFORWARD_ROW2, MIB_IPFORWARD_TABLE2,
 };
 use windows_sys::Win32::Networking::WinSock::{
@@ -178,10 +177,7 @@ pub fn require_control_destinations_outside_tun(
         if status != 0 {
             return Err("HOST_WINDOWS_CONTROL_ROUTE_UNAVAILABLE");
         }
-        reject_control_route_via_owned_tun(
-            unsafe { route.InterfaceLuid.Value },
-            owned_tun_luid,
-        )?;
+        reject_control_route_via_owned_tun(unsafe { route.InterfaceLuid.Value }, owned_tun_luid)?;
     }
     Ok(())
 }
@@ -990,17 +986,24 @@ fn observe_owned_foreign_interfaces()
 mod tests {
     #[test]
     fn native_control_route_must_never_select_own_tun_luid() {
-        assert_eq!(reject_control_route_via_owned_tun(100, 100),
-            Err("HOST_WINDOWS_CONTROL_ROUTE_CAPTURED_BY_TUN"));
-        assert_eq!(reject_control_route_via_owned_tun(0, 100),
-            Err("HOST_WINDOWS_CONTROL_ROUTE_LUID_UNPROVEN"));
-        assert_eq!(reject_control_route_via_owned_tun(200, 0),
-            Err("HOST_WINDOWS_CONTROL_ROUTE_LUID_UNPROVEN"));
+        assert_eq!(
+            reject_control_route_via_owned_tun(100, 100),
+            Err("HOST_WINDOWS_CONTROL_ROUTE_CAPTURED_BY_TUN")
+        );
+        assert_eq!(
+            reject_control_route_via_owned_tun(0, 100),
+            Err("HOST_WINDOWS_CONTROL_ROUTE_LUID_UNPROVEN")
+        );
+        assert_eq!(
+            reject_control_route_via_owned_tun(200, 0),
+            Err("HOST_WINDOWS_CONTROL_ROUTE_LUID_UNPROVEN")
+        );
         assert_eq!(reject_control_route_via_owned_tun(200, 100), Ok(()));
-        assert_eq!(require_control_destinations_outside_tun(&[], 100),
-            Err("HOST_WINDOWS_CONTROL_ROUTE_DESTINATIONS_UNPROVEN"));
+        assert_eq!(
+            require_control_destinations_outside_tun(&[], 100),
+            Err("HOST_WINDOWS_CONTROL_ROUTE_DESTINATIONS_UNPROVEN")
+        );
     }
-
 
     use super::*;
 
