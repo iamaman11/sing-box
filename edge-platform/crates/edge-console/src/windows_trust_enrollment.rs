@@ -419,6 +419,23 @@ fn exact_installed_git_ancestor(
     Ok(())
 }
 
+/// GitHub's first Compare page embeds full file patches; for a frequently
+/// updated protected main this can exceed the intentionally small HTTP cap.
+/// The second paginated page retains status/base/merge-base proof even when
+/// the comparison contains only one commit. Never widen the response bound.
+fn bounded_git_ancestry_url(
+    base: &str,
+    ancestor: &str,
+    descendant: &str,
+) -> Result<String, &'static str> {
+    if !exact_git_revision(ancestor) || !exact_git_revision(descendant) {
+        return Err("HOST_WINDOWS_TRUST_GIT_ANCESTRY_REVISION_INVALID");
+    }
+    Ok(format!(
+        "{base}/compare/{ancestor}...{descendant}?per_page=1&page=2"
+    ))
+}
+
 pub(super) async fn fetch_bounded(
     client: &reqwest::Client,
     url: &str,
@@ -654,7 +671,8 @@ pub(super) async fn verify_historical_windows_trust_ancestor(
     }
     // GitHub includes huge file patches on page 1. Page 2 retains exact
     // base/merge-base/status even when all commits fit on page 1.
-    let compare_url = format!("{base}/compare/{old_merge}...{installed_merge}?per_page=1&page=2");
+    let compare_url = bounded_git_ancestry_url(base, old_merge, installed_merge)
+        .map_err(str::to_owned)?;
     let (ancestry, published) = tokio::try_join!(
         fetch_json(&client, &compare_url),
         accepted_asset(
@@ -717,7 +735,8 @@ pub(super) async fn fetch_exact_protected_git(
     // Neither the runner nor the Administrator supplies registry bytes.
     // The published latest release must point EXACTLY at protected Git main.
     let current_tag_url = format!("{base}/git/ref/tags/{current_tag}");
-    let compare_url = format!("{base}/compare/{installed_merge}...{current_main}");
+    let compare_url = bounded_git_ancestry_url(base, installed_merge, current_main)
+        .map_err(str::to_owned)?;
     let (current_tag_ref, ancestry) = tokio::try_join!(
         fetch_json(&client, &current_tag_url),
         fetch_json(&client, &compare_url),
@@ -1124,6 +1143,28 @@ mod tests {
         compare["status"] = serde_json::json!("ahead");
         compare["base_commit"]["sha"] = serde_json::json!("d".repeat(40));
         assert!(exact_installed_git_ancestor(&compare, &old, &current).is_err());
+    }
+
+    #[test]
+    fn git_compare_proof_is_bounded_on_long_protected_main_history() {
+        let ancestor = "a".repeat(40);
+        let current = "b".repeat(40);
+        let url = bounded_git_ancestry_url(
+            "https://api.github.com/repos/iamaman11/sing-box",
+            &ancestor,
+            &current,
+        )
+        .unwrap();
+        assert!(url.contains(&format!("/compare/{ancestor}...{current}")));
+        assert!(url.ends_with("?per_page=1&page=2"));
+        assert_eq!(
+            bounded_git_ancestry_url(
+                "https://api.github.com/repos/iamaman11/sing-box",
+                &ancestor,
+                "invalid",
+            ),
+            Err("HOST_WINDOWS_TRUST_GIT_ANCESTRY_REVISION_INVALID")
+        );
     }
 
     #[test]
