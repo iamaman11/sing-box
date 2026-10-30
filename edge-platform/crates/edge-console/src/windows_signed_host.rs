@@ -504,14 +504,16 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
         &trust.release_set_pb,
         None,
     )?;
-    let mode = selected
-        .target
-        .as_ref()
-        .map(|target| FleetHostMode::try_from(target.windows_mode))
-        .transpose()
-        .map_err(|_| "HOST_WINDOWS_SYSTEM_TARGET_MODE_INVALID")?;
-    if mode != Some(FleetHostMode::ProxyOnly) {
-        return Err("HOST_WINDOWS_SYSTEM_PROXY_ONLY_REQUIRED".into());
+    // Independently re-check the exact Git host target against the exact
+    // signed desired spec. The runner's preflight is never trusted here.
+    let desired = edge_shared_types::parse_production_desired_text(&trust.selected_spec_bytes)?;
+    let mode = edge_shared_types::host_lifecycle::validate_windows_mode_target_and_spec(
+        &selected, &desired,
+    )?;
+    // Native route-capture admission remains closed until signed TUN effects,
+    // control-plane reachability and restoration are independently accepted.
+    if mode != WindowsDatapathMode::ProxyOnly {
+        return Err("HOST_WINDOWS_CONFIG_NETWORK_ADMISSION_REQUIRED".into());
     }
     // A pre-BEGIN native SCM/readback failure never creates journal state.
     tokio::task::block_in_place(|| system_native_observation(install_root))

@@ -28,17 +28,23 @@ pub(super) fn prepare(root: &Path, spec: &[u8]) -> Result<Option<Configuration>,
     let desired = edge_shared_types::parse_production_desired_text(spec)?;
     edge_controller_core::production::ProductionComposition::from_proto(&desired)
         .map_err(|_| "HOST_WINDOWS_CONFIG_DESIRED_INVALID")?;
-    if desired.windows_datapath_mode != WindowsDatapathMode::ProxyOnly as i32 {
-        return Err("HOST_WINDOWS_CONFIG_NETWORK_ADMISSION_REQUIRED".into());
+    let mode = WindowsDatapathMode::try_from(desired.windows_datapath_mode)
+        .map_err(|_| "HOST_WINDOWS_DATAPATH_MODE_INVALID")?;
+    if mode == WindowsDatapathMode::Unspecified {
+        return Err("HOST_WINDOWS_DATAPATH_MODE_INVALID".into());
     }
+    // A selected-application policy is inert in ProxyOnly. Do not demand
+    // installed process paths until a TUN candidate actually uses them.
     let application_paths = edge_shared_types::windows_routing::verify_native_paths(
-        desired.windows_application_routing.as_ref(),
+        if mode == WindowsDatapathMode::ManagedTun {
+            desired.windows_application_routing.as_ref()
+        } else {
+            None
+        },
     )?;
-    let bytes = edge_singbox::render_windows_config_for_desired(
-        &state,
-        WindowsDatapathMode::ProxyOnly,
-        &desired,
-    )?;
+    // Prepare and exact-binary-check either desired candidate with the SAME
+    // renderer. Preparing ManagedTun is not authorization to activate it.
+    let bytes = edge_singbox::render_windows_config_for_desired(&state, mode, &desired)?;
     Ok(Some(Configuration {
         digest: windows_admin::process::sha(&bytes),
         bytes,

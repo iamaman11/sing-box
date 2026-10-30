@@ -16,6 +16,34 @@ pub const MAX_HOST_RESULT_BYTES: usize = 8192;
 
 pub const MAX_NATIVE_OBSERVATION_BYTES: usize = 4096;
 
+/// The Windows mode has two Git projections: the host target controls whether
+/// the runtime may run, while the production spec controls what gets rendered.
+/// They MUST agree before an intent is emitted or admitted by LocalSystem.
+/// This is validation only; it does not authorize TUN or any native mutation.
+pub fn validate_windows_mode_target_and_spec(
+    host: &FleetHost,
+    desired: &crate::ProductionDesiredState,
+) -> Result<crate::WindowsDatapathMode, &'static str> {
+    use crate::WindowsDatapathMode as Datapath;
+    if host.kind != FleetHostKind::Windows as i32 {
+        return Err("HOST_WINDOWS_MODE_HOST_KIND_MISMATCH");
+    }
+    let target = host
+        .target
+        .as_ref()
+        .ok_or("HOST_TARGET_UNSET_OBSERVE_ONLY")?;
+    let mode =
+        FleetHostMode::try_from(target.windows_mode).map_err(|_| "HOST_TARGET_MODE_INVALID")?;
+    let datapath =
+        Datapath::try_from(desired.windows_datapath_mode).map_err(|_| "HOST_WINDOWS_DATAPATH_MODE_INVALID")?;
+    match (mode, datapath) {
+        (FleetHostMode::ProxyOnly, Datapath::ProxyOnly)
+        | (FleetHostMode::ManagedTun, Datapath::ManagedTun) => Ok(datapath),
+        _ => Err("HOST_WINDOWS_TARGET_SPEC_MODE_MISMATCH"),
+    }
+}
+
+
 /// Returns a local typed readback, not a signed mutation receipt. Kind and
 /// release digest semantics are fixed: Windows activation records are NOT
 /// interchangeable with VM application bundle digests.
@@ -1758,6 +1786,61 @@ mod partial_vm_recovery_tests {
         assert_eq!(
             verify_windows_signed_git_prerequisites(&host),
             Err("HOST_WINDOWS_SIGNED_KIND_REQUIRED")
+        );
+    }
+}
+
+/// One toggle, two typed Git projections: mismatches cannot escape to
+/// signed SYSTEM execution, including when the host mode is unspecified.
+#[cfg(test)]
+mod windows_mode_projection_tests {
+    use super::*;
+
+    #[test]
+    fn mode_projection_accepts_off_and_on_only_when_both_agree() {
+        use crate::{FleetHostTarget, FleetHostRunState, WindowsDatapathMode};
+        let mut host = FleetHost {
+            kind: FleetHostKind::Windows as i32,
+            target: Some(FleetHostTarget {
+                run_state: FleetHostRunState::Stopped as i32,
+                windows_mode: FleetHostMode::ProxyOnly as i32,
+            }),
+            ..Default::default()
+        };
+        let mut desired = crate::ProductionDesiredState {
+            windows_datapath_mode: WindowsDatapathMode::ProxyOnly as i32,
+            ..Default::default()
+        };
+        assert_eq!(
+            validate_windows_mode_target_and_spec(&host, &desired),
+            Ok(WindowsDatapathMode::ProxyOnly)
+        );
+        desired.windows_datapath_mode = WindowsDatapathMode::ManagedTun as i32;
+        assert_eq!(
+            validate_windows_mode_target_and_spec(&host, &desired),
+            Err("HOST_WINDOWS_TARGET_SPEC_MODE_MISMATCH")
+        );
+        host.target.as_mut().unwrap().windows_mode = FleetHostMode::ManagedTun as i32;
+        assert_eq!(
+            validate_windows_mode_target_and_spec(&host, &desired),
+            Ok(WindowsDatapathMode::ManagedTun)
+        );
+        desired.windows_datapath_mode = WindowsDatapathMode::ProxyOnly as i32;
+        assert_eq!(
+            validate_windows_mode_target_and_spec(&host, &desired),
+            Err("HOST_WINDOWS_TARGET_SPEC_MODE_MISMATCH")
+        );
+        host.target.as_mut().unwrap().windows_mode = FleetHostMode::Unspecified as i32;
+        assert!(validate_windows_mode_target_and_spec(&host, &desired).is_err());
+        host.target = None;
+        assert_eq!(
+            validate_windows_mode_target_and_spec(&host, &desired),
+            Err("HOST_TARGET_UNSET_OBSERVE_ONLY")
+        );
+        host.kind = FleetHostKind::Vm as i32;
+        assert_eq!(
+            validate_windows_mode_target_and_spec(&host, &desired),
+            Err("HOST_WINDOWS_MODE_HOST_KIND_MISMATCH")
         );
     }
 }
