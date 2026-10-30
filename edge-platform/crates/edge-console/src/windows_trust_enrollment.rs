@@ -551,11 +551,15 @@ fn exact_windows_registration(
     }
     let registry: HostRegistry = edge_shared_types::decode_host_registry(registry_pb)
         .map_err(|_| "HOST_WINDOWS_TRUST_REGISTRY_INVALID")?;
-    let host = registry
+    let registrations: Vec<_> = registry
         .hosts
         .iter()
-        .find(|h| h.machine_id == machine_id && h.kind == FleetHostKind::Windows as i32)
-        .ok_or("HOST_WINDOWS_TRUST_MACHINE_NOT_REGISTERED")?;
+        .filter(|h| h.machine_id == machine_id && h.kind == FleetHostKind::Windows as i32)
+        .collect();
+    if registrations.len() != 1 {
+        return Err("HOST_WINDOWS_TRUST_MACHINE_NOT_UNIQUE_IN_GIT".into());
+    }
+    let host = registrations[0];
     let hostname = std::env::var("COMPUTERNAME")
         .map_err(|_| "HOST_WINDOWS_TRUST_OS_HOSTNAME_UNAVAILABLE")?;
     if host.desired_spec_path != SPEC

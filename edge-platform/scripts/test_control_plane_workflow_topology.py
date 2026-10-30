@@ -651,7 +651,14 @@ assert "WINDOWS_CONNECT_INITIAL_SCM_OR_TASK_UNKNOWN_NO_REPLAY" in install_script
 assert "WINDOWS_CONNECT_PARTIAL_INITIAL_INSTALL_NO_REPLAY" in install_script
 assert "OfflineCleanInstall(InstallRootArgs)" in Path("edge-platform/crates/edge-console/src/cli.rs").read_text(encoding="utf-8")
 clean_install = Path("edge-platform/crates/edge-console/src/windows_clean_install.rs").read_text(encoding="utf-8")
-assert "prepare_clean_before_scm(install_root)?" in clean_install
+assert "prepare_clean_before_scm(install_root, &machine_id)?" in clean_install
+assert "resolve_local_windows_machine(&active).await?" in clean_install
+assert "HOST_WINDOWS_FIRST_USE_GIT_HOST_ABSENT_OR_AMBIGUOUS" in Path(
+    "edge-platform/crates/edge-console/src/windows_trust_enrollment.rs"
+).read_text()
+assert "async fn install(install_root: &Path)" in clean_install
+assert "fn valid_machine_id(machine: &str)" in identity_owner
+assert "fn bound_machine_id(install_root: &Path)" in identity_owner
 # The first-use Administrator must NEVER run the SYSTEM-only journal
 # primary-token gate; the dispatcher performs that check after enrolment.
 identity_clean_prepare = identity_owner.split(
