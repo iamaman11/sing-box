@@ -261,7 +261,9 @@ fn preflight_fresh_identity_root(root: &Path) -> Result<(), String> {
 
 /// Local Administrator pre-BEGIN proof for a *completed* identity. Never read
 /// the SYSTEM private key or interpret file existence alone as authority.
-pub(super) fn verify_existing_receipt_identity_slot(install_root: &Path) -> Result<Vec<u8>, String> {
+pub(super) fn verify_existing_receipt_identity_slot(
+    install_root: &Path,
+) -> Result<Vec<u8>, String> {
     require_windows_local_administrator_first_use().map_err(str::to_owned)?;
     let root = native_root(install_root)?;
     verify_native_journal_protection(&root.join("journal")).map_err(str::to_owned)?;
