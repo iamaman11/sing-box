@@ -2011,10 +2011,13 @@ mod tests {
     #[test]
     fn desired_state_alone_selects_windows_datapath() {
         let mut desired = canonical_production_desired_state().unwrap();
-        for mode in [WindowsDatapathMode::ProxyOnly, WindowsDatapathMode::ManagedTun] {
+        for mode in [
+            WindowsDatapathMode::ProxyOnly,
+            WindowsDatapathMode::ManagedTun,
+        ] {
             desired.windows_datapath_mode = mode as i32;
-            let rendered = render_windows_config_for_desired(&stage2_runtime_state(), &desired)
-                .unwrap();
+            let rendered =
+                render_windows_config_for_desired(&stage2_runtime_state(), &desired).unwrap();
             let config: Value = serde_json::from_slice(&rendered).unwrap();
             let tun = config["inbounds"]
                 .as_array()
