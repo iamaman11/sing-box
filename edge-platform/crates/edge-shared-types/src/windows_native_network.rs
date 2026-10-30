@@ -6,12 +6,12 @@
 //! absent from the live OS interface table. It also enumerates current
 //! IPv4/IPv6 routes, assigned addresses and adapter DNS endpoints, but counts do
 //! not prove their restoration, WARP health, Line1, or future TUN safety.
-use std::collections::BTreeSet;
-use prost::Message;
 use crate::{
     FleetWindowsNetworkAdapter, FleetWindowsNetworkAddress, FleetWindowsNetworkBaseline,
     FleetWindowsNetworkDns, FleetWindowsNetworkRoute,
 };
+use prost::Message;
+use std::collections::BTreeSet;
 use windows_sys::Win32::NetworkManagement::IpHelper::{
     FreeMibTable, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST, GetAdaptersAddresses,
     GetIfTable2, GetIpForwardTable2, IP_ADAPTER_ADDRESSES_LH, MIB_IF_TABLE2, MIB_IPFORWARD_TABLE2,
@@ -206,36 +206,52 @@ impl NativeNetworkIdentity {
             schema_version: 1,
             operation_id: operation.into(),
             before_sha256: self.signed_prebegin_digest().to_vec(),
-            routes: self.routes.iter().map(|r| FleetWindowsNetworkRoute {
-                interface_luid: r.interface_luid,
-                family: u32::from(r.family),
-                prefix: r.prefix.clone(),
-                prefix_length: u32::from(r.prefix_length),
-                next_hop: r.next_hop.clone(),
-                metric: r.metric,
-                protocol: r.protocol,
-                origin: r.origin,
-                site_prefix_length: u32::from(r.site_prefix_length),
-                loopback: r.loopback,
-                published: r.published,
-            }).collect(),
-            addresses: self.addresses.iter().map(|a| FleetWindowsNetworkAddress {
-                interface_luid: a.interface_luid,
-                family: u32::from(a.family),
-                address: a.address.clone(),
-                prefix_length: u32::from(a.prefix_length),
-            }).collect(),
-            dns: self.dns.iter().map(|d| FleetWindowsNetworkDns {
-                interface_luid: d.interface_luid,
-                order: d.order,
-                family: u32::from(d.family),
-                server: d.server.clone(),
-            }).collect(),
-            foreign_warp_adapters: self.foreign_warp_adapters.iter().map(|a| FleetWindowsNetworkAdapter {
-                alias: a.alias.clone(),
-                interface_luid: a.interface_luid,
-                oper_status: a.oper_status,
-            }).collect(),
+            routes: self
+                .routes
+                .iter()
+                .map(|r| FleetWindowsNetworkRoute {
+                    interface_luid: r.interface_luid,
+                    family: u32::from(r.family),
+                    prefix: r.prefix.clone(),
+                    prefix_length: u32::from(r.prefix_length),
+                    next_hop: r.next_hop.clone(),
+                    metric: r.metric,
+                    protocol: r.protocol,
+                    origin: r.origin,
+                    site_prefix_length: u32::from(r.site_prefix_length),
+                    loopback: r.loopback,
+                    published: r.published,
+                })
+                .collect(),
+            addresses: self
+                .addresses
+                .iter()
+                .map(|a| FleetWindowsNetworkAddress {
+                    interface_luid: a.interface_luid,
+                    family: u32::from(a.family),
+                    address: a.address.clone(),
+                    prefix_length: u32::from(a.prefix_length),
+                })
+                .collect(),
+            dns: self
+                .dns
+                .iter()
+                .map(|d| FleetWindowsNetworkDns {
+                    interface_luid: d.interface_luid,
+                    order: d.order,
+                    family: u32::from(d.family),
+                    server: d.server.clone(),
+                })
+                .collect(),
+            foreign_warp_adapters: self
+                .foreign_warp_adapters
+                .iter()
+                .map(|a| FleetWindowsNetworkAdapter {
+                    alias: a.alias.clone(),
+                    interface_luid: a.interface_luid,
+                    oper_status: a.oper_status,
+                })
+                .collect(),
         };
         let bytes = snapshot.encode_to_vec();
         if bytes.len() > MAX_NATIVE_NETWORK_BASELINE_BYTES {
@@ -263,55 +279,71 @@ impl NativeNetworkIdentity {
         {
             return Err("HOST_WINDOWS_NETWORK_BASELINE_NONCANONICAL");
         }
-        let family = |n| u16::try_from(n)
-            .map_err(|_| "HOST_WINDOWS_NETWORK_BASELINE_FIELD_INVALID");
-        let octet = |n| u8::try_from(n)
-            .map_err(|_| "HOST_WINDOWS_NETWORK_BASELINE_FIELD_INVALID");
+        let family =
+            |n| u16::try_from(n).map_err(|_| "HOST_WINDOWS_NETWORK_BASELINE_FIELD_INVALID");
+        let octet = |n| u8::try_from(n).map_err(|_| "HOST_WINDOWS_NETWORK_BASELINE_FIELD_INVALID");
         let decoded = Self {
-            routes: record.routes.into_iter().map(|r| {
-                Ok(RouteIdentity {
-                    interface_luid: r.interface_luid,
-                    family: family(r.family)?,
-                    prefix: r.prefix,
-                    prefix_length: octet(r.prefix_length)?,
-                    next_hop: r.next_hop,
-                    metric: r.metric,
-                    protocol: r.protocol,
-                    origin: r.origin,
-                    site_prefix_length: octet(r.site_prefix_length)?,
-                    loopback: r.loopback,
-                    published: r.published,
+            routes: record
+                .routes
+                .into_iter()
+                .map(|r| {
+                    Ok(RouteIdentity {
+                        interface_luid: r.interface_luid,
+                        family: family(r.family)?,
+                        prefix: r.prefix,
+                        prefix_length: octet(r.prefix_length)?,
+                        next_hop: r.next_hop,
+                        metric: r.metric,
+                        protocol: r.protocol,
+                        origin: r.origin,
+                        site_prefix_length: octet(r.site_prefix_length)?,
+                        loopback: r.loopback,
+                        published: r.published,
+                    })
                 })
-            }).collect::<Result<Vec<_>, &'static str>>()?,
-            addresses: record.addresses.into_iter().map(|a| {
-                Ok(UnicastAddressIdentity {
-                    interface_luid: a.interface_luid,
-                    family: family(a.family)?,
-                    address: a.address,
-                    prefix_length: octet(a.prefix_length)?,
+                .collect::<Result<Vec<_>, &'static str>>()?,
+            addresses: record
+                .addresses
+                .into_iter()
+                .map(|a| {
+                    Ok(UnicastAddressIdentity {
+                        interface_luid: a.interface_luid,
+                        family: family(a.family)?,
+                        address: a.address,
+                        prefix_length: octet(a.prefix_length)?,
+                    })
                 })
-            }).collect::<Result<Vec<_>, &'static str>>()?,
-            dns: record.dns.into_iter().map(|d| {
-                Ok(DnsIdentity {
-                    interface_luid: d.interface_luid,
-                    order: d.order,
-                    family: family(d.family)?,
-                    server: d.server,
+                .collect::<Result<Vec<_>, &'static str>>()?,
+            dns: record
+                .dns
+                .into_iter()
+                .map(|d| {
+                    Ok(DnsIdentity {
+                        interface_luid: d.interface_luid,
+                        order: d.order,
+                        family: family(d.family)?,
+                        server: d.server,
+                    })
                 })
-            }).collect::<Result<Vec<_>, &'static str>>()?,
-            foreign_warp_adapters: record.foreign_warp_adapters.into_iter().map(|a| {
-                ManagedAdapterIdentity {
+                .collect::<Result<Vec<_>, &'static str>>()?,
+            foreign_warp_adapters: record
+                .foreign_warp_adapters
+                .into_iter()
+                .map(|a| ManagedAdapterIdentity {
                     alias: a.alias,
                     interface_luid: a.interface_luid,
                     oper_status: a.oper_status,
-                }
-            }).collect(),
+                })
+                .collect(),
         };
         // Native witnesses use IP Helper's canonical ordered/unique sets.
         if !decoded.routes.windows(2).all(|r| r[0] < r[1])
             || !decoded.addresses.windows(2).all(|r| r[0] < r[1])
             || !decoded.dns.windows(2).all(|r| r[0] < r[1])
-            || !decoded.foreign_warp_adapters.windows(2).all(|r| r[0] < r[1])
+            || !decoded
+                .foreign_warp_adapters
+                .windows(2)
+                .all(|r| r[0] < r[1])
             || decoded.signed_prebegin_digest() != record.before_sha256.as_slice()
             || decoded.encode_baseline(operation)?.as_slice() != bytes
         {
@@ -1112,7 +1144,9 @@ mod tests {
             NativeNetworkIdentity::decode_baseline(&baseline_bytes, "issue1-comment-42").unwrap(),
             baseline
         );
-        assert!(NativeNetworkIdentity::decode_baseline(&baseline_bytes, "issue1-comment-43").is_err());
+        assert!(
+            NativeNetworkIdentity::decode_baseline(&baseline_bytes, "issue1-comment-43").is_err()
+        );
         let mut corrupted = baseline_bytes.clone();
         let len = corrupted.len();
         corrupted[len - 1] ^= 1;

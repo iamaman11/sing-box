@@ -472,7 +472,8 @@ fn apply_exact_proxyonly_scm_step(
     match step {
         FleetHostPlannedStep::Start => {
             let config = config.ok_or("HOST_WINDOWS_RUNTIME_CONFIGURATION_REQUIRED")?;
-            let desired = edge_shared_types::parse_production_desired_text(&trust.selected_spec_bytes)?;
+            let desired =
+                edge_shared_types::parse_production_desired_text(&trust.selected_spec_bytes)?;
             let mode = WindowsDatapathMode::try_from(desired.windows_datapath_mode)
                 .map_err(|_| "HOST_WINDOWS_DATAPATH_MODE_INVALID")?;
             if mode == WindowsDatapathMode::ManagedTun {
