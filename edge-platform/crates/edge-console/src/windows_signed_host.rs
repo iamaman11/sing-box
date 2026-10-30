@@ -273,46 +273,94 @@ fn lowercase_sha(bytes: &[u8]) -> String {
     bytes.iter().map(|value| format!("{value:02x}")).collect()
 }
 
-/// Protect the EXISTING route-capturing runtime, independently of what the
-/// *new* Git desired mode requests. A ProxyOnly target may be an OFF toggle
-/// from a running TUN; that transition cannot simply STOP the service before
-/// independently restoring WARP/DNS/routes. No network edits are done here.
+/// One actual network baseline per signed operation, kept in the EXISTING
+/// SYSTEM journal. An old ManagedTun is never inferred from desired ProxyOnly.
+struct WindowsNetworkPreflight {
+    baseline: edge_shared_types::windows_native_network::NativeNetworkIdentity,
+    prior_tun_luid: Option<u64>,
+    original_start_operation: Option<String>,
+}
+
+impl WindowsNetworkPreflight {
+    fn require_current(&self, stop_effect_completed: bool) -> Result<(), &'static str> {
+        use edge_shared_types::windows_native_network;
+        if let Some(luid) = self.prior_tun_luid
+            && !stop_effect_completed
+        {
+            let (_, live) = windows_native_network::observe_native_managed_tun()?;
+            live.require_native_dual_stack_route_capture()?;
+            if live.owned_tun.interface_luid != luid {
+                return Err("HOST_WINDOWS_ACTIVE_TUN_LUID_CHANGED");
+            }
+            return Ok(());
+        }
+        let (_, now) = windows_native_network::observe_native_network_identity()?;
+        self.baseline.require_restored(&now)
+    }
+}
+
+/// An OFF transition may stop ONLY an exact running SCM-owned TUN that has
+/// an immutable original prestate in the protected SYSTEM journal. Missing
+/// snapshot, changed LUID or an unknown owner BLOCKS without a network edit.
 fn preflight_existing_windows_route_capture(
     install_root: &Path,
     mode: WindowsDatapathMode,
+    action: FleetHostAction,
+    desired_run: edge_shared_types::FleetHostRunState,
     observed_owner: edge_shared_types::FleetNativeOwnerState,
-) -> Result<edge_shared_types::windows_native_network::NativeNetworkIdentity, &'static str> {
-    use edge_shared_types::FleetNativeOwnerState as Owner;
-    // Unlike SCM status, this query sees a stale TUN adapter left behind by
-    // a crashed process. Never treat absence of a child as proof of network
-    // restoration or use a desired ProxyOnly flag to bypass this gate.
-    let (_, network) =
-        edge_shared_types::windows_native_network::observe_native_network_identity()?;
-    if mode == WindowsDatapathMode::ManagedTun {
-        network.require_foreign_warp_up()?;
-    }
-    if observed_owner == Owner::Stopped {
-        // No running owner means this gate makes no claim about stale physical
-        // routes. ManagedTun activation is separately denied until the
-        // independent Windows network readback and restoration exist.
-        return Ok(network);
-    }
-    let config = local_singbox_config_path(install_root);
-    match fs::symlink_metadata(&config) {
-        Err(err) if err.kind() == io::ErrorKind::NotFound => {
-            return Err("HOST_WINDOWS_EXISTING_RUNTIME_CONFIG_UNPROVEN");
+) -> Result<WindowsNetworkPreflight, &'static str> {
+    use edge_shared_types::windows_native_network::{self, NativeNetworkIdentity};
+    let active = install_root.join("native-host/journal/network-baseline.active.pb");
+    match fs::symlink_metadata(&active) {
+        Ok(metadata) => {
+            if !metadata.file_type().is_file() || metadata.file_type().is_symlink() {
+                return Err("HOST_WINDOWS_ACTIVE_NETWORK_BASELINE_UNTRUSTED");
+            }
+            edge_shared_types::host_journal::verify_windows_protected_path_acl(&active, true)?;
+            let bytes = bounded_regular_file(
+                &active,
+                windows_native_network::MAX_NATIVE_NETWORK_BASELINE_BYTES as u64,
+            )?;
+            let (operation, baseline) = NativeNetworkIdentity::decode_active_baseline(&bytes)?;
+            if mode != WindowsDatapathMode::ProxyOnly
+                || action != FleetHostAction::Stop
+                || desired_run != edge_shared_types::FleetHostRunState::Stopped
+                || observed_owner != edge_shared_types::FleetNativeOwnerState::Running
+            {
+                return Err("HOST_WINDOWS_ACTIVE_NETWORK_BASELINE_REQUIRES_SIGNED_STOP");
+            }
+            let config = local_singbox_config_path(install_root);
+            edge_shared_types::host_journal::verify_windows_protected_path_acl(&config, true)?;
+            let config = bounded_regular_file(&config, 1024 * 1024)?;
+            edge_singbox::require_managed_tun_config(&config)?;
+            let (_, tun) = windows_native_network::observe_native_managed_tun()?;
+            tun.require_native_dual_stack_route_capture()?;
+            Ok(WindowsNetworkPreflight {
+                baseline,
+                prior_tun_luid: Some(tun.owned_tun.interface_luid),
+                original_start_operation: Some(operation),
+            })
         }
-        Err(_) => return Err("HOST_WINDOWS_EXISTING_RUNTIME_CONFIG_UNPROVEN"),
-        Ok(meta) if !meta.file_type().is_file() || meta.file_type().is_symlink() => {
-            return Err("HOST_WINDOWS_EXISTING_RUNTIME_CONFIG_UNPROVEN");
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            let (_, baseline) = windows_native_network::observe_native_network_identity()?;
+            if mode == WindowsDatapathMode::ManagedTun {
+                baseline.require_foreign_warp_up()?;
+            }
+            if observed_owner != edge_shared_types::FleetNativeOwnerState::Stopped {
+                let config = local_singbox_config_path(install_root);
+                edge_shared_types::host_journal::verify_windows_protected_path_acl(&config, true)?;
+                let bytes = bounded_regular_file(&config, 1024 * 1024)?;
+                edge_singbox::require_no_windows_route_capture_config(&bytes)
+                    .map_err(|_| "HOST_WINDOWS_RUNNING_TUN_NETWORK_RESTORATION_REQUIRED")?;
+            }
+            Ok(WindowsNetworkPreflight {
+                baseline,
+                prior_tun_luid: None,
+                original_start_operation: None,
+            })
         }
-        Ok(_) => {}
+        Err(_) => Err("HOST_WINDOWS_ACTIVE_NETWORK_BASELINE_UNAVAILABLE"),
     }
-    edge_shared_types::host_journal::verify_windows_protected_path_acl(&config, true)?;
-    let bytes = bounded_regular_file(&config, 1024 * 1024)?;
-    edge_singbox::require_no_windows_route_capture_config(&bytes)
-        .map_err(|_| "HOST_WINDOWS_RUNNING_TUN_NETWORK_RESTORATION_REQUIRED")?;
-    Ok(network)
 }
 
 /// Only the installed SYSTEM trust supplies the Git registry, exact spec,
