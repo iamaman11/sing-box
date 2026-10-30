@@ -1993,6 +1993,7 @@ mod tests {
             release_set_sha256: vec![3; 32],
             requested_mode: FleetHostMode::Unspecified as i32,
             requested_at_unix: 1000,
+            network_admission: None,
         };
         let mut a = FleetHostAuthorization {
             schema_version: 1,
@@ -2208,6 +2209,7 @@ mod tests {
             release_set_sha256: vec![3; 32],
             requested_mode: FleetHostMode::Unspecified as i32,
             requested_at_unix: 1000,
+            network_admission: None,
         };
         let mut auth = FleetHostAuthorization {
             schema_version: 1,
@@ -2352,6 +2354,7 @@ mod tests {
             release_set_sha256: digest(&SHA256, &release_pb).as_ref().to_vec(),
             requested_mode: FleetHostMode::Unspecified as i32,
             requested_at_unix: 1000,
+            network_admission: None,
         };
         let mut auth = FleetHostAuthorization {
             schema_version: 1,

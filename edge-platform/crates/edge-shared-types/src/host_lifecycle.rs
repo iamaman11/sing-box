@@ -1666,6 +1666,7 @@ mod tests {
                 .to_vec(),
             requested_mode: FleetHostMode::Unspecified as i32,
             requested_at_unix: 1000,
+            network_admission: None,
         };
         let (_, bound) =
             bind_native_host_artifacts(&intent, &registry_pb, spec, &release_pb, Some(&bundle_pb))
@@ -1817,6 +1818,7 @@ mod tests {
             release_set_sha256: release.clone(),
             requested_mode: FleetHostMode::Unspecified as i32,
             requested_at_unix: 1,
+            network_admission: None,
         };
         (registry, intent, registry_sha, desired, release)
     }
