@@ -376,6 +376,9 @@ pub fn require_managed_tun_config(bytes: &[u8]) -> Result<(), &'static str> {
     {
         return Err("HOST_WINDOWS_TUN_CONFIG_NATIVE_ROUTE_INVALID");
     }
+    if config.pointer("/route/find_process").and_then(Value::as_bool) != Some(true) {
+        return Err("HOST_WINDOWS_TUN_PROCESS_READBACK_NOT_ENABLED");
+    }
     let excluded = tun
         .get("route_exclude_address")
         .and_then(Value::as_array)
@@ -610,6 +613,11 @@ pub fn render_windows_config_for_desired(
             }
             rules.push(json!({"inbound":["managed-tun-in"], "outbound":"direct"}));
         }
+        // Process matching selected applications already requires resolving
+        // their full Windows image paths. Keep that same native process
+        // metadata for unselected DIRECT traffic readback as well.
+        // No packet capture, content logging or separate app-monitor service.
+        config["route"]["find_process"] = json!(true);
         sync_stable_bypass_rules(&mut config);
     }
 
@@ -763,6 +771,9 @@ pub fn verify_managed_application_routes(
     }
     let config: Value =
         serde_json::from_slice(config_bytes).map_err(|_| "WINDOWS_SELECTED_APPS_CONFIG_INVALID")?;
+    if config.pointer("/route/find_process").and_then(Value::as_bool) != Some(true) {
+        return Err("WINDOWS_SELECTED_APPS_PROCESS_READBACK_NOT_ENABLED");
+    }
     let rules = config
         .pointer("/route/rules")
         .and_then(Value::as_array)
@@ -2353,6 +2364,26 @@ mod tests {
         assert_eq!(
             verify_managed_application_routes(&original, &wrong),
             Err("WINDOWS_SELECTED_APPS_STALE_OVERRIDE_FORBIDDEN")
+        );
+    }
+
+    #[test]
+    fn stage4b_process_metadata_is_required_for_auditable_tun_routes() {
+        let mut desired = canonical_production_desired_state().unwrap();
+        desired.windows_datapath_mode = WindowsDatapathMode::ManagedTun as i32;
+        let bytes = render_windows_config_for_desired(&stage2_runtime_state(), &desired).unwrap();
+        assert_eq!(verify_managed_application_routes(&bytes, &desired), Ok(()));
+        assert_eq!(require_managed_tun_config(&bytes), Ok(()));
+        let mut corrupted: Value = serde_json::from_slice(&bytes).unwrap();
+        corrupted["route"].as_object_mut().unwrap().remove("find_process");
+        let raw = serde_json::to_vec(&corrupted).unwrap();
+        assert_eq!(
+            verify_managed_application_routes(&raw, &desired),
+            Err("WINDOWS_SELECTED_APPS_PROCESS_READBACK_NOT_ENABLED")
+        );
+        assert_eq!(
+            require_managed_tun_config(&raw),
+            Err("HOST_WINDOWS_TUN_PROCESS_READBACK_NOT_ENABLED")
         );
     }
 
