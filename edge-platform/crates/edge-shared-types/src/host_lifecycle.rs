@@ -56,8 +56,7 @@ pub fn validate_windows_datapath_prebegin(
     observed_owner: crate::FleetNativeOwnerState,
 ) -> Result<(), &'static str> {
     use crate::{
-        FleetHostRunState as Run, FleetNativeOwnerState as Owner,
-        WindowsDatapathMode as Datapath,
+        FleetHostRunState as Run, FleetNativeOwnerState as Owner, WindowsDatapathMode as Datapath,
     };
     match mode {
         Datapath::ProxyOnly => Ok(()),
