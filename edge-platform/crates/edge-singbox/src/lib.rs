@@ -516,7 +516,9 @@ pub fn render_windows_config_for_desired(
             "type": "tun",
             "tag": "managed-tun-in",
             "interface_name": "sing-box-tun",
-            "address": ["172.19.0.1/30"],
+            // Both native IP families must enter the selected-app route.
+            // Physical activation still requires signed network restoration.
+            "address": ["172.19.0.1/30", "fdfe:dcba:9876::1/126"],
             "auto_route": true,
             "strict_route": true,
             "dns_mode": "hijack"
@@ -536,7 +538,7 @@ pub fn render_windows_config_for_desired(
                 }
             ],
             "final": "managed-dns",
-            "strategy": "ipv4_only"
+            "strategy": "prefer_ipv4"
         });
         sync_tun_route_excludes(&mut config, Some(state.server_ip.as_str()))?;
         if let Some(policy) = desired.windows_application_routing.as_ref().filter(|p| {
@@ -2306,6 +2308,10 @@ mod tests {
             tun.get("interface_name").and_then(Value::as_str),
             Some("sing-box-tun")
         );
+        assert_eq!(
+            tun.get("address"),
+            Some(&json!(["172.19.0.1/30", "fdfe:dcba:9876::1/126"]))
+        );
         assert_eq!(tun.get("auto_route").and_then(Value::as_bool), Some(true));
         assert_eq!(tun.get("strict_route").and_then(Value::as_bool), Some(true));
         assert!(tun.get("auto_redirect").is_none());
@@ -2333,6 +2339,10 @@ mod tests {
         assert_eq!(
             config.pointer("/dns/final").and_then(Value::as_str),
             Some("managed-dns")
+        );
+        assert_eq!(
+            config.pointer("/dns/strategy").and_then(Value::as_str),
+            Some("prefer_ipv4")
         );
         assert!(
             config
