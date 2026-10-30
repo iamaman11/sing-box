@@ -868,10 +868,6 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
     {
         let candidate = windows_config::prepare(install_root, &trust.selected_spec_bytes)?
             .ok_or("HOST_WINDOWS_TUN_CONFIG_NOT_PREPARED")?;
-        let admission_now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| "HOST_WINDOWS_SYSTEM_CLOCK_UNAVAILABLE")?
-            .as_secs();
         // The native SYSTEM owner will mint the exact bound witness only
         // after all actual read-only probes complete. The Worker never
         // authorizes a runner-supplied pre-TUN readiness boolean.
@@ -893,6 +889,12 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
         let (_, after_witness) =
             edge_shared_types::windows_native_network::observe_native_network_identity()?;
         network_baseline.require_restored(&after_witness)?;
+        // Expiry starts AFTER all real probes and native restoration, not at
+        // the start of potentially long external network acceptance.
+        let admission_now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| "HOST_WINDOWS_SYSTEM_CLOCK_UNAVAILABLE")?
+            .as_secs();
         let admission = edge_shared_types::host_lifecycle::sign_windows_network_admission(
             &intent,
             &receipt_private,
@@ -976,6 +978,25 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
             .duration_since(UNIX_EPOCH)
             .map_err(|_| "HOST_WINDOWS_SYSTEM_CLOCK_UNAVAILABLE")?
             .as_secs();
+    }
+    if mode == WindowsDatapathMode::ManagedTun && action == FleetHostAction::Start {
+        let config = config
+            .as_ref()
+            .ok_or("HOST_WINDOWS_TUN_CONFIG_NOT_PREPARED")?;
+        let (_, fresh) =
+            edge_shared_types::windows_native_network::observe_native_network_identity()?;
+        network_baseline.require_restored(&fresh)?;
+        // Worker signature and native config validation may consume time.
+        // Re-verify the entire original SYSTEM-signed proof against current
+        // clock, exact binary config and kernel prestate BEFORE BEGIN.
+        edge_shared_types::host_lifecycle::verify_windows_network_admission(
+            &intent,
+            &selected.native_receipt_public_key,
+            &installed_runtime_sha256,
+            &config.digest,
+            &fresh.signed_prebegin_digest(),
+            now,
+        )?;
     }
     let effect_completed = std::cell::Cell::new(false);
     let result = tokio::task::block_in_place(|| {
