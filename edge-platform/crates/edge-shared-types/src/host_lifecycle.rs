@@ -34,15 +34,14 @@ pub fn validate_windows_mode_target_and_spec(
         .ok_or("HOST_TARGET_UNSET_OBSERVE_ONLY")?;
     let mode =
         FleetHostMode::try_from(target.windows_mode).map_err(|_| "HOST_TARGET_MODE_INVALID")?;
-    let datapath =
-        Datapath::try_from(desired.windows_datapath_mode).map_err(|_| "HOST_WINDOWS_DATAPATH_MODE_INVALID")?;
+    let datapath = Datapath::try_from(desired.windows_datapath_mode)
+        .map_err(|_| "HOST_WINDOWS_DATAPATH_MODE_INVALID")?;
     match (mode, datapath) {
         (FleetHostMode::ProxyOnly, Datapath::ProxyOnly)
         | (FleetHostMode::ManagedTun, Datapath::ManagedTun) => Ok(datapath),
         _ => Err("HOST_WINDOWS_TARGET_SPEC_MODE_MISMATCH"),
     }
 }
-
 
 /// Returns a local typed readback, not a signed mutation receipt. Kind and
 /// release digest semantics are fixed: Windows activation records are NOT
@@ -1798,7 +1797,7 @@ mod windows_mode_projection_tests {
 
     #[test]
     fn mode_projection_accepts_off_and_on_only_when_both_agree() {
-        use crate::{FleetHostTarget, FleetHostRunState, WindowsDatapathMode};
+        use crate::{FleetHostRunState, FleetHostTarget, WindowsDatapathMode};
         let mut host = FleetHost {
             kind: FleetHostKind::Windows as i32,
             target: Some(FleetHostTarget {

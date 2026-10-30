@@ -2315,8 +2315,8 @@ fn host_lifecycle_admission(
     }
     let spec_bytes = std::fs::read(spec_path).map_err(|_| "HOST_DESIRED_SPEC_UNREADABLE")?;
     if kind == ManagedHostKind::Windows {
-        let typed = edge_shared_types::parse_production_desired_text(&spec_bytes)
-            .map_err(str::to_owned)?;
+        let typed =
+            edge_shared_types::parse_production_desired_text(&spec_bytes).map_err(str::to_owned)?;
         edge_shared_types::host_lifecycle::validate_windows_mode_target_and_spec(selected, &typed)
             .map_err(str::to_owned)?;
     }

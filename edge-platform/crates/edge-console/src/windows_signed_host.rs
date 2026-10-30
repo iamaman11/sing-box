@@ -5,7 +5,7 @@
 
 use super::*;
 use edge_shared_types::{
-    FleetHostAction, FleetHostAuthorization, FleetHostIntent, FleetHostKind, FleetHostMode,
+    FleetHostAction, FleetHostAuthorization, FleetHostIntent, FleetHostKind,
     FleetHostPlannedStep, FleetNativeObservation, FleetNativeTrustSnapshot,
     host_journal::verify_native_journal_protection,
     host_lifecycle::{bind_native_host_artifacts, decode_host_intent},
