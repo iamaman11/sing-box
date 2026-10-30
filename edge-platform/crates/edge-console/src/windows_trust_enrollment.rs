@@ -180,7 +180,11 @@ pub(super) fn rebind_pending_trust_after_offline_handoff(
     if windows_signed_host::bounded_regular_file(&archive, 512)? != before {
         return Err("HOST_WINDOWS_PENDING_TRUST_ARCHIVE_CHANGED_NO_REPLAY".into());
     }
-    File::open(&archive)
+    // Windows FlushFileBuffers requires a writable handle, exactly as the
+    // existing receipt-marker predecessor archival path already does.
+    OpenOptions::new()
+        .write(true)
+        .open(&archive)
         .and_then(|file| file.sync_all())
         .map_err(|_| "HOST_WINDOWS_PENDING_TRUST_ARCHIVE_SYNC_UNKNOWN_NO_REPLAY")?;
     let next = FleetWindowsTrustEnrollment {
