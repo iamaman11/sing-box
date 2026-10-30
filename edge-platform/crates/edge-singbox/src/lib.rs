@@ -1790,6 +1790,7 @@ mod tests {
             &state_path,
             r#"{
   "instance_id":"instance-1",
+  "ip":"203.0.113.10",
   "tunnel":{
     "domain":"edge.example.com",
     "hy2_port":8443,
@@ -1868,6 +1869,19 @@ mod tests {
                 .iter()
                 .any(|value| { value.as_str() == Some("162.159.197.2/32") })
         );
+        assert!(excludes.iter().any(|value| value.as_str() == Some("203.0.113.10/32")));
+
+        // A legacy TUN state without the exact upstream IP must not
+        // overwrite a valid configuration with a route-capture candidate.
+        let previous = fs::read(&config_path).unwrap();
+        let mut missing_ip: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        missing_ip.as_object_mut().unwrap().remove("ip");
+        fs::write(&state_path, serde_json::to_vec(&missing_ip).unwrap()).unwrap();
+        assert_eq!(
+            sync_local_config(&config_path, &state_path, &runtime_root).unwrap_err(),
+            "WINDOWS_MANAGED_TUN_CONTROL_IP_MISSING"
+        );
+        assert_eq!(fs::read(&config_path).unwrap(), previous);
 
         fs::remove_dir_all(repo_root).unwrap();
     }
