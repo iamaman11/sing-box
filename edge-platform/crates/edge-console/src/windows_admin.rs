@@ -47,6 +47,11 @@ fn check_journal_entry(
     admin: bool,
     recovery: bool,
 ) -> Result<(), &'static str> {
+    // ADMIN never inherits RECOVER's narrow exception, even if a caller
+    // accidentally combines both flags in this internal API.
+    if admin && recovery {
+        return Err("HOST_WINDOWS_ADMIN_RECOVERY_SCOPE_INVALID");
+    }
     if (admin
         && (name == format!("admin-{id}.pending.pb") || name == format!("admin-{id}.terminal.pb")))
         || (!admin && (name == format!("{id}.pb") || name.starts_with(&format!("{id}."))))
@@ -256,10 +261,10 @@ mod admission_tests {
         // it does not execute a historical mutation or grant ADMIN rights.
         assert_eq!(
             check_journal_entry("resource-other.pending.pb", id, true, true),
-            Ok(())
+            Err("HOST_WINDOWS_ADMIN_RECOVERY_SCOPE_INVALID")
         );
-        // Only lifecycle caller supplies recovery=true; ADMIN must never
-        // borrow this parameter from runner/Worker data.
+        // Only lifecycle caller supplies recovery=true; ADMIN cannot
+        // borrow this narrow exception from runner/Worker data.
         // The original request is permanently non-replayable.
         assert_eq!(
             check_journal_entry("admin-own-operation-digest.pending.pb", id, true, false),

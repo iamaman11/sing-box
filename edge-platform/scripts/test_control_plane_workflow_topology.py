@@ -522,6 +522,8 @@ assert "host_admin::sign_receipt" in admin_system
 assert 'name.starts_with("resource-") && recovery' in admin_system
 assert 'name.starts_with("resource-") && (admin || recovery)' not in admin_system
 assert "signed_admin_cannot_bypass_historical_resource_pending" in admin_system
+assert "if admin && recovery {" in admin_system
+assert "HOST_WINDOWS_ADMIN_RECOVERY_SCOPE_INVALID" in admin_system
 assert "HOST_WINDOWS_PENDING_GATE_NO_REPLAY" in admin_system
 assert "HOST_WINDOWS_OPERATION_EXISTS_NO_REPLAY" in admin_system
 assert "check_journal_entry(&name, &id, admin, recovery)?" in admin_system
