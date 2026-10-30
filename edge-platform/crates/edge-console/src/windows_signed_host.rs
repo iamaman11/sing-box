@@ -363,6 +363,44 @@ fn preflight_existing_windows_route_capture(
     }
 }
 
+/// The old baseline stays immutable until the physical network is
+/// restored AND the native STOP terminal is durable. Archive in the SAME
+/// protected journal; never delete a pending operation or touch foreign NICs.
+fn archive_verified_network_baseline(
+    root: &Path,
+    original_operation: &str,
+) -> Result<(), &'static str> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
+    use edge_shared_types::windows_native_network::{self, NativeNetworkIdentity};
+    let journal = root.join("native-host/journal");
+    let active = journal.join("network-baseline.active.pb");
+    edge_shared_types::host_journal::verify_windows_protected_path_acl(&active, true)?;
+    let bytes = bounded_regular_file(
+        &active,
+        windows_native_network::MAX_NATIVE_NETWORK_BASELINE_BYTES as u64,
+    )?;
+    let (operation, baseline) = NativeNetworkIdentity::decode_active_baseline(&bytes)?;
+    if operation != original_operation {
+        return Err("HOST_WINDOWS_NETWORK_BASELINE_ORIGINAL_OPERATION_MISMATCH");
+    }
+    let (_, actual) = windows_native_network::observe_native_network_identity()?;
+    baseline.require_restored(&actual)?;
+    let id = lowercase_sha(&windows_admin::process::sha(original_operation.as_bytes()));
+    let archive = journal.join(format!("network-baseline-{id}.restored.pb"));
+    match fs::symlink_metadata(&archive) {
+        Ok(_) => return Err("HOST_WINDOWS_NETWORK_BASELINE_ARCHIVE_EXISTS"),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => return Err("HOST_WINDOWS_NETWORK_BASELINE_ARCHIVE_UNAVAILABLE"),
+    }
+    let from: Vec<u16> = active.as_os_str().encode_wide().chain(Some(0)).collect();
+    let to: Vec<u16> = archive.as_os_str().encode_wide().chain(Some(0)).collect();
+    if unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), MOVEFILE_WRITE_THROUGH) } == 0 {
+        return Err("HOST_WINDOWS_NETWORK_BASELINE_ARCHIVE_UNKNOWN_NO_REPLAY");
+    }
+    Ok(())
+}
+
 /// Only the installed SYSTEM trust supplies the Git registry, exact spec,
 /// release and public signer. No runner-provided trust fields are accepted.
 /// A Windows trust snapshot uses the existing FleetNativeTrustSnapshot without
@@ -860,6 +898,15 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
         )
     })
     .map_err(str::to_owned)?;
+    // Only a VERIFIED signed STOP may retire the active TUN before-state;
+    // interrupted effects keep it for a new independent recovery decision.
+    if action == FleetHostAction::Stop
+        && result.state == edge_shared_types::FleetHostResultState::Verified as i32
+        && result.physical_readback
+        && let Some(original) = network_preflight.original_start_operation.as_deref()
+    {
+        archive_verified_network_baseline(install_root, original)?;
+    }
     // Native journal has already fsynced terminal before SYSTEM signs.
     let signed = sign_native_receipt(&intent, &result, &selected, &receipt_private)
         .map_err(str::to_owned)?;
