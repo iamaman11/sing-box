@@ -2720,7 +2720,7 @@ mod tests {
             desired_spec_path: "infra/production/production.textproto".into(),
             target: Some(FleetHostTarget {
                 run_state: FleetHostRunState::Stopped as i32,
-                windows_mode: FleetHostMode::ProxyOnly as i32,
+                windows_mode: FleetHostMode::Unspecified as i32,
             }),
             worker_authority_public_key: signer.public_key().as_ref().to_vec(),
             ..Default::default()
@@ -2730,7 +2730,7 @@ mod tests {
             hosts: vec![host.clone()],
         };
         let registry_pb = encode_host_registry(&registry).unwrap();
-        let spec = b"exact checked-out Windows desired";
+        let spec = b"windows_datapath_mode: WINDOWS_DATAPATH_MODE_PROXY_ONLY\n";
         let release_pb = ReleaseSet {
             schema_version: 7,
             source_revision: "a".repeat(40),

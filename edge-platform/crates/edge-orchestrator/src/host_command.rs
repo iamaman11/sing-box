@@ -3180,7 +3180,7 @@ mod tests {
                 desired_spec_path: spec.to_string_lossy().into_owned(),
                 target: Some(edge_shared_types::FleetHostTarget {
                     run_state: edge_shared_types::FleetHostRunState::Stopped as i32,
-                    windows_mode: FleetHostMode::ProxyOnly as i32,
+                    windows_mode: FleetHostMode::Unspecified as i32,
                 }),
                 native_receipt_public_key: vec![8; 32],
                 vm_first_use_credential: None,
@@ -3218,10 +3218,10 @@ mod tests {
             "HOST_TARGET_UNSET_OBSERVE_ONLY"
         );
         assert!(!intent_path.exists());
-        // An invalid mode/kind must not emit any proposal either.
+        // A duplicate Windows mode in host registry must not emit a proposal.
         blocked.hosts[0].target = Some(edge_shared_types::FleetHostTarget {
             run_state: edge_shared_types::FleetHostRunState::Stopped as i32,
-            windows_mode: FleetHostMode::Unspecified as i32,
+            windows_mode: FleetHostMode::ManagedTun as i32,
         });
         assert_eq!(
             host_lifecycle_admission(
@@ -3237,7 +3237,7 @@ mod tests {
                 None,
             )
             .unwrap_err(),
-            "HOST_TARGET_MODE_KIND_MISMATCH"
+            "HOST_WINDOWS_DUPLICATE_GIT_MODE_FORBIDDEN"
         );
         assert!(!intent_path.exists());
         host_lifecycle_admission(
@@ -3318,7 +3318,7 @@ mod tests {
                 None,
             )
             .unwrap_err(),
-            "HOST_ACTION_CONFLICTS_WITH_DESIRED"
+            "HOST_SET_MODE_RETIRED_USE_GIT_APPLY"
         );
         let mut vm_target = desired.clone();
         vm_target.hosts[0].kind = ManagedHostKind::Vm as i32;
@@ -3384,25 +3384,23 @@ mod tests {
         std::fs::remove_file(&intent_path).unwrap();
         std::fs::remove_file(intent_path.with_extension("receipt.pb")).unwrap();
         std::fs::write(&file, "").unwrap();
-        host_lifecycle_admission(
-            &desired,
-            "windows-test",
-            HostLifecycleOperation::SetMode(FleetHostMode::ProxyOnly),
-            &release,
-            &registry_sha,
-            None,
-            Some(&file),
-            Some(129),
-            Some(&intent_path),
-            None,
-        )
-        .unwrap();
-        let mode = edge_shared_types::host_lifecycle::decode_host_intent(
-            &std::fs::read(&intent_path).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(mode.action, FleetHostAction::SetMode as i32);
-        assert_eq!(mode.requested_mode, FleetHostMode::ProxyOnly as i32);
+        assert_eq!(
+            host_lifecycle_admission(
+                &desired,
+                "windows-test",
+                HostLifecycleOperation::SetMode(FleetHostMode::ProxyOnly),
+                &release,
+                &registry_sha,
+                None,
+                Some(&file),
+                Some(129),
+                Some(&intent_path),
+                None,
+            )
+            .unwrap_err(),
+            "HOST_SET_MODE_RETIRED_USE_GIT_APPLY"
+        );
+        assert!(!intent_path.exists());
         assert!(
             host_lifecycle_admission(
                 &desired,

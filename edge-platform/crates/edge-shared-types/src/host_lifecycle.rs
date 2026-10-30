@@ -1540,7 +1540,7 @@ mod tests {
     }
 
     #[test]
-    fn never_start_stopped_windows_or_implicit_vm() {
+    fn never_start_stopped_windows_or_accept_separate_mode_action() {
         use crate::{FleetHostRunState, FleetHostTarget};
         let (mut registry, mut intent, _, _, _) = fixture();
         assert_eq!(
@@ -1549,7 +1549,7 @@ mod tests {
         );
         registry.hosts[0].target = Some(FleetHostTarget {
             run_state: FleetHostRunState::Stopped as i32,
-            windows_mode: FleetHostMode::ProxyOnly as i32,
+            windows_mode: FleetHostMode::Unspecified as i32,
         });
         intent.action = FleetHostAction::Start as i32;
         assert_eq!(
@@ -1562,34 +1562,39 @@ mod tests {
         intent.requested_mode = FleetHostMode::ManagedTun as i32;
         assert_eq!(
             validate_intent_against_target(&intent, &registry).unwrap_err(),
-            "HOST_ACTION_CONFLICTS_WITH_DESIRED"
+            "HOST_SET_MODE_RETIRED_USE_GIT_APPLY"
         );
     }
 
     #[test]
-    fn managed_tun_is_an_apply_setting_not_implicit_start_or_recover() {
+    fn managed_tun_is_an_apply_setting_not_a_separate_lifecycle_action() {
         use crate::{FleetHostRunState, FleetHostTarget};
         let (mut registry, mut intent, _, _, _) = fixture();
         registry.hosts[0].target = Some(FleetHostTarget {
             run_state: FleetHostRunState::Stopped as i32,
-            windows_mode: FleetHostMode::ManagedTun as i32,
+            windows_mode: FleetHostMode::Unspecified as i32,
         });
         intent.action = FleetHostAction::Apply as i32;
         assert_eq!(validate_intent_against_target(&intent, &registry), Ok(()));
-        for action in [
-            FleetHostAction::Start,
-            FleetHostAction::Recover,
-            FleetHostAction::Configure,
-        ] {
-            intent.action = action as i32;
-            assert!(validate_intent_against_target(&intent, &registry).is_err());
-        }
+        intent.action = FleetHostAction::Start as i32;
+        assert_eq!(
+            validate_intent_against_target(&intent, &registry),
+            Err("HOST_ACTION_CONFLICTS_WITH_DESIRED")
+        );
+        intent.action = FleetHostAction::Recover as i32;
+        assert_eq!(validate_intent_against_target(&intent, &registry), Ok(()));
+        intent.action = FleetHostAction::SetMode as i32;
+        intent.requested_mode = FleetHostMode::ManagedTun as i32;
+        assert_eq!(
+            validate_intent_against_target(&intent, &registry),
+            Err("HOST_SET_MODE_RETIRED_USE_GIT_APPLY")
+        );
         intent.action = FleetHostAction::Apply as i32;
+        intent.requested_mode = FleetHostMode::Unspecified as i32;
         registry.hosts[0].target.as_mut().unwrap().run_state =
             FleetHostRunState::Running as i32;
         assert_eq!(validate_intent_against_target(&intent, &registry), Ok(()));
-        // This is only a typed proposal. SYSTEM must still reject physical TUN
-        // until the existing native owner proves network restoration.
+        // Native Windows SYSTEM still separately blocks physical route capture.
     }
 
     #[test]
@@ -1829,20 +1834,20 @@ mod partial_vm_recovery_tests {
     }
 }
 
-/// One toggle, two typed Git projections: mismatches cannot escape to
-/// signed SYSTEM execution, including when the host mode is unspecified.
+/// The registry MUST NOT persist the Windows mode; only the selected typed
+/// production spec owns it. Projection is memory-only for the pure planner.
 #[cfg(test)]
 mod windows_mode_projection_tests {
     use super::*;
 
     #[test]
-    fn mode_projection_accepts_off_and_on_only_when_both_agree() {
+    fn mode_projection_uses_only_production_and_rejects_duplicate_git_values() {
         use crate::{FleetHostRunState, FleetHostTarget, WindowsDatapathMode};
         let mut host = FleetHost {
             kind: FleetHostKind::Windows as i32,
             target: Some(FleetHostTarget {
                 run_state: FleetHostRunState::Stopped as i32,
-                windows_mode: FleetHostMode::ProxyOnly as i32,
+                windows_mode: FleetHostMode::Unspecified as i32,
             }),
             ..Default::default()
         };
@@ -1857,20 +1862,30 @@ mod windows_mode_projection_tests {
         desired.windows_datapath_mode = WindowsDatapathMode::ManagedTun as i32;
         assert_eq!(
             validate_windows_mode_target_and_spec(&host, &desired),
-            Err("HOST_WINDOWS_TARGET_SPEC_MODE_MISMATCH")
+            Ok(WindowsDatapathMode::ManagedTun)
+        );
+        let planned = project_host_for_planner(
+            &host,
+            b"windows_datapath_mode: WINDOWS_DATAPATH_MODE_MANAGED_TUN\n",
+        )
+        .unwrap();
+        assert_eq!(
+            planned.target.as_ref().unwrap().windows_mode,
+            FleetHostMode::ManagedTun as i32
+        );
+        assert_eq!(
+            host.target.as_ref().unwrap().windows_mode,
+            FleetHostMode::Unspecified as i32
         );
         host.target.as_mut().unwrap().windows_mode = FleetHostMode::ManagedTun as i32;
         assert_eq!(
             validate_windows_mode_target_and_spec(&host, &desired),
-            Ok(WindowsDatapathMode::ManagedTun)
-        );
-        desired.windows_datapath_mode = WindowsDatapathMode::ProxyOnly as i32;
-        assert_eq!(
-            validate_windows_mode_target_and_spec(&host, &desired),
-            Err("HOST_WINDOWS_TARGET_SPEC_MODE_MISMATCH")
+            Err("HOST_WINDOWS_DUPLICATE_GIT_MODE_FORBIDDEN")
         );
         host.target.as_mut().unwrap().windows_mode = FleetHostMode::Unspecified as i32;
+        desired.windows_datapath_mode = WindowsDatapathMode::Unspecified as i32;
         assert!(validate_windows_mode_target_and_spec(&host, &desired).is_err());
+        desired.windows_datapath_mode = WindowsDatapathMode::ProxyOnly as i32;
         host.target = None;
         assert_eq!(
             validate_windows_mode_target_and_spec(&host, &desired),
