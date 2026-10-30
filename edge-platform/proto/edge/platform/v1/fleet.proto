@@ -747,6 +747,9 @@ message FleetWindowsRuntimeEffect {
   // Controller verifies SYSTEM's local protected receipt identity first.
   bytes registry_pb = 8;
   bytes selected_spec_bytes = 9;
+  // Exact native IPv4/IPv6 routes, addresses, ordered DNS and Cloudflare
+  // One adapter identity observed by SYSTEM before this signed effect.
+  bytes before_network_sha256 = 10;
 }
 
 

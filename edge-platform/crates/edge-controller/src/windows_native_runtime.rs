@@ -110,6 +110,12 @@ pub(super) async fn execute(
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| "HOST_WINDOWS_EFFECT_CLOCK_INVALID")?
         .as_secs();
+    let (_, network_before) =
+        edge_shared_types::windows_native_network::observe_native_network_identity()?;
+    windows_runtime_effect::verify_native_network_binding(
+        &effect,
+        &network_before.signed_prebegin_digest(),
+    )?;
     windows_runtime_effect::verify(
         &effect,
         &expected,
@@ -119,11 +125,7 @@ pub(super) async fn execute(
         digest.as_ref(),
         now,
     )?;
-    // Recheck the physical OS interface in the executing Controller, not
-    // only in SYSTEM pre-BEGIN. A stale TUN must never be adopted by a
-    // signed ProxyOnly runtime effect or hidden by a new desired spec.
-    let (_, network_before) =
-        edge_shared_types::windows_native_network::observe_native_network_identity()?;
+    // Native observer above also rejects a stale managed TUN on any path.
     let state = active(root)?;
     let paths = LocalRuntimePaths {
         singbox_binary_path: PathBuf::from(&state.sing_box_path),
@@ -135,6 +137,12 @@ pub(super) async fn execute(
         let _gate = WINDOWS_RUNTIME_OWNER_GATE
             .lock()
             .map_err(|_| "HOST_WINDOWS_EFFECT_OWNER_LOCK_POISONED")?;
+        let (_, just_before_start) =
+            edge_shared_types::windows_native_network::observe_native_network_identity()?;
+        windows_runtime_effect::verify_native_network_binding(
+            &effect,
+            &just_before_start.signed_prebegin_digest(),
+        )?;
         windows_runtime_effect::consume(
             &mut *USED
                 .lock()

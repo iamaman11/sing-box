@@ -459,6 +459,7 @@ fn apply_exact_proxyonly_scm_step(
     installed_sha: &[u8],
     config: Option<&windows_config::Configuration>,
     trust: &FleetNativeTrustSnapshot,
+    network_baseline: &edge_shared_types::windows_native_network::NativeNetworkIdentity,
 ) -> Result<(), &'static str> {
     let scm = ServiceManager::local_computer(None::<&str>, ServiceManagerAccess::CONNECT)
         .map_err(|_| "HOST_WINDOWS_SYSTEM_SCM_UNAVAILABLE")?;
@@ -518,6 +519,7 @@ fn apply_exact_proxyonly_scm_step(
                     authorization: Some(authorization.clone()),
                     challenge: Some(challenge),
                     config_sha256: config.digest.clone(),
+                    before_network_sha256: network_baseline.signed_prebegin_digest().to_vec(),
                     expires_at_unix: now.saturating_add(60).min(authorization.expires_at_unix),
                     registry_pb: trust.registry_pb.clone(),
                     selected_spec_bytes: trust.selected_spec_bytes.clone(),
@@ -764,6 +766,7 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
                     &installed_runtime_sha256,
                     config.as_ref(),
                     &trust,
+                    &network_baseline,
                 ),
             },
         )

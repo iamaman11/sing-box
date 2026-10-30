@@ -23,6 +23,21 @@ pub fn sign(effect: &mut Effect, private: &[u8]) -> Result<(), &'static str> {
     effect.system_signature = pair.sign(&payload(effect)).as_ref().to_vec();
     Ok(())
 }
+/// SYSTEM signs an exact kernel snapshot. Controller independently compares
+/// it before launching the child. Different routes/DNS/WARP fail closed.
+pub fn verify_native_network_binding(
+    effect: &Effect,
+    actual_sha256: &[u8],
+) -> Result<(), &'static str> {
+    if actual_sha256.len() != 32
+        || effect.before_network_sha256.len() != 32
+        || effect.before_network_sha256 != actual_sha256
+    {
+        return Err("HOST_WINDOWS_EFFECT_NETWORK_PREBEGIN_DRIFT");
+    }
+    Ok(())
+}
+
 pub fn decode(bytes: &[u8]) -> Result<Effect, &'static str> {
     if bytes.is_empty() || bytes.len() > MAX_BYTES {
         return Err("HOST_WINDOWS_EFFECT_SIZE_INVALID");
@@ -72,6 +87,8 @@ pub fn verify(
         || challenge.installed_release_sha256.len() != 32
         || config_sha256.len() != 32
         || effect.config_sha256 != config_sha256
+        || effect.before_network_sha256.len() != 32
+        || effect.before_network_sha256.iter().all(|v| *v == 0)
         || effect.expires_at_unix <= now
         || effect.expires_at_unix > now.saturating_add(120)
         || effect.expires_at_unix > auth.expires_at_unix
@@ -217,6 +234,7 @@ mod tests {
             authorization: Some(auth),
             challenge: Some(challenge.clone()),
             config_sha256: vec![3; 32],
+            before_network_sha256: vec![4; 32],
             expires_at_unix: 180,
             registry_pb: registry.encode_to_vec(),
             selected_spec_bytes: spec.to_vec(),
@@ -233,7 +251,15 @@ mod tests {
             150,
         )
         .unwrap();
+        assert_eq!(verify_native_network_binding(&effect, &[4; 32]), Ok(()));
+        assert_eq!(
+            verify_native_network_binding(&effect, &[5; 32]),
+            Err("HOST_WINDOWS_EFFECT_NETWORK_PREBEGIN_DRIFT")
+        );
         let mut changed = effect.clone();
+        changed.before_network_sha256[0] ^= 1;
+        assert!(verify_system_signature(&changed, system.public_key().as_ref()).is_err());
+        changed = effect.clone();
         changed.challenge.as_mut().unwrap().nonce[0] ^= 1;
         assert!(
             verify(

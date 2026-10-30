@@ -91,6 +91,53 @@ pub struct NativeNetworkIdentity {
 }
 
 impl NativeNetworkIdentity {
+    /// One bounded, domain-separated digest of the actual typed kernel
+    /// network. No alternative desired state or runner-provided observation.
+    pub fn signed_prebegin_digest(&self) -> [u8; 32] {
+        fn bytes(ctx: &mut ring::digest::Context, value: &[u8]) {
+            ctx.update(&(value.len() as u32).to_be_bytes());
+            ctx.update(value);
+        }
+        let mut hash = ring::digest::Context::new(&ring::digest::SHA256);
+        hash.update(b"sing-box/windows-native-network-prebegin/v1:");
+        hash.update(&(self.routes.len() as u32).to_be_bytes());
+        for row in &self.routes {
+            hash.update(&row.interface_luid.to_be_bytes());
+            hash.update(&row.family.to_be_bytes());
+            bytes(&mut hash, &row.prefix);
+            hash.update(&[row.prefix_length]);
+            bytes(&mut hash, &row.next_hop);
+            hash.update(&row.metric.to_be_bytes());
+            hash.update(&row.protocol.to_be_bytes());
+            hash.update(&row.origin.to_be_bytes());
+            hash.update(&[row.site_prefix_length]);
+            hash.update(&[u8::from(row.loopback), u8::from(row.published)]);
+        }
+        hash.update(&(self.addresses.len() as u32).to_be_bytes());
+        for row in &self.addresses {
+            hash.update(&row.interface_luid.to_be_bytes());
+            hash.update(&row.family.to_be_bytes());
+            bytes(&mut hash, &row.address);
+            hash.update(&[row.prefix_length]);
+        }
+        hash.update(&(self.dns.len() as u32).to_be_bytes());
+        for row in &self.dns {
+            hash.update(&row.interface_luid.to_be_bytes());
+            hash.update(&row.order.to_be_bytes());
+            hash.update(&row.family.to_be_bytes());
+            bytes(&mut hash, &row.server);
+        }
+        hash.update(&(self.foreign_warp_adapters.len() as u32).to_be_bytes());
+        for row in &self.foreign_warp_adapters {
+            bytes(&mut hash, row.alias.as_bytes());
+            hash.update(&row.interface_luid.to_be_bytes());
+            hash.update(&row.oper_status.to_be_bytes());
+        }
+        let mut digest = [0_u8; 32];
+        digest.copy_from_slice(hash.finish().as_ref());
+        digest
+    }
+
     /// No tolerance for a changed native route, resolver order or foreign
     /// Cloudflare One interface during an exact restoration proof. A change
     /// needs a separately signed RECOVER; guessing a correction is forbidden.
@@ -646,8 +693,10 @@ mod tests {
         };
         assert!(baseline.require_foreign_warp_up().is_ok());
         assert_eq!(baseline.require_restored(&baseline), Ok(()));
+        assert_eq!(baseline.signed_prebegin_digest(), baseline.clone().signed_prebegin_digest());
         let mut changed = baseline.clone();
         changed.routes[0].metric += 1;
+        assert_ne!(baseline.signed_prebegin_digest(), changed.signed_prebegin_digest());
         assert_eq!(
             baseline.require_restored(&changed),
             Err("HOST_WINDOWS_NETWORK_ROUTES_NOT_RESTORED")
@@ -678,12 +727,14 @@ mod tests {
         );
         changed = baseline.clone();
         changed.dns[0].order += 1;
+        assert_ne!(baseline.signed_prebegin_digest(), changed.signed_prebegin_digest());
         assert_eq!(
             baseline.require_restored(&changed),
             Err("HOST_WINDOWS_NETWORK_DNS_NOT_RESTORED")
         );
         changed = baseline.clone();
         changed.foreign_warp_adapters[0].oper_status = 2;
+        assert_ne!(baseline.signed_prebegin_digest(), changed.signed_prebegin_digest());
         assert_eq!(
             baseline.require_restored(&changed),
             Err("HOST_WINDOWS_NETWORK_CLOUDFLARE_ONE_CHANGED")
