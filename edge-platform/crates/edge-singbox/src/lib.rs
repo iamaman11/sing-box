@@ -528,7 +528,7 @@ pub fn render_windows_config_for_desired(
             "final": "managed-dns",
             "strategy": "ipv4_only"
         });
-        sync_tun_route_excludes(&mut config, Some(state.server_ip.as_str()));
+        sync_tun_route_excludes(&mut config, Some(state.server_ip.as_str()))?;
         if let Some(policy) = desired.windows_application_routing.as_ref().filter(|p| {
             p.scope == edge_shared_types::WindowsApplicationScope::SelectedApplications as i32
         }) {
@@ -664,7 +664,7 @@ fn sync_local_config_from_bindings(
         &state.tunnel_warp,
         TunnelKind::VlessReality,
     );
-    sync_tun_route_excludes(&mut config, state.ip.as_deref());
+    sync_tun_route_excludes(&mut config, state.ip.as_deref())?;
     sync_stable_bypass_rules(&mut config);
     sync_wsl_inbound(&mut config);
     sync_wsl_selector(&mut config);
@@ -680,9 +680,29 @@ fn sync_local_config_from_bindings(
     })
 }
 
-fn sync_tun_route_excludes(config: &mut Value, server_ip: Option<&str>) {
+fn sync_tun_route_excludes(
+    config: &mut Value,
+    server_ip: Option<&str>,
+) -> Result<(), &'static str> {
     let Some(inbounds) = config.get_mut("inbounds").and_then(Value::as_array_mut) else {
-        return;
+        return Ok(());
+    };
+    // ProxyOnly has no managed tunnel and needs no control-route exclusion.
+    // ManagedTun must preserve an exact native route to its upstream; a
+    // hostname, empty address, or invalid prefix must never become /32.
+    if !inbounds
+        .iter()
+        .any(|v| v.get("type").and_then(Value::as_str) == Some("tun"))
+    {
+        return Ok(());
+    }
+    let control_ip = server_ip
+        .ok_or("WINDOWS_MANAGED_TUN_CONTROL_IP_MISSING")?
+        .parse::<std::net::IpAddr>()
+        .map_err(|_| "WINDOWS_MANAGED_TUN_CONTROL_IP_INVALID")?;
+    let control_cidr = match control_ip {
+        std::net::IpAddr::V4(ip) => format!("{ip}/32"),
+        std::net::IpAddr::V6(ip) => format!("{ip}/128"),
     };
 
     let mut required = WARP_CONTROL_ENDPOINTS
@@ -690,9 +710,7 @@ fn sync_tun_route_excludes(config: &mut Value, server_ip: Option<&str>) {
         .chain(FOREIGN_CLOUDFLARE_MESH_CIDRS.iter())
         .map(|value| (*value).to_owned())
         .collect::<Vec<_>>();
-    if let Some(server_ip) = server_ip.filter(|value| !value.trim().is_empty()) {
-        required.push(format!("{server_ip}/32"));
-    }
+    required.push(control_cidr);
     for inbound in inbounds {
         let Some(object) = inbound.as_object_mut() else {
             continue;
@@ -722,6 +740,7 @@ fn sync_tun_route_excludes(config: &mut Value, server_ip: Option<&str>) {
             }
         }
     }
+    Ok(())
 }
 
 fn sync_stable_bypass_rules(config: &mut Value) {
@@ -2129,6 +2148,53 @@ mod tests {
                 .and_then(Value::as_str),
             Some("edge.example.com")
         );
+    }
+
+    #[test]
+    fn managed_tun_preserves_ipv4_and_ipv6_control_routes_without_guessing() {
+        for (ip, expected) in [
+            ("203.0.113.10", "203.0.113.10/32"),
+            ("2001:db8::20", "2001:db8::20/128"),
+        ] {
+            let mut config = json!({
+                "inbounds": [{"type": "mixed"}, {"type": "tun", "tag": "managed-tun-in"}]
+            });
+            sync_tun_route_excludes(&mut config, Some(ip)).unwrap();
+            sync_tun_route_excludes(&mut config, Some(ip)).unwrap();
+            let exclusions = config["inbounds"][1]["route_exclude_address"]
+                .as_array()
+                .unwrap();
+            assert_eq!(
+                exclusions
+                    .iter()
+                    .filter(|v| v.as_str() == Some(expected))
+                    .count(),
+                1,
+                "control route must be exact and idempotent"
+            );
+            assert!(exclusions.iter().any(|v| v == "100.96.0.0/12"));
+            assert!(config["inbounds"][0].get("route_exclude_address").is_none());
+        }
+        let config = json!({"inbounds": [{"type": "tun"}]});
+        for invalid in ["", "example.org", "2001:db8::20/32", "203.0.113.10/128"] {
+            let mut candidate = config.clone();
+            assert_eq!(
+                sync_tun_route_excludes(&mut candidate, Some(invalid)),
+                Err("WINDOWS_MANAGED_TUN_CONTROL_IP_INVALID")
+            );
+            assert_eq!(candidate, config, "invalid route must fail before mutation");
+        }
+        let mut missing = config.clone();
+        assert_eq!(
+            sync_tun_route_excludes(&mut missing, None),
+            Err("WINDOWS_MANAGED_TUN_CONTROL_IP_MISSING")
+        );
+        assert_eq!(missing, config);
+        let mut proxy_only = json!({"inbounds": [{"type": "mixed"}]});
+        sync_tun_route_excludes(&mut proxy_only, Some("invalid.example")).unwrap();
+        assert!(proxy_only["inbounds"][0]
+            .get("route_exclude_address")
+            .is_none());
     }
 
     #[test]
