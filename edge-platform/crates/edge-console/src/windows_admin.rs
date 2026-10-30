@@ -47,15 +47,12 @@ fn check_journal_entry(
     recovery: bool,
 ) -> Result<(), &'static str> {
     if (admin
-        && (name == format!("admin-{id}.pending.pb")
-            || name == format!("admin-{id}.terminal.pb")))
+        && (name == format!("admin-{id}.pending.pb") || name == format!("admin-{id}.terminal.pb")))
         || (!admin && (name == format!("{id}.pb") || name.starts_with(&format!("{id}."))))
     {
         return Err("HOST_WINDOWS_OPERATION_EXISTS_NO_REPLAY");
     }
-    if name.ends_with(".pending.pb")
-        && !(name.starts_with("resource-") && (admin || recovery))
-    {
+    if name.ends_with(".pending.pb") && !(name.starts_with("resource-") && (admin || recovery)) {
         return Err("HOST_WINDOWS_PENDING_GATE_NO_REPLAY");
     }
     Ok(())
