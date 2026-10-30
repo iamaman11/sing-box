@@ -761,8 +761,8 @@ pub fn verify_managed_application_routes(
     if config_bytes.is_empty() || config_bytes.len() > 1024 * 1024 {
         return Err("WINDOWS_SELECTED_APPS_CONFIG_SIZE_INVALID");
     }
-    let config: Value = serde_json::from_slice(config_bytes)
-        .map_err(|_| "WINDOWS_SELECTED_APPS_CONFIG_INVALID")?;
+    let config: Value =
+        serde_json::from_slice(config_bytes).map_err(|_| "WINDOWS_SELECTED_APPS_CONFIG_INVALID")?;
     let rules = config
         .pointer("/route/rules")
         .and_then(Value::as_array)
@@ -813,7 +813,9 @@ pub fn verify_managed_application_routes(
             if fallback.get("outbound").and_then(Value::as_str) != Some("direct")
                 || fallback.get("process_path").is_some()
                 || fallback.get("process_name").is_some()
-                || paths.last().is_some_and(|(index, _)| index >= fallback_index)
+                || paths
+                    .last()
+                    .is_some_and(|(index, _)| index >= fallback_index)
                 || tun_rules
                     .iter()
                     .take(policy.applications.len())
@@ -830,13 +832,16 @@ pub fn verify_managed_application_routes(
             }
         }
     }
-    if rules.first().and_then(|r| r.get("outbound")).and_then(Value::as_str)
+    if rules
+        .first()
+        .and_then(|r| r.get("outbound"))
+        .and_then(Value::as_str)
         != Some("direct")
+        || rules.first().and_then(|r| r.get("process_name")) != Some(&json!([WARP_SERVICE_PROCESS]))
         || rules
-            .first()
-            .and_then(|r| r.get("process_name"))
-            != Some(&json!([WARP_SERVICE_PROCESS]))
-        || rules.get(1).and_then(|r| r.get("outbound")).and_then(Value::as_str)
+            .get(1)
+            .and_then(|r| r.get("outbound"))
+            .and_then(Value::as_str)
             != Some("direct")
         || rules.get(1).and_then(|r| r.get("ip_cidr")) != Some(&json!(LOOPBACK_CIDRS))
     {
@@ -2263,7 +2268,6 @@ mod tests {
         }
     }
 
-
     #[test]
     fn selected_apps_native_policy_readback_rejects_shadowing_and_direct_fallback_loss() {
         use edge_shared_types::{
@@ -2287,7 +2291,10 @@ mod tests {
         });
         let original =
             render_windows_config_for_desired(&stage2_runtime_state(), &desired).unwrap();
-        assert_eq!(verify_managed_application_routes(&original, &desired), Ok(()));
+        assert_eq!(
+            verify_managed_application_routes(&original, &desired),
+            Ok(())
+        );
         let mut changed: Value = serde_json::from_slice(&original).unwrap();
         let rules = changed["route"]["rules"].as_array_mut().unwrap();
         let selected = rules
