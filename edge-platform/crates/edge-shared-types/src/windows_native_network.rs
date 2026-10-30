@@ -198,7 +198,9 @@ fn read_native_routes(
             return Err("HOST_WINDOWS_NETWORK_ROUTE_ADDRESS_FAMILY_MISMATCH");
         }
         let key = RouteIdentity {
-            interface_luid: row.InterfaceLuid.Value,
+            // SAFETY: GetIpForwardTable2 initializes the LUID union in
+            // every returned MIB_IPFORWARD_ROW2.
+            interface_luid: unsafe { row.InterfaceLuid.Value },
             family,
             prefix,
             prefix_length: row.DestinationPrefix.PrefixLength,
@@ -586,22 +588,26 @@ mod tests {
     #[test]
     fn ipv4_and_ipv6_native_sockaddrs_preserve_exact_bytes() {
         use windows_sys::Win32::Networking::WinSock::SOCKADDR_INET;
-        let mut v4 = SOCKADDR_INET::default();
+        // SAFETY: SOCKADDR_INET is a plain Win32 address union; zero
+        // initialisation is valid before writing the selected family.
+        let mut v4: SOCKADDR_INET = unsafe { std::mem::zeroed() };
         // SAFETY: the active union member is written and then read as AF_INET.
         unsafe {
             v4.Ipv4.sin_family = AF_INET;
             v4.Ipv4.sin_addr.S_un.S_addr = u32::from_ne_bytes([203, 0, 113, 10]);
         }
         assert_eq!(address_bytes(&v4), Ok((AF_INET, vec![203, 0, 113, 10])));
-        let mut v6 = SOCKADDR_INET::default();
+        // SAFETY: Zero bytes are a valid initial sockaddr union state.
+        let mut v6: SOCKADDR_INET = unsafe { std::mem::zeroed() };
         // SAFETY: the active union member is written and then read as AF_INET6.
         unsafe {
             v6.Ipv6.sin6_family = AF_INET6;
             v6.Ipv6.sin6_addr.u.Byte = [0x20; 16];
         }
         assert_eq!(address_bytes(&v6), Ok((AF_INET6, vec![0x20; 16])));
-        let mut unknown = SOCKADDR_INET::default();
-        unknown.si_family = AF_UNSPEC;
+        let unknown = SOCKADDR_INET {
+            si_family: AF_UNSPEC,
+        };
         assert_eq!(
             address_bytes(&unknown),
             Err("HOST_WINDOWS_NETWORK_ADDRESS_FAMILY_INVALID")
