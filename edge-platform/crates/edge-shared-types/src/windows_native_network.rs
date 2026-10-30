@@ -90,6 +90,55 @@ pub struct NativeNetworkIdentity {
     pub foreign_warp_adapters: Vec<ManagedAdapterIdentity>,
 }
 
+/// Native evidence for a ManagedTun effect. The adapter is an observed kernel
+/// identity, not permission to adopt a device with a matching display name.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ManagedTunNetworkObservation {
+    pub network: NativeNetworkIdentity,
+    pub owned_tun: ManagedAdapterIdentity,
+}
+
+impl ManagedTunNetworkObservation {
+    /// A controlled TUN may add only routes and addresses through its own
+    /// LUID. It must not alter the caller's original foreign routes, address
+    /// bindings, resolver ordering or Cloudflare One adapter. Fail closed
+    /// rather than trying to rewrite another network owner's settings.
+    pub fn require_foreign_network_preserved(
+        &self,
+        before: &NativeNetworkIdentity,
+    ) -> Result<(), &'static str> {
+        if self.owned_tun.oper_status != 1 {
+            return Err("HOST_WINDOWS_MANAGED_TUN_NOT_RUNNING");
+        }
+        self.network.require_foreign_warp_up()?;
+        let preserved = NativeNetworkIdentity {
+            routes: self
+                .network
+                .routes
+                .iter()
+                .filter(|route| route.interface_luid != self.owned_tun.interface_luid)
+                .cloned()
+                .collect(),
+            addresses: self
+                .network
+                .addresses
+                .iter()
+                .filter(|address| address.interface_luid != self.owned_tun.interface_luid)
+                .cloned()
+                .collect(),
+            dns: self
+                .network
+                .dns
+                .iter()
+                .filter(|dns| dns.interface_luid != self.owned_tun.interface_luid)
+                .cloned()
+                .collect(),
+            foreign_warp_adapters: self.network.foreign_warp_adapters.clone(),
+        };
+        before.require_restored(&preserved)
+    }
+}
+
 impl NativeNetworkIdentity {
     /// One bounded, domain-separated digest of the actual typed kernel
     /// network. No alternative desired state or runner-provided observation.
@@ -485,11 +534,39 @@ pub fn observe_native_route_dns() -> Result<NativeNetworkReadback, &'static str>
 /// and assigned addresses for restoration comparison. Does not alter the OS.
 pub fn observe_native_network_identity()
 -> Result<(NativeNetworkReadback, NativeNetworkIdentity), &'static str> {
+    let (readback, network, owned) = read_native_network_snapshot()?;
+    if !owned.is_empty() {
+        return Err("HOST_WINDOWS_NETWORK_MANAGED_TUN_INTERFACE_STILL_PRESENT");
+    }
+    Ok((readback, network))
+}
+
+/// This observer is deliberately NOT a generic permission to start/stop a
+/// TUN. The native signed owner uses it only to inspect an admitted effect
+/// after recording a durable BEGIN. Plain ProxyOnly paths keep the strict
+/// no-TUN observer above, preventing accidental adoption after a crash.
+pub fn observe_native_managed_tun()
+-> Result<(NativeNetworkReadback, ManagedTunNetworkObservation), &'static str> {
+    let (readback, network, mut owned) = read_native_network_snapshot()?;
+    if owned.len() != 1 {
+        return Err("HOST_WINDOWS_MANAGED_TUN_OWNER_AMBIGUOUS");
+    }
+    Ok((
+        readback,
+        ManagedTunNetworkObservation {
+            network,
+            owned_tun: owned.remove(0),
+        },
+    ))
+}
+
+fn read_native_network_snapshot()
+-> Result<(NativeNetworkReadback, NativeNetworkIdentity, Vec<ManagedAdapterIdentity>), &'static str> {
     let mut result = NativeNetworkReadback::default();
     let mut routes = BTreeSet::new();
     let mut dns = BTreeSet::new();
     let mut addresses = BTreeSet::new();
-    let warp = observe_owned_foreign_interfaces()?;
+    let (warp, owned) = observe_owned_foreign_interfaces()?;
     read_native_routes(&mut result, &mut routes)?;
     read_native_dns(&mut result, &mut dns, &mut addresses)?;
     Ok((
@@ -500,6 +577,7 @@ pub fn observe_native_network_identity()
             dns: dns.into_iter().collect(),
             foreign_warp_adapters: warp,
         },
+        owned,
     ))
 }
 
@@ -517,12 +595,19 @@ fn is_owned_tun_alias(raw: &[u16]) -> Result<bool, &'static str> {
 /// *process* is stopped or Git currently requests ProxyOnly. Windows may
 /// retain a TUN adapter after process loss; trusting SCM alone is unsafe.
 pub fn require_owned_tun_absent() -> Result<(), &'static str> {
-    observe_owned_foreign_interfaces().map(|_| ())
+    let (_, tun) = observe_owned_foreign_interfaces()?;
+    if tun.is_empty() {
+        Ok(())
+    } else {
+        Err("HOST_WINDOWS_NETWORK_MANAGED_TUN_INTERFACE_STILL_PRESENT")
+    }
 }
 
-/// The same native interface table both excludes our stale TUN and observes
-/// Cloudflare One, without claiming foreign ownership or changing it.
-fn observe_owned_foreign_interfaces() -> Result<Vec<ManagedAdapterIdentity>, &'static str> {
+/// The same native interface table observes our TUN and foreign Cloudflare
+/// One separately. Alias matching is a readback only: an untrusted interface
+/// with this name is never adopted by a new process or blindly deleted.
+fn observe_owned_foreign_interfaces()
+-> Result<(Vec<ManagedAdapterIdentity>, Vec<ManagedAdapterIdentity>), &'static str> {
     struct OwnedTable(*mut MIB_IF_TABLE2);
     impl Drop for OwnedTable {
         fn drop(&mut self) {
@@ -550,9 +635,18 @@ fn observe_owned_foreign_interfaces() -> Result<Vec<ManagedAdapterIdentity>, &'s
     // MIB_IF_ROW2 element stride, not a hand-computed byte offset.
     let rows = unsafe { std::slice::from_raw_parts((*table.0).Table.as_ptr(), count) };
     let mut foreign = BTreeSet::new();
+    let mut owned = BTreeSet::new();
     for row in rows {
         if is_owned_tun_alias(&row.Alias)? {
-            return Err("HOST_WINDOWS_NETWORK_MANAGED_TUN_INTERFACE_STILL_PRESENT");
+            // Even a single alias match is not proof of ownership, but it
+            // identifies the observed LUID for exact scoped poststate tests.
+            if !owned.insert(ManagedAdapterIdentity {
+                alias: OWNED_TUN_ALIAS.into(),
+                interface_luid: unsafe { row.InterfaceLuid.Value },
+                oper_status: row.OperStatus,
+            }) {
+                return Err("HOST_WINDOWS_NETWORK_DUPLICATE_MANAGED_TUN");
+            }
         }
         let end = row
             .Alias
@@ -573,12 +667,106 @@ fn observe_owned_foreign_interfaces() -> Result<Vec<ManagedAdapterIdentity>, &'s
             return Err("HOST_WINDOWS_NETWORK_DUPLICATE_FOREIGN_ADAPTER");
         }
     }
-    Ok(foreign.into_iter().collect())
+    if owned.len() > 1 {
+        return Err("HOST_WINDOWS_NETWORK_MULTIPLE_MANAGED_TUN_INTERFACES");
+    }
+    Ok((foreign.into_iter().collect(), owned.into_iter().collect()))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+
+    #[test]
+    fn managed_tun_native_poststate_may_only_add_owned_interface_resources() {
+        let baseline = NativeNetworkIdentity {
+            routes: vec![RouteIdentity {
+                interface_luid: 8,
+                family: AF_INET,
+                prefix: vec![0, 0, 0, 0],
+                prefix_length: 0,
+                next_hop: vec![192, 0, 2, 1],
+                metric: 10,
+                protocol: 3,
+                origin: 2,
+                site_prefix_length: 0,
+                loopback: false,
+                published: false,
+            }],
+            addresses: vec![UnicastAddressIdentity {
+                interface_luid: 8,
+                family: AF_INET,
+                address: vec![192, 0, 2, 44],
+                prefix_length: 24,
+            }],
+            dns: vec![DnsIdentity {
+                interface_luid: 8,
+                order: 0,
+                family: AF_INET,
+                server: vec![192, 0, 2, 53],
+            }],
+            foreign_warp_adapters: vec![ManagedAdapterIdentity {
+                alias: "cloudflarewarp".into(),
+                interface_luid: 7,
+                oper_status: 1,
+            }],
+        };
+        let mut after = ManagedTunNetworkObservation {
+            network: baseline.clone(),
+            owned_tun: ManagedAdapterIdentity {
+                alias: "sing-box-tun".into(),
+                interface_luid: 42,
+                oper_status: 1,
+            },
+        };
+        after.network.routes.push(RouteIdentity {
+            interface_luid: 42,
+            family: AF_INET6,
+            prefix: vec![0; 16],
+            prefix_length: 0,
+            next_hop: vec![0; 16],
+            metric: 5,
+            protocol: 3,
+            origin: 2,
+            site_prefix_length: 0,
+            loopback: false,
+            published: false,
+        });
+        after.network.addresses.push(UnicastAddressIdentity {
+            interface_luid: 42,
+            family: AF_INET6,
+            address: vec![0xfd; 16],
+            prefix_length: 126,
+        });
+        after.network.dns.push(DnsIdentity {
+            interface_luid: 42,
+            order: 0,
+            family: AF_INET6,
+            server: vec![0xfd; 16],
+        });
+        assert_eq!(after.require_foreign_network_preserved(&baseline), Ok(()));
+        after.network.routes[0].metric = 11;
+        assert_eq!(
+            after.require_foreign_network_preserved(&baseline),
+            Err("HOST_WINDOWS_NETWORK_ROUTES_NOT_RESTORED")
+        );
+        after.network.routes[0].metric = 10;
+        after.network.dns[0].server[0] ^= 1;
+        assert_eq!(
+            after.require_foreign_network_preserved(&baseline),
+            Err("HOST_WINDOWS_NETWORK_DNS_NOT_RESTORED")
+        );
+        after.network.dns[0].server[0] ^= 1;
+        after.owned_tun.oper_status = 2;
+        assert_eq!(
+            after.require_foreign_network_preserved(&baseline),
+            Err("HOST_WINDOWS_MANAGED_TUN_NOT_RUNNING")
+        );
+        after.owned_tun.oper_status = 1;
+        after.network.foreign_warp_adapters[0].oper_status = 2;
+        assert!(after.require_foreign_network_preserved(&baseline).is_err());
+    }
 
     #[test]
     fn exact_native_tun_alias_proof_is_case_insensitive_and_fail_closed() {
