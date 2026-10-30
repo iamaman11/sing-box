@@ -675,6 +675,28 @@ message FleetHostIntent {
   FleetHostMode requested_mode = 10;
   // Advisory timestamp only; never used as a mutation authorization.
   uint64 requested_at_unix = 11;
+  // Worker signs this exact intent INCLUDING the local, separately signed
+  // native evidence. Never a runner boolean or authority to skip OS readback.
+  FleetWindowsNetworkAdmission network_admission = 12;
+}
+
+// Proof of the pre-TUN physical control plane, minted by installed SYSTEM
+// after independent native Line1/control/DNS tests. The existing Worker
+// authorizes only the exact bound operation. No new mode-setting protocol.
+message FleetWindowsNetworkAdmission {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  string operation_id = 3;
+  bytes installed_release_sha256 = 4;
+  bytes desired_release_set_sha256 = 5;
+  bytes config_sha256 = 6;
+  bytes before_network_sha256 = 7;
+  uint64 observed_at_unix = 8;
+  uint64 expires_at_unix = 9;
+  bytes line1_witness_sha256 = 10;
+  bytes control_witness_sha256 = 11;
+  bytes dns_witness_sha256 = 12;
+  bytes system_signature = 13;
 }
 
 // A single closed reason determines BOTH printable error_class and

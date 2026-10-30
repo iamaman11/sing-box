@@ -827,6 +827,15 @@ pub fn validate_host_intent(
     }
     let mode =
         FleetHostMode::try_from(intent.requested_mode).map_err(|_| "HOST_INTENT_MODE_INVALID")?;
+    // An admission proof is meaningful only for a separate, explicit
+    // Windows START. Never let an opaque proof turn APPLY/STOP/RECOVER, a VM
+    // operation or retired SetMode into a route-capturing operation.
+    if intent.network_admission.is_some()
+        && (host.kind != FleetHostKind::Windows as i32
+            || action != FleetHostAction::Start)
+    {
+        return Err("HOST_WINDOWS_NETWORK_ADMISSION_UNEXPECTED_ACTION");
+    }
     if action == FleetHostAction::Unspecified
         || (action == FleetHostAction::SetMode
             && (host.kind != FleetHostKind::Windows as i32 || mode == FleetHostMode::Unspecified))
@@ -1088,6 +1097,62 @@ pub fn prepared_host_result(intent: &FleetHostIntent) -> FleetHostResult {
         crate::FleetHostResultReason::PreparedNeedsOwnerTrust,
     );
     result
+}
+
+/// Typed pre-BEGIN binding for one native route-capturing START. This
+/// verifier authenticates the separately enrolled SYSTEM witness, and the
+/// Worker separately signs the enclosing FleetHostIntent. Neither signature
+/// alone proves physical connectivity: the SYSTEM owner must independently
+/// re-observe native network and Line1/control/DNS before the child starts.
+pub fn verify_windows_network_admission(
+    intent: &FleetHostIntent,
+    trusted_system_public_key: &[u8],
+    installed_release_sha256: &[u8],
+    config_sha256: &[u8],
+    native_before_sha256: &[u8],
+    now: u64,
+) -> Result<(), &'static str> {
+    use crate::FleetWindowsNetworkAdmission;
+    let proof: &FleetWindowsNetworkAdmission = intent
+        .network_admission
+        .as_ref()
+        .ok_or("HOST_WINDOWS_NETWORK_ADMISSION_MISSING")?;
+    let sha = |b: &[u8]| b.len() == 32 && b.iter().any(|v| *v != 0);
+    if intent.kind != FleetHostKind::Windows as i32
+        || intent.action != FleetHostAction::Start as i32
+        || proof.schema_version != 1
+        || proof.machine_id != intent.machine_id
+        || proof.operation_id != intent.operation_id
+        || trusted_system_public_key.len() != 32
+        || !sha(installed_release_sha256)
+        || !sha(config_sha256)
+        || !sha(native_before_sha256)
+        || proof.installed_release_sha256 != installed_release_sha256
+        || proof.desired_release_set_sha256 != intent.release_set_sha256
+        || proof.config_sha256 != config_sha256
+        || proof.before_network_sha256 != native_before_sha256
+        || !sha(&proof.line1_witness_sha256)
+        || !sha(&proof.control_witness_sha256)
+        || !sha(&proof.dns_witness_sha256)
+        || proof.observed_at_unix == 0
+        || proof.expires_at_unix <= proof.observed_at_unix
+        || proof.expires_at_unix - proof.observed_at_unix > 60
+        || now < proof.observed_at_unix
+        || now > proof.expires_at_unix
+        || proof.system_signature.len() != 64
+    {
+        return Err("HOST_WINDOWS_NETWORK_ADMISSION_BINDING_OR_FRESHNESS_INVALID");
+    }
+    let mut unsigned = proof.clone();
+    unsigned.system_signature.clear();
+    let mut payload = b"sing-box/windows-network-admission/v1:".to_vec();
+    payload.extend(unsigned.encode_to_vec());
+    ring::signature::UnparsedPublicKey::new(
+        &ring::signature::ED25519,
+        trusted_system_public_key,
+    )
+    .verify(&payload, &proof.system_signature)
+    .map_err(|_| "HOST_WINDOWS_NETWORK_ADMISSION_SYSTEM_SIGNATURE_INVALID")
 }
 
 /// The existing Cloudflare Worker is the sole issuer of this detached
