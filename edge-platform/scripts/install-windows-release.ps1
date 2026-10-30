@@ -94,6 +94,42 @@ function Assert-RootExecutionChain {
         New-Item -ItemType Directory -Path $InstallRoot -ErrorAction Stop | Out-Null
         $ApproveRepair = $true
     }
+    if ($exists -and $ApproveRepair) {
+        # A periodic SYSTEM dispatch may run old bytes while the root DACL is
+        # being normalized. Explicit ACL approval does NOT grant authority to
+        # disable/restart it. Only a separate proven offline handoff may leave
+        # the existing task Disabled before this change.
+        $task = Get-ScheduledTask -TaskName 'EdgePlatformPrivilegedDispatch' -ErrorAction Stop
+        if ($null -eq $task -or [string]$task.State -cne 'Disabled' -or
+            @($task.Actions).Count -ne 1 -or
+            [string]$task.Principal.LogonType -cne 'ServiceAccount' -or
+            [string]$task.Principal.RunLevel -cne 'Highest') {
+            throw 'WINDOWS_INSTALL_ACL_REPAIR_REQUIRES_EXACT_DISABLED_SYSTEM_TASK'
+        }
+        $principal = [string]$task.Principal.UserId
+        $systemSid = if ($principal -ceq 'S-1-5-18') { $principal } else {
+            ([Security.Principal.NTAccount]::new($principal)).Translate(
+                [Security.Principal.SecurityIdentifier]
+            ).Value
+        }
+        if ($systemSid -cne 'S-1-5-18' -or
+            [string]$task.Actions[0].Arguments -cnotmatch '^privileged-dispatch --install-root "?C:\\sing-box"?$' -or
+            ([string]$task.Actions[0].Execute).Trim('"') -cnotmatch '^C:\\sing-box\\releases\\[0-9a-f]{64}\\bin\\edge-console\.exe$') {
+            throw 'WINDOWS_INSTALL_ACL_REPAIR_SYSTEM_TASK_IDENTITY_MISMATCH'
+        }
+        $runningConsole = @(Get-CimInstance -ClassName Win32_Process -Filter "Name='edge-console.exe'" -ErrorAction Stop)
+        if ($runningConsole.Count -ne 0) {
+            throw 'WINDOWS_INSTALL_ACL_REPAIR_OLD_CONSOLE_RUNNING'
+        }
+        $controller = @(Get-CimInstance -ClassName Win32_Service -Filter "Name='EdgePlatformController'" -ErrorAction Stop)
+        if ($controller.Count -ne 1 -or [string]$controller[0].State -cne 'Stopped') {
+            throw 'WINDOWS_INSTALL_ACL_REPAIR_CONTROLLER_NOT_STOPPED'
+        }
+        $tuns = @(Get-NetAdapter -Name 'sing-box-tun' -ErrorAction SilentlyContinue)
+        if ($tuns.Count -ne 0) {
+            throw 'WINDOWS_INSTALL_ACL_REPAIR_MANAGED_TUN_PRESENT'
+        }
+    }
     $scopes = @($InstallRoot)
     foreach ($name in @('releases', 'bin', 'bootstrap')) {
         $path = Join-Path $InstallRoot $name

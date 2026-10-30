@@ -202,6 +202,18 @@ assert "function Assert-RootExecutionChain {" in windows_installer
 assert "Assert-RootExecutionChain -ApproveRepair:$ApproveAclRepair" in windows_installer
 assert "Assert-RootExecutionChain -CreateFresh" in windows_installer
 assert "WINDOWS_INSTALL_PRELAUNCH_DESCENDANT_REPARSE_BLOCKED" in windows_installer
+assert "WINDOWS_INSTALL_ACL_REPAIR_REQUIRES_EXACT_DISABLED_SYSTEM_TASK" in windows_installer
+assert "WINDOWS_INSTALL_ACL_REPAIR_OLD_CONSOLE_RUNNING" in windows_installer
+assert "WINDOWS_INSTALL_ACL_REPAIR_CONTROLLER_NOT_STOPPED" in windows_installer
+preflight = windows_installer.split("function Assert-RootExecutionChain {", 1)[1].split(
+    "function Protect-ReleaseStageBeforeExecution {", 1
+)[0]
+assert preflight.index("WINDOWS_INSTALL_ACL_REPAIR_REQUIRES_EXACT_DISABLED_SYSTEM_TASK") < preflight.index(
+    "& icacls.exe $path /grant:r"
+)
+assert "Disable-ScheduledTask" not in windows_installer
+assert "Enable-ScheduledTask" not in windows_installer
+
 prelaunch = windows_installer.split("function Assert-RootExecutionChain {", 1)[1].split(
     "function Protect-ReleaseStageBeforeExecution {", 1
 )[0]
