@@ -18,6 +18,8 @@ use std::time::Duration;
 const MAX_CONNECTION_SNAPSHOT: u64 = 1_048_576;
 const MAX_CONNECTIONS: usize = 1024;
 const MAX_INVENTORY: usize = 512;
+const MAX_INVENTORY_BYTES: usize = 32_768;
+const MAX_REGISTRY_SUBKEYS: u32 = 8_192;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Evidence {
@@ -49,6 +51,20 @@ fn is_managed_tun(value: &Value) -> bool {
 /// witness. It must be a live tracked native TUN connection from the exact
 /// executable path, with the correct first outbound chain. Absence, missing
 /// path metadata or incomplete traffic always means UNPROVEN, never PASS.
+fn connection_traffic_observed(connection: &Value) -> bool {
+    let metadata = &connection["metadata"];
+    let destination = metadata
+        .get("destinationIP")
+        .and_then(Value::as_str)
+        .is_some_and(|s| !s.is_empty())
+        || metadata.get("host").and_then(Value::as_str).is_some_and(|s| !s.is_empty());
+    let transport = metadata.get("network").and_then(Value::as_str);
+    destination
+        && matches!(transport, Some("tcp" | "udp"))
+        && connection.get("upload").and_then(Value::as_u64).is_some_and(|n| n > 0)
+        && connection.get("download").and_then(Value::as_u64).is_some_and(|n| n > 0)
+}
+
 fn assess_application_route(connections: &[Value], app: &WindowsApplicationRoute) -> Evidence {
     let Ok(expected) = production_windows_route_tag(app.route) else {
         return Evidence::Fail;
@@ -61,11 +77,10 @@ fn assess_application_route(connections: &[Value], app: &WindowsApplicationRoute
             continue;
         }
         observed = true;
+        // A tracked, zero-byte (or one-way) connection is not proof that
+        // HTTPS/TCP or UDP traffic actually reached the selected outbound.
         if !is_managed_tun(connection)
-            || connection
-                .pointer("/metadata/processPath")
-                .and_then(Value::as_str)
-                .is_none_or(str::is_empty)
+            || !connection_traffic_observed(connection)
             || connection
                 .get("chains")
                 .and_then(Value::as_array)
@@ -103,12 +118,13 @@ fn assess_unselected_direct(connections: &[Value], selected: &BTreeSet<String>) 
             continue;
         }
         observed = true;
-        if connection
-            .get("chains")
-            .and_then(Value::as_array)
-            .and_then(|items| items.first())
-            .and_then(Value::as_str)
-            != Some("direct")
+        if !connection_traffic_observed(connection)
+            || connection
+                .get("chains")
+                .and_then(Value::as_array)
+                .and_then(|items| items.first())
+                .and_then(Value::as_str)
+                != Some("direct")
         {
             return Evidence::Fail;
         }
@@ -151,6 +167,131 @@ fn running_executables() -> (System, BTreeSet<String>) {
         .map(str::to_owned)
         .collect::<BTreeSet<_>>();
     (sys, paths)
+}
+
+
+#[derive(Default)]
+struct InstalledInventory {
+    // Uninstall DisplayName is evidence of a registry registration, not of
+    // an executable's installed/current on-disk identity.
+    registered_programs: BTreeSet<String>,
+    // App Paths gives path candidates to inspect before editing Git desired.
+    // Windows does not require applications to register here.
+    app_path_candidates: BTreeSet<String>,
+}
+
+/// Read-only registry enumeration. A registry display name, App Paths entry,
+/// or running process is NOT a verified application identity, and no registry
+/// value is ever executed or applied as a route. Both 32/64-bit views and
+/// machine/user hives are inspected; missing/inaccessible entries are normal.
+fn registry_inventory() -> InstalledInventory {
+    use windows_sys::Win32::System::Registry::{
+        HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY,
+        KEY_WOW64_64KEY, REG_SZ, RegCloseKey, RegEnumKeyExW, RegOpenKeyExW,
+        RegQueryValueExW,
+    };
+
+    fn wide(value: &str) -> Vec<u16> {
+        value.encode_utf16().chain(std::iter::once(0)).collect()
+    }
+    fn read_string(key: HKEY, name: &str) -> Option<String> {
+        let wname = wide(name);
+        let mut raw = [0u8; 4096];
+        let mut size = raw.len() as u32;
+        let mut kind = 0u32;
+        let status = unsafe {
+            RegQueryValueExW(
+                key,
+                if name.is_empty() { std::ptr::null() } else { wname.as_ptr() },
+                std::ptr::null_mut(),
+                &mut kind,
+                raw.as_mut_ptr(),
+                &mut size,
+            )
+        };
+        if status != 0 || kind != REG_SZ || size < 2 || size as usize > raw.len() || size % 2 != 0 {
+            return None;
+        }
+        let units = raw[..size as usize]
+            .chunks_exact(2)
+            .map(|pair| u16::from_le_bytes([pair[0], pair[1]]))
+            .collect::<Vec<_>>();
+        let end = units.iter().position(|unit| *unit == 0)?;
+        let text = String::from_utf16(&units[..end]).ok()?;
+        (!text.is_empty() && text.len() <= 2048 && !text.chars().any(char::is_control))
+            .then_some(text)
+    }
+
+    fn enumerate(hive: HKEY, view: u32, root: &str, value: &str, target: &mut BTreeSet<String>) {
+        let mut key = std::ptr::null_mut();
+        if unsafe { RegOpenKeyExW(hive, wide(root).as_ptr(), 0, KEY_READ | view, &mut key) } != 0 {
+            return;
+        }
+        for index in 0..MAX_REGISTRY_SUBKEYS {
+            let mut name = [0u16; 260];
+            let mut length = name.len() as u32;
+            let status = unsafe {
+                RegEnumKeyExW(
+                    key,
+                    index,
+                    name.as_mut_ptr(),
+                    &mut length,
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                    std::ptr::null_mut(),
+                )
+            };
+            if status != 0 { break; }
+            let Ok(child) = String::from_utf16(&name[..length as usize]) else { continue; };
+            let mut entry = std::ptr::null_mut();
+            let subkey = format!("{root}\\{child}");
+            if unsafe { RegOpenKeyExW(hive, wide(&subkey).as_ptr(), 0, KEY_READ | view, &mut entry) } != 0 {
+                continue;
+            }
+            if let Some(value) = read_string(entry, value) {
+                target.insert(value);
+            }
+            unsafe { RegCloseKey(entry) };
+        }
+        unsafe { RegCloseKey(key) };
+    }
+    let mut found = InstalledInventory::default();
+    for hive in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
+        for view in [KEY_WOW64_64KEY, KEY_WOW64_32KEY] {
+            enumerate(
+                hive, view,
+                r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
+                "DisplayName",
+                &mut found.registered_programs,
+            );
+            enumerate(
+                hive, view,
+                r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths",
+                "",
+                &mut found.app_path_candidates,
+            );
+        }
+    }
+    // App Paths default strings may be stale or indirect. Expose only
+    // currently-existing lexical absolute executable file candidates.
+    found.app_path_candidates.retain(|path| {
+        edge_shared_types::host_admin::windows_absolute_path(path)
+            && Path::new(path).is_file()
+    });
+    found
+}
+
+fn print_inventory_rows(label: &str, rows: &BTreeSet<String>, budget: &mut usize) -> bool {
+    let mut emitted = 0usize;
+    for row in rows.iter().take(MAX_INVENTORY) {
+        let len = label.len() + 1 + row.len() + 1;
+        if len > *budget { break; }
+        println!("{label}={row}");
+        *budget -= len;
+        emitted += 1;
+    }
+    emitted < rows.len()
 }
 
 fn exact_owned_singbox_pid(
@@ -289,12 +430,20 @@ pub(super) fn run(command: &str, activation: &Path) -> Result<(), String> {
     verify_windows_activation_files(&state)?;
     let (sys, executables) = running_executables();
     if command == "app-inventory" {
-        println!("source=WINDOWS_NATIVE_RUNNING_PROCESSES");
-        println!("installed_apps_inventory=UNPROVEN");
-        for path in executables.iter().take(MAX_INVENTORY) {
-            println!("running_executable={path}");
-        }
-        println!("inventory_truncated={}", executables.len() > MAX_INVENTORY);
+        let installed = registry_inventory();
+        println!("source=WINDOWS_REGISTRY_UNINSTALL_APP_PATHS_AND_NATIVE_RUNNING_PROCESSES");
+        println!("installed_apps_inventory=PARTIAL_REGISTRY_ONLY");
+        println!("registry_names_not_executable_identities=YES");
+        println!("registered_app_paths_not_authorized_routes=YES");
+        let mut budget = MAX_INVENTORY_BYTES;
+        let truncated = print_inventory_rows(
+            "registered_program_name", &installed.registered_programs, &mut budget,
+        ) | print_inventory_rows(
+            "registered_app_path_candidate", &installed.app_path_candidates, &mut budget,
+        ) | print_inventory_rows(
+            "running_executable", &executables, &mut budget,
+        );
+        println!("inventory_truncated={truncated}");
         println!("mutations=0");
         return Ok(());
     }
@@ -315,7 +464,13 @@ pub(super) fn run(command: &str, activation: &Path) -> Result<(), String> {
     let config = fs::read(config_path).map_err(|_| "HOST_WINDOWS_APP_CONFIG_UNAVAILABLE")?;
     edge_singbox::verify_managed_application_routes(&config, &desired)?;
     let owned = exact_owned_singbox_pid(&sys, &state).and_then(require_exact_api_owner);
-    let connections = owned.and_then(|_| live_connections()).ok();
+    let connections = match owned.and_then(|_| live_connections()) {
+        Ok(rows) => Some(rows),
+        Err(reason) => {
+            println!("application_api_failure={reason}");
+            None
+        }
+    };
     let (_, tun) = edge_shared_types::windows_native_network::observe_native_managed_tun()?;
     tun.require_native_dual_stack_route_capture()?;
     println!("managed_tun=ON");
@@ -349,7 +504,12 @@ mod tests {
     }
     fn connection(path: &str, out: &str) -> Value {
         json!({
-            "metadata": {"processPath":path,"type":"tun/managed-tun-in"},
+            "metadata": {
+                "processPath":path,
+                "type":"tun/managed-tun-in",
+                "network":"tcp",
+                "destinationIP":"203.0.113.20"
+            },
             "chains":[out],
             "upload":123,
             "download":456
@@ -425,6 +585,27 @@ mod tests {
             Evidence::Unproven
         );
     }
+    #[test]
+    fn route_evidence_rejects_zero_byte_one_way_or_unattributed_traffic() {
+        let chosen = app();
+        for field in ["upload", "download"] {
+            let mut row = connection(&chosen.executable_path, "vless-reality-warp");
+            row[field] = json!(0);
+            assert_eq!(assess_application_route(&[row], &chosen), Evidence::Fail);
+        }
+        for field in ["network", "destinationIP"] {
+            let mut row = connection(&chosen.executable_path, "vless-reality-warp");
+            row["metadata"][field] = Value::Null;
+            assert_eq!(assess_application_route(&[row], &chosen), Evidence::Fail);
+        }
+        let mut row = connection(r"C:\Apps\Other\example.exe", "direct");
+        row["download"] = json!(0);
+        assert_eq!(
+            assess_unselected_direct(&[row], &BTreeSet::new()),
+            Evidence::Fail
+        );
+    }
+
     #[test]
     fn snapshot_rejects_wrong_schema_unbounded_and_missing_connections() {
         assert!(validate_snapshot(b"{}").is_err());
