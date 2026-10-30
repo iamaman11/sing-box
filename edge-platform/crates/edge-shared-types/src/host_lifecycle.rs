@@ -831,8 +831,7 @@ pub fn validate_host_intent(
     // Windows START. Never let an opaque proof turn APPLY/STOP/RECOVER, a VM
     // operation or retired SetMode into a route-capturing operation.
     if intent.network_admission.is_some()
-        && (host.kind != FleetHostKind::Windows as i32
-            || action != FleetHostAction::Start)
+        && (host.kind != FleetHostKind::Windows as i32 || action != FleetHostAction::Start)
     {
         return Err("HOST_WINDOWS_NETWORK_ADMISSION_UNEXPECTED_ACTION");
     }
@@ -1147,12 +1146,9 @@ pub fn verify_windows_network_admission(
     unsigned.system_signature.clear();
     let mut payload = b"sing-box/windows-network-admission/v1:".to_vec();
     payload.extend(unsigned.encode_to_vec());
-    ring::signature::UnparsedPublicKey::new(
-        &ring::signature::ED25519,
-        trusted_system_public_key,
-    )
-    .verify(&payload, &proof.system_signature)
-    .map_err(|_| "HOST_WINDOWS_NETWORK_ADMISSION_SYSTEM_SIGNATURE_INVALID")
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, trusted_system_public_key)
+        .verify(&payload, &proof.system_signature)
+        .map_err(|_| "HOST_WINDOWS_NETWORK_ADMISSION_SYSTEM_SIGNATURE_INVALID")
 }
 
 /// The existing Cloudflare Worker is the sole issuer of this detached
@@ -1238,7 +1234,12 @@ mod tests {
         let before = [6; 32];
         assert_eq!(
             verify_windows_network_admission(
-                &intent, key.public_key().as_ref(), &installed, &config, &before, 111
+                &intent,
+                key.public_key().as_ref(),
+                &installed,
+                &config,
+                &before,
+                111
             ),
             Err("HOST_WINDOWS_NETWORK_ADMISSION_MISSING")
         );
@@ -1267,17 +1268,38 @@ mod tests {
         intent.network_admission = Some(admission);
         let verify = |intent: &FleetHostIntent, now: u64| {
             verify_windows_network_admission(
-                intent, key.public_key().as_ref(), &installed, &config, &before, now
+                intent,
+                key.public_key().as_ref(),
+                &installed,
+                &config,
+                &before,
+                now,
             )
         };
         assert_eq!(verify(&intent, 120), Ok(()));
         assert!(verify(&intent, 151).is_err());
-        assert!(verify_windows_network_admission(
-            &intent, key.public_key().as_ref(), &installed, &[99; 32], &before, 120
-        ).is_err());
-        assert!(verify_windows_network_admission(
-            &intent, key.public_key().as_ref(), &installed, &config, &[98; 32], 120
-        ).is_err());
+        assert!(
+            verify_windows_network_admission(
+                &intent,
+                key.public_key().as_ref(),
+                &installed,
+                &[99; 32],
+                &before,
+                120
+            )
+            .is_err()
+        );
+        assert!(
+            verify_windows_network_admission(
+                &intent,
+                key.public_key().as_ref(),
+                &installed,
+                &config,
+                &[98; 32],
+                120
+            )
+            .is_err()
+        );
         let mut altered = intent.clone();
         altered.operation_id = "issue1-comment-235".into();
         assert!(verify(&altered, 120).is_err());
@@ -1298,7 +1320,12 @@ mod tests {
             Err("HOST_WINDOWS_NETWORK_ADMISSION_SYSTEM_SIGNATURE_INVALID")
         );
         altered = intent.clone();
-        altered.network_admission.as_mut().unwrap().dns_witness_sha256.clear();
+        altered
+            .network_admission
+            .as_mut()
+            .unwrap()
+            .dns_witness_sha256
+            .clear();
         assert!(verify(&altered, 120).is_err());
         altered = intent.clone();
         altered.network_admission.as_mut().unwrap().expires_at_unix = 170;
