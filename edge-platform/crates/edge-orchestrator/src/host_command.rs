@@ -3149,7 +3149,7 @@ mod tests {
         let spec = std::env::temp_dir().join(format!("sing-box-host-spec-{}", std::process::id()));
         std::fs::write(
             &spec,
-            b"schema_version: 6\\nwindows_datapath_mode: WINDOWS_DATAPATH_MODE_PROXY_ONLY\\n",
+            b"schema_version: 6\nwindows_datapath_mode: WINDOWS_DATAPATH_MODE_PROXY_ONLY\n",
         )
         .unwrap();
         let desired = HostRegistry {
