@@ -224,6 +224,73 @@ if ($source -cnotmatch [regex]::Escape('& $PSCommandPath @argsInitial') -or
     $source -cnotmatch [regex]::Escape('& $PSCommandPath @argsExact')) {
     throw 'Canonical installer is not invoking the verified named argument maps'
 }
+# Regression: -cnotmatch populates the automatic $Matches hash when the
+# digest regex matches. The old variable name $matches was overwritten, and
+# the next .digest access raised PropertyNotFoundException on a string.
+function Invoke-LegacyPublishedDigestCollision {
+    $matches = @([pscustomobject]@{ digest = ('sha256:' + ('a' * 64)) })
+    if ([string]$matches[0].digest -cnotmatch '^sha256:[0-9a-f]{64}$') {
+        throw 'Expected valid legacy digest'
+    }
+    return $matches[0].digest
+}
+$oldFailure = 'NO_ERROR'
+try { $null = Invoke-LegacyPublishedDigestCollision } catch { $oldFailure = $_.Exception.Message }
+if ($oldFailure -notmatch "digest") {
+    throw "Pre-fix PowerShell automatic Matches collision not reproduced: $oldFailure"
+}
+
+# Import only the canonical pure metadata helper, never execute installer top-level.
+$digestFns = @($functions | Where-Object { $_.Name -ceq 'Get-RequiredPublishedAssetSha256' })
+$oldVerifiers = @($functions | Where-Object { $_.Name -ceq 'Assert-ExistingNativeReleaseFromProtectedGit' })
+if ($digestFns.Count -ne 1 -or $oldVerifiers.Count -ne 1) {
+    throw 'Canonical published asset digest helper or old EXE verifier not unique'
+}
+. ([ScriptBlock]::Create($digestFns[0].Extent.Text))
+$oldVerifierText = $oldVerifiers[0].Extent.Text
+if ($oldVerifierText -cnotmatch 'Get-RequiredPublishedAssetSha256 -Release' -or
+    $oldVerifierText -match '\$matches\b' -or
+    $oldVerifierText -cnotmatch '\(Get-ExactHash -Path \$file\) -cne \$publishedDigest') {
+    throw 'Old published EXE must compare actual bytes to exact digest, without automatic Matches collision'
+}
+$goodAssets = [pscustomobject]@{ assets = @(
+    [pscustomobject]@{ name = 'edge-platform-windows.zip'; digest = ('sha256:' + ('a' * 64)) },
+    [pscustomobject]@{ name = 'release-set.pb'; digest = ('sha256:' + ('b' * 64)) }
+) }
+foreach ($entry in @(
+    @{ name = 'edge-platform-windows.zip'; expected = ('a' * 64) },
+    @{ name = 'release-set.pb'; expected = ('b' * 64) }
+)) {
+    $actual = Get-RequiredPublishedAssetSha256 -Release $goodAssets -Name $entry.name
+    if ($actual -cne $entry.expected) { throw "Valid published digest mismatch: $($entry.name)" }
+}
+
+# Missing, malformed, duplicate or absent immutable metadata always fails closed
+# with an owner-specific error (never raw 'property digest not found').
+$negativeAssets = @(
+    @{ release = [pscustomobject]@{ assets = @([pscustomobject]@{ name = 'release-set.pb' }) }; reason = 'WINDOWS_INSTALL_OLD_RELEASE_PUBLISHED_DIGEST_UNAVAILABLE' },
+    @{ release = [pscustomobject]@{ assets = @([pscustomobject]@{ name = 'release-set.pb'; digest = 'sha256:bad' }) }; reason = 'WINDOWS_INSTALL_OLD_RELEASE_PUBLISHED_DIGEST_UNAVAILABLE' },
+    @{ release = [pscustomobject]@{ assets = @([pscustomobject]@{ name = 'release-set.pb'; digest = ('sha256:' + ('A' * 64)) }) }; reason = 'WINDOWS_INSTALL_OLD_RELEASE_PUBLISHED_DIGEST_UNAVAILABLE' },
+    @{ release = [pscustomobject]@{ assets = @(
+        [pscustomobject]@{ name = 'release-set.pb'; digest = ('sha256:' + ('a' * 64)) },
+        [pscustomobject]@{ name = 'release-set.pb'; digest = ('sha256:' + ('b' * 64)) }
+    ) }; reason = 'WINDOWS_INSTALL_OLD_RELEASE_ASSET_NOT_UNIQUE' },
+    @{ release = [pscustomobject]@{ assets = @() }; reason = 'WINDOWS_INSTALL_OLD_RELEASE_ASSET_NOT_UNIQUE' }
+)
+foreach ($case in $negativeAssets) {
+    $caught = 'NO_ERROR'
+    try {
+        $null = Get-RequiredPublishedAssetSha256 -Release $case.release -Name 'release-set.pb'
+    } catch {
+        $caught = $_.Exception.Message
+    }
+    if (-not $caught.StartsWith($case.reason, [StringComparison]::Ordinal)) {
+        throw "Expected $($case.reason), got $caught"
+    }
+}
+Write-Output 'windows_installer_published_digest_matches_collision=PASS'
+Write-Output 'windows_installer_published_digest_missing_and_malformed_fail_closed=PASS'
+
 Write-Output 'windows_connect_powershell_named_binding=PASS'
 
 Write-Output 'windows_installer_offline_direct_github_transport=PASS'

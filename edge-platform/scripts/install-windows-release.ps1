@@ -249,6 +249,22 @@ function Protect-ReleaseStageBeforeExecution {
 }
 
 
+# Avoid $matches (PowerShell's automatic regex capture variable).
+# Missing/malformed published digests fail closed, not as a property exception.
+function Get-RequiredPublishedAssetSha256 {
+    param([Parameter(Mandatory)] $Release, [Parameter(Mandatory)] [string]$Name)
+    $namedAssets = @($Release.assets | Where-Object { [string]$_.name -ceq $Name })
+    if ($namedAssets.Count -ne 1) {
+        throw "WINDOWS_INSTALL_OLD_RELEASE_ASSET_NOT_UNIQUE: $Name"
+    }
+    $digestMember = $namedAssets[0].PSObject.Properties['digest']
+    if ($null -eq $digestMember -or
+        [string]$digestMember.Value -cnotmatch '^sha256:[0-9a-f]{64}$') {
+        throw "WINDOWS_INSTALL_OLD_RELEASE_PUBLISHED_DIGEST_UNAVAILABLE: $Name"
+    }
+    return ([string]$digestMember.Value).Substring(7)
+}
+
 # A repaired DACL does not establish authenticity of code that previously
 # was replaceable. Bind the old SYSTEM EXE to the exact published Git release
 # BEFORE executing the installed diagnostic/console from that directory.
@@ -302,14 +318,10 @@ function Assert-ExistingNativeReleaseFromProtectedGit {
     }
     $oldDir = Join-Path $InstallRoot "releases\$releaseSha"
     foreach ($asset in @('edge-platform-windows.zip', 'release-set.pb')) {
-        $matches = @($release.assets | Where-Object { [string]$_.name -ceq $asset })
-        if ($matches.Count -ne 1 -or
-            [string]$matches[0].digest -cnotmatch '^sha256:[0-9a-f]{64}$') {
-            throw 'WINDOWS_INSTALL_OLD_RELEASE_PUBLISHED_DIGEST_UNAVAILABLE'
-        }
+        $publishedDigest = Get-RequiredPublishedAssetSha256 -Release $release -Name $asset
         $file = Join-Path $oldDir $asset
         if (-not (Test-Path -LiteralPath $file -PathType Leaf) -or
-            (Get-ExactHash -Path $file) -cne ([string]$matches[0].digest).Substring(7)) {
+            (Get-ExactHash -Path $file) -cne $publishedDigest) {
             throw 'WINDOWS_INSTALL_OLD_RELEASE_BYTES_NOT_PUBLISHED_NO_EXECUTION'
         }
     }
