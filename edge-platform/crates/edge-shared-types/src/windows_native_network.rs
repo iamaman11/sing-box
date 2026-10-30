@@ -352,6 +352,19 @@ impl NativeNetworkIdentity {
         Ok(decoded)
     }
 
+    /// An active TUN record is scoped by the ORIGINAL signed operation ID.
+    /// Decode canonical protected bytes before any owner-scoped recovery.
+    pub fn decode_active_baseline(bytes: &[u8]) -> Result<(String, Self), &'static str> {
+        if bytes.is_empty() || bytes.len() > MAX_NATIVE_NETWORK_BASELINE_BYTES {
+            return Err("HOST_WINDOWS_NETWORK_BASELINE_SIZE_INVALID");
+        }
+        let header = FleetWindowsNetworkBaseline::decode(bytes)
+            .map_err(|_| "HOST_WINDOWS_NETWORK_BASELINE_PROTO_INVALID")?;
+        let operation = header.operation_id;
+        let baseline = Self::decode_baseline(bytes, &operation)?;
+        Ok((operation, baseline))
+    }
+
     /// One bounded, domain-separated digest of the actual typed kernel
     /// network. No alternative desired state or runner-provided observation.
     pub fn signed_prebegin_digest(&self) -> [u8; 32] {
