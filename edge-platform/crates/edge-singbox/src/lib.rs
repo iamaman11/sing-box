@@ -2192,9 +2192,11 @@ mod tests {
         assert_eq!(missing, config);
         let mut proxy_only = json!({"inbounds": [{"type": "mixed"}]});
         sync_tun_route_excludes(&mut proxy_only, Some("invalid.example")).unwrap();
-        assert!(proxy_only["inbounds"][0]
-            .get("route_exclude_address")
-            .is_none());
+        assert!(
+            proxy_only["inbounds"][0]
+                .get("route_exclude_address")
+                .is_none()
+        );
     }
 
     #[test]
