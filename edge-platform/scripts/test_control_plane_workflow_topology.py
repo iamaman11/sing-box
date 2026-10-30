@@ -201,6 +201,15 @@ windows_runner_bootstrap = Path("edge-platform/scripts/bootstrap-windows-runner.
 assert "function Assert-RootExecutionChain {" in windows_installer
 assert "Assert-RootExecutionChain -ApproveRepair:$ApproveAclRepair" in windows_installer
 assert "Assert-RootExecutionChain -CreateFresh" in windows_installer
+assert "WINDOWS_INSTALL_PRELAUNCH_DESCENDANT_REPARSE_BLOCKED" in windows_installer
+prelaunch = windows_installer.split("function Assert-RootExecutionChain {", 1)[1].split(
+    "function Protect-ReleaseStageBeforeExecution {", 1
+)[0]
+assert prelaunch.index("WINDOWS_INSTALL_PRELAUNCH_DESCENDANT_REPARSE_BLOCKED") < prelaunch.index(
+    "& icacls.exe (Join-Path $path '*') /reset /T /Q"
+)
+assert "Get-ProtectedAppAclReadback -Path $entry.FullName" in prelaunch
+
 assert "function Assert-ExistingNativeReleaseFromProtectedGit {" in windows_installer
 assert "Assert-ExistingNativeReleaseFromProtectedGit\n    $installed" in windows_installer
 assert "WINDOWS_INSTALL_OLD_EXECUTABLE_NOT_PUBLISHED_NO_EXECUTION" in windows_installer

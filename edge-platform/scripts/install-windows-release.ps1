@@ -104,6 +104,26 @@ function Assert-RootExecutionChain {
             $scopes += $path
         }
     }
+    # Reparse points and unprivileged OWNERS are checked before any mutation.
+    # A recursive icacls /reset must never traverse an unknown junction or
+    # rewrite a sealed private-key/journal tree through a hidden link.
+    foreach ($path in $scopes) {
+        $objects = @(Get-Item -LiteralPath $path -Force -ErrorAction Stop)
+        if ($path -cne $InstallRoot) {
+            $objects += @(Get-ChildItem -LiteralPath $path -Force -Recurse -ErrorAction Stop)
+        }
+        if ($objects.Count -gt 12000) {
+            throw 'WINDOWS_INSTALL_PRELAUNCH_EXECUTABLE_TREE_TOO_LARGE'
+        }
+        foreach ($entry in $objects) {
+            if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'WINDOWS_INSTALL_PRELAUNCH_DESCENDANT_REPARSE_BLOCKED'
+            }
+            # Fails if the owner is neither SYSTEM nor Administrators. An
+            # unsafe owner cannot be silently normalized during repair.
+            $null = Get-ProtectedAppAclReadback -Path $entry.FullName
+        }
+    }
     if ($ApproveRepair) {
         foreach ($path in $scopes) {
             $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
