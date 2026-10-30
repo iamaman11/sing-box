@@ -516,9 +516,12 @@ assert "request_canonical_native_admin_authorization" in admin_system
 assert "host_admin::verify_authorization" in admin_system
 assert "TransportRequest::open" in admin_system
 assert "host_admin::sign_receipt" in admin_system
-# Historical resource BEGIN may coexist with a DIFFERENT fresh signed ADMIN;
-# unfinished ADMIN or the original operation ID must still fail closed.
-assert 'name.starts_with("resource-") && (admin || recovery)' in admin_system
+# Generic ADMIN is an arbitrary executable and must not bypass UNKNOWN
+# lifecycle network effects. Only a signed native RECOVER can inspect the
+# historical resource journal; /host status remains independently read-only.
+assert 'name.starts_with("resource-") && recovery' in admin_system
+assert 'name.starts_with("resource-") && (admin || recovery)' not in admin_system
+assert "signed_admin_cannot_bypass_historical_resource_pending" in admin_system
 assert "HOST_WINDOWS_PENDING_GATE_NO_REPLAY" in admin_system
 assert "HOST_WINDOWS_OPERATION_EXISTS_NO_REPLAY" in admin_system
 assert "check_journal_entry(&name, &id, admin, recovery)?" in admin_system

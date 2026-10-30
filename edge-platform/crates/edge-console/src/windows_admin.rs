@@ -37,9 +37,10 @@ pub(super) fn owner_lock(root: &Path) -> Result<File, String> {
 }
 
 /// Classification is pure and shared by admission before and after Worker POST.
-/// A historical resource BEGIN is never replayed, but it must not prevent a
-/// DIFFERENT freshly Worker-authorized SYSTEM ADMIN operation that can diagnose
-/// that resource. An unfinished ADMIN is still an exclusive unknown operation.
+/// An UNKNOWN resource BEGIN freezes all mutating Windows entrypoints.
+/// Arbitrary signed ADMIN may execute cmd.exe/PowerShell and therefore cannot
+/// be classified read-only. Native /host status remains the diagnostic route;
+/// only a separately signed RECOVER can inspect the prior resource BEGIN.
 fn check_journal_entry(
     name: &str,
     id: &str,
@@ -52,7 +53,7 @@ fn check_journal_entry(
     {
         return Err("HOST_WINDOWS_OPERATION_EXISTS_NO_REPLAY");
     }
-    if name.ends_with(".pending.pb") && !(name.starts_with("resource-") && (admin || recovery)) {
+    if name.ends_with(".pending.pb") && !(name.starts_with("resource-") && recovery) {
         return Err("HOST_WINDOWS_PENDING_GATE_NO_REPLAY");
     }
     Ok(())
@@ -178,9 +179,9 @@ pub(super) async fn dispatch_if_present(root: &Path) -> Result<bool, String> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(_) => return Err("HOST_ADMIN_TERMINAL_METADATA_UNAVAILABLE_NO_REPLAY".into()),
     }
-    // The same ACL-verified policy is rechecked AFTER Worker authorization,
-    // immediately before BEGIN. Historical resource pending is not cleared,
-    // adopted or replayed; the fresh ADMIN ID remains one-shot.
+    // Recheck AFTER Worker authorization immediately before ADMIN BEGIN.
+    // A signature authenticates the operator; it does not make arbitrary
+    // executables read-only or release another resource's UNKNOWN BEGIN.
     request_available(&journal, &operation, true, false)?;
     create(&pending, &raw)?;
     let out_path = journal.join(format!("admin-{id}.stdout.bin"));
@@ -232,13 +233,16 @@ mod admission_tests {
     use super::*;
 
     #[test]
-    fn independent_signed_admin_can_diagnose_historical_resource_pending() {
+    fn signed_admin_cannot_bypass_historical_resource_pending() {
         let id = "own-operation-digest";
+        // Any generic ADMIN request may contain a mutable executable or
+        // shell. Neither Worker authorization nor a distinct operation ID
+        // proves it read-only, even for commands described as diagnostics.
         assert_eq!(
             check_journal_entry("resource-historical.pending.pb", id, true, false),
-            Ok(())
+            Err("HOST_WINDOWS_PENDING_GATE_NO_REPLAY")
         );
-        // Ordinary lifecycle must still refuse a resource BEGIN until its
+        // Ordinary lifecycle must also refuse a resource BEGIN until its
         // separately signed RECOVER has settled the physical state.
         assert_eq!(
             check_journal_entry("resource-historical.pending.pb", id, false, false),
@@ -248,6 +252,14 @@ mod admission_tests {
             check_journal_entry("resource-historical.pending.pb", id, false, true),
             Ok(())
         );
+        // RECOVER admission is scoped later by the signed native journal;
+        // it does not execute a historical mutation or grant ADMIN rights.
+        assert_eq!(
+            check_journal_entry("resource-other.pending.pb", id, true, true),
+            Ok(())
+        );
+        // Only lifecycle caller supplies recovery=true; ADMIN must never
+        // borrow this parameter from runner/Worker data.
         // The original request is permanently non-replayable.
         assert_eq!(
             check_journal_entry("admin-own-operation-digest.pending.pb", id, true, false),
