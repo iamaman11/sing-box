@@ -192,6 +192,100 @@ function Protect-ReleaseStageBeforeExecution {
     }
 }
 
+
+# A repaired DACL does not establish authenticity of code that previously
+# was replaceable. Bind the old SYSTEM EXE to the exact published Git release
+# BEFORE executing the installed diagnostic/console from that directory.
+function Assert-ExistingNativeReleaseFromProtectedGit {
+    $task = Get-ScheduledTask -TaskName 'EdgePlatformPrivilegedDispatch' -ErrorAction Stop
+    if ($null -eq $task -or @($task.Actions).Count -ne 1 -or
+        [string]$task.Principal.LogonType -cne 'ServiceAccount' -or
+        [string]$task.Principal.RunLevel -cne 'Highest') {
+        throw 'WINDOWS_INSTALL_OLD_SYSTEM_OWNER_UNPROVEN'
+    }
+    $owner = [string]$task.Principal.UserId
+    $sid = if ($owner -ceq 'S-1-5-18') { $owner } else {
+        ([Security.Principal.NTAccount]::new($owner)).Translate(
+            [Security.Principal.SecurityIdentifier]
+        ).Value
+    }
+    $taskArgs = [string]$task.Actions[0].Arguments
+    $taskExe = ([string]$task.Actions[0].Execute).Trim('"')
+    $exact = [regex]::Match(
+        $taskExe,
+        '\AC:\\sing-box\\releases\\(?<sha>[0-9a-f]{64})\\bin\\edge-console\.exe\z'
+    )
+    if ($sid -cne 'S-1-5-18' -or
+        $taskArgs -cnotmatch '^privileged-dispatch --install-root "?C:\\sing-box"?$' -or
+        -not $exact.Success) {
+        throw 'WINDOWS_INSTALL_OLD_SYSTEM_OWNER_UNPROVEN'
+    }
+    $releaseSha = $exact.Groups['sha'].Value
+    $tag = "edge-release-$releaseSha"
+    $release = Get-DurableRelease -Tag $tag
+    $head = Invoke-GitHubJsonGet -Uri "https://api.github.com/repos/$Repository/branches/main"
+    $revision = [string]$release.target_commitish
+    if (-not [bool]$head.protected -or
+        [string]$head.commit.sha -cnotmatch '^[0-9a-f]{40}$' -or
+        $revision -cnotmatch '^[0-9a-f]{40}$' -or
+        [string]$release.tag_name -cne $tag -or
+        [bool]$release.draft -or [bool]$release.prerelease -or
+        [string]::IsNullOrEmpty([string]$release.published_at)) {
+        throw 'WINDOWS_INSTALL_OLD_RELEASE_GIT_AUTHORITY_UNPROVEN'
+    }
+    $ref = Invoke-GitHubJsonGet -Uri "https://api.github.com/repos/$Repository/git/ref/tags/$tag"
+    $compareUri = "https://api.github.com/repos/$Repository/compare/" +
+        $revision + "..." + [string]$head.commit.sha + "?per_page=1&page=2"
+    $compare = Invoke-GitHubJsonGet -Uri $compareUri
+    if ([string]$ref.object.type -cne 'commit' -or
+        [string]$ref.object.sha -cne $revision -or
+        [string]$compare.status -notin @('ahead', 'identical') -or
+        [string]$compare.base_commit.sha -cne $revision -or
+        [string]$compare.merge_base_commit.sha -cne $revision) {
+        throw 'WINDOWS_INSTALL_OLD_RELEASE_NOT_PROTECTED_MAIN_ANCESTOR'
+    }
+    $oldDir = Join-Path $InstallRoot "releases\$releaseSha"
+    foreach ($asset in @('edge-platform-windows.zip', 'release-set.pb')) {
+        $matches = @($release.assets | Where-Object { [string]$_.name -ceq $asset })
+        if ($matches.Count -ne 1 -or
+            [string]$matches[0].digest -cnotmatch '^sha256:[0-9a-f]{64}$') {
+            throw 'WINDOWS_INSTALL_OLD_RELEASE_PUBLISHED_DIGEST_UNAVAILABLE'
+        }
+        $file = Join-Path $oldDir $asset
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf) -or
+            (Get-ExactHash -Path $file) -cne ([string]$matches[0].digest).Substring(7)) {
+            throw 'WINDOWS_INSTALL_OLD_RELEASE_BYTES_NOT_PUBLISHED_NO_EXECUTION'
+        }
+    }
+    if ((Get-ExactHash -Path (Join-Path $oldDir 'release-set.pb')) -cne $releaseSha) {
+        throw 'WINDOWS_INSTALL_OLD_RELEASE_MANIFEST_SHA_MISMATCH'
+    }
+    $stage = Join-Path $InstallRoot ('.release-verify-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $stage -ErrorAction Stop | Out-Null
+    try {
+        # Decompress as data; never execute an untrusted existing EXE.
+        Expand-Archive -LiteralPath (Join-Path $oldDir 'edge-platform-windows.zip') -DestinationPath $stage
+        foreach ($exe in @('edge-console.exe','edge-diagnostic.exe','edge-controller.exe','sing-box.exe','edge-release-set.exe')) {
+            $published = Join-Path $stage "bin\$exe"
+            $installed = Join-Path $oldDir "bin\$exe"
+            if (-not (Test-Path -LiteralPath $published -PathType Leaf) -or
+                -not (Test-Path -LiteralPath $installed -PathType Leaf) -or
+                (Get-ExactHash -Path $published) -cne (Get-ExactHash -Path $installed)) {
+                throw 'WINDOWS_INSTALL_OLD_EXECUTABLE_NOT_PUBLISHED_NO_EXECUTION'
+            }
+        }
+        foreach ($exe in @('edge-console.exe','edge-diagnostic.exe')) {
+            if ((Get-ExactHash -Path (Join-Path $InstallRoot "bin\$exe")) -cne
+                (Get-ExactHash -Path (Join-Path $stage "bin\$exe"))) {
+                throw 'WINDOWS_INSTALL_OLD_STABLE_BINARY_NOT_PUBLISHED_NO_EXECUTION'
+            }
+        }
+    } finally {
+        Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Write-Output 'windows_old_executables=PUBLISHED_RELEASE_VERIFIED_BEFORE_EXECUTION'
+}
+
 function Assert-OfflineWindow {
     if (-not $Offline) { return }
     if ($ForceRematerialize) {
@@ -631,6 +725,7 @@ if ($ConnectWindows) {
         exit 0
     }
     Assert-RootExecutionChain -ApproveRepair:$ApproveAclRepair
+    Assert-ExistingNativeReleaseFromProtectedGit
     $installed = Invoke-Diagnostic -Diagnostic $stableDiagnostic -State $currentPath
     if ([string]$installed['release_set_sha256'] -ceq $selectedDigest) {
         if ($ApproveRetainedBegin) {

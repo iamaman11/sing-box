@@ -201,6 +201,11 @@ windows_runner_bootstrap = Path("edge-platform/scripts/bootstrap-windows-runner.
 assert "function Assert-RootExecutionChain {" in windows_installer
 assert "Assert-RootExecutionChain -ApproveRepair:$ApproveAclRepair" in windows_installer
 assert "Assert-RootExecutionChain -CreateFresh" in windows_installer
+assert "function Assert-ExistingNativeReleaseFromProtectedGit {" in windows_installer
+assert "Assert-ExistingNativeReleaseFromProtectedGit\n    $installed" in windows_installer
+assert "WINDOWS_INSTALL_OLD_EXECUTABLE_NOT_PUBLISHED_NO_EXECUTION" in windows_installer
+assert "WINDOWS_INSTALL_OLD_RELEASE_NOT_PROTECTED_MAIN_ANCESTOR" in windows_installer
+
 assert "WINDOWS_INSTALL_PRELAUNCH_UNPRIVILEGED_WRITER_BLOCKED" in windows_installer
 assert 'Join-Path $InstallRoot (".release-stage-"' in windows_installer
 assert "function Connect-CanonicalWindowsApplication {" in windows_runner_bootstrap
