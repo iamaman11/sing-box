@@ -291,6 +291,63 @@ foreach ($case in $negativeAssets) {
 Write-Output 'windows_installer_published_digest_matches_collision=PASS'
 Write-Output 'windows_installer_published_digest_missing_and_malformed_fail_closed=PASS'
 
+# Import ONLY the pure disabled-successor predicate from the canonical
+# installer AST. No staging, SCM, SYSTEM task or network effect is executed.
+$successorFunctions = @($functions | Where-Object {
+    $_.Name -ceq 'Assert-DisabledOfflineSuccessorIdentity'
+})
+if ($successorFunctions.Count -ne 1) { throw 'Canonical disabled successor predicate missing' }
+. ([ScriptBlock]::Create($successorFunctions[0].Extent.Text))
+$oldFrom = 'a' * 64
+$oldTo = 'b' * 64
+$oldRevision = 'c' * 40
+$newTarget = 'e' * 64
+$newRevision = 'd' * 40
+$successorArgs = @{
+    RetainedFrom = $oldFrom
+    RetainedTo = $oldTo
+    RetainedRevision = $oldRevision
+    InstalledRelease = $oldTo
+    NextRelease = $newTarget
+    NextRevision = $newRevision
+}
+# Both legitimate physical states: old source still installed, or retained to
+# already installed. Neither claims historical terminal success.
+foreach ($installedCase in @($oldFrom, $oldTo)) {
+    $successorArgs.InstalledRelease = $installedCase
+    Assert-DisabledOfflineSuccessorIdentity @successorArgs
+}
+$negativeSuccessorCases = @(
+    @{ InstalledRelease = ('f' * 64) },
+    @{ InstalledRelease = $oldFrom; NextRelease = $oldFrom },
+    @{ InstalledRelease = $oldFrom; NextRelease = $oldTo },
+    @{ InstalledRelease = $oldTo; NextRelease = $oldFrom },
+    @{ InstalledRelease = $oldTo; NextRelease = $oldTo },
+    @{ InstalledRelease = $oldTo; NextRevision = $oldRevision },
+    @{ RetainedFrom = $oldTo; InstalledRelease = $oldTo }
+)
+foreach ($case in $negativeSuccessorCases) {
+    $bound = $successorArgs.Clone()
+    foreach ($key in $case.Keys) { $bound[$key] = $case[$key] }
+    $observed = 'NO_ERROR'
+    try { Assert-DisabledOfflineSuccessorIdentity @bound } catch {
+        $observed = $_.Exception.Message
+    }
+    if ($observed -cne 'OFFLINE_BOOTSTRAP_DISABLED_PREDECESSOR_NOT_DISTINCT_NO_REPLAY') {
+        throw "Retained disabled successor negative case was admitted: $observed"
+    }
+}
+# The production disabled-task path MUST invoke the same tested predicate.
+$nativeGate = @($functions | Where-Object {
+    $_.Name -ceq 'Assert-DisabledOfflineSuccessorIdentity'
+})
+if ($source -cnotmatch [regex]::Escape('Assert-DisabledOfflineSuccessorIdentity `') -or
+    $nativeGate.Count -ne 1) {
+    throw 'Disabled-task canonical installed-to predicate not wired into installer'
+}
+Write-Output 'windows_installer_retained_begin_installed_to_successor=PASS'
+Write-Output 'windows_installer_retained_begin_distinct_negative_matrix=PASS'
+
 Write-Output 'windows_connect_powershell_named_binding=PASS'
 
 Write-Output 'windows_installer_offline_direct_github_transport=PASS'
