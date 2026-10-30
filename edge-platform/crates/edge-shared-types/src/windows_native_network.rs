@@ -207,8 +207,8 @@ fn read_native_routes(
             protocol: row.Protocol,
             origin: row.Origin,
             site_prefix_length: row.SitePrefixLength,
-            loopback: row.Loopback != 0,
-            published: row.Publish != 0,
+            loopback: row.Loopback,
+            published: row.Publish,
         };
         if !identity.insert(key) {
             return Err("HOST_WINDOWS_NETWORK_DUPLICATE_ROUTE_IDENTITY");
@@ -330,7 +330,9 @@ fn read_native_dns(
                         _ => return Err("HOST_WINDOWS_NETWORK_DNS_FAMILY_INVALID"),
                     };
                     if !identity.insert(DnsIdentity {
-                        interface_luid: entry.Luid.Value,
+                        // SAFETY: GetAdaptersAddresses initializes the native
+                        // NET_LUID union for every returned adapter.
+                        interface_luid: unsafe { entry.Luid.Value },
                         order: ordinal,
                         family,
                         server: address,
@@ -436,7 +438,9 @@ fn observe_owned_foreign_interfaces() -> Result<Vec<ManagedAdapterIdentity>, &'s
         if warp_alias(&alias)
             && !foreign.insert(ManagedAdapterIdentity {
                 alias: alias.to_ascii_lowercase(),
-                interface_luid: row.InterfaceLuid.Value,
+                // SAFETY: GetIfTable2 initializes InterfaceLuid in each
+                // native MIB_IF_ROW2 returned by the OS.
+                interface_luid: unsafe { row.InterfaceLuid.Value },
                 oper_status: row.OperStatus,
             })
         {

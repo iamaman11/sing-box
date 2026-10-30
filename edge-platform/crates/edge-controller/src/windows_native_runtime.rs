@@ -145,17 +145,22 @@ pub(super) async fn execute(
         )?;
         edge_local_runtime::start_native_verified_proxy(&paths)
     })?;
-    let (_, network_after) =
-        edge_shared_types::windows_native_network::observe_native_network_identity()?;
-    network_before.require_restored(&network_after)?;
+    // The child has already been created. Register supervision BEFORE
+    // network poststate can fail; otherwise an uncertain native readback
+    // leaves a live unmanaged child while SYSTEM correctly holds the BEGIN.
     let supervisor_root = root.to_path_buf();
+    let baseline_for_supervisor = network_before.clone();
     tokio::spawn(async move {
         if let Err(e) =
-            supervise_windows_managed_child(supervisor_root.clone(), Some(network_before)).await
+            supervise_windows_managed_child(supervisor_root.clone(), Some(baseline_for_supervisor))
+                .await
         {
             let _ = write_controller_service_error(&supervisor_root, "native_child_exit", &e);
         }
     });
+    let (_, network_after) =
+        edge_shared_types::windows_native_network::observe_native_network_identity()?;
+    network_before.require_restored(&network_after)?;
     Ok(LocalRuntimeResponse {
         success: true,
         pid: started.pid,
