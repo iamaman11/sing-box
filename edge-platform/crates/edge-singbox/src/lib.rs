@@ -745,6 +745,106 @@ fn sync_local_config_from_bindings(
     })
 }
 
+/// Read back the release-pinned JSON immediately before its native TUN
+/// effect. The *same* Git Protobuf policy must be visible to SYSTEM and to
+/// the Controller. This is config identity, NOT proof of actual application
+/// traffic; the physical A10 traffic witness remains a separate gate.
+pub fn verify_managed_application_routes(
+    config_bytes: &[u8],
+    desired: &edge_shared_types::ProductionDesiredState,
+) -> Result<(), &'static str> {
+    use edge_shared_types::{WindowsApplicationScope, WindowsDatapathMode};
+    if desired.windows_datapath_mode != WindowsDatapathMode::ManagedTun as i32 {
+        return Err("WINDOWS_SELECTED_APPS_MANAGED_TUN_REQUIRED");
+    }
+    edge_shared_types::windows_routing::validate(desired.windows_application_routing.as_ref())?;
+    if config_bytes.is_empty() || config_bytes.len() > 1024 * 1024 {
+        return Err("WINDOWS_SELECTED_APPS_CONFIG_SIZE_INVALID");
+    }
+    let config: Value = serde_json::from_slice(config_bytes)
+        .map_err(|_| "WINDOWS_SELECTED_APPS_CONFIG_INVALID")?;
+    let rules = config
+        .pointer("/route/rules")
+        .and_then(Value::as_array)
+        .ok_or("WINDOWS_SELECTED_APPS_RULES_INVALID")?;
+    let tun = |rule: &Value| rule.get("inbound") == Some(&json!(["managed-tun-in"]));
+    let paths = rules
+        .iter()
+        .enumerate()
+        .filter(|(_, rule)| rule.get("process_path").is_some())
+        .collect::<Vec<_>>();
+    let selected = desired
+        .windows_application_routing
+        .as_ref()
+        .filter(|policy| policy.scope == WindowsApplicationScope::SelectedApplications as i32);
+    match selected {
+        Some(policy) => {
+            if paths.len() != policy.applications.len() {
+                return Err("WINDOWS_SELECTED_APPS_PROCESS_RULE_COUNT_MISMATCH");
+            }
+            for ((index, rule), app) in paths.iter().zip(&policy.applications) {
+                let expected_outbound = production_windows_route_tag(app.route)
+                    .map_err(|_| "WINDOWS_SELECTED_APPS_ROUTE_INVALID")?;
+                if !tun(rule)
+                    || rule.get("process_path") != Some(&json!([app.executable_path]))
+                    || rule.get("outbound").and_then(Value::as_str) != Some(expected_outbound)
+                    || rule.get("process_name").is_some()
+                    || rule.get("domain").is_some()
+                {
+                    return Err("WINDOWS_SELECTED_APPS_PROCESS_RULE_MISMATCH");
+                }
+                // Prior process-name/loopback exclusions are security
+                // boundaries, not application-specific fallthrough.
+                if *index < 2 {
+                    return Err("WINDOWS_SELECTED_APPS_BYPASS_SHADOWED");
+                }
+            }
+            let tun_rules = rules
+                .iter()
+                .enumerate()
+                .filter(|(_, rule)| tun(rule))
+                .collect::<Vec<_>>();
+            if tun_rules.len() != policy.applications.len() + 1 {
+                return Err("WINDOWS_SELECTED_APPS_TUN_RULE_COUNT_MISMATCH");
+            }
+            let (fallback_index, fallback) = tun_rules
+                .last()
+                .ok_or("WINDOWS_SELECTED_APPS_DIRECT_FALLBACK_MISSING")?;
+            if fallback.get("outbound").and_then(Value::as_str) != Some("direct")
+                || fallback.get("process_path").is_some()
+                || fallback.get("process_name").is_some()
+                || paths.last().is_some_and(|(index, _)| index >= fallback_index)
+                || tun_rules
+                    .iter()
+                    .take(policy.applications.len())
+                    .any(|(_, rule)| rule.get("process_path").is_none())
+            {
+                return Err("WINDOWS_SELECTED_APPS_DIRECT_FALLBACK_INVALID");
+            }
+        }
+        None => {
+            // Absent or AllApplications uses the normal TUN selector, never
+            // a stray process rule or stale selected-only DIRECT catch-all.
+            if !paths.is_empty() || rules.iter().any(tun) {
+                return Err("WINDOWS_SELECTED_APPS_STALE_OVERRIDE_FORBIDDEN");
+            }
+        }
+    }
+    if rules.first().and_then(|r| r.get("outbound")).and_then(Value::as_str)
+        != Some("direct")
+        || rules
+            .first()
+            .and_then(|r| r.get("process_name"))
+            != Some(&json!([WARP_SERVICE_PROCESS]))
+        || rules.get(1).and_then(|r| r.get("outbound")).and_then(Value::as_str)
+            != Some("direct")
+        || rules.get(1).and_then(|r| r.get("ip_cidr")) != Some(&json!(LOOPBACK_CIDRS))
+    {
+        return Err("WINDOWS_SELECTED_APPS_FOREIGN_BYPASS_MISSING");
+    }
+    Ok(())
+}
+
 fn sync_tun_route_excludes(
     config: &mut Value,
     server_ip: Option<&str>,
@@ -2161,6 +2261,92 @@ mod tests {
                 })
             );
         }
+    }
+
+
+    #[test]
+    fn selected_apps_native_policy_readback_rejects_shadowing_and_direct_fallback_loss() {
+        use edge_shared_types::{
+            WindowsApplicationRoute, WindowsApplicationRouting, WindowsApplicationScope,
+            WindowsDefaultRoute,
+        };
+        let mut desired = canonical_production_desired_state().unwrap();
+        desired.windows_datapath_mode = WindowsDatapathMode::ManagedTun as i32;
+        desired.windows_application_routing = Some(WindowsApplicationRouting {
+            scope: WindowsApplicationScope::SelectedApplications as i32,
+            applications: vec![
+                WindowsApplicationRoute {
+                    executable_path: r"C:\Apps\Selected\browser.exe".into(),
+                    route: WindowsDefaultRoute::VlessRealityWarp as i32,
+                },
+                WindowsApplicationRoute {
+                    executable_path: r"C:\Apps\Selected\chat.exe".into(),
+                    route: WindowsDefaultRoute::Hysteria2Direct as i32,
+                },
+            ],
+        });
+        let original =
+            render_windows_config_for_desired(&stage2_runtime_state(), &desired).unwrap();
+        assert_eq!(verify_managed_application_routes(&original, &desired), Ok(()));
+        let mut changed: Value = serde_json::from_slice(&original).unwrap();
+        let rules = changed["route"]["rules"].as_array_mut().unwrap();
+        let selected = rules
+            .iter()
+            .position(|rule| rule.get("process_path").is_some())
+            .unwrap();
+        rules[selected]["outbound"] = json!("direct");
+        assert_eq!(
+            verify_managed_application_routes(&serde_json::to_vec(&changed).unwrap(), &desired),
+            Err("WINDOWS_SELECTED_APPS_PROCESS_RULE_MISMATCH")
+        );
+        let mut changed: Value = serde_json::from_slice(&original).unwrap();
+        changed["route"]["rules"]
+            .as_array_mut()
+            .unwrap()
+            .retain(|r| r.get("process_path").is_none());
+        assert_eq!(
+            verify_managed_application_routes(&serde_json::to_vec(&changed).unwrap(), &desired),
+            Err("WINDOWS_SELECTED_APPS_PROCESS_RULE_COUNT_MISMATCH")
+        );
+        let mut changed: Value = serde_json::from_slice(&original).unwrap();
+        changed["route"]["rules"].as_array_mut().unwrap().pop();
+        assert_eq!(
+            verify_managed_application_routes(&serde_json::to_vec(&changed).unwrap(), &desired),
+            Err("WINDOWS_SELECTED_APPS_TUN_RULE_COUNT_MISMATCH")
+        );
+        let mut changed: Value = serde_json::from_slice(&original).unwrap();
+        changed["route"]["rules"][0]["outbound"] = json!("vless-reality-warp");
+        assert_eq!(
+            verify_managed_application_routes(&serde_json::to_vec(&changed).unwrap(), &desired),
+            Err("WINDOWS_SELECTED_APPS_FOREIGN_BYPASS_MISSING")
+        );
+        let mut changed: Value = serde_json::from_slice(&original).unwrap();
+        changed["route"]["rules"]
+            .as_array_mut()
+            .unwrap()
+            .push(json!({
+                "inbound": ["managed-tun-in"],
+                "process_path": [r"C:\Apps\Other\browser.exe"],
+                "outbound": "vless-reality-warp"
+            }));
+        assert_eq!(
+            verify_managed_application_routes(&serde_json::to_vec(&changed).unwrap(), &desired),
+            Err("WINDOWS_SELECTED_APPS_PROCESS_RULE_COUNT_MISMATCH")
+        );
+        let mut wrong = desired.clone();
+        wrong.windows_datapath_mode = WindowsDatapathMode::ProxyOnly as i32;
+        assert_eq!(
+            verify_managed_application_routes(&original, &wrong),
+            Err("WINDOWS_SELECTED_APPS_MANAGED_TUN_REQUIRED")
+        );
+        wrong.windows_datapath_mode = WindowsDatapathMode::ManagedTun as i32;
+        wrong.windows_application_routing = None;
+        let default = render_windows_config_for_desired(&stage2_runtime_state(), &wrong).unwrap();
+        assert_eq!(verify_managed_application_routes(&default, &wrong), Ok(()));
+        assert_eq!(
+            verify_managed_application_routes(&original, &wrong),
+            Err("WINDOWS_SELECTED_APPS_STALE_OVERRIDE_FORBIDDEN")
+        );
     }
 
     #[test]

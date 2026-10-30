@@ -132,6 +132,10 @@ pub(super) async fn execute(
     let desired = edge_shared_types::parse_production_desired_text(spec)?;
     let mode = edge_shared_types::WindowsDatapathMode::try_from(desired.windows_datapath_mode)
         .map_err(|_| "HOST_WINDOWS_EFFECT_MODE_UNRECOGNIZED")?;
+    if mode == edge_shared_types::WindowsDatapathMode::ManagedTun {
+        edge_singbox::require_managed_tun_config(&bytes)?;
+        edge_singbox::verify_managed_application_routes(&bytes, &desired)?;
+    }
     // Native observer above also rejects a stale managed TUN on any path.
     let state = active(root)?;
     let paths = LocalRuntimePaths {
