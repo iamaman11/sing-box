@@ -472,6 +472,23 @@ fn apply_exact_proxyonly_scm_step(
     match step {
         FleetHostPlannedStep::Start => {
             let config = config.ok_or("HOST_WINDOWS_RUNTIME_CONFIGURATION_REQUIRED")?;
+            let desired = edge_shared_types::parse_production_desired_text(&trust.selected_spec_bytes)?;
+            let mode = WindowsDatapathMode::try_from(desired.windows_datapath_mode)
+                .map_err(|_| "HOST_WINDOWS_DATAPATH_MODE_INVALID")?;
+            if mode == WindowsDatapathMode::ManagedTun {
+                // Only one active baseline, in the existing LocalSystem
+                // journal. BEGIN has already been synced. Create BEFORE any
+                // route-capturing effect so crash recovery never guesses the
+                // original foreign routes, DNS or WARP interface.
+                network_baseline.require_foreign_warp_up()?;
+                edge_shared_types::windows_native_network::require_owned_tun_absent()?;
+                let bytes = network_baseline.encode_baseline(&intent.operation_id)?;
+                windows_admin::create(
+                    &root.join("native-host/journal/network-baseline.active.pb"),
+                    &bytes,
+                )
+                .map_err(|_| "HOST_WINDOWS_NETWORK_BASELINE_UNKNOWN_NO_REPLAY")?;
+            }
             windows_config::apply(root, config, &intent.operation_id)?;
             windows_config::prepare_runtime_logs(root)?;
             service
