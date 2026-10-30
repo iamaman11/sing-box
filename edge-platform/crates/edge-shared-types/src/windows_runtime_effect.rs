@@ -2,8 +2,8 @@
 //! SYSTEM signs only after durable BEGIN; Controller cannot read the private
 //! receipt key. A process nonce + consumed operation ID prevent local RPC replay.
 use crate::{
-    FleetHostAction, FleetHostKind, FleetHostRunState,
-    FleetWindowsRuntimeChallenge as Challenge, FleetWindowsRuntimeEffect as Effect, HostRegistry,
+    FleetHostAction, FleetHostKind, FleetHostRunState, FleetWindowsRuntimeChallenge as Challenge,
+    FleetWindowsRuntimeEffect as Effect, HostRegistry,
 };
 use prost::Message;
 use ring::signature::{ED25519, Ed25519KeyPair, UnparsedPublicKey};

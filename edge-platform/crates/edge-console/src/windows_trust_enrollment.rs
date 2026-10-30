@@ -5,8 +5,8 @@
 //! registry, spec, or trust bytes. No SCM, network/TUN or resource mutation.
 use super::*;
 use edge_shared_types::{
-    FleetHostAction, FleetHostIntent, FleetHostKind, FleetHostRunState,
-    FleetNativeTrustSnapshot, FleetWindowsTrustEnrollment, HostRegistry, ReleaseSet,
+    FleetHostAction, FleetHostIntent, FleetHostKind, FleetHostRunState, FleetNativeTrustSnapshot,
+    FleetWindowsTrustEnrollment, HostRegistry, ReleaseSet,
     host_journal::require_windows_local_administrator_first_use,
     host_journal::verify_native_journal_protection,
     host_lifecycle::{digest_host_desired, verify_windows_signed_git_prerequisites},

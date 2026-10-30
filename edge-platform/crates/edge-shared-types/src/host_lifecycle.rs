@@ -65,7 +65,9 @@ pub fn project_host_for_planner(
         .windows_mode = match mode {
         crate::WindowsDatapathMode::ProxyOnly => FleetHostMode::ProxyOnly as i32,
         crate::WindowsDatapathMode::ManagedTun => FleetHostMode::ManagedTun as i32,
-        crate::WindowsDatapathMode::Unspecified => return Err("HOST_WINDOWS_DATAPATH_MODE_INVALID"),
+        crate::WindowsDatapathMode::Unspecified => {
+            return Err("HOST_WINDOWS_DATAPATH_MODE_INVALID");
+        }
     };
     Ok(projected)
 }
@@ -1591,8 +1593,7 @@ mod tests {
         );
         intent.action = FleetHostAction::Apply as i32;
         intent.requested_mode = FleetHostMode::Unspecified as i32;
-        registry.hosts[0].target.as_mut().unwrap().run_state =
-            FleetHostRunState::Running as i32;
+        registry.hosts[0].target.as_mut().unwrap().run_state = FleetHostRunState::Running as i32;
         assert_eq!(validate_intent_against_target(&intent, &registry), Ok(()));
         // Native Windows SYSTEM still separately blocks physical route capture.
     }

@@ -3393,11 +3393,9 @@ mod release_set_tests {
             windows_mode: FleetHostMode::Unspecified as i32,
         });
         assert!(validate_host_registry(&invalid).is_ok());
-        invalid.hosts[2].target.as_mut().unwrap().windows_mode =
-            FleetHostMode::ProxyOnly as i32;
+        invalid.hosts[2].target.as_mut().unwrap().windows_mode = FleetHostMode::ProxyOnly as i32;
         assert!(validate_host_registry(&invalid).is_err());
-        invalid.hosts[2].target.as_mut().unwrap().windows_mode =
-            FleetHostMode::Unspecified as i32;
+        invalid.hosts[2].target.as_mut().unwrap().windows_mode = FleetHostMode::Unspecified as i32;
         invalid.hosts[2].target.as_mut().unwrap().run_state = FleetHostRunState::Unspecified as i32;
         assert!(validate_host_registry(&invalid).is_err());
         invalid = expected.clone();
