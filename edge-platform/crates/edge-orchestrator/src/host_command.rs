@@ -784,11 +784,15 @@ pub(crate) fn run(
             // decision until Worker + native owner independently attest.
             // Reuse the same independently release-bound VM digest for the
             // detailed reconciliation proposal printed below.
-            let planned_host = edge_shared_types::host_lifecycle::project_host_for_planner(
-                selected,
-                &read_bounded(Path::new(&selected.desired_spec_path), 1_048_576)?,
-            )
-            .map_err(str::to_owned)?;
+            let planned_host = if selected.kind == ManagedHostKind::Windows as i32 {
+                edge_shared_types::host_lifecycle::project_host_for_planner(
+                    selected,
+                    &read_git_host_spec(&selected.desired_spec_path)?,
+                )
+                .map_err(str::to_owned)?
+            } else {
+                selected.clone()
+            };
             let proposed = edge_shared_types::host_planner::propose_host_transition(
                 &planned_host,
                 Some(&observed),
@@ -2511,6 +2515,17 @@ fn host_lifecycle_admission(
     Ok(())
 }
 
+/// Read one bounded Git-owned desired source, not an arbitrary runtime path.
+/// The registry has already validated the exact spec selector.
+fn read_git_host_spec(spec: &str) -> Result<Vec<u8>, String> {
+    let path = Path::new(spec);
+    let meta = std::fs::symlink_metadata(path).map_err(|_| "HOST_DESIRED_SPEC_MISSING")?;
+    if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 1_048_576 {
+        return Err("HOST_DESIRED_SPEC_INVALID_FILE".into());
+    }
+    std::fs::read(path).map_err(|_| "HOST_DESIRED_SPEC_UNREADABLE".into())
+}
+
 fn print_host_target(host: &edge_shared_types::FleetHost) -> Result<(), String> {
     match &host.target {
         None => {
@@ -2526,7 +2541,7 @@ fn print_host_target(host: &edge_shared_types::FleetHost) -> Result<(), String> 
             }
             println!("host_desired_run_state={state:?}");
             if host.kind == FleetHostKind::Windows as i32 {
-                let spec = read_bounded(Path::new(&host.desired_spec_path), 1_048_576)?;
+                let spec = read_git_host_spec(&host.desired_spec_path)?;
                 let desired = edge_shared_types::parse_production_desired_text(&spec)
                     .map_err(str::to_owned)?;
                 let mode =
