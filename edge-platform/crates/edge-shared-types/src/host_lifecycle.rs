@@ -1142,13 +1142,67 @@ pub fn verify_windows_network_admission(
     {
         return Err("HOST_WINDOWS_NETWORK_ADMISSION_BINDING_OR_FRESHNESS_INVALID");
     }
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, trusted_system_public_key)
+        .verify(&windows_network_admission_payload(proof), &proof.system_signature)
+        .map_err(|_| "HOST_WINDOWS_NETWORK_ADMISSION_SYSTEM_SIGNATURE_INVALID")
+}
+
+fn windows_network_admission_payload(
+    proof: &crate::FleetWindowsNetworkAdmission,
+) -> Vec<u8> {
     let mut unsigned = proof.clone();
     unsigned.system_signature.clear();
     let mut payload = b"sing-box/windows-network-admission/v1:".to_vec();
     payload.extend(unsigned.encode_to_vec());
-    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, trusted_system_public_key)
-        .verify(&payload, &proof.system_signature)
-        .map_err(|_| "HOST_WINDOWS_NETWORK_ADMISSION_SYSTEM_SIGNATURE_INVALID")
+    payload
+}
+
+/// Only the existing LocalSystem signer can issue this evidence after native
+/// probes actually succeed. It is not the Worker authorization: the Worker
+/// must sign the resulting ENTIRE enriched FleetHostIntent as a separate
+/// action. One operation, one replay journal, no new signing authority.
+pub fn sign_windows_network_admission(
+    intent: &FleetHostIntent,
+    system_private_pkcs8: &[u8],
+    installed_release_sha256: &[u8],
+    config_sha256: &[u8],
+    before_network_sha256: &[u8],
+    line1_witness_sha256: &[u8],
+    control_witness_sha256: &[u8],
+    dns_witness_sha256: &[u8],
+    observed_at_unix: u64,
+) -> Result<crate::FleetWindowsNetworkAdmission, &'static str> {
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+    let pair = Ed25519KeyPair::from_pkcs8(system_private_pkcs8)
+        .map_err(|_| "HOST_WINDOWS_NETWORK_ADMISSION_LOCAL_KEY_INVALID")?;
+    let proof = crate::FleetWindowsNetworkAdmission {
+        schema_version: 1,
+        machine_id: intent.machine_id.clone(),
+        operation_id: intent.operation_id.clone(),
+        installed_release_sha256: installed_release_sha256.to_vec(),
+        desired_release_set_sha256: intent.release_set_sha256.clone(),
+        config_sha256: config_sha256.to_vec(),
+        before_network_sha256: before_network_sha256.to_vec(),
+        observed_at_unix,
+        expires_at_unix: observed_at_unix.saturating_add(60),
+        line1_witness_sha256: line1_witness_sha256.to_vec(),
+        control_witness_sha256: control_witness_sha256.to_vec(),
+        dns_witness_sha256: dns_witness_sha256.to_vec(),
+        ..Default::default()
+    };
+    let mut proof = proof;
+    proof.system_signature = pair.sign(&windows_network_admission_payload(&proof)).as_ref().to_vec();
+    let mut enriched = intent.clone();
+    enriched.network_admission = Some(proof.clone());
+    verify_windows_network_admission(
+        &enriched,
+        pair.public_key().as_ref(),
+        installed_release_sha256,
+        config_sha256,
+        before_network_sha256,
+        observed_at_unix,
+    )?;
+    Ok(proof)
 }
 
 /// The existing Cloudflare Worker is the sole issuer of this detached
@@ -1213,12 +1267,9 @@ mod tests {
     fn windows_set_mode_requires_bound_network_admission() {
         use crate::FleetWindowsNetworkAdmission;
         use ring::signature::{Ed25519KeyPair, KeyPair};
-        let key = Ed25519KeyPair::from_pkcs8(
-            Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
-                .unwrap()
-                .as_ref(),
-        )
-        .unwrap();
+        let keypair_bytes =
+            Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
+        let key = Ed25519KeyPair::from_pkcs8(keypair_bytes.as_ref()).unwrap();
         let mut intent = FleetHostIntent {
             schema_version: 1,
             machine_id: "win-machine-1".into(),
@@ -1277,6 +1328,21 @@ mod tests {
             )
         };
         assert_eq!(verify(&intent, 120), Ok(()));
+        let new_proof = sign_windows_network_admission(
+            &FleetHostIntent {
+                network_admission: None,
+                ..intent.clone()
+            },
+            keypair_bytes.as_ref(),
+            &installed,
+            &config,
+            &before,
+            &[7; 32],
+            &[8; 32],
+            &[9; 32],
+            120,
+        );
+        assert!(new_proof.is_ok());
         assert!(verify(&intent, 151).is_err());
         assert!(
             verify_windows_network_admission(
