@@ -66,6 +66,16 @@ pub(super) fn request_available(
     }
     Ok(())
 }
+/// Refuse another request at the single SYSTEM task boundary. Inaccessible
+/// metadata is not proof of absence; never fall through to another handler.
+pub(super) fn reject_competing_request(path: &Path) -> Result<(), &'static str> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Err("HOST_WINDOWS_COMPETING_REQUEST"),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(()),
+        Err(_) => Err("HOST_WINDOWS_COMPETING_REQUEST_METADATA_UNAVAILABLE"),
+    }
+}
+
 pub(super) fn create(path: &Path, bytes: &[u8]) -> Result<(), String> {
     let mut f = OpenOptions::new()
         .write(true)
@@ -111,11 +121,8 @@ pub(super) async fn dispatch_if_present(root: &Path) -> Result<bool, String> {
         Ok(_) => {}
     }
     require_exact_immutable_activation_console(root)?;
-    if privileged_request_path(root).exists()
-        || root.join("exchange/requests/host-intent.pb").exists()
-    {
-        return Err("HOST_WINDOWS_SYSTEM_COMPETING_REQUEST".into());
-    }
+    reject_competing_request(&privileged_request_path(root))?;
+    reject_competing_request(&root.join("exchange/requests/host-intent.pb"))?;
     let journal = root.join("native-host/journal");
     verify_native_journal_protection(&journal)?;
     let transport =
@@ -207,4 +214,37 @@ pub(super) async fn dispatch_if_present(root: &Path) -> Result<bool, String> {
     }
     println!("native_system_admin=SIGNED_TERMINAL");
     Ok(true)
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+
+    #[test]
+    fn competing_request_is_rejected_before_authorization() {
+        let dir = std::env::temp_dir().join(format!(
+            "edge-windows-competing-request-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&dir).unwrap();
+        let path = dir.join("admin-request.pb");
+        assert!(reject_competing_request(&path).is_ok());
+        fs::write(&path, b"pending").unwrap();
+        assert_eq!(
+            reject_competing_request(&path),
+            Err("HOST_WINDOWS_COMPETING_REQUEST")
+        );
+        fs::remove_file(&path).unwrap();
+        fs::create_dir(&path).unwrap();
+        assert_eq!(
+            reject_competing_request(&path),
+            Err("HOST_WINDOWS_COMPETING_REQUEST")
+        );
+        fs::remove_dir(&path).unwrap();
+        fs::remove_dir(&dir).unwrap();
+    }
 }

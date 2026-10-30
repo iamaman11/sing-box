@@ -449,9 +449,10 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
         }
         Ok(_) => {}
     }
-    if privileged_request_path(install_root).exists() {
-        return Err("HOST_WINDOWS_SYSTEM_COMPETING_LEGACY_REQUEST".into());
-    }
+    windows_admin::reject_competing_request(&privileged_request_path(install_root))?;
+    windows_admin::reject_competing_request(
+        &install_root.join("exchange/requests/admin-request.pb"),
+    )?;
     // Already-retargeted immutable console, not mutable bin/edge-console.exe.
     require_exact_immutable_activation_console(install_root)?;
     let protected = install_root.join("native-host");
