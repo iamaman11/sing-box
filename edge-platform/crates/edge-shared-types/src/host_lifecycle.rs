@@ -1143,13 +1143,14 @@ pub fn verify_windows_network_admission(
         return Err("HOST_WINDOWS_NETWORK_ADMISSION_BINDING_OR_FRESHNESS_INVALID");
     }
     ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, trusted_system_public_key)
-        .verify(&windows_network_admission_payload(proof), &proof.system_signature)
+        .verify(
+            &windows_network_admission_payload(proof),
+            &proof.system_signature,
+        )
         .map_err(|_| "HOST_WINDOWS_NETWORK_ADMISSION_SYSTEM_SIGNATURE_INVALID")
 }
 
-fn windows_network_admission_payload(
-    proof: &crate::FleetWindowsNetworkAdmission,
-) -> Vec<u8> {
+fn windows_network_admission_payload(proof: &crate::FleetWindowsNetworkAdmission) -> Vec<u8> {
     let mut unsigned = proof.clone();
     unsigned.system_signature.clear();
     let mut payload = b"sing-box/windows-network-admission/v1:".to_vec();
@@ -1191,7 +1192,10 @@ pub fn sign_windows_network_admission(
         ..Default::default()
     };
     let mut proof = proof;
-    proof.system_signature = pair.sign(&windows_network_admission_payload(&proof)).as_ref().to_vec();
+    proof.system_signature = pair
+        .sign(&windows_network_admission_payload(&proof))
+        .as_ref()
+        .to_vec();
     let mut enriched = intent.clone();
     enriched.network_admission = Some(proof.clone());
     verify_windows_network_admission(
