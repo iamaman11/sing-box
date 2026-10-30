@@ -122,7 +122,8 @@ pub(super) async fn execute(
     // Recheck the physical OS interface in the executing Controller, not
     // only in SYSTEM pre-BEGIN. A stale TUN must never be adopted by a
     // signed ProxyOnly runtime effect or hidden by a new desired spec.
-    edge_shared_types::windows_native_network::observe_native_route_dns()?;
+    let (_, network_before) =
+        edge_shared_types::windows_native_network::observe_native_network_identity()?;
     let state = active(root)?;
     let paths = LocalRuntimePaths {
         singbox_binary_path: PathBuf::from(&state.sing_box_path),
@@ -144,9 +145,15 @@ pub(super) async fn execute(
         )?;
         edge_local_runtime::start_native_verified_proxy(&paths)
     })?;
+    let (_, network_after) =
+        edge_shared_types::windows_native_network::observe_native_network_identity()?;
+    network_before.require_restored(&network_after)?;
     let supervisor_root = root.to_path_buf();
     tokio::spawn(async move {
-        if let Err(e) = supervise_windows_managed_child(supervisor_root.clone()).await {
+        if let Err(e) = supervise_windows_managed_child(
+            supervisor_root.clone(),
+            Some(network_before),
+        ).await {
             let _ = write_controller_service_error(&supervisor_root, "native_child_exit", &e);
         }
     });

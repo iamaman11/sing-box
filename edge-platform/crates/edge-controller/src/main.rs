@@ -530,7 +530,10 @@ fn read_windows_privileged_result_marker(repo_root: &Path) -> Result<Option<Vec<
 }
 
 #[cfg(windows)]
-async fn supervise_windows_managed_child(repo_root: PathBuf) -> Result<(), String> {
+async fn supervise_windows_managed_child(
+    repo_root: PathBuf,
+    baseline: Option<edge_shared_types::windows_native_network::NativeNetworkIdentity>,
+) -> Result<(), String> {
     if !is_installed_windows_root(&repo_root) {
         return Ok(());
     }
@@ -577,7 +580,19 @@ async fn supervise_windows_managed_child(repo_root: PathBuf) -> Result<(), Strin
                 pid = next_pid;
                 recovered |= did_recover;
             }
-            None => return Ok(()),
+            None => {
+                if let Some(baseline) = &baseline {
+                    // The signed ProxyOnly effect owns a prelaunch native
+                    // snapshot. On any child exit, including SCM STOP, verify
+                    // the OS really restored the exact routes, DNS order and
+                    // Cloudflare One interface. Never repair foreign routes.
+                    let (_, after) = edge_shared_types::windows_native_network::
+                        observe_native_network_identity()
+                        .map_err(str::to_owned)?;
+                    baseline.require_restored(&after).map_err(str::to_owned)?;
+                }
+                return Ok(());
+            }
         }
     }
 }
@@ -891,7 +906,7 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
             // The controller's own child is supervised while this SCM service runs.
             let supervisor_root = repo_root.clone();
             let supervisor = runtime.spawn(async move {
-                if let Err(err) = supervise_windows_managed_child(supervisor_root.clone()).await {
+                if let Err(err) = supervise_windows_managed_child(supervisor_root.clone(), None).await {
                     let _ = write_controller_service_error(&supervisor_root, "child_exit", &err);
                     eprintln!("Windows managed child supervision stopped fail-closed: {err}");
                 }
@@ -1013,7 +1028,8 @@ fn require_native_windows_runtime_launch_safety(repo_root: &Path) -> Result<(), 
     let bytes = fs::read(&path).map_err(|_| "HOST_WINDOWS_RECOVERY_EXISTING_CONFIG_UNPROVEN")?;
     edge_singbox::require_no_windows_route_capture_config(&bytes)
         .map_err(|_| "HOST_WINDOWS_RECOVERY_EXISTING_TUN_NETWORK_RESTORATION_REQUIRED")?;
-    edge_shared_types::windows_native_network::observe_native_route_dns().map_err(str::to_owned)?;
+    edge_shared_types::windows_native_network::observe_native_network_identity()
+        .map_err(|error| error.to_owned())?;
     Ok(())
 }
 
