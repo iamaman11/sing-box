@@ -354,6 +354,85 @@ message FleetVmManagedDockerResource {
   string network_name = 7;
   // A monotonic signed revision requests one explicit restart without replay.
   uint64 restart_generation = 8;
+  // Optional project-scoped ULA /64 private bridge IPAM. Both or neither.
+  string ipv6_subnet = 9;
+  string ipv6_gateway = 10;
+  // Exact ordered DNS resolvers for CONTAINER only. No host DNS effects.
+  repeated string dns_servers = 11;
+  // For an owned bridge only: exact Linux bridge name, "sb..." and <=15 bytes.
+  // Enables a Git-owned route to attest the link via Docker's native owner.
+  string bridge_interface_name = 12;
+}
+
+// Git-owned, single-table isolated IPv4/IPv6 route. Its manifest is a
+// private managed/<name>.pb file in the immutable ReleaseSet, executed by the
+// existing VM root owner after the same signed durable BEGIN as Docker.
+message FleetVmManagedKernelRoute {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  string resource_name = 3;
+  FleetVmIpFamily family = 4;
+  string destination = 5;
+  uint32 prefix_length = 6;
+  string interface_name = 7;
+  uint32 table_id = 8;
+}
+// Git-declared explicit TCP/UDP allow/deny in an isolated nftables inet
+// table. Default accept protects the host control path; no global default
+// drop, forward/output hook or provider firewall write.
+enum FleetVmFirewallTransport {
+  FLEET_VM_FIREWALL_TRANSPORT_UNSPECIFIED = 0;
+  FLEET_VM_FIREWALL_TRANSPORT_TCP = 1;
+  FLEET_VM_FIREWALL_TRANSPORT_UDP = 2;
+}
+enum FleetVmFirewallAction {
+  FLEET_VM_FIREWALL_ACTION_UNSPECIFIED = 0;
+  FLEET_VM_FIREWALL_ACTION_ALLOW = 1;
+  FLEET_VM_FIREWALL_ACTION_DENY = 2;
+}
+message FleetVmFirewallRule {
+  FleetVmFirewallTransport transport = 1;
+  uint32 destination_port = 2;
+  FleetVmFirewallAction action = 3;
+}
+message FleetVmManagedFirewall {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  string resource_name = 3;
+  repeated FleetVmFirewallRule ingress_rules = 4;
+}
+message FleetVmManagedFirewallReadback {
+  string resource_name = 1;
+  bytes manifest_sha256 = 2;
+  bool present = 3;
+  bool converged = 4;
+  string reason_code = 5;
+}
+// Scoped systemd-resolved per-link routing-only DNS. Never global/default
+// DNS; only an exact project-owned Docker bridge interface may be changed.
+message FleetVmManagedSystemDns {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  string resource_name = 3;
+  string interface_name = 4;
+  repeated string name_servers = 5;
+  string routing_domain = 6;
+}
+message FleetVmManagedSystemDnsReadback {
+  string resource_name = 1;
+  bytes manifest_sha256 = 2;
+  bool present = 3;
+  bool converged = 4;
+  string reason_code = 5;
+}
+message FleetVmManagedKernelRouteReadback {
+  string resource_name = 1;
+  FleetVmIpFamily family = 2;
+  uint32 table_id = 3;
+  bytes manifest_sha256 = 4;
+  bool present = 5;
+  bool converged = 6;
+  string reason_code = 7;
 }
 
 // One bounded, native Docker readback for EACH Git-owned managed object.
@@ -416,6 +495,9 @@ message FleetVmResourceReport {
   // process names, raw errors or kernel stack content are transported.
   FleetVmProcessSnapshot processes = 12;
   repeated FleetVmManagedDockerReadback managed_docker = 13;
+  repeated FleetVmManagedKernelRouteReadback managed_kernel_routes = 14;
+  repeated FleetVmManagedFirewallReadback managed_firewall = 15;
+  repeated FleetVmManagedSystemDnsReadback managed_system_dns = 16;
 }
 
 enum FleetHostRunState {
@@ -426,8 +508,9 @@ enum FleetHostRunState {
 
 message FleetHostTarget {
   FleetHostRunState run_state = 1;
-  // Windows only. VM uses UNSPECIFIED, never a Windows TUN mode.
-  FleetHostMode windows_mode = 2;
+  // Retained wire number only for Protobuf schema compatibility; MUST stay
+  // UNSPECIFIED in Git. Windows datapath is owned solely by ProductionDesiredState.
+  FleetHostMode windows_mode = 2 [deprecated = true];
 }
 
 
@@ -592,6 +675,28 @@ message FleetHostIntent {
   FleetHostMode requested_mode = 10;
   // Advisory timestamp only; never used as a mutation authorization.
   uint64 requested_at_unix = 11;
+  // Worker signs this exact intent INCLUDING the local, separately signed
+  // native evidence. Never a runner boolean or authority to skip OS readback.
+  FleetWindowsNetworkAdmission network_admission = 12;
+}
+
+// Proof of the pre-TUN physical control plane, minted by installed SYSTEM
+// after independent native Line1/control/DNS tests. The existing Worker
+// authorizes only the exact bound operation. No new mode-setting protocol.
+message FleetWindowsNetworkAdmission {
+  uint32 schema_version = 1;
+  string machine_id = 2;
+  string operation_id = 3;
+  bytes installed_release_sha256 = 4;
+  bytes desired_release_set_sha256 = 5;
+  bytes config_sha256 = 6;
+  bytes before_network_sha256 = 7;
+  uint64 observed_at_unix = 8;
+  uint64 expires_at_unix = 9;
+  bytes line1_witness_sha256 = 10;
+  bytes control_witness_sha256 = 11;
+  bytes dns_witness_sha256 = 12;
+  bytes system_signature = 13;
 }
 
 // A single closed reason determines BOTH printable error_class and
@@ -649,6 +754,68 @@ message FleetHostAuthorization {
   bytes ed25519_signature = 6;
 }
 
+// SYSTEM delegates one already Worker-authorized effect to its existing
+// Controller child supervisor. No secret, second owner or persistent ledger.
+// Controller nonce changes on every process start and is consumed per operation.
+message FleetWindowsRuntimeEffect {
+  uint32 schema_version = 1;
+  FleetHostIntent intent = 2;
+  FleetHostAuthorization authorization = 3;
+  FleetWindowsRuntimeChallenge challenge = 4;
+  bytes config_sha256 = 5;
+  uint64 expires_at_unix = 6;
+  bytes system_signature = 7;
+  // Public Git context independently verified by SYSTEM before BEGIN. The
+  // Controller verifies SYSTEM's local protected receipt identity first.
+  bytes registry_pb = 8;
+  bytes selected_spec_bytes = 9;
+  // Exact native IPv4/IPv6 routes, addresses, ordered DNS and Cloudflare
+  // One adapter identity observed by SYSTEM before this signed effect.
+  bytes before_network_sha256 = 10;
+}
+
+// One protected native before-state in the EXISTING SYSTEM journal. Not
+// desired configuration, a second network owner or permission to replay.
+message FleetWindowsNetworkBaseline {
+  uint32 schema_version = 1;
+  string operation_id = 2;
+  bytes before_sha256 = 3;
+  repeated FleetWindowsNetworkRoute routes = 4;
+  repeated FleetWindowsNetworkAddress addresses = 5;
+  repeated FleetWindowsNetworkDns dns = 6;
+  repeated FleetWindowsNetworkAdapter foreign_warp_adapters = 7;
+}
+message FleetWindowsNetworkRoute {
+  uint64 interface_luid = 1;
+  uint32 family = 2;
+  bytes prefix = 3;
+  uint32 prefix_length = 4;
+  bytes next_hop = 5;
+  uint32 metric = 6;
+  int32 protocol = 7;
+  int32 origin = 8;
+  uint32 site_prefix_length = 9;
+  bool loopback = 10;
+  bool published = 11;
+}
+message FleetWindowsNetworkAddress {
+  uint64 interface_luid = 1;
+  uint32 family = 2;
+  bytes address = 3;
+  uint32 prefix_length = 4;
+}
+message FleetWindowsNetworkDns {
+  uint64 interface_luid = 1;
+  uint32 order = 2;
+  uint32 family = 3;
+  bytes server = 4;
+}
+message FleetWindowsNetworkAdapter {
+  string alias = 1;
+  uint64 interface_luid = 2;
+  int32 oper_status = 3;
+}
+
 
 // A bounded, local, non-secret physical readback. The observer reports its
 // actual source and proof scope; this message NEVER authorizes mutations or
@@ -687,6 +854,9 @@ message FleetNativeObservation {
   // Root-local resource evidence for signed historical RECOVER; this is
   // the already existing FleetVmResourceReport, not a second state store.
   FleetVmResourceReport vm_recovery_resources = 10;
+  // Actual configuration bytes, independently read by the Windows owner.
+  // Empty means absent/unproven, never "matches desired".
+  bytes windows_config_sha256 = 11;
 }
 
 
@@ -701,6 +871,7 @@ enum FleetHostPlannedStep {
   FLEET_HOST_PLANNED_STEP_STOP = 4;
   FLEET_HOST_PLANNED_STEP_REPLACE_RELEASE = 5;
   FLEET_HOST_PLANNED_STEP_INSTALL = 6;
+  FLEET_HOST_PLANNED_STEP_CONFIGURE = 7;
 }
 
 // Closed host-level planner reasons. CLI reason_code is a derived projection,
@@ -731,6 +902,7 @@ enum FleetHostPlanReason {
   FLEET_HOST_PLAN_REASON_RUNNING_MATCHES_LOCAL_NOT_EXTERNAL = 22;
   FLEET_HOST_PLAN_REASON_VM_DEGRADED_REQUIRES_SCOPED_CONTAINER_PREADMISSION = 23;
   FLEET_HOST_PLAN_REASON_RUNTIME_READINESS_UNPROVEN = 24;
+  FLEET_HOST_PLAN_REASON_STOPPED_CONFIGURATION_DRIFT = 25;
 }
 
 message FleetHostTransitionPlan {

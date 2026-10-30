@@ -9,9 +9,19 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(windows)]
 use std::mem::size_of;
 #[cfg(windows)]
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 #[cfg(windows)]
-use std::ptr::null_mut;
+use std::ptr::{null, null_mut};
+#[cfg(windows)]
+use std::sync::{Mutex, OnceLock};
+#[cfg(windows)]
+use windows_sys::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
+    SetInformationJobObject,
+};
 
 use edge_shared_types::{
     LocalSingboxState, WindowsDatapathMode, canonical_production_desired_state,
@@ -409,6 +419,131 @@ pub fn start_local_runtime(
     visible_window: bool,
 ) -> Result<RuntimeOperationResult, String> {
     start_local_runtime_with_policy(paths, visible_window, false)
+}
+
+/// The existing Controller may supervise one SYSTEM-admitted ProxyOnly child.
+/// Configuration is already protected, rendered and validated by SYSTEM; this
+/// path NEVER rewrites it, adopts an orphan, captures routes or retries launch.
+pub fn start_native_verified_proxy(
+    paths: &LocalRuntimePaths,
+) -> Result<RuntimeOperationResult, String> {
+    let bytes =
+        fs::read(&paths.config_path).map_err(|_| "HOST_WINDOWS_EFFECT_CONFIG_UNREADABLE")?;
+    edge_singbox::require_proxy_only_config(&bytes)?;
+    let managed = exact_managed_runtime_processes(&paths.config_path);
+    if !managed.is_empty() {
+        return Err("HOST_WINDOWS_EFFECT_CHILD_ALREADY_EXISTS_NO_REPLAY".into());
+    }
+    validate_singbox_config(&paths.singbox_binary_path, &paths.config_path)?;
+    let mut child = launch_singbox(paths, false)?;
+    if let Err(e) = observe_startup(&mut child) {
+        return Err(format!("HOST_WINDOWS_EFFECT_START_POSTSTATE_UNPROVEN: {e}"));
+    }
+    Ok(RuntimeOperationResult {
+        pid: Some(child.id()),
+        note: "NATIVE_SYSTEM_ADMITTED_PROXY_STARTED".into(),
+        warnings: Vec::new(),
+        local_singbox: inspect_local_runtime(&paths.config_path),
+    })
+}
+
+// The native Controller process itself owns exactly one Windows Job Object.
+// A crash, panic, forced SCM termination or reboot closes this OS handle
+// and kills its TUN child without a watchdog, second process or scheduler.
+// No foreign processes can be assigned to this Job.
+#[cfg(windows)]
+static NATIVE_MANAGED_TUN_JOB: OnceLock<Mutex<Option<OwnedHandle>>> = OnceLock::new();
+
+#[cfg(windows)]
+fn bind_managed_tun_job_to_child(child: &Child) -> Result<(), String> {
+    let mut owner = NATIVE_MANAGED_TUN_JOB
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .map_err(|_| "HOST_WINDOWS_TUN_JOB_OWNER_LOCK_POISONED")?;
+    if owner.is_some() {
+        return Err("HOST_WINDOWS_TUN_JOB_OWNER_ALREADY_PRESENT".into());
+    }
+    // JobObjectExtendedLimitInformation with KILL_ON_JOB_CLOSE is the only
+    // kernel state this Controller owns; no route/DNS/WARP mutation.
+    let raw = unsafe { CreateJobObjectW(null(), null()) };
+    if raw.is_null() {
+        return Err("HOST_WINDOWS_TUN_JOB_CREATE_FAILED".into());
+    }
+    let handle = unsafe { OwnedHandle::from_raw_handle(raw as _) };
+    let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    let configured = unsafe {
+        SetInformationJobObject(
+            raw,
+            JobObjectExtendedLimitInformation,
+            (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    };
+    if configured == 0 {
+        return Err("HOST_WINDOWS_TUN_JOB_LIMITS_FAILED".into());
+    }
+    if unsafe { AssignProcessToJobObject(raw, child.as_raw_handle() as _) } == 0 {
+        return Err("HOST_WINDOWS_TUN_JOB_ASSIGN_FAILED".into());
+    }
+    *owner = Some(handle);
+    Ok(())
+}
+
+/// Native ManagedTun child executor, only for an already signed SYSTEM
+/// delegation. This is never exported through the legacy Windows controller
+/// RPC. The existing SCM supervisor owns the child after successful return.
+#[cfg(windows)]
+pub fn start_native_verified_managed_tun(
+    paths: &LocalRuntimePaths,
+) -> Result<RuntimeOperationResult, String> {
+    let bytes = fs::read(&paths.config_path).map_err(|_| "HOST_WINDOWS_TUN_CONFIG_UNREADABLE")?;
+    edge_singbox::require_managed_tun_config(&bytes)?;
+    if !matches!(
+        classify_runtime_process(&paths.config_path),
+        RuntimeProcessClassification::Absent
+    ) {
+        return Err("HOST_WINDOWS_TUN_CONFLICTING_CHILD_OR_OWNER".into());
+    }
+    let (_, before) = edge_shared_types::windows_native_network::observe_native_network_identity()?;
+    before.require_foreign_warp_up()?;
+    // A missing process is not proof of an absent stale TUN interface.
+    // Refuse route capture if the installed native owner or OS still has
+    // any adapter with the exact managed TUN identity.
+    edge_shared_types::windows_native_network::require_owned_tun_absent()?;
+    validate_singbox_config(&paths.singbox_binary_path, &paths.config_path)?;
+    let mut child = launch_singbox(paths, false)?;
+    // Bind the *exact* newly created PID to this Controller's kill-on-close
+    // Job before accepting any startup observation. If assignment is denied
+    // (including by foreign job nesting), kill just this child and verify
+    // the original network instead of falling back to an unguarded TUN.
+    let bound = bind_managed_tun_job_to_child(&child);
+    let poststate = bound.and_then(|_| {
+        observe_startup(&mut child)?;
+        let (_, current) = edge_shared_types::windows_native_network::observe_native_managed_tun()?;
+        current.require_foreign_network_preserved(&before)?;
+        Ok(())
+    });
+    if let Err(error) = poststate {
+        // We own ONLY this newly launched process. Stop it, never attempt
+        // to change another adapter/route/DNS owner. If the OS does not
+        // restore the exact network, leave the signed BEGIN unresolved.
+        let stopped = child.kill().and_then(|_| child.wait()).is_ok();
+        let restored = edge_shared_types::windows_native_network::observe_native_network_identity()
+            .and_then(|(_, after)| before.require_restored(&after))
+            .is_ok();
+        return Err(if stopped && restored {
+            format!("HOST_WINDOWS_TUN_START_REJECTED_RESTORED: {error}")
+        } else {
+            "HOST_WINDOWS_TUN_START_UNKNOWN_NO_REPLAY".into()
+        });
+    }
+    Ok(RuntimeOperationResult {
+        pid: Some(child.id()),
+        note: "NATIVE_SYSTEM_ADMITTED_MANAGED_TUN_STARTED".into(),
+        warnings: Vec::new(),
+        local_singbox: inspect_local_runtime(&paths.config_path),
+    })
 }
 
 fn existing_owner_for_noop(

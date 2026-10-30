@@ -211,13 +211,18 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
         #[cfg(windows)]
         Command::OfflineCleanInstall(args) => {
             windows_clean_install::install(Path::new(&args.install_root))
+                .await
                 .map_err(ConsoleError::Command)?;
             Ok(())
         }
         #[cfg(windows)]
         Command::OfflineReceiptIdentityPrepare(args) => {
             let root = Path::new(&args.install_root);
-            windows_receipt_enrollment::prepare(root).map_err(ConsoleError::Command)?;
+            let active = load_verified_activation(root)?;
+            let machine = windows_trust_enrollment::resolve_local_windows_machine(&active)
+                .await
+                .map_err(ConsoleError::Command)?;
+            windows_receipt_enrollment::prepare(root, &machine).map_err(ConsoleError::Command)?;
             windows_trust_enrollment::prepare_pending(root).map_err(|reason| {
                 ConsoleError::Command(format!(
                     "HOST_WINDOWS_FIRST_USE_TRUST_MARKER_UNKNOWN_NO_REPLAY: {reason}"
@@ -242,7 +247,8 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                 serde_json::json!({
                     "schema": "sing-box.windows-first-use-status/v1",
                     "stage": stage,
-                    "machine_id": "sing-box-windows-lab",
+                    "machine_id": windows_receipt_enrollment::bound_machine_id(root)
+                        .map_err(ConsoleError::Command)?,
                     "installed_release_set_sha256": active.release_set_sha256,
                     "trusted_remote_execution": false,
                     "mutations": 0
@@ -330,6 +336,7 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                 supersession.as_ref(),
                 args.enroll_receipt,
             )
+            .await
             .map_err(ConsoleError::Command)?;
             println!("status=PASS");
             println!("code={code}");

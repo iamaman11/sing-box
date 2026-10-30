@@ -260,6 +260,15 @@ message StartLocalRuntimeRequest {
   optional string state_path = 3;
   bool force_restart = 4;
   bool visible_window = 5;
+  // Canonical, bounded FleetWindowsRuntimeEffect. Empty retains the legacy
+  // denial. No caller-selected binary/config/state paths are accepted with it.
+  bytes native_system_effect = 6;
+}
+
+message FleetWindowsRuntimeChallenge {
+  bytes nonce = 1;
+  uint64 process_id = 2;
+  bytes installed_release_sha256 = 3;
 }
 
 message StopLocalRuntimeRequest {

@@ -110,6 +110,7 @@ pub(super) async fn start_local(
             state_path: None,
             force_restart: false,
             visible_window: false,
+            native_system_effect: Vec::new(),
         }))
         .await?;
     Ok(response.into_inner())
@@ -126,6 +127,7 @@ pub(super) async fn start_local_visible(
             state_path: None,
             force_restart: false,
             visible_window: true,
+            native_system_effect: Vec::new(),
         }))
         .await?;
     Ok(response.into_inner())

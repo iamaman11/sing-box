@@ -1,4 +1,6 @@
 mod legacy_provider_support;
+#[cfg(windows)]
+mod windows_native_runtime;
 use legacy_provider_support::*;
 
 use std::env;
@@ -528,7 +530,10 @@ fn read_windows_privileged_result_marker(repo_root: &Path) -> Result<Option<Vec<
 }
 
 #[cfg(windows)]
-async fn supervise_windows_managed_child(repo_root: PathBuf) -> Result<(), String> {
+async fn supervise_windows_managed_child(
+    repo_root: PathBuf,
+    baseline: Option<edge_shared_types::windows_native_network::NativeNetworkIdentity>,
+) -> Result<(), String> {
     if !is_installed_windows_root(&repo_root) {
         return Ok(());
     }
@@ -537,6 +542,9 @@ async fn supervise_windows_managed_child(repo_root: PathBuf) -> Result<(), Strin
         return Ok(());
     }
     let initial = exact_managed_runtime_processes(&config_path);
+    if initial.is_empty() {
+        return Ok(());
+    } // signed start arrives after SCM is Running
     if initial.len() != 1 || initial[0].parent_pid != Some(std::process::id()) {
         return Err(
             "SCM startup did not expose one exact child owned by this controller".to_owned(),
@@ -572,7 +580,20 @@ async fn supervise_windows_managed_child(repo_root: PathBuf) -> Result<(), Strin
                 pid = next_pid;
                 recovered |= did_recover;
             }
-            None => return Ok(()),
+            None => {
+                if let Some(baseline) = &baseline {
+                    // The signed ProxyOnly effect owns a prelaunch native
+                    // snapshot. On any child exit, including SCM STOP, verify
+                    // the OS really restored the exact routes, DNS order and
+                    // Cloudflare One interface. Never repair foreign routes.
+                    let (_, after) =
+                        edge_shared_types::windows_native_network::observe_native_network_identity(
+                        )
+                        .map_err(str::to_owned)?;
+                    baseline.require_restored(&after).map_err(str::to_owned)?;
+                }
+                return Ok(());
+            }
         }
     }
 }
@@ -886,7 +907,9 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
             // The controller's own child is supervised while this SCM service runs.
             let supervisor_root = repo_root.clone();
             let supervisor = runtime.spawn(async move {
-                if let Err(err) = supervise_windows_managed_child(supervisor_root.clone()).await {
+                if let Err(err) =
+                    supervise_windows_managed_child(supervisor_root.clone(), None).await
+                {
                     let _ = write_controller_service_error(&supervisor_root, "child_exit", &err);
                     eprintln!("Windows managed child supervision stopped fail-closed: {err}");
                 }
@@ -999,7 +1022,18 @@ fn require_native_windows_runtime_launch_safety(repo_root: &Path) -> Result<(), 
     let desired = canonical_production_desired_state()?;
     let mode = WindowsDatapathMode::try_from(desired.windows_datapath_mode)
         .map_err(|_| "installed Windows datapath mode is invalid".to_owned())?;
-    require_native_windows_route_capture_safety(mode)
+    require_native_windows_route_capture_safety(mode)?;
+    // The desired mode is NOT the current routing state. A previous
+    // ManagedTun config may survive a Git switch back to ProxyOnly. Never
+    // automatically restart that exact sing-box process after an SCM child
+    // exit: it would recapture Windows routes without a fresh HostIntent.
+    let path = default_local_config_path(repo_root);
+    let bytes = fs::read(&path).map_err(|_| "HOST_WINDOWS_RECOVERY_EXISTING_CONFIG_UNPROVEN")?;
+    edge_singbox::require_no_windows_route_capture_config(&bytes)
+        .map_err(|_| "HOST_WINDOWS_RECOVERY_EXISTING_TUN_NETWORK_RESTORATION_REQUIRED")?;
+    edge_shared_types::windows_native_network::observe_native_network_identity()
+        .map_err(|error| error.to_owned())?;
+    Ok(())
 }
 
 #[cfg(any(windows, test))]
@@ -1213,6 +1247,7 @@ async fn start_local_runtime_via_controller(
             state_path: None,
             force_restart: false,
             visible_window: false,
+            native_system_effect: Vec::new(),
         }))
         .await?;
     Ok(response.into_inner())

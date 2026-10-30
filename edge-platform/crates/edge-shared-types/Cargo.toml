@@ -20,6 +20,7 @@ tonic-prost-build = "0.14.5"
 [dependencies]
 prost = "0.14.3"
 prost-types = "0.14.3"
+prost-reflect = { version = "=0.16.5", features = ["text-format"] }
 tonic = "0.14.5"
 tonic-prost = "0.14.5"
 ring = "0.17.14"
@@ -30,5 +31,8 @@ windows-sys = { version = "0.61.2", features = [
     "Win32_Foundation",
     "Win32_Security",
     "Win32_Security_Authorization",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_NetworkManagement_Ndis",
+    "Win32_Networking_WinSock",
     "Win32_System_Threading"
 ] }

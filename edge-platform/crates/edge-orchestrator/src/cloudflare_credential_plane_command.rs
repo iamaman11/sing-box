@@ -3939,16 +3939,59 @@ function CAT(...xs){const n=xs.reduce((a,b)=>a+b.length,0),b=new Uint8Array(n);l
 function VI(n){let x=BigInt(n),b=[];do{let v=Number(x&127n);x>>=7n;if(x)v|=128;b.push(v)}while(x);return Uint8Array.from(b)}
 function FLD(n,bytes){return CAT(VI((BigInt(n)<<3n)|2n),VI(bytes.length),bytes)}
 function FNUM(n,value){return CAT(VI(BigInt(n)<<3n),VI(value))}
+// The Worker is still the SAME signer: it validates only the shape and
+// exact outer-Intent binding of the already SYSTEM-signed native witness.
+// SYSTEM/Controller independently verify the Ed25519 signature against
+// the enrolled machine identity and re-observe the real kernel/Line1/DNS.
+// Do not let a runner-provided boolean grant any permission.
+function NETADMIT(b,m,id,release){
+ if(!(b instanceof Uint8Array)||b.length<220||b.length>1024)return false;
+ let p=0,last=0,observed=0,expires=0,vm=null,op=null,desired=null;
+ const seen=new Set();
+ while(p<b.length){
+  const key=V(b,p);if(!key)return false;
+  const f=Number(key[0]>>3n),w=Number(key[0]&7n);p=key[1];
+  if(f<=last||f>13)return false;last=f;seen.add(f);
+  if(f===1||f===8||f===9){
+   if(w!==0)return false;const n=V(b,p);if(!n)return false;p=n[1];
+   if(n[0]>BigInt(Number.MAX_SAFE_INTEGER))return false;
+   const num=Number(n[0]);
+   if(f===1&&num!==1)return false;
+   if(f===8)observed=num;
+   if(f===9)expires=num;
+   continue;
+  }
+  if(w!==2)return false;
+  const size=V(b,p);if(!size||size[0]>BigInt(b.length))return false;
+  p=size[1];const n=Number(size[0]);if(n>b.length-p)return false;
+  const value=b.slice(p,p+n);p+=n;
+  if(f===2||f===3){
+   if(n===0||n>128)return false;
+   try{const val=TD.decode(value);if(f===2)vm=val;else op=val;}catch{return false}
+  }else if(f===13){
+   if(n!==64||!value.some(x=>x!==0))return false;
+  }else if(n!==32||!value.some(x=>x!==0)){
+   return false;
+  }else if(f===5){
+   desired=Array.from(value,x=>x.toString(16).padStart(2,"0")).join("");
+  }
+ }
+ if(seen.size!==13||vm!==m||op!==id||desired!==release)return false;
+ const now=Math.floor(Date.now()/1000);
+ return Number.isSafeInteger(observed)&&Number.isSafeInteger(expires)&&
+   observed>0&&expires>observed&&expires-observed<=60&&
+   observed<=now&&now<=expires;
+}
 // Reject duplicate fields, unknown wire types and ambiguous field order.
 // The native prost decoder accepts only its canonical protobuf encoding;
 // the issuer must not sign a different representation of the same request.
 function INFO(b){
- let p=0,last=0,id=null,m=null,action=null,kind=null,schema=null,when=null,resource=null,release=null;
+ let p=0,last=0,id=null,m=null,action=null,kind=null,schema=null,when=null,resource=null,release=null,admission=null;
  const seen=new Set();
  while(p<b.length){
   const k=V(b,p);if(!k)return null;
   const f=Number(k[0]>>3n),w=Number(k[0]&7n);p=k[1];
-  if(f<=last||f>11)return null;last=f;seen.add(f);
+  if(f<=last||f>12)return null;last=f;seen.add(f);
   const numberField=f===1||f===3||f===6||f===10||f===11;
   if(numberField){
    if(w!==0)return null;
@@ -3970,6 +4013,8 @@ function INFO(b){
    }else if(f>=7&&f<=9){
     if(n!==32||!value.some(x=>x!==0))return null;
     if(f===9)release=Array.from(value,x=>x.toString(16).padStart(2,"0")).join("");
+   }else if(f===12){
+    admission=value;
    }else return null;
   }
  }
@@ -3983,6 +4028,11 @@ function INFO(b){
     typeof id!=="string"||!/^issue1-comment-[1-9][0-9]{0,19}$/.test(id)||
     typeof m!=="string"||!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(m)||
     !Number.isSafeInteger(when)||when<=0)return null;
+ // Network admission is a STRICTLY Windows-only START extension, never a
+ // generic VM/Admin/Apply/Stop grant. The approved comment is still checked.
+ if(admission!==null&&
+    !(kind===1&&action===7&&resource==="sing-box"&&NETADMIT(admission,m,id,release)))
+   return null;
  return{id,m,kind,action,when,release,resource};
 }
 // Only fixed enums and bounded numeric GitHub metadata cross this boundary.
@@ -4223,7 +4273,8 @@ function ADMIN_INFO(b){
     typeof m!=="string"||!/^[A-Za-z0-9][A-Za-z0-9_.-]{0,63}$/.test(m)||
     argv.length<1||argv.length>128||argv.some(x=>!x||x.length>8192||x.includes(String.fromCharCode(0)))||
     !/^[0-9a-f]{64}$/.test(release||"")||!/^[0-9a-f]{64}$/.test(comment||"")||
-    cwd.length>2048||cwd.includes(String.fromCharCode(0))||(cwd&&!cwd.startsWith("/"))||
+    cwd.length>2048||cwd.includes(String.fromCharCode(0))||
+    (cwd&&!cwd.startsWith("/")&&!/^[A-Za-z]:\\/.test(cwd))||
     env.length>128||env.some(x=>x.length>8192||!x.match(/^[A-Za-z0-9_]+=/))||
     !Number.isInteger(timeout)||timeout<1||timeout>3600||
     b.length>32768||[1,2,3,4,5,6,7,11].some(n=>!seen.has(n)))

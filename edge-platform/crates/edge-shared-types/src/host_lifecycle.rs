@@ -16,6 +16,118 @@ pub const MAX_HOST_RESULT_BYTES: usize = 8192;
 
 pub const MAX_NATIVE_OBSERVATION_BYTES: usize = 4096;
 
+/// One Git authority for Windows datapath: ProductionDesiredState. The host
+/// registry owns only RUNNING/STOPPED. Its retained proto field 2 MUST be empty;
+/// a second persisted setting is rejected, not reconciled or silently adopted.
+/// This pure resolver does not authorize TUN or any native mutation.
+pub fn validate_windows_mode_target_and_spec(
+    host: &FleetHost,
+    desired: &crate::ProductionDesiredState,
+) -> Result<crate::WindowsDatapathMode, &'static str> {
+    use crate::WindowsDatapathMode as Datapath;
+    if host.kind != FleetHostKind::Windows as i32 {
+        return Err("HOST_WINDOWS_MODE_HOST_KIND_MISMATCH");
+    }
+    let target = host
+        .target
+        .as_ref()
+        .ok_or("HOST_TARGET_UNSET_OBSERVE_ONLY")?;
+    let mode =
+        FleetHostMode::try_from(target.windows_mode).map_err(|_| "HOST_TARGET_MODE_INVALID")?;
+    if mode != FleetHostMode::Unspecified {
+        return Err("HOST_WINDOWS_DUPLICATE_GIT_MODE_FORBIDDEN");
+    }
+    let datapath = Datapath::try_from(desired.windows_datapath_mode)
+        .map_err(|_| "HOST_WINDOWS_DATAPATH_MODE_INVALID")?;
+    if datapath == Datapath::Unspecified {
+        return Err("HOST_WINDOWS_DATAPATH_MODE_INVALID");
+    }
+    Ok(datapath)
+}
+
+/// Before BEGIN, allow only effects that cannot enable Windows route capture.
+/// A stopped-owner APPLY may stage the exact signed ManagedTun configuration,
+/// but it cannot start the service or alter routes. Native effectors still
+/// enforce offline ownership and the journal never admits implicit replay.
+pub fn validate_windows_datapath_prebegin(
+    mode: crate::WindowsDatapathMode,
+    action: FleetHostAction,
+    desired_run: crate::FleetHostRunState,
+    observed_owner: crate::FleetNativeOwnerState,
+) -> Result<(), &'static str> {
+    validate_windows_datapath_prebegin_with_admission(
+        mode,
+        action,
+        desired_run,
+        observed_owner,
+        false,
+    )
+}
+
+/// The pure planner never grants this flag. Only Windows LocalSystem may
+/// pass true AFTER a fresh, separately SYSTEM-signed network witness was
+/// independently verified and the entire intent was signed by Worker.
+/// Authorization is per exact START, not a persisted mode or a UI override.
+pub fn validate_windows_datapath_prebegin_with_admission(
+    mode: crate::WindowsDatapathMode,
+    action: FleetHostAction,
+    desired_run: crate::FleetHostRunState,
+    observed_owner: crate::FleetNativeOwnerState,
+    signed_network_admission_verified: bool,
+) -> Result<(), &'static str> {
+    use crate::{
+        FleetHostRunState as Run, FleetNativeOwnerState as Owner, WindowsDatapathMode as Datapath,
+    };
+    match mode {
+        Datapath::ProxyOnly if signed_network_admission_verified => {
+            Err("HOST_WINDOWS_NETWORK_ADMISSION_PROXY_ONLY_FORBIDDEN")
+        }
+        Datapath::ProxyOnly => Ok(()),
+        Datapath::ManagedTun => match (action, desired_run, observed_owner) {
+            (FleetHostAction::Stop, Run::Stopped, Owner::Stopped)
+            | (FleetHostAction::Apply, Run::Stopped, Owner::Stopped)
+                if !signed_network_admission_verified =>
+            {
+                Ok(())
+            }
+            (FleetHostAction::Start, Run::Running, Owner::Stopped)
+                if signed_network_admission_verified =>
+            {
+                Ok(())
+            }
+            _ => Err("HOST_WINDOWS_CONFIG_NETWORK_ADMISSION_REQUIRED"),
+        },
+        Datapath::Unspecified => Err("HOST_WINDOWS_DATAPATH_MODE_INVALID"),
+    }
+}
+
+/// Create an ephemeral, typed projection for the existing pure planner.
+/// The registry signature/digest remains bound to the *original* Git bytes:
+/// the projected mode must never be stored, signed, or committed as desired.
+pub fn project_host_for_planner(
+    host: &FleetHost,
+    spec_bytes: &[u8],
+) -> Result<FleetHost, &'static str> {
+    if host.kind != FleetHostKind::Windows as i32 {
+        return Ok(host.clone());
+    }
+    let spec = crate::parse_production_desired_text(spec_bytes)?;
+    let mode = validate_windows_mode_target_and_spec(host, &spec)?;
+    let mut projected = host.clone();
+    projected
+        .target
+        .as_mut()
+        .ok_or("HOST_TARGET_UNSET_OBSERVE_ONLY")?
+        .windows_mode = match mode {
+        crate::WindowsDatapathMode::ProxyOnly => FleetHostMode::ProxyOnly as i32,
+        crate::WindowsDatapathMode::ManagedTun => FleetHostMode::ManagedTun as i32,
+        crate::WindowsDatapathMode::Unspecified => {
+            return Err("HOST_WINDOWS_DATAPATH_MODE_INVALID");
+        }
+    };
+    Ok(projected)
+}
+
 /// Returns a local typed readback, not a signed mutation receipt. Kind and
 /// release digest semantics are fixed: Windows activation records are NOT
 /// interchangeable with VM application bundle digests.
@@ -79,6 +191,7 @@ pub fn build_native_observation(
         runtime_ready_proven: runtime_ready.is_some(),
         reason_codes: reason_codes.iter().map(|s| (*s).to_owned()).collect(),
         vm_recovery_resources: None,
+        windows_config_sha256: Vec::new(),
     };
     validate_native_observation(&observation)?;
     Ok(observation)
@@ -111,6 +224,8 @@ pub fn validate_native_observation(
         || (!observed.observed_release_sha256.is_empty()
             && observed.observed_release_sha256.len() != 32)
         || (observed.runtime_ready && !observed.runtime_ready_proven)
+        || (!observed.windows_config_sha256.is_empty()
+            && (kind != FleetHostKind::Windows || !sha(&observed.windows_config_sha256)))
         || observed.reason_codes.len() > 12
         || observed.reason_codes.iter().any(|code| {
             code.is_empty()
@@ -468,12 +583,111 @@ pub struct BoundNativeHostArtifacts {
     pub runtime_release_sha256: Vec<u8>,
 }
 
+/**
+ * Read the exact, previously enrolled Windows SYSTEM trust registry without
+ * changing a single signed/historical byte. The old stopped ProxyOnly target
+ * was once stored in FleetHostTarget.windows_mode. New Git desired MUST reject
+ * that field; only an installed, protected trust snapshot may be evaluated by
+ * this narrow historical reader. The privileged caller independently verifies
+ * the installed immutable release, protected trust ACL, private receipt key,
+ * Worker signer pin and fresh CURRENT Git authority before any signed effect.
+ *
+ * The in-memory clone is for structural validation only. Digests and receipts
+ * remain bound to the ORIGINAL stored protobuf bytes and original host.
+ */
+pub fn decode_historical_windows_trust_registry(
+    bytes: &[u8],
+    exact_spec_bytes: &[u8],
+    machine_id: &str,
+) -> Result<HostRegistry, &'static str> {
+    if bytes.is_empty() || bytes.len() > 65536 {
+        return Err("HOST_WINDOWS_HISTORICAL_REGISTRY_INVALID");
+    }
+    let original =
+        HostRegistry::decode(bytes).map_err(|_| "HOST_WINDOWS_HISTORICAL_REGISTRY_INVALID")?;
+    let mut checked = original.clone();
+    for host in &mut checked.hosts {
+        let Some(target) = host.target.as_mut() else {
+            continue;
+        };
+        if target.windows_mode == FleetHostMode::Unspecified as i32 {
+            continue;
+        }
+        // Historical trust from this installed Windows host is ONLY the old,
+        // explicitly stopped ProxyOnly owner. No ManagedTun, other host, or
+        // running-owner snapshot can gain a compatibility admission.
+        if host.kind != FleetHostKind::Windows as i32
+            || host.machine_id != machine_id
+            || target.windows_mode != FleetHostMode::ProxyOnly as i32
+            || target.run_state != crate::FleetHostRunState::Stopped as i32
+        {
+            return Err("HOST_WINDOWS_HISTORICAL_MODE_NOT_ACCEPTED");
+        }
+        let spec = crate::parse_production_desired_text(exact_spec_bytes)
+            .map_err(|_| "HOST_WINDOWS_HISTORICAL_SPEC_INVALID")?;
+        if spec.windows_datapath_mode != crate::WindowsDatapathMode::ProxyOnly as i32 {
+            return Err("HOST_WINDOWS_HISTORICAL_MODE_SPEC_MISMATCH");
+        }
+        target.windows_mode = FleetHostMode::Unspecified as i32;
+    }
+    crate::validate_host_registry(&checked)
+        .map_err(|_| "HOST_WINDOWS_HISTORICAL_REGISTRY_INVALID")?;
+    if !checked
+        .hosts
+        .iter()
+        .any(|host| host.kind == FleetHostKind::Windows as i32 && host.machine_id == machine_id)
+    {
+        return Err("HOST_WINDOWS_HISTORICAL_MACHINE_UNREGISTERED");
+    }
+    Ok(original)
+}
+
+/// This function is for verifying a LOCAL, protected, previously installed
+/// Windows trust snapshot only. Live HostIntent/Worker operations continue
+/// through bind_native_host_artifacts, which rejects all duplicate Git modes.
+pub fn bind_historical_windows_trust_artifacts(
+    intent: &FleetHostIntent,
+    registry_pb: &[u8],
+    exact_spec_bytes: &[u8],
+    release_set_pb: &[u8],
+) -> Result<(HostRegistry, BoundNativeHostArtifacts), &'static str> {
+    if intent.kind != FleetHostKind::Windows as i32 {
+        return Err("HOST_WINDOWS_HISTORICAL_KIND_INVALID");
+    }
+    bind_native_host_artifacts_inner(
+        intent,
+        registry_pb,
+        exact_spec_bytes,
+        release_set_pb,
+        None,
+        true,
+    )
+}
+
 pub fn bind_native_host_artifacts(
     intent: &FleetHostIntent,
     registry_pb: &[u8],
     exact_spec_bytes: &[u8],
     release_set_pb: &[u8],
     vm_bundle_pb: Option<&[u8]>,
+) -> Result<(HostRegistry, BoundNativeHostArtifacts), &'static str> {
+    bind_native_host_artifacts_inner(
+        intent,
+        registry_pb,
+        exact_spec_bytes,
+        release_set_pb,
+        vm_bundle_pb,
+        false,
+    )
+}
+
+fn bind_native_host_artifacts_inner(
+    intent: &FleetHostIntent,
+    registry_pb: &[u8],
+    exact_spec_bytes: &[u8],
+    release_set_pb: &[u8],
+    vm_bundle_pb: Option<&[u8]>,
+    historical_windows_trust: bool,
 ) -> Result<(HostRegistry, BoundNativeHostArtifacts), &'static str> {
     fn digest_bytes(bytes: &[u8]) -> Vec<u8> {
         ring::digest::digest(&ring::digest::SHA256, bytes)
@@ -487,8 +701,11 @@ pub fn bind_native_host_artifacts(
     {
         return Err("HOST_NATIVE_ARTIFACT_SIZE_INVALID");
     }
-    let registry =
-        crate::decode_host_registry(registry_pb).map_err(|_| "HOST_NATIVE_REGISTRY_INVALID")?;
+    let registry = if historical_windows_trust {
+        decode_historical_windows_trust_registry(registry_pb, exact_spec_bytes, &intent.machine_id)?
+    } else {
+        crate::decode_host_registry(registry_pb).map_err(|_| "HOST_NATIVE_REGISTRY_INVALID")?
+    };
     let host = registry
         .hosts
         .iter()
@@ -639,6 +856,14 @@ pub fn validate_host_intent(
     }
     let mode =
         FleetHostMode::try_from(intent.requested_mode).map_err(|_| "HOST_INTENT_MODE_INVALID")?;
+    // An admission proof is meaningful only for a separate, explicit
+    // Windows START. Never let an opaque proof turn APPLY/STOP/RECOVER, a VM
+    // operation or retired SetMode into a route-capturing operation.
+    if intent.network_admission.is_some()
+        && (host.kind != FleetHostKind::Windows as i32 || action != FleetHostAction::Start)
+    {
+        return Err("HOST_WINDOWS_NETWORK_ADMISSION_UNEXPECTED_ACTION");
+    }
     if action == FleetHostAction::Unspecified
         || (action == FleetHostAction::SetMode
             && (host.kind != FleetHostKind::Windows as i32 || mode == FleetHostMode::Unspecified))
@@ -675,33 +900,20 @@ pub fn validate_intent_against_target(
     }
     let mode =
         FleetHostMode::try_from(target.windows_mode).map_err(|_| "HOST_TARGET_MODE_INVALID")?;
-    if (host.kind == FleetHostKind::Windows as i32 && mode == FleetHostMode::Unspecified)
-        || (host.kind == FleetHostKind::Vm as i32 && mode != FleetHostMode::Unspecified)
-    {
-        return Err("HOST_TARGET_MODE_KIND_MISMATCH");
+    if mode != FleetHostMode::Unspecified {
+        return Err("HOST_WINDOWS_DUPLICATE_GIT_MODE_FORBIDDEN");
+    }
+    if action == FleetHostAction::SetMode {
+        return Err("HOST_SET_MODE_RETIRED_USE_GIT_APPLY");
     }
     if (action == FleetHostAction::Start && state != FleetHostRunState::Running)
         || (action == FleetHostAction::Stop && state != FleetHostRunState::Stopped)
-        || (action == FleetHostAction::SetMode && intent.requested_mode != target.windows_mode)
     {
         return Err("HOST_ACTION_CONFLICTS_WITH_DESIRED");
     }
-    // TUN is never inferred or admitted from an APPLY/RECOVER alone. Exact
-    // typed SET_MODE and a separate physical gate are both required.
-    if mode == FleetHostMode::ManagedTun
-        && action != FleetHostAction::SetMode
-        && matches!(
-            action,
-            FleetHostAction::Start
-                | FleetHostAction::Apply
-                | FleetHostAction::Install
-                | FleetHostAction::Reinstall
-                | FleetHostAction::Recover
-                | FleetHostAction::Configure
-        )
-    {
-        return Err("HOST_TUN_EXPLICIT_MODE_GATE_REQUIRED");
-    }
+    // START and APPLY are proposals only. The signed SYSTEM handler checks
+    // the exact production datapath spec and enforces native network admission
+    // before BEGIN; a pure registry lookup can never turn on route capture.
     Ok(())
 }
 
@@ -915,6 +1127,117 @@ pub fn prepared_host_result(intent: &FleetHostIntent) -> FleetHostResult {
     result
 }
 
+/// Typed pre-BEGIN binding for one native route-capturing START. This
+/// verifier authenticates the separately enrolled SYSTEM witness, and the
+/// Worker separately signs the enclosing FleetHostIntent. Neither signature
+/// alone proves physical connectivity: the SYSTEM owner must independently
+/// re-observe native network and Line1/control/DNS before the child starts.
+pub fn verify_windows_network_admission(
+    intent: &FleetHostIntent,
+    trusted_system_public_key: &[u8],
+    installed_release_sha256: &[u8],
+    config_sha256: &[u8],
+    native_before_sha256: &[u8],
+    now: u64,
+) -> Result<(), &'static str> {
+    use crate::FleetWindowsNetworkAdmission;
+    let proof: &FleetWindowsNetworkAdmission = intent
+        .network_admission
+        .as_ref()
+        .ok_or("HOST_WINDOWS_NETWORK_ADMISSION_MISSING")?;
+    let sha = |b: &[u8]| b.len() == 32 && b.iter().any(|v| *v != 0);
+    if intent.kind != FleetHostKind::Windows as i32
+        || intent.action != FleetHostAction::Start as i32
+        || proof.schema_version != 1
+        || proof.machine_id != intent.machine_id
+        || proof.operation_id != intent.operation_id
+        || trusted_system_public_key.len() != 32
+        || !sha(installed_release_sha256)
+        || !sha(config_sha256)
+        || !sha(native_before_sha256)
+        || proof.installed_release_sha256 != installed_release_sha256
+        || proof.desired_release_set_sha256 != intent.release_set_sha256
+        || proof.config_sha256 != config_sha256
+        || proof.before_network_sha256 != native_before_sha256
+        || !sha(&proof.line1_witness_sha256)
+        || !sha(&proof.control_witness_sha256)
+        || !sha(&proof.dns_witness_sha256)
+        || proof.observed_at_unix == 0
+        || proof.expires_at_unix <= proof.observed_at_unix
+        || proof.expires_at_unix - proof.observed_at_unix > 60
+        || now < proof.observed_at_unix
+        || now > proof.expires_at_unix
+        || proof.system_signature.len() != 64
+    {
+        return Err("HOST_WINDOWS_NETWORK_ADMISSION_BINDING_OR_FRESHNESS_INVALID");
+    }
+    ring::signature::UnparsedPublicKey::new(&ring::signature::ED25519, trusted_system_public_key)
+        .verify(
+            &windows_network_admission_payload(proof),
+            &proof.system_signature,
+        )
+        .map_err(|_| "HOST_WINDOWS_NETWORK_ADMISSION_SYSTEM_SIGNATURE_INVALID")
+}
+
+fn windows_network_admission_payload(proof: &crate::FleetWindowsNetworkAdmission) -> Vec<u8> {
+    let mut unsigned = proof.clone();
+    unsigned.system_signature.clear();
+    let mut payload = b"sing-box/windows-network-admission/v1:".to_vec();
+    payload.extend(unsigned.encode_to_vec());
+    payload
+}
+
+/// Only the existing LocalSystem signer can issue this evidence after native
+/// probes actually succeed. It is not the Worker authorization: the Worker
+/// must sign the resulting ENTIRE enriched FleetHostIntent as a separate
+/// action. One operation, one replay journal, no new signing authority.
+pub fn sign_windows_network_admission(
+    intent: &FleetHostIntent,
+    system_private_pkcs8: &[u8],
+    installed_release_sha256: &[u8],
+    config_sha256: &[u8],
+    before_network_sha256: &[u8],
+    line1_witness_sha256: &[u8],
+    control_witness_sha256: &[u8],
+    dns_witness_sha256: &[u8],
+    observed_at_unix: u64,
+) -> Result<crate::FleetWindowsNetworkAdmission, &'static str> {
+    use ring::signature::{Ed25519KeyPair, KeyPair};
+    let pair = Ed25519KeyPair::from_pkcs8(system_private_pkcs8)
+        .map_err(|_| "HOST_WINDOWS_NETWORK_ADMISSION_LOCAL_KEY_INVALID")?;
+    let proof = crate::FleetWindowsNetworkAdmission {
+        schema_version: 1,
+        machine_id: intent.machine_id.clone(),
+        operation_id: intent.operation_id.clone(),
+        installed_release_sha256: installed_release_sha256.to_vec(),
+        desired_release_set_sha256: intent.release_set_sha256.clone(),
+        config_sha256: config_sha256.to_vec(),
+        before_network_sha256: before_network_sha256.to_vec(),
+        observed_at_unix,
+        expires_at_unix: observed_at_unix.saturating_add(60),
+        line1_witness_sha256: line1_witness_sha256.to_vec(),
+        control_witness_sha256: control_witness_sha256.to_vec(),
+        dns_witness_sha256: dns_witness_sha256.to_vec(),
+        ..Default::default()
+    };
+    let mut proof = proof;
+    proof.system_signature = pair
+        .sign(&windows_network_admission_payload(&proof))
+        .as_ref()
+        .to_vec();
+    let mut enriched = intent.clone();
+    enriched.network_admission = Some(proof.clone());
+    verify_windows_network_admission(
+        &enriched,
+        pair.public_key().as_ref(),
+        installed_release_sha256,
+        config_sha256,
+        before_network_sha256,
+        observed_at_unix,
+    )?;
+    Ok(proof)
+}
+
 /// The existing Cloudflare Worker is the sole issuer of this detached
 /// authorization; the native owner pins the public key in its accepted
 /// immutable release. Neither the GitHub runner nor the caller can mint it.
@@ -973,6 +1296,141 @@ pub fn host_authorization_payload(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn windows_set_mode_requires_bound_network_admission() {
+        use crate::FleetWindowsNetworkAdmission;
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+        let keypair_bytes =
+            Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new()).unwrap();
+        let key = Ed25519KeyPair::from_pkcs8(keypair_bytes.as_ref()).unwrap();
+        let mut intent = FleetHostIntent {
+            schema_version: 1,
+            machine_id: "win-machine-1".into(),
+            kind: FleetHostKind::Windows as i32,
+            operation_id: "issue1-comment-234".into(),
+            action: FleetHostAction::Start as i32,
+            resource_id: "sing-box".into(),
+            release_set_sha256: vec![3; 32],
+            ..Default::default()
+        };
+        let installed = [4; 32];
+        let config = [5; 32];
+        let before = [6; 32];
+        assert_eq!(
+            verify_windows_network_admission(
+                &intent,
+                key.public_key().as_ref(),
+                &installed,
+                &config,
+                &before,
+                111
+            ),
+            Err("HOST_WINDOWS_NETWORK_ADMISSION_MISSING")
+        );
+        let mut admission = FleetWindowsNetworkAdmission {
+            schema_version: 1,
+            machine_id: intent.machine_id.clone(),
+            operation_id: intent.operation_id.clone(),
+            installed_release_sha256: installed.to_vec(),
+            desired_release_set_sha256: intent.release_set_sha256.clone(),
+            config_sha256: config.to_vec(),
+            before_network_sha256: before.to_vec(),
+            observed_at_unix: 100,
+            expires_at_unix: 150,
+            line1_witness_sha256: vec![7; 32],
+            control_witness_sha256: vec![8; 32],
+            dns_witness_sha256: vec![9; 32],
+            ..Default::default()
+        };
+        let sign = |proof: &mut FleetWindowsNetworkAdmission| {
+            proof.system_signature.clear();
+            let mut raw = b"sing-box/windows-network-admission/v1:".to_vec();
+            raw.extend(proof.encode_to_vec());
+            proof.system_signature = key.sign(&raw).as_ref().to_vec();
+        };
+        sign(&mut admission);
+        intent.network_admission = Some(admission);
+        let verify = |intent: &FleetHostIntent, now: u64| {
+            verify_windows_network_admission(
+                intent,
+                key.public_key().as_ref(),
+                &installed,
+                &config,
+                &before,
+                now,
+            )
+        };
+        assert_eq!(verify(&intent, 120), Ok(()));
+        let new_proof = sign_windows_network_admission(
+            &FleetHostIntent {
+                network_admission: None,
+                ..intent.clone()
+            },
+            keypair_bytes.as_ref(),
+            &installed,
+            &config,
+            &before,
+            &[7; 32],
+            &[8; 32],
+            &[9; 32],
+            120,
+        );
+        assert!(new_proof.is_ok());
+        assert!(verify(&intent, 151).is_err());
+        assert!(
+            verify_windows_network_admission(
+                &intent,
+                key.public_key().as_ref(),
+                &installed,
+                &[99; 32],
+                &before,
+                120
+            )
+            .is_err()
+        );
+        assert!(
+            verify_windows_network_admission(
+                &intent,
+                key.public_key().as_ref(),
+                &installed,
+                &config,
+                &[98; 32],
+                120
+            )
+            .is_err()
+        );
+        let mut altered = intent.clone();
+        altered.operation_id = "issue1-comment-235".into();
+        assert!(verify(&altered, 120).is_err());
+        altered = intent.clone();
+        altered.release_set_sha256[0] ^= 1;
+        assert!(verify(&altered, 120).is_err());
+        altered = intent.clone();
+        altered.action = FleetHostAction::Stop as i32;
+        assert!(verify(&altered, 120).is_err());
+        altered = intent.clone();
+        altered
+            .network_admission
+            .as_mut()
+            .unwrap()
+            .line1_witness_sha256[0] ^= 1;
+        assert_eq!(
+            verify(&altered, 120),
+            Err("HOST_WINDOWS_NETWORK_ADMISSION_SYSTEM_SIGNATURE_INVALID")
+        );
+        altered = intent.clone();
+        altered
+            .network_admission
+            .as_mut()
+            .unwrap()
+            .dns_witness_sha256
+            .clear();
+        assert!(verify(&altered, 120).is_err());
+        altered = intent.clone();
+        altered.network_admission.as_mut().unwrap().expires_at_unix = 170;
+        assert!(verify(&altered, 120).is_err());
+    }
+
     #[test]
     fn runner_copied_verified_result_is_only_structurally_correlated() {
         let intent = FleetHostIntent {
@@ -1039,6 +1497,92 @@ mod tests {
 
     use super::*;
     use crate::{FleetHost, HostRegistry, encode_host_registry};
+
+    #[test]
+    fn installed_windows_historical_trust_is_read_only_and_proxyonly_scoped() {
+        use crate::release::v1::ReleaseSet;
+        use crate::{FleetHostRunState, FleetHostTarget};
+
+        let (mut registry, _, _, _, _) = fixture();
+        registry.hosts[0].target = Some(FleetHostTarget {
+            run_state: FleetHostRunState::Stopped as i32,
+            windows_mode: FleetHostMode::ProxyOnly as i32,
+        });
+        let stored = registry.encode_to_vec();
+        let spec = b"windows_datapath_mode: WINDOWS_DATAPATH_MODE_PROXY_ONLY\n";
+        let release = ReleaseSet {
+            schema_version: crate::RELEASE_SET_SCHEMA_VERSION,
+            source_revision: "a".repeat(40),
+            ..Default::default()
+        };
+        let release_pb = release.encode_to_vec();
+        let sha = |bytes: &[u8]| {
+            ring::digest::digest(&ring::digest::SHA256, bytes)
+                .as_ref()
+                .to_vec()
+        };
+        let intent = FleetHostIntent {
+            schema_version: 1,
+            machine_id: "windows-1".into(),
+            kind: FleetHostKind::Windows as i32,
+            resource_id: "sing-box".into(),
+            operation_id: "historical-trust".into(),
+            action: FleetHostAction::Stop as i32,
+            registry_sha256: sha(&stored),
+            desired_sha256: digest_host_desired(&registry.hosts[0], spec).unwrap(),
+            release_set_sha256: sha(&release_pb),
+            requested_at_unix: 123,
+            ..Default::default()
+        };
+
+        // The current Git reader and ALL new/remote admission reject the old
+        // field, even though the protected HISTORICAL trust may still use it.
+        assert!(crate::decode_host_registry(&stored).is_err());
+        assert_eq!(
+            bind_native_host_artifacts(&intent, &stored, spec, &release_pb, None).unwrap_err(),
+            "HOST_NATIVE_REGISTRY_INVALID"
+        );
+        let historic =
+            decode_historical_windows_trust_registry(&stored, spec, "windows-1").unwrap();
+        assert_eq!(historic.encode_to_vec(), stored);
+        let (_, bound) =
+            bind_historical_windows_trust_artifacts(&intent, &stored, spec, &release_pb).unwrap();
+        assert_eq!(bound.registry_sha256, sha(&stored));
+        assert_eq!(bound.desired_sha256, intent.desired_sha256);
+        assert_eq!(bound.release_set_sha256, sha(&release_pb));
+
+        let mut forged = intent.clone();
+        forged.registry_sha256[0] ^= 1;
+        assert_eq!(
+            bind_historical_windows_trust_artifacts(&forged, &stored, spec, &release_pb)
+                .unwrap_err(),
+            "HOST_INTENT_DIGEST_MISMATCH"
+        );
+        assert_eq!(
+            decode_historical_windows_trust_registry(&stored, spec, "foreign-windows"),
+            Err("HOST_WINDOWS_HISTORICAL_MODE_NOT_ACCEPTED")
+        );
+        assert_eq!(
+            decode_historical_windows_trust_registry(
+                &stored,
+                b"windows_datapath_mode: WINDOWS_DATAPATH_MODE_MANAGED_TUN\n",
+                "windows-1",
+            ),
+            Err("HOST_WINDOWS_HISTORICAL_MODE_SPEC_MISMATCH")
+        );
+        let mut invalid = registry.clone();
+        invalid.hosts[0].target.as_mut().unwrap().windows_mode = FleetHostMode::ManagedTun as i32;
+        assert_eq!(
+            decode_historical_windows_trust_registry(&invalid.encode_to_vec(), spec, "windows-1"),
+            Err("HOST_WINDOWS_HISTORICAL_MODE_NOT_ACCEPTED")
+        );
+        invalid.hosts[0].target.as_mut().unwrap().windows_mode = FleetHostMode::ProxyOnly as i32;
+        invalid.hosts[0].target.as_mut().unwrap().run_state = FleetHostRunState::Running as i32;
+        assert_eq!(
+            decode_historical_windows_trust_registry(&invalid.encode_to_vec(), spec, "windows-1"),
+            Err("HOST_WINDOWS_HISTORICAL_MODE_NOT_ACCEPTED")
+        );
+    }
 
     #[test]
     fn one_git_vm_first_use_gate_preserves_receipt_registration_boundary() {
@@ -1155,6 +1699,7 @@ mod tests {
                 .to_vec(),
             requested_mode: FleetHostMode::Unspecified as i32,
             requested_at_unix: 1000,
+            network_admission: None,
         };
         let (_, bound) =
             bind_native_host_artifacts(&intent, &registry_pb, spec, &release_pb, Some(&bundle_pb))
@@ -1306,6 +1851,7 @@ mod tests {
             release_set_sha256: release.clone(),
             requested_mode: FleetHostMode::Unspecified as i32,
             requested_at_unix: 1,
+            network_admission: None,
         };
         (registry, intent, registry_sha, desired, release)
     }
@@ -1496,7 +2042,7 @@ mod tests {
     }
 
     #[test]
-    fn never_start_stopped_windows_or_implicit_vm() {
+    fn never_start_stopped_windows_or_accept_separate_mode_action() {
         use crate::{FleetHostRunState, FleetHostTarget};
         let (mut registry, mut intent, _, _, _) = fixture();
         assert_eq!(
@@ -1505,7 +2051,7 @@ mod tests {
         );
         registry.hosts[0].target = Some(FleetHostTarget {
             run_state: FleetHostRunState::Stopped as i32,
-            windows_mode: FleetHostMode::ProxyOnly as i32,
+            windows_mode: FleetHostMode::Unspecified as i32,
         });
         intent.action = FleetHostAction::Start as i32;
         assert_eq!(
@@ -1518,8 +2064,38 @@ mod tests {
         intent.requested_mode = FleetHostMode::ManagedTun as i32;
         assert_eq!(
             validate_intent_against_target(&intent, &registry).unwrap_err(),
-            "HOST_ACTION_CONFLICTS_WITH_DESIRED"
+            "HOST_SET_MODE_RETIRED_USE_GIT_APPLY"
         );
+    }
+
+    #[test]
+    fn managed_tun_is_an_apply_setting_not_a_separate_lifecycle_action() {
+        use crate::{FleetHostRunState, FleetHostTarget};
+        let (mut registry, mut intent, _, _, _) = fixture();
+        registry.hosts[0].target = Some(FleetHostTarget {
+            run_state: FleetHostRunState::Stopped as i32,
+            windows_mode: FleetHostMode::Unspecified as i32,
+        });
+        intent.action = FleetHostAction::Apply as i32;
+        assert_eq!(validate_intent_against_target(&intent, &registry), Ok(()));
+        intent.action = FleetHostAction::Start as i32;
+        assert_eq!(
+            validate_intent_against_target(&intent, &registry),
+            Err("HOST_ACTION_CONFLICTS_WITH_DESIRED")
+        );
+        intent.action = FleetHostAction::Recover as i32;
+        assert_eq!(validate_intent_against_target(&intent, &registry), Ok(()));
+        intent.action = FleetHostAction::SetMode as i32;
+        intent.requested_mode = FleetHostMode::ManagedTun as i32;
+        assert_eq!(
+            validate_intent_against_target(&intent, &registry),
+            Err("HOST_SET_MODE_RETIRED_USE_GIT_APPLY")
+        );
+        intent.action = FleetHostAction::Apply as i32;
+        intent.requested_mode = FleetHostMode::Unspecified as i32;
+        registry.hosts[0].target.as_mut().unwrap().run_state = FleetHostRunState::Running as i32;
+        assert_eq!(validate_intent_against_target(&intent, &registry), Ok(()));
+        // Native Windows SYSTEM still separately blocks physical route capture.
     }
 
     #[test]
@@ -1675,6 +2251,7 @@ mod partial_vm_recovery_tests {
             runtime_ready: false,
             reason_codes: vec!["CONTAINER_NOT_RUNNING".into()],
             vm_recovery_resources: Some(report),
+            windows_config_sha256: Vec::new(),
         };
         (host, observed)
     }
@@ -1754,6 +2331,221 @@ mod partial_vm_recovery_tests {
         assert_eq!(
             verify_windows_signed_git_prerequisites(&host),
             Err("HOST_WINDOWS_SIGNED_KIND_REQUIRED")
+        );
+    }
+}
+
+/// The registry MUST NOT persist the Windows mode; only the selected typed
+/// production spec owns it. Projection is memory-only for the pure planner.
+#[cfg(test)]
+mod windows_mode_projection_tests {
+    use super::*;
+
+    #[test]
+    fn managed_tun_admission_is_one_signed_start_only() {
+        use crate::{
+            FleetHostRunState as Run, FleetNativeOwnerState as Owner,
+            WindowsDatapathMode as Datapath,
+        };
+        let admit = validate_windows_datapath_prebegin_with_admission;
+        assert_eq!(
+            admit(
+                Datapath::ManagedTun,
+                FleetHostAction::Start,
+                Run::Running,
+                Owner::Stopped,
+                true
+            ),
+            Ok(())
+        );
+        for (mode, action, run, owner, witness) in [
+            (
+                Datapath::ManagedTun,
+                FleetHostAction::Start,
+                Run::Running,
+                Owner::Stopped,
+                false,
+            ),
+            (
+                Datapath::ManagedTun,
+                FleetHostAction::Start,
+                Run::Running,
+                Owner::Running,
+                true,
+            ),
+            (
+                Datapath::ManagedTun,
+                FleetHostAction::Start,
+                Run::Running,
+                Owner::Unproven,
+                true,
+            ),
+            (
+                Datapath::ManagedTun,
+                FleetHostAction::Start,
+                Run::Stopped,
+                Owner::Stopped,
+                true,
+            ),
+            (
+                Datapath::ManagedTun,
+                FleetHostAction::Apply,
+                Run::Stopped,
+                Owner::Stopped,
+                true,
+            ),
+            (
+                Datapath::ManagedTun,
+                FleetHostAction::Stop,
+                Run::Stopped,
+                Owner::Stopped,
+                true,
+            ),
+            (
+                Datapath::ManagedTun,
+                FleetHostAction::Recover,
+                Run::Stopped,
+                Owner::Stopped,
+                true,
+            ),
+            (
+                Datapath::ProxyOnly,
+                FleetHostAction::Start,
+                Run::Running,
+                Owner::Stopped,
+                true,
+            ),
+        ] {
+            assert!(admit(mode, action, run, owner, witness).is_err());
+        }
+        assert_eq!(
+            admit(
+                Datapath::ManagedTun,
+                FleetHostAction::Apply,
+                Run::Stopped,
+                Owner::Stopped,
+                false
+            ),
+            Ok(())
+        );
+    }
+
+    #[test]
+    fn managed_tun_may_stage_only_with_stopped_owner() {
+        use crate::{
+            FleetHostRunState as Run, FleetNativeOwnerState as Owner,
+            WindowsDatapathMode as Datapath,
+        };
+        let guard = validate_windows_datapath_prebegin;
+        assert_eq!(
+            guard(
+                Datapath::ManagedTun,
+                FleetHostAction::Apply,
+                Run::Stopped,
+                Owner::Stopped,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            guard(
+                Datapath::ManagedTun,
+                FleetHostAction::Stop,
+                Run::Stopped,
+                Owner::Stopped,
+            ),
+            Ok(())
+        );
+        for (action, desired_run, observed_owner) in [
+            (FleetHostAction::Apply, Run::Running, Owner::Stopped),
+            (FleetHostAction::Apply, Run::Stopped, Owner::Running),
+            (FleetHostAction::Apply, Run::Stopped, Owner::Unproven),
+            (FleetHostAction::Stop, Run::Stopped, Owner::Running),
+            (FleetHostAction::Stop, Run::Stopped, Owner::Unproven),
+            (FleetHostAction::Start, Run::Running, Owner::Stopped),
+            (FleetHostAction::Start, Run::Stopped, Owner::Stopped),
+            (FleetHostAction::Recover, Run::Stopped, Owner::Stopped),
+            (FleetHostAction::Stop, Run::Running, Owner::Running),
+        ] {
+            assert_eq!(
+                guard(Datapath::ManagedTun, action, desired_run, observed_owner),
+                Err("HOST_WINDOWS_CONFIG_NETWORK_ADMISSION_REQUIRED")
+            );
+        }
+        assert_eq!(
+            guard(
+                Datapath::ProxyOnly,
+                FleetHostAction::Start,
+                Run::Running,
+                Owner::Stopped,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            guard(
+                Datapath::Unspecified,
+                FleetHostAction::Stop,
+                Run::Stopped,
+                Owner::Running,
+            ),
+            Err("HOST_WINDOWS_DATAPATH_MODE_INVALID")
+        );
+    }
+
+    #[test]
+    fn mode_projection_uses_only_production_and_rejects_duplicate_git_values() {
+        use crate::{FleetHostRunState, FleetHostTarget, WindowsDatapathMode};
+        let mut host = FleetHost {
+            kind: FleetHostKind::Windows as i32,
+            target: Some(FleetHostTarget {
+                run_state: FleetHostRunState::Stopped as i32,
+                windows_mode: FleetHostMode::Unspecified as i32,
+            }),
+            ..Default::default()
+        };
+        let mut desired = crate::ProductionDesiredState {
+            windows_datapath_mode: WindowsDatapathMode::ProxyOnly as i32,
+            ..Default::default()
+        };
+        assert_eq!(
+            validate_windows_mode_target_and_spec(&host, &desired),
+            Ok(WindowsDatapathMode::ProxyOnly)
+        );
+        desired.windows_datapath_mode = WindowsDatapathMode::ManagedTun as i32;
+        assert_eq!(
+            validate_windows_mode_target_and_spec(&host, &desired),
+            Ok(WindowsDatapathMode::ManagedTun)
+        );
+        let planned = project_host_for_planner(
+            &host,
+            b"windows_datapath_mode: WINDOWS_DATAPATH_MODE_MANAGED_TUN\n",
+        )
+        .unwrap();
+        assert_eq!(
+            planned.target.as_ref().unwrap().windows_mode,
+            FleetHostMode::ManagedTun as i32
+        );
+        assert_eq!(
+            host.target.as_ref().unwrap().windows_mode,
+            FleetHostMode::Unspecified as i32
+        );
+        host.target.as_mut().unwrap().windows_mode = FleetHostMode::ManagedTun as i32;
+        assert_eq!(
+            validate_windows_mode_target_and_spec(&host, &desired),
+            Err("HOST_WINDOWS_DUPLICATE_GIT_MODE_FORBIDDEN")
+        );
+        host.target.as_mut().unwrap().windows_mode = FleetHostMode::Unspecified as i32;
+        desired.windows_datapath_mode = WindowsDatapathMode::Unspecified as i32;
+        assert!(validate_windows_mode_target_and_spec(&host, &desired).is_err());
+        desired.windows_datapath_mode = WindowsDatapathMode::ProxyOnly as i32;
+        host.target = None;
+        assert_eq!(
+            validate_windows_mode_target_and_spec(&host, &desired),
+            Err("HOST_TARGET_UNSET_OBSERVE_ONLY")
+        );
+        host.kind = FleetHostKind::Vm as i32;
+        assert_eq!(
+            validate_windows_mode_target_and_spec(&host, &desired),
+            Err("HOST_WINDOWS_MODE_HOST_KIND_MISMATCH")
         );
     }
 }

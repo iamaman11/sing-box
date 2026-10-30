@@ -109,16 +109,16 @@ pub fn propose_host_transition(
             );
         }
     };
-    if kind == FleetHostKind::Windows && desired_mode == FleetHostMode::ManagedTun {
-        return plan(
-            host,
-            Blocked,
-            FleetHostPlanReason::TunSeparatePhysicalGateRequired,
-            expected,
-            &[],
-        );
-    }
-    if kind == FleetHostKind::Windows && desired_mode != FleetHostMode::ProxyOnly
+    // A ManagedTun target MAY produce an unauthenticated START *proposal*.
+    // The pure planner has no authority to route traffic; LocalSystem must
+    // independently obtain and bind signed network evidence before BEGIN.
+    // This also permits the normal read-only Windows diagnostic to report
+    // the exact owner instead of hiding it behind a permanent mode block.
+    if kind == FleetHostKind::Windows
+        && !matches!(
+            desired_mode,
+            FleetHostMode::ProxyOnly | FleetHostMode::ManagedTun
+        )
         || kind == FleetHostKind::Vm && desired_mode != FleetHostMode::Unspecified
     {
         return plan(
@@ -182,9 +182,23 @@ pub fn propose_host_transition(
         && observed.release_proof == FleetNativeReleaseProof::ApplicationBundle as i32
         && actual == expected
         && crate::host_lifecycle::known_runtime_only_historical_reasons(observed);
+    // An exact native readback of ONE lost owned network object may
+    // request the existing VM scoped START step. This is only a pure
+    // proposal; root preflight must independently prove the lost resource
+    // and a fresh Worker-signed APPLY must pass durable BEGIN.
+    let vm_known_same_release_network_loss = kind == FleetHostKind::Vm
+        && desired_run == FleetHostRunState::Running
+        && observed.owner_state == FleetNativeOwnerState::Running as i32
+        && observed.release_proof == FleetNativeReleaseProof::ApplicationBundle as i32
+        && actual == expected
+        && observed.runtime_ready_proven
+        && !observed.runtime_ready
+        && observed.reason_codes.len() == 1
+        && observed.reason_codes[0] == "VM_MANAGED_NETWORK_MISSING";
     if !observed.reason_codes.is_empty()
         && !vm_known_resource_bundle_drift
         && !vm_known_same_release_runtime_defect
+        && !vm_known_same_release_network_loss
     {
         return plan(
             host,
@@ -356,6 +370,34 @@ pub fn propose_host_transition(
 /* Host and per-resource plans obey the same fail-closed contract: one
  * Protobuf reason, one planned step, no inferred privilege from observation.
  */
+/// A freshly authorized APPLY may update a proven STOPPED Windows owner
+/// while keeping it STOPPED. STOP/START/RECOVER never acquire this authority.
+pub fn propose_signed_host_transition(
+    host: &FleetHost,
+    observed: &FleetNativeObservation,
+    action: crate::FleetHostAction,
+    expected_release: &[u8],
+    expected_bundle: &[u8],
+    now: u64,
+) -> FleetHostTransitionPlan {
+    let mut proposal =
+        propose_host_transition(host, Some(observed), expected_release, expected_bundle, now);
+    if host.kind == FleetHostKind::Windows as i32
+        && action == crate::FleetHostAction::Apply
+        && proposal.reason
+            == FleetHostPlanReason::StoppedReleaseMismatchRequiresInstallTarget as i32
+    {
+        proposal = plan(
+            host,
+            FleetHostPlannedStep::ReplaceRelease,
+            FleetHostPlanReason::ReleaseMismatchProposalOnly,
+            expected_release,
+            &observed.observed_release_sha256,
+        );
+    }
+    proposal
+}
+
 pub fn validate_host_transition_plan(
     proposal: &FleetHostTransitionPlan,
     host: &FleetHost,
@@ -406,6 +448,7 @@ pub fn validate_host_transition_plan(
         Reason::StartProposalOnly | Reason::VmDegradedRequiresScopedContainerPreadmission => {
             FleetHostPlannedStep::Start
         }
+        Reason::StoppedConfigurationDrift => FleetHostPlannedStep::Configure,
         Reason::Unspecified => return Err("HOST_PLAN_REASON_UNSPECIFIED"),
     };
     if proposal.step != expected_step as i32 {
@@ -417,6 +460,49 @@ pub fn validate_host_transition_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn signed_apply_updates_stopped_windows_without_implicitly_starting() {
+        let h = host(
+            FleetHostKind::Windows,
+            FleetHostMode::ProxyOnly,
+            FleetHostRunState::Stopped,
+        );
+        let o = observed(FleetHostKind::Windows, FleetNativeOwnerState::Stopped);
+        for action in [
+            crate::FleetHostAction::Start,
+            crate::FleetHostAction::Stop,
+            crate::FleetHostAction::Recover,
+        ] {
+            assert_eq!(
+                propose_signed_host_transition(&h, &o, action, &[2; 32], &[2; 32], 1000).step,
+                FleetHostPlannedStep::Blocked as i32
+            );
+        }
+        let p = propose_signed_host_transition(
+            &h,
+            &o,
+            crate::FleetHostAction::Apply,
+            &[2; 32],
+            &[2; 32],
+            1000,
+        );
+        assert_eq!(p.step, FleetHostPlannedStep::ReplaceRelease as i32);
+        validate_host_transition_plan(&p, &h).unwrap();
+        let mut bad = o;
+        bad.reason_codes.push("UNPROVEN".into());
+        assert_eq!(
+            propose_signed_host_transition(
+                &h,
+                &bad,
+                crate::FleetHostAction::Apply,
+                &[2; 32],
+                &[2; 32],
+                1000
+            )
+            .step,
+            FleetHostPlannedStep::Blocked as i32
+        );
+    }
     use crate::{FleetHostTarget, managed_host};
 
     fn host(kind: FleetHostKind, mode: FleetHostMode, run: FleetHostRunState) -> FleetHost {
@@ -460,6 +546,7 @@ mod tests {
             runtime_ready_proven: true,
             reason_codes: vec![],
             vm_recovery_resources: None,
+            windows_config_sha256: Vec::new(),
         }
     }
 
@@ -504,6 +591,39 @@ mod tests {
         assert_eq!(
             validate_host_transition_plan(&forged, &vm),
             Err("HOST_PLAN_SCOPE_OR_AUTHORITY_INVALID")
+        );
+    }
+
+    #[test]
+    fn same_release_network_loss_requires_exact_native_readiness_failure() {
+        let vm = host(
+            FleetHostKind::Vm,
+            FleetHostMode::Unspecified,
+            FleetHostRunState::Running,
+        );
+        let mut live = observed(FleetHostKind::Vm, FleetNativeOwnerState::Running);
+        live.runtime_ready = false;
+        live.reason_codes = vec!["VM_MANAGED_NETWORK_MISSING".into()];
+        let plan = propose_host_transition(&vm, Some(&live), &[1; 32], &[1; 32], 1000);
+        assert_eq!(plan.step, FleetHostPlannedStep::Start as i32);
+        assert!(!plan.owner_attested && !plan.mutation_authorized);
+
+        live.runtime_ready_proven = false;
+        assert_eq!(
+            propose_host_transition(&vm, Some(&live), &[1; 32], &[1; 32], 1000).step,
+            FleetHostPlannedStep::Blocked as i32
+        );
+        live.runtime_ready_proven = true;
+        live.reason_codes
+            .push("VM_MANAGED_NETWORK_UNKNOWN_NO_REPLAY".into());
+        assert_eq!(
+            propose_host_transition(&vm, Some(&live), &[1; 32], &[1; 32], 1000).step,
+            FleetHostPlannedStep::Blocked as i32
+        );
+        live.reason_codes = vec!["VM_MANAGED_NETWORK_UNKNOWN_NO_REPLAY".into()];
+        assert_eq!(
+            propose_host_transition(&vm, Some(&live), &[1; 32], &[1; 32], 1000).step,
+            FleetHostPlannedStep::Blocked as i32
         );
     }
 
@@ -737,9 +857,35 @@ mod tests {
         );
         assert_eq!(
             propose_host_transition(&win, None, &[1; 32], &[], 1000).reason_code,
-            "TUN_SEPARATE_PHYSICAL_GATE_REQUIRED"
+            "NATIVE_READBACK_REQUIRED"
         );
     }
+    #[test]
+    fn stopped_managed_tun_target_permits_safe_stop_but_never_implicit_start() {
+        let host = host(
+            FleetHostKind::Windows,
+            FleetHostMode::ManagedTun,
+            FleetHostRunState::Stopped,
+        );
+        let running = observed(FleetHostKind::Windows, FleetNativeOwnerState::Running);
+        let stop = propose_host_transition(&host, Some(&running), &[1; 32], &[], 1000);
+        assert_eq!(stop.step, FleetHostPlannedStep::Stop as i32);
+        validate_host_transition_plan(&stop, &host).unwrap();
+
+        let stopped = observed(FleetHostKind::Windows, FleetNativeOwnerState::Stopped);
+        let noop = propose_host_transition(&host, Some(&stopped), &[1; 32], &[], 1000);
+        assert_eq!(noop.step, FleetHostPlannedStep::Noop as i32);
+        validate_host_transition_plan(&noop, &host).unwrap();
+
+        let mut starting = host.clone();
+        starting.target.as_mut().unwrap().run_state = FleetHostRunState::Running as i32;
+        let proposal = propose_host_transition(&starting, Some(&stopped), &[1; 32], &[], 1000);
+        assert_eq!(proposal.step, FleetHostPlannedStep::Start as i32);
+        assert_eq!(proposal.reason_code, "START_PROPOSAL_ONLY");
+        assert!(!proposal.owner_attested && !proposal.mutation_authorized);
+        validate_host_transition_plan(&proposal, &starting).unwrap();
+    }
+
     #[test]
     fn vm_bundle_drift_with_addressed_warp_consumer_can_propose_replace_only() {
         let vm = host(

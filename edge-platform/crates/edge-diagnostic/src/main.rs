@@ -44,6 +44,9 @@ use windows_sys::Win32::System::Services::{
     SERVICE_PAUSED, SERVICE_RUNNING, SERVICE_START_PENDING, SERVICE_STATUS_PROCESS,
 };
 
+#[cfg(windows)]
+mod windows_app_audit;
+
 const WINDOWS_CONTROLLER_SERVICE_NAME: &str = "EdgePlatformController";
 const MANAGED_TUN_INTERFACE_NAME: &str = "sing-box-tun";
 
@@ -57,10 +60,27 @@ fn main() {
 fn run() -> Result<(), String> {
     let mut args = std::env::args().skip(1);
     let command = args.next().ok_or_else(usage)?;
-    if command != "doctor" && command != "host-observe" {
+    if command != "doctor"
+        && command != "host-observe"
+        && command != "app-inventory"
+        && command != "app-routes"
+    {
         return Err(usage());
     }
     let state_path = PathBuf::from(args.next().ok_or_else(usage)?);
+    if command == "app-inventory" || command == "app-routes" {
+        if args.next().is_some() {
+            return Err(usage());
+        }
+        #[cfg(windows)]
+        {
+            return windows_app_audit::run(&command, &state_path);
+        }
+        #[cfg(not(windows))]
+        {
+            return Err("HOST_WINDOWS_APP_AUDIT_REQUIRES_WINDOWS".to_owned());
+        }
+    }
     if command == "host-observe" {
         if args.next().is_some() {
             return Err(usage());
@@ -286,8 +306,8 @@ fn observe_pending_privileged_request_metadata(install_root: &Path) -> String {
 }
 
 /// Bounded read-only Fleet snapshot. It never starts a service, accesses private
-/// credential material, walks processes, probes DNS/routes or hashes release files.
-/// Read-only native Windows SCM + local activation record. This is not
+/// credential material, walks processes, changes DNS/routes or hashes release
+/// files. Read-only native Windows SCM, interface inventory and activation. Not
 /// a privileged service operation and can never issue a VERIFIED receipt.
 fn build_host_observation(state_path: &Path) -> Result<Vec<u8>, String> {
     use edge_shared_types::host_lifecycle::build_native_observation;
@@ -366,6 +386,14 @@ fn build_host_observation(state_path: &Path) -> Result<Vec<u8>, String> {
         reason_codes.push("WINDOWS_SCM_UNSUPPORTED_HOST");
         FleetNativeOwnerState::Unproven
     };
+    // A stale sing-box-owned TUN can outlive its child after an interruption.
+    // Observe the kernel adapter directly: stopped SCM is NOT proof that a
+    // previous route capture has been undone. Report uncertainty in the same
+    // existing read-only snapshot; never delete or adopt the interface here.
+    #[cfg(windows)]
+    if let Err(error) = edge_shared_types::windows_native_network::require_owned_tun_absent() {
+        reason_codes.push(error);
+    }
     // SCM state is not sing-box runtime readiness or proof of external DNS,
     // network, TLS or authentication. The typed runtime_ready_proven=false
     // already expresses this missing proof. Do NOT put an expected proof gap
@@ -1330,7 +1358,7 @@ fn observe_udp6_listeners(projects: &BTreeMap<u32, String>) -> Result<usize, Str
 }
 
 fn usage() -> String {
-    "usage: edge-diagnostic doctor <current.pb> [--fast] | host-observe <current.pb>".to_owned()
+    "usage: edge-diagnostic doctor <current.pb> [--fast] | host-observe <current.pb> | app-inventory <current.pb> | app-routes <current.pb>".to_owned()
 }
 
 #[cfg(test)]

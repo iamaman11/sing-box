@@ -306,6 +306,7 @@ pub(crate) struct NativeVmRunPlan {
     // not itself cover published ports and host mount sources.
     compose_sha256: Option<Vec<u8>>,
     edge_network_id: Option<String>,
+    network_repair: Option<managed_file::PreparedScopedNetworkRepair>,
 }
 
 fn check_owned_vm_snapshot(
@@ -715,6 +716,84 @@ async fn apply_owned_vm_service_aliases_once(
 }
 
 /// Reuse the same authoritative Docker/resource report for historical
+/// Previous BEGIN recovery is strictly read-only. A lost ephemeral route,
+/// nft table or per-link resolved state is a KNOWN missing resource only if
+/// its root-owned manifest and independently observed owner are proven.
+/// This never grants an effect or authorizes reuse of the old operation ID.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ManagedNetworkRecovery {
+    Converged,
+    KnownRecoverable,
+    UnknownNoReplay,
+}
+
+fn classify_managed_network_recovery(
+    report: &edge_shared_types::FleetVmResourceReport,
+) -> ManagedNetworkRecovery {
+    use ManagedNetworkRecovery::*;
+    let mut missing = false;
+    for row in &report.managed_kernel_routes {
+        if row.present && row.converged && row.reason_code == "DESIRED_PRESENT" {
+            continue;
+        }
+        if !row.present
+            && !row.converged
+            && row.reason_code == "ROUTE_MISSING"
+            && row.manifest_sha256.len() == 32
+            && !row.resource_name.is_empty()
+        {
+            missing = true;
+        } else {
+            return UnknownNoReplay;
+        }
+    }
+    for row in &report.managed_firewall {
+        if row.present && row.converged && row.reason_code == "DESIRED_PRESENT" {
+            continue;
+        }
+        if !row.present
+            && !row.converged
+            && row.reason_code == "MANAGED_FIREWALL_TABLE_MISSING"
+            && row.manifest_sha256.len() == 32
+            && !row.resource_name.is_empty()
+        {
+            missing = true;
+        } else {
+            return UnknownNoReplay;
+        }
+    }
+    for row in &report.managed_system_dns {
+        if row.present && row.converged && row.reason_code == "DESIRED_PRESENT" {
+            continue;
+        }
+        if !row.present
+            && !row.converged
+            && row.reason_code == "MANAGED_SYSTEM_DNS_DRIFT"
+            && row.manifest_sha256.len() == 32
+            && !row.resource_name.is_empty()
+        {
+            missing = true;
+        } else {
+            return UnknownNoReplay;
+        }
+    }
+    if missing { KnownRecoverable } else { Converged }
+}
+
+/// Read-only native status of every installed managed network manifest.
+pub(crate) async fn observe_vm_managed_network_recovery(
+    stack_dir: &Path,
+    host: &FleetHost,
+) -> ManagedNetworkRecovery {
+    let report = edge_shared_types::FleetVmResourceReport {
+        managed_kernel_routes: collect_native_managed_kernel_routes(stack_dir, host).await,
+        managed_firewall: collect_native_managed_firewall(stack_dir, host).await,
+        managed_system_dns: collect_native_managed_system_dns(stack_dir, host).await,
+        ..Default::default()
+    };
+    classify_managed_network_recovery(&report)
+}
+
 /// recovery and the next fresh APPLY. The root caller owns the lock; this
 /// function performs NO effect. Validate network ownership and attachment
 /// separately from Docker names before trusting the report in the journal.
@@ -730,12 +809,29 @@ pub(crate) async fn capture_partial_vm_resource_evidence(
     let network_id = read_owned_edge_network_id(&docker, host).await?;
     verify_vm_network_attachments(&docker, host, &owned, &network_id).await?;
     let mut report = observe_vm_resource_report(host, stack_dir).await?;
+    // Never silently discard a missing or foreign managed network object
+    // and then classify a previous BEGIN as a recovered complete VM.
+    // Known loss needs a NEW signed APPLY; uncertain or foreign state blocks.
+    match classify_managed_network_recovery(&report) {
+        ManagedNetworkRecovery::Converged => {}
+        ManagedNetworkRecovery::KnownRecoverable => {
+            return Err(
+                "HOST_VM_MANAGED_NETWORK_KNOWN_RECOVERABLE_NEW_SIGNED_APPLY_REQUIRED".into(),
+            );
+        }
+        ManagedNetworkRecovery::UnknownNoReplay => {
+            return Err("HOST_VM_MANAGED_NETWORK_UNKNOWN_NO_REPLAY".into());
+        }
+    }
     // No duplicate diagnostic store or oversized /host intent. Only the
     // already typed Docker resource and installed-policy evidence is needed
     // for resource recovery. The full deep diagnostic remains available.
     report.network = None;
     report.processes = None;
     report.managed_docker.clear();
+    report.managed_kernel_routes.clear();
+    report.managed_firewall.clear();
+    report.managed_system_dns.clear();
     edge_shared_types::host_resources::validate_vm_resource_report(&report, host)
         .map_err(str::to_owned)?;
     Ok(report)
@@ -745,6 +841,14 @@ pub(crate) async fn capture_partial_vm_resource_evidence(
 /// Resolve the common typed resource planner against root-local Docker
 /// evidence BEFORE the journal BEGIN. A single absent owned gateway may
 /// use native Docker CREATE; other resources must be unchanged and ready.
+fn start_can_repair_only_network(
+    step: FleetHostPlannedStep,
+    docker_changes: usize,
+    alias_repairs: usize,
+) -> bool {
+    step == FleetHostPlannedStep::Start && docker_changes == 0 && alias_repairs == 0
+}
+
 pub(crate) async fn preflight_native_vm_run(
     stack_dir: &Path,
     host: &FleetHost,
@@ -828,7 +932,20 @@ pub(crate) async fn preflight_native_vm_run(
     } else {
         Vec::new()
     };
-    if changed == 0 && alias_repairs.is_empty() {
+    let network_repair = if start_can_repair_only_network(step, changed, alias_repairs.len()) {
+        Some(managed_file::preflight_scoped_network_repair(stack_dir, host).await?)
+    } else {
+        // Do not combine Docker/alias mutations with a missing or foreign
+        // managed route, nft table or DNS link in one signed transaction.
+        if step == FleetHostPlannedStep::Start
+            && observe_vm_managed_network_recovery(stack_dir, host).await
+                != ManagedNetworkRecovery::Converged
+        {
+            return Err("HOST_VM_START_MANAGED_NETWORK_DEPENDENCY_UNPROVEN".into());
+        }
+        None
+    };
+    if changed == 0 && alias_repairs.is_empty() && network_repair.is_none() {
         return Err("HOST_NATIVE_VM_RESOURCE_NO_MUTATION_REQUIRED".into());
     }
     if let Some(service) = create_missing.as_deref() {
@@ -880,6 +997,7 @@ pub(crate) async fn preflight_native_vm_run(
         desired_graph,
         create_missing,
         alias_repairs,
+        network_repair,
         prepared_create,
         compose_sha256,
         edge_network_id,
@@ -921,6 +1039,15 @@ pub(crate) async fn apply_native_vm_run_once(
     } else {
         owned_vm_start_order(&owned)?
     };
+    if let Some(repair) = &plan.network_repair {
+        if plan.step != FleetHostPlannedStep::Start
+            || plan.create_missing.is_some()
+            || !plan.alias_repairs.is_empty()
+        {
+            return Err("HOST_VM_MANAGED_REPAIR_CONFLICTING_EFFECT_NO_REPLAY".into());
+        }
+        managed_file::apply_scoped_network_repair_once(stack_dir, host, repair).await?;
+    }
     // A missing service alias is an exact network resource transition.
     // Keep the immutable container ID/process/image; do not recreate images
     // or touch the daemon outside this Worker-signed root-owned journal.
@@ -1435,7 +1562,9 @@ fn verify_native_vm_run_poststate(
             _ => return Err("HOST_NATIVE_VM_POSTSTATE_OWNER_CHANGED_NO_REPLAY".into()),
         }
     }
-    if (changes == 0 && plan.alias_repairs.is_empty()) || after.len() > host.vm_containers.len() {
+    if (changes == 0 && plan.alias_repairs.is_empty() && plan.network_repair.is_none())
+        || after.len() > host.vm_containers.len()
+    {
         return Err("HOST_NATIVE_VM_POSTSTATE_CHANGE_UNPROVEN_NO_REPLAY".into());
     }
     Ok(())
@@ -4255,6 +4384,7 @@ mod vm_native_start_order_tests {
             desired_graph: Some(graph),
             create_missing: Some("line2-proxy".into()),
             alias_repairs: Vec::new(),
+            network_repair: None,
             prepared_create: None,
             compose_sha256: None,
             edge_network_id: None,
@@ -4349,6 +4479,7 @@ mod vm_native_start_order_tests {
             desired_graph: None,
             create_missing: None,
             alias_repairs: Vec::new(),
+            network_repair: None,
             prepared_create: None,
             compose_sha256: None,
             edge_network_id: None,
@@ -4371,6 +4502,7 @@ mod vm_native_start_order_tests {
             desired_graph: None,
             create_missing: None,
             alias_repairs: Vec::new(),
+            network_repair: None,
             prepared_create: None,
             compose_sha256: None,
             edge_network_id: None,
@@ -4899,5 +5031,115 @@ mod native_vm_partial_image_reconcile_tests {
         assert!(!verified_image_transition(
             &old_id, desired, &next_id, desired, desired
         ));
+    }
+}
+
+#[cfg(test)]
+mod managed_network_recovery_tests {
+    use super::*;
+
+    #[test]
+    fn signed_start_network_repair_never_coexists_with_other_effects() {
+        assert!(start_can_repair_only_network(
+            FleetHostPlannedStep::Start,
+            0,
+            0
+        ));
+        for (step, changes, aliases) in [
+            (FleetHostPlannedStep::Stop, 0, 0),
+            (FleetHostPlannedStep::ReplaceRelease, 0, 0),
+            (FleetHostPlannedStep::Start, 1, 0),
+            (FleetHostPlannedStep::Start, 0, 1),
+        ] {
+            assert!(!start_can_repair_only_network(step, changes, aliases));
+        }
+    }
+
+    #[test]
+    fn reboot_missing_owned_network_is_not_verified_or_replayed() {
+        use edge_shared_types::{
+            FleetVmManagedFirewallReadback, FleetVmManagedKernelRouteReadback,
+            FleetVmManagedSystemDnsReadback, FleetVmResourceReport,
+        };
+        let mut report = FleetVmResourceReport::default();
+        assert_eq!(
+            classify_managed_network_recovery(&report),
+            ManagedNetworkRecovery::Converged
+        );
+        report
+            .managed_kernel_routes
+            .push(FleetVmManagedKernelRouteReadback {
+                present: false,
+                converged: false,
+                resource_name: "sb-vmtest-lab".into(),
+                manifest_sha256: vec![1; 32],
+                reason_code: "ROUTE_MISSING".into(),
+                ..Default::default()
+            });
+        assert_eq!(
+            classify_managed_network_recovery(&report),
+            ManagedNetworkRecovery::KnownRecoverable
+        );
+        report
+            .managed_firewall
+            .push(FleetVmManagedFirewallReadback {
+                present: false,
+                converged: false,
+                resource_name: "sb-vmtest-lab".into(),
+                manifest_sha256: vec![2; 32],
+                reason_code: "MANAGED_FIREWALL_TABLE_MISSING".into(),
+                ..Default::default()
+            });
+        report
+            .managed_system_dns
+            .push(FleetVmManagedSystemDnsReadback {
+                present: false,
+                converged: false,
+                resource_name: "sb-vmtest-lab".into(),
+                manifest_sha256: vec![3; 32],
+                reason_code: "MANAGED_SYSTEM_DNS_DRIFT".into(),
+                ..Default::default()
+            });
+        assert_eq!(
+            classify_managed_network_recovery(&report),
+            ManagedNetworkRecovery::KnownRecoverable
+        );
+        report.managed_firewall[0].reason_code = "MANAGED_FIREWALL_RULESET_DRIFT".into();
+        report.managed_firewall[0].present = true;
+        assert_eq!(
+            classify_managed_network_recovery(&report),
+            ManagedNetworkRecovery::UnknownNoReplay
+        );
+        report.managed_firewall.clear();
+        report.managed_kernel_routes[0].manifest_sha256.clear();
+        assert_eq!(
+            classify_managed_network_recovery(&report),
+            ManagedNetworkRecovery::UnknownNoReplay
+        );
+    }
+
+    #[test]
+    fn known_network_state_requires_full_convergence_for_recovery() {
+        use edge_shared_types::{FleetVmManagedSystemDnsReadback, FleetVmResourceReport};
+        let mut report = FleetVmResourceReport::default();
+        report
+            .managed_system_dns
+            .push(FleetVmManagedSystemDnsReadback {
+                present: true,
+                converged: true,
+                resource_name: "sb-vmtest-lab".into(),
+                manifest_sha256: vec![4; 32],
+                reason_code: "DESIRED_PRESENT".into(),
+                ..Default::default()
+            });
+        assert_eq!(
+            classify_managed_network_recovery(&report),
+            ManagedNetworkRecovery::Converged
+        );
+        report.managed_system_dns[0].reason_code = "HOST_VM_DNS_NETWORK_OWNER_UNPROVEN".into();
+        assert_eq!(
+            classify_managed_network_recovery(&report),
+            ManagedNetworkRecovery::UnknownNoReplay
+        );
     }
 }

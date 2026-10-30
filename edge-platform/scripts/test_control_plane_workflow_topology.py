@@ -12,6 +12,39 @@ assert required <= actual, f"native workflow missing: {required-actual}"
 assert not (legacy & actual), f"legacy mutation workflow present: {legacy&actual}"
 router=(root/"edge-control-plane.yml").read_text(encoding="utf-8")
 native=(root/"host-native-observe.yml").read_text(encoding="utf-8")
+# The single /host namespace also owns a strictly read-only external Line2
+# witness; it can use protected credentials only on the GitHub-hosted vantage.
+# This job MUST NOT acquire native root, a new transport, or a provider write.
+line2 = router.split("  host_line2_external_witness:\n",1)[1].split("\n  host_project_dns:",1)[0]
+for admission in (
+    "github.event.issue.number == 1",
+    "github.actor_id == '44100369'",
+    "github.run_attempt == 1",
+    "startsWith(github.event.comment.body, '/host witness-line2 ')",
+    "name: production-vultr",
+    "contents: read",
+    "bash edge-platform/scripts/resolve_durable_release.sh",
+    'test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"',
+    "EDGE_RELEASE_CONTEXT_PATH=",
+    "compile_vm_host_desired.sh",
+    "--source-comment-id",
+    'witness-line2 "${machine}"',
+    "line2_g5_full_policy_matrix=UNPROVEN",
+    "line2_authenticated_doh_a_and_nxdomain=VERIFIED_ALL_SIX_PROXY_PATHS",
+    "line2_local_dns_leak_absence=UNPROVEN_NEEDS_EXTERNAL_CAPTURE",
+):
+    assert admission in line2, f"Line2 protected witness is missing {admission}"
+assert "issues: write" in line2, "single correlated report cannot be posted"
+assert "gh api -X POST" in line2 and "issues/1/comments" in line2
+assert "SOURCE_COMMENT_ID" in line2 and "G5_FULL_NETWORK_MATRIX=UNPROVEN" in line2
+assert "PROXIED_DOH_A_AND_NXDOMAIN=${report}" in line2
+assert "NATIVE_SIGNED_VM_READBACK=NOT_SUBSTITUTED" in line2
+assert "id: witness" in line2 and "if: ${{ always() }}" in line2
+assert "group: sing-box-line2-independent-readonly-${{ github.event.comment.id }}" in line2
+assert "sudo " not in line2 and "docker " not in line2
+assert "CLOUDFLARE_CONTROL_TOKEN:" not in line2
+assert "IAMAMAN11_SING_BOX_CONTROL_PLANE_TOKEN:" not in line2
+assert "uses: ./.github/workflows/host-native-observe.yml" not in line2
 ci=(root/"edge-platform-ci.yml").read_text(encoding="utf-8")
 # Release publication authenticates GitHub's exact two-parent merge and
 # merged PR identity, not the human commit message. This must support
@@ -160,6 +193,48 @@ assert "pending_original_desired_sha256 = 18" in typed_proto
 assert "pending_begin_record_sha256 = 19" in typed_proto
 assert "pending_original_release_sha256|pending_original_desired_sha256|pending_begin_record_sha256" in native
 assert "protected_journal_has_pending(journal)?" in Path("edge-platform/crates/edge-agent/src/host_native.rs").read_text(encoding="utf-8")
+
+# A fresh Windows install must have exactly one owner of SCM/SYSTEM task.
+# The runner bootstrap is transport-only; it must not duplicate registration.
+windows_installer = Path("edge-platform/scripts/install-windows-release.ps1").read_text()
+windows_runner_bootstrap = Path("edge-platform/scripts/bootstrap-windows-runner.ps1").read_text()
+assert "function Assert-RootExecutionChain {" in windows_installer
+assert "Assert-RootExecutionChain -ApproveRepair:$ApproveAclRepair" in windows_installer
+assert "Assert-RootExecutionChain -CreateFresh" in windows_installer
+assert "WINDOWS_INSTALL_PRELAUNCH_DESCENDANT_REPARSE_BLOCKED" in windows_installer
+assert "WINDOWS_INSTALL_ACL_REPAIR_REQUIRES_EXACT_DISABLED_SYSTEM_TASK" in windows_installer
+assert "WINDOWS_INSTALL_ACL_REPAIR_OLD_CONSOLE_RUNNING" in windows_installer
+assert "WINDOWS_INSTALL_ACL_REPAIR_CONTROLLER_NOT_STOPPED" in windows_installer
+preflight = windows_installer.split("function Assert-RootExecutionChain {", 1)[1].split(
+    "function Protect-ReleaseStageBeforeExecution {", 1
+)[0]
+assert preflight.index("WINDOWS_INSTALL_ACL_REPAIR_REQUIRES_EXACT_DISABLED_SYSTEM_TASK") < preflight.index(
+    "& icacls.exe $path /grant:r"
+)
+assert "Disable-ScheduledTask" not in windows_installer
+assert "Enable-ScheduledTask" not in windows_installer
+
+prelaunch = windows_installer.split("function Assert-RootExecutionChain {", 1)[1].split(
+    "function Protect-ReleaseStageBeforeExecution {", 1
+)[0]
+assert prelaunch.index("WINDOWS_INSTALL_PRELAUNCH_DESCENDANT_REPARSE_BLOCKED") < prelaunch.index(
+    "& icacls.exe (Join-Path $path '*') /reset /T /Q"
+)
+assert "Get-ProtectedAppAclReadback -Path $entry.FullName" in prelaunch
+
+assert "function Assert-ExistingNativeReleaseFromProtectedGit {" in windows_installer
+assert "Assert-ExistingNativeReleaseFromProtectedGit\n    $installed" in windows_installer
+assert "WINDOWS_INSTALL_OLD_EXECUTABLE_NOT_PUBLISHED_NO_EXECUTION" in windows_installer
+assert "WINDOWS_INSTALL_OLD_RELEASE_NOT_PROTECTED_MAIN_ANCESTOR" in windows_installer
+
+assert "WINDOWS_INSTALL_PRELAUNCH_UNPRIVILEGED_WRITER_BLOCKED" in windows_installer
+assert 'Join-Path $InstallRoot (".release-stage-"' in windows_installer
+assert "function Connect-CanonicalWindowsApplication {" in windows_runner_bootstrap
+assert "& $installer -ConnectWindows -InstallRoot $ApplicationRoot" in windows_runner_bootstrap
+assert "function Register-PrivilegedDispatcher {" not in windows_runner_bootstrap
+assert "function Converge-ControllerService {" not in windows_runner_bootstrap
+assert "Register-ScheduledTask" not in windows_runner_bootstrap
+assert "Install-InitialApplicationAuthority" not in windows_runner_bootstrap
 
 # A signed explicit recovery for an old BEGIN uses the existing native
 # transport, NEVER a second service or an unsigned root journal reset.
@@ -475,7 +550,40 @@ assert "&installed_runtime_sha256," in win_system
 journal_source = Path(
     "edge-platform/crates/edge-shared-types/src/host_journal.rs"
 ).read_text(encoding="utf-8")
-assert "expected_windows_installed_release: Option<&[u8]>" in journal_source
+assert "expected_windows_installed_release: Option<WindowsExecutionBinding<'_>>" in journal_source
+assert "expected_config_sha256" in journal_source
+assert "HOST_WINDOWS_RECOVERY_CONFIGURATION_NOT_CONVERGED_NO_REPLAY" in journal_source
+admin_system = Path("edge-platform/crates/edge-console/src/windows_admin.rs").read_text(encoding="utf-8")
+assert "request_canonical_native_admin_authorization" in admin_system
+assert "host_admin::verify_authorization" in admin_system
+assert "TransportRequest::open" in admin_system
+assert "host_admin::sign_receipt" in admin_system
+# Generic ADMIN is an arbitrary executable and must not bypass UNKNOWN
+# lifecycle network effects. Only a signed native RECOVER can inspect the
+# historical resource journal; /host status remains independently read-only.
+assert 'name.starts_with("resource-") && recovery' in admin_system
+assert 'name.starts_with("resource-") && (admin || recovery)' not in admin_system
+assert "signed_admin_cannot_bypass_historical_resource_pending" in admin_system
+assert "if admin && recovery {" in admin_system
+assert "HOST_WINDOWS_ADMIN_RECOVERY_SCOPE_INVALID" in admin_system
+assert "HOST_WINDOWS_PENDING_GATE_NO_REPLAY" in admin_system
+assert "HOST_WINDOWS_OPERATION_EXISTS_NO_REPLAY" in admin_system
+assert "check_journal_entry(&name, &id, admin, recovery)?" in admin_system
+assert admin_system.count("request_available(&journal, &operation, true, false)?;") == 2
+assert admin_system.index(
+    "host_admin::verify_authorization"
+) < admin_system.rindex(
+    "request_available(&journal, &operation, true, false)?;"
+) < admin_system.index("create(&pending, &raw)?;")
+assert admin_system.index("request_available(&journal") < admin_system.index("request_canonical_native_admin_authorization")
+assert "windows_native_runtime::execute" in Path("edge-platform/crates/edge-controller/src/controller_rpc.rs").read_text(encoding="utf-8")
+effect_contract=Path("edge-platform/crates/edge-shared-types/src/windows_runtime_effect.rs").read_text(encoding="utf-8")
+assert "verify_host_authorization" in effect_contract
+assert "HOST_WINDOWS_EFFECT_ALREADY_CONSUMED_NO_REPLAY" in effect_contract
+assert "effect.challenge.as_ref() != Some(challenge)" in effect_contract
+assert "host_admin_native_result=SYSTEM_SIGNED_PROOF_PENDING_INDEPENDENT_VERIFICATION" in native
+assert "HOST_WINDOWS_ADMIN_RECEIPT_UNKNOWN_NO_REPLAY" in native
+assert 'if [[ "${HOST_OPERATION}" = ADMIN ]]; then' in native
 assert "HOST_WINDOWS_INSTALLED_RUNTIME_READBACK_MISMATCH" in journal_source
 assert "verify_native_journal_protection(protected_journal_dir)?;" in journal_source
 assert "SYSTEM task or immutable action mismatched" in Path(
@@ -559,7 +667,9 @@ assert 'OfflineFirstUseStatus(InstallRootArgs)' in Path("edge-platform/crates/ed
 assert "TRUST_RECORDED_UNVERIFIED" in Path("edge-platform/crates/edge-console/src/windows_trust_enrollment.rs").read_text(encoding="utf-8")
 assert "require_identity_request_for_trust(" in identity_owner
 
-assert "windows_receipt_enrollment::prepare(install_root).map_err(|reason|" in win_console
+assert "windows_receipt_enrollment::prepare(" in win_console
+assert "fresh_machine.as_deref().ok_or(" in win_console
+assert "resolve_local_windows_machine(&before).await?" in win_console
 assert "OFFLINE_BOOTSTRAP_IDENTITY_STEP_UNCERTAIN_NO_REPLAY" in win_console
 assert "HOST_WINDOWS_RECEIPT_ENROLL_SLOT_NOT_EMPTY_NO_REKEY" in identity_owner
 install_script = Path("edge-platform/scripts/install-windows-release.ps1").read_text(encoding="utf-8")
@@ -569,7 +679,14 @@ assert "WINDOWS_CONNECT_INITIAL_SCM_OR_TASK_UNKNOWN_NO_REPLAY" in install_script
 assert "WINDOWS_CONNECT_PARTIAL_INITIAL_INSTALL_NO_REPLAY" in install_script
 assert "OfflineCleanInstall(InstallRootArgs)" in Path("edge-platform/crates/edge-console/src/cli.rs").read_text(encoding="utf-8")
 clean_install = Path("edge-platform/crates/edge-console/src/windows_clean_install.rs").read_text(encoding="utf-8")
-assert "prepare_clean_before_scm(install_root)?" in clean_install
+assert "prepare_clean_before_scm(install_root, &machine_id)?" in clean_install
+assert "resolve_local_windows_machine(&active).await?" in clean_install
+assert "HOST_WINDOWS_FIRST_USE_GIT_HOST_ABSENT_OR_AMBIGUOUS" in Path(
+    "edge-platform/crates/edge-console/src/windows_trust_enrollment.rs"
+).read_text()
+assert "async fn install(install_root: &Path)" in clean_install
+assert "fn valid_machine_id(machine: &str)" in identity_owner
+assert "fn bound_machine_id(install_root: &Path)" in identity_owner
 # The first-use Administrator must NEVER run the SYSTEM-only journal
 # primary-token gate; the dispatcher performs that check after enrolment.
 identity_clean_prepare = identity_owner.split(

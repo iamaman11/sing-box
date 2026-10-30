@@ -355,9 +355,12 @@ pub(crate) fn run(
             for host in selected {
                 let kind = ManagedHostKind::try_from(host.kind)
                     .map_err(|_| "HOST_KIND_INVALID".to_owned())?;
-                if (diagnostic.is_some() || administrative.is_some()) && kind != ManagedHostKind::Vm
-                {
+                if diagnostic.is_some() && kind != ManagedHostKind::Vm {
                     return Err("HOST_DIAG_VM_ONLY_UNTIL_WINDOWS_NATIVE_ACCEPTANCE".to_owned());
+                }
+                if let Some(request) = &administrative {
+                    edge_shared_types::host_admin::validate_for_kind(request, kind)
+                        .map_err(str::to_owned)?;
                 }
                 let owner = match host.owner.as_ref() {
                     Some(managed_host::Owner::WindowsRunnerName(name)) => name,
@@ -781,15 +784,27 @@ pub(crate) fn run(
             // decision until Worker + native owner independently attest.
             // Reuse the same independently release-bound VM digest for the
             // detailed reconciliation proposal printed below.
+            let planned_host = if selected.kind == ManagedHostKind::Windows as i32 {
+                edge_shared_types::host_lifecycle::project_host_for_planner(
+                    selected,
+                    &read_git_host_spec(&selected.desired_spec_path)?,
+                )
+                .map_err(str::to_owned)?
+            } else {
+                selected.clone()
+            };
             let proposed = edge_shared_types::host_planner::propose_host_transition(
-                selected,
+                &planned_host,
                 Some(&observed),
                 &release_sha,
                 &native_bundle_sha,
                 now,
             );
-            edge_shared_types::host_planner::validate_host_transition_plan(&proposed, selected)
-                .map_err(str::to_owned)?;
+            edge_shared_types::host_planner::validate_host_transition_plan(
+                &proposed,
+                &planned_host,
+            )
+            .map_err(str::to_owned)?;
             println!(
                 "host_reconcile_step={:?}",
                 edge_shared_types::FleetHostPlannedStep::try_from(proposed.step)
@@ -1042,6 +1057,27 @@ pub(crate) fn run(
                         managed.reason_code,
                     );
                 }
+                println!(
+                    "host_vm_managed_kernel_routes_count={}",
+                    report.managed_kernel_routes.len()
+                );
+                println!("host_vm_managed_kernel_routes_origin=RUNNER_COPIED_UNAUTHENTICATED");
+                for row in &report.managed_kernel_routes {
+                    println!(
+                        "host_vm_managed_kernel_route={} family={:?} table={} present={} converged={} reason={}",
+                        if row.resource_name.is_empty() {
+                            "UNPROVEN"
+                        } else {
+                            row.resource_name.as_str()
+                        },
+                        edge_shared_types::FleetVmIpFamily::try_from(row.family)
+                            .unwrap_or(edge_shared_types::FleetVmIpFamily::Unspecified),
+                        row.table_id,
+                        row.present,
+                        row.converged,
+                        row.reason_code
+                    );
+                }
                 println!("host_vm_resources_schema=1");
                 println!(
                     "host_vm_installed_policy_hierarchy_origin={}",
@@ -1254,9 +1290,7 @@ pub(crate) fn run(
             let selected = desired
                 .hosts
                 .iter()
-                .find(|host| {
-                    host.machine_id == machine_id && host.kind == ManagedHostKind::Vm as i32
-                })
+                .find(|host| host.machine_id == machine_id)
                 .ok_or("BOOTSTRAP_GIT_MACHINE_NOT_REGISTERED")?;
             if !selected.native_receipt_public_key.is_empty() {
                 return Err("BOOTSTRAP_GIT_RECEIPT_ALREADY_REGISTERED".into());
@@ -1390,6 +1424,12 @@ pub(crate) fn run(
                     host.machine_id == machine_id && host.kind == ManagedHostKind::Vm as i32
                 })
                 .ok_or("HOST_ADMIN_GIT_MACHINE_NOT_REGISTERED")?;
+            host_admin::validate_for_kind(
+                &request,
+                ManagedHostKind::try_from(selected.kind)
+                    .map_err(|_| "HOST_ADMIN_GIT_HOST_KIND_INVALID")?,
+            )
+            .map_err(str::to_owned)?;
             if request.machine_id != machine_id
                 || request.release_set_sha256
                     != exact_hex_sha256(&release.release().release_set_sha256)?
@@ -1817,6 +1857,9 @@ pub(crate) fn run(
             println!("host_receipt_merge=EXACT_ONE_PUBLIC_KEY_CHANGE");
             println!("host_mutations=0");
             Ok(())
+        }
+        HostCommand::WitnessLine2 { .. } => {
+            Err("HOST_VM_LINE2_WITNESS_MUST_USE_PROTECTED_READONLY_OWNER".to_owned())
         }
         HostCommand::Diagnose { .. } => Err("HOST_DIAG_DISPATCH_INVARIANT_FAILED".to_owned()),
         HostCommand::Admin { .. } => Err("HOST_ADMIN_DISPATCH_INVARIANT_FAILED".to_owned()),
@@ -2283,6 +2326,15 @@ fn host_lifecycle_admission(
         return Err("HOST_DESIRED_SPEC_INVALID_FILE".to_owned());
     }
     let spec_bytes = std::fs::read(spec_path).map_err(|_| "HOST_DESIRED_SPEC_UNREADABLE")?;
+    if kind == ManagedHostKind::Windows && selected.target.is_none() {
+        return Err("HOST_TARGET_UNSET_OBSERVE_ONLY".into());
+    }
+    if kind == ManagedHostKind::Windows {
+        let typed =
+            edge_shared_types::parse_production_desired_text(&spec_bytes).map_err(str::to_owned)?;
+        edge_shared_types::host_lifecycle::validate_windows_mode_target_and_spec(selected, &typed)
+            .map_err(str::to_owned)?;
+    }
     let desired_sha = edge_shared_types::host_lifecycle::digest_host_desired(selected, &spec_bytes)
         .map_err(str::to_owned)?;
     let release_sha = exact_hex_sha256(expected_release_set_sha256)?;
@@ -2313,6 +2365,9 @@ fn host_lifecycle_admission(
             _ => FleetHostMode::Unspecified as i32,
         },
         requested_at_unix: now,
+        // GitHub runner constructs only the base intent. LocalSystem, not
+        // this orchestrator, obtains and signs physical pre-TUN witnesses.
+        network_admission: None,
     };
     validate_host_intent(
         &intent,
@@ -2463,6 +2518,17 @@ fn host_lifecycle_admission(
     Ok(())
 }
 
+/// Read one bounded Git-owned desired source, not an arbitrary runtime path.
+/// The registry has already validated the exact spec selector.
+fn read_git_host_spec(spec: &str) -> Result<Vec<u8>, String> {
+    let path = Path::new(spec);
+    let meta = std::fs::symlink_metadata(path).map_err(|_| "HOST_DESIRED_SPEC_MISSING")?;
+    if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 1_048_576 {
+        return Err("HOST_DESIRED_SPEC_INVALID_FILE".into());
+    }
+    std::fs::read(path).map_err(|_| "HOST_DESIRED_SPEC_UNREADABLE".into())
+}
+
 fn print_host_target(host: &edge_shared_types::FleetHost) -> Result<(), String> {
     match &host.target {
         None => {
@@ -2470,16 +2536,26 @@ fn print_host_target(host: &edge_shared_types::FleetHost) -> Result<(), String> 
             println!("host_desired_windows_mode=UNSET");
         }
         Some(target) => {
-            use edge_shared_types::{FleetHostMode, FleetHostRunState};
+            use edge_shared_types::{FleetHostKind, FleetHostRunState};
             let state = FleetHostRunState::try_from(target.run_state)
                 .map_err(|_| "HOST_TARGET_RUN_STATE_INVALID")?;
-            let mode = FleetHostMode::try_from(target.windows_mode)
-                .map_err(|_| "HOST_TARGET_MODE_INVALID")?;
             if state == FleetHostRunState::Unspecified {
                 return Err("HOST_TARGET_RUN_STATE_REQUIRED".to_owned());
             }
             println!("host_desired_run_state={state:?}");
-            println!("host_desired_windows_mode={mode:?}");
+            if host.kind == FleetHostKind::Windows as i32 {
+                let spec = read_git_host_spec(&host.desired_spec_path)?;
+                let desired = edge_shared_types::parse_production_desired_text(&spec)
+                    .map_err(str::to_owned)?;
+                let mode =
+                    edge_shared_types::host_lifecycle::validate_windows_mode_target_and_spec(
+                        host, &desired,
+                    )
+                    .map_err(str::to_owned)?;
+                println!("host_desired_windows_mode={mode:?}");
+            } else {
+                println!("host_desired_windows_mode=UNSPECIFIED");
+            }
         }
     }
     Ok(())
@@ -3037,6 +3113,7 @@ mod tests {
             runtime_ready_proven: true,
             reason_codes: vec![],
             vm_recovery_resources: None,
+            windows_config_sha256: Vec::new(),
         };
         assert_eq!(
             validate_readback_scope(&host, &o, &"a".repeat(64), None, 1000).unwrap(),
@@ -3106,7 +3183,11 @@ mod tests {
     #[test]
     fn fresh_host_apply_and_recover_never_admit_historical_mutation() {
         let spec = std::env::temp_dir().join(format!("sing-box-host-spec-{}", std::process::id()));
-        std::fs::write(&spec, b"schema_version: 1\\n").unwrap();
+        std::fs::write(
+            &spec,
+            b"schema_version: 6\nwindows_datapath_mode: WINDOWS_DATAPATH_MODE_PROXY_ONLY\n",
+        )
+        .unwrap();
         let desired = HostRegistry {
             schema_version: 1,
             hosts: vec![ManagedHost {
@@ -3120,7 +3201,7 @@ mod tests {
                 desired_spec_path: spec.to_string_lossy().into_owned(),
                 target: Some(edge_shared_types::FleetHostTarget {
                     run_state: edge_shared_types::FleetHostRunState::Stopped as i32,
-                    windows_mode: FleetHostMode::ProxyOnly as i32,
+                    windows_mode: FleetHostMode::Unspecified as i32,
                 }),
                 native_receipt_public_key: vec![8; 32],
                 vm_first_use_credential: None,
@@ -3158,10 +3239,10 @@ mod tests {
             "HOST_TARGET_UNSET_OBSERVE_ONLY"
         );
         assert!(!intent_path.exists());
-        // An invalid mode/kind must not emit any proposal either.
+        // A duplicate Windows mode in host registry must not emit a proposal.
         blocked.hosts[0].target = Some(edge_shared_types::FleetHostTarget {
             run_state: edge_shared_types::FleetHostRunState::Stopped as i32,
-            windows_mode: FleetHostMode::Unspecified as i32,
+            windows_mode: FleetHostMode::ManagedTun as i32,
         });
         assert_eq!(
             host_lifecycle_admission(
@@ -3177,7 +3258,7 @@ mod tests {
                 None,
             )
             .unwrap_err(),
-            "HOST_TARGET_MODE_KIND_MISMATCH"
+            "HOST_WINDOWS_DUPLICATE_GIT_MODE_FORBIDDEN"
         );
         assert!(!intent_path.exists());
         host_lifecycle_admission(
@@ -3258,7 +3339,7 @@ mod tests {
                 None,
             )
             .unwrap_err(),
-            "HOST_ACTION_CONFLICTS_WITH_DESIRED"
+            "HOST_SET_MODE_RETIRED_USE_GIT_APPLY"
         );
         let mut vm_target = desired.clone();
         vm_target.hosts[0].kind = ManagedHostKind::Vm as i32;
@@ -3324,25 +3405,23 @@ mod tests {
         std::fs::remove_file(&intent_path).unwrap();
         std::fs::remove_file(intent_path.with_extension("receipt.pb")).unwrap();
         std::fs::write(&file, "").unwrap();
-        host_lifecycle_admission(
-            &desired,
-            "windows-test",
-            HostLifecycleOperation::SetMode(FleetHostMode::ProxyOnly),
-            &release,
-            &registry_sha,
-            None,
-            Some(&file),
-            Some(129),
-            Some(&intent_path),
-            None,
-        )
-        .unwrap();
-        let mode = edge_shared_types::host_lifecycle::decode_host_intent(
-            &std::fs::read(&intent_path).unwrap(),
-        )
-        .unwrap();
-        assert_eq!(mode.action, FleetHostAction::SetMode as i32);
-        assert_eq!(mode.requested_mode, FleetHostMode::ProxyOnly as i32);
+        assert_eq!(
+            host_lifecycle_admission(
+                &desired,
+                "windows-test",
+                HostLifecycleOperation::SetMode(FleetHostMode::ProxyOnly),
+                &release,
+                &registry_sha,
+                None,
+                Some(&file),
+                Some(129),
+                Some(&intent_path),
+                None,
+            )
+            .unwrap_err(),
+            "HOST_SET_MODE_RETIRED_USE_GIT_APPLY"
+        );
+        assert!(!intent_path.exists());
         assert!(
             host_lifecycle_admission(
                 &desired,
@@ -3360,8 +3439,9 @@ mod tests {
         );
         std::fs::remove_file(file).unwrap();
         std::fs::remove_file(spec).unwrap();
-        std::fs::remove_file(&intent_path).unwrap();
-        std::fs::remove_file(intent_path.with_extension("receipt.pb")).unwrap();
+        // Retired SET_MODE must leave no request/receipt to clean up.
+        assert!(!intent_path.exists());
+        assert!(!intent_path.with_extension("receipt.pb").exists());
     }
 
     #[test]

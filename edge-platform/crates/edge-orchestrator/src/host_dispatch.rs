@@ -13,6 +13,9 @@ pub(super) async fn run(
     release_context: &edge_orchestrator::OrchestrationContext,
 ) -> Result<(), String> {
     match command {
+        cli::HostCommand::WitnessLine2 { machine_id } => {
+            vm_line2_acceptance::run(&machine_id, source_comment_id, release_context).await
+        }
         cli::HostCommand::VmWorkerAuthorizerUpgrade {
             machine_id,
             plan_only,

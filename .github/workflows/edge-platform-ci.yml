@@ -11,6 +11,7 @@ on:
       - "infra/**"
       - "win/**"
       - ".github/workflows/**"
+      - ".gitattributes"
   push:
     branches: [main]
     # Canonical ReleaseSet input and executable workflow changes, including
@@ -20,6 +21,7 @@ on:
       - "infra/**"
       - "win/**"
       - ".github/workflows/**"
+      - ".gitattributes"
 
 permissions:
   contents: read
@@ -1049,6 +1051,17 @@ jobs:
           # native Windows runner; the Linux source checks compile it out.
           cargo test --locked -p edge-shared-types --lib windows_w4_acl_tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { throw "Windows W4 protected-volume ACL contract failed" }
+
+          # Real file handles must protect routing identities, not only pass
+          # lexical validation on Linux. No application is executed here.
+          cargo test --locked -p edge-shared-types --lib windows_routing::tests -- --nocapture
+          if ($LASTEXITCODE -ne 0) { throw "Windows selected-application path identity contract failed" }
+
+          # The exact dual-stack route/DNS and Cloudflare One readback tests
+          # must EXECUTE on Windows, not only compile inside the test binary.
+          # No route, DNS, WARP or TUN mutation is performed by these tests.
+          cargo test --locked -p edge-shared-types --lib windows_native_network::tests -- --nocapture
+          if ($LASTEXITCODE -ne 0) { throw "Windows native network identity and fail-closed readback tests failed" }
 
       # WINDOWS_CANDIDATE_BUILD_CONTRACT_BEGIN
       - name: Build exact Windows control binaries

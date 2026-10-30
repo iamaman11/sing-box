@@ -392,6 +392,57 @@ for(const [action,verb] of [[7,'start'],[8,'stop']]){
  assert.equal(response.status,403,'Windows '+verb+' cannot reuse opposite comment');
 }
 adminComment='/host start sing-box-windows-lab';
+// Field 12 is an appended, separately SYSTEM-signed native witness that the
+// existing Worker signs ONLY inside the same approved Windows START intent.
+// Worker validates bounded structure/identity/TTL; installed SYSTEM and
+// Controller still verify the local signature and actual kernel snapshot.
+const admissionBytes=({machine='sing-box-windows-lab',operation=info.id,
+ desired=0xaa,signature=0x4d,observed=now-3,expires=now+45}={})=>CAT(
+ FNUM(1,1),FLD(2,TE.encode(machine)),FLD(3,TE.encode(operation)),
+ FLD(4,new Uint8Array(32).fill(0xbb)),
+ FLD(5,new Uint8Array(32).fill(desired)),
+ FLD(6,new Uint8Array(32).fill(0xcc)),
+ FLD(7,new Uint8Array(32).fill(0xdd)),
+ FNUM(8,observed),FNUM(9,expires),
+ FLD(10,new Uint8Array(32).fill(0xee)),
+ FLD(11,new Uint8Array(32).fill(0xab)),
+ FLD(12,new Uint8Array(32).fill(0xcd)),
+ FLD(13,new Uint8Array(64).fill(signature)));
+const withAdmission=(proof,kind=1,action=7)=>CAT(winBytes(kind,action),FLD(12,proof));
+const admitted=withAdmission(admissionBytes());
+assert.equal(INFO(admitted).action,7,'Worker recognizes exact native Windows START extension');
+response=await signedWindows(admitted);
+assert.equal(response.status,200,'Worker accepts one fresh native-bound Windows START');
+const admittedAuth=proofFields(new Uint8Array(await response.arrayBuffer()));
+const admittedId=admittedAuth.get(2),admittedOp=admittedAuth.get(3);
+const admittedPayload=CAT(TE.encode('sing-box/native-host-authorization/v1:'),
+ U32(admitted.length),admitted,U32(admittedId.length),admittedId,
+ U32(admittedOp.length),admittedOp,U64(admittedAuth.get(4)),U64(admittedAuth.get(5)));
+assert.equal(await crypto.subtle.verify(
+ 'Ed25519',ed.publicKey,admittedAuth.get(6),admittedPayload),true,
+ 'Worker signature binds every byte of the nested native admission');
+for(const [description,proof] of [
+ ['wrong machine',admissionBytes({machine:'foreign-host'})],
+ ['wrong operation',admissionBytes({operation:'issue1-comment-456'})],
+ ['wrong desired ReleaseSet',admissionBytes({desired:0x52})],
+ ['expired',admissionBytes({observed:now-70,expires:now-10})],
+ ['future',admissionBytes({observed:now+3600,expires:now+3640})],
+ ['too long TTL',admissionBytes({observed:now-20,expires:now+80})],
+ ['zero signature',admissionBytes({signature:0})],
+ ['truncated protobuf',admissionBytes().subarray(0,128)],
+ ['unknown nested field',CAT(admissionBytes(),FNUM(14,1))],
+ ['duplicate nested field',CAT(admissionBytes(),FLD(13,new Uint8Array(64).fill(1)))],
+]){
+ assert.equal(INFO(withAdmission(proof)),null,'invalid native admission '+description);
+ assert.equal((await signedWindows(withAdmission(proof))).status,400,
+  'Worker refuses '+description+' without signing');
+}
+assert.equal(INFO(withAdmission(admissionBytes(),2,7)),null,
+ 'VM START cannot use Windows native admission');
+assert.equal(INFO(withAdmission(admissionBytes(),1,8)),null,
+ 'Windows STOP cannot reuse network capture authority');
+assert.equal(INFO(CAT(admitted,FLD(12,admissionBytes()))),null,
+ 'duplicate native admission in the same HostIntent is invalid');
 assert.equal(INFO(winBytes(2,7)),null,'VM cannot acquire Windows START authority');
 assert.equal(INFO(winBytes(2,8)),null,'VM cannot acquire Windows STOP authority');
 assert.equal(INFO(winBytes(1,9,1)),null,'Windows mode/TUN is not yet a signed Worker effect');
@@ -511,6 +562,35 @@ assert.equal(adminResponse.status,403,'admin source comment binds exact argv');
 githubMode='denied';
 adminResponse=await ADMIN_AUTHORIZE(await nativeReq(await jwt(),nativeBytes),env,adminUrl);
 assert.equal(adminResponse.status,403,'unapproved GitHub actor cannot authorize root');
+githubMode='approved';
+// Windows uses the SAME VM Worker signing owner and native-admin domain.
+// Exercise real router + GitHub approval, not merely a regex assertion.
+const windowsArgv=[String.raw`C:\Windows\System32\WindowsPowerShell\v1.0\powershell.exe`,
+  '-NoProfile','-NonInteractive','-Command','[Console]::WriteLine("synthetic")'];
+const windowsCwd=String.raw`C:\Work`;
+const windowsPayload={argv:windowsArgv,cwd:windowsCwd,environment:['TEST_VALUE=ok'],
+  stdin_base64:'aGVsbG8',timeout_seconds:40,publish_output:true};
+adminComment='/host admin sing-box-windows-lab '+ADMIN_ARGS_B64(windowsPayload);
+const windowsCommentHash=new Uint8Array(await crypto.subtle.digest('SHA-256',TE.encode(adminComment)));
+const windowsRequest=(cwd=windowsCwd)=>CAT(FNUM(1,1),FLD(2,TE.encode('sing-box-windows-lab')),
+  FNUM(3,6346290327),...windowsArgv.map(arg=>FLD(4,TE.encode(arg))),
+  FLD(5,new Uint8Array(32).fill(0xaa)),FNUM(6,now),FLD(7,windowsCommentHash),
+  FLD(8,TE.encode(cwd)),FLD(9,TE.encode('TEST_VALUE=ok')),FLD(10,TE.encode('hello')),
+  FNUM(11,40),FNUM(12,1));
+const windowsBytes=windowsRequest();
+assert.equal(ADMIN_INFO(windowsBytes).cwd,windowsCwd);
+adminResponse=await ACTIVE_VM_WORKER.fetch(await nativeReq(await jwt(),windowsBytes),env);
+assert.equal(adminResponse.status,200,'Windows request must reach the single signing owner');
+const windowsAuth=proofFields(new Uint8Array(await adminResponse.arrayBuffer()));
+const windowsKid=windowsAuth.get(2),windowsOp=windowsAuth.get(3);
+const windowsSigned=CAT(TE.encode('sing-box/native-admin-authorization/v1:'),
+  U32(windowsBytes.length),windowsBytes,U32(windowsKid.length),windowsKid,
+  U32(windowsOp.length),windowsOp,U64(windowsAuth.get(4)),U64(windowsAuth.get(5)));
+assert.equal(await crypto.subtle.verify('Ed25519',ed.publicKey,windowsAuth.get(6),windowsSigned),true,
+  'Windows argv/cwd are cryptographically bound to the exact native request');
+adminResponse=await ACTIVE_VM_WORKER.fetch(await nativeReq(await jwt(),windowsRequest(String.raw`C:\Other`)),env);
+assert.equal(adminResponse.status,403,'different Windows cwd cannot reuse GitHub approval');
+assert.equal(ADMIN_INFO(windowsRequest('relative')),null,'relative Windows cwd rejected before signing');
 adminComment=null;githubMode='approved';
 console.log('host_worker_access_contract=PASS');
 """

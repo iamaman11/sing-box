@@ -260,6 +260,44 @@ async fn capture_local_host_observation(
     // Reason codes are already part of signed FleetNativeObservation/v1;
     // never export raw Docker, WARP or credential errors.
     let reasons = native_runtime_reason_codes(&state, reasons);
+    // The existing physical readback covers Docker/application health.
+    // A missing *owned* ephemeral route, nft table or per-link DNS can
+    // survive as Docker-ready after reboot. Observe that separate native
+    // scope before signing a misleading healthy/NOOP receipt.
+    // Only a fully running application with an installed marker can claim
+    // network-only loss; all other states retain their original planner gate.
+    let managed_network = if digest.is_some()
+        && state.ready
+        && ownership_proven
+        && owner_state == FleetNativeOwnerState::Running
+    {
+        match host_native::registered_vm_host() {
+            Ok(host) => {
+                docker_observation::observe_vm_managed_network_recovery(stack_dir, &host).await
+            }
+            Err(_) => docker_observation::ManagedNetworkRecovery::UnknownNoReplay,
+        }
+    } else {
+        docker_observation::ManagedNetworkRecovery::Converged
+    };
+    let mut reasons = reasons;
+    match managed_network {
+        docker_observation::ManagedNetworkRecovery::Converged => {}
+        docker_observation::ManagedNetworkRecovery::KnownRecoverable => {
+            if reasons.len() == 12 {
+                reasons[11] = "VM_DIAGNOSTIC_TRUNCATED";
+            } else {
+                reasons.push("VM_MANAGED_NETWORK_MISSING");
+            }
+        }
+        docker_observation::ManagedNetworkRecovery::UnknownNoReplay => {
+            if reasons.len() == 12 {
+                reasons[11] = "VM_DIAGNOSTIC_TRUNCATED";
+            } else {
+                reasons.push("VM_MANAGED_NETWORK_UNKNOWN_NO_REPLAY");
+            }
+        }
+    }
     // Runtime readiness is already explicitly encoded as
     // runtime_ready_proven / runtime_ready. Stopped VM resources are not
     // a broken observation; do not flag them as an evidence error merely
@@ -273,7 +311,9 @@ async fn capture_local_host_observation(
         owner_state,
         proof,
         digest.as_deref(),
-        ownership_proven.then_some(state.ready),
+        ownership_proven.then_some(
+            state.ready && managed_network == docker_observation::ManagedNetworkRecovery::Converged,
+        ),
         observed_at,
         &reasons,
     )

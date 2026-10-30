@@ -140,10 +140,10 @@ hosts: {
   kind: FLEET_HOST_KIND_WINDOWS
   windows_runner_name: "DESKTOP-0E1F6UQ"
   windows_runner_label: "sing-box-windows-lab"
+  worker_authority_public_key: "\xe7ۉ\x82W+\x80\\/7\x95\x03$\r=\xcf{\x9a\xd8E\x11zAbw8\x8f\x0bJ\xf8u\x8d"
   native_receipt_public_key: "\155\263\172\063\205\217\005\214\212\023\174\001\370\012\120\133\107\310\241\243\014\316\365\044\042\253\324\203\236\317\014\136"
   desired_spec_path: "infra/production/production.textproto"
   target: {
     run_state: FLEET_HOST_RUN_STATE_STOPPED
-    windows_mode: FLEET_HOST_MODE_PROXY_ONLY
-  }
+   }
 }

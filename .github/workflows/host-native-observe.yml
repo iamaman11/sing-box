@@ -44,7 +44,7 @@ jobs:
     # retains its independent fleet-wide concurrency lock.
     # Status remains independent and read-only; Windows is unaffected.
     concurrency:
-      group: ${{ (inputs.kind == 'VM' && (inputs.operation == 'APPLY_PREFLIGHT' || inputs.operation == 'RECOVER_PREFLIGHT' || inputs.operation == 'ADMIN')) && format('host-native-vm-{0}', inputs.machine_id) || (inputs.kind == 'WINDOWS' && inputs.operation == 'APPLY_PREFLIGHT' && (startsWith(inputs.command_body, '/host start ') || startsWith(inputs.command_body, '/host stop '))) && format('host-native-windows-{0}', inputs.machine_id) || format('host-readonly-{0}', inputs.source_comment_id) }}
+      group: ${{ (inputs.kind == 'VM' && (inputs.operation == 'APPLY_PREFLIGHT' || inputs.operation == 'RECOVER_PREFLIGHT' || inputs.operation == 'ADMIN')) && format('host-native-vm-{0}', inputs.machine_id) || (inputs.kind == 'WINDOWS' && (inputs.operation == 'APPLY_PREFLIGHT' || inputs.operation == 'RECOVER_PREFLIGHT' || inputs.operation == 'ADMIN')) && format('host-native-windows-{0}', inputs.machine_id) || format('host-readonly-{0}', inputs.source_comment_id) }}
       cancel-in-progress: false
     # Git selects a single owner from Rust's exact protobuf matrix.
     # This job NEVER holds issues:write, Docker socket or generic root.
@@ -61,7 +61,7 @@ jobs:
       HOST_OPERATION: ${{ inputs.operation }}
     steps:
       - name: Receive exact approved administrative request in existing runner
-        if: env.TARGET_KIND == 'VM' && env.HOST_OPERATION == 'ADMIN'
+        if: env.HOST_OPERATION == 'ADMIN'
         uses: actions/download-artifact@v4
         with:
           name: host-intent-${{ inputs.source_comment_id }}
@@ -101,6 +101,62 @@ jobs:
 
       - name: Preserve native signed administrative result even when command failed
         if: (success() || failure()) && env.TARGET_KIND == 'VM' && env.HOST_OPERATION == 'ADMIN'
+        uses: actions/upload-artifact@v4
+        with:
+          name: host-admin-result-${{ inputs.source_comment_id }}
+          path: ${{ runner.temp }}/host-admin/admin-result.pb
+          if-no-files-found: warn
+          retention-days: 7
+
+      - name: Forward exact Windows admin request to existing SYSTEM owner
+        if: env.TARGET_KIND == 'WINDOWS' && env.HOST_OPERATION == 'ADMIN'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          if ($env:RUNNER_NAME -cne $env:TARGET_OWNER -or
+              [Security.Principal.WindowsIdentity]::GetCurrent().User.Value -cne 'S-1-5-20') {
+            throw 'HOST_WINDOWS_ADMIN_TRANSPORT_IDENTITY_INVALID'
+          }
+          $root = 'C:\sing-box'
+          $source = Join-Path $env:RUNNER_TEMP 'host-admin\host-intent.pb'
+          $meta = Get-Item -LiteralPath $source
+          if ($meta.PSIsContainer -or ($meta.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+              $meta.Length -lt 1 -or $meta.Length -gt 32768) {
+            throw 'HOST_WINDOWS_ADMIN_REQUEST_INVALID'
+          }
+          foreach ($name in @('request.pb', 'host-intent.pb', 'admin-request.pb')) {
+            if (Test-Path -LiteralPath (Join-Path $root "exchange\requests\$name")) {
+              throw 'HOST_WINDOWS_ADMIN_COMPETING_REQUEST_NO_REPLAY'
+            }
+          }
+          $receipt = Join-Path $root 'exchange\results\admin-result.pb'
+          $prior = if (Test-Path -LiteralPath $receipt) { (Get-FileHash -LiteralPath $receipt -Algorithm SHA256).Hash } else { '' }
+          $destination = Join-Path $root 'exchange\requests\admin-request.pb'
+          $bytes = [IO.File]::ReadAllBytes($source)
+          $stream = [IO.File]::Open($destination, [IO.FileMode]::CreateNew, [IO.FileAccess]::Write, [IO.FileShare]::None)
+          try { $stream.Write($bytes); $stream.Flush($true) } finally { $stream.Dispose() }
+          # Only the already configured periodic SYSTEM task may consume it.
+          # No task run/start, no credentials, SCM or process effects here.
+          $deadline = [DateTime]::UtcNow.AddSeconds(3800)
+          do {
+            if (Test-Path -LiteralPath $receipt -PathType Leaf) {
+              $m = Get-Item -LiteralPath $receipt
+              if (-not ($m.Attributes -band [IO.FileAttributes]::ReparsePoint) -and $m.Length -gt 0 -and $m.Length -le 140000) {
+                $candidate = [IO.File]::ReadAllBytes($receipt)
+                $hash = [Convert]::ToHexString([Security.Cryptography.SHA256]::HashData($candidate))
+                if ($hash -cne $prior) {
+                  [IO.File]::WriteAllBytes((Join-Path $env:RUNNER_TEMP 'host-admin\admin-result.pb'), $candidate)
+                  Write-Output 'host_admin_native_result=SYSTEM_SIGNED_PROOF_PENDING_INDEPENDENT_VERIFICATION'
+                  exit 0
+                }
+              }
+            }
+            Start-Sleep -Milliseconds 500
+          } while ([DateTime]::UtcNow -lt $deadline)
+          throw 'HOST_WINDOWS_ADMIN_RECEIPT_UNKNOWN_NO_REPLAY'
+
+      - name: Preserve Windows SYSTEM signed administrative result
+        if: (success() || failure()) && env.TARGET_KIND == 'WINDOWS' && env.HOST_OPERATION == 'ADMIN'
         uses: actions/upload-artifact@v4
         with:
           name: host-admin-result-${{ inputs.source_comment_id }}
@@ -335,21 +391,19 @@ jobs:
           echo 'host_native_result=LOCAL_PROTOBUF_NOT_YET_REMOTE_ATTESTED'
 
       - name: Receive typed Windows HostIntent from protected Git
-        if: env.TARGET_KIND == 'WINDOWS' && env.HOST_OPERATION == 'APPLY_PREFLIGHT' && (startsWith(env.COMMAND_BODY, '/host start ') || startsWith(env.COMMAND_BODY, '/host stop '))
+        if: env.TARGET_KIND == 'WINDOWS' && (env.HOST_OPERATION == 'APPLY_PREFLIGHT' || env.HOST_OPERATION == 'RECOVER_PREFLIGHT')
         uses: actions/download-artifact@v4
         with:
           name: host-intent-${{ inputs.source_comment_id }}
           path: ${{ runner.temp }}/windows-signed-intent
 
       - name: Forward exact Windows HostIntent to existing SYSTEM task
-        if: env.TARGET_KIND == 'WINDOWS' && env.HOST_OPERATION == 'APPLY_PREFLIGHT' && (startsWith(env.COMMAND_BODY, '/host start ') || startsWith(env.COMMAND_BODY, '/host stop '))
+        if: env.TARGET_KIND == 'WINDOWS' && (env.HOST_OPERATION == 'APPLY_PREFLIGHT' || env.HOST_OPERATION == 'RECOVER_PREFLIGHT')
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
-          if ($env:RUNNER_NAME -cne $env:TARGET_OWNER -or
-              $env:TARGET_OWNER -cne 'DESKTOP-0E1F6UQ' -or
-              $env:TARGET_MACHINE -cne 'sing-box-windows-lab' -or
-              $env:COMMAND_BODY -cnotmatch '^/host (start|stop) sing-box-windows-lab$') {
+          $allowed = @('start','stop','apply','recover') | ForEach-Object { "/host $_ $env:TARGET_MACHINE" }
+          if ($env:RUNNER_NAME -cne $env:TARGET_OWNER -or $env:COMMAND_BODY -cnotin $allowed) {
             throw 'HOST_WINDOWS_NATIVE_TRANSPORT_IDENTITY_INVALID'
           }
           if ([Security.Principal.WindowsIdentity]::GetCurrent().User.Value -cne 'S-1-5-20') {
@@ -390,6 +444,11 @@ jobs:
               [Security.Cryptography.SHA256]::HashData($priorBytes))
           }
           $destination = Join-Path $root 'exchange\requests\host-intent.pb'
+          foreach ($name in @('request.pb', 'admin-request.pb')) {
+            if (Test-Path -LiteralPath (Join-Path $root "exchange\requests\$name")) {
+              throw 'HOST_WINDOWS_NATIVE_COMPETING_REQUEST_NO_REPLAY'
+            }
+          }
           $bytes = [IO.File]::ReadAllBytes($intent)
           # Exclusive, fsynced CREATE: never overwrite an uncertain request.
           $stream = [IO.File]::Open($destination,
@@ -400,7 +459,7 @@ jobs:
           # cannot edit/create/run that task, nor directly invoke SCM.
           $folder = Join-Path $env:RUNNER_TEMP 'windows-system-result'
           New-Item -ItemType Directory -Path $folder -Force | Out-Null
-          $deadline = (Get-Date).AddSeconds(100)
+          $deadline = (Get-Date).AddSeconds(1100)
           $changed = $false
           do {
             if (Test-Path -LiteralPath $receipt -PathType Leaf) {
@@ -421,7 +480,7 @@ jobs:
           Write-Output 'host_windows_receipt=UNTRUSTED_COPY_REQUIRE_HOSTED_RUST_VERIFIER'
 
       - name: Preserve Windows signed owner result for hosted Rust
-        if: (success() || failure()) && env.TARGET_KIND == 'WINDOWS' && env.HOST_OPERATION == 'APPLY_PREFLIGHT' && (startsWith(env.COMMAND_BODY, '/host start ') || startsWith(env.COMMAND_BODY, '/host stop '))
+        if: (success() || failure()) && env.TARGET_KIND == 'WINDOWS' && (env.HOST_OPERATION == 'APPLY_PREFLIGHT' || env.HOST_OPERATION == 'RECOVER_PREFLIGHT')
         uses: actions/upload-artifact@v4
         with:
           name: native-windows-receipt-${{ inputs.source_comment_id }}
@@ -626,7 +685,7 @@ jobs:
             --to "${RUNNER_TEMP}/host-readback-registry.pb#format=binpb")
           registry="${RUNNER_TEMP}/host-readback-registry.pb"
           test -s "${registry}"
-          if [[ "${TARGET_KIND}" = VM && "${HOST_OPERATION}" = ADMIN ]]; then
+          if [[ "${HOST_OPERATION}" = ADMIN ]]; then
             admin_name="host-admin-result-${SOURCE_COMMENT_ID}"
             if ! gh run download "${GITHUB_RUN_ID}" -R "${GITHUB_REPOSITORY}" -n "${admin_name}" -D "${out}" >/dev/null 2>&1; then
               echo 'typed_verdict=ADMIN_RECEIPT_MISSING_UNKNOWN_NO_REPLAY' >> "${GITHUB_OUTPUT}"
@@ -699,8 +758,8 @@ jobs:
               echo '~~~'
             } >> "${GITHUB_STEP_SUMMARY}"
           fi
-          if [[ "${TARGET_KIND}" = WINDOWS && "${HOST_OPERATION}" = APPLY_PREFLIGHT &&
-                "${COMMAND_BODY}" =~ ^/host\ (start|stop)\ ${TARGET_MACHINE}$ ]]; then
+          if [[ "${TARGET_KIND}" = WINDOWS && ( "${HOST_OPERATION}" = APPLY_PREFLIGHT || "${HOST_OPERATION}" = RECOVER_PREFLIGHT ) &&
+                "${COMMAND_BODY}" =~ ^/host\ (start|stop|apply|recover)\ ${TARGET_MACHINE}$ ]]; then
             system_dir="${RUNNER_TEMP}/host-windows-system-receipt"
             mkdir -p "${system_dir}"
             if gh run download "${GITHUB_RUN_ID}" -R "${GITHUB_REPOSITORY}" \
@@ -773,7 +832,7 @@ jobs:
               result=ROOT_CODE_ONLY_REFRESH_BLOCKED_NO_REPLAY
             fi
           fi
-          if [[ "${TARGET_KIND}" = VM && "${HOST_OPERATION}" = ADMIN ]]; then
+          if [[ "${HOST_OPERATION}" = ADMIN ]]; then
             native_note='Native ADMIN: no independent signed result established.'
             if [[ "${TYPED_OUTCOME}" = success && "${ADMIN_RECEIPT_PROOF}" = VERIFIED_EXIT_ZERO ]]; then
               result=ADMIN_SIGNED_EXIT_ZERO

@@ -268,6 +268,126 @@ jobs:
           retention-days: 7
 
 
+  host_line2_external_witness:
+    # An independent GitHub-hosted traffic probe, NOT a native VM effect.
+    # Exactly the same immutable /host comment authority as other host jobs.
+    if: >-
+      github.event_name == 'issue_comment' &&
+      github.repository == 'iamaman11/sing-box' &&
+      github.repository_id == '1221750822' &&
+      github.event.issue.number == 1 &&
+      !github.event.issue.pull_request &&
+      github.actor_id == '44100369' &&
+      github.run_attempt == 1 &&
+      startsWith(github.event.comment.body, '/host witness-line2 ')
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    concurrency:
+      group: sing-box-line2-independent-readonly-${{ github.event.comment.id }}
+      cancel-in-progress: false
+    timeout-minutes: 22
+    permissions:
+      contents: read
+      actions: read
+      issues: write
+    env:
+      COMMAND_BODY: ${{ github.event.comment.body }}
+      GH_TOKEN: ${{ github.token }}
+      VULTR_API_KEY: ${{ secrets.VULTR_API_KEY }}
+      EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID }}
+      EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET }}
+    steps:
+      - name: Verify Git selection and exact published ReleaseSet
+        id: witness
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${COMMAND_BODY}" =~ ^/host[[:space:]]witness-line2[[:space:]]([a-zA-Z0-9][a-zA-Z0-9_-]{0,63})$ ]] || {
+            echo HOST_VM_LINE2_WITNESS_COMMAND_INVALID >&2
+            exit 2
+          }
+          machine="${BASH_REMATCH[1]}"
+          test -n "${VULTR_API_KEY}" || { echo HOST_VM_LINE2_VULTR_IDENTITY_MISSING >&2; exit 2; }
+          test -n "${EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID}" || { echo HOST_VM_LINE2_ACCESS_IDENTITY_MISSING >&2; exit 2; }
+          test -n "${EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET}" || { echo HOST_VM_LINE2_ACCESS_IDENTITY_MISSING >&2; exit 2; }
+          git init -q .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch -q --no-tags --depth=1 origin "${GITHUB_SHA}"
+          git checkout -q --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+          export ACCEPTED_REVISION="${GITHUB_SHA}"
+          export REPOSITORY="${GITHUB_REPOSITORY}"
+          export OUTPUT_DIR="${RUNNER_TEMP}/line2-release"
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          [[ "${EDGE_RELEASE_SET_SHA256}" =~ ^[0-9a-f]{64}$ ]] || {
+            echo HOST_VM_LINE2_RELEASE_UNPROVEN >&2
+            exit 2
+          }
+          test -f "${OUTPUT_DIR}/fleet-registry.pb"
+          test -f "${OUTPUT_DIR}/application-bundle.pb"
+          bin="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          printf '%s  %s\n' "${EDGE_ORCHESTRATOR_SHA256}" "${bin}" | sha256sum --check --status
+          chmod 0755 "${bin}"
+          bash edge-platform/scripts/compile_vm_host_desired.sh "${machine}"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
+          "${bin}" host --hosts-pb "${OUTPUT_DIR}/fleet-registry.pb" \
+            --hosts-sha256 "$(sha256sum "${OUTPUT_DIR}/fleet-registry.pb" | cut -d' ' -f1)" \
+            --source-comment-id "${{ github.event.comment.id }}" \
+            witness-line2 "${machine}" | tee "${RUNNER_TEMP}/line2-independent-result.txt"
+          grep -Fxq 'line2_external_6_of_6=PASS' "${RUNNER_TEMP}/line2-independent-result.txt"
+          grep -Fxq 'line2_g5_full_policy_matrix=UNPROVEN' "${RUNNER_TEMP}/line2-independent-result.txt"
+          grep -Fxq 'line2_external_warp_identity=TRACE_CONFIRMED' "${RUNNER_TEMP}/line2-independent-result.txt"
+          grep -Fxq 'line2_authenticated_doh_a_and_nxdomain=VERIFIED_ALL_SIX_PROXY_PATHS' "${RUNNER_TEMP}/line2-independent-result.txt"
+          grep -Fxq 'line2_local_dns_leak_absence=UNPROVEN_NEEDS_EXTERNAL_CAPTURE' "${RUNNER_TEMP}/line2-independent-result.txt"
+          grep -Fxq 'host_vm_line2_witness_worker=VERIFIED_GIT_PINNED_ED25519' "${RUNNER_TEMP}/line2-independent-result.txt"
+          grep -Fxq 'host_vm_line2_native_installed_release=UNPROVEN_SIGNED_VM_READBACK_REQUIRED' "${RUNNER_TEMP}/line2-independent-result.txt"
+          grep -Fxq 'host_vm_line2_warp_udp=GIT_OUTBOUND_TCP_ONLY_NOT_SUPPORTED' "${RUNNER_TEMP}/line2-independent-result.txt"
+          grep -Fxq 'host_vm_line2_witness_mutations=0' "${RUNNER_TEMP}/line2-independent-result.txt"
+          {
+            echo '### VM Line2 independent read-only witness'
+            echo 'Six public proxies tested; entire G5 policy matrix remains independently gated.'
+            echo '~~~text'
+            cat "${RUNNER_TEMP}/line2-independent-result.txt"
+            echo '~~~'
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Report one correlated independent Line2 verdict
+        if: ${{ always() }}
+        shell: bash
+        env:
+          SOURCE_COMMENT_ID: ${{ github.event.comment.id }}
+          WITNESS_STEP_OUTCOME: ${{ steps.witness.outcome }}
+        run: |
+          set -euo pipefail
+          [[ "${SOURCE_COMMENT_ID}" =~ ^[0-9]{1,19}$ ]] || {
+            echo HOST_VM_LINE2_REPORT_SOURCE_COMMENT_INVALID >&2
+            exit 2
+          }
+          # A green hosted job alone is not native proof. Only exact Rust
+          # witnesses may yield a narrow six-TCP-endpoint PASS.
+          report="UNPROVEN"
+          reason="HOST_VM_LINE2_HOSTED_WITNESS_INCOMPLETE"
+          result="${RUNNER_TEMP}/line2-independent-result.txt"
+          if [[ "${WITNESS_STEP_OUTCOME}" == success ]] &&
+             [[ -f "${result}" ]] &&
+             grep -Fxq 'line2_external_6_of_6=PASS' "${result}" &&
+             grep -Fxq 'host_vm_line2_witness_worker=VERIFIED_GIT_PINNED_ED25519' "${result}" &&
+             grep -Fxq 'line2_authenticated_doh_a_and_nxdomain=VERIFIED_ALL_SIX_PROXY_PATHS' "${result}" &&
+             grep -Fxq 'line2_g5_full_policy_matrix=UNPROVEN' "${result}" &&
+             grep -Fxq 'host_vm_line2_witness_mutations=0' "${result}"; then
+            report="PASS"
+            reason="HOST_VM_LINE2_SIX_TCP_ENDPOINTS_AND_PROXY_DOH_INDEPENDENTLY_PROVEN"
+          elif [[ "${WITNESS_STEP_OUTCOME}" == failure ]]; then
+            report="FAIL"
+            reason="HOST_VM_LINE2_PROTECTED_WITNESS_STEP_FAILED"
+          fi
+          body="$(printf '%s\n'             "HOST_VM_LINE2_EXTERNAL_WITNESS_V1"             "SOURCE_COMMENT_ID=${SOURCE_COMMENT_ID}"             "GIT_SHA=${GITHUB_SHA}"             "RUN_ID=${GITHUB_RUN_ID}"             "SIX_TCP_ENDPOINTS=${report}"             "PROXIED_DOH_A_AND_NXDOMAIN=${report}"             "G5_FULL_NETWORK_MATRIX=UNPROVEN"             "NATIVE_SIGNED_VM_READBACK=NOT_SUBSTITUTED"             "MUTATIONS=0"             "REASON=${reason}"             "OWNER=GITHUB_HOSTED_INDEPENDENT_WITNESS"             "NEXT_ACTION=CHECK_EXACT_RUN_AND_MISSING_ACCEPTANCE_GATES")"
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/issues/1/comments"             -f "body=${body}" >/dev/null
+
   host_project_dns:
     # Same operator ingress and protected Environment; existing Rust Cloudflare
     # DNS and Vultr owners, never a VM-side DNS API credential.

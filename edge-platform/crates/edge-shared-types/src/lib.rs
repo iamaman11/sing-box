@@ -32,6 +32,10 @@ pub mod host_receipt;
 pub mod host_resources;
 pub mod host_signer_attestation;
 pub mod vm_bootstrap;
+#[cfg(windows)]
+pub mod windows_native_network;
+pub mod windows_routing;
+pub mod windows_runtime_effect;
 
 pub mod initial_credential_attestation;
 pub use initial_credential_attestation::first_use_host_attestation_sha256;
@@ -219,10 +223,8 @@ pub fn validate_host_registry(desired: &HostRegistry) -> Result<(), String> {
             if run_state == FleetHostRunState::Unspecified {
                 return Err("HOST_TARGET_RUN_STATE_REQUIRED".to_owned());
             }
-            if (kind == ManagedHostKind::Windows && mode == FleetHostMode::Unspecified)
-                || (kind == ManagedHostKind::Vm && mode != FleetHostMode::Unspecified)
-            {
-                return Err("HOST_TARGET_MODE_KIND_MISMATCH".to_owned());
+            if mode != FleetHostMode::Unspecified {
+                return Err("HOST_WINDOWS_DUPLICATE_GIT_MODE_FORBIDDEN".to_owned());
             }
         }
         match kind {
@@ -265,7 +267,52 @@ pub fn decode_production_desired_state(bytes: &[u8]) -> Result<ProductionDesired
                 .to_owned(),
         );
     }
+    windows_routing::validate(desired.windows_application_routing.as_ref())?;
     Ok(desired)
+}
+
+/// Native typed Git boundary. No runtime protoc, JSON desired or installer
+/// dependency. Descriptor and concrete Rust type originate from the SAME
+/// accepted schema. Errors deliberately omit confidential source text.
+pub fn parse_production_desired_text(bytes: &[u8]) -> Result<ProductionDesiredState, &'static str> {
+    if bytes.is_empty() || bytes.len() > 65536 {
+        return Err("CONFIG_TEXT_SIZE_INVALID");
+    }
+    let text = std::str::from_utf8(bytes).map_err(|_| "CONFIG_TEXT_UTF8_INVALID")?;
+    let pool = prost_reflect::DescriptorPool::decode(
+        include_bytes!(concat!(env!("OUT_DIR"), "/platform-descriptor.pb")).as_slice(),
+    )
+    .map_err(|_| "CONFIG_DESCRIPTOR_INVALID")?;
+    let descriptor = pool
+        .get_message_by_name("edge.platform.v1.ProductionDesiredState")
+        .ok_or("CONFIG_DESCRIPTOR_MISSING")?;
+    let dynamic = prost_reflect::DynamicMessage::parse_text_format(descriptor, text)
+        .map_err(|_| "CONFIG_TEXT_PROTOBUF_INVALID")?;
+    let typed: ProductionDesiredState = dynamic
+        .transcode_to()
+        .map_err(|_| "CONFIG_TEXT_SCHEMA_MISMATCH")?;
+    windows_routing::validate(typed.windows_application_routing.as_ref())?;
+    Ok(typed)
+}
+
+#[cfg(test)]
+mod native_production_text_tests {
+    use super::*;
+    #[test]
+    fn native_text_matches_protoc_and_rejects_ambiguous_or_unknown_fields() {
+        let text = include_bytes!(concat!(
+            env!("OUT_DIR"),
+            "/production-desired-state.textproto"
+        ));
+        let typed = parse_production_desired_text(text).unwrap();
+        assert_eq!(
+            typed.encode_to_vec(),
+            CANONICAL_PRODUCTION_DESIRED_STATE_BYTES
+        );
+        assert!(parse_production_desired_text(b"unknown_field: 1").is_err());
+        assert!(parse_production_desired_text(b"schema_version: 6 schema_version: 6").is_err());
+        assert!(parse_production_desired_text(&[0xff]).is_err());
+    }
 }
 
 /// Reads one immutable Git-derived protobuf by exact digest. The existing
@@ -3340,14 +3387,17 @@ mod release_set_tests {
             "infra/hosts/specs/application-acceptance-1.textproto".to_owned();
         assert!(validate_host_registry(&typed_vm).is_err());
 
-        // Operator must explicitly set the single desired run state and,
-        // only on Windows, the desired ProxyOnly/TUN mode.
+        // Fleet target owns only RUNNING/STOPPED. Windows mode belongs to the
+        // typed production desired spec, never a duplicated registry field.
         invalid = expected.clone();
         invalid.hosts[2].target = Some(FleetHostTarget {
             run_state: FleetHostRunState::Stopped as i32,
-            windows_mode: FleetHostMode::ProxyOnly as i32,
+            windows_mode: FleetHostMode::Unspecified as i32,
         });
         assert!(validate_host_registry(&invalid).is_ok());
+        invalid.hosts[2].target.as_mut().unwrap().windows_mode = FleetHostMode::ProxyOnly as i32;
+        assert!(validate_host_registry(&invalid).is_err());
+        invalid.hosts[2].target.as_mut().unwrap().windows_mode = FleetHostMode::Unspecified as i32;
         invalid.hosts[2].target.as_mut().unwrap().run_state = FleetHostRunState::Unspecified as i32;
         assert!(validate_host_registry(&invalid).is_err());
         invalid = expected.clone();

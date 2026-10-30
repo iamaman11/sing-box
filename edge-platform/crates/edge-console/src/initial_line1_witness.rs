@@ -6,8 +6,8 @@ use edge_secrets::{
     windows_runtime_state_from_attested_vm_bundle, write_access_service_identity,
     write_atomic_private,
 };
-use edge_shared_types::{CredentialProjectionKind, WindowsRuntimeState};
-use edge_singbox::render_windows_config;
+use edge_shared_types::{CredentialProjectionKind, WindowsDatapathMode, WindowsRuntimeState};
+use edge_singbox::render_windows_config_for_desired;
 use serde_json::{Value, json};
 use std::collections::BTreeSet;
 use std::fs;
@@ -70,8 +70,13 @@ fn isolated_config(state: &WindowsRuntimeState, ports: &[u16]) -> Result<Vec<u8>
     {
         return Err("Line1 witness requires eight distinct nonzero localhost listeners".to_owned());
     }
-    let mut config: Value = serde_json::from_slice(&render_windows_config(state)?)
-        .map_err(|_| "Line1 canonical sing-box renderer produced invalid JSON".to_owned())?;
+    // No matter what Git's NEXT desired mode is, external Line1 admission
+    // must be witnessed by a disposable process with NO TUN interface.
+    let mut desired = edge_shared_types::canonical_production_desired_state()?;
+    desired.windows_datapath_mode = WindowsDatapathMode::ProxyOnly as i32;
+    let mut config: Value =
+        serde_json::from_slice(&render_windows_config_for_desired(state, &desired)?)
+            .map_err(|_| "Line1 canonical sing-box renderer produced invalid JSON".to_owned())?;
     let source = config["outbounds"]
         .as_array()
         .ok_or("Line1 canonical outbounds missing")?;
@@ -408,14 +413,36 @@ pub(crate) fn run(
     let bundle = store.read_bundle(candidate)?;
     let runtime =
         windows_runtime_state_from_attested_vm_bundle(&bundle, target_ipv4, target_domain)?;
+    run_isolated_external_line1(&install_root.join("runtime"), singbox_binary, &runtime)?;
+    // Never print the addresses or any credential to the GitHub job.
+    println!("operation=CREDENTIAL_INITIAL_LINE1_EXTERNAL_WITNESS");
+    println!("line1_external_4_of_4=PASS");
+    println!("line1_direct_warp_egress_distinct=true");
+    println!("line1_witness_vantage=WINDOWS_ISOLATED_PROXY_ONLY");
+    println!("line1_issued_generation={generation}");
+    println!("windows_tun_mutations=0");
+    println!("windows_dns_mutations=0");
+    println!("windows_routes_mutations=0");
+    println!("windows_scm_mutations=0");
+    Ok(())
+}
+
+/// One existing external test implementation shared by isolated initial
+/// credential acceptance and prospective signed native TUN admission. It is
+/// always a disposable ProxyOnly child; its file contains credentials only
+/// under a privately owned directory and is deleted on scope exit.
+fn run_isolated_external_line1(
+    private_parent: &Path,
+    singbox_binary: &Path,
+    runtime: &WindowsRuntimeState,
+) -> Result<[Ipv4Addr; 4], String> {
     let ports = allocate_loopback_ports(8)?;
-    let config = isolated_config(&runtime, &ports)?;
+    let config = isolated_config(runtime, &ports)?;
     let ns = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| "Line1 witness system clock invalid")?
         .as_nanos();
-    let private = install_root
-        .join("runtime")
+    let private = private_parent
         .join(format!("line1-witness-{}-{ns}", std::process::id()))
         .join("candidate.json");
     if private.exists() {
@@ -458,17 +485,42 @@ pub(crate) fn run(
     if ips[0] == ips[2] || ips[1] == ips[3] {
         return Err("Line1 direct and WARP have the same observed external IPv4".to_owned());
     }
-    // Never print the addresses or any credential to the GitHub job.
-    println!("operation=CREDENTIAL_INITIAL_LINE1_EXTERNAL_WITNESS");
-    println!("line1_external_4_of_4=PASS");
-    println!("line1_direct_warp_egress_distinct=true");
-    println!("line1_witness_vantage=WINDOWS_ISOLATED_PROXY_ONLY");
-    println!("line1_issued_generation={generation}");
-    println!("windows_tun_mutations=0");
-    println!("windows_dns_mutations=0");
-    println!("windows_routes_mutations=0");
-    println!("windows_scm_mutations=0");
-    Ok(())
+    // Close the exact owned child BEFORE observing native network recovery.
+    drop(owner);
+    Ok(ips)
+}
+
+/// This local-only SYSTEM pre-TUN witness runs against the currently installed
+/// credential state; it never adopts an existing process or changes SCM,
+/// TUN, DNS, Windows firewall or routes. It does not itself sign or authorize
+/// a FleetHostIntent. A proof issuer must also independently attest the
+/// separate DNS/control recovery path and the exact config/release identity.
+#[cfg(windows)]
+pub(crate) fn prove_serving_line1_before_tun(
+    install_root: &Path,
+    singbox_binary: &Path,
+    runtime: &WindowsRuntimeState,
+) -> Result<[u8; 32], String> {
+    if !install_root
+        .to_string_lossy()
+        .eq_ignore_ascii_case(r"C:\sing-box")
+    {
+        return Err("HOST_WINDOWS_LINE1_ADMISSION_ROOT_INVALID".into());
+    }
+    let journal = install_root.join("native-host/journal");
+    edge_shared_types::host_journal::verify_native_journal_protection(&journal)?;
+    let (_, before) = edge_shared_types::windows_native_network::observe_native_network_identity()?;
+    before.require_foreign_warp_up()?;
+    let ips = run_isolated_external_line1(&journal, singbox_binary, runtime)?;
+    let (_, after) = edge_shared_types::windows_native_network::observe_native_network_identity()?;
+    before.require_restored(&after)?;
+    let mut input = b"sing-box/line1-pre-tun-real-egress/v1:".to_vec();
+    for ip in ips {
+        input.extend(ip.octets());
+    }
+    let mut evidence = [0u8; 32];
+    evidence.copy_from_slice(ring::digest::digest(&ring::digest::SHA256, &input).as_ref());
+    Ok(evidence)
 }
 
 #[cfg(test)]

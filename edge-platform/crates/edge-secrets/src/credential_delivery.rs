@@ -1007,6 +1007,23 @@ pub async fn request_canonical_native_admin_authorization(
     Ok(signed)
 }
 
+/// GitHub-hosted read-only network acceptance: use the SAME protected
+/// Cloudflare Access service identity as the existing VM credential proof.
+/// No second credential file, Vault dependency, or provider mutation.
+pub async fn fetch_canonical_credential_bundle_with_service_identity(
+    projection: CredentialProjectionKind,
+    generation: u64,
+    access_client_id: &str,
+    access_client_secret: &str,
+) -> Result<CredentialDeliveryBundle, String> {
+    let identity = AccessServiceIdentity::parse_env(&format!(
+        "CF_ACCESS_CLIENT_ID={access_client_id}\nCF_ACCESS_CLIENT_SECRET={access_client_secret}"
+    ))?;
+    observe_canonical_credential_bundle_with_identity(projection, generation, &identity, false)
+        .await?
+        .ok_or_else(|| "HOST_VM_WITNESS_WORKER_CREDENTIAL_ABSENT".to_owned())
+}
+
 pub async fn fetch_canonical_credential_bundle(
     projection: CredentialProjectionKind,
     generation: u64,

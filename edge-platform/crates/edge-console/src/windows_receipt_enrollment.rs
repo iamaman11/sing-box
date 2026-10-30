@@ -21,7 +21,46 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 
-const MACHINE: &str = "sing-box-windows-lab";
+#[cfg(test)]
+const MACHINE: &str = "sing-box-windows-lab"; // test fixture, never runtime owner
+pub(super) fn valid_machine_id(machine: &str) -> bool {
+    !machine.is_empty()
+        && machine.len() <= 40
+        && machine
+            .bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_lowercase())
+        && machine
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+// The existing typed receipt marker carries the host ID across release handoff.
+// It is not an authority: signed trust separately checks current protected Git.
+pub(super) fn bound_machine_id(install_root: &Path) -> Result<String, String> {
+    let root = native_root(install_root)?;
+    for marker in [MARKER, COMPLETED] {
+        let path = root.join(marker);
+        let meta = match fs::symlink_metadata(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Ok(meta) => meta,
+            Err(_) => return Err("HOST_WINDOWS_RECEIPT_MACHINE_MARKER_UNAVAILABLE".into()),
+        };
+        if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 512 {
+            return Err("HOST_WINDOWS_RECEIPT_MACHINE_MARKER_INVALID".into());
+        }
+        let bytes =
+            fs::read(&path).map_err(|_| "HOST_WINDOWS_RECEIPT_MACHINE_MARKER_UNREADABLE")?;
+        let request = FleetWindowsReceiptIdentityEnrollment::decode(bytes.as_slice())
+            .map_err(|_| "HOST_WINDOWS_RECEIPT_MACHINE_MARKER_PROTO_INVALID")?;
+        if request.encode_to_vec() != bytes || !valid_machine_id(&request.machine_id) {
+            return Err("HOST_WINDOWS_RECEIPT_MACHINE_MARKER_NONCANONICAL".into());
+        }
+        return Ok(request.machine_id);
+    }
+    Ok("UNREGISTERED".into())
+}
+
 const MARKER: &str = "receipt-enrollment.pb";
 const COMPLETED: &str = "receipt-enrollment.completed.pb";
 const PRIVATE: &str = "receipt-key.pk8";
@@ -47,7 +86,7 @@ fn request_valid(
     active: &WindowsActivationState,
 ) -> Result<(), &'static str> {
     if request.schema_version != 1
-        || request.machine_id != MACHINE
+        || !valid_machine_id(&request.machine_id)
         || request.source_revision != active.source_revision
         || request.release_set_sha256 != active.release_set_sha256
         || request.source_revision.len() != 40
@@ -78,7 +117,67 @@ fn read_marker(path: &Path, active: &WindowsActivationState) -> Result<(), Strin
     if request.encode_to_vec() != bytes {
         return Err("HOST_WINDOWS_RECEIPT_ENROLL_PROTO_NONCANONICAL".into());
     }
+    if request_valid(&request, active).is_ok() {
+        return Ok(());
+    }
+    // Completed first-use is historical identity evidence, not permission to
+    // enroll again after every update. Preserve its original exact bytes.
+    if path.file_name().and_then(|s| s.to_str()) == Some(COMPLETED) {
+        let root = path
+            .parent()
+            .and_then(Path::parent)
+            .ok_or("HOST_WINDOWS_IDENTITY_HISTORY_ROOT_INVALID")?;
+        let historical = historical_marker_activation(
+            root,
+            &request.source_revision,
+            &request.release_set_sha256,
+        )?;
+        return request_valid(&request, &historical).map_err(str::to_owned);
+    }
     request_valid(&request, active).map_err(str::to_owned)
+}
+
+pub(super) fn historical_marker_activation(
+    root: &Path,
+    source: &str,
+    release: &str,
+) -> Result<WindowsActivationState, String> {
+    if source.len() != 40
+        || release.len() != 64
+        || !source
+            .bytes()
+            .chain(release.bytes())
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err("HOST_WINDOWS_IDENTITY_HISTORY_DIGEST_INVALID".into());
+    }
+    let path = root.join("releases").join(release).join("release-set.pb");
+    edge_shared_types::host_journal::verify_windows_protected_path_acl(&path, true)?;
+    let bytes = windows_signed_host::bounded_regular_file(&path, 65536)?;
+    verify_historical_release_bytes(&bytes, source, release)?;
+    Ok(WindowsActivationState {
+        source_revision: source.into(),
+        release_set_sha256: release.into(),
+        ..Default::default()
+    })
+}
+
+fn verify_historical_release_bytes(
+    bytes: &[u8],
+    source: &str,
+    release: &str,
+) -> Result<(), &'static str> {
+    let pb = edge_shared_types::ReleaseSet::decode(bytes)
+        .map_err(|_| "HOST_WINDOWS_IDENTITY_HISTORY_RELEASE_INVALID")?;
+    let sha: String = ring::digest::digest(&ring::digest::SHA256, &bytes)
+        .as_ref()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    if sha != release || pb.source_revision != source || pb.encode_to_vec() != bytes {
+        return Err("HOST_WINDOWS_IDENTITY_HISTORY_RELEASE_MISMATCH");
+    }
+    Ok(())
 }
 
 fn create_only(path: &Path, bytes: &[u8]) -> Result<(), String> {
@@ -199,6 +298,42 @@ fn preflight_fresh_identity_root(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Local Administrator pre-BEGIN proof for a *completed* identity. Never read
+/// the SYSTEM private key or interpret file existence alone as authority.
+pub(super) fn verify_existing_receipt_identity_slot(
+    install_root: &Path,
+) -> Result<Vec<u8>, String> {
+    require_windows_local_administrator_first_use().map_err(str::to_owned)?;
+    let root = native_root(install_root)?;
+    verify_native_journal_protection(&root.join("journal")).map_err(str::to_owned)?;
+    for name in [PRIVATE, PUBLIC, COMPLETED] {
+        let path = root.join(name);
+        edge_shared_types::host_journal::verify_windows_protected_path_acl(&path, true)
+            .map_err(str::to_owned)?;
+        let max = if name == PRIVATE {
+            4096
+        } else if name == PUBLIC {
+            32
+        } else {
+            512
+        };
+        if !checked_regular_exists(&path, max)? {
+            return Err("HOST_WINDOWS_RECEIPT_COMPLETED_IDENTITY_MISSING".into());
+        }
+    }
+    match fs::symlink_metadata(root.join(MARKER)) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        _ => return Err("HOST_WINDOWS_RECEIPT_COMPLETED_WITH_PENDING_MARKER".into()),
+    }
+    let public = fs::read(root.join(PUBLIC))
+        .map_err(|_| "HOST_WINDOWS_RECEIPT_COMPLETED_PUBLIC_UNREADABLE")?;
+    if public.len() != 32 || public.iter().all(|b| *b == 0) {
+        return Err("HOST_WINDOWS_RECEIPT_COMPLETED_PUBLIC_INVALID".into());
+    }
+    // The next LocalSystem signed handler checks the private/public pair.
+    Ok(public)
+}
+
 // An explicit retained-BEGIN supersession may carry forward ONLY an
 // unconsumed first-use request pair. No key, completed marker or trust may
 // already exist: this is not a credential rotation or journal replay.
@@ -291,16 +426,18 @@ pub(super) fn rebind_pending_after_offline_handoff(
     {
         return Err("HOST_WINDOWS_FIRST_USE_REBIND_ORIGINAL_CHANGED_NO_REPLAY".into());
     }
+    let bound = FleetWindowsReceiptIdentityEnrollment::decode(previously.receipt_bytes.as_slice())
+        .map_err(|_| "HOST_WINDOWS_FIRST_USE_REBIND_HOST_ID_UNPROVEN")?;
     let new_receipt = FleetWindowsReceiptIdentityEnrollment {
         schema_version: 1,
-        machine_id: MACHINE.to_owned(),
+        machine_id: bound.machine_id.clone(),
         source_revision: current.source_revision.clone(),
         release_set_sha256: current.release_set_sha256.clone(),
     };
     request_valid(&new_receipt, &current).map_err(str::to_owned)?;
     let new_trust = FleetWindowsTrustEnrollment {
         schema_version: 1,
-        machine_id: MACHINE.to_owned(),
+        machine_id: bound.machine_id,
         source_revision: current.source_revision.clone(),
         release_set_sha256: current.release_set_sha256.clone(),
     };
@@ -373,7 +510,10 @@ pub(super) fn require_identity_request_for_trust(
 /// the SAME typed identity marker as a durable local-authorized BEGIN. The
 /// existing SYSTEM task eventually completes it. A crash cannot be treated
 /// as a fresh enrollment; no other first-use store is introduced.
-pub(super) fn prepare_clean_before_scm(install_root: &Path) -> Result<(), String> {
+pub(super) fn prepare_clean_before_scm(
+    install_root: &Path,
+    machine_id: &str,
+) -> Result<(), String> {
     require_windows_local_administrator_first_use().map_err(str::to_owned)?;
     require_exact_immutable_activation_console(install_root)?;
     let active = load_verified_activation(install_root).map_err(|err| err.to_string())?;
@@ -387,7 +527,7 @@ pub(super) fn prepare_clean_before_scm(install_root: &Path) -> Result<(), String
     let root = native_root(install_root)?;
     let request = FleetWindowsReceiptIdentityEnrollment {
         schema_version: 1,
-        machine_id: MACHINE.into(),
+        machine_id: machine_id.into(),
         source_revision: active.source_revision.clone(),
         release_set_sha256: active.release_set_sha256.clone(),
     };
@@ -398,7 +538,7 @@ pub(super) fn prepare_clean_before_scm(install_root: &Path) -> Result<(), String
 
 /// Local elevated Administrator: create ONE immutable, typed request in the
 /// existing protected root. No receipt PRIVATE key is generated here.
-pub(super) fn prepare(install_root: &Path) -> Result<(), String> {
+pub(super) fn prepare(install_root: &Path, registered_machine: &str) -> Result<(), String> {
     require_windows_local_administrator_first_use().map_err(str::to_owned)?;
     require_exact_immutable_activation_console(install_root)?;
     let active = load_verified_activation(install_root).map_err(|err| err.to_string())?;
@@ -421,7 +561,7 @@ pub(super) fn prepare(install_root: &Path) -> Result<(), String> {
     }
     let request = FleetWindowsReceiptIdentityEnrollment {
         schema_version: 1,
-        machine_id: MACHINE.into(),
+        machine_id: registered_machine.into(),
         source_revision: active.source_revision.clone(),
         release_set_sha256: active.release_set_sha256.clone(),
     };
@@ -617,7 +757,7 @@ pub(super) fn observe(install_root: &Path) -> Result<(), String> {
     }
     let bytes = fs::read(public).map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_PUBLIC_UNREADABLE")?;
     println!("w4_receipt_identity=PUBLIC_ONLY_OBSERVED");
-    println!("machine_id={MACHINE}");
+    println!("machine_id={}", bound_machine_id(install_root)?);
     println!("release_set_sha256={}", active.release_set_sha256);
     println!(
         "native_receipt_public_hex={}",
@@ -631,6 +771,26 @@ pub(super) fn observe(install_root: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn completed_identity_history_requires_exact_original_release() {
+        let original = edge_shared_types::ReleaseSet {
+            schema_version: 7,
+            source_revision: "a".repeat(40),
+            ..Default::default()
+        }
+        .encode_to_vec();
+        let sha: String = ring::digest::digest(&ring::digest::SHA256, &original)
+            .as_ref()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect();
+        verify_historical_release_bytes(&original, &"a".repeat(40), &sha).unwrap();
+        assert!(verify_historical_release_bytes(&original, &"b".repeat(40), &sha).is_err());
+        assert!(
+            verify_historical_release_bytes(&original, &"a".repeat(40), &"0".repeat(64)).is_err()
+        );
+        assert!(verify_historical_release_bytes(b"invalid", &"a".repeat(40), &sha).is_err());
+    }
     #[test]
     fn pending_rebind_accepts_only_exact_unconsumed_pair() {
         let dir = std::env::temp_dir().join(format!("w4-rebind-pending-{}", std::process::id()));
@@ -697,7 +857,7 @@ mod tests {
         };
         assert!(request_valid(&request, &active).is_ok());
         let mut altered = request.clone();
-        altered.machine_id = "other-host".into();
+        altered.machine_id = "Invalid-Uppercase".into();
         assert!(request_valid(&altered, &active).is_err());
         altered = request.clone();
         altered.release_set_sha256 = "f".repeat(64);

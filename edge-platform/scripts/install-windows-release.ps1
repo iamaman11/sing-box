@@ -7,6 +7,8 @@ param(
     # hand-copied from GitHub. Retained old BEGIN needs separate explicit scope.
     [switch]$ConnectWindows,
     [switch]$ApproveRetainedBegin,
+    # Explicit local approval to harden the old unsafe EXE chain before running it.
+    [switch]$ApproveAclRepair,
     [string]$InstallRoot = "C:\sing-box",
     [string]$GitHubToken = $env:EDGE_GITHUB_TOKEN,
     [switch]$ForceRematerialize,
@@ -34,6 +36,311 @@ $GitHubReadAttempts = 3
 $GitHubReadTimeoutSec = 15
 $GitHubAssetTimeoutSec = 120
 $GitHubRetryDelaySec = 2
+
+
+# Trusted-entry repair is intentionally bounded to the application executable
+# chain. Never traverse native-host/, journals, sealed private keys, or C:\.
+# This is local Administrator first-use authority, not runner/remote authority.
+function Get-ProtectedAppAclReadback {
+    param([Parameter(Mandatory)] [string]$Path)
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'WINDOWS_INSTALL_PRELAUNCH_REPARSE_PATH_BLOCKED'
+    }
+    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    $owner = ([Security.Principal.NTAccount]::new([string]$acl.Owner)).Translate(
+        [Security.Principal.SecurityIdentifier]
+    ).Value
+    if ($owner -notin @('S-1-5-18', 'S-1-5-32-544')) {
+        throw 'WINDOWS_INSTALL_PRELAUNCH_OWNER_NOT_PRIVILEGED'
+    }
+    # Same effective mutation mask as the native SYSTEM journal verifier.
+    [long]$write = 0x00000002 -bor 0x00000004 -bor 0x00000010 -bor
+        0x00000040 -bor 0x00000100 -bor 0x00010000 -bor
+        0x00040000 -bor 0x00080000 -bor 0x10000000 -bor 0x40000000
+    $writers = @()
+    foreach ($ace in @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))) {
+        $sid = $ace.IdentityReference.Value
+        if ($ace.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            $sid -in @('S-1-5-18', 'S-1-5-32-544')) {
+            continue
+        }
+        if (([long]$ace.FileSystemRights -band $write) -ne 0) {
+            $writers += $sid
+        }
+    }
+    return @($writers | Sort-Object -Unique)
+}
+
+function Assert-RootExecutionChain {
+    param([switch]$CreateFresh, [switch]$ApproveRepair)
+    if ($InstallRoot -cne 'C:\sing-box') {
+        throw 'WINDOWS_INSTALL_PRELAUNCH_EXACT_ROOT_REQUIRED'
+    }
+    $principal = [Security.Principal.WindowsPrincipal]::new(
+        [Security.Principal.WindowsIdentity]::GetCurrent()
+    )
+    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        throw 'WINDOWS_INSTALL_PRELAUNCH_ELEVATED_ADMIN_REQUIRED'
+    }
+    $exists = Test-Path -LiteralPath $InstallRoot -PathType Container
+    if (-not $exists -and -not $CreateFresh) {
+        throw 'WINDOWS_INSTALL_PRELAUNCH_ROOT_MISSING'
+    }
+    if (-not $exists) {
+        if (Test-Path -LiteralPath $InstallRoot) {
+            throw 'WINDOWS_INSTALL_PRELAUNCH_ROOT_WRONG_TYPE'
+        }
+        New-Item -ItemType Directory -Path $InstallRoot -ErrorAction Stop | Out-Null
+        $ApproveRepair = $true
+    }
+    if ($exists -and $ApproveRepair) {
+        # A periodic SYSTEM dispatch may run old bytes while the root DACL is
+        # being normalized. Explicit ACL approval does NOT grant authority to
+        # disable/restart it. Only a separate proven offline handoff may leave
+        # the existing task Disabled before this change.
+        $task = Get-ScheduledTask -TaskName 'EdgePlatformPrivilegedDispatch' -ErrorAction Stop
+        if ($null -eq $task -or [string]$task.State -cne 'Disabled' -or
+            @($task.Actions).Count -ne 1 -or
+            [string]$task.Principal.LogonType -cne 'ServiceAccount' -or
+            [string]$task.Principal.RunLevel -cne 'Highest') {
+            throw 'WINDOWS_INSTALL_ACL_REPAIR_REQUIRES_EXACT_DISABLED_SYSTEM_TASK'
+        }
+        $principal = [string]$task.Principal.UserId
+        $systemSid = if ($principal -ceq 'S-1-5-18') { $principal } else {
+            ([Security.Principal.NTAccount]::new($principal)).Translate(
+                [Security.Principal.SecurityIdentifier]
+            ).Value
+        }
+        if ($systemSid -cne 'S-1-5-18' -or
+            [string]$task.Actions[0].Arguments -cnotmatch '^privileged-dispatch --install-root "?C:\\sing-box"?$' -or
+            ([string]$task.Actions[0].Execute).Trim('"') -cnotmatch '^C:\\sing-box\\releases\\[0-9a-f]{64}\\bin\\edge-console\.exe$') {
+            throw 'WINDOWS_INSTALL_ACL_REPAIR_SYSTEM_TASK_IDENTITY_MISMATCH'
+        }
+        $runningConsole = @(Get-CimInstance -ClassName Win32_Process -Filter "Name='edge-console.exe'" -ErrorAction Stop)
+        if ($runningConsole.Count -ne 0) {
+            throw 'WINDOWS_INSTALL_ACL_REPAIR_OLD_CONSOLE_RUNNING'
+        }
+        $controller = @(Get-CimInstance -ClassName Win32_Service -Filter "Name='EdgePlatformController'" -ErrorAction Stop)
+        if ($controller.Count -ne 1 -or [string]$controller[0].State -cne 'Stopped') {
+            throw 'WINDOWS_INSTALL_ACL_REPAIR_CONTROLLER_NOT_STOPPED'
+        }
+        $tuns = @(Get-NetAdapter -Name 'sing-box-tun' -ErrorAction SilentlyContinue)
+        if ($tuns.Count -ne 0) {
+            throw 'WINDOWS_INSTALL_ACL_REPAIR_MANAGED_TUN_PRESENT'
+        }
+    }
+    $scopes = @($InstallRoot)
+    foreach ($name in @('releases', 'bin', 'bootstrap')) {
+        $path = Join-Path $InstallRoot $name
+        if (Test-Path -LiteralPath $path) {
+            if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+                throw 'WINDOWS_INSTALL_PRELAUNCH_EXECUTABLE_DIR_WRONG_TYPE'
+            }
+            $scopes += $path
+        }
+    }
+    # Reparse points and unprivileged OWNERS are checked before any mutation.
+    # A recursive icacls /reset must never traverse an unknown junction or
+    # rewrite a sealed private-key/journal tree through a hidden link.
+    foreach ($path in $scopes) {
+        $objects = @(Get-Item -LiteralPath $path -Force -ErrorAction Stop)
+        if ($path -cne $InstallRoot) {
+            $objects += @(Get-ChildItem -LiteralPath $path -Force -Recurse -ErrorAction Stop)
+        }
+        if ($objects.Count -gt 12000) {
+            throw 'WINDOWS_INSTALL_PRELAUNCH_EXECUTABLE_TREE_TOO_LARGE'
+        }
+        foreach ($entry in $objects) {
+            if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'WINDOWS_INSTALL_PRELAUNCH_DESCENDANT_REPARSE_BLOCKED'
+            }
+            # Fails if the owner is neither SYSTEM nor Administrators. An
+            # unsafe owner cannot be silently normalized during repair.
+            $null = Get-ProtectedAppAclReadback -Path $entry.FullName
+        }
+    }
+    if ($ApproveRepair) {
+        foreach ($path in $scopes) {
+            $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'WINDOWS_INSTALL_PRELAUNCH_REPARSE_PATH_BLOCKED'
+            }
+            # A root/EXE write grant may be EXPLICIT even when its owner is
+            # Administrators. /inheritance:r alone does not remove that grant.
+            & icacls.exe $path /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-20:(OI)(CI)RX' /Q | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_INSTALL_PRELAUNCH_GRANT_FAILED_NO_EXECUTION' }
+            & icacls.exe $path /inheritance:r /Q | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_INSTALL_PRELAUNCH_INHERITANCE_FAILED_NO_EXECUTION' }
+            # Read every explicit writer SID from the exact directory ACL.
+            # This scope never includes native-host or its sealed identity.
+            $acl = Get-Acl -LiteralPath $path -ErrorAction Stop
+            [long]$write = 0x00000002 -bor 0x00000004 -bor 0x00000010 -bor
+                0x00000040 -bor 0x00000100 -bor 0x00010000 -bor
+                0x00040000 -bor 0x00080000 -bor 0x10000000 -bor 0x40000000
+            $unsafe = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) |
+                Where-Object { $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+                    $_.IdentityReference.Value -notin @('S-1-5-18','S-1-5-32-544') -and
+                    (([long]$_.FileSystemRights -band $write) -ne 0) } |
+                ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
+            foreach ($sid in $unsafe) {
+                & icacls.exe $path /remove:g "*$sid" /Q | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_INSTALL_PRELAUNCH_WRITER_REMOVAL_FAILED_NO_EXECUTION' }
+            }
+            & icacls.exe $path /setowner '*S-1-5-32-544' /Q | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_INSTALL_PRELAUNCH_OWNER_FAILED_NO_EXECUTION' }
+            if ($path -cne $InstallRoot) {
+                # Only immutable executable trees. A reset on C:\sing-box or
+                # native-host would destroy the sealed key's intended DACL.
+                & icacls.exe (Join-Path $path '*') /reset /T /Q | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_INSTALL_PRELAUNCH_EXECUTABLE_RESET_FAILED_NO_EXECUTION' }
+                & icacls.exe $path /setowner '*S-1-5-32-544' /T /Q | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_INSTALL_PRELAUNCH_EXECUTABLE_OWNER_FAILED_NO_EXECUTION' }
+            }
+        }
+    }
+    foreach ($path in $scopes) {
+        $objects = @($path)
+        if ($path -cne $InstallRoot) {
+            $objects += @(Get-ChildItem -LiteralPath $path -Force -Recurse -ErrorAction Stop |
+                Select-Object -ExpandProperty FullName)
+        }
+        if ($objects.Count -gt 12000) { throw 'WINDOWS_INSTALL_PRELAUNCH_EXECUTABLE_TREE_TOO_LARGE' }
+        foreach ($object in $objects) {
+            if (@(Get-ProtectedAppAclReadback -Path $object).Count -ne 0) {
+                throw 'WINDOWS_INSTALL_PRELAUNCH_UNPRIVILEGED_WRITER_BLOCKED'
+            }
+        }
+    }
+}
+
+
+function Protect-ReleaseStageBeforeExecution {
+    param([Parameter(Mandatory)] [string]$Stage)
+    $expectedPrefix = Join-Path $InstallRoot '.release-stage-'
+    $isReleaseStage = $Stage -cmatch '^C:\\sing-box\\releases\\[0-9a-f]{64}\.new$'
+    if (-not $Stage.StartsWith($expectedPrefix, [StringComparison]::Ordinal) -and
+        -not $isReleaseStage) {
+        throw 'WINDOWS_INSTALL_STAGE_SCOPE_INVALID'
+    }
+    # No extracted binary may be run while owned or writable by an ordinary
+    # SID, even when its verified source archive came from protected Git.
+    $items = @(Get-Item -LiteralPath $Stage -Force -ErrorAction Stop)
+    $items += @(Get-ChildItem -LiteralPath $Stage -Force -Recurse -ErrorAction Stop)
+    if ($items.Count -gt 12000) { throw 'WINDOWS_INSTALL_STAGE_TOO_LARGE' }
+    foreach ($entry in $items) {
+        if (($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw 'WINDOWS_INSTALL_STAGE_REPARSE_BLOCKED'
+        }
+    }
+    & icacls.exe $Stage /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-20:(OI)(CI)RX' /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_INSTALL_STAGE_ACL_FAILED' }
+    & icacls.exe $Stage /inheritance:r /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_INSTALL_STAGE_INHERITANCE_FAILED' }
+    & icacls.exe (Join-Path $Stage '*') /reset /T /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_INSTALL_STAGE_RESET_FAILED' }
+    & icacls.exe $Stage /setowner '*S-1-5-32-544' /T /Q | Out-Null
+    if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_INSTALL_STAGE_OWNER_FAILED' }
+    foreach ($entry in $items) {
+        if (@(Get-ProtectedAppAclReadback -Path $entry.FullName).Count -ne 0) {
+            throw 'WINDOWS_INSTALL_STAGE_UNPRIVILEGED_WRITER'
+        }
+    }
+}
+
+
+# A repaired DACL does not establish authenticity of code that previously
+# was replaceable. Bind the old SYSTEM EXE to the exact published Git release
+# BEFORE executing the installed diagnostic/console from that directory.
+function Assert-ExistingNativeReleaseFromProtectedGit {
+    $task = Get-ScheduledTask -TaskName 'EdgePlatformPrivilegedDispatch' -ErrorAction Stop
+    if ($null -eq $task -or @($task.Actions).Count -ne 1 -or
+        [string]$task.Principal.LogonType -cne 'ServiceAccount' -or
+        [string]$task.Principal.RunLevel -cne 'Highest') {
+        throw 'WINDOWS_INSTALL_OLD_SYSTEM_OWNER_UNPROVEN'
+    }
+    $owner = [string]$task.Principal.UserId
+    $sid = if ($owner -ceq 'S-1-5-18') { $owner } else {
+        ([Security.Principal.NTAccount]::new($owner)).Translate(
+            [Security.Principal.SecurityIdentifier]
+        ).Value
+    }
+    $taskArgs = [string]$task.Actions[0].Arguments
+    $taskExe = ([string]$task.Actions[0].Execute).Trim('"')
+    $exact = [regex]::Match(
+        $taskExe,
+        '\AC:\\sing-box\\releases\\(?<sha>[0-9a-f]{64})\\bin\\edge-console\.exe\z'
+    )
+    if ($sid -cne 'S-1-5-18' -or
+        $taskArgs -cnotmatch '^privileged-dispatch --install-root "?C:\\sing-box"?$' -or
+        -not $exact.Success) {
+        throw 'WINDOWS_INSTALL_OLD_SYSTEM_OWNER_UNPROVEN'
+    }
+    $releaseSha = $exact.Groups['sha'].Value
+    $tag = "edge-release-$releaseSha"
+    $release = Get-DurableRelease -Tag $tag
+    $head = Invoke-GitHubJsonGet -Uri "https://api.github.com/repos/$Repository/branches/main"
+    $revision = [string]$release.target_commitish
+    if (-not [bool]$head.protected -or
+        [string]$head.commit.sha -cnotmatch '^[0-9a-f]{40}$' -or
+        $revision -cnotmatch '^[0-9a-f]{40}$' -or
+        [string]$release.tag_name -cne $tag -or
+        [bool]$release.draft -or [bool]$release.prerelease -or
+        [string]::IsNullOrEmpty([string]$release.published_at)) {
+        throw 'WINDOWS_INSTALL_OLD_RELEASE_GIT_AUTHORITY_UNPROVEN'
+    }
+    $ref = Invoke-GitHubJsonGet -Uri "https://api.github.com/repos/$Repository/git/ref/tags/$tag"
+    $compareUri = "https://api.github.com/repos/$Repository/compare/" +
+        $revision + "..." + [string]$head.commit.sha + "?per_page=1&page=2"
+    $compare = Invoke-GitHubJsonGet -Uri $compareUri
+    if ([string]$ref.object.type -cne 'commit' -or
+        [string]$ref.object.sha -cne $revision -or
+        [string]$compare.status -notin @('ahead', 'identical') -or
+        [string]$compare.base_commit.sha -cne $revision -or
+        [string]$compare.merge_base_commit.sha -cne $revision) {
+        throw 'WINDOWS_INSTALL_OLD_RELEASE_NOT_PROTECTED_MAIN_ANCESTOR'
+    }
+    $oldDir = Join-Path $InstallRoot "releases\$releaseSha"
+    foreach ($asset in @('edge-platform-windows.zip', 'release-set.pb')) {
+        $matches = @($release.assets | Where-Object { [string]$_.name -ceq $asset })
+        if ($matches.Count -ne 1 -or
+            [string]$matches[0].digest -cnotmatch '^sha256:[0-9a-f]{64}$') {
+            throw 'WINDOWS_INSTALL_OLD_RELEASE_PUBLISHED_DIGEST_UNAVAILABLE'
+        }
+        $file = Join-Path $oldDir $asset
+        if (-not (Test-Path -LiteralPath $file -PathType Leaf) -or
+            (Get-ExactHash -Path $file) -cne ([string]$matches[0].digest).Substring(7)) {
+            throw 'WINDOWS_INSTALL_OLD_RELEASE_BYTES_NOT_PUBLISHED_NO_EXECUTION'
+        }
+    }
+    if ((Get-ExactHash -Path (Join-Path $oldDir 'release-set.pb')) -cne $releaseSha) {
+        throw 'WINDOWS_INSTALL_OLD_RELEASE_MANIFEST_SHA_MISMATCH'
+    }
+    $stage = Join-Path $InstallRoot ('.release-verify-' + [guid]::NewGuid().ToString('N'))
+    New-Item -ItemType Directory -Path $stage -ErrorAction Stop | Out-Null
+    try {
+        # Decompress as data; never execute an untrusted existing EXE.
+        Expand-Archive -LiteralPath (Join-Path $oldDir 'edge-platform-windows.zip') -DestinationPath $stage
+        foreach ($exe in @('edge-console.exe','edge-diagnostic.exe','edge-controller.exe','sing-box.exe','edge-release-set.exe')) {
+            $published = Join-Path $stage "bin\$exe"
+            $installed = Join-Path $oldDir "bin\$exe"
+            if (-not (Test-Path -LiteralPath $published -PathType Leaf) -or
+                -not (Test-Path -LiteralPath $installed -PathType Leaf) -or
+                (Get-ExactHash -Path $published) -cne (Get-ExactHash -Path $installed)) {
+                throw 'WINDOWS_INSTALL_OLD_EXECUTABLE_NOT_PUBLISHED_NO_EXECUTION'
+            }
+        }
+        foreach ($exe in @('edge-console.exe','edge-diagnostic.exe')) {
+            if ((Get-ExactHash -Path (Join-Path $InstallRoot "bin\$exe")) -cne
+                (Get-ExactHash -Path (Join-Path $stage "bin\$exe"))) {
+                throw 'WINDOWS_INSTALL_OLD_STABLE_BINARY_NOT_PUBLISHED_NO_EXECUTION'
+            }
+        }
+    } finally {
+        Remove-Item -LiteralPath $stage -Recurse -Force -ErrorAction SilentlyContinue
+    }
+    Write-Output 'windows_old_executables=PUBLISHED_RELEASE_VERIFIED_BEFORE_EXECUTION'
+}
 
 function Assert-OfflineWindow {
     if (-not $Offline) { return }
@@ -373,12 +680,22 @@ function Activate-ReleaseAuthority {
     )
     $null = & $Tool @activationArgs
     if ($LASTEXITCODE -ne 0) { throw "Failed to create typed Windows activation state" }
+    & icacls.exe $currentTemp /setowner '*S-1-5-32-544' /Q | Out-Null
+    if ($LASTEXITCODE -ne 0 -or @(Get-ProtectedAppAclReadback -Path $currentTemp).Count -ne 0) {
+        throw 'WINDOWS_INSTALL_ACTIVATION_POINTER_ACL_NOT_PROTECTED'
+    }
     [void](Invoke-Diagnostic -Diagnostic $Diagnostic -State $currentTemp)
 
     $stableConsole = Join-Path $binDir "edge-console.exe"
     $stableDiagnostic = Join-Path $binDir "edge-diagnostic.exe"
     Copy-StableBinary -Source $Console -Target $stableConsole
     Copy-StableBinary -Source $Diagnostic -Target $stableDiagnostic
+    foreach ($binary in @($stableConsole, $stableDiagnostic)) {
+        & icacls.exe $binary /setowner '*S-1-5-32-544' /Q | Out-Null
+        if ($LASTEXITCODE -ne 0 -or @(Get-ProtectedAppAclReadback -Path $binary).Count -ne 0) {
+            throw 'WINDOWS_INSTALL_STABLE_BINARY_ACL_NOT_PROTECTED'
+        }
+    }
 
     if ((Test-Path -LiteralPath $currentPath) -and -not $PreservePrevious) {
         Copy-Item -LiteralPath $currentPath -Destination "$previousPath.new" -Force
@@ -463,6 +780,8 @@ if ($ConnectWindows) {
         Write-Output 'windows_connect_next=EXISTING_SYSTEM_TASK'
         exit 0
     }
+    Assert-RootExecutionChain -ApproveRepair:$ApproveAclRepair
+    Assert-ExistingNativeReleaseFromProtectedGit
     $installed = Invoke-Diagnostic -Diagnostic $stableDiagnostic -State $currentPath
     if ([string]$installed['release_set_sha256'] -ceq $selectedDigest) {
         if ($ApproveRetainedBegin) {
@@ -479,7 +798,7 @@ if ($ConnectWindows) {
         }
         $state = ($stateText | Out-String | ConvertFrom-Json -ErrorAction Stop)
         if ([string]$state.schema -cne 'sing-box.windows-first-use-status/v1' -or
-            [string]$state.machine_id -cne 'sing-box-windows-lab' -or
+            [string]$state.machine_id -cnotmatch '^(UNREGISTERED|[a-z][a-z0-9-]{0,39})$' -or
             [string]$state.installed_release_set_sha256 -cne $selectedDigest -or
             [int]$state.mutations -ne 0) {
             throw 'WINDOWS_CONNECT_FIRST_USE_STATE_NOT_CANONICAL'
@@ -566,6 +885,9 @@ if ($ConnectWindows) {
 if ($ApproveRetainedBegin) {
     throw 'WINDOWS_CONNECT_APPROVAL_REQUIRES_CONNECT_WINDOWS'
 }
+if ($ApproveAclRepair) {
+    throw 'WINDOWS_INSTALL_ACL_REPAIR_APPROVAL_REQUIRES_CONNECT_WINDOWS'
+}
 if (($StageOnly -or $BootstrapNow) -and (-not $Offline -or $ForceRematerialize -or $ArchivedAcceptanceSourceRunId -ne 0 -or ($StageOnly -and $BootstrapNow))) {
     throw 'OFFLINE_BOOTSTRAP_BLOCKED: StageOnly requires exact ordinary offline candidate'
 }
@@ -598,11 +920,20 @@ $binDir = Join-Path $InstallRoot "bin"
 $releasesDir = Join-Path $InstallRoot "releases"
 $currentPath = Join-Path $InstallRoot "current.pb"
 $previousPath = Join-Path $InstallRoot "previous.pb"
-New-Item -ItemType Directory -Force -Path $binDir, $releasesDir | Out-Null
-
 Assert-HexSha256 -Value $ReleaseSetSha256 -Name "ReleaseSetSha256"
 $tag = "edge-release-$ReleaseSetSha256"
 Assert-AcceptedReleaseAuthority -AcceptedRevision $AcceptedRevision -Tag $tag -ArchivedAcceptanceSourceRunId $ArchivedAcceptanceSourceRunId
+# Before any downloaded verifier or installed console is executed: the root
+# must be protected. Existing unsafe roots require the explicit ConnectWindows
+# repair scope; fresh roots are protected before materializing release files.
+if (-not (Test-Path -LiteralPath $InstallRoot)) {
+    Assert-RootExecutionChain -CreateFresh
+} else {
+    Assert-RootExecutionChain
+}
+# Directories are created only after the protected root has been proven or
+# provisioned. Creating them first could inherit writable volume-root ACEs.
+New-Item -ItemType Directory -Force -Path $binDir, $releasesDir | Out-Null
 $canonicalReleaseDir = Join-Path $releasesDir $ReleaseSetSha256
 $repairReleaseDir = Join-Path $releasesDir ($ReleaseSetSha256 + ".repair")
 $releaseDir = $canonicalReleaseDir
@@ -653,7 +984,8 @@ $requiredInstalled = @(
 $needsInstall = $ForceRematerialize -or @($requiredInstalled | Where-Object { -not (Test-Path -LiteralPath $_) }).Count -gt 0
 
 if ($needsInstall) {
-    $stage = Join-Path $env:TEMP ("edge-platform-release-" + [guid]::NewGuid().ToString("N"))
+    # Never execute downloaded verifier binaries from a user-writable TEMP.
+        $stage = Join-Path $InstallRoot (".release-stage-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
     try {
         $release = Get-DurableRelease -Tag $tag
@@ -677,6 +1009,7 @@ if ($needsInstall) {
             throw "Windows release package is missing bootstrap\install-windows-release.ps1"
         }
 
+        Protect-ReleaseStageBeforeExecution -Stage $stage
         $tool = Join-Path $unpacked "bin\edge-release-set.exe"
         $verifyArgs = @(
             "verify-windows", "--input", $stageReleaseSet, "--sha256-file", $stageReleaseSetSidecar,
@@ -700,6 +1033,9 @@ if ($needsInstall) {
         Copy-Item -LiteralPath $stagePackageSidecar -Destination (Join-Path $releaseStage "edge-platform-windows.zip.sha256")
         Copy-Item -LiteralPath (Join-Path $unpacked "bin") -Destination $releaseStage -Recurse
         Copy-Item -LiteralPath (Join-Path $unpacked "bootstrap") -Destination $releaseStage -Recurse
+        # The new immutable release tree must be protected before native code
+        # is executed from it, even if the old root was previously unsafe.
+        Protect-ReleaseStageBeforeExecution -Stage $releaseStage
         if (Test-Path -LiteralPath $releaseDir) { Remove-Item -Recurse -Force $releaseDir }
         Move-Item -LiteralPath $releaseStage -Destination $releaseDir
     } finally {

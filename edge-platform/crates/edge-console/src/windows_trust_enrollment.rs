@@ -5,8 +5,8 @@
 //! registry, spec, or trust bytes. No SCM, network/TUN or resource mutation.
 use super::*;
 use edge_shared_types::{
-    FleetHostAction, FleetHostIntent, FleetHostKind, FleetHostMode, FleetHostRunState,
-    FleetNativeTrustSnapshot, FleetWindowsTrustEnrollment, HostRegistry, ReleaseSet,
+    FleetHostAction, FleetHostIntent, FleetHostKind, FleetHostRunState, FleetNativeTrustSnapshot,
+    FleetWindowsTrustEnrollment, HostRegistry, ReleaseSet,
     host_journal::require_windows_local_administrator_first_use,
     host_journal::verify_native_journal_protection,
     host_lifecycle::{digest_host_desired, verify_windows_signed_git_prerequisites},
@@ -18,7 +18,8 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
-const HOST: &str = "sing-box-windows-lab";
+#[cfg(test)]
+const HOST: &str = "sing-box-windows-lab"; // test fixture, never runtime owner
 const SPEC: &str = "infra/production/production.textproto";
 const TRUST_FILE: &str = "trust.pb";
 const PUBLIC: &str = "receipt-public-key.bin";
@@ -42,7 +43,7 @@ pub(super) fn verify_enrollment_marker(
         .map_err(|_| "HOST_WINDOWS_TRUST_ENROLL_MARKER_PROTO_INVALID")?;
     if request.encode_to_vec() != bytes
         || request.schema_version != 1
-        || request.machine_id != HOST
+        || !windows_receipt_enrollment::valid_machine_id(&request.machine_id)
         || request.source_revision != active.source_revision
         || request.release_set_sha256 != active.release_set_sha256
     {
@@ -96,7 +97,7 @@ fn prepare_exact(install_root: &Path, allow_pending_identity: bool) -> Result<()
     }
     let request = FleetWindowsTrustEnrollment {
         schema_version: 1,
-        machine_id: HOST.to_owned(),
+        machine_id: windows_receipt_enrollment::bound_machine_id(install_root)?,
         source_revision: active.source_revision.clone(),
         release_set_sha256: active.release_set_sha256.clone(),
     };
@@ -114,6 +115,99 @@ fn prepare_exact(install_root: &Path, allow_pending_identity: bool) -> Result<()
     println!("native_trust_next=EXISTING_LOCALSYSTEM_TASK");
     println!("scm_mutations=0");
     println!("network_mutations=0");
+    Ok(())
+}
+
+/// A pending first-use trust marker may cross an approved exact offline
+/// handoff, but only once and with the same receipt identity.
+pub(super) fn preflight_pending_trust_handoff(
+    install_root: &Path,
+    predecessor: &WindowsActivationState,
+) -> Result<(), String> {
+    require_windows_local_administrator_first_use().map_err(str::to_owned)?;
+    let root = install_root.join("native-host");
+    verify_native_journal_protection(&root.join("journal")).map_err(str::to_owned)?;
+    for name in [DONE, TRUST_FILE] {
+        if windows_receipt_enrollment::checked_regular_exists(
+            &root.join(name),
+            if name == TRUST_FILE {
+                9 * 1024 * 1024
+            } else {
+                512
+            },
+        )? {
+            return Err("HOST_WINDOWS_PENDING_TRUST_ALREADY_COMPLETED".into());
+        }
+    }
+    let marker = root.join(MARKER);
+    edge_shared_types::host_journal::verify_windows_protected_path_acl(&marker, true)
+        .map_err(str::to_owned)?;
+    let bytes = windows_signed_host::bounded_regular_file(&marker, 512)?;
+    verify_enrollment_marker(&bytes, predecessor).map_err(str::to_owned)?;
+    let archive = root.join(format!(
+        "{MARKER}.predecessor-{}",
+        predecessor.release_set_sha256
+    ));
+    match fs::symlink_metadata(archive) {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        _ => Err("HOST_WINDOWS_PENDING_TRUST_PREDECESSOR_ALREADY_RECORDED".into()),
+    }
+}
+
+/// Archive exact predecessor intent before replacing the pending marker. This
+/// is an irreversible no-replay handoff under the SAME disabled SYSTEM task.
+pub(super) fn rebind_pending_trust_after_offline_handoff(
+    install_root: &Path,
+    predecessor: &WindowsActivationState,
+) -> Result<(), String> {
+    require_windows_local_administrator_first_use().map_err(str::to_owned)?;
+    require_exact_immutable_activation_console(install_root)?;
+    let current = load_verified_activation(install_root).map_err(|e| e.to_string())?;
+    if current.release_set_sha256 == predecessor.release_set_sha256 {
+        return Err("HOST_WINDOWS_PENDING_TRUST_HANDOFF_NOT_DISTINCT".into());
+    }
+    require_offline_windows_owner(install_root, &current)?;
+    verify_offline_bootstrap_dispatcher(&current.console_path, "Disabled")?;
+    preflight_pending_trust_handoff(install_root, predecessor)?;
+    let root = install_root.join("native-host");
+    let marker = root.join(MARKER);
+    let before = windows_signed_host::bounded_regular_file(&marker, 512)?;
+    let archive = root.join(format!(
+        "{MARKER}.predecessor-{}",
+        predecessor.release_set_sha256
+    ));
+    fs::hard_link(&marker, &archive)
+        .map_err(|_| "HOST_WINDOWS_PENDING_TRUST_ARCHIVE_UNKNOWN_NO_REPLAY")?;
+    if windows_signed_host::bounded_regular_file(&archive, 512)? != before {
+        return Err("HOST_WINDOWS_PENDING_TRUST_ARCHIVE_CHANGED_NO_REPLAY".into());
+    }
+    // Windows FlushFileBuffers requires a writable handle, exactly as the
+    // existing receipt-marker predecessor archival path already does.
+    OpenOptions::new()
+        .write(true)
+        .open(&archive)
+        .and_then(|file| file.sync_all())
+        .map_err(|_| "HOST_WINDOWS_PENDING_TRUST_ARCHIVE_SYNC_UNKNOWN_NO_REPLAY")?;
+    let next = FleetWindowsTrustEnrollment {
+        schema_version: 1,
+        machine_id: windows_receipt_enrollment::bound_machine_id(install_root)?,
+        source_revision: current.source_revision.clone(),
+        release_set_sha256: current.release_set_sha256.clone(),
+    };
+    let bytes = next.encode_to_vec();
+    verify_enrollment_marker(&bytes, &current).map_err(str::to_owned)?;
+    fs::remove_file(&marker).map_err(|_| "HOST_WINDOWS_PENDING_TRUST_UNLINK_UNKNOWN_NO_REPLAY")?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&marker)
+        .map_err(|_| "HOST_WINDOWS_PENDING_TRUST_CREATE_UNKNOWN_NO_REPLAY")?;
+    file.write_all(&bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|_| "HOST_WINDOWS_PENDING_TRUST_WRITE_UNKNOWN_NO_REPLAY")?;
+    if windows_signed_host::bounded_regular_file(&marker, 512)? != bytes {
+        return Err("HOST_WINDOWS_PENDING_TRUST_READBACK_UNPROVEN_NO_REPLAY".into());
+    }
     Ok(())
 }
 
@@ -157,7 +251,19 @@ pub(super) fn read_only_first_use_trust_stage(
         }
     } else if has_done {
         let bytes = fs::read(&done).map_err(|_| "HOST_WINDOWS_FIRST_USE_TRUST_DONE_UNREADABLE")?;
-        verify_enrollment_marker(&bytes, active).map_err(str::to_owned)?;
+        if verify_enrollment_marker(&bytes, active).is_err() {
+            let marker = FleetWindowsTrustEnrollment::decode(bytes.as_slice())
+                .map_err(|_| "HOST_WINDOWS_TRUST_HISTORY_MARKER_INVALID")?;
+            let install = root
+                .parent()
+                .ok_or("HOST_WINDOWS_TRUST_HISTORY_ROOT_INVALID")?;
+            let historical = windows_receipt_enrollment::historical_marker_activation(
+                install,
+                &marker.source_revision,
+                &marker.release_set_sha256,
+            )?;
+            verify_enrollment_marker(&bytes, &historical)?;
+        }
     }
     if !has_trust && has_done {
         return Err("HOST_WINDOWS_FIRST_USE_TRUST_DONE_WITHOUT_SNAPSHOT".into());
@@ -172,12 +278,24 @@ pub(super) fn read_only_first_use_trust_stage(
             .map_err(|_| "HOST_WINDOWS_FIRST_USE_TRUST_SNAPSHOT_PROTO_INVALID")?;
         if snapshot.encode_to_vec() != bytes
             || snapshot.schema_version != 1
-            || snapshot.machine_id != HOST
+            || !windows_receipt_enrollment::valid_machine_id(&snapshot.machine_id)
             || snapshot.pinned_worker_public_key.len() != 32
             || snapshot.release_set_pb.is_empty()
-            || sha_hex(&snapshot.release_set_pb) != active.release_set_sha256
         {
             return Err("HOST_WINDOWS_FIRST_USE_TRUST_SNAPSHOT_INVALID".into());
+        }
+        let recorded = sha_hex(&snapshot.release_set_pb);
+        if recorded != active.release_set_sha256 {
+            let old = ReleaseSet::decode(snapshot.release_set_pb.as_slice())
+                .map_err(|_| "HOST_WINDOWS_FIRST_USE_TRUST_HISTORY_RELEASE_INVALID")?;
+            let install = root
+                .parent()
+                .ok_or("HOST_WINDOWS_FIRST_USE_TRUST_HISTORY_ROOT_INVALID")?;
+            windows_receipt_enrollment::historical_marker_activation(
+                install,
+                &old.source_revision,
+                &recorded,
+            )?;
         }
         // This read-only local projection is NOT live Worker attestation.
         return Ok("TRUST_RECORDED_UNVERIFIED");
@@ -302,7 +420,24 @@ fn exact_installed_git_ancestor(
     Ok(())
 }
 
-async fn fetch_bounded(
+/// GitHub's first Compare page embeds full file patches; for a frequently
+/// updated protected main this can exceed the intentionally small HTTP cap.
+/// The second paginated page retains status/base/merge-base proof even when
+/// the comparison contains only one commit. Never widen the response bound.
+fn bounded_git_ancestry_url(
+    base: &str,
+    ancestor: &str,
+    descendant: &str,
+) -> Result<String, &'static str> {
+    if !exact_git_revision(ancestor) || !exact_git_revision(descendant) {
+        return Err("HOST_WINDOWS_TRUST_GIT_ANCESTRY_REVISION_INVALID");
+    }
+    Ok(format!(
+        "{base}/compare/{ancestor}...{descendant}?per_page=1&page=2"
+    ))
+}
+
+pub(super) async fn fetch_bounded(
     client: &reqwest::Client,
     url: &str,
     limit: usize,
@@ -342,7 +477,10 @@ async fn fetch_bounded(
     Ok(bytes)
 }
 
-async fn fetch_json(client: &reqwest::Client, url: &str) -> Result<serde_json::Value, String> {
+pub(super) async fn fetch_json(
+    client: &reqwest::Client,
+    url: &str,
+) -> Result<serde_json::Value, String> {
     let bytes = fetch_bounded(client, url, MAX_JSON).await?;
     serde_json::from_slice(&bytes).map_err(|_| "HOST_WINDOWS_TRUST_SOURCE_JSON_INVALID".into())
 }
@@ -387,6 +525,7 @@ async fn accepted_asset(
 }
 
 fn exact_windows_registration(
+    machine_id: &str,
     registry_pb: &[u8],
     release_pb: &[u8],
     spec: &[u8],
@@ -413,20 +552,30 @@ fn exact_windows_registration(
     }
     let registry: HostRegistry = edge_shared_types::decode_host_registry(registry_pb)
         .map_err(|_| "HOST_WINDOWS_TRUST_REGISTRY_INVALID")?;
-    let host = registry
+    let registrations: Vec<_> = registry
         .hosts
         .iter()
-        .find(|h| h.machine_id == HOST && h.kind == FleetHostKind::Windows as i32)
-        .ok_or("HOST_WINDOWS_TRUST_MACHINE_NOT_REGISTERED")?;
+        .filter(|h| h.machine_id == machine_id && h.kind == FleetHostKind::Windows as i32)
+        .collect();
+    if registrations.len() != 1 {
+        return Err("HOST_WINDOWS_TRUST_MACHINE_NOT_UNIQUE_IN_GIT".into());
+    }
+    let host = registrations[0];
+    let hostname =
+        std::env::var("COMPUTERNAME").map_err(|_| "HOST_WINDOWS_TRUST_OS_HOSTNAME_UNAVAILABLE")?;
     if host.desired_spec_path != SPEC
-        || host.windows_runner_label != "sing-box-windows-lab"
-        || !matches!(host.owner.as_ref(), Some(edge_shared_types::managed_host::Owner::WindowsRunnerName(n)) if n == "DESKTOP-0E1F6UQ")
+        || host.windows_runner_label.is_empty()
+        || !matches!(host.owner.as_ref(), Some(edge_shared_types::managed_host::Owner::WindowsRunnerName(n)) if n.eq_ignore_ascii_case(&hostname))
         || !matches!(host.target.as_ref(),
-            Some(target) if target.run_state == FleetHostRunState::Stopped as i32
-                && target.windows_mode == FleetHostMode::ProxyOnly as i32)
+            Some(target) if target.run_state == FleetHostRunState::Stopped as i32)
     {
         return Err("HOST_WINDOWS_TRUST_GIT_OWNER_OR_TARGET_INVALID".into());
     }
+    // Enroll the existing stopped owner against the exact Git mode, whether
+    // ProxyOnly or ManagedTun. Trust enrollment never starts a TUN; actual
+    // route-capturing effects remain blocked at the native SYSTEM gate.
+    let desired = edge_shared_types::parse_production_desired_text(spec)?;
+    edge_shared_types::host_lifecycle::validate_windows_mode_target_and_spec(host, &desired)?;
     verify_windows_signed_git_prerequisites(host).map_err(str::to_owned)?;
     if receipt_public.len() != 32 || host.native_receipt_public_key != receipt_public {
         return Err("HOST_WINDOWS_TRUST_GIT_RECEIPT_PIN_MISMATCH".into());
@@ -436,7 +585,7 @@ fn exact_windows_registration(
     let pinned = host.worker_authority_public_key.clone();
     let intent = FleetHostIntent {
         schema_version: 1,
-        machine_id: HOST.to_owned(),
+        machine_id: machine_id.to_owned(),
         kind: FleetHostKind::Windows as i32,
         resource_id: "sing-box".into(),
         operation_id: "windows-trust-enrollment".into(),
@@ -449,7 +598,7 @@ fn exact_windows_registration(
     };
     let trust = FleetNativeTrustSnapshot {
         schema_version: 1,
-        machine_id: HOST.into(),
+        machine_id: machine_id.into(),
         registry_pb: registry_pb.to_vec(),
         release_set_pb: release_pb.to_vec(),
         selected_spec_bytes: spec.to_vec(),
@@ -464,6 +613,90 @@ fn exact_windows_registration(
     )
     .map_err(str::to_owned)?;
     Ok(trust)
+}
+
+/// Multi-release proof for the one immutable LocalSystem trust snapshot.
+/// Nothing is written: verify the protected historical release on disk, its
+/// exact canonical GitHub release asset and tag, and signed-host release
+/// ancestry in protected Git. No new private key, trust copy or journal.
+pub(super) async fn verify_historical_windows_trust_ancestor(
+    install_root: &Path,
+    trust_release_pb: &[u8],
+    installed: &WindowsActivationState,
+) -> Result<String, String> {
+    if trust_release_pb.is_empty() || trust_release_pb.len() > MAX_RELEASE {
+        return Err("HOST_WINDOWS_TRUST_ANCESTOR_RELEASE_INVALID".into());
+    }
+    let trusted = ReleaseSet::decode(trust_release_pb)
+        .map_err(|_| "HOST_WINDOWS_TRUST_ANCESTOR_RELEASE_INVALID")?;
+    if trusted.encode_to_vec() != trust_release_pb {
+        return Err("HOST_WINDOWS_TRUST_ANCESTOR_RELEASE_NONCANONICAL".into());
+    }
+    let trust_sha = sha_hex(trust_release_pb);
+    if trust_sha == installed.release_set_sha256 {
+        return Err("HOST_WINDOWS_TRUST_ANCESTOR_MUST_BE_HISTORICAL".into());
+    }
+    windows_receipt_enrollment::historical_marker_activation(
+        install_root,
+        &trusted.source_revision,
+        &trust_sha,
+    )?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(25))
+        .build()
+        .map_err(|_| "HOST_WINDOWS_TRUST_TLS_CLIENT_UNAVAILABLE")?;
+    let base = "https://api.github.com/repos/iamaman11/sing-box";
+    let old_tag = format!("edge-release-{trust_sha}");
+    let installed_tag = format!("edge-release-{}", installed.release_set_sha256);
+    let main_url = format!("{base}/git/ref/heads/main");
+    let old_release_url = format!("{base}/releases/tags/{old_tag}");
+    let old_ref_url = format!("{base}/git/ref/tags/{old_tag}");
+    let installed_release_url = format!("{base}/releases/tags/{installed_tag}");
+    let installed_ref_url = format!("{base}/git/ref/tags/{installed_tag}");
+    let (head, old_release, old_ref, installed_release, installed_ref) = tokio::try_join!(
+        fetch_json(&client, &main_url),
+        fetch_json(&client, &old_release_url),
+        fetch_json(&client, &old_ref_url),
+        fetch_json(&client, &installed_release_url),
+        fetch_json(&client, &installed_ref_url),
+    )?;
+    let old_active = WindowsActivationState {
+        source_revision: trusted.source_revision,
+        release_set_sha256: trust_sha.clone(),
+        ..Default::default()
+    };
+    exact_github_provenance(&head, &old_release, &old_ref, &old_active).map_err(str::to_owned)?;
+    exact_github_provenance(&head, &installed_release, &installed_ref, installed)
+        .map_err(str::to_owned)?;
+    let old_merge = old_release["target_commitish"]
+        .as_str()
+        .ok_or("HOST_WINDOWS_TRUST_ANCESTOR_GIT_SOURCE_MISSING")?;
+    let installed_merge = installed_release["target_commitish"]
+        .as_str()
+        .ok_or("HOST_WINDOWS_TRUST_ANCESTOR_GIT_TARGET_MISSING")?;
+    if old_merge == installed_merge {
+        return Err("HOST_WINDOWS_TRUST_ANCESTOR_GIT_NOT_DISTINCT".into());
+    }
+    // GitHub includes huge file patches on page 1. Page 2 retains exact
+    // base/merge-base/status even when all commits fit on page 1.
+    let compare_url =
+        bounded_git_ancestry_url(base, old_merge, installed_merge).map_err(str::to_owned)?;
+    let (ancestry, published) = tokio::try_join!(
+        fetch_json(&client, &compare_url),
+        accepted_asset(
+            &client,
+            &old_release,
+            &old_tag,
+            "release-set.pb",
+            MAX_RELEASE
+        ),
+    )?;
+    if published != trust_release_pb {
+        return Err("HOST_WINDOWS_TRUST_ANCESTOR_PUBLISHED_BYTES_MISMATCH".into());
+    }
+    exact_installed_git_ancestor(&ancestry, old_merge, installed_merge)
+        .map_err(|_| "HOST_WINDOWS_TRUST_ANCESTOR_NOT_IN_PROTECTED_GIT")?;
+    Ok(trust_sha)
 }
 
 pub(super) async fn fetch_exact_protected_git(
@@ -510,7 +743,8 @@ pub(super) async fn fetch_exact_protected_git(
     // Neither the runner nor the Administrator supplies registry bytes.
     // The published latest release must point EXACTLY at protected Git main.
     let current_tag_url = format!("{base}/git/ref/tags/{current_tag}");
-    let compare_url = format!("{base}/compare/{installed_merge}...{current_main}");
+    let compare_url =
+        bounded_git_ancestry_url(base, installed_merge, current_main).map_err(str::to_owned)?;
     let (current_tag_ref, ancestry) = tokio::try_join!(
         fetch_json(&client, &current_tag_url),
         fetch_json(&client, &compare_url),
@@ -566,6 +800,50 @@ pub(super) async fn fetch_exact_protected_git(
         return Err("HOST_WINDOWS_TRUST_GIT_CHANGED_DURING_FETCH".into());
     }
     Ok((installed_release_pb, current_release_pb, registry_pb, spec))
+}
+
+// Pure, deterministic selector tested without network and independent of the
+// local machine. A second Git host claiming the same hostname is always NO-GO.
+fn select_registered_windows_machine(
+    registry: &HostRegistry,
+    hostname: &str,
+) -> Result<String, String> {
+    let hosts: Vec<_> = registry
+        .hosts
+        .iter()
+        .filter(|h| {
+            h.kind == FleetHostKind::Windows as i32
+                && windows_receipt_enrollment::valid_machine_id(&h.machine_id)
+                && matches!(h.owner.as_ref(),
+                    Some(edge_shared_types::managed_host::Owner::WindowsRunnerName(n))
+                        if n.eq_ignore_ascii_case(hostname))
+        })
+        .collect();
+    if hosts.len() != 1 {
+        return Err("HOST_WINDOWS_FIRST_USE_GIT_HOST_ABSENT_OR_AMBIGUOUS".into());
+    }
+    let host = hosts[0];
+    if host.windows_runner_label.is_empty()
+        || host.desired_spec_path != SPEC
+        || !matches!(host.target.as_ref(),
+            Some(target) if target.run_state == FleetHostRunState::Stopped as i32)
+    {
+        return Err("HOST_WINDOWS_FIRST_USE_GIT_TARGET_INVALID".into());
+    }
+    Ok(host.machine_id.clone())
+}
+
+// Select a single host from the accepted Git source BEFORE first durable
+// identity BEGIN. The OS hostname is verified against the typed Windows owner.
+pub(super) async fn resolve_local_windows_machine(
+    active: &WindowsActivationState,
+) -> Result<String, String> {
+    let (_, _, registry_pb, _) = fetch_exact_protected_git(active).await?;
+    let registry = edge_shared_types::decode_host_registry(&registry_pb)
+        .map_err(|_| "HOST_WINDOWS_FIRST_USE_GIT_REGISTRY_INVALID")?;
+    let hostname = std::env::var("COMPUTERNAME")
+        .map_err(|_| "HOST_WINDOWS_FIRST_USE_OS_HOSTNAME_UNAVAILABLE")?;
+    select_registered_windows_machine(&registry, &hostname)
 }
 
 /// Called ONLY from the existing periodic LocalSystem task, never a new
@@ -625,7 +903,9 @@ pub(super) async fn dispatch_if_needed(install_root: &Path) -> Result<(), String
         fs::read(&key_path).map_err(|_| "HOST_WINDOWS_TRUST_PRIVATE_IDENTITY_UNREADABLE")?;
     let (release_pb, _current_release_pb, registry_pb, spec) =
         fetch_exact_protected_git(&active).await?;
+    let machine_id = windows_receipt_enrollment::bound_machine_id(install_root)?;
     let trust = match exact_windows_registration(
+        &machine_id,
         &registry_pb,
         &release_pb,
         &spec,
@@ -701,7 +981,7 @@ pub(super) async fn dispatch_if_needed(install_root: &Path) -> Result<(), String
     run_icacls(&dest, &["/setowner", "*S-1-5-18", "/Q"])?;
     complete_trust_marker(&root)?;
     println!("native_trust=ENROLLED_EXACT_PROTECTED_GIT");
-    println!("native_trust_machine={HOST}");
+    println!("native_trust_machine={machine_id}");
     println!("native_trust_release={}", active.release_set_sha256);
     println!(
         "native_trust_worker_key_sha256={}",
@@ -715,6 +995,43 @@ pub(super) async fn dispatch_if_needed(install_root: &Path) -> Result<(), String
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn protected_git_host_selection_rejects_unknown_duplicate_and_wrong_target() {
+        let host = edge_shared_types::ManagedHost {
+            machine_id: "windows-sample".into(),
+            kind: FleetHostKind::Windows as i32,
+            owner: Some(edge_shared_types::managed_host::Owner::WindowsRunnerName(
+                "WIN-SAMPLE".into(),
+            )),
+            windows_runner_label: "sing-box-windows-lab".into(),
+            desired_spec_path: SPEC.into(),
+            target: Some(edge_shared_types::FleetHostTarget {
+                run_state: FleetHostRunState::Stopped as i32,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut registry = HostRegistry {
+            hosts: vec![host],
+            ..Default::default()
+        };
+        assert_eq!(
+            select_registered_windows_machine(&registry, "win-sample"),
+            Ok("windows-sample".into())
+        );
+        assert!(select_registered_windows_machine(&registry, "OTHER").is_err());
+        registry.hosts.push(edge_shared_types::ManagedHost {
+            machine_id: "windows-other".into(),
+            ..registry.hosts[0].clone()
+        });
+        assert!(select_registered_windows_machine(&registry, "win-sample").is_err());
+        registry.hosts.pop();
+        registry.hosts[0].target = None;
+        assert!(select_registered_windows_machine(&registry, "win-sample").is_err());
+        registry.hosts[0].machine_id = "BAD-ID".into();
+        assert!(select_registered_windows_machine(&registry, "win-sample").is_err());
+    }
+
     #[test]
     fn read_only_trust_stage_never_calls_a_recorded_snapshot_authorized() {
         let dir = std::env::temp_dir().join(format!("w4-trust-readonly-{}", std::process::id()));
@@ -774,7 +1091,7 @@ mod tests {
         let bytes = req.encode_to_vec();
         assert_eq!(verify_enrollment_marker(&bytes, &active), Ok(()));
         let mut wrong = req.clone();
-        wrong.machine_id = "foreign-host".into();
+        wrong.machine_id = "Invalid-Uppercase".into();
         assert!(verify_enrollment_marker(&wrong.encode_to_vec(), &active).is_err());
         wrong = req.clone();
         wrong.release_set_sha256 = "c".repeat(64);
@@ -893,6 +1210,52 @@ mod tests {
         compare["merge_base_commit"]["sha"] = serde_json::json!(old);
         compare["status"] = serde_json::json!("diverged");
         assert!(exact_installed_git_ancestor(&compare, &old, &current).is_err());
+    }
+
+    #[test]
+    fn published_historical_git_ancestor_rejects_divergent_history() {
+        let old = "a".repeat(40);
+        let current = "b".repeat(40);
+        let mut compare = serde_json::json!({
+            "status":"ahead", "base_commit":{"sha":old},
+            "merge_base_commit":{"sha":old}
+        });
+        assert_eq!(
+            exact_installed_git_ancestor(&compare, &old, &current),
+            Ok(())
+        );
+        compare["merge_base_commit"]["sha"] = serde_json::json!("c".repeat(40));
+        assert!(exact_installed_git_ancestor(&compare, &old, &current).is_err());
+        compare["merge_base_commit"]["sha"] = serde_json::json!(old);
+        compare["status"] = serde_json::json!("diverged");
+        assert!(exact_installed_git_ancestor(&compare, &old, &current).is_err());
+        compare["status"] = serde_json::json!("behind");
+        assert!(exact_installed_git_ancestor(&compare, &old, &current).is_err());
+        compare["status"] = serde_json::json!("ahead");
+        compare["base_commit"]["sha"] = serde_json::json!("d".repeat(40));
+        assert!(exact_installed_git_ancestor(&compare, &old, &current).is_err());
+    }
+
+    #[test]
+    fn git_compare_proof_is_bounded_on_long_protected_main_history() {
+        let ancestor = "a".repeat(40);
+        let current = "b".repeat(40);
+        let url = bounded_git_ancestry_url(
+            "https://api.github.com/repos/iamaman11/sing-box",
+            &ancestor,
+            &current,
+        )
+        .unwrap();
+        assert!(url.contains(&format!("/compare/{ancestor}...{current}")));
+        assert!(url.ends_with("?per_page=1&page=2"));
+        assert_eq!(
+            bounded_git_ancestry_url(
+                "https://api.github.com/repos/iamaman11/sing-box",
+                &ancestor,
+                "invalid",
+            ),
+            Err("HOST_WINDOWS_TRUST_GIT_ANCESTRY_REVISION_INVALID")
+        );
     }
 
     #[test]

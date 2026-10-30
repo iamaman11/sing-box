@@ -23,7 +23,9 @@ use ring::digest::{SHA256, digest};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
+use std::io::Write;
 use std::path::{Component, Path, PathBuf};
+use std::process::{Command as BuildCommand, Stdio};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use tokio::time::sleep;
 use tonic::Request;
@@ -211,6 +213,7 @@ pub(crate) fn prepare_application_bundle_with_image_environment(
 
     let mut stack_files = Vec::new();
     collect_bundle_files(&bundle_root, &bundle_root, &mut stack_files)?;
+    compile_git_managed_protobuf_sources(&mut stack_files)?;
     stack_files.retain(|file| file.relative_path != ".images.env");
     stack_files.push(BundleFile {
         relative_path: ".images.env".to_owned(),
@@ -241,6 +244,324 @@ pub(crate) fn prepare_application_bundle_with_image_environment(
         desired_release(desired, artifact, &bundle_digest).map_err(|err| err.to_string())?;
 
     Ok(PreparedApplicationBundle { request, release })
+}
+
+/// Human-reviewable native desired files are textproto in protected Git;
+/// the immutable bundle contains only canonical protobuf bytes. This is a
+/// build-time transform, NEVER a VM-side compiler, second runtime registry or
+/// JSON desired boundary. Protoc is the same vendored source used by shared
+/// contract build.rs, not a host-installed tool with mutable version.
+fn managed_textproto_type(relative: &str) -> Result<Option<(&'static str, String)>, &'static str> {
+    let Some(suffix) = relative.strip_prefix("managed/") else {
+        return Ok(None);
+    };
+    if !suffix.ends_with(".textproto") {
+        return Ok(None);
+    }
+    let stem = suffix.strip_suffix(".textproto").unwrap_or("");
+    let (kind, name) = if let Some(name) = stem.strip_prefix("host-route-") {
+        ("edge.platform.v1.FleetVmManagedKernelRoute", name)
+    } else if let Some(name) = stem.strip_prefix("host-firewall-") {
+        ("edge.platform.v1.FleetVmManagedFirewall", name)
+    } else if let Some(name) = stem.strip_prefix("host-dns-") {
+        ("edge.platform.v1.FleetVmManagedSystemDns", name)
+    } else if let Some(name) = stem.strip_prefix("docker-volume-") {
+        ("edge.platform.v1.FleetVmManagedDockerResource", name)
+    } else if let Some(name) = stem.strip_prefix("docker-network-") {
+        ("edge.platform.v1.FleetVmManagedDockerResource", name)
+    } else if let Some(name) = stem.strip_prefix("docker-container-") {
+        ("edge.platform.v1.FleetVmManagedDockerResource", name)
+    } else {
+        return Err("HOST_VM_MANAGED_TEXTPROTO_UNSUPPORTED_TYPE");
+    };
+    if name.is_empty()
+        || name.len() > 24
+        || name.starts_with('-')
+        || name.ends_with('-')
+        || !name
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+    {
+        return Err("HOST_VM_MANAGED_TEXTPROTO_FILENAME_INVALID");
+    }
+    Ok(Some((kind, format!("managed/{stem}.pb"))))
+}
+
+fn encode_managed_textproto(kind: &str, raw: &[u8]) -> Result<Vec<u8>, String> {
+    if raw.is_empty() || raw.len() > 2048 {
+        return Err("HOST_VM_MANAGED_TEXTPROTO_SIZE_INVALID".into());
+    }
+    let compiler = protoc_bin_vendored::protoc_bin_path()
+        .map_err(|_| "HOST_VM_MANAGED_TEXTPROTO_COMPILER_MISSING")?;
+    let proto_root = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../proto");
+    let input = proto_root.join("edge/platform/v1/fleet.proto");
+    let mut child = BuildCommand::new(compiler)
+        .arg(format!("--proto_path={}", proto_root.display()))
+        .arg(format!("--encode={kind}"))
+        .arg(input)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|_| "HOST_VM_MANAGED_TEXTPROTO_COMPILER_UNAVAILABLE")?;
+    child
+        .stdin
+        .take()
+        .ok_or("HOST_VM_MANAGED_TEXTPROTO_STDIN_MISSING")?
+        .write_all(raw)
+        .map_err(|_| "HOST_VM_MANAGED_TEXTPROTO_WRITE_FAILED")?;
+    let output = child
+        .wait_with_output()
+        .map_err(|_| "HOST_VM_MANAGED_TEXTPROTO_COMPILE_UNAVAILABLE")?;
+    if !output.status.success() || output.stdout.is_empty() || output.stdout.len() > 2048 {
+        return Err("HOST_VM_MANAGED_TEXTPROTO_COMPILE_INVALID".into());
+    }
+    // The native owner performs a second, host-bound decode and EXACT
+    // encode check before any BEGIN. Do not trust runner or a file extension.
+    Ok(output.stdout)
+}
+
+fn compile_git_managed_protobuf_sources(files: &mut Vec<BundleFile>) -> Result<(), String> {
+    let existing = files
+        .iter()
+        .map(|file| file.relative_path.clone())
+        .collect::<BTreeSet<_>>();
+    let mut compiled = Vec::with_capacity(files.len());
+    for file in files.drain(..) {
+        match managed_textproto_type(&file.relative_path).map_err(str::to_owned)? {
+            None => {
+                // Only the canonical build-time compiler may introduce native
+                // protobuf manifests. A checked-in .pb would be opaque Git
+                // desired and could evade human review of exact typed fields.
+                if file.relative_path.starts_with("managed/") && file.relative_path.ends_with(".pb")
+                {
+                    return Err("HOST_VM_MANAGED_RAW_PROTOBUF_SOURCE_FORBIDDEN".into());
+                }
+                compiled.push(file);
+            }
+            Some((kind, output_path)) => {
+                // Compiling a Git textproto must not silently strip a
+                // sensitive/executable file's original security metadata.
+                if file.sensitive || file.executable {
+                    return Err("HOST_VM_MANAGED_TEXTPROTO_METADATA_FORBIDDEN".into());
+                }
+                if existing.contains(output_path.as_str()) {
+                    return Err("HOST_VM_MANAGED_TEXTPROTO_BINARY_DUPLICATE".into());
+                }
+                let bytes = encode_managed_textproto(kind, &file.content)?;
+                compiled.push(BundleFile {
+                    relative_path: output_path,
+                    content: bytes,
+                    executable: false,
+                    sensitive: false,
+                });
+            }
+        }
+    }
+    // Preserve the exact historical ordered BundleFile list when no new
+    // managed source is present. Reordering an existing bundle would change
+    // ReleaseSet digests and cause an unnecessary VM replacement.
+    let mut seen = BTreeSet::new();
+    if compiled
+        .iter()
+        .any(|file| !seen.insert(file.relative_path.as_str()))
+    {
+        return Err("HOST_VM_MANAGED_TEXTPROTO_DUPLICATE_PATH".into());
+    }
+    *files = compiled;
+    Ok(())
+}
+
+#[cfg(test)]
+mod managed_textproto_tests {
+    use super::*;
+    use edge_shared_types::{
+        FleetVmIpFamily, FleetVmManagedDockerResource, FleetVmManagedFirewall,
+        FleetVmManagedKernelRoute,
+    };
+
+    #[test]
+    fn managed_git_route_produces_only_typed_protobuf_and_no_textproto_runtime_file() {
+        let source = br#"schema_version: 1
+machine_id: "vm-test"
+resource_name: "sb-vm-test-lab"
+family: FLEET_VM_IP_FAMILY_V4
+destination: "10.31.0.0"
+prefix_length: 16
+interface_name: "sblab0"
+table_id: 20100
+"#;
+        let mut files = vec![BundleFile {
+            relative_path: "managed/host-route-lab.textproto".into(),
+            content: source.to_vec(),
+            executable: false,
+            sensitive: false,
+        }];
+        compile_git_managed_protobuf_sources(&mut files).unwrap();
+        assert_eq!(files.len(), 1);
+        assert_eq!(files[0].relative_path, "managed/host-route-lab.pb");
+        let record = FleetVmManagedKernelRoute::decode(files[0].content.as_slice()).unwrap();
+        assert_eq!(record.family, FleetVmIpFamily::V4 as i32);
+        assert_eq!(record.machine_id, "vm-test");
+        assert_eq!(record.table_id, 20100);
+        assert_eq!(record.encode_to_vec(), files[0].content);
+    }
+
+    #[test]
+    fn managed_git_firewall_is_only_protobuf_and_is_deterministic() {
+        let source = br#"schema_version: 1
+machine_id: "vmtest"
+resource_name: "sb-vmtest-lab"
+ingress_rules {
+  transport: FLEET_VM_FIREWALL_TRANSPORT_TCP
+  destination_port: 22555
+  action: FLEET_VM_FIREWALL_ACTION_DENY
+}
+ingress_rules {
+  transport: FLEET_VM_FIREWALL_TRANSPORT_UDP
+  destination_port: 22556
+  action: FLEET_VM_FIREWALL_ACTION_ALLOW
+}
+"#;
+        let make = || {
+            vec![BundleFile {
+                relative_path: "managed/host-firewall-lab.textproto".into(),
+                content: source.to_vec(),
+                sensitive: false,
+                executable: false,
+            }]
+        };
+        let mut first = make();
+        let mut second = make();
+        compile_git_managed_protobuf_sources(&mut first).unwrap();
+        compile_git_managed_protobuf_sources(&mut second).unwrap();
+        assert_eq!(first[0].relative_path, "managed/host-firewall-lab.pb");
+        assert_eq!(first[0].content, second[0].content);
+        let typed = FleetVmManagedFirewall::decode(first[0].content.as_slice()).unwrap();
+        assert_eq!(typed.ingress_rules.len(), 2);
+        assert_eq!(typed.encode_to_vec(), first[0].content);
+    }
+
+    #[test]
+    fn managed_git_container_dns_stays_typed_in_immutable_bundle() {
+        let source = format!(
+            "schema_version: 1\nmachine_id: \"vm-test\"\nresource_name: \"sb-vm-test-lab\"\nkind: FLEET_VM_MANAGED_DOCKER_KIND_CONTAINER\ndesired_state: FLEET_VM_MANAGED_DOCKER_DESIRED_STATE_PRESENT\nimage_ref: \"ghcr.io/iamaman11/test@sha256:{}\"\ndns_servers: \"1.1.1.1\"\n",
+            "a".repeat(64)
+        );
+        let mut files = vec![BundleFile {
+            relative_path: "managed/docker-container-lab.textproto".into(),
+            content: source.into_bytes(),
+            executable: false,
+            sensitive: false,
+        }];
+        compile_git_managed_protobuf_sources(&mut files).unwrap();
+        assert_eq!(files.len(), 1);
+        let spec = FleetVmManagedDockerResource::decode(files[0].content.as_slice()).unwrap();
+        assert_eq!(spec.dns_servers, vec!["1.1.1.1"]);
+        assert_eq!(files[0].relative_path, "managed/docker-container-lab.pb");
+    }
+
+    #[test]
+    fn managed_git_ipv6_bridge_builds_deterministic_typed_bundle() {
+        let source = br#"schema_version: 1
+machine_id: "vm-test"
+resource_name: "sb-vm-test-lab"
+kind: FLEET_VM_MANAGED_DOCKER_KIND_BRIDGE_NETWORK
+desired_state: FLEET_VM_MANAGED_DOCKER_DESIRED_STATE_PRESENT
+ipv6_subnet: "fd45:1234:abcd::/64"
+ipv6_gateway: "fd45:1234:abcd::1"
+"#;
+        let fresh = || {
+            vec![BundleFile {
+                relative_path: "managed/docker-network-lab.textproto".into(),
+                content: source.to_vec(),
+                executable: false,
+                sensitive: false,
+            }]
+        };
+        let mut first = fresh();
+        let mut second = fresh();
+        compile_git_managed_protobuf_sources(&mut first).unwrap();
+        compile_git_managed_protobuf_sources(&mut second).unwrap();
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0].relative_path, "managed/docker-network-lab.pb");
+        assert_eq!(first[0].content, second[0].content);
+        let spec = FleetVmManagedDockerResource::decode(first[0].content.as_slice()).unwrap();
+        assert_eq!(spec.ipv6_subnet, "fd45:1234:abcd::/64");
+        assert_eq!(spec.ipv6_gateway, "fd45:1234:abcd::1");
+        assert_eq!(spec.encode_to_vec(), first[0].content);
+    }
+
+    #[test]
+    fn managed_git_rejects_opaque_binary_desired_instead_of_compiling_it() {
+        for path in [
+            "managed/host-route-lab.pb",
+            "managed/docker-network-lab.pb",
+            "managed/docker-container-lab.pb",
+            "managed/unknown.pb",
+        ] {
+            let mut files = vec![BundleFile {
+                relative_path: path.into(),
+                content: vec![8, 1],
+                executable: false,
+                sensitive: false,
+            }];
+            assert_eq!(
+                compile_git_managed_protobuf_sources(&mut files),
+                Err("HOST_VM_MANAGED_RAW_PROTOBUF_SOURCE_FORBIDDEN".into())
+            );
+        }
+    }
+
+    #[test]
+    fn managed_git_textproto_cannot_drop_sensitive_or_executable_metadata() {
+        for (sensitive, executable) in [(true, false), (false, true), (true, true)] {
+            let mut files = vec![BundleFile {
+                relative_path: "managed/host-route-lab.textproto".into(),
+                content: b"schema_version: 1".to_vec(),
+                executable,
+                sensitive,
+            }];
+            assert_eq!(
+                compile_git_managed_protobuf_sources(&mut files),
+                Err("HOST_VM_MANAGED_TEXTPROTO_METADATA_FORBIDDEN".into())
+            );
+        }
+    }
+
+    #[test]
+    fn managed_git_route_refuses_unknown_type_path_duplicate_and_malformed_source() {
+        for name in [
+            "managed/host-route-.textproto",
+            "managed/host-route-../bad.textproto",
+            "managed/host-route-BAD.textproto",
+            "managed/dns-unknown.textproto",
+        ] {
+            assert!(managed_textproto_type(name).is_err(), "{name}");
+        }
+        assert!(
+            encode_managed_textproto(
+                "edge.platform.v1.FleetVmManagedKernelRoute",
+                b"not valid protobuf text",
+            )
+            .is_err()
+        );
+        let mut duplicate = vec![
+            BundleFile {
+                relative_path: "managed/host-route-lab.textproto".into(),
+                content: b"schema_version: 1".to_vec(),
+                executable: false,
+                sensitive: false,
+            },
+            BundleFile {
+                relative_path: "managed/host-route-lab.pb".into(),
+                content: vec![1, 2, 3],
+                executable: false,
+                sensitive: false,
+            },
+        ];
+        assert!(compile_git_managed_protobuf_sources(&mut duplicate).is_err());
+    }
 }
 
 fn validate_application_bundle_root(bundle_root: &Path) -> Result<(), String> {
