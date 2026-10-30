@@ -2365,6 +2365,9 @@ fn host_lifecycle_admission(
             _ => FleetHostMode::Unspecified as i32,
         },
         requested_at_unix: now,
+        // GitHub runner constructs only the base intent. LocalSystem, not
+        // this orchestrator, obtains and signs physical pre-TUN witnesses.
+        network_admission: None,
     };
     validate_host_intent(
         &intent,
