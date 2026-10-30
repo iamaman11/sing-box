@@ -42,7 +42,7 @@ pub(super) fn verify_enrollment_marker(
         .map_err(|_| "HOST_WINDOWS_TRUST_ENROLL_MARKER_PROTO_INVALID")?;
     if request.encode_to_vec() != bytes
         || request.schema_version != 1
-        || request.machine_id != HOST
+        || !windows_receipt_enrollment::valid_machine_id(&request.machine_id)
         || request.source_revision != active.source_revision
         || request.release_set_sha256 != active.release_set_sha256
     {
@@ -96,7 +96,7 @@ fn prepare_exact(install_root: &Path, allow_pending_identity: bool) -> Result<()
     }
     let request = FleetWindowsTrustEnrollment {
         schema_version: 1,
-        machine_id: HOST.to_owned(),
+        machine_id: windows_receipt_enrollment::bound_machine_id(install_root)?,
         source_revision: active.source_revision.clone(),
         release_set_sha256: active.release_set_sha256.clone(),
     };
@@ -189,7 +189,7 @@ pub(super) fn rebind_pending_trust_after_offline_handoff(
         .map_err(|_| "HOST_WINDOWS_PENDING_TRUST_ARCHIVE_SYNC_UNKNOWN_NO_REPLAY")?;
     let next = FleetWindowsTrustEnrollment {
         schema_version: 1,
-        machine_id: HOST.into(),
+        machine_id: windows_receipt_enrollment::bound_machine_id(install_root)?,
         source_revision: current.source_revision.clone(),
         release_set_sha256: current.release_set_sha256.clone(),
     };
@@ -277,7 +277,7 @@ pub(super) fn read_only_first_use_trust_stage(
             .map_err(|_| "HOST_WINDOWS_FIRST_USE_TRUST_SNAPSHOT_PROTO_INVALID")?;
         if snapshot.encode_to_vec() != bytes
             || snapshot.schema_version != 1
-            || snapshot.machine_id != HOST
+            || !windows_receipt_enrollment::valid_machine_id(&snapshot.machine_id)
             || snapshot.pinned_worker_public_key.len() != 32
             || snapshot.release_set_pb.is_empty()
         {
@@ -524,6 +524,7 @@ async fn accepted_asset(
 }
 
 fn exact_windows_registration(
+    machine_id: &str,
     registry_pb: &[u8],
     release_pb: &[u8],
     spec: &[u8],
@@ -553,11 +554,13 @@ fn exact_windows_registration(
     let host = registry
         .hosts
         .iter()
-        .find(|h| h.machine_id == HOST && h.kind == FleetHostKind::Windows as i32)
+        .find(|h| h.machine_id == machine_id && h.kind == FleetHostKind::Windows as i32)
         .ok_or("HOST_WINDOWS_TRUST_MACHINE_NOT_REGISTERED")?;
+    let hostname = std::env::var("COMPUTERNAME")
+        .map_err(|_| "HOST_WINDOWS_TRUST_OS_HOSTNAME_UNAVAILABLE")?;
     if host.desired_spec_path != SPEC
-        || host.windows_runner_label != "sing-box-windows-lab"
-        || !matches!(host.owner.as_ref(), Some(edge_shared_types::managed_host::Owner::WindowsRunnerName(n)) if n == "DESKTOP-0E1F6UQ")
+        || host.windows_runner_label.is_empty()
+        || !matches!(host.owner.as_ref(), Some(edge_shared_types::managed_host::Owner::WindowsRunnerName(n)) if n.eq_ignore_ascii_case(&hostname))
         || !matches!(host.target.as_ref(),
             Some(target) if target.run_state == FleetHostRunState::Stopped as i32)
     {
@@ -577,7 +580,7 @@ fn exact_windows_registration(
     let pinned = host.worker_authority_public_key.clone();
     let intent = FleetHostIntent {
         schema_version: 1,
-        machine_id: HOST.to_owned(),
+        machine_id: machine_id.to_owned(),
         kind: FleetHostKind::Windows as i32,
         resource_id: "sing-box".into(),
         operation_id: "windows-trust-enrollment".into(),
@@ -590,7 +593,7 @@ fn exact_windows_registration(
     };
     let trust = FleetNativeTrustSnapshot {
         schema_version: 1,
-        machine_id: HOST.into(),
+        machine_id: machine_id.into(),
         registry_pb: registry_pb.to_vec(),
         release_set_pb: release_pb.to_vec(),
         selected_spec_bytes: spec.to_vec(),
@@ -794,6 +797,41 @@ pub(super) async fn fetch_exact_protected_git(
     Ok((installed_release_pb, current_release_pb, registry_pb, spec))
 }
 
+// Select a single host from the accepted Git source BEFORE first durable
+// identity BEGIN. The OS hostname is verified against the typed Windows owner.
+pub(super) async fn resolve_local_windows_machine(
+    active: &WindowsActivationState,
+) -> Result<String, String> {
+    let (_, _, registry_pb, _) = fetch_exact_protected_git(active).await?;
+    let registry = edge_shared_types::decode_host_registry(&registry_pb)
+        .map_err(|_| "HOST_WINDOWS_FIRST_USE_GIT_REGISTRY_INVALID")?;
+    let hostname = std::env::var("COMPUTERNAME")
+        .map_err(|_| "HOST_WINDOWS_FIRST_USE_OS_HOSTNAME_UNAVAILABLE")?;
+    let hosts: Vec<_> = registry
+        .hosts
+        .iter()
+        .filter(|h| {
+            h.kind == FleetHostKind::Windows as i32
+                && windows_receipt_enrollment::valid_machine_id(&h.machine_id)
+                && matches!(h.owner.as_ref(),
+                    Some(edge_shared_types::managed_host::Owner::WindowsRunnerName(n))
+                        if n.eq_ignore_ascii_case(&hostname))
+        })
+        .collect();
+    if hosts.len() != 1 {
+        return Err("HOST_WINDOWS_FIRST_USE_GIT_HOST_ABSENT_OR_AMBIGUOUS".into());
+    }
+    let host = hosts[0];
+    if host.windows_runner_label.is_empty()
+        || host.desired_spec_path != SPEC
+        || !matches!(host.target.as_ref(),
+            Some(target) if target.run_state == FleetHostRunState::Stopped as i32)
+    {
+        return Err("HOST_WINDOWS_FIRST_USE_GIT_TARGET_INVALID".into());
+    }
+    Ok(host.machine_id.clone())
+}
+
 /// Called ONLY from the existing periodic LocalSystem task, never a new
 /// endpoint. Absence of an enrolled receipt identity is a normal NOOP.
 /// An accepted exact protected Git source with both public keys is mandatory
@@ -851,7 +889,9 @@ pub(super) async fn dispatch_if_needed(install_root: &Path) -> Result<(), String
         fs::read(&key_path).map_err(|_| "HOST_WINDOWS_TRUST_PRIVATE_IDENTITY_UNREADABLE")?;
     let (release_pb, _current_release_pb, registry_pb, spec) =
         fetch_exact_protected_git(&active).await?;
+    let machine_id = windows_receipt_enrollment::bound_machine_id(install_root)?;
     let trust = match exact_windows_registration(
+        &machine_id,
         &registry_pb,
         &release_pb,
         &spec,
@@ -927,7 +967,7 @@ pub(super) async fn dispatch_if_needed(install_root: &Path) -> Result<(), String
     run_icacls(&dest, &["/setowner", "*S-1-5-18", "/Q"])?;
     complete_trust_marker(&root)?;
     println!("native_trust=ENROLLED_EXACT_PROTECTED_GIT");
-    println!("native_trust_machine={HOST}");
+    println!("native_trust_machine={machine_id}");
     println!("native_trust_release={}", active.release_set_sha256);
     println!(
         "native_trust_worker_key_sha256={}",
@@ -1000,7 +1040,7 @@ mod tests {
         let bytes = req.encode_to_vec();
         assert_eq!(verify_enrollment_marker(&bytes, &active), Ok(()));
         let mut wrong = req.clone();
-        wrong.machine_id = "foreign-host".into();
+        wrong.machine_id = "Invalid-Uppercase".into();
         assert!(verify_enrollment_marker(&wrong.encode_to_vec(), &active).is_err());
         wrong = req.clone();
         wrong.release_set_sha256 = "c".repeat(64);

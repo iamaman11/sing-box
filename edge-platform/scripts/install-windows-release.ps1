@@ -635,7 +635,417 @@ if ($ConnectWindows) {
         }
         $state = ($stateText | Out-String | ConvertFrom-Json -ErrorAction Stop)
         if ([string]$state.schema -cne 'sing-box.windows-first-use-status/v1' -or
-            [string]$state.machine_id -cne 'sing-box-windows-lab' -or
+            [string]$state.machine_id -cnotmatch '^(UNREGISTERED|[a-z][a-z0-9-]{0,39})
+            [string]$state.installed_release_set_sha256 -cne $selectedDigest -or
+            [int]$state.mutations -ne 0) {
+            throw 'WINDOWS_CONNECT_FIRST_USE_STATE_NOT_CANONICAL'
+        }
+        # Historical offline BEGIN may remain after an uncertain handoff.
+        # Status/NOOP is safe, but never authorize another identity/trust
+        # mutation from this result without independent adjudication.
+        $retainedBegin = Test-Path -LiteralPath (Join-Path $InstallRoot 'offline-bootstrap-intent-v1')
+        if ($retainedBegin -and [string]$state.stage -in @(
+            'NOT_STARTED', 'RECEIPT_READY_TRUST_NOT_REQUESTED'
+        )) {
+            throw 'WINDOWS_CONNECT_RETAINED_BEGIN_BLOCKS_NEW_ENROLLMENT_NO_REPLAY'
+        }
+        switch ([string]$state.stage) {
+            'NOT_STARTED' {
+                $global:LASTEXITCODE = 0
+                & $console offline-receipt-identity-prepare --install-root $InstallRoot
+                if ($LASTEXITCODE -ne 0) {
+                    throw 'WINDOWS_CONNECT_IDENTITY_RESULT_UNKNOWN_NO_REPLAY'
+                }
+                Write-Output 'windows_connect=IDENTITY_AND_TRUST_REQUESTED'
+                exit 0
+            }
+            'RECEIPT_READY_TRUST_NOT_REQUESTED' {
+                $global:LASTEXITCODE = 0
+                & $console offline-host-trust-prepare --install-root $InstallRoot
+                if ($LASTEXITCODE -ne 0) {
+                    throw 'WINDOWS_CONNECT_TRUST_RESULT_UNKNOWN_NO_REPLAY'
+                }
+                Write-Output 'windows_connect=TRUST_REQUESTED'
+                exit 0
+            }
+            'SYSTEM_PENDING' {
+                Write-Output 'windows_connect=SYSTEM_PENDING_NOOP'
+                exit 0
+            }
+            'AWAITING_GIT_AUTHORITY_OR_SYSTEM' {
+                Write-Output 'windows_connect=AWAITING_GIT_AUTHORITY_NOOP'
+                exit 0
+            }
+            'TRUST_RECORDED_UNVERIFIED' {
+                Write-Output 'windows_connect=TRUST_RECORDED_NOOP'
+                Write-Output 'independent_worker_acceptance=NOT_PROVEN'
+                exit 0
+            }
+            default {
+                throw 'WINDOWS_CONNECT_FIRST_USE_UNKNOWN_STAGE_NO_REPLAY'
+            }
+        }
+    }
+    $argsExact = @{
+        AcceptedRevision = [string]$branch.commit.sha
+        ReleaseSetSha256 = $selectedDigest
+        InstallRoot = $InstallRoot
+        Offline = $true
+        BootstrapNow = $true
+        EnrollReceipt = $true
+    }
+    $oldBegin = Join-Path $InstallRoot 'offline-bootstrap-intent-v1'
+    if (Test-Path -LiteralPath $oldBegin) {
+        if (-not $ApproveRetainedBegin) {
+            throw 'WINDOWS_CONNECT_RETAINED_BEGIN_REQUIRES_EXPLICIT_APPROVAL: no automatic supersession'
+        }
+        $entry = Get-Item -LiteralPath $oldBegin -Force -ErrorAction Stop
+        if ($entry.PSIsContainer -or ($entry.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            $entry.Length -lt 1 -or $entry.Length -gt 512) {
+            throw 'WINDOWS_CONNECT_RETAINED_BEGIN_NOT_BOUNDED_REGULAR: no replay'
+        }
+        $oldDigest = (Get-FileHash -LiteralPath $oldBegin -Algorithm SHA256 -ErrorAction Stop).Hash.ToLowerInvariant()
+        $argsExact['RetainedIntentSha256'] = $oldDigest
+        $argsExact['ExpectedCurrentReleaseSetSha256'] = [string]$installed['release_set_sha256']
+    } elseif ($ApproveRetainedBegin) {
+        throw 'WINDOWS_CONNECT_SUPERSESSION_REQUEST_WITHOUT_RETAINED_BEGIN'
+    }
+    $global:LASTEXITCODE = 0
+    & $PSCommandPath @argsExact
+    if ($LASTEXITCODE -ne 0) {
+        throw 'WINDOWS_CONNECT_NATIVE_OUTCOME_UNKNOWN_NO_REPLAY: inspect installed release and journal'
+    }
+    Write-Output 'windows_connect=INSTALL_AND_IDENTITY_REQUEST_DURABLE'
+    Write-Output 'windows_connect_next=EXISTING_SYSTEM_TASK'
+    exit 0
+}
+if ($ApproveRetainedBegin) {
+    throw 'WINDOWS_CONNECT_APPROVAL_REQUIRES_CONNECT_WINDOWS'
+}
+if ($ApproveAclRepair) {
+    throw 'WINDOWS_INSTALL_ACL_REPAIR_APPROVAL_REQUIRES_CONNECT_WINDOWS'
+}
+if (($StageOnly -or $BootstrapNow) -and (-not $Offline -or $ForceRematerialize -or $ArchivedAcceptanceSourceRunId -ne 0 -or ($StageOnly -and $BootstrapNow))) {
+    throw 'OFFLINE_BOOTSTRAP_BLOCKED: StageOnly requires exact ordinary offline candidate'
+}
+if ($EnrollReceipt -and (-not $Offline -or -not $BootstrapNow -or $StageOnly -or $ForceRematerialize -or $ArchivedAcceptanceSourceRunId -ne 0)) {
+    throw 'OFFLINE_BOOTSTRAP_ENROLL_BLOCKED: explicit Offline BootstrapNow required'
+}
+if (($StageOnly -or $BootstrapNow) -and $Repository -cne 'iamaman11/sing-box') {
+    throw 'OFFLINE_BOOTSTRAP_BLOCKED: only canonical protected GitHub repository is allowed'
+}
+# Both independent pins are mandatory together and permitted ONLY with
+# the existing explicit offline first-use. No StageOnly/online downgrade.
+$hasRetained = -not [string]::IsNullOrEmpty($RetainedIntentSha256)
+$hasCurrent = -not [string]::IsNullOrEmpty($ExpectedCurrentReleaseSetSha256)
+if ($hasRetained -ne $hasCurrent) {
+    throw 'OFFLINE_BOOTSTRAP_SUPERSESSION_BOTH_PINS_REQUIRED'
+}
+if ($hasRetained) {
+    # Both read-only StageOnly and the final BootstrapNow must carry the
+    # SAME exact pins; a disabled task never bypasses the stage proof.
+    if (-not $Offline -or (-not $BootstrapNow -and -not $StageOnly) -or
+        $ForceRematerialize -or $InstallRoot -cne 'C:\sing-box') {
+        throw 'OFFLINE_BOOTSTRAP_SUPERSESSION_ONLY_EXACT_OFFLINE_FIRST_USE'
+    }
+    Assert-HexSha256 -Value $RetainedIntentSha256 -Name 'RetainedIntentSha256'
+    Assert-HexSha256 -Value $ExpectedCurrentReleaseSetSha256 -Name 'ExpectedCurrentReleaseSetSha256'
+}
+Assert-OfflineWindow
+
+$binDir = Join-Path $InstallRoot "bin"
+$releasesDir = Join-Path $InstallRoot "releases"
+$currentPath = Join-Path $InstallRoot "current.pb"
+$previousPath = Join-Path $InstallRoot "previous.pb"
+Assert-HexSha256 -Value $ReleaseSetSha256 -Name "ReleaseSetSha256"
+$tag = "edge-release-$ReleaseSetSha256"
+Assert-AcceptedReleaseAuthority -AcceptedRevision $AcceptedRevision -Tag $tag -ArchivedAcceptanceSourceRunId $ArchivedAcceptanceSourceRunId
+# Before any downloaded verifier or installed console is executed: the root
+# must be protected. Existing unsafe roots require the explicit ConnectWindows
+# repair scope; fresh roots are protected before materializing release files.
+if (-not (Test-Path -LiteralPath $InstallRoot)) {
+    Assert-RootExecutionChain -CreateFresh
+} else {
+    Assert-RootExecutionChain
+}
+# Directories are created only after the protected root has been proven or
+# provisioned. Creating them first could inherit writable volume-root ACEs.
+New-Item -ItemType Directory -Force -Path $binDir, $releasesDir | Out-Null
+$canonicalReleaseDir = Join-Path $releasesDir $ReleaseSetSha256
+$repairReleaseDir = Join-Path $releasesDir ($ReleaseSetSha256 + ".repair")
+$releaseDir = $canonicalReleaseDir
+$preservePrevious = $false
+$currentReleaseDir = ""
+
+if ($ForceRematerialize) {
+    $stableDiagnostic = Join-Path $binDir "edge-diagnostic.exe"
+    if (-not (Test-Path -LiteralPath $currentPath -PathType Leaf)) {
+        throw "ForceRematerialize requires a verified current activation"
+    }
+    if (-not (Test-Path -LiteralPath $stableDiagnostic -PathType Leaf)) {
+        throw "ForceRematerialize requires the stable diagnostic boundary"
+    }
+    $current = Invoke-Diagnostic -Diagnostic $stableDiagnostic -State $currentPath
+    if ([string]$current["release_set_sha256"] -ne $ReleaseSetSha256) {
+        throw "ForceRematerialize target must equal the exact current ReleaseSet"
+    }
+    $currentReleaseDir = [IO.Path]::GetFullPath([string]$current["release_dir"]).TrimEnd('\')
+    $canonicalFull = [IO.Path]::GetFullPath($canonicalReleaseDir).TrimEnd('\')
+    $repairFull = [IO.Path]::GetFullPath($repairReleaseDir).TrimEnd('\')
+    if ($currentReleaseDir -ceq $canonicalFull) {
+        $releaseDir = $repairReleaseDir
+    } elseif ($currentReleaseDir -ceq $repairFull) {
+        $releaseDir = $canonicalReleaseDir
+    } else {
+        throw "ForceRematerialize current activation is outside the bounded canonical/repair slots"
+    }
+    if ([IO.Path]::GetFullPath($releaseDir).TrimEnd('\') -ceq $currentReleaseDir) {
+        throw "ForceRematerialize refuses to overwrite the active immutable release directory"
+    }
+    $preservePrevious = $true
+    Write-Output "rematerialize_from=$currentReleaseDir"
+    Write-Output "rematerialize_to=$([IO.Path]::GetFullPath($releaseDir))"
+}
+
+$releaseSetPath = Join-Path $releaseDir "release-set.pb"
+$releaseSetSidecar = Join-Path $releaseDir "release-set.pb.sha256"
+$packagePath = Join-Path $releaseDir "edge-platform-windows.zip"
+$packageSidecar = Join-Path $releaseDir "edge-platform-windows.zip.sha256"
+
+$requiredInstalled = @(
+    $releaseSetPath, $releaseSetSidecar, $packagePath, $packageSidecar,
+    (Join-Path $releaseDir "bin\edge-release-set.exe"),
+    (Join-Path $releaseDir "bin\edge-diagnostic.exe"),
+    (Join-Path $releaseDir "bootstrap\install-windows-release.ps1")
+)
+$needsInstall = $ForceRematerialize -or @($requiredInstalled | Where-Object { -not (Test-Path -LiteralPath $_) }).Count -gt 0
+
+if ($needsInstall) {
+    # Never execute downloaded verifier binaries from a user-writable TEMP.
+        $stage = Join-Path $InstallRoot (".release-stage-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Force -Path $stage | Out-Null
+    try {
+        $release = Get-DurableRelease -Tag $tag
+        foreach ($name in @("release-set.pb", "release-set.pb.sha256", "edge-platform-windows.zip", "edge-platform-windows.zip.sha256")) {
+            Download-DurableReleaseAsset -Release $release -Name $name -Destination (Join-Path $stage $name)
+        }
+
+        $stageReleaseSet = Join-Path $stage "release-set.pb"
+        $stageReleaseSetSidecar = Join-Path $stage "release-set.pb.sha256"
+        $stagePackage = Join-Path $stage "edge-platform-windows.zip"
+        $stagePackageSidecar = Join-Path $stage "edge-platform-windows.zip.sha256"
+        [void](Assert-ShaSidecar -File $stageReleaseSet -Sidecar $stageReleaseSetSidecar -ExpectedName "release-set.pb" -ExpectedDigest $ReleaseSetSha256)
+        [void](Assert-ShaSidecar -File $stagePackage -Sidecar $stagePackageSidecar -ExpectedName "edge-platform-windows.zip")
+
+        $unpacked = Join-Path $stage "unpacked"
+        Expand-Archive -LiteralPath $stagePackage -DestinationPath $unpacked -Force
+        foreach ($name in @("edge-controller.exe", "edge-console.exe", "sing-box.exe", "edge-diagnostic.exe", "edge-release-set.exe")) {
+            if (-not (Test-Path -LiteralPath (Join-Path $unpacked "bin\$name"))) { throw "Windows release package is missing bin\$name" }
+        }
+        if (-not (Test-Path -LiteralPath (Join-Path $unpacked "bootstrap\install-windows-release.ps1") -PathType Leaf)) {
+            throw "Windows release package is missing bootstrap\install-windows-release.ps1"
+        }
+
+        Protect-ReleaseStageBeforeExecution -Stage $stage
+        $tool = Join-Path $unpacked "bin\edge-release-set.exe"
+        $verifyArgs = @(
+            "verify-windows", "--input", $stageReleaseSet, "--sha256-file", $stageReleaseSetSidecar,
+            "--windows-artifact", $stagePackage,
+            "--windows-controller", (Join-Path $unpacked "bin\edge-controller.exe"),
+            "--windows-console", (Join-Path $unpacked "bin\edge-console.exe"),
+            "--windows-diagnostic", (Join-Path $unpacked "bin\edge-diagnostic.exe"),
+            "--windows-sing-box", (Join-Path $unpacked "bin\sing-box.exe")
+        )
+        $verificationOutput = @(& $tool @verifyArgs)
+        if ($LASTEXITCODE -ne 0) { throw "Downloaded Windows release failed ReleaseSet verification" }
+        Assert-AcceptedCandidateSource -VerificationOutput $verificationOutput -AcceptedRevision $AcceptedRevision
+        $verificationOutput | Write-Output
+
+        $releaseStage = "$releaseDir.new"
+        if (Test-Path -LiteralPath $releaseStage) { Remove-Item -Recurse -Force $releaseStage }
+        New-Item -ItemType Directory -Force -Path $releaseStage | Out-Null
+        Copy-Item -LiteralPath $stageReleaseSet -Destination (Join-Path $releaseStage "release-set.pb")
+        Copy-Item -LiteralPath $stageReleaseSetSidecar -Destination (Join-Path $releaseStage "release-set.pb.sha256")
+        Copy-Item -LiteralPath $stagePackage -Destination (Join-Path $releaseStage "edge-platform-windows.zip")
+        Copy-Item -LiteralPath $stagePackageSidecar -Destination (Join-Path $releaseStage "edge-platform-windows.zip.sha256")
+        Copy-Item -LiteralPath (Join-Path $unpacked "bin") -Destination $releaseStage -Recurse
+        Copy-Item -LiteralPath (Join-Path $unpacked "bootstrap") -Destination $releaseStage -Recurse
+        if (Test-Path -LiteralPath $releaseDir) { Remove-Item -Recurse -Force $releaseDir }
+        Move-Item -LiteralPath $releaseStage -Destination $releaseDir
+    } finally {
+        if (Test-Path -LiteralPath $stage) { Remove-Item -Recurse -Force $stage }
+    }
+}
+
+[void](Assert-ShaSidecar -File $releaseSetPath -Sidecar $releaseSetSidecar -ExpectedName "release-set.pb" -ExpectedDigest $ReleaseSetSha256)
+[void](Assert-ShaSidecar -File $packagePath -Sidecar $packageSidecar -ExpectedName "edge-platform-windows.zip")
+
+$tool = Join-Path $releaseDir "bin\edge-release-set.exe"
+$diagnostic = Join-Path $releaseDir "bin\edge-diagnostic.exe"
+$controller = Join-Path $releaseDir "bin\edge-controller.exe"
+$console = Join-Path $releaseDir "bin\edge-console.exe"
+$singBox = Join-Path $releaseDir "bin\sing-box.exe"
+$releaseInstaller = Join-Path $releaseDir "bootstrap\install-windows-release.ps1"
+$verifyArgs = @(
+    "verify-windows", "--input", $releaseSetPath, "--sha256-file", $releaseSetSidecar,
+    "--windows-artifact", $packagePath, "--windows-controller", $controller,
+    "--windows-console", $console, "--windows-diagnostic", $diagnostic, "--windows-sing-box", $singBox
+)
+$verificationOutput = @(& $tool @verifyArgs)
+if ($LASTEXITCODE -ne 0) { throw "Installed Windows release failed exact ReleaseSet verification" }
+Assert-AcceptedCandidateSource -VerificationOutput $verificationOutput -AcceptedRevision $AcceptedRevision
+$verificationOutput | Write-Output
+
+if ($StageOnly -or $BootstrapNow) {
+    # Does not touch current/previous authority or stable binaries/tasks/SCM.
+    $stable = Join-Path $InstallRoot "bin\edge-diagnostic.exe"
+    if (-not (Test-Path -LiteralPath $currentPath -PathType Leaf) -or
+        -not (Test-Path -LiteralPath $stable -PathType Leaf)) {
+        throw 'OFFLINE_BOOTSTRAP_BLOCKED: installed stable authority absent'
+    }
+    $old = Invoke-Diagnostic -Diagnostic $stable -State $currentPath
+    # Both stopped immutable sources are valid. ProxyOnly must already be
+    # OnDemand: staging never authorizes switching an auto-start owner.
+    if ([string]$old['release_set_sha256'] -ceq $ReleaseSetSha256 -or
+        [string]$old['windows_datapath_mode'] -notin @('ManagedTun', 'ProxyOnly') -or
+        [string]$old['scm_state'] -cne 'Stopped' -or
+        [string]$old['managed_tun_present'] -cne 'false' -or
+        ([string]$old['windows_datapath_mode'] -ceq 'ProxyOnly' -and
+         [string]$old['scm_start_type'] -cne 'OnDemand')) {
+        throw 'OFFLINE_BOOTSTRAP_BLOCKED: exact stopped ProxyOnly/ManagedTun source required'
+    }
+    # Re-observe the ONLY existing SYSTEM/Highest dispatcher before calling
+    # the native one-shot owner. Never retarget an unrelated task.
+    $dispatch = Get-ScheduledTask -TaskName 'EdgePlatformPrivilegedDispatch' -ErrorAction Stop
+    # UserId is localized (e.g. 'СИСТЕМА' on Russian Windows).
+    # Resolve to the immutable well-known LocalSystem SID; never trust a name.
+    if ($null -eq $dispatch) {
+        throw 'OFFLINE_BOOTSTRAP_BLOCKED: existing SYSTEM task missing'
+    }
+    $principalName = [string]$dispatch.Principal.UserId
+    try {
+        $principalSid = if ($principalName -ceq 'S-1-5-18') {
+            'S-1-5-18'
+        } else {
+            ([System.Security.Principal.NTAccount]::new($principalName)).Translate(
+                [System.Security.Principal.SecurityIdentifier]
+            ).Value
+        }
+    } catch {
+        throw 'OFFLINE_BOOTSTRAP_BLOCKED: task principal SID cannot be resolved'
+    }
+    # For one separately approved distinct successor, a compensated UNKNOWN
+    # may have left this SAME exact LocalSystem task Disabled. The old BEGIN
+    # must be pinned, canonical and bound to this installed owner; neither
+    # the same attempted ReleaseSet nor the same revision may be replayed.
+    $disabledSuccessorProven = $false
+    if ($hasRetained -and [string]$dispatch.State -ceq 'Disabled') {
+        if ([string]$old['release_set_sha256'] -cne $ExpectedCurrentReleaseSetSha256) {
+            throw 'OFFLINE_BOOTSTRAP_DISABLED_PREDECESSOR_RELEASE_MISMATCH'
+        }
+        $retainedPath = Join-Path $InstallRoot 'offline-bootstrap-intent-v1'
+        $retainedFile = Get-Item -LiteralPath $retainedPath -Force -ErrorAction Stop
+        if ($retainedFile.PSIsContainer -or
+            ($retainedFile.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+            $retainedFile.Length -lt 1 -or $retainedFile.Length -gt 512) {
+            throw 'OFFLINE_BOOTSTRAP_DISABLED_PREDECESSOR_NOT_REGULAR'
+        }
+        $retainedBytes = [IO.File]::ReadAllBytes($retainedPath)
+        if ($retainedBytes.Length -ne $retainedFile.Length -or
+            (Get-FileHash -LiteralPath $retainedPath -Algorithm SHA256).Hash.ToLowerInvariant() -cne $RetainedIntentSha256) {
+            throw 'OFFLINE_BOOTSTRAP_DISABLED_PREDECESSOR_SHA_MISMATCH'
+        }
+        $retainedText = [Text.UTF8Encoding]::new($false, $true).GetString($retainedBytes)
+        $retainedMatch = [regex]::Match(
+            $retainedText,
+            '\Aschema=sing-box\.windows-offline-bootstrap/v1\nfrom=(?<from>[0-9a-f]{64})\nto=(?<to>[0-9a-f]{64})\naccepted_revision=(?<revision>[0-9a-f]{40})\n\z'
+        )
+        if (-not $retainedMatch.Success -or
+            $retainedMatch.Groups['from'].Value -cne [string]$old['release_set_sha256'] -or
+            $retainedMatch.Groups['to'].Value -ceq $ReleaseSetSha256 -or
+            $retainedMatch.Groups['revision'].Value -ceq $AcceptedRevision) {
+            throw 'OFFLINE_BOOTSTRAP_DISABLED_PREDECESSOR_NOT_DISTINCT_NO_REPLAY'
+        }
+        $disabledSuccessorProven = $true
+    }
+    if ($principalSid -cne 'S-1-5-18' -or
+        ([string]$dispatch.State -cne 'Ready' -and -not $disabledSuccessorProven) -or
+        [string]$dispatch.Principal.RunLevel -cne 'Highest' -or
+        [string]$dispatch.Principal.LogonType -cne 'ServiceAccount' -or
+        @($dispatch.Actions).Count -ne 1 -or
+        [string]@($dispatch.Actions)[0].Execute.Trim('"') -cne [string]$old['console_path'] -or
+        [string]@($dispatch.Actions)[0].Arguments -notmatch '^privileged-dispatch --install-root "?C:\\sing-box"?$') {
+        throw 'OFFLINE_BOOTSTRAP_BLOCKED: old exact SYSTEM task not proven'
+    }
+    Write-Output 'offline_bootstrap_task=EXACT_SYSTEM_OWNER'
+    Write-Output 'offline_bootstrap_candidate=VERIFIED_STAGE_ONLY'
+    Write-Output "offline_bootstrap_console=$console"
+    if ($BootstrapNow) {
+        $bootstrapArgs = @("offline-bootstrap", $AcceptedRevision, $ReleaseSetSha256, "--install-root", $InstallRoot)
+        if ($EnrollReceipt) { $bootstrapArgs += "--enroll-receipt" }
+        if ($hasRetained) {
+            $bootstrapArgs += @(
+                "--retained-intent-sha256", $RetainedIntentSha256,
+                "--expected-current-release-set-sha256", $ExpectedCurrentReleaseSetSha256
+            )
+        }
+        & $console @bootstrapArgs
+        if ($LASTEXITCODE -ne 0) { throw 'OFFLINE_BOOTSTRAP_UNKNOWN: native result uncertain, DO NOT REPLAY' }
+        Write-Output 'offline_bootstrap=RETURNED_FROM_NATIVE_OWNER'
+        if ($EnrollReceipt) {
+            Write-Output 'w4_receipt_identity=LOCAL_ADMIN_REQUEST_DURABLE'
+            Write-Output 'w4_next=EXISTING_SYSTEM_TASK_ONLY'
+        }
+        exit 0
+    }
+    Write-Output 'windows_service_mutations=0'
+    Write-Output 'windows_authority_mutations=0'
+    exit 0
+}
+
+if (Test-Path -LiteralPath $currentPath -PathType Leaf) {
+    $current = Invoke-Diagnostic -Diagnostic $diagnostic -State $currentPath
+    if (-not $ForceRematerialize -and $current["release_set_sha256"] -eq $ReleaseSetSha256) {
+        Assert-AcceptedCandidateSource -VerificationOutput @("source_revision=$($current["source_revision"])") -AcceptedRevision $AcceptedRevision
+        Refresh-StableBootstrapInstaller -Source $releaseInstaller -InstallRoot $InstallRoot
+        Write-Output "Windows ReleaseSet $ReleaseSetSha256 is already active"
+        Write-Output "activation=NOOP"
+        Write-Output "current_state=$currentPath"
+        Write-Output "console=$($current["console_path"])"
+        Write-Output "diagnostic=$($current["diagnostic_path"])"
+        Write-Output "runtime_state=NOT_CONFIGURED"
+        Write-Output "runtime_config=NOT_CONFIGURED"
+        Write-Output "automation_registered=false"
+        exit 0
+    }
+}
+
+Assert-OfflineWindow
+
+$activation = Activate-ReleaseAuthority `
+    -Tool $tool `
+    -ReleaseSetPath $releaseSetPath `
+    -ReleaseSetSidecar $releaseSetSidecar `
+    -ReleaseDir $releaseDir `
+    -Controller $controller `
+    -Console $console `
+    -Diagnostic $diagnostic `
+    -SingBox $singBox `
+    -InstallRoot $InstallRoot `
+    -PreservePrevious:$preservePrevious
+
+Refresh-StableBootstrapInstaller -Source $releaseInstaller -InstallRoot $InstallRoot
+if ($ForceRematerialize) {
+    Write-Output "rematerialization=PASS"
+}
+Write-Output "Activated exact Windows ReleaseSet $ReleaseSetSha256"
+Write-Output "current_state=$($activation["current_state"])"
+Write-Output "console=$($activation["console"])"
+Write-Output "diagnostic=$($activation["diagnostic"])"
+Write-Output "runtime_state=NOT_CONFIGURED"
+Write-Output "runtime_config=NOT_CONFIGURED"
+Write-Output "automation_registered=false"
+ -or
             [string]$state.installed_release_set_sha256 -cne $selectedDigest -or
             [int]$state.mutations -ne 0) {
             throw 'WINDOWS_CONNECT_FIRST_USE_STATE_NOT_CANONICAL'

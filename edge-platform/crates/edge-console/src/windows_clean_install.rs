@@ -6,7 +6,7 @@ use super::*;
 use edge_shared_types::host_journal::require_windows_local_administrator_first_use;
 use std::path::Path;
 
-pub(super) fn install(install_root: &Path) -> Result<(), String> {
+pub(super) async fn install(install_root: &Path) -> Result<(), String> {
     require_windows_local_administrator_first_use().map_err(str::to_owned)?;
     if install_root != Path::new(r"C:\sing-box") {
         return Err("HOST_WINDOWS_CLEAN_INSTALL_ROOT_INVALID".into());
@@ -28,6 +28,7 @@ pub(super) fn install(install_root: &Path) -> Result<(), String> {
     let doctor = String::from_utf8_lossy(&output.stdout);
     verify_clean_prestate(&doctor, &active.release_set_sha256)?;
     windows_receipt_enrollment::preflight_fresh_identity_slot(install_root)?;
+    let machine_id = windows_trust_enrollment::resolve_local_windows_machine(&active).await?;
     // Enumerate task scheduler successfully before treating absence as proven.
     // schtasks /Query exit=1 is ambiguous (missing task vs access/transport
     // failure), and would authorize an unsafe first-use BEGIN on uncertainty.
@@ -64,7 +65,7 @@ if ($controller.Count -ne 0) {
     // First durable effect is the SAME protected typed receipt identity
     // marker, after provisioning its existing ACL-verified native journal.
     converge_native_host_acl(install_root)?;
-    windows_receipt_enrollment::prepare_clean_before_scm(install_root)?;
+    windows_receipt_enrollment::prepare_clean_before_scm(install_root, &machine_id)?;
     let manager = ServiceManager::local_computer(
         None::<&str>,
         ServiceManagerAccess::CONNECT | ServiceManagerAccess::CREATE_SERVICE,

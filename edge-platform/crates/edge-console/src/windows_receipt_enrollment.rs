@@ -21,7 +21,40 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 
-const MACHINE: &str = "sing-box-windows-lab";
+const MACHINE: &str = "sing-box-windows-lab"; // legacy first-use fixture only
+pub(super) fn valid_machine_id(machine: &str) -> bool {
+    !machine.is_empty()
+        && machine.len() <= 40
+        && machine.bytes().next().is_some_and(|b| b.is_ascii_lowercase())
+        && machine.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+}
+
+// The existing typed receipt marker carries the host ID across release handoff.
+// It is not an authority: signed trust separately checks current protected Git.
+pub(super) fn bound_machine_id(install_root: &Path) -> Result<String, String> {
+    let root = native_root(install_root)?;
+    for marker in [MARKER, COMPLETED] {
+        let path = root.join(marker);
+        let meta = match fs::symlink_metadata(&path) {
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Ok(meta) => meta,
+            Err(_) => return Err("HOST_WINDOWS_RECEIPT_MACHINE_MARKER_UNAVAILABLE".into()),
+        };
+        if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 512 {
+            return Err("HOST_WINDOWS_RECEIPT_MACHINE_MARKER_INVALID".into());
+        }
+        let bytes = fs::read(&path).map_err(|_| "HOST_WINDOWS_RECEIPT_MACHINE_MARKER_UNREADABLE")?;
+        let request = FleetWindowsReceiptIdentityEnrollment::decode(bytes.as_slice())
+            .map_err(|_| "HOST_WINDOWS_RECEIPT_MACHINE_MARKER_PROTO_INVALID")?;
+        if request.encode_to_vec() != bytes || !valid_machine_id(&request.machine_id) {
+            return Err("HOST_WINDOWS_RECEIPT_MACHINE_MARKER_NONCANONICAL".into());
+        }
+        return Ok(request.machine_id);
+    }
+    Ok("UNREGISTERED".into())
+}
+
+
 const MARKER: &str = "receipt-enrollment.pb";
 const COMPLETED: &str = "receipt-enrollment.completed.pb";
 const PRIVATE: &str = "receipt-key.pk8";
@@ -47,7 +80,7 @@ fn request_valid(
     active: &WindowsActivationState,
 ) -> Result<(), &'static str> {
     if request.schema_version != 1
-        || request.machine_id != MACHINE
+        || !valid_machine_id(&request.machine_id)
         || request.source_revision != active.source_revision
         || request.release_set_sha256 != active.release_set_sha256
         || request.source_revision.len() != 40
@@ -387,16 +420,18 @@ pub(super) fn rebind_pending_after_offline_handoff(
     {
         return Err("HOST_WINDOWS_FIRST_USE_REBIND_ORIGINAL_CHANGED_NO_REPLAY".into());
     }
+    let bound = FleetWindowsReceiptIdentityEnrollment::decode(previously.receipt_bytes.as_slice())
+        .map_err(|_| "HOST_WINDOWS_FIRST_USE_REBIND_HOST_ID_UNPROVEN")?;
     let new_receipt = FleetWindowsReceiptIdentityEnrollment {
         schema_version: 1,
-        machine_id: MACHINE.to_owned(),
+        machine_id: bound.machine_id.clone(),
         source_revision: current.source_revision.clone(),
         release_set_sha256: current.release_set_sha256.clone(),
     };
     request_valid(&new_receipt, &current).map_err(str::to_owned)?;
     let new_trust = FleetWindowsTrustEnrollment {
         schema_version: 1,
-        machine_id: MACHINE.to_owned(),
+        machine_id: bound.machine_id,
         source_revision: current.source_revision.clone(),
         release_set_sha256: current.release_set_sha256.clone(),
     };
@@ -469,7 +504,7 @@ pub(super) fn require_identity_request_for_trust(
 /// the SAME typed identity marker as a durable local-authorized BEGIN. The
 /// existing SYSTEM task eventually completes it. A crash cannot be treated
 /// as a fresh enrollment; no other first-use store is introduced.
-pub(super) fn prepare_clean_before_scm(install_root: &Path) -> Result<(), String> {
+pub(super) fn prepare_clean_before_scm(install_root: &Path, machine_id: &str) -> Result<(), String> {
     require_windows_local_administrator_first_use().map_err(str::to_owned)?;
     require_exact_immutable_activation_console(install_root)?;
     let active = load_verified_activation(install_root).map_err(|err| err.to_string())?;
@@ -483,7 +518,7 @@ pub(super) fn prepare_clean_before_scm(install_root: &Path) -> Result<(), String
     let root = native_root(install_root)?;
     let request = FleetWindowsReceiptIdentityEnrollment {
         schema_version: 1,
-        machine_id: MACHINE.into(),
+        machine_id: machine_id.into(),
         source_revision: active.source_revision.clone(),
         release_set_sha256: active.release_set_sha256.clone(),
     };
@@ -713,7 +748,7 @@ pub(super) fn observe(install_root: &Path) -> Result<(), String> {
     }
     let bytes = fs::read(public).map_err(|_| "HOST_WINDOWS_RECEIPT_ENROLL_PUBLIC_UNREADABLE")?;
     println!("w4_receipt_identity=PUBLIC_ONLY_OBSERVED");
-    println!("machine_id={MACHINE}");
+    println!("machine_id={}", bound_machine_id(install_root)?);
     println!("release_set_sha256={}", active.release_set_sha256);
     println!(
         "native_receipt_public_hex={}",
@@ -813,7 +848,7 @@ mod tests {
         };
         assert!(request_valid(&request, &active).is_ok());
         let mut altered = request.clone();
-        altered.machine_id = "other-host".into();
+        altered.machine_id = "Invalid-Uppercase".into();
         assert!(request_valid(&altered, &active).is_err());
         altered = request.clone();
         altered.release_set_sha256 = "f".repeat(64);

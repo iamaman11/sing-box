@@ -211,6 +211,7 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
         #[cfg(windows)]
         Command::OfflineCleanInstall(args) => {
             windows_clean_install::install(Path::new(&args.install_root))
+                .await
                 .map_err(ConsoleError::Command)?;
             Ok(())
         }
@@ -242,7 +243,8 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                 serde_json::json!({
                     "schema": "sing-box.windows-first-use-status/v1",
                     "stage": stage,
-                    "machine_id": "sing-box-windows-lab",
+                    "machine_id": windows_receipt_enrollment::bound_machine_id(root)
+                        .map_err(ConsoleError::Command)?,
                     "installed_release_set_sha256": active.release_set_sha256,
                     "trusted_remote_execution": false,
                     "mutations": 0
