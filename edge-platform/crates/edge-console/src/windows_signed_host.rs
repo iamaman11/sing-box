@@ -323,8 +323,26 @@ fn preflight_existing_windows_route_capture(
             )?;
             let (operation, baseline) = NativeNetworkIdentity::decode_active_baseline(&bytes)?;
             if mode != WindowsDatapathMode::ProxyOnly
-                || action != FleetHostAction::Stop
                 || desired_run != edge_shared_types::FleetHostRunState::Stopped
+            {
+                return Err("HOST_WINDOWS_ACTIVE_NETWORK_BASELINE_REQUIRES_SIGNED_STOP");
+            }
+            // The old STOP may have physically restored everything but
+            // crashed before archiving this record. RECOVER is read-only:
+            // the same protected journal and signed authorization decide
+            // whether the prior pending scope may be reconciled.
+            if action == FleetHostAction::Recover
+                && observed_owner == edge_shared_types::FleetNativeOwnerState::Stopped
+            {
+                let (_, current) = windows_native_network::observe_native_network_identity()?;
+                baseline.require_restored(&current)?;
+                return Ok(WindowsNetworkPreflight {
+                    baseline,
+                    prior_tun_luid: None,
+                    original_start_operation: Some(operation),
+                });
+            }
+            if action != FleetHostAction::Stop
                 || observed_owner != edge_shared_types::FleetNativeOwnerState::Running
             {
                 return Err("HOST_WINDOWS_ACTIVE_NETWORK_BASELINE_REQUIRES_SIGNED_STOP");
@@ -842,7 +860,8 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
                 let observed = system_native_observation(install_root)?;
                 if mode == WindowsDatapathMode::ManagedTun
                     && effect_completed.get()
-                    && observed.owner_state == edge_shared_types::FleetNativeOwnerState::Running as i32
+                    && observed.owner_state
+                        == edge_shared_types::FleetNativeOwnerState::Running as i32
                 {
                     let (_, live) =
                         edge_shared_types::windows_native_network::observe_native_managed_tun()?;
@@ -867,28 +886,28 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
             },
             |step| {
                 let outcome = match step {
-                FleetHostPlannedStep::ReplaceRelease => windows_update::apply(
-                    install_root,
-                    update.as_ref().ok_or("HOST_WINDOWS_UPDATE_NOT_PREPARED")?,
-                    &trust,
-                    &intent.operation_id,
-                ),
-                FleetHostPlannedStep::Configure => windows_config::apply(
-                    install_root,
-                    config.as_ref().ok_or("HOST_WINDOWS_CONFIG_NOT_PREPARED")?,
-                    &intent.operation_id,
-                ),
-                _ => apply_exact_proxyonly_scm_step(
-                    step,
-                    install_root,
-                    &intent,
-                    &auth,
-                    &receipt_private,
-                    &installed_runtime_sha256,
-                    config.as_ref(),
-                    &trust,
-                    network_baseline,
-                ),
+                    FleetHostPlannedStep::ReplaceRelease => windows_update::apply(
+                        install_root,
+                        update.as_ref().ok_or("HOST_WINDOWS_UPDATE_NOT_PREPARED")?,
+                        &trust,
+                        &intent.operation_id,
+                    ),
+                    FleetHostPlannedStep::Configure => windows_config::apply(
+                        install_root,
+                        config.as_ref().ok_or("HOST_WINDOWS_CONFIG_NOT_PREPARED")?,
+                        &intent.operation_id,
+                    ),
+                    _ => apply_exact_proxyonly_scm_step(
+                        step,
+                        install_root,
+                        &intent,
+                        &auth,
+                        &receipt_private,
+                        &installed_runtime_sha256,
+                        config.as_ref(),
+                        &trust,
+                        network_baseline,
+                    ),
                 };
                 if outcome.is_ok() {
                     effect_completed.set(true);
@@ -900,7 +919,7 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
     .map_err(str::to_owned)?;
     // Only a VERIFIED signed STOP may retire the active TUN before-state;
     // interrupted effects keep it for a new independent recovery decision.
-    if action == FleetHostAction::Stop
+    if matches!(action, FleetHostAction::Stop | FleetHostAction::Recover)
         && result.state == edge_shared_types::FleetHostResultState::Verified as i32
         && result.physical_readback
         && let Some(original) = network_preflight.original_start_operation.as_deref()
