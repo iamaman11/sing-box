@@ -92,6 +92,32 @@ pub(super) fn bounded_regular_file(path: &Path, max: u64) -> Result<Vec<u8>, &'s
     Ok(bytes)
 }
 
+/// The installed ReleaseSet and the immutable SYSTEM trust are two
+/// independently verified authorities after an approved offline upgrade.
+/// The installed bytes are fetched from the exact protected Git release;
+/// historical trust is bound to the existing verified previous.pb record.
+/// Never require the new release to equal the old preserved trust bytes.
+fn verify_installed_trust_release_binding(
+    installed_pb: &[u8],
+    installed_sha256: &str,
+    trusted_pb: &[u8],
+    verified_previous_sha256: Option<&str>,
+) -> Result<(), &'static str> {
+    let installed_digest = lowercase_sha(digest(&SHA256, installed_pb).as_ref());
+    if installed_digest != installed_sha256 {
+        return Err("HOST_WINDOWS_SYSTEM_INSTALLED_GIT_RELEASE_CHANGED");
+    }
+    let trusted_digest = lowercase_sha(digest(&SHA256, trusted_pb).as_ref());
+    if trusted_digest == installed_sha256 {
+        if installed_pb != trusted_pb {
+            return Err("HOST_WINDOWS_SYSTEM_INSTALLED_TRUST_BYTES_CHANGED");
+        }
+    } else if verified_previous_sha256 != Some(trusted_digest.as_str()) {
+        return Err("HOST_WINDOWS_TRUST_PREDECESSOR_RELEASE_MISMATCH");
+    }
+    Ok(())
+}
+
 /// Common authority loader for lifecycle and universal admin. The local
 /// bootstrap anchors the installed runtime; independently fetched protected
 /// Git anchors current authority. The binding intent is NEVER executed.
@@ -166,25 +192,32 @@ pub(super) async fn current_authority(
         .iter()
         .map(|b| format!("{b:02x}"))
         .collect();
-    if trust_release != installed.release_set_sha256 {
-        // Only the exact predecessor of one approved offline handoff can
-        // explain an immutable trust snapshot from a different release.
-        let predecessor = load_verified_activation_path(
-            install_root,
-            &install_root.join("previous.pb"),
-            "previous.pb",
+    let predecessor = if trust_release != installed.release_set_sha256 {
+        // Old trust is allowed only when the exact prior activation independently
+        // verifies. No replacement key, re-enrollment or unsigned runner input.
+        Some(
+            load_verified_activation_path(
+                install_root,
+                &install_root.join("previous.pb"),
+                "previous.pb",
+            )
+            .map_err(|_| "HOST_WINDOWS_TRUST_PREDECESSOR_NOT_VERIFIED")?,
         )
-        .map_err(|_| "HOST_WINDOWS_TRUST_PREDECESSOR_NOT_VERIFIED")?;
-        if predecessor.release_set_sha256 != trust_release {
-            return Err("HOST_WINDOWS_TRUST_PREDECESSOR_RELEASE_MISMATCH".into());
-        }
-    }
+    } else {
+        None
+    };
     let boot = verify_system_trust(&bytes, &historical, &trust_release, private)?;
     let (installed_pb, current_pb, registry_pb, spec) =
         windows_trust_enrollment::fetch_exact_protected_git(&installed).await?;
-    if installed_pb != boot.release_set_pb {
-        return Err("HOST_WINDOWS_SYSTEM_INSTALLED_GIT_RELEASE_CHANGED".into());
-    }
+    verify_installed_trust_release_binding(
+        &installed_pb,
+        &installed.release_set_sha256,
+        &boot.release_set_pb,
+        predecessor
+            .as_ref()
+            .map(|verified| verified.release_set_sha256.as_str()),
+    )
+    .map_err(str::to_owned)?;
     let binding = binding(
         machine_id,
         operation_id,
@@ -682,6 +715,75 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn verified_offline_upgrade_keeps_immutable_predecessor_trust() {
+        let old_trust = b"previous immutable ReleaseSet";
+        let installed = b"new protected Git ReleaseSet";
+        let sha = |bytes: &[u8]| lowercase_sha(digest(&SHA256, bytes).as_ref());
+        let old_sha = sha(old_trust);
+        let installed_sha = sha(installed);
+
+        // Same-release behavior still requires the identical trust bytes.
+        assert_eq!(
+            verify_installed_trust_release_binding(
+                old_trust,
+                &old_sha,
+                old_trust,
+                None,
+            ),
+            Ok(())
+        );
+        // Canonical positive path: exact new release, old trust pinned to
+        // previously verified activation; no trust regeneration or overwrite.
+        assert_eq!(
+            verify_installed_trust_release_binding(
+                installed,
+                &installed_sha,
+                old_trust,
+                Some(&old_sha),
+            ),
+            Ok(())
+        );
+        // No previous.pb evidence or a foreign predecessor is NOT an upgrade.
+        assert_eq!(
+            verify_installed_trust_release_binding(
+                installed,
+                &installed_sha,
+                old_trust,
+                None,
+            ),
+            Err("HOST_WINDOWS_TRUST_PREDECESSOR_RELEASE_MISMATCH")
+        );
+        assert_eq!(
+            verify_installed_trust_release_binding(
+                installed,
+                &installed_sha,
+                old_trust,
+                Some(&installed_sha),
+            ),
+            Err("HOST_WINDOWS_TRUST_PREDECESSOR_RELEASE_MISMATCH")
+        );
+        // A substituted installed ReleaseSet is denied even with valid old trust.
+        assert_eq!(
+            verify_installed_trust_release_binding(
+                b"tampered installed release",
+                &installed_sha,
+                old_trust,
+                Some(&old_sha),
+            ),
+            Err("HOST_WINDOWS_SYSTEM_INSTALLED_GIT_RELEASE_CHANGED")
+        );
+        assert_eq!(
+            verify_installed_trust_release_binding(
+                installed,
+                &installed_sha,
+                b"foreign trust",
+                Some(&old_sha),
+            ),
+            Err("HOST_WINDOWS_TRUST_PREDECESSOR_RELEASE_MISMATCH")
+        );
+    }
 
     #[test]
     fn transport_request_cannot_be_swapped_during_execution() {
