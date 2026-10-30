@@ -7,6 +7,11 @@
 //! IPv4/IPv6 routes, assigned addresses and adapter DNS endpoints, but counts do
 //! not prove their restoration, WARP health, Line1, or future TUN safety.
 use std::collections::BTreeSet;
+use prost::Message;
+use crate::{
+    FleetWindowsNetworkAdapter, FleetWindowsNetworkAddress, FleetWindowsNetworkBaseline,
+    FleetWindowsNetworkDns, FleetWindowsNetworkRoute,
+};
 use windows_sys::Win32::NetworkManagement::IpHelper::{
     FreeMibTable, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST, GetAdaptersAddresses,
     GetIfTable2, GetIpForwardTable2, IP_ADAPTER_ADDRESSES_LH, MIB_IF_TABLE2, MIB_IPFORWARD_TABLE2,
@@ -22,6 +27,7 @@ const MAX_NATIVE_ADAPTERS: usize = 512;
 const MAX_DNS_LINKS: usize = 1024;
 const MAX_UNICAST_LINKS: usize = 4096;
 const MAX_ADAPTER_BUFFER_BYTES: usize = 1024 * 1024;
+pub const MAX_NATIVE_NETWORK_BASELINE_BYTES: usize = 4 * 1024 * 1024;
 
 /// Transient native observation only, never a Git value, persisted config,
 /// authorization or permission to touch a route. The logical owner stays
@@ -190,6 +196,54 @@ impl ManagedTunNetworkObservation {
 }
 
 impl NativeNetworkIdentity {
+    /// The existing SYSTEM journal stores the physical prestate once after
+    /// durable BEGIN and before a TUN effect. Exact native fields only.
+    pub fn encode_baseline(&self, operation: &str) -> Result<Vec<u8>, &'static str> {
+        if operation.is_empty() || operation.len() > 96 {
+            return Err("HOST_WINDOWS_NETWORK_BASELINE_OPERATION_INVALID");
+        }
+        let snapshot = FleetWindowsNetworkBaseline {
+            schema_version: 1,
+            operation_id: operation.into(),
+            before_sha256: self.signed_prebegin_digest().to_vec(),
+            routes: self.routes.iter().map(|r| FleetWindowsNetworkRoute {
+                interface_luid: r.interface_luid,
+                family: u32::from(r.family),
+                prefix: r.prefix.clone(),
+                prefix_length: u32::from(r.prefix_length),
+                next_hop: r.next_hop.clone(),
+                metric: r.metric,
+                protocol: r.protocol,
+                origin: r.origin,
+                site_prefix_length: u32::from(r.site_prefix_length),
+                loopback: r.loopback,
+                published: r.published,
+            }).collect(),
+            addresses: self.addresses.iter().map(|a| FleetWindowsNetworkAddress {
+                interface_luid: a.interface_luid,
+                family: u32::from(a.family),
+                address: a.address.clone(),
+                prefix_length: u32::from(a.prefix_length),
+            }).collect(),
+            dns: self.dns.iter().map(|d| FleetWindowsNetworkDns {
+                interface_luid: d.interface_luid,
+                order: d.order,
+                family: u32::from(d.family),
+                server: d.server.clone(),
+            }).collect(),
+            foreign_warp_adapters: self.foreign_warp_adapters.iter().map(|a| FleetWindowsNetworkAdapter {
+                alias: a.alias.clone(),
+                interface_luid: a.interface_luid,
+                oper_status: a.oper_status,
+            }).collect(),
+        };
+        let bytes = snapshot.encode_to_vec();
+        if bytes.len() > MAX_NATIVE_NETWORK_BASELINE_BYTES {
+            return Err("HOST_WINDOWS_NETWORK_BASELINE_OVERSIZED");
+        }
+        Ok(bytes)
+    }
+
     /// One bounded, domain-separated digest of the actual typed kernel
     /// network. No alternative desired state or runner-provided observation.
     pub fn signed_prebegin_digest(&self) -> [u8; 32] {
