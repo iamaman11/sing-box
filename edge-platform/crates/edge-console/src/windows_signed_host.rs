@@ -539,8 +539,7 @@ fn system_native_observation(install_root: &Path) -> Result<FleetNativeObservati
 /// sing-box listener is not proof that an unproxied Git/Cloudflare control
 /// path survives route capture. Output is only domain-separated evidence
 /// derived from real resolver answers and TLS-validated HTTP responses.
-async fn probe_pre_tun_native_control_dns()
--> Result<([u8; 32], [u8; 32]), &'static str> {
+async fn probe_pre_tun_native_control_dns() -> Result<([u8; 32], [u8; 32]), &'static str> {
     use std::net::SocketAddr;
     let hosts: Vec<SocketAddr> = tokio::net::lookup_host(("api.github.com", 443))
         .await
@@ -576,7 +575,10 @@ async fn probe_pre_tun_native_control_dns()
     let mut control_evidence = b"sing-box/windows-native-control-witness/v1:".to_vec();
     for (url, status) in [
         ("https://api.github.com", reqwest::StatusCode::OK),
-        ("https://cp.cloudflare.com/generate_204", reqwest::StatusCode::NO_CONTENT),
+        (
+            "https://cp.cloudflare.com/generate_204",
+            reqwest::StatusCode::NO_CONTENT,
+        ),
     ] {
         let response = client
             .get(url)
@@ -856,8 +858,7 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
     // separate SYSTEM signature, current physical network or config check.
     // This is still not permission to capture a route: the shared gate below
     // remains CLOSED until real native Line1/control/DNS witness generation.
-    let tun_config = if mode == WindowsDatapathMode::ManagedTun
-        && action == FleetHostAction::Start
+    let tun_config = if mode == WindowsDatapathMode::ManagedTun && action == FleetHostAction::Start
     {
         let candidate = windows_config::prepare(install_root, &trust.selected_spec_bytes)?
             .ok_or("HOST_WINDOWS_TUN_CONFIG_NOT_PREPARED")?;
@@ -880,9 +881,7 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
             .map_err(|_| "HOST_WINDOWS_NETWORK_ADMISSION_RELEASE_UNPROVEN")?;
         let state_file = windows_runtime_state_path(install_root);
         edge_shared_types::host_journal::verify_windows_protected_path_acl(&state_file, true)?;
-        let runtime = decode_windows_runtime_state(
-            &bounded_regular_file(&state_file, 65536)?,
-        )?;
+        let runtime = decode_windows_runtime_state(&bounded_regular_file(&state_file, 65536)?)?;
         let line1 = initial_line1_witness::prove_serving_line1_before_tun(
             install_root,
             Path::new(&active.sing_box_path),

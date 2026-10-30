@@ -74,10 +74,9 @@ fn isolated_config(state: &WindowsRuntimeState, ports: &[u16]) -> Result<Vec<u8>
     // must be witnessed by a disposable process with NO TUN interface.
     let mut desired = edge_shared_types::canonical_production_desired_state()?;
     desired.windows_datapath_mode = WindowsDatapathMode::ProxyOnly as i32;
-    let mut config: Value = serde_json::from_slice(
-        &render_windows_config_for_desired(state, &desired)?,
-    )
-    .map_err(|_| "Line1 canonical sing-box renderer produced invalid JSON".to_owned())?;
+    let mut config: Value =
+        serde_json::from_slice(&render_windows_config_for_desired(state, &desired)?)
+            .map_err(|_| "Line1 canonical sing-box renderer produced invalid JSON".to_owned())?;
     let source = config["outbounds"]
         .as_array()
         .ok_or("Line1 canonical outbounds missing")?;
@@ -510,12 +509,10 @@ pub(crate) fn prove_serving_line1_before_tun(
     }
     let journal = install_root.join("native-host/journal");
     edge_shared_types::host_journal::verify_native_journal_protection(&journal)?;
-    let (_, before) =
-        edge_shared_types::windows_native_network::observe_native_network_identity()?;
+    let (_, before) = edge_shared_types::windows_native_network::observe_native_network_identity()?;
     before.require_foreign_warp_up()?;
     let ips = run_isolated_external_line1(&journal, singbox_binary, runtime)?;
-    let (_, after) =
-        edge_shared_types::windows_native_network::observe_native_network_identity()?;
+    let (_, after) = edge_shared_types::windows_native_network::observe_native_network_identity()?;
     before.require_restored(&after)?;
     let mut input = b"sing-box/line1-pre-tun-real-egress/v1:".to_vec();
     for ip in ips {
