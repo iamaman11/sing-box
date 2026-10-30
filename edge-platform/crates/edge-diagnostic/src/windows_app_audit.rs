@@ -461,15 +461,16 @@ pub(super) fn run(command: &str, activation: &Path) -> Result<(), String> {
         let mut program_budget = MAX_INVENTORY_BYTES / 3;
         let mut path_budget = MAX_INVENTORY_BYTES / 3;
         let mut process_budget = MAX_INVENTORY_BYTES / 3;
-        let truncated = print_inventory_rows(
-            "registered_program_name",
-            &installed.registered_programs,
-            &mut program_budget,
-        ) | print_inventory_rows(
-            "registered_app_path_candidate",
-            &installed.app_path_candidates,
-            &mut path_budget,
-        ) | print_inventory_rows("running_executable", &executables, &mut process_budget);
+        let truncated =
+            print_inventory_rows(
+                "registered_program_name",
+                &installed.registered_programs,
+                &mut program_budget,
+            ) | print_inventory_rows(
+                "registered_app_path_candidate",
+                &installed.app_path_candidates,
+                &mut path_budget,
+            ) | print_inventory_rows("running_executable", &executables, &mut process_budget);
         println!("inventory_truncated={truncated}");
         println!("mutations=0");
         return Ok(());
