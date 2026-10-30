@@ -513,9 +513,7 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
     // STOP is the fail-safe for an already running tunnel: never make it
     // depend on proving that future TUN capture can be admitted. All
     // actions that might start or change route capture remain gated.
-    if mode != WindowsDatapathMode::ProxyOnly
-        && intent.action != FleetHostAction::Stop as i32
-    {
+    if mode != WindowsDatapathMode::ProxyOnly && intent.action != FleetHostAction::Stop as i32 {
         return Err("HOST_WINDOWS_CONFIG_NETWORK_ADMISSION_REQUIRED".into());
     }
     // A pre-BEGIN native SCM/readback failure never creates journal state.

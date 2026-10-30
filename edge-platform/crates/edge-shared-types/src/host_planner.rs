@@ -125,7 +125,10 @@ pub fn propose_host_transition(
         );
     }
     if kind == FleetHostKind::Windows
-        && !matches!(desired_mode, FleetHostMode::ProxyOnly | FleetHostMode::ManagedTun)
+        && !matches!(
+            desired_mode,
+            FleetHostMode::ProxyOnly | FleetHostMode::ManagedTun
+        )
         || kind == FleetHostKind::Vm && desired_mode != FleetHostMode::Unspecified
     {
         return plan(
@@ -887,10 +890,7 @@ mod tests {
         let mut starting = host.clone();
         starting.target.as_mut().unwrap().run_state = FleetHostRunState::Running as i32;
         let blocked = propose_host_transition(&starting, Some(&stopped), &[1; 32], &[], 1000);
-        assert_eq!(
-            blocked.reason_code,
-            "TUN_SEPARATE_PHYSICAL_GATE_REQUIRED"
-        );
+        assert_eq!(blocked.reason_code, "TUN_SEPARATE_PHYSICAL_GATE_REQUIRED");
     }
 
     #[test]
