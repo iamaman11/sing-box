@@ -3224,14 +3224,13 @@ async fn offline_bootstrap_privileged_release(
     // Resolve the exact protected-Git host before any durable BEGIN. This is
     // only needed for a genuinely new identity; completed/pending identities
     // are preserved and NEVER resolved into a different machine.
-    let fresh_machine = if enroll_receipt
-        && existing_identity_stage.is_none()
-        && pending_identity_rebind.is_none()
-    {
-        Some(windows_trust_enrollment::resolve_local_windows_machine(&before).await?)
-    } else {
-        None
-    };
+    let fresh_machine =
+        if enroll_receipt && existing_identity_stage.is_none() && pending_identity_rebind.is_none()
+        {
+            Some(windows_trust_enrollment::resolve_local_windows_machine(&before).await?)
+        } else {
+            None
+        };
     if before.release_set_sha256 == target {
         return Err("OFFLINE_BOOTSTRAP_BLOCKED: exact distinct legacy release required".to_owned());
     }
