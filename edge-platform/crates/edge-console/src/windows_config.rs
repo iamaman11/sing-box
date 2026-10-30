@@ -44,7 +44,7 @@ pub(super) fn prepare(root: &Path, spec: &[u8]) -> Result<Option<Configuration>,
     )?;
     // Prepare and exact-binary-check either desired candidate with the SAME
     // renderer. Preparing ManagedTun is not authorization to activate it.
-    let bytes = edge_singbox::render_windows_config_for_desired(&state, mode, &desired)?;
+    let bytes = edge_singbox::render_windows_config_for_desired(&state, &desired)?;
     Ok(Some(Configuration {
         digest: windows_admin::process::sha(&bytes),
         bytes,

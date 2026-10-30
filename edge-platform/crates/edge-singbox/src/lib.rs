@@ -308,12 +308,7 @@ pub fn sync_local_config(
 
 pub fn render_windows_config(state: &WindowsRuntimeState) -> Result<Vec<u8>, String> {
     let desired = canonical_production_desired_state()?;
-    let mode = WindowsDatapathMode::try_from(desired.windows_datapath_mode)
-        .map_err(|_| "canonical production Windows datapath mode is invalid".to_owned())?;
-    if mode == WindowsDatapathMode::Unspecified {
-        return Err("canonical production Windows datapath mode is unspecified".to_owned());
-    }
-    render_windows_config_for_mode(state, mode)
+    render_windows_config_for_desired(state, &desired)
 }
 
 /// Parse only the external sing-box JSON boundary. Native callers never
@@ -345,16 +340,23 @@ fn render_windows_config_for_mode(
     state: &WindowsRuntimeState,
     mode: WindowsDatapathMode,
 ) -> Result<Vec<u8>, String> {
-    let desired = canonical_production_desired_state()?;
-    render_windows_config_for_desired(state, mode, &desired)
+    let mut desired = canonical_production_desired_state()?;
+    desired.windows_datapath_mode = mode as i32;
+    render_windows_config_for_desired(state, &desired)
 }
 
 pub fn render_windows_config_for_desired(
     state: &WindowsRuntimeState,
-    mode: WindowsDatapathMode,
     desired: &edge_shared_types::ProductionDesiredState,
 ) -> Result<Vec<u8>, String> {
     edge_shared_types::encode_windows_runtime_state(state)?;
+    // The signed Git desired state owns the mode. A separate mode parameter
+    // would allow the caller to render a different route-capturing datapath.
+    let mode = WindowsDatapathMode::try_from(desired.windows_datapath_mode)
+        .map_err(|_| "WINDOWS_DATAPATH_MODE_INVALID".to_owned())?;
+    if mode == WindowsDatapathMode::Unspecified {
+        return Err("WINDOWS_DATAPATH_MODE_UNSPECIFIED".to_owned());
+    }
     edge_shared_types::windows_routing::validate(desired.windows_application_routing.as_ref())?;
     let routes = desired
         .windows_route_policy
@@ -2007,6 +2009,27 @@ mod tests {
     }
 
     #[test]
+    fn desired_state_alone_selects_windows_datapath() {
+        let mut desired = canonical_production_desired_state().unwrap();
+        for mode in [WindowsDatapathMode::ProxyOnly, WindowsDatapathMode::ManagedTun] {
+            desired.windows_datapath_mode = mode as i32;
+            let rendered = render_windows_config_for_desired(&stage2_runtime_state(), &desired)
+                .unwrap();
+            let config: Value = serde_json::from_slice(&rendered).unwrap();
+            let tun = config["inbounds"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|inbound| inbound["type"] == "tun");
+            assert_eq!(tun, mode == WindowsDatapathMode::ManagedTun);
+        }
+        desired.windows_datapath_mode = WindowsDatapathMode::Unspecified as i32;
+        assert!(render_windows_config_for_desired(&stage2_runtime_state(), &desired).is_err());
+        desired.windows_datapath_mode = 9999;
+        assert!(render_windows_config_for_desired(&stage2_runtime_state(), &desired).is_err());
+    }
+
+    #[test]
     fn stage4b_selected_apps_precede_tun_default_direct() {
         let mut desired = canonical_production_desired_state().unwrap();
         desired.windows_application_routing = Some(edge_shared_types::WindowsApplicationRouting {
@@ -2016,12 +2039,8 @@ mod tests {
                 route: edge_shared_types::WindowsDefaultRoute::VlessRealityWarp as i32,
             }],
         });
-        let bytes = render_windows_config_for_desired(
-            &stage2_runtime_state(),
-            WindowsDatapathMode::ManagedTun,
-            &desired,
-        )
-        .unwrap();
+        desired.windows_datapath_mode = WindowsDatapathMode::ManagedTun as i32;
+        let bytes = render_windows_config_for_desired(&stage2_runtime_state(), &desired).unwrap();
         let config: Value = serde_json::from_slice(&bytes).unwrap();
         if let Some(binary) = std::env::var_os("EDGE_TEST_SING_BOX") {
             let root = unique_test_dir();
@@ -2062,12 +2081,8 @@ mod tests {
                 .unwrap()["outbound"],
             WSL_SELECTOR_TAG
         );
-        let bytes = render_windows_config_for_desired(
-            &stage2_runtime_state(),
-            WindowsDatapathMode::ProxyOnly,
-            &desired,
-        )
-        .unwrap();
+        desired.windows_datapath_mode = WindowsDatapathMode::ProxyOnly as i32;
+        let bytes = render_windows_config_for_desired(&stage2_runtime_state(), &desired).unwrap();
         let proxy: Value = serde_json::from_slice(&bytes).unwrap();
         assert!(
             !proxy["route"]["rules"]
