@@ -788,6 +788,35 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
     let network_preflight =
         preflight_existing_windows_route_capture(install_root, mode, action, run, owner)?;
     let network_baseline = &network_preflight.baseline;
+    // Prepare the exact signed ManagedTun candidate READ-ONLY before native
+    // BEGIN. A forged runner proof never becomes a reason to skip the
+    // separate SYSTEM signature, current physical network or config check.
+    // This is still not permission to capture a route: the shared gate below
+    // remains CLOSED until real native Line1/control/DNS witness generation.
+    let tun_config = if mode == WindowsDatapathMode::ManagedTun
+        && action == FleetHostAction::Start
+    {
+        let candidate = windows_config::prepare(install_root, &trust.selected_spec_bytes)?
+            .ok_or("HOST_WINDOWS_TUN_CONFIG_NOT_PREPARED")?;
+        let admission_now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| "HOST_WINDOWS_SYSTEM_CLOCK_UNAVAILABLE")?
+            .as_secs();
+        edge_shared_types::host_lifecycle::verify_windows_network_admission(
+            &intent,
+            &selected.native_receipt_public_key,
+            &installed_runtime_sha256,
+            &candidate.digest,
+            &network_baseline.signed_prebegin_digest(),
+            admission_now,
+        )?;
+        Some(candidate)
+    } else {
+        if intent.network_admission.is_some() {
+            return Err("HOST_WINDOWS_NETWORK_ADMISSION_UNEXPECTED_MODE".into());
+        }
+        None
+    };
     edge_shared_types::host_lifecycle::validate_windows_datapath_prebegin(
         mode, action, run, owner,
     )?;
@@ -799,7 +828,9 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
     } else {
         None
     };
-    let config = if matches!(
+    let config = if tun_config.is_some() {
+        tun_config
+    } else if matches!(
         FleetHostAction::try_from(intent.action),
         Ok(FleetHostAction::Apply | FleetHostAction::Recover | FleetHostAction::Start)
     ) && update.is_none()
