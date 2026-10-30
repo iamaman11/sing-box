@@ -516,7 +516,18 @@ assert "request_canonical_native_admin_authorization" in admin_system
 assert "host_admin::verify_authorization" in admin_system
 assert "TransportRequest::open" in admin_system
 assert "host_admin::sign_receipt" in admin_system
-assert "HOST_ADMIN_PENDING_GATE_NO_REPLAY" in admin_system
+# Historical resource BEGIN may coexist with a DIFFERENT fresh signed ADMIN;
+# unfinished ADMIN or the original operation ID must still fail closed.
+assert 'name.starts_with("resource-") && (admin || recovery)' in admin_system
+assert "HOST_WINDOWS_PENDING_GATE_NO_REPLAY" in admin_system
+assert "HOST_WINDOWS_OPERATION_EXISTS_NO_REPLAY" in admin_system
+assert "check_journal_entry(&name, &id, admin, recovery)?" in admin_system
+assert admin_system.count("request_available(&journal, &operation, true, false)?;") == 2
+assert admin_system.index(
+    "host_admin::verify_authorization"
+) < admin_system.rindex(
+    "request_available(&journal, &operation, true, false)?;"
+) < admin_system.index("create(&pending, &raw)?;")
 assert admin_system.index("request_available(&journal") < admin_system.index("request_canonical_native_admin_authorization")
 assert "windows_native_runtime::execute" in Path("edge-platform/crates/edge-controller/src/controller_rpc.rs").read_text(encoding="utf-8")
 effect_contract=Path("edge-platform/crates/edge-shared-types/src/windows_runtime_effect.rs").read_text(encoding="utf-8")
