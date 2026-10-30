@@ -36,8 +36,34 @@ pub(super) fn owner_lock(root: &Path) -> Result<File, String> {
     Ok(lock)
 }
 
-/// Refuse an existing operation BEFORE a one-shot Worker POST. The scheduled
-/// task must not repeatedly request authorizations after an uncertain ACK.
+/// Classification is pure and shared by admission before and after Worker POST.
+/// A historical resource BEGIN is never replayed, but it must not prevent a
+/// DIFFERENT freshly Worker-authorized SYSTEM ADMIN operation that can diagnose
+/// that resource. An unfinished ADMIN is still an exclusive unknown operation.
+fn check_journal_entry(
+    name: &str,
+    id: &str,
+    admin: bool,
+    recovery: bool,
+) -> Result<(), &'static str> {
+    if (admin
+        && (name == format!("admin-{id}.pending.pb")
+            || name == format!("admin-{id}.terminal.pb")))
+        || (!admin && (name == format!("{id}.pb") || name.starts_with(&format!("{id}."))))
+    {
+        return Err("HOST_WINDOWS_OPERATION_EXISTS_NO_REPLAY");
+    }
+    if name.ends_with(".pending.pb")
+        && !(name.starts_with("resource-") && (admin || recovery))
+    {
+        return Err("HOST_WINDOWS_PENDING_GATE_NO_REPLAY");
+    }
+    Ok(())
+}
+
+/// Refuse an existing operation BEFORE a one-shot Worker POST and immediately
+/// before durable ADMIN BEGIN. The scheduled task must not repeatedly request
+/// authorizations after an uncertain ACK.
 pub(super) fn request_available(
     journal: &Path,
     operation: &str,
@@ -53,16 +79,7 @@ pub(super) fn request_available(
         let name = entry.file_name();
         let name = name.to_string_lossy();
         edge_shared_types::host_journal::verify_windows_protected_path_acl(&entry.path(), true)?;
-        if (admin
-            && (name == format!("admin-{id}.pending.pb")
-                || name == format!("admin-{id}.terminal.pb")))
-            || (!admin && (name == format!("{id}.pb") || name.starts_with(&format!("{id}."))))
-        {
-            return Err("HOST_WINDOWS_OPERATION_EXISTS_NO_REPLAY");
-        }
-        if name.ends_with(".pending.pb") && !(recovery && name.starts_with("resource-")) {
-            return Err("HOST_WINDOWS_PENDING_GATE_NO_REPLAY");
-        }
+        check_journal_entry(&name, &id, admin, recovery)?;
     }
     Ok(())
 }
@@ -164,13 +181,10 @@ pub(super) async fn dispatch_if_present(root: &Path) -> Result<bool, String> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(_) => return Err("HOST_ADMIN_TERMINAL_METADATA_UNAVAILABLE_NO_REPLAY".into()),
     }
-    // Unknown effects in the same host freeze admission, not just this ID.
-    for entry in fs::read_dir(&journal).map_err(|_| "HOST_ADMIN_JOURNAL_UNAVAILABLE")? {
-        let entry = entry.map_err(|_| "HOST_ADMIN_JOURNAL_UNAVAILABLE")?;
-        if entry.file_name().to_string_lossy().ends_with(".pending.pb") {
-            return Err("HOST_ADMIN_PENDING_GATE_NO_REPLAY".into());
-        }
-    }
+    // The same ACL-verified policy is rechecked AFTER Worker authorization,
+    // immediately before BEGIN. Historical resource pending is not cleared,
+    // adopted or replayed; the fresh ADMIN ID remains one-shot.
+    request_available(&journal, &operation, true, false)?;
     create(&pending, &raw)?;
     let out_path = journal.join(format!("admin-{id}.stdout.bin"));
     let err_path = journal.join(format!("admin-{id}.stderr.bin"));
@@ -219,6 +233,56 @@ pub(super) async fn dispatch_if_present(root: &Path) -> Result<bool, String> {
 #[cfg(test)]
 mod admission_tests {
     use super::*;
+
+    #[test]
+    fn independent_signed_admin_can_diagnose_historical_resource_pending() {
+        let id = "own-operation-digest";
+        assert_eq!(
+            check_journal_entry("resource-historical.pending.pb", id, true, false),
+            Ok(())
+        );
+        // Ordinary lifecycle must still refuse a resource BEGIN until its
+        // separately signed RECOVER has settled the physical state.
+        assert_eq!(
+            check_journal_entry("resource-historical.pending.pb", id, false, false),
+            Err("HOST_WINDOWS_PENDING_GATE_NO_REPLAY")
+        );
+        assert_eq!(
+            check_journal_entry("resource-historical.pending.pb", id, false, true),
+            Ok(())
+        );
+        // The original request is permanently non-replayable.
+        assert_eq!(
+            check_journal_entry("admin-own-operation-digest.pending.pb", id, true, false),
+            Err("HOST_WINDOWS_OPERATION_EXISTS_NO_REPLAY")
+        );
+        assert_eq!(
+            check_journal_entry("admin-own-operation-digest.terminal.pb", id, true, false),
+            Err("HOST_WINDOWS_OPERATION_EXISTS_NO_REPLAY")
+        );
+        // A second incomplete ADMIN is not silently treated as an isolated
+        // resource; no guessed owner/scope or parallel arbitrary effects.
+        assert_eq!(
+            check_journal_entry("admin-other.pending.pb", id, true, false),
+            Err("HOST_WINDOWS_PENDING_GATE_NO_REPLAY")
+        );
+        assert_eq!(
+            check_journal_entry("unknown.pending.pb", id, true, false),
+            Err("HOST_WINDOWS_PENDING_GATE_NO_REPLAY")
+        );
+        assert_eq!(
+            check_journal_entry("admin-other.terminal.pb", id, true, false),
+            Ok(())
+        );
+        assert_eq!(
+            check_journal_entry("other-record.pb", id, true, false),
+            Ok(())
+        );
+        assert_eq!(
+            check_journal_entry("own-operation-digest.pb", id, false, false),
+            Err("HOST_WINDOWS_OPERATION_EXISTS_NO_REPLAY")
+        );
+    }
 
     #[test]
     fn competing_request_is_rejected_before_authorization() {
