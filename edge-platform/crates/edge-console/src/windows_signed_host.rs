@@ -95,13 +95,13 @@ pub(super) fn bounded_regular_file(path: &Path, max: u64) -> Result<Vec<u8>, &'s
 /// The installed ReleaseSet and the immutable SYSTEM trust are two
 /// independently verified authorities after an approved offline upgrade.
 /// The installed bytes are fetched from the exact protected Git release;
-/// historical trust is bound to the existing verified previous.pb record.
+/// historical trust is bound to previous.pb or verified published Git ancestry.
 /// Never require the new release to equal the old preserved trust bytes.
 fn verify_installed_trust_release_binding(
     installed_pb: &[u8],
     installed_sha256: &str,
     trusted_pb: &[u8],
-    verified_previous_sha256: Option<&str>,
+    verified_trust_origin_sha256: Option<&str>,
 ) -> Result<(), &'static str> {
     let installed_digest = lowercase_sha(digest(&SHA256, installed_pb).as_ref());
     if installed_digest != installed_sha256 {
@@ -112,7 +112,7 @@ fn verify_installed_trust_release_binding(
         if installed_pb != trusted_pb {
             return Err("HOST_WINDOWS_SYSTEM_INSTALLED_TRUST_BYTES_CHANGED");
         }
-    } else if verified_previous_sha256 != Some(trusted_digest.as_str()) {
+    } else if verified_trust_origin_sha256 != Some(trusted_digest.as_str()) {
         return Err("HOST_WINDOWS_TRUST_PREDECESSOR_RELEASE_MISMATCH");
     }
     Ok(())
@@ -209,13 +209,30 @@ pub(super) async fn current_authority(
     let boot = verify_system_trust(&bytes, &historical, &trust_release, private)?;
     let (installed_pb, current_pb, registry_pb, spec) =
         windows_trust_enrollment::fetch_exact_protected_git(&installed).await?;
+    // previous.pb proves the last physical local-Administrator handoff.
+    // A second or later upgrade must also prove the ORIGINAL immutable
+    // trust ReleaseSet through its historical Git tag, asset and ancestry.
+    let verified_origin_sha = if let Some(ref previous) = predecessor {
+        if previous.release_set_sha256 == trust_release {
+            Some(trust_release.clone())
+        } else {
+            Some(
+                windows_trust_enrollment::verify_historical_windows_trust_ancestor(
+                    install_root,
+                    &boot.release_set_pb,
+                    &installed,
+                )
+                .await?,
+            )
+        }
+    } else {
+        None
+    };
     verify_installed_trust_release_binding(
         &installed_pb,
         &installed.release_set_sha256,
         &boot.release_set_pb,
-        predecessor
-            .as_ref()
-            .map(|verified| verified.release_set_sha256.as_str()),
+        verified_origin_sha.as_deref(),
     )
     .map_err(str::to_owned)?;
     let binding = binding(

@@ -590,6 +590,81 @@ fn exact_windows_registration(
     Ok(trust)
 }
 
+/// Multi-release proof for the one immutable LocalSystem trust snapshot.
+/// Nothing is written: verify the protected historical release on disk, its
+/// exact canonical GitHub release asset and tag, and signed-host release
+/// ancestry in protected Git. No new private key, trust copy or journal.
+pub(super) async fn verify_historical_windows_trust_ancestor(
+    install_root: &Path,
+    trust_release_pb: &[u8],
+    installed: &WindowsActivationState,
+) -> Result<String, String> {
+    if trust_release_pb.is_empty() || trust_release_pb.len() > MAX_RELEASE {
+        return Err("HOST_WINDOWS_TRUST_ANCESTOR_RELEASE_INVALID".into());
+    }
+    let trusted = ReleaseSet::decode(trust_release_pb)
+        .map_err(|_| "HOST_WINDOWS_TRUST_ANCESTOR_RELEASE_INVALID")?;
+    if trusted.encode_to_vec() != trust_release_pb {
+        return Err("HOST_WINDOWS_TRUST_ANCESTOR_RELEASE_NONCANONICAL".into());
+    }
+    let trust_sha = sha_hex(trust_release_pb);
+    if trust_sha == installed.release_set_sha256 {
+        return Err("HOST_WINDOWS_TRUST_ANCESTOR_MUST_BE_HISTORICAL".into());
+    }
+    windows_receipt_enrollment::historical_marker_activation(
+        install_root,
+        &trusted.source_revision,
+        &trust_sha,
+    )?;
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(25))
+        .build()
+        .map_err(|_| "HOST_WINDOWS_TRUST_TLS_CLIENT_UNAVAILABLE")?;
+    let base = "https://api.github.com/repos/iamaman11/sing-box";
+    let old_tag = format!("edge-release-{trust_sha}");
+    let installed_tag = format!("edge-release-{}", installed.release_set_sha256);
+    let (head, old_release, old_ref, installed_release, installed_ref) = tokio::try_join!(
+        fetch_json(&client, &format!("{base}/git/ref/heads/main")),
+        fetch_json(&client, &format!("{base}/releases/tags/{old_tag}")),
+        fetch_json(&client, &format!("{base}/git/ref/tags/{old_tag}")),
+        fetch_json(&client, &format!("{base}/releases/tags/{installed_tag}")),
+        fetch_json(&client, &format!("{base}/git/ref/tags/{installed_tag}")),
+    )?;
+    let old_active = WindowsActivationState {
+        source_revision: trusted.source_revision,
+        release_set_sha256: trust_sha.clone(),
+        ..Default::default()
+    };
+    exact_github_provenance(&head, &old_release, &old_ref, &old_active)
+        .map_err(str::to_owned)?;
+    exact_github_provenance(&head, &installed_release, &installed_ref, installed)
+        .map_err(str::to_owned)?;
+    let old_merge = old_release["target_commitish"]
+        .as_str()
+        .ok_or("HOST_WINDOWS_TRUST_ANCESTOR_GIT_SOURCE_MISSING")?;
+    let installed_merge = installed_release["target_commitish"]
+        .as_str()
+        .ok_or("HOST_WINDOWS_TRUST_ANCESTOR_GIT_TARGET_MISSING")?;
+    if old_merge == installed_merge {
+        return Err("HOST_WINDOWS_TRUST_ANCESTOR_GIT_NOT_DISTINCT".into());
+    }
+    // GitHub includes huge file patches on page 1. Page 2 retains exact
+    // base/merge-base/status even when all commits fit on page 1.
+    let compare_url = format!(
+        "{base}/compare/{old_merge}...{installed_merge}?per_page=1&page=2"
+    );
+    let (ancestry, published) = tokio::try_join!(
+        fetch_json(&client, &compare_url),
+        accepted_asset(&client, &old_release, &old_tag, "release-set.pb", MAX_RELEASE),
+    )?;
+    if published != trust_release_pb {
+        return Err("HOST_WINDOWS_TRUST_ANCESTOR_PUBLISHED_BYTES_MISMATCH".into());
+    }
+    exact_installed_git_ancestor(&ancestry, old_merge, installed_merge)
+        .map_err(|_| "HOST_WINDOWS_TRUST_ANCESTOR_NOT_IN_PROTECTED_GIT")?;
+    Ok(trust_sha)
+}
+
 pub(super) async fn fetch_exact_protected_git(
     active: &WindowsActivationState,
 ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>, Vec<u8>), String> {
@@ -1016,6 +1091,27 @@ mod tests {
         assert!(exact_installed_git_ancestor(&compare, &old, &current).is_err());
         compare["merge_base_commit"]["sha"] = serde_json::json!(old);
         compare["status"] = serde_json::json!("diverged");
+        assert!(exact_installed_git_ancestor(&compare, &old, &current).is_err());
+    }
+
+    #[test]
+    fn published_historical_git_ancestor_rejects_divergent_history() {
+        let old = "a".repeat(40);
+        let current = "b".repeat(40);
+        let mut compare = serde_json::json!({
+            "status":"ahead", "base_commit":{"sha":old},
+            "merge_base_commit":{"sha":old}
+        });
+        assert_eq!(exact_installed_git_ancestor(&compare, &old, &current), Ok(()));
+        compare["merge_base_commit"]["sha"] = serde_json::json!("c".repeat(40));
+        assert!(exact_installed_git_ancestor(&compare, &old, &current).is_err());
+        compare["merge_base_commit"]["sha"] = serde_json::json!(old);
+        compare["status"] = serde_json::json!("diverged");
+        assert!(exact_installed_git_ancestor(&compare, &old, &current).is_err());
+        compare["status"] = serde_json::json!("behind");
+        assert!(exact_installed_git_ancestor(&compare, &old, &current).is_err());
+        compare["status"] = serde_json::json!("ahead");
+        compare["base_commit"]["sha"] = serde_json::json!("d".repeat(40));
         assert!(exact_installed_git_ancestor(&compare, &old, &current).is_err());
     }
 
