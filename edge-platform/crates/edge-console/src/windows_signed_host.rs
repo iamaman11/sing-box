@@ -161,7 +161,25 @@ pub(super) async fn current_authority(
         &boot.release_set_pb,
         true,
     )?;
-    let boot = verify_system_trust(&bytes, &historical, &installed.release_set_sha256, private)?;
+    let trust_release: String = digest(&SHA256, &boot.release_set_pb)
+        .as_ref()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    if trust_release != installed.release_set_sha256 {
+        // Only the exact predecessor of one approved offline handoff can
+        // explain an immutable trust snapshot from a different release.
+        let predecessor = load_verified_activation_path(
+            install_root,
+            &install_root.join("previous.pb"),
+            "previous.pb",
+        )
+        .map_err(|_| "HOST_WINDOWS_TRUST_PREDECESSOR_NOT_VERIFIED")?;
+        if predecessor.release_set_sha256 != trust_release {
+            return Err("HOST_WINDOWS_TRUST_PREDECESSOR_RELEASE_MISMATCH".into());
+        }
+    }
+    let boot = verify_system_trust(&bytes, &historical, &trust_release, private)?;
     let (installed_pb, current_pb, registry_pb, spec) =
         windows_trust_enrollment::fetch_exact_protected_git(&installed).await?;
     if installed_pb != boot.release_set_pb {

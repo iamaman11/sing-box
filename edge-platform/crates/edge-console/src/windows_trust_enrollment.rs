@@ -117,6 +117,86 @@ fn prepare_exact(install_root: &Path, allow_pending_identity: bool) -> Result<()
     Ok(())
 }
 
+/// A pending first-use trust marker may cross an approved exact offline
+/// handoff, but only once and with the same receipt identity.
+pub(super) fn preflight_pending_trust_handoff(
+    install_root: &Path,
+    predecessor: &WindowsActivationState,
+) -> Result<(), String> {
+    require_windows_local_administrator_first_use().map_err(str::to_owned)?;
+    let root = install_root.join("native-host");
+    verify_native_journal_protection(&root.join("journal")).map_err(str::to_owned)?;
+    for name in [DONE, TRUST_FILE] {
+        if windows_receipt_enrollment::checked_regular_exists(
+            &root.join(name),
+            if name == TRUST_FILE { 9 * 1024 * 1024 } else { 512 },
+        )? {
+            return Err("HOST_WINDOWS_PENDING_TRUST_ALREADY_COMPLETED".into());
+        }
+    }
+    let marker = root.join(MARKER);
+    edge_shared_types::host_journal::verify_windows_protected_path_acl(&marker, true)
+        .map_err(str::to_owned)?;
+    let bytes = windows_signed_host::bounded_regular_file(&marker, 512)?;
+    verify_enrollment_marker(&bytes, predecessor).map_err(str::to_owned)?;
+    let archive = root.join(format!("{MARKER}.predecessor-{}", predecessor.release_set_sha256));
+    match fs::symlink_metadata(archive) {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
+        _ => Err("HOST_WINDOWS_PENDING_TRUST_PREDECESSOR_ALREADY_RECORDED".into()),
+    }
+}
+
+/// Archive exact predecessor intent before replacing the pending marker. This
+/// is an irreversible no-replay handoff under the SAME disabled SYSTEM task.
+pub(super) fn rebind_pending_trust_after_offline_handoff(
+    install_root: &Path,
+    predecessor: &WindowsActivationState,
+) -> Result<(), String> {
+    require_windows_local_administrator_first_use().map_err(str::to_owned)?;
+    require_exact_immutable_activation_console(install_root)?;
+    let current = load_verified_activation(install_root).map_err(|e| e.to_string())?;
+    if current.release_set_sha256 == predecessor.release_set_sha256 {
+        return Err("HOST_WINDOWS_PENDING_TRUST_HANDOFF_NOT_DISTINCT".into());
+    }
+    require_offline_windows_owner(install_root, &current)?;
+    verify_offline_bootstrap_dispatcher(&current.console_path, "Disabled")?;
+    preflight_pending_trust_handoff(install_root, predecessor)?;
+    let root = install_root.join("native-host");
+    let marker = root.join(MARKER);
+    let before = windows_signed_host::bounded_regular_file(&marker, 512)?;
+    let archive = root.join(format!("{MARKER}.predecessor-{}", predecessor.release_set_sha256));
+    fs::hard_link(&marker, &archive)
+        .map_err(|_| "HOST_WINDOWS_PENDING_TRUST_ARCHIVE_UNKNOWN_NO_REPLAY")?;
+    if windows_signed_host::bounded_regular_file(&archive, 512)? != before {
+        return Err("HOST_WINDOWS_PENDING_TRUST_ARCHIVE_CHANGED_NO_REPLAY".into());
+    }
+    File::open(&archive)
+        .and_then(|file| file.sync_all())
+        .map_err(|_| "HOST_WINDOWS_PENDING_TRUST_ARCHIVE_SYNC_UNKNOWN_NO_REPLAY")?;
+    let next = FleetWindowsTrustEnrollment {
+        schema_version: 1,
+        machine_id: HOST.into(),
+        source_revision: current.source_revision.clone(),
+        release_set_sha256: current.release_set_sha256.clone(),
+    };
+    let bytes = next.encode_to_vec();
+    verify_enrollment_marker(&bytes, &current).map_err(str::to_owned)?;
+    fs::remove_file(&marker)
+        .map_err(|_| "HOST_WINDOWS_PENDING_TRUST_UNLINK_UNKNOWN_NO_REPLAY")?;
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&marker)
+        .map_err(|_| "HOST_WINDOWS_PENDING_TRUST_CREATE_UNKNOWN_NO_REPLAY")?;
+    file.write_all(&bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|_| "HOST_WINDOWS_PENDING_TRUST_WRITE_UNKNOWN_NO_REPLAY")?;
+    if windows_signed_host::bounded_regular_file(&marker, 512)? != bytes {
+        return Err("HOST_WINDOWS_PENDING_TRUST_READBACK_UNPROVEN_NO_REPLAY".into());
+    }
+    Ok(())
+}
+
 /// Derived read-only state, never a second journal or source of authority.
 pub(super) fn first_use_trust_present(root: &Path) -> Result<bool, String> {
     for name in [MARKER, DONE, TRUST_FILE] {
@@ -187,9 +267,21 @@ pub(super) fn read_only_first_use_trust_stage(
             || snapshot.machine_id != HOST
             || snapshot.pinned_worker_public_key.len() != 32
             || snapshot.release_set_pb.is_empty()
-            || sha_hex(&snapshot.release_set_pb) != active.release_set_sha256
         {
             return Err("HOST_WINDOWS_FIRST_USE_TRUST_SNAPSHOT_INVALID".into());
+        }
+        let recorded = sha_hex(&snapshot.release_set_pb);
+        if recorded != active.release_set_sha256 {
+            let old = ReleaseSet::decode(snapshot.release_set_pb.as_slice())
+                .map_err(|_| "HOST_WINDOWS_FIRST_USE_TRUST_HISTORY_RELEASE_INVALID")?;
+            let install = root
+                .parent()
+                .ok_or("HOST_WINDOWS_FIRST_USE_TRUST_HISTORY_ROOT_INVALID")?;
+            windows_receipt_enrollment::historical_marker_activation(
+                install,
+                &old.source_revision,
+                &recorded,
+            )?;
         }
         // This read-only local projection is NOT live Worker attestation.
         return Ok("TRUST_RECORDED_UNVERIFIED");

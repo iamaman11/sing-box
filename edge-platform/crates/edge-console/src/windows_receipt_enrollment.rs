@@ -259,6 +259,42 @@ fn preflight_fresh_identity_root(root: &Path) -> Result<(), String> {
     Ok(())
 }
 
+/// Local Administrator pre-BEGIN proof for a *completed* identity. Never read
+/// the SYSTEM private key or interpret file existence alone as authority.
+pub(super) fn verify_existing_receipt_identity_slot(
+    install_root: &Path,
+) -> Result<(), String> {
+    require_windows_local_administrator_first_use().map_err(str::to_owned)?;
+    let root = native_root(install_root)?;
+    verify_native_journal_protection(&root.join("journal")).map_err(str::to_owned)?;
+    for name in [PRIVATE, PUBLIC, COMPLETED] {
+        let path = root.join(name);
+        edge_shared_types::host_journal::verify_windows_protected_path_acl(&path, true)
+            .map_err(str::to_owned)?;
+        let max = if name == PRIVATE {
+            4096
+        } else if name == PUBLIC {
+            32
+        } else {
+            512
+        };
+        if !checked_regular_exists(&path, max)? {
+            return Err("HOST_WINDOWS_RECEIPT_COMPLETED_IDENTITY_MISSING".into());
+        }
+    }
+    match fs::symlink_metadata(root.join(MARKER)) {
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+        _ => return Err("HOST_WINDOWS_RECEIPT_COMPLETED_WITH_PENDING_MARKER".into()),
+    }
+    let public = fs::read(root.join(PUBLIC))
+        .map_err(|_| "HOST_WINDOWS_RECEIPT_COMPLETED_PUBLIC_UNREADABLE")?;
+    if public.len() != 32 || public.iter().all(|b| *b == 0) {
+        return Err("HOST_WINDOWS_RECEIPT_COMPLETED_PUBLIC_INVALID".into());
+    }
+    // The next LocalSystem signed handler checks the private/public pair.
+    Ok(())
+}
+
 // An explicit retained-BEGIN supersession may carry forward ONLY an
 // unconsumed first-use request pair. No key, completed marker or trust may
 // already exist: this is not a credential rotation or journal replay.

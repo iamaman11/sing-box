@@ -3076,6 +3076,35 @@ fn read_only_windows_first_use_source(
     Ok((before, previously_disabled))
 }
 
+/// The already registered SYSTEM identity is immutable across an approved
+/// offline release update. Only the still-pending TRUST request can be moved
+/// to the new release, and only while the old task is disabled.
+#[cfg(windows)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ExistingIdentityHandoff {
+    TrustNotRequested,
+    TrustPending,
+    TrustRecorded,
+}
+
+#[cfg(windows)]
+fn classify_completed_identity_for_handoff(
+    stage: &str,
+) -> Result<Option<ExistingIdentityHandoff>, String> {
+    match stage {
+        "RECEIPT_READY_TRUST_NOT_REQUESTED" => {
+            Ok(Some(ExistingIdentityHandoff::TrustNotRequested))
+        }
+        "AWAITING_GIT_AUTHORITY_OR_SYSTEM" => {
+            Ok(Some(ExistingIdentityHandoff::TrustPending))
+        }
+        "TRUST_RECORDED_UNVERIFIED" => Ok(Some(ExistingIdentityHandoff::TrustRecorded)),
+        "SYSTEM_PENDING" => Ok(None),
+        "NOT_STARTED" => Err("HOST_WINDOWS_FIRST_USE_IDENTITY_SLOT_INCONSISTENT".into()),
+        _ => Err("HOST_WINDOWS_FIRST_USE_UPGRADE_STAGE_INVALID".into()),
+    }
+}
+
 #[cfg(windows)]
 fn offline_bootstrap_privileged_release(
     install_root: &Path,
@@ -3107,26 +3136,44 @@ fn offline_bootstrap_privileged_release(
     }
     let (before, previously_disabled) =
         read_only_windows_first_use_source(install_root, supersession, revision, target)?;
+    // One-shot approved offline bootstrap must NOT generate a second Ed25519
+    // identity on an already-enrolled physical Windows host. Determine its
+    // exact prior stage before the irreversible native BEGIN.
+    let mut existing_identity_stage = None;
     let pending_identity_rebind = if enroll_receipt {
         match windows_receipt_enrollment::preflight_fresh_identity_slot(install_root) {
             Ok(()) => None,
             Err(refused) if refused == "HOST_WINDOWS_RECEIPT_ENROLL_SLOT_NOT_EMPTY_NO_REKEY" => {
-                if supersession.is_none() {
-                    return Err(
-                        "HOST_WINDOWS_FIRST_USE_REBIND_EXPLICIT_BEGIN_APPROVAL_REQUIRED".into(),
-                    );
+                let stage = windows_receipt_enrollment::read_only_first_use_stage(install_root)?;
+                if let Some(existing) = classify_completed_identity_for_handoff(stage)? {
+                    windows_receipt_enrollment::verify_existing_receipt_identity_slot(
+                        install_root,
+                    )?;
+                    if existing == ExistingIdentityHandoff::TrustPending {
+                        windows_trust_enrollment::preflight_pending_trust_handoff(
+                            install_root,
+                            &before,
+                        )?;
+                    }
+                    existing_identity_stage = Some(existing);
+                    None
+                } else {
+                    if supersession.is_none() {
+                        return Err(
+                            "HOST_WINDOWS_FIRST_USE_REBIND_EXPLICIT_BEGIN_APPROVAL_REQUIRED"
+                                .into(),
+                        );
+                    }
+                    Some(windows_receipt_enrollment::preflight_pending_rebind(
+                        install_root,
+                        &before,
+                    )?)
                 }
-                Some(windows_receipt_enrollment::preflight_pending_rebind(
-                    install_root,
-                    &before,
-                )?)
             }
             Err(reason) => return Err(reason),
         }
     } else {
-        // A direct owner upgrade must not abandon either pending first-use
-        // request by silently replacing its exact-release executable.
-        // Metadata errors are UNKNOWN, not proof of an empty slot.
+        // Do not abandon any pending first-use request just to replace code.
         for marker in ["receipt-enrollment.pb", "trust-enrollment.pb"] {
             match fs::symlink_metadata(install_root.join("native-host").join(marker)) {
                 Ok(_) => {
@@ -3134,7 +3181,7 @@ fn offline_bootstrap_privileged_release(
                         "HOST_WINDOWS_FIRST_USE_PENDING_REQUIRES_EXPLICIT_APPROVED_REBIND".into(),
                     );
                 }
-                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+                Err(err) if err.kind() == io::ErrorKind::NotFound => {}
                 Err(_) => {
                     return Err("HOST_WINDOWS_FIRST_USE_PENDING_METADATA_UNPROVEN_NO_REPLAY".into());
                 }
@@ -3327,20 +3374,43 @@ fn offline_bootstrap_privileged_release(
             format!("OFFLINE_BOOTSTRAP_PENDING_IDENTITY_REBIND_UNKNOWN_NO_REPLAY: {reason}")
         })?;
     }
+    if existing_identity_stage == Some(ExistingIdentityHandoff::TrustPending) {
+        windows_trust_enrollment::rebind_pending_trust_after_offline_handoff(
+            install_root,
+            &before,
+        )
+        .map_err(|reason| {
+            format!("OFFLINE_BOOTSTRAP_PENDING_TRUST_REBIND_UNKNOWN_NO_REPLAY: {reason}")
+        })?;
+    }
     // New main rejects legacy mutation opcodes; re-enable only after the
     // exact immutable signed-capable replacement and pending requests pass
     // readback. If re-enable fails the one-shot marker remains; never replay.
     change_offline_bootstrap_task_enabled(true)?;
     verify_offline_bootstrap_dispatcher(&console.to_string_lossy(), "Ready")?;
     if enroll_receipt && pending_identity_rebind.is_none() {
-        // First-use on an empty identity slot: the already installed task
-        // alone creates the PRIVATE key; local Administrator writes requests.
-        windows_receipt_enrollment::prepare(install_root).map_err(|reason| {
-            format!("OFFLINE_BOOTSTRAP_IDENTITY_STEP_UNCERTAIN_NO_REPLAY: {reason}; installed release may already be active; inspect current.pb and native identity status before any new authorization")
-        })?;
-        windows_trust_enrollment::prepare_pending(install_root).map_err(|reason| {
-            format!("OFFLINE_BOOTSTRAP_TRUST_INTENT_UNKNOWN_NO_REPLAY: {reason}; keep the same key and journal; do not repeat installation")
-        })?;
+        match existing_identity_stage {
+            None => {
+                // First-use: only the existing task generates the private key.
+                windows_receipt_enrollment::prepare(install_root).map_err(|reason| {
+                    format!("OFFLINE_BOOTSTRAP_IDENTITY_STEP_UNCERTAIN_NO_REPLAY: {reason}; inspect current.pb and native identity status before any new action")
+                })?;
+                windows_trust_enrollment::prepare_pending(install_root).map_err(|reason| {
+                    format!("OFFLINE_BOOTSTRAP_TRUST_INTENT_UNKNOWN_NO_REPLAY: {reason}; preserve the same key and journal")
+                })?;
+            }
+            Some(ExistingIdentityHandoff::TrustNotRequested) => {
+                // Completed receipt is historical; request ONLY Worker trust.
+                windows_trust_enrollment::prepare(install_root).map_err(|reason| {
+                    format!("OFFLINE_BOOTSTRAP_REGISTERED_TRUST_PREPARE_UNKNOWN_NO_REPLAY: {reason}")
+                })?;
+            }
+            Some(ExistingIdentityHandoff::TrustPending)
+            | Some(ExistingIdentityHandoff::TrustRecorded) => {
+                // Pending marker was re-bound while task was disabled, or
+                // previously recorded trust remains byte-for-byte immutable.
+            }
+        }
     }
     Ok(activated)
 }
