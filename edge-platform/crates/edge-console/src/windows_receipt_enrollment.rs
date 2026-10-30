@@ -25,8 +25,13 @@ const MACHINE: &str = "sing-box-windows-lab"; // legacy first-use fixture only
 pub(super) fn valid_machine_id(machine: &str) -> bool {
     !machine.is_empty()
         && machine.len() <= 40
-        && machine.bytes().next().is_some_and(|b| b.is_ascii_lowercase())
-        && machine.bytes().all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
+        && machine
+            .bytes()
+            .next()
+            .is_some_and(|b| b.is_ascii_lowercase())
+        && machine
+            .bytes()
+            .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'-')
 }
 
 // The existing typed receipt marker carries the host ID across release handoff.
@@ -43,7 +48,8 @@ pub(super) fn bound_machine_id(install_root: &Path) -> Result<String, String> {
         if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 512 {
             return Err("HOST_WINDOWS_RECEIPT_MACHINE_MARKER_INVALID".into());
         }
-        let bytes = fs::read(&path).map_err(|_| "HOST_WINDOWS_RECEIPT_MACHINE_MARKER_UNREADABLE")?;
+        let bytes =
+            fs::read(&path).map_err(|_| "HOST_WINDOWS_RECEIPT_MACHINE_MARKER_UNREADABLE")?;
         let request = FleetWindowsReceiptIdentityEnrollment::decode(bytes.as_slice())
             .map_err(|_| "HOST_WINDOWS_RECEIPT_MACHINE_MARKER_PROTO_INVALID")?;
         if request.encode_to_vec() != bytes || !valid_machine_id(&request.machine_id) {
@@ -53,7 +59,6 @@ pub(super) fn bound_machine_id(install_root: &Path) -> Result<String, String> {
     }
     Ok("UNREGISTERED".into())
 }
-
 
 const MARKER: &str = "receipt-enrollment.pb";
 const COMPLETED: &str = "receipt-enrollment.completed.pb";
@@ -504,7 +509,10 @@ pub(super) fn require_identity_request_for_trust(
 /// the SAME typed identity marker as a durable local-authorized BEGIN. The
 /// existing SYSTEM task eventually completes it. A crash cannot be treated
 /// as a fresh enrollment; no other first-use store is introduced.
-pub(super) fn prepare_clean_before_scm(install_root: &Path, machine_id: &str) -> Result<(), String> {
+pub(super) fn prepare_clean_before_scm(
+    install_root: &Path,
+    machine_id: &str,
+) -> Result<(), String> {
     require_windows_local_administrator_first_use().map_err(str::to_owned)?;
     require_exact_immutable_activation_console(install_root)?;
     let active = load_verified_activation(install_root).map_err(|err| err.to_string())?;

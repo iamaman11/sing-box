@@ -162,7 +162,9 @@ function Assert-RootExecutionChain {
 function Protect-ReleaseStageBeforeExecution {
     param([Parameter(Mandatory)] [string]$Stage)
     $expectedPrefix = Join-Path $InstallRoot '.release-stage-'
-    if (-not $Stage.StartsWith($expectedPrefix, [StringComparison]::Ordinal)) {
+    $isReleaseStage = $Stage -cmatch '^C:\\sing-box\\releases\\[0-9a-f]{64}\.new$'
+    if (-not $Stage.StartsWith($expectedPrefix, [StringComparison]::Ordinal) -and
+        -not $isReleaseStage) {
         throw 'WINDOWS_INSTALL_STAGE_SCOPE_INVALID'
     }
     # No extracted binary may be run while owned or writable by an ordinary
@@ -528,12 +530,22 @@ function Activate-ReleaseAuthority {
     )
     $null = & $Tool @activationArgs
     if ($LASTEXITCODE -ne 0) { throw "Failed to create typed Windows activation state" }
+    & icacls.exe $currentTemp /setowner '*S-1-5-32-544' /Q | Out-Null
+    if ($LASTEXITCODE -ne 0 -or @(Get-ProtectedAppAclReadback -Path $currentTemp).Count -ne 0) {
+        throw 'WINDOWS_INSTALL_ACTIVATION_POINTER_ACL_NOT_PROTECTED'
+    }
     [void](Invoke-Diagnostic -Diagnostic $Diagnostic -State $currentTemp)
 
     $stableConsole = Join-Path $binDir "edge-console.exe"
     $stableDiagnostic = Join-Path $binDir "edge-diagnostic.exe"
     Copy-StableBinary -Source $Console -Target $stableConsole
     Copy-StableBinary -Source $Diagnostic -Target $stableDiagnostic
+    foreach ($binary in @($stableConsole, $stableDiagnostic)) {
+        & icacls.exe $binary /setowner '*S-1-5-32-544' /Q | Out-Null
+        if ($LASTEXITCODE -ne 0 -or @(Get-ProtectedAppAclReadback -Path $binary).Count -ne 0) {
+            throw 'WINDOWS_INSTALL_STABLE_BINARY_ACL_NOT_PROTECTED'
+        }
+    }
 
     if ((Test-Path -LiteralPath $currentPath) -and -not $PreservePrevious) {
         Copy-Item -LiteralPath $currentPath -Destination "$previousPath.new" -Force
@@ -870,6 +882,9 @@ if ($needsInstall) {
         Copy-Item -LiteralPath $stagePackageSidecar -Destination (Join-Path $releaseStage "edge-platform-windows.zip.sha256")
         Copy-Item -LiteralPath (Join-Path $unpacked "bin") -Destination $releaseStage -Recurse
         Copy-Item -LiteralPath (Join-Path $unpacked "bootstrap") -Destination $releaseStage -Recurse
+        # The new immutable release tree must be protected before native code
+        # is executed from it, even if the old root was previously unsafe.
+        Protect-ReleaseStageBeforeExecution -Stage $releaseStage
         if (Test-Path -LiteralPath $releaseDir) { Remove-Item -Recurse -Force $releaseDir }
         Move-Item -LiteralPath $releaseStage -Destination $releaseDir
     } finally {

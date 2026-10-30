@@ -560,8 +560,8 @@ fn exact_windows_registration(
         return Err("HOST_WINDOWS_TRUST_MACHINE_NOT_UNIQUE_IN_GIT".into());
     }
     let host = registrations[0];
-    let hostname = std::env::var("COMPUTERNAME")
-        .map_err(|_| "HOST_WINDOWS_TRUST_OS_HOSTNAME_UNAVAILABLE")?;
+    let hostname =
+        std::env::var("COMPUTERNAME").map_err(|_| "HOST_WINDOWS_TRUST_OS_HOSTNAME_UNAVAILABLE")?;
     if host.desired_spec_path != SPEC
         || host.windows_runner_label.is_empty()
         || !matches!(host.owner.as_ref(), Some(edge_shared_types::managed_host::Owner::WindowsRunnerName(n)) if n.eq_ignore_ascii_case(&hostname))
