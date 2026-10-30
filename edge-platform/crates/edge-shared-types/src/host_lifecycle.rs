@@ -719,21 +719,22 @@ pub fn validate_intent_against_target(
     {
         return Err("HOST_ACTION_CONFLICTS_WITH_DESIRED");
     }
-    // TUN is never inferred or admitted from an APPLY/RECOVER alone. Exact
-    // typed SET_MODE and a separate physical gate are both required.
+    // ManagedTun is a Git-owned setting applied by the EXISTING /host apply
+    // transaction, not a separate privileged SET_MODE subsystem. This pure
+    // validator does not authorize route capture: LocalSystem and Controller
+    // still independently enforce the native network admission before BEGIN.
+    // In particular, START/RECOVER cannot silently change the datapath.
     if mode == FleetHostMode::ManagedTun
-        && action != FleetHostAction::SetMode
         && matches!(
             action,
             FleetHostAction::Start
-                | FleetHostAction::Apply
                 | FleetHostAction::Install
                 | FleetHostAction::Reinstall
                 | FleetHostAction::Recover
                 | FleetHostAction::Configure
         )
     {
-        return Err("HOST_TUN_EXPLICIT_MODE_GATE_REQUIRED");
+        return Err("HOST_TUN_NATIVE_NETWORK_ADMISSION_REQUIRED");
     }
     Ok(())
 }
@@ -1553,6 +1554,32 @@ mod tests {
             validate_intent_against_target(&intent, &registry).unwrap_err(),
             "HOST_ACTION_CONFLICTS_WITH_DESIRED"
         );
+    }
+
+    #[test]
+    fn managed_tun_is_an_apply_setting_not_implicit_start_or_recover() {
+        use crate::{FleetHostRunState, FleetHostTarget};
+        let (mut registry, mut intent, _, _, _) = fixture();
+        registry.hosts[0].target = Some(FleetHostTarget {
+            run_state: FleetHostRunState::Stopped as i32,
+            windows_mode: FleetHostMode::ManagedTun as i32,
+        });
+        intent.action = FleetHostAction::Apply as i32;
+        assert_eq!(validate_intent_against_target(&intent, &registry), Ok(()));
+        for action in [
+            FleetHostAction::Start,
+            FleetHostAction::Recover,
+            FleetHostAction::Configure,
+        ] {
+            intent.action = action as i32;
+            assert!(validate_intent_against_target(&intent, &registry).is_err());
+        }
+        intent.action = FleetHostAction::Apply as i32;
+        registry.hosts[0].target.as_mut().unwrap().run_state =
+            FleetHostRunState::Running as i32;
+        assert_eq!(validate_intent_against_target(&intent, &registry), Ok(()));
+        // This is only a typed proposal. SYSTEM must still reject physical TUN
+        // until the existing native owner proves network restoration.
     }
 
     #[test]
