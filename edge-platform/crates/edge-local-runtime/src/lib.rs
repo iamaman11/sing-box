@@ -11,7 +11,17 @@ use std::mem::size_of;
 #[cfg(windows)]
 use std::os::windows::process::CommandExt;
 #[cfg(windows)]
-use std::ptr::null_mut;
+use std::ptr::{null, null_mut};
+#[cfg(windows)]
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+#[cfg(windows)]
+use std::sync::{Mutex, OnceLock};
+#[cfg(windows)]
+use windows_sys::Win32::System::JobObjects::{
+    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    SetInformationJobObject,
+};
 
 use edge_shared_types::{
     LocalSingboxState, WindowsDatapathMode, canonical_production_desired_state,
@@ -437,6 +447,49 @@ pub fn start_native_verified_proxy(
     })
 }
 
+// The native Controller process itself owns exactly one Windows Job Object.
+ // A crash, panic, forced SCM termination or reboot closes this OS handle
+ // and kills its TUN child without a watchdog, second process or scheduler.
+ // No foreign processes can be assigned to this Job.
+#[cfg(windows)]
+static NATIVE_MANAGED_TUN_JOB: OnceLock<Mutex<Option<OwnedHandle>>> = OnceLock::new();
+
+#[cfg(windows)]
+fn bind_managed_tun_job_to_child(child: &Child) -> Result<(), String> {
+    let mut owner = NATIVE_MANAGED_TUN_JOB
+        .get_or_init(|| Mutex::new(None))
+        .lock()
+        .map_err(|_| "HOST_WINDOWS_TUN_JOB_OWNER_LOCK_POISONED")?;
+    if owner.is_some() {
+        return Err("HOST_WINDOWS_TUN_JOB_OWNER_ALREADY_PRESENT".into());
+    }
+    // JobObjectExtendedLimitInformation with KILL_ON_JOB_CLOSE is the only
+    // kernel state this Controller owns; no route/DNS/WARP mutation.
+    let raw = unsafe { CreateJobObjectW(null(), null()) };
+    if raw.is_null() {
+        return Err("HOST_WINDOWS_TUN_JOB_CREATE_FAILED".into());
+    }
+    let handle = unsafe { OwnedHandle::from_raw_handle(raw as _) };
+    let mut limits: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = unsafe { std::mem::zeroed() };
+    limits.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+    let configured = unsafe {
+        SetInformationJobObject(
+            raw,
+            JobObjectExtendedLimitInformation,
+            (&limits as *const JOBOBJECT_EXTENDED_LIMIT_INFORMATION).cast(),
+            std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
+        )
+    };
+    if configured == 0 {
+        return Err("HOST_WINDOWS_TUN_JOB_LIMITS_FAILED".into());
+    }
+    if unsafe { AssignProcessToJobObject(raw, child.as_raw_handle() as _) } == 0 {
+        return Err("HOST_WINDOWS_TUN_JOB_ASSIGN_FAILED".into());
+    }
+    *owner = Some(handle);
+    Ok(())
+}
+
 /// Native ManagedTun child executor, only for an already signed SYSTEM
 /// delegation. This is never exported through the legacy Windows controller
 /// RPC. The existing SCM supervisor owns the child after successful return.
@@ -456,9 +509,15 @@ pub fn start_native_verified_managed_tun(
     before.require_foreign_warp_up()?;
     validate_singbox_config(&paths.singbox_binary_path, &paths.config_path)?;
     let mut child = launch_singbox(paths, false)?;
-    let startup = observe_startup(&mut child);
-    let poststate = startup.and_then(|_| {
-        let (_, current) = edge_shared_types::windows_native_network::observe_native_managed_tun()?;
+    // Bind the *exact* newly created PID to this Controller's kill-on-close
+    // Job before accepting any startup observation. If assignment is denied
+    // (including by foreign job nesting), kill just this child and verify
+    // the original network instead of falling back to an unguarded TUN.
+    let bound = bind_managed_tun_job_to_child(&child);
+    let poststate = bound.and_then(|_| {
+        observe_startup(&mut child)?;
+        let (_, current) =
+            edge_shared_types::windows_native_network::observe_native_managed_tun()?;
         current.require_foreign_network_preserved(&before)?;
         Ok(())
     });

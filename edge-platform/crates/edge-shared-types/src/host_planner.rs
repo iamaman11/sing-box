@@ -109,21 +109,11 @@ pub fn propose_host_transition(
             );
         }
     };
-    // Never block an emergency STOP merely because the recorded target
-    // describes ManagedTun. Stopped is safe; START/INSTALL/CONFIGURE still
-    // require the independent native route-capture admission.
-    if kind == FleetHostKind::Windows
-        && desired_mode == FleetHostMode::ManagedTun
-        && desired_run != FleetHostRunState::Stopped
-    {
-        return plan(
-            host,
-            Blocked,
-            FleetHostPlanReason::TunSeparatePhysicalGateRequired,
-            expected,
-            &[],
-        );
-    }
+    // A ManagedTun target MAY produce an unauthenticated START *proposal*.
+    // The pure planner has no authority to route traffic; LocalSystem must
+    // independently obtain and bind signed network evidence before BEGIN.
+    // This also permits the normal read-only Windows diagnostic to report
+    // the exact owner instead of hiding it behind a permanent mode block.
     if kind == FleetHostKind::Windows
         && !matches!(
             desired_mode,
@@ -867,7 +857,7 @@ mod tests {
         );
         assert_eq!(
             propose_host_transition(&win, None, &[1; 32], &[], 1000).reason_code,
-            "TUN_SEPARATE_PHYSICAL_GATE_REQUIRED"
+            "NATIVE_READBACK_REQUIRED"
         );
     }
     #[test]
@@ -889,8 +879,11 @@ mod tests {
 
         let mut starting = host.clone();
         starting.target.as_mut().unwrap().run_state = FleetHostRunState::Running as i32;
-        let blocked = propose_host_transition(&starting, Some(&stopped), &[1; 32], &[], 1000);
-        assert_eq!(blocked.reason_code, "TUN_SEPARATE_PHYSICAL_GATE_REQUIRED");
+        let proposal = propose_host_transition(&starting, Some(&stopped), &[1; 32], &[], 1000);
+        assert_eq!(proposal.step, FleetHostPlannedStep::Start as i32);
+        assert_eq!(proposal.reason_code, "START_PROPOSAL_ONLY");
+        assert!(!proposal.owner_attested && !proposal.mutation_authorized);
+        validate_host_transition_plan(&proposal, &starting).unwrap();
     }
 
     #[test]

@@ -55,17 +55,36 @@ pub fn validate_windows_datapath_prebegin(
     desired_run: crate::FleetHostRunState,
     observed_owner: crate::FleetNativeOwnerState,
 ) -> Result<(), &'static str> {
+    validate_windows_datapath_prebegin_with_admission(
+        mode, action, desired_run, observed_owner, false,
+    )
+}
+
+/// The pure planner never grants this flag. Only Windows LocalSystem may
+/// pass true AFTER a fresh, separately SYSTEM-signed network witness was
+/// independently verified and the entire intent was signed by Worker.
+/// Authorization is per exact START, not a persisted mode or a UI override.
+pub fn validate_windows_datapath_prebegin_with_admission(
+    mode: crate::WindowsDatapathMode,
+    action: FleetHostAction,
+    desired_run: crate::FleetHostRunState,
+    observed_owner: crate::FleetNativeOwnerState,
+    signed_network_admission_verified: bool,
+) -> Result<(), &'static str> {
     use crate::{
         FleetHostRunState as Run, FleetNativeOwnerState as Owner, WindowsDatapathMode as Datapath,
     };
     match mode {
+        Datapath::ProxyOnly if signed_network_admission_verified => {
+            Err("HOST_WINDOWS_NETWORK_ADMISSION_PROXY_ONLY_FORBIDDEN")
+        }
         Datapath::ProxyOnly => Ok(()),
         Datapath::ManagedTun => match (action, desired_run, observed_owner) {
-            // Even STOP can remove the interface that currently owns DNS and
-            // control-channel routing. A running or UNKNOWN TUN cannot be
-            // torn down until native restoration has been independently proved.
-            (FleetHostAction::Stop, Run::Stopped, Owner::Stopped) => Ok(()),
-            (FleetHostAction::Apply, Run::Stopped, Owner::Stopped) => Ok(()),
+            (FleetHostAction::Stop, Run::Stopped, Owner::Stopped)
+            | (FleetHostAction::Apply, Run::Stopped, Owner::Stopped)
+                if !signed_network_admission_verified => Ok(()),
+            (FleetHostAction::Start, Run::Running, Owner::Stopped)
+                if signed_network_admission_verified => Ok(()),
             _ => Err("HOST_WINDOWS_CONFIG_NETWORK_ADMISSION_REQUIRED"),
         },
         Datapath::Unspecified => Err("HOST_WINDOWS_DATAPATH_MODE_INVALID"),
@@ -2311,6 +2330,33 @@ mod partial_vm_recovery_tests {
 #[cfg(test)]
 mod windows_mode_projection_tests {
     use super::*;
+
+    #[test]
+    fn managed_tun_admission_is_one_signed_start_only() {
+        use crate::{FleetHostRunState as Run, FleetNativeOwnerState as Owner,
+                    WindowsDatapathMode as Datapath};
+        let admit = validate_windows_datapath_prebegin_with_admission;
+        assert_eq!(
+            admit(Datapath::ManagedTun, FleetHostAction::Start,
+                  Run::Running, Owner::Stopped, true), Ok(())
+        );
+        for (mode, action, run, owner, witness) in [
+            (Datapath::ManagedTun, FleetHostAction::Start, Run::Running, Owner::Stopped, false),
+            (Datapath::ManagedTun, FleetHostAction::Start, Run::Running, Owner::Running, true),
+            (Datapath::ManagedTun, FleetHostAction::Start, Run::Running, Owner::Unproven, true),
+            (Datapath::ManagedTun, FleetHostAction::Start, Run::Stopped, Owner::Stopped, true),
+            (Datapath::ManagedTun, FleetHostAction::Apply, Run::Stopped, Owner::Stopped, true),
+            (Datapath::ManagedTun, FleetHostAction::Stop, Run::Stopped, Owner::Stopped, true),
+            (Datapath::ManagedTun, FleetHostAction::Recover, Run::Stopped, Owner::Stopped, true),
+            (Datapath::ProxyOnly, FleetHostAction::Start, Run::Running, Owner::Stopped, true),
+        ] {
+            assert!(admit(mode, action, run, owner, witness).is_err());
+        }
+        assert_eq!(
+            admit(Datapath::ManagedTun, FleetHostAction::Apply,
+                  Run::Stopped, Owner::Stopped, false), Ok(())
+        );
+    }
 
     #[test]
     fn managed_tun_may_stage_only_with_stopped_owner() {

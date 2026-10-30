@@ -925,8 +925,14 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
         }
         None
     };
-    edge_shared_types::host_lifecycle::validate_windows_datapath_prebegin(
-        mode, action, run, owner,
+    edge_shared_types::host_lifecycle::validate_windows_datapath_prebegin_with_admission(
+        mode,
+        action,
+        run,
+        owner,
+        mode == WindowsDatapathMode::ManagedTun
+            && action == FleetHostAction::Start
+            && intent.network_admission.is_some(),
     )?;
     let update = if intent.action == FleetHostAction::Apply as i32
         && digest(&SHA256, &trust.release_set_pb).as_ref() != installed_runtime_sha256
@@ -1024,6 +1030,32 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
                     let (_, live) =
                         edge_shared_types::windows_native_network::observe_native_managed_tun()?;
                     live.require_foreign_network_preserved(network_baseline)?;
+                    // A kernel TUN and a listening localhost socket are not
+                    // Internet readiness. After route capture independently
+                    // prove native resolver + DIRECT GitHub/Cloudflare TLS.
+                    // Never report VERIFIED on a broken control path.
+                    let proof = tokio::runtime::Handle::current()
+                        .block_on(probe_pre_tun_native_control_dns());
+                    let (_, after_probes) =
+                        edge_shared_types::windows_native_network::observe_native_managed_tun()?;
+                    after_probes.require_foreign_network_preserved(network_baseline)?;
+                    if proof.is_err() {
+                        // The START intent also authorizes immediate safety
+                        // cleanup of this exact newly owned child, NOT a
+                        // second START or arbitrary foreign route rewrite.
+                        let _ = apply_exact_proxyonly_scm_step(
+                            FleetHostPlannedStep::Stop,
+                            install_root,
+                            &intent,
+                            &auth,
+                            &receipt_private,
+                            &installed_runtime_sha256,
+                            None,
+                            &trust,
+                            network_baseline,
+                        );
+                        return Err("HOST_WINDOWS_TUN_CONTROL_POSTSTATE_UNKNOWN_NO_REPLAY");
+                    }
                 } else {
                     network_preflight.require_current(effect_completed.get())?;
                 }
