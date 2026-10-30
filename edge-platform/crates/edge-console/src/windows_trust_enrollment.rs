@@ -623,20 +623,24 @@ pub(super) async fn verify_historical_windows_trust_ancestor(
     let base = "https://api.github.com/repos/iamaman11/sing-box";
     let old_tag = format!("edge-release-{trust_sha}");
     let installed_tag = format!("edge-release-{}", installed.release_set_sha256);
+    let main_url = format!("{base}/git/ref/heads/main");
+    let old_release_url = format!("{base}/releases/tags/{old_tag}");
+    let old_ref_url = format!("{base}/git/ref/tags/{old_tag}");
+    let installed_release_url = format!("{base}/releases/tags/{installed_tag}");
+    let installed_ref_url = format!("{base}/git/ref/tags/{installed_tag}");
     let (head, old_release, old_ref, installed_release, installed_ref) = tokio::try_join!(
-        fetch_json(&client, &format!("{base}/git/ref/heads/main")),
-        fetch_json(&client, &format!("{base}/releases/tags/{old_tag}")),
-        fetch_json(&client, &format!("{base}/git/ref/tags/{old_tag}")),
-        fetch_json(&client, &format!("{base}/releases/tags/{installed_tag}")),
-        fetch_json(&client, &format!("{base}/git/ref/tags/{installed_tag}")),
+        fetch_json(&client, &main_url),
+        fetch_json(&client, &old_release_url),
+        fetch_json(&client, &old_ref_url),
+        fetch_json(&client, &installed_release_url),
+        fetch_json(&client, &installed_ref_url),
     )?;
     let old_active = WindowsActivationState {
         source_revision: trusted.source_revision,
         release_set_sha256: trust_sha.clone(),
         ..Default::default()
     };
-    exact_github_provenance(&head, &old_release, &old_ref, &old_active)
-        .map_err(str::to_owned)?;
+    exact_github_provenance(&head, &old_release, &old_ref, &old_active).map_err(str::to_owned)?;
     exact_github_provenance(&head, &installed_release, &installed_ref, installed)
         .map_err(str::to_owned)?;
     let old_merge = old_release["target_commitish"]
@@ -650,12 +654,16 @@ pub(super) async fn verify_historical_windows_trust_ancestor(
     }
     // GitHub includes huge file patches on page 1. Page 2 retains exact
     // base/merge-base/status even when all commits fit on page 1.
-    let compare_url = format!(
-        "{base}/compare/{old_merge}...{installed_merge}?per_page=1&page=2"
-    );
+    let compare_url = format!("{base}/compare/{old_merge}...{installed_merge}?per_page=1&page=2");
     let (ancestry, published) = tokio::try_join!(
         fetch_json(&client, &compare_url),
-        accepted_asset(&client, &old_release, &old_tag, "release-set.pb", MAX_RELEASE),
+        accepted_asset(
+            &client,
+            &old_release,
+            &old_tag,
+            "release-set.pb",
+            MAX_RELEASE
+        ),
     )?;
     if published != trust_release_pb {
         return Err("HOST_WINDOWS_TRUST_ANCESTOR_PUBLISHED_BYTES_MISMATCH".into());
@@ -1102,7 +1110,10 @@ mod tests {
             "status":"ahead", "base_commit":{"sha":old},
             "merge_base_commit":{"sha":old}
         });
-        assert_eq!(exact_installed_git_ancestor(&compare, &old, &current), Ok(()));
+        assert_eq!(
+            exact_installed_git_ancestor(&compare, &old, &current),
+            Ok(())
+        );
         compare["merge_base_commit"]["sha"] = serde_json::json!("c".repeat(40));
         assert!(exact_installed_git_ancestor(&compare, &old, &current).is_err());
         compare["merge_base_commit"]["sha"] = serde_json::json!(old);
