@@ -5,9 +5,7 @@
 //! admission. It proves only that the exact sing-box-owned interface is
 //! absent from the live OS interface table. DNS, IPv4/IPv6 route restoration,
 //! WARP, Line1, and poststate must be proven independently before TUN START.
-use windows_sys::Win32::NetworkManagement::IpHelper::{
-    FreeMibTable, GetIfTable2, MIB_IF_TABLE2,
-};
+use windows_sys::Win32::NetworkManagement::IpHelper::{FreeMibTable, GetIfTable2, MIB_IF_TABLE2};
 
 const OWNED_TUN_ALIAS: &str = "sing-box-tun";
 const MAX_NATIVE_INTERFACES: usize = 4096;
