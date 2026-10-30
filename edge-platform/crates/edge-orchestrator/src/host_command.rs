@@ -3436,8 +3436,9 @@ mod tests {
         );
         std::fs::remove_file(file).unwrap();
         std::fs::remove_file(spec).unwrap();
-        std::fs::remove_file(&intent_path).unwrap();
-        std::fs::remove_file(intent_path.with_extension("receipt.pb")).unwrap();
+        // Retired SET_MODE must leave no request/receipt to clean up.
+        assert!(!intent_path.exists());
+        assert!(!intent_path.with_extension("receipt.pb").exists());
     }
 
     #[test]
