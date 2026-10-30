@@ -2084,9 +2084,10 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(selected_rules, vec![&json!([selected])]);
         assert!(!selected_rules.iter().any(|rule| {
-            rule.as_array().unwrap().iter().any(|path| {
-                path.as_str() == Some(unselected) || path.as_str() == Some(child)
-            })
+            rule.as_array()
+                .unwrap()
+                .iter()
+                .any(|path| path.as_str() == Some(unselected) || path.as_str() == Some(child))
         }));
         let selected_index = rules
             .iter()
@@ -2095,16 +2096,17 @@ mod tests {
         let fallback_index = rules
             .iter()
             .position(|rule| {
-                rule["inbound"] == json!(["managed-tun-in"])
-                    && rule.get("process_path").is_none()
+                rule["inbound"] == json!(["managed-tun-in"]) && rule.get("process_path").is_none()
             })
             .unwrap();
         assert!(selected_index < fallback_index);
         assert_eq!(rules[fallback_index]["outbound"], "direct");
         for tag in [DESKTOP_TRACE_INBOUND_TAG, WSL_INBOUND_TAG] {
-            assert!(rules.iter().any(|rule| {
-                rule["inbound"] == json!([tag]) && rule["outbound"] != "direct"
-            }));
+            assert!(
+                rules.iter().any(|rule| {
+                    rule["inbound"] == json!([tag]) && rule["outbound"] != "direct"
+                })
+            );
         }
     }
 
