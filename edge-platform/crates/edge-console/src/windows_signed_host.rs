@@ -455,6 +455,17 @@ fn system_native_observation(install_root: &Path) -> Result<FleetNativeObservati
                     == Path::new(&active.sing_box_path).canonicalize().ok()
             });
         if owned {
+            // Only an exact native SCM child/config can prove that this
+            // adapter belongs to the running signed ManagedTun operation.
+            let owned_tun = bounded_regular_file(&config, 1024 * 1024)
+                .is_ok_and(|bytes| edge_singbox::require_managed_tun_config(&bytes).is_ok())
+                && edge_shared_types::windows_native_network::observe_native_managed_tun()
+                    .is_ok_and(|(_, tun)| tun.require_native_dual_stack_route_capture().is_ok());
+            if owned_tun {
+                readback.reason_codes.retain(|reason| {
+                    reason != "HOST_WINDOWS_NETWORK_MANAGED_TUN_INTERFACE_STILL_PRESENT"
+                });
+            }
             let ready = tokio::runtime::Handle::current().block_on(proxy_traffic_ready());
             readback.runtime_ready_proven = ready;
             readback.runtime_ready = ready;
