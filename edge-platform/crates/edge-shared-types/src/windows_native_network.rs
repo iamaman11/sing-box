@@ -98,11 +98,7 @@ pub struct ManagedTunNetworkObservation {
     pub owned_tun: ManagedAdapterIdentity,
 }
 
-fn native_default_capture_present(
-    routes: &[RouteIdentity],
-    luid: u64,
-    family: u16,
-) -> bool {
+fn native_default_capture_present(routes: &[RouteIdentity], luid: u64, family: u16) -> bool {
     let bytes = match family {
         AF_INET => 4,
         AF_INET6 => 16,
@@ -129,7 +125,11 @@ impl ManagedTunNetworkObservation {
     pub fn require_native_dual_stack_route_capture(&self) -> Result<(), &'static str> {
         let luid = self.owned_tun.interface_luid;
         if luid == 0
-            || self.network.foreign_warp_adapters.iter().any(|warp| warp.interface_luid == luid)
+            || self
+                .network
+                .foreign_warp_adapters
+                .iter()
+                .any(|warp| warp.interface_luid == luid)
             || self.owned_tun.oper_status != 1
         {
             return Err("HOST_WINDOWS_MANAGED_TUN_NATIVE_OWNER_INVALID");
@@ -138,9 +138,12 @@ impl ManagedTunNetworkObservation {
             (AF_INET, "HOST_WINDOWS_MANAGED_TUN_IPV4_ROUTE_UNPROVEN"),
             (AF_INET6, "HOST_WINDOWS_MANAGED_TUN_IPV6_ROUTE_UNPROVEN"),
         ] {
-            if !self.network.addresses.iter().any(|address| {
-                address.interface_luid == luid && address.family == family
-            }) || !native_default_capture_present(&self.network.routes, luid, family)
+            if !self
+                .network
+                .addresses
+                .iter()
+                .any(|address| address.interface_luid == luid && address.family == family)
+                || !native_default_capture_present(&self.network.routes, luid, family)
             {
                 return Err(reason);
             }
@@ -817,7 +820,10 @@ mod tests {
             server: vec![0xfd; 16],
         });
         assert_eq!(after.require_foreign_network_preserved(&baseline), Ok(()));
-        after.network.routes.retain(|route| route.family != AF_INET6);
+        after
+            .network
+            .routes
+            .retain(|route| route.family != AF_INET6);
         assert_eq!(
             after.require_native_dual_stack_route_capture(),
             Err("HOST_WINDOWS_MANAGED_TUN_IPV6_ROUTE_UNPROVEN")
