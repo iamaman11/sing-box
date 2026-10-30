@@ -510,15 +510,26 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
     let mode = edge_shared_types::host_lifecycle::validate_windows_mode_target_and_spec(
         &selected, &desired,
     )?;
-    // STOP is the fail-safe for an already running tunnel: never make it
-    // depend on proving that future TUN capture can be admitted. All
-    // actions that might start or change route capture remain gated.
-    if mode != WindowsDatapathMode::ProxyOnly && intent.action != FleetHostAction::Stop as i32 {
-        return Err("HOST_WINDOWS_CONFIG_NETWORK_ADMISSION_REQUIRED".into());
-    }
-    // A pre-BEGIN native SCM/readback failure never creates journal state.
-    tokio::task::block_in_place(|| system_native_observation(install_root))
+    // The native readback is a pre-BEGIN proof, not runner-supplied state.
+    // ManagedTun may be STAGED while stopped, but no TUN activation or
+    // running-owner reconfiguration is authorized by this operation.
+    let observed = tokio::task::block_in_place(|| system_native_observation(install_root))
         .map_err(str::to_owned)?;
+    let action = FleetHostAction::try_from(intent.action)
+        .map_err(|_| "HOST_WINDOWS_SYSTEM_ACTION_NOT_ACCEPTED")?;
+    let run = selected
+        .target
+        .as_ref()
+        .ok_or("HOST_TARGET_UNSET_OBSERVE_ONLY")
+        .and_then(|target| {
+            edge_shared_types::FleetHostRunState::try_from(target.run_state)
+                .map_err(|_| "HOST_TARGET_RUN_STATE_INVALID")
+        })?;
+    let owner = edge_shared_types::FleetNativeOwnerState::try_from(observed.owner_state)
+        .map_err(|_| "HOST_WINDOWS_NATIVE_OWNER_STATE_INVALID")?;
+    edge_shared_types::host_lifecycle::validate_windows_datapath_prebegin(
+        mode, action, run, owner,
+    )?;
     let update = if intent.action == FleetHostAction::Apply as i32
         && digest(&SHA256, &trust.release_set_pb).as_ref() != installed_runtime_sha256
     {

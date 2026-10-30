@@ -45,6 +45,31 @@ pub fn validate_windows_mode_target_and_spec(
     Ok(datapath)
 }
 
+/// Before BEGIN, allow only effects that cannot enable Windows route capture.
+/// A stopped-owner APPLY may stage the exact signed ManagedTun configuration,
+/// but it cannot start the service or alter routes. Native effectors still
+/// enforce offline ownership and the journal never admits implicit replay.
+pub fn validate_windows_datapath_prebegin(
+    mode: crate::WindowsDatapathMode,
+    action: FleetHostAction,
+    desired_run: crate::FleetHostRunState,
+    observed_owner: crate::FleetNativeOwnerState,
+) -> Result<(), &'static str> {
+    use crate::{
+        FleetHostRunState as Run, FleetNativeOwnerState as Owner,
+        WindowsDatapathMode as Datapath,
+    };
+    match mode {
+        Datapath::ProxyOnly => Ok(()),
+        Datapath::ManagedTun => match (action, desired_run, observed_owner) {
+            (FleetHostAction::Stop, Run::Stopped, _) => Ok(()),
+            (FleetHostAction::Apply, Run::Stopped, Owner::Stopped) => Ok(()),
+            _ => Err("HOST_WINDOWS_CONFIG_NETWORK_ADMISSION_REQUIRED"),
+        },
+        Datapath::Unspecified => Err("HOST_WINDOWS_DATAPATH_MODE_INVALID"),
+    }
+}
+
 /// Create an ephemeral, typed projection for the existing pure planner.
 /// The registry signature/digest remains bound to the *original* Git bytes:
 /// the projected mode must never be stored, signed, or committed as desired.
@@ -1840,6 +1865,65 @@ mod partial_vm_recovery_tests {
 #[cfg(test)]
 mod windows_mode_projection_tests {
     use super::*;
+
+    #[test]
+    fn managed_tun_may_stage_only_with_stopped_owner() {
+        use crate::{
+            FleetHostRunState as Run, FleetNativeOwnerState as Owner,
+            WindowsDatapathMode as Datapath,
+        };
+        let guard = validate_windows_datapath_prebegin;
+        assert_eq!(
+            guard(
+                Datapath::ManagedTun,
+                FleetHostAction::Apply,
+                Run::Stopped,
+                Owner::Stopped,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            guard(
+                Datapath::ManagedTun,
+                FleetHostAction::Stop,
+                Run::Stopped,
+                Owner::Running,
+            ),
+            Ok(())
+        );
+        for (action, desired_run, observed_owner) in [
+            (FleetHostAction::Apply, Run::Running, Owner::Stopped),
+            (FleetHostAction::Apply, Run::Stopped, Owner::Running),
+            (FleetHostAction::Apply, Run::Stopped, Owner::Unproven),
+            (FleetHostAction::Start, Run::Running, Owner::Stopped),
+            (FleetHostAction::Start, Run::Stopped, Owner::Stopped),
+            (FleetHostAction::Recover, Run::Stopped, Owner::Stopped),
+            (FleetHostAction::Stop, Run::Running, Owner::Running),
+        ] {
+            assert_eq!(
+                guard(Datapath::ManagedTun, action, desired_run, observed_owner),
+                Err("HOST_WINDOWS_CONFIG_NETWORK_ADMISSION_REQUIRED")
+            );
+        }
+        assert_eq!(
+            guard(
+                Datapath::ProxyOnly,
+                FleetHostAction::Start,
+                Run::Running,
+                Owner::Stopped,
+            ),
+            Ok(())
+        );
+        assert_eq!(
+            guard(
+                Datapath::Unspecified,
+                FleetHostAction::Stop,
+                Run::Stopped,
+                Owner::Running,
+            ),
+            Err("HOST_WINDOWS_DATAPATH_MODE_INVALID")
+        );
+    }
 
     #[test]
     fn mode_projection_uses_only_production_and_rejects_duplicate_git_values() {
