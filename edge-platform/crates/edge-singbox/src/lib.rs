@@ -1869,7 +1869,11 @@ mod tests {
                 .iter()
                 .any(|value| { value.as_str() == Some("162.159.197.2/32") })
         );
-        assert!(excludes.iter().any(|value| value.as_str() == Some("203.0.113.10/32")));
+        assert!(
+            excludes
+                .iter()
+                .any(|value| value.as_str() == Some("203.0.113.10/32"))
+        );
 
         // A legacy TUN state without the exact upstream IP must not
         // overwrite a valid configuration with a route-capture candidate.
