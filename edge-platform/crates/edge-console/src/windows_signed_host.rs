@@ -388,9 +388,9 @@ fn archive_verified_network_baseline(
     root: &Path,
     original_operation: &str,
 ) -> Result<(), &'static str> {
-    use std::os::windows::ffi::OsStrExt;
-    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
     use edge_shared_types::windows_native_network::{self, NativeNetworkIdentity};
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{MOVEFILE_WRITE_THROUGH, MoveFileExW};
     let journal = root.join("native-host/journal");
     let active = journal.join("network-baseline.active.pb");
     edge_shared_types::host_journal::verify_windows_protected_path_acl(&active, true)?;
