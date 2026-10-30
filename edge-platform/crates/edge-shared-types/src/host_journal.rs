@@ -385,6 +385,115 @@ fn verify_windows_acl_chain(
     Ok(())
 }
 
+// A read-only, SID-based scan of the EXACT object being hardened. The root
+// may have explicit unprivileged writers other than its current owner, so
+// neither /inheritance:r nor removing only the owner SID is sufficient.
+// The caller removes unsafe allow-grants while holding no-DELETE-sharing
+// handles, then the canonical full ancestor/leaf verifier decides PASS.
+#[cfg(windows)]
+pub fn windows_unprivileged_write_grant_sids(
+    path: &Path,
+) -> Result<Vec<String>, &'static str> {
+    use std::collections::BTreeSet;
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::fs::MetadataExt;
+    use windows_sys::Win32::Foundation::LocalFree;
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertSidToStringSidW, GetNamedSecurityInfoW, SE_FILE_OBJECT,
+    };
+    use windows_sys::Win32::Security::{
+        ACCESS_ALLOWED_ACE, ACL, DACL_SECURITY_INFORMATION, GetAce, IsWellKnownSid,
+        WinBuiltinAdministratorsSid, WinLocalSystemSid,
+    };
+    if !path.is_absolute() || !path.starts_with(Path::new(r"C:\sing-box")) {
+        return Err("HOST_WINDOWS_JOURNAL_ABSOLUTE_PATH_REQUIRED");
+    }
+    let meta = fs::symlink_metadata(path)
+        .map_err(|_| "HOST_WINDOWS_SYSTEM_AUTHORITY_ACL_UNAVAILABLE")?;
+    if meta.file_type().is_symlink() || meta.file_attributes() & 0x400 != 0 {
+        return Err("HOST_WINDOWS_SYSTEM_AUTHORITY_ACL_REPARSE");
+    }
+    let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
+    wide.push(0);
+    let mut dacl: *mut ACL = std::ptr::null_mut();
+    let mut descriptor = std::ptr::null_mut();
+    let status = unsafe {
+        GetNamedSecurityInfoW(
+            wide.as_mut_ptr(),
+            SE_FILE_OBJECT,
+            DACL_SECURITY_INFORMATION,
+            std::ptr::null_mut(),
+            std::ptr::null_mut(),
+            &mut dacl,
+            std::ptr::null_mut(),
+            &mut descriptor,
+        )
+    };
+    if status != 0 {
+        if !descriptor.is_null() {
+            unsafe { LocalFree(descriptor) };
+        }
+        return Err("HOST_WINDOWS_SYSTEM_AUTHORITY_ACL_UNAVAILABLE");
+    }
+    let scan = (|| -> Result<Vec<String>, &'static str> {
+        if dacl.is_null() {
+            return Err("HOST_WINDOWS_SYSTEM_AUTHORITY_ACL_UNAVAILABLE");
+        }
+        let mut writers = BTreeSet::new();
+        let acl = unsafe { &*dacl };
+        if acl.AceCount > 1024 {
+            return Err("HOST_WINDOWS_SYSTEM_AUTHORITY_ACL_TOO_LARGE");
+        }
+        for index in 0..acl.AceCount {
+            let mut ace = std::ptr::null_mut();
+            if unsafe { GetAce(dacl, index as u32, &mut ace) } == 0 || ace.is_null() {
+                return Err("HOST_WINDOWS_SYSTEM_AUTHORITY_ACL_UNAVAILABLE");
+            }
+            let header = unsafe { &*(ace as *const windows_sys::Win32::Security::ACE_HEADER) };
+            if header.AceType != 0 && header.AceType != 1 {
+                return Err("HOST_WINDOWS_SYSTEM_AUTHORITY_ACL_UNKNOWN_ACE");
+            }
+            if header.AceType == 1 {
+                continue; // Deny entries never authorize writes.
+            }
+            let grant = unsafe { &*(ace as *const ACCESS_ALLOWED_ACE) };
+            let sid = (&grant.SidStart as *const u32).cast_mut().cast();
+            let privileged = unsafe {
+                IsWellKnownSid(sid, WinLocalSystemSid) != 0
+                    || IsWellKnownSid(sid, WinBuiltinAdministratorsSid) != 0
+            };
+            // Inherit-only is NOT a safe exception on C:\sing-box. This is
+            // an actual application object, not the Windows volume root.
+            if windows_acl_grant_safe(grant.Mask, privileged, false, false) {
+                continue;
+            }
+            let mut sid_text: *mut u16 = std::ptr::null_mut();
+            if unsafe { ConvertSidToStringSidW(sid, &mut sid_text) } == 0 || sid_text.is_null() {
+                return Err("HOST_WINDOWS_SYSTEM_AUTHORITY_SID_UNAVAILABLE");
+            }
+            let mut len = 0usize;
+            while len < 128 && unsafe { *sid_text.add(len) } != 0 {
+                len += 1;
+            }
+            let value = if len == 128 {
+                Err("HOST_WINDOWS_SYSTEM_AUTHORITY_SID_UNAVAILABLE")
+            } else {
+                String::from_utf16(unsafe { std::slice::from_raw_parts(sid_text, len) })
+                    .map_err(|_| "HOST_WINDOWS_SYSTEM_AUTHORITY_SID_UNAVAILABLE")
+            };
+            unsafe { LocalFree(sid_text.cast()) };
+            let value = value?;
+            if !value.starts_with("S-1-") {
+                return Err("HOST_WINDOWS_SYSTEM_AUTHORITY_SID_UNAVAILABLE");
+            }
+            writers.insert(value);
+        }
+        Ok(writers.into_iter().collect())
+    })();
+    unsafe { LocalFree(descriptor) };
+    scan
+}
+
 #[cfg(windows)]
 pub fn windows_native_acl_owner_sid(path: &Path) -> Result<String, &'static str> {
     use std::os::windows::ffi::OsStrExt;
@@ -3163,6 +3272,22 @@ mod windows_w4_acl_tests {
         assert!(!windows_acl_owner_safe(false, false, false));
         assert!(!windows_acl_owner_safe(false, false, true));
         assert!(!windows_acl_owner_safe(false, true, false));
+    }
+
+    #[test]
+    fn explicit_nonowner_full_control_is_not_exempt_after_inheritance_removal() {
+        // Physical Windows case: an explicit Allow ACE (not necessarily the
+        // owner's SID), OI|CI, FullControl 0x001F01FF. Even if the owner is
+        // BUILTIN\\Administrators and the leaf journal is sealed, this
+        // independent writer must be pruned on the app root/EXE.
+        const FULL_CONTROL: u32 = 0x001f_01ff;
+        assert!(!windows_acl_grant_safe(FULL_CONTROL, false, false, false));
+        assert!(!windows_acl_grant_safe(FULL_CONTROL, false, false, true));
+        assert!(windows_acl_grant_safe(0x0012_00a9, false, false, false)); // RX
+        assert!(windows_acl_grant_safe(FULL_CONTROL, true, false, false)); // SYSTEM/Admin
+        for rights in [0x0004_0000, 0x0008_0000, 0x0001_0000, 0x4000_0000] {
+            assert!(!windows_acl_grant_safe(0x0012_00a9 | rights, false, false, false));
+        }
     }
 
     #[test]

@@ -4335,6 +4335,16 @@ fn harden_system_authority_path_for_reader(
     };
     run_icacls(path, &["/grant:r", system, admins, &reader, "/Q"])?;
     run_icacls(path, &["/inheritance:r", "/Q"])?;
+    // /inheritance:r strips inherited grants but deliberately retains any
+    // unrelated EXPLICIT user-writable ACE. Never assume that removing the
+    // former owner's SID removes all writers: the owner may be Administrators.
+    // Inspect the actual DACL by SID, then remove only unsafe allow-grants on
+    // this exact path. The native verifier below remains the final authority.
+    for sid in edge_shared_types::host_journal::windows_unprivileged_write_grant_sids(path)
+        .map_err(str::to_owned)?
+    {
+        run_icacls(path, &["/remove:g", &format!("*{sid}"), "/Q"])?;
+    }
     if reader_sid != "S-1-5-20" {
         run_icacls(path, &["/remove:g", "*S-1-5-20", "/Q"])?;
     }
