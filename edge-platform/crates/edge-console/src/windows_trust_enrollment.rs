@@ -5,7 +5,7 @@
 //! registry, spec, or trust bytes. No SCM, network/TUN or resource mutation.
 use super::*;
 use edge_shared_types::{
-    FleetHostAction, FleetHostIntent, FleetHostKind, FleetHostMode, FleetHostRunState,
+    FleetHostAction, FleetHostIntent, FleetHostKind, FleetHostRunState,
     FleetNativeTrustSnapshot, FleetWindowsTrustEnrollment, HostRegistry, ReleaseSet,
     host_journal::require_windows_local_administrator_first_use,
     host_journal::verify_native_journal_protection,
@@ -437,11 +437,15 @@ fn exact_windows_registration(
         || host.windows_runner_label != "sing-box-windows-lab"
         || !matches!(host.owner.as_ref(), Some(edge_shared_types::managed_host::Owner::WindowsRunnerName(n)) if n == "DESKTOP-0E1F6UQ")
         || !matches!(host.target.as_ref(),
-            Some(target) if target.run_state == FleetHostRunState::Stopped as i32
-                && target.windows_mode == FleetHostMode::ProxyOnly as i32)
+            Some(target) if target.run_state == FleetHostRunState::Stopped as i32)
     {
         return Err("HOST_WINDOWS_TRUST_GIT_OWNER_OR_TARGET_INVALID".into());
     }
+    // Enroll the existing stopped owner against the exact Git mode, whether
+    // ProxyOnly or ManagedTun. Trust enrollment never starts a TUN; actual
+    // route-capturing effects remain blocked at the native SYSTEM gate.
+    let desired = edge_shared_types::parse_production_desired_text(spec)?;
+    edge_shared_types::host_lifecycle::validate_windows_mode_target_and_spec(host, &desired)?;
     verify_windows_signed_git_prerequisites(host).map_err(str::to_owned)?;
     if receipt_public.len() != 32 || host.native_receipt_public_key != receipt_public {
         return Err("HOST_WINDOWS_TRUST_GIT_RECEIPT_PIN_MISMATCH".into());
