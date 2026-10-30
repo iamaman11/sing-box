@@ -125,6 +125,13 @@ pub(super) async fn execute(
         digest.as_ref(),
         now,
     )?;
+    // The signed spec, not Controller's locally embedded desired setting,
+    // selects the only admitted native child. ManagedTun is still denied
+    // by the shared network admission until its independent control/Line1
+    // proof exists; do NOT promote a staged configuration into permission.
+    let desired = edge_shared_types::parse_production_desired_text(spec)?;
+    let mode = edge_shared_types::WindowsDatapathMode::try_from(desired.windows_datapath_mode)
+        .map_err(|_| "HOST_WINDOWS_EFFECT_MODE_UNRECOGNIZED")?;
     // Native observer above also rejects a stale managed TUN on any path.
     let state = active(root)?;
     let paths = LocalRuntimePaths {
@@ -151,7 +158,17 @@ pub(super) async fn execute(
             effect.expires_at_unix,
             now,
         )?;
-        edge_local_runtime::start_native_verified_proxy(&paths)
+        match mode {
+            edge_shared_types::WindowsDatapathMode::ProxyOnly => {
+                edge_local_runtime::start_native_verified_proxy(&paths)
+            }
+            edge_shared_types::WindowsDatapathMode::ManagedTun => {
+                edge_local_runtime::start_native_verified_managed_tun(&paths)
+            }
+            edge_shared_types::WindowsDatapathMode::Unspecified => {
+                Err("HOST_WINDOWS_EFFECT_MODE_UNRECOGNIZED".into())
+            }
+        }
     })?;
     // The child has already been created. Register supervision BEFORE
     // network poststate can fail; otherwise an uncertain native readback
@@ -166,9 +183,21 @@ pub(super) async fn execute(
             let _ = write_controller_service_error(&supervisor_root, "native_child_exit", &e);
         }
     });
-    let (_, network_after) =
-        edge_shared_types::windows_native_network::observe_native_network_identity()?;
-    network_before.require_restored(&network_after)?;
+    match mode {
+        edge_shared_types::WindowsDatapathMode::ProxyOnly => {
+            let (_, after) =
+                edge_shared_types::windows_native_network::observe_native_network_identity()?;
+            network_before.require_restored(&after)?;
+        }
+        edge_shared_types::WindowsDatapathMode::ManagedTun => {
+            let (_, after) =
+                edge_shared_types::windows_native_network::observe_native_managed_tun()?;
+            after.require_foreign_network_preserved(&network_before)?;
+        }
+        edge_shared_types::WindowsDatapathMode::Unspecified => {
+            return Err("HOST_WINDOWS_EFFECT_MODE_UNRECOGNIZED".into());
+        }
+    }
     Ok(LocalRuntimeResponse {
         success: true,
         pid: started.pid,
