@@ -1057,6 +1057,12 @@ jobs:
           cargo test --locked -p edge-shared-types --lib windows_routing::tests -- --nocapture
           if ($LASTEXITCODE -ne 0) { throw "Windows selected-application path identity contract failed" }
 
+          # The exact dual-stack route/DNS and Cloudflare One readback tests
+          # must EXECUTE on Windows, not only compile inside the test binary.
+          # No route, DNS, WARP or TUN mutation is performed by these tests.
+          cargo test --locked -p edge-shared-types --lib windows_native_network::tests -- --nocapture
+          if ($LASTEXITCODE -ne 0) { throw "Windows native network identity and fail-closed readback tests failed" }
+
       # WINDOWS_CANDIDATE_BUILD_CONTRACT_BEGIN
       - name: Build exact Windows control binaries
         if: needs.dependencies.outputs.windows_reuse != 'true'
