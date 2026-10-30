@@ -3136,7 +3136,7 @@ mod existing_identity_handoff_tests {
 }
 
 #[cfg(windows)]
-fn offline_bootstrap_privileged_release(
+async fn offline_bootstrap_privileged_release(
     install_root: &Path,
     request: &WindowsPrivilegedRequest,
     supersession: Option<&RetainedOfflineBootstrapSupersession>,
@@ -3219,6 +3219,17 @@ fn offline_bootstrap_privileged_release(
                 }
             }
         }
+        None
+    };
+    // Resolve the exact protected-Git host before any durable BEGIN. This is
+    // only needed for a genuinely new identity; completed/pending identities
+    // are preserved and NEVER resolved into a different machine.
+    let fresh_machine = if enroll_receipt
+        && existing_identity_stage.is_none()
+        && pending_identity_rebind.is_none()
+    {
+        Some(windows_trust_enrollment::resolve_local_windows_machine(&before).await?)
+    } else {
         None
     };
     if before.release_set_sha256 == target {
@@ -3432,7 +3443,13 @@ fn offline_bootstrap_privileged_release(
         match existing_identity_stage {
             None => {
                 // First-use: only the existing task generates the private key.
-                windows_receipt_enrollment::prepare(install_root).map_err(|reason| {
+                windows_receipt_enrollment::prepare(
+                    install_root,
+                    fresh_machine.as_deref().ok_or(
+                        "HOST_WINDOWS_FIRST_USE_GIT_HOST_BINDING_REQUIRED",
+                    )?,
+                )
+                .map_err(|reason| {
                     format!("OFFLINE_BOOTSTRAP_IDENTITY_STEP_UNCERTAIN_NO_REPLAY: {reason}; inspect current.pb and native identity status before any new action")
                 })?;
                 windows_trust_enrollment::prepare_pending(install_root).map_err(|reason| {

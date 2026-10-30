@@ -18,7 +18,8 @@ use std::io::Write;
 use std::path::Path;
 use std::time::Duration;
 
-const HOST: &str = "sing-box-windows-lab";
+#[cfg(test)]
+const HOST: &str = "sing-box-windows-lab"; // test fixture, never runtime owner
 const SPEC: &str = "infra/production/production.textproto";
 const TRUST_FILE: &str = "trust.pb";
 const PUBLIC: &str = "receipt-public-key.bin";

@@ -21,7 +21,8 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
 
-const MACHINE: &str = "sing-box-windows-lab"; // legacy first-use fixture only
+#[cfg(test)]
+const MACHINE: &str = "sing-box-windows-lab"; // test fixture, never runtime owner
 pub(super) fn valid_machine_id(machine: &str) -> bool {
     !machine.is_empty()
         && machine.len() <= 40
@@ -537,7 +538,7 @@ pub(super) fn prepare_clean_before_scm(
 
 /// Local elevated Administrator: create ONE immutable, typed request in the
 /// existing protected root. No receipt PRIVATE key is generated here.
-pub(super) fn prepare(install_root: &Path) -> Result<(), String> {
+pub(super) fn prepare(install_root: &Path, registered_machine: &str) -> Result<(), String> {
     require_windows_local_administrator_first_use().map_err(str::to_owned)?;
     require_exact_immutable_activation_console(install_root)?;
     let active = load_verified_activation(install_root).map_err(|err| err.to_string())?;
@@ -560,7 +561,7 @@ pub(super) fn prepare(install_root: &Path) -> Result<(), String> {
     }
     let request = FleetWindowsReceiptIdentityEnrollment {
         schema_version: 1,
-        machine_id: MACHINE.into(),
+        machine_id: registered_machine.into(),
         source_revision: active.source_revision.clone(),
         release_set_sha256: active.release_set_sha256.clone(),
     };

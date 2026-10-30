@@ -218,7 +218,13 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
         #[cfg(windows)]
         Command::OfflineReceiptIdentityPrepare(args) => {
             let root = Path::new(&args.install_root);
-            windows_receipt_enrollment::prepare(root).map_err(ConsoleError::Command)?;
+            let active = load_verified_activation(root)?;
+            let machine =
+                windows_trust_enrollment::resolve_local_windows_machine(&active)
+                    .await
+                    .map_err(ConsoleError::Command)?;
+            windows_receipt_enrollment::prepare(root, &machine)
+                .map_err(ConsoleError::Command)?;
             windows_trust_enrollment::prepare_pending(root).map_err(|reason| {
                 ConsoleError::Command(format!(
                     "HOST_WINDOWS_FIRST_USE_TRUST_MARKER_UNKNOWN_NO_REPLAY: {reason}"
@@ -332,6 +338,7 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                 supersession.as_ref(),
                 args.enroll_receipt,
             )
+            .await
             .map_err(ConsoleError::Command)?;
             println!("status=PASS");
             println!("code={code}");
