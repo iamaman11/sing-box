@@ -9,17 +9,17 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 #[cfg(windows)]
 use std::mem::size_of;
 #[cfg(windows)]
+use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
+#[cfg(windows)]
 use std::os::windows::process::CommandExt;
 #[cfg(windows)]
 use std::ptr::{null, null_mut};
 #[cfg(windows)]
-use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
-#[cfg(windows)]
 use std::sync::{Mutex, OnceLock};
 #[cfg(windows)]
 use windows_sys::Win32::System::JobObjects::{
-    AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    AssignProcessToJobObject, CreateJobObjectW, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    JOBOBJECT_EXTENDED_LIMIT_INFORMATION, JobObjectExtendedLimitInformation,
     SetInformationJobObject,
 };
 
@@ -448,9 +448,9 @@ pub fn start_native_verified_proxy(
 }
 
 // The native Controller process itself owns exactly one Windows Job Object.
- // A crash, panic, forced SCM termination or reboot closes this OS handle
- // and kills its TUN child without a watchdog, second process or scheduler.
- // No foreign processes can be assigned to this Job.
+// A crash, panic, forced SCM termination or reboot closes this OS handle
+// and kills its TUN child without a watchdog, second process or scheduler.
+// No foreign processes can be assigned to this Job.
 #[cfg(windows)]
 static NATIVE_MANAGED_TUN_JOB: OnceLock<Mutex<Option<OwnedHandle>>> = OnceLock::new();
 
@@ -516,8 +516,7 @@ pub fn start_native_verified_managed_tun(
     let bound = bind_managed_tun_job_to_child(&child);
     let poststate = bound.and_then(|_| {
         observe_startup(&mut child)?;
-        let (_, current) =
-            edge_shared_types::windows_native_network::observe_native_managed_tun()?;
+        let (_, current) = edge_shared_types::windows_native_network::observe_native_managed_tun()?;
         current.require_foreign_network_preserved(&before)?;
         Ok(())
     });

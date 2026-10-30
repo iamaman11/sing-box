@@ -56,7 +56,11 @@ pub fn validate_windows_datapath_prebegin(
     observed_owner: crate::FleetNativeOwnerState,
 ) -> Result<(), &'static str> {
     validate_windows_datapath_prebegin_with_admission(
-        mode, action, desired_run, observed_owner, false,
+        mode,
+        action,
+        desired_run,
+        observed_owner,
+        false,
     )
 }
 
@@ -82,9 +86,15 @@ pub fn validate_windows_datapath_prebegin_with_admission(
         Datapath::ManagedTun => match (action, desired_run, observed_owner) {
             (FleetHostAction::Stop, Run::Stopped, Owner::Stopped)
             | (FleetHostAction::Apply, Run::Stopped, Owner::Stopped)
-                if !signed_network_admission_verified => Ok(()),
+                if !signed_network_admission_verified =>
+            {
+                Ok(())
+            }
             (FleetHostAction::Start, Run::Running, Owner::Stopped)
-                if signed_network_admission_verified => Ok(()),
+                if signed_network_admission_verified =>
+            {
+                Ok(())
+            }
             _ => Err("HOST_WINDOWS_CONFIG_NETWORK_ADMISSION_REQUIRED"),
         },
         Datapath::Unspecified => Err("HOST_WINDOWS_DATAPATH_MODE_INVALID"),
@@ -2333,28 +2343,90 @@ mod windows_mode_projection_tests {
 
     #[test]
     fn managed_tun_admission_is_one_signed_start_only() {
-        use crate::{FleetHostRunState as Run, FleetNativeOwnerState as Owner,
-                    WindowsDatapathMode as Datapath};
+        use crate::{
+            FleetHostRunState as Run, FleetNativeOwnerState as Owner,
+            WindowsDatapathMode as Datapath,
+        };
         let admit = validate_windows_datapath_prebegin_with_admission;
         assert_eq!(
-            admit(Datapath::ManagedTun, FleetHostAction::Start,
-                  Run::Running, Owner::Stopped, true), Ok(())
+            admit(
+                Datapath::ManagedTun,
+                FleetHostAction::Start,
+                Run::Running,
+                Owner::Stopped,
+                true
+            ),
+            Ok(())
         );
         for (mode, action, run, owner, witness) in [
-            (Datapath::ManagedTun, FleetHostAction::Start, Run::Running, Owner::Stopped, false),
-            (Datapath::ManagedTun, FleetHostAction::Start, Run::Running, Owner::Running, true),
-            (Datapath::ManagedTun, FleetHostAction::Start, Run::Running, Owner::Unproven, true),
-            (Datapath::ManagedTun, FleetHostAction::Start, Run::Stopped, Owner::Stopped, true),
-            (Datapath::ManagedTun, FleetHostAction::Apply, Run::Stopped, Owner::Stopped, true),
-            (Datapath::ManagedTun, FleetHostAction::Stop, Run::Stopped, Owner::Stopped, true),
-            (Datapath::ManagedTun, FleetHostAction::Recover, Run::Stopped, Owner::Stopped, true),
-            (Datapath::ProxyOnly, FleetHostAction::Start, Run::Running, Owner::Stopped, true),
+            (
+                Datapath::ManagedTun,
+                FleetHostAction::Start,
+                Run::Running,
+                Owner::Stopped,
+                false,
+            ),
+            (
+                Datapath::ManagedTun,
+                FleetHostAction::Start,
+                Run::Running,
+                Owner::Running,
+                true,
+            ),
+            (
+                Datapath::ManagedTun,
+                FleetHostAction::Start,
+                Run::Running,
+                Owner::Unproven,
+                true,
+            ),
+            (
+                Datapath::ManagedTun,
+                FleetHostAction::Start,
+                Run::Stopped,
+                Owner::Stopped,
+                true,
+            ),
+            (
+                Datapath::ManagedTun,
+                FleetHostAction::Apply,
+                Run::Stopped,
+                Owner::Stopped,
+                true,
+            ),
+            (
+                Datapath::ManagedTun,
+                FleetHostAction::Stop,
+                Run::Stopped,
+                Owner::Stopped,
+                true,
+            ),
+            (
+                Datapath::ManagedTun,
+                FleetHostAction::Recover,
+                Run::Stopped,
+                Owner::Stopped,
+                true,
+            ),
+            (
+                Datapath::ProxyOnly,
+                FleetHostAction::Start,
+                Run::Running,
+                Owner::Stopped,
+                true,
+            ),
         ] {
             assert!(admit(mode, action, run, owner, witness).is_err());
         }
         assert_eq!(
-            admit(Datapath::ManagedTun, FleetHostAction::Apply,
-                  Run::Stopped, Owner::Stopped, false), Ok(())
+            admit(
+                Datapath::ManagedTun,
+                FleetHostAction::Apply,
+                Run::Stopped,
+                Owner::Stopped,
+                false
+            ),
+            Ok(())
         );
     }
 
