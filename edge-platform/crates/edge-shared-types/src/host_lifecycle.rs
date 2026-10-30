@@ -1214,6 +1214,98 @@ pub fn host_authorization_payload(
 #[cfg(test)]
 mod tests {
     #[test]
+    fn windows_set_mode_requires_bound_network_admission() {
+        use crate::FleetWindowsNetworkAdmission;
+        use ring::signature::{Ed25519KeyPair, KeyPair};
+        let key = Ed25519KeyPair::from_pkcs8(
+            Ed25519KeyPair::generate_pkcs8(&ring::rand::SystemRandom::new())
+                .unwrap()
+                .as_ref(),
+        )
+        .unwrap();
+        let mut intent = FleetHostIntent {
+            schema_version: 1,
+            machine_id: "win-machine-1".into(),
+            kind: FleetHostKind::Windows as i32,
+            operation_id: "issue1-comment-234".into(),
+            action: FleetHostAction::Start as i32,
+            resource_id: "sing-box".into(),
+            release_set_sha256: vec![3; 32],
+            ..Default::default()
+        };
+        let installed = [4; 32];
+        let config = [5; 32];
+        let before = [6; 32];
+        assert_eq!(
+            verify_windows_network_admission(
+                &intent, key.public_key().as_ref(), &installed, &config, &before, 111
+            ),
+            Err("HOST_WINDOWS_NETWORK_ADMISSION_MISSING")
+        );
+        let mut admission = FleetWindowsNetworkAdmission {
+            schema_version: 1,
+            machine_id: intent.machine_id.clone(),
+            operation_id: intent.operation_id.clone(),
+            installed_release_sha256: installed.to_vec(),
+            desired_release_set_sha256: intent.release_set_sha256.clone(),
+            config_sha256: config.to_vec(),
+            before_network_sha256: before.to_vec(),
+            observed_at_unix: 100,
+            expires_at_unix: 150,
+            line1_witness_sha256: vec![7; 32],
+            control_witness_sha256: vec![8; 32],
+            dns_witness_sha256: vec![9; 32],
+            ..Default::default()
+        };
+        let sign = |proof: &mut FleetWindowsNetworkAdmission| {
+            proof.system_signature.clear();
+            let mut raw = b"sing-box/windows-network-admission/v1:".to_vec();
+            raw.extend(proof.encode_to_vec());
+            proof.system_signature = key.sign(&raw).as_ref().to_vec();
+        };
+        sign(&mut admission);
+        intent.network_admission = Some(admission);
+        let verify = |intent: &FleetHostIntent, now: u64| {
+            verify_windows_network_admission(
+                intent, key.public_key().as_ref(), &installed, &config, &before, now
+            )
+        };
+        assert_eq!(verify(&intent, 120), Ok(()));
+        assert!(verify(&intent, 151).is_err());
+        assert!(verify_windows_network_admission(
+            &intent, key.public_key().as_ref(), &installed, &[99; 32], &before, 120
+        ).is_err());
+        assert!(verify_windows_network_admission(
+            &intent, key.public_key().as_ref(), &installed, &config, &[98; 32], 120
+        ).is_err());
+        let mut altered = intent.clone();
+        altered.operation_id = "issue1-comment-235".into();
+        assert!(verify(&altered, 120).is_err());
+        altered = intent.clone();
+        altered.release_set_sha256[0] ^= 1;
+        assert!(verify(&altered, 120).is_err());
+        altered = intent.clone();
+        altered.action = FleetHostAction::Stop as i32;
+        assert!(verify(&altered, 120).is_err());
+        altered = intent.clone();
+        altered
+            .network_admission
+            .as_mut()
+            .unwrap()
+            .line1_witness_sha256[0] ^= 1;
+        assert_eq!(
+            verify(&altered, 120),
+            Err("HOST_WINDOWS_NETWORK_ADMISSION_SYSTEM_SIGNATURE_INVALID")
+        );
+        altered = intent.clone();
+        altered.network_admission.as_mut().unwrap().dns_witness_sha256.clear();
+        assert!(verify(&altered, 120).is_err());
+        altered = intent.clone();
+        altered.network_admission.as_mut().unwrap().expires_at_unix = 170;
+        assert!(verify(&altered, 120).is_err());
+    }
+
+    #[test]
     fn runner_copied_verified_result_is_only_structurally_correlated() {
         let intent = FleetHostIntent {
             schema_version: 1,
