@@ -7,6 +7,8 @@ param(
     # hand-copied from GitHub. Retained old BEGIN needs separate explicit scope.
     [switch]$ConnectWindows,
     [switch]$ApproveRetainedBegin,
+    # Explicit local approval to harden the old unsafe EXE chain before running it.
+    [switch]$ApproveAclRepair,
     [string]$InstallRoot = "C:\sing-box",
     [string]$GitHubToken = $env:EDGE_GITHUB_TOKEN,
     [switch]$ForceRematerialize,
@@ -34,6 +36,127 @@ $GitHubReadAttempts = 3
 $GitHubReadTimeoutSec = 15
 $GitHubAssetTimeoutSec = 120
 $GitHubRetryDelaySec = 2
+
+
+# Trusted-entry repair is intentionally bounded to the application executable
+# chain. Never traverse native-host/, journals, sealed private keys, or C:\.
+# This is local Administrator first-use authority, not runner/remote authority.
+function Get-ProtectedAppAclReadback {
+    param([Parameter(Mandatory)] [string]$Path)
+    $item = Get-Item -LiteralPath $Path -Force -ErrorAction Stop
+    if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw 'WINDOWS_INSTALL_PRELAUNCH_REPARSE_PATH_BLOCKED'
+    }
+    $acl = Get-Acl -LiteralPath $Path -ErrorAction Stop
+    $owner = ([Security.Principal.NTAccount]::new([string]$acl.Owner)).Translate(
+        [Security.Principal.SecurityIdentifier]
+    ).Value
+    if ($owner -notin @('S-1-5-18', 'S-1-5-32-544')) {
+        throw 'WINDOWS_INSTALL_PRELAUNCH_OWNER_NOT_PRIVILEGED'
+    }
+    # Same effective mutation mask as the native SYSTEM journal verifier.
+    [long]$write = 0x00000002 -bor 0x00000004 -bor 0x00000010 -bor
+        0x00000040 -bor 0x00000100 -bor 0x00010000 -bor
+        0x00040000 -bor 0x00080000 -bor 0x10000000 -bor 0x40000000
+    $writers = @()
+    foreach ($ace in @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]))) {
+        $sid = $ace.IdentityReference.Value
+        if ($ace.AccessControlType -ne [Security.AccessControl.AccessControlType]::Allow -or
+            $sid -in @('S-1-5-18', 'S-1-5-32-544')) {
+            continue
+        }
+        if (([long]$ace.FileSystemRights -band $write) -ne 0) {
+            $writers += $sid
+        }
+    }
+    return @($writers | Sort-Object -Unique)
+}
+
+function Assert-RootExecutionChain {
+    param([switch]$CreateFresh, [switch]$ApproveRepair)
+    if ($InstallRoot -cne 'C:\sing-box') {
+        throw 'WINDOWS_INSTALL_PRELAUNCH_EXACT_ROOT_REQUIRED'
+    }
+    $principal = [Security.Principal.WindowsPrincipal]::new(
+        [Security.Principal.WindowsIdentity]::GetCurrent()
+    )
+    if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
+        throw 'WINDOWS_INSTALL_PRELAUNCH_ELEVATED_ADMIN_REQUIRED'
+    }
+    $exists = Test-Path -LiteralPath $InstallRoot -PathType Container
+    if (-not $exists -and -not $CreateFresh) {
+        throw 'WINDOWS_INSTALL_PRELAUNCH_ROOT_MISSING'
+    }
+    if (-not $exists) {
+        if (Test-Path -LiteralPath $InstallRoot) {
+            throw 'WINDOWS_INSTALL_PRELAUNCH_ROOT_WRONG_TYPE'
+        }
+        New-Item -ItemType Directory -Path $InstallRoot -ErrorAction Stop | Out-Null
+        $ApproveRepair = $true
+    }
+    $scopes = @($InstallRoot)
+    foreach ($name in @('releases', 'bin', 'bootstrap')) {
+        $path = Join-Path $InstallRoot $name
+        if (Test-Path -LiteralPath $path) {
+            if (-not (Test-Path -LiteralPath $path -PathType Container)) {
+                throw 'WINDOWS_INSTALL_PRELAUNCH_EXECUTABLE_DIR_WRONG_TYPE'
+            }
+            $scopes += $path
+        }
+    }
+    if ($ApproveRepair) {
+        foreach ($path in $scopes) {
+            $item = Get-Item -LiteralPath $path -Force -ErrorAction Stop
+            if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+                throw 'WINDOWS_INSTALL_PRELAUNCH_REPARSE_PATH_BLOCKED'
+            }
+            # A root/EXE write grant may be EXPLICIT even when its owner is
+            # Administrators. /inheritance:r alone does not remove that grant.
+            & icacls.exe $path /grant:r '*S-1-5-18:(OI)(CI)F' '*S-1-5-32-544:(OI)(CI)F' '*S-1-5-20:(OI)(CI)RX' /Q | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_INSTALL_PRELAUNCH_GRANT_FAILED_NO_EXECUTION' }
+            & icacls.exe $path /inheritance:r /Q | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_INSTALL_PRELAUNCH_INHERITANCE_FAILED_NO_EXECUTION' }
+            # Read every explicit writer SID from the exact directory ACL.
+            # This scope never includes native-host or its sealed identity.
+            $acl = Get-Acl -LiteralPath $path -ErrorAction Stop
+            [long]$write = 0x00000002 -bor 0x00000004 -bor 0x00000010 -bor
+                0x00000040 -bor 0x00000100 -bor 0x00010000 -bor
+                0x00040000 -bor 0x00080000 -bor 0x10000000 -bor 0x40000000
+            $unsafe = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) |
+                Where-Object { $_.AccessControlType -eq [Security.AccessControl.AccessControlType]::Allow -and
+                    $_.IdentityReference.Value -notin @('S-1-5-18','S-1-5-32-544') -and
+                    (([long]$_.FileSystemRights -band $write) -ne 0) } |
+                ForEach-Object { $_.IdentityReference.Value } | Sort-Object -Unique)
+            foreach ($sid in $unsafe) {
+                & icacls.exe $path /remove:g "*$sid" /Q | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_INSTALL_PRELAUNCH_WRITER_REMOVAL_FAILED_NO_EXECUTION' }
+            }
+            & icacls.exe $path /setowner '*S-1-5-32-544' /Q | Out-Null
+            if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_INSTALL_PRELAUNCH_OWNER_FAILED_NO_EXECUTION' }
+            if ($path -cne $InstallRoot) {
+                # Only immutable executable trees. A reset on C:\sing-box or
+                # native-host would destroy the sealed key's intended DACL.
+                & icacls.exe (Join-Path $path '*') /reset /T /Q | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_INSTALL_PRELAUNCH_EXECUTABLE_RESET_FAILED_NO_EXECUTION' }
+                & icacls.exe $path /setowner '*S-1-5-32-544' /T /Q | Out-Null
+                if ($LASTEXITCODE -ne 0) { throw 'WINDOWS_INSTALL_PRELAUNCH_EXECUTABLE_OWNER_FAILED_NO_EXECUTION' }
+            }
+        }
+    }
+    foreach ($path in $scopes) {
+        $objects = @($path)
+        if ($path -cne $InstallRoot) {
+            $objects += @(Get-ChildItem -LiteralPath $path -Force -Recurse -ErrorAction Stop |
+                Select-Object -ExpandProperty FullName)
+        }
+        if ($objects.Count -gt 12000) { throw 'WINDOWS_INSTALL_PRELAUNCH_EXECUTABLE_TREE_TOO_LARGE' }
+        foreach ($object in $objects) {
+            if (@(Get-ProtectedAppAclReadback -Path $object).Count -ne 0) {
+                throw 'WINDOWS_INSTALL_PRELAUNCH_UNPRIVILEGED_WRITER_BLOCKED'
+            }
+        }
+    }
+}
 
 function Assert-OfflineWindow {
     if (-not $Offline) { return }
@@ -463,6 +586,7 @@ if ($ConnectWindows) {
         Write-Output 'windows_connect_next=EXISTING_SYSTEM_TASK'
         exit 0
     }
+    Assert-RootExecutionChain -ApproveRepair:$ApproveAclRepair
     $installed = Invoke-Diagnostic -Diagnostic $stableDiagnostic -State $currentPath
     if ([string]$installed['release_set_sha256'] -ceq $selectedDigest) {
         if ($ApproveRetainedBegin) {
@@ -566,6 +690,9 @@ if ($ConnectWindows) {
 if ($ApproveRetainedBegin) {
     throw 'WINDOWS_CONNECT_APPROVAL_REQUIRES_CONNECT_WINDOWS'
 }
+if ($ApproveAclRepair) {
+    throw 'WINDOWS_INSTALL_ACL_REPAIR_APPROVAL_REQUIRES_CONNECT_WINDOWS'
+}
 if (($StageOnly -or $BootstrapNow) -and (-not $Offline -or $ForceRematerialize -or $ArchivedAcceptanceSourceRunId -ne 0 -or ($StageOnly -and $BootstrapNow))) {
     throw 'OFFLINE_BOOTSTRAP_BLOCKED: StageOnly requires exact ordinary offline candidate'
 }
@@ -603,6 +730,14 @@ New-Item -ItemType Directory -Force -Path $binDir, $releasesDir | Out-Null
 Assert-HexSha256 -Value $ReleaseSetSha256 -Name "ReleaseSetSha256"
 $tag = "edge-release-$ReleaseSetSha256"
 Assert-AcceptedReleaseAuthority -AcceptedRevision $AcceptedRevision -Tag $tag -ArchivedAcceptanceSourceRunId $ArchivedAcceptanceSourceRunId
+# Before any downloaded verifier or installed console is executed: the root
+# must be protected. Existing unsafe roots require the explicit ConnectWindows
+# repair scope; fresh roots are protected before materializing release files.
+if (-not (Test-Path -LiteralPath $InstallRoot)) {
+    Assert-RootExecutionChain -CreateFresh
+} else {
+    Assert-RootExecutionChain
+}
 $canonicalReleaseDir = Join-Path $releasesDir $ReleaseSetSha256
 $repairReleaseDir = Join-Path $releasesDir ($ReleaseSetSha256 + ".repair")
 $releaseDir = $canonicalReleaseDir
@@ -653,7 +788,8 @@ $requiredInstalled = @(
 $needsInstall = $ForceRematerialize -or @($requiredInstalled | Where-Object { -not (Test-Path -LiteralPath $_) }).Count -gt 0
 
 if ($needsInstall) {
-    $stage = Join-Path $env:TEMP ("edge-platform-release-" + [guid]::NewGuid().ToString("N"))
+    # Never execute downloaded verifier binaries from a user-writable TEMP.
+        $stage = Join-Path $InstallRoot (".release-stage-" + [guid]::NewGuid().ToString("N"))
     New-Item -ItemType Directory -Force -Path $stage | Out-Null
     try {
         $release = Get-DurableRelease -Tag $tag

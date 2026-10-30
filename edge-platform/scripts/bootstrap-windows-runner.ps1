@@ -83,24 +83,19 @@ function Assert-MainProtected {
     }
 }
 
-function Install-InitialApplicationAuthority {
-    $tempRoot = Join-Path $env:TEMP ("sing-box-trust-anchor-" + [guid]::NewGuid().ToString("N"))
-    New-Item -ItemType Directory -Force -Path $tempRoot | Out-Null
+# Runner is transport only. The canonical installer alone owns the service,
+# LocalSystem task, receipt identity and pending Worker trust.
+function Connect-CanonicalWindowsApplication {
+    $tempRoot = Join-Path $env:TEMP ("sing-box-install-source-" + [guid]::NewGuid().ToString("N"))
+    New-Item -ItemType Directory -Path $tempRoot -ErrorAction Stop | Out-Null
     try {
         $installer = Join-Path $tempRoot "install-windows-release.ps1"
         $uri = "https://raw.githubusercontent.com/$Repository/$AcceptedRevision/edge-platform/scripts/install-windows-release.ps1"
         Invoke-WebRequest -UseBasicParsing -Uri $uri -OutFile $installer
-        & $installer `
-            -AcceptedRevision $AcceptedRevision `
-            -ReleaseSetSha256 $ReleaseSetSha256 `
-            -InstallRoot $ApplicationRoot
+        & $installer -ConnectWindows -InstallRoot $ApplicationRoot
         if ($LASTEXITCODE -ne 0) {
-            throw "Initial exact ReleaseSet activation failed"
+            throw "Canonical Windows first-use outcome unknown; no replay"
         }
-
-        $bootstrapDir = Join-Path $ApplicationRoot "bootstrap"
-        New-Item -ItemType Directory -Force -Path $bootstrapDir | Out-Null
-        Copy-Item -LiteralPath $installer -Destination (Join-Path $bootstrapDir "install-windows-release.ps1") -Force
     } finally {
         Remove-Item -LiteralPath $tempRoot -Recurse -Force -ErrorAction SilentlyContinue
     }
@@ -150,53 +145,6 @@ function Install-CredentialAccessIdentity {
     }
 }
 
-function Converge-ControllerService {
-    $console = Join-Path $ApplicationRoot "releases\$ReleaseSetSha256\bin\edge-console.exe"
-    if (-not (Test-Path -LiteralPath $console -PathType Leaf)) {
-        throw "Exact immutable controller authority console is missing: $console"
-    }
-    & $console privileged-converge-controller-service --install-root $ApplicationRoot
-    if ($LASTEXITCODE -ne 0) {
-        throw "Native Windows controller service convergence failed"
-    }
-}
-
-
-function Register-PrivilegedDispatcher {
-    $console = Join-Path $ApplicationRoot "releases\$ReleaseSetSha256\bin\edge-console.exe"
-    if (-not (Test-Path -LiteralPath $console -PathType Leaf)) {
-        throw "Exact immutable privileged console is missing: $console"
-    }
-
-    $action = New-ScheduledTaskAction `
-        -Execute $console `
-        -Argument ('privileged-dispatch --install-root "' + $ApplicationRoot + '"')
-    $trigger = New-ScheduledTaskTrigger `
-        -Once `
-        -At ((Get-Date).AddMinutes(1)) `
-        -RepetitionInterval (New-TimeSpan -Minutes 1)
-    $principal = New-ScheduledTaskPrincipal `
-        -UserId $SystemSid `
-        -LogonType ServiceAccount `
-        -RunLevel Highest
-    $settings = New-ScheduledTaskSettingsSet `
-        -MultipleInstances IgnoreNew `
-        -ExecutionTimeLimit (New-TimeSpan -Minutes 10) `
-        -StartWhenAvailable
-
-    Register-ScheduledTask `
-        -TaskName $PrivilegedTaskName `
-        -Action $action `
-        -Trigger $trigger `
-        -Principal $principal `
-        -Settings $settings `
-        -Force | Out-Null
-
-    $task = Get-ScheduledTask -TaskName $PrivilegedTaskName
-    if ((Resolve-IdentitySid -Identity ([string]$task.Principal.UserId)) -ne $SystemSid) {
-        throw "Privileged dispatcher task is not owned by LocalSystem SID"
-    }
-}
 function Get-RunnerService {
     $serviceMarker = Join-Path $RunnerRoot ".service"
     $runnerMarker = Join-Path $RunnerRoot ".runner"
@@ -278,10 +226,8 @@ function Register-Runner {
 Assert-Administrator
 Assert-IsolatedRoots
 Assert-MainProtected
-Install-InitialApplicationAuthority
-Converge-ControllerService
+Connect-CanonicalWindowsApplication
 Install-CredentialAccessIdentity
-Register-PrivilegedDispatcher
 
 $service = Get-RunnerService
 if (-not $service) {
@@ -309,8 +255,8 @@ Write-Output "runner_identity_sid=$NetworkServiceSid"
 Write-Output "runner_update_policy=github_auto"
 Write-Output "accepted_revision=$AcceptedRevision"
 Write-Output "release_set_sha256=$ReleaseSetSha256"
-Write-Output "privileged_task=$PrivilegedTaskName"
-Write-Output "privileged_identity=SYSTEM"
+Write-Output "privileged_task_owner=canonical_windows_installer"
+Write-Output "privileged_identity=SYSTEM_VIA_CANONICAL_INSTALLER"
 Write-Output "runner_application_access=TRANSPORT_ONLY"
 Write-Output "controller_service=EdgePlatformController"
 Write-Output "controller_start_owner=windows_scm"

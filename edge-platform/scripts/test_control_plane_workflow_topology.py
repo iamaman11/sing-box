@@ -194,6 +194,22 @@ assert "pending_begin_record_sha256 = 19" in typed_proto
 assert "pending_original_release_sha256|pending_original_desired_sha256|pending_begin_record_sha256" in native
 assert "protected_journal_has_pending(journal)?" in Path("edge-platform/crates/edge-agent/src/host_native.rs").read_text(encoding="utf-8")
 
+# A fresh Windows install must have exactly one owner of SCM/SYSTEM task.
+# The runner bootstrap is transport-only; it must not duplicate registration.
+windows_installer = Path("edge-platform/scripts/install-windows-release.ps1").read_text()
+windows_runner_bootstrap = Path("edge-platform/scripts/bootstrap-windows-runner.ps1").read_text()
+assert "function Assert-RootExecutionChain {" in windows_installer
+assert "Assert-RootExecutionChain -ApproveRepair:$ApproveAclRepair" in windows_installer
+assert "Assert-RootExecutionChain -CreateFresh" in windows_installer
+assert "WINDOWS_INSTALL_PRELAUNCH_UNPRIVILEGED_WRITER_BLOCKED" in windows_installer
+assert 'Join-Path $InstallRoot (".release-stage-"' in windows_installer
+assert "function Connect-CanonicalWindowsApplication {" in windows_runner_bootstrap
+assert "& $installer -ConnectWindows -InstallRoot $ApplicationRoot" in windows_runner_bootstrap
+assert "function Register-PrivilegedDispatcher {" not in windows_runner_bootstrap
+assert "function Converge-ControllerService {" not in windows_runner_bootstrap
+assert "Register-ScheduledTask" not in windows_runner_bootstrap
+assert "Install-InitialApplicationAuthority" not in windows_runner_bootstrap
+
 # A signed explicit recovery for an old BEGIN uses the existing native
 # transport, NEVER a second service or an unsigned root journal reset.
 journal = Path("edge-platform/crates/edge-shared-types/src/host_journal.rs").read_text(encoding="utf-8")
