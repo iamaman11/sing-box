@@ -57,12 +57,21 @@ fn connection_traffic_observed(connection: &Value) -> bool {
         .get("destinationIP")
         .and_then(Value::as_str)
         .is_some_and(|s| !s.is_empty())
-        || metadata.get("host").and_then(Value::as_str).is_some_and(|s| !s.is_empty());
+        || metadata
+            .get("host")
+            .and_then(Value::as_str)
+            .is_some_and(|s| !s.is_empty());
     let transport = metadata.get("network").and_then(Value::as_str);
     destination
         && matches!(transport, Some("tcp" | "udp"))
-        && connection.get("upload").and_then(Value::as_u64).is_some_and(|n| n > 0)
-        && connection.get("download").and_then(Value::as_u64).is_some_and(|n| n > 0)
+        && connection
+            .get("upload")
+            .and_then(Value::as_u64)
+            .is_some_and(|n| n > 0)
+        && connection
+            .get("download")
+            .and_then(Value::as_u64)
+            .is_some_and(|n| n > 0)
 }
 
 fn assess_application_route(connections: &[Value], app: &WindowsApplicationRoute) -> Evidence {
@@ -169,7 +178,6 @@ fn running_executables() -> (System, BTreeSet<String>) {
     (sys, paths)
 }
 
-
 #[derive(Default)]
 struct InstalledInventory {
     // Uninstall DisplayName is evidence of a registry registration, not of
@@ -186,9 +194,8 @@ struct InstalledInventory {
 /// machine/user hives are inspected; missing/inaccessible entries are normal.
 fn registry_inventory() -> InstalledInventory {
     use windows_sys::Win32::System::Registry::{
-        HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY,
-        KEY_WOW64_64KEY, REG_SZ, RegCloseKey, RegEnumKeyExW, RegOpenKeyExW,
-        RegQueryValueExW,
+        HKEY, HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
+        REG_SZ, RegCloseKey, RegEnumKeyExW, RegOpenKeyExW, RegQueryValueExW,
     };
 
     fn wide(value: &str) -> Vec<u16> {
@@ -202,7 +209,11 @@ fn registry_inventory() -> InstalledInventory {
         let status = unsafe {
             RegQueryValueExW(
                 key,
-                if name.is_empty() { std::ptr::null() } else { wname.as_ptr() },
+                if name.is_empty() {
+                    std::ptr::null()
+                } else {
+                    wname.as_ptr()
+                },
                 std::ptr::null_mut(),
                 &mut kind,
                 raw.as_mut_ptr(),
@@ -242,11 +253,18 @@ fn registry_inventory() -> InstalledInventory {
                     std::ptr::null_mut(),
                 )
             };
-            if status != 0 { break; }
-            let Ok(child) = String::from_utf16(&name[..length as usize]) else { continue; };
+            if status != 0 {
+                break;
+            }
+            let Ok(child) = String::from_utf16(&name[..length as usize]) else {
+                continue;
+            };
             let mut entry = std::ptr::null_mut();
             let subkey = format!("{root}\\{child}");
-            if unsafe { RegOpenKeyExW(hive, wide(&subkey).as_ptr(), 0, KEY_READ | view, &mut entry) } != 0 {
+            if unsafe {
+                RegOpenKeyExW(hive, wide(&subkey).as_ptr(), 0, KEY_READ | view, &mut entry)
+            } != 0
+            {
                 continue;
             }
             if let Some(value) = read_string(entry, value) {
@@ -260,13 +278,15 @@ fn registry_inventory() -> InstalledInventory {
     for hive in [HKEY_LOCAL_MACHINE, HKEY_CURRENT_USER] {
         for view in [KEY_WOW64_64KEY, KEY_WOW64_32KEY] {
             enumerate(
-                hive, view,
+                hive,
+                view,
                 r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall",
                 "DisplayName",
                 &mut found.registered_programs,
             );
             enumerate(
-                hive, view,
+                hive,
+                view,
                 r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths",
                 "",
                 &mut found.app_path_candidates,
@@ -276,8 +296,7 @@ fn registry_inventory() -> InstalledInventory {
     // App Paths default strings may be stale or indirect. Expose only
     // currently-existing lexical absolute executable file candidates.
     found.app_path_candidates.retain(|path| {
-        edge_shared_types::host_admin::windows_absolute_path(path)
-            && Path::new(path).is_file()
+        edge_shared_types::host_admin::windows_absolute_path(path) && Path::new(path).is_file()
     });
     found
 }
@@ -286,7 +305,9 @@ fn print_inventory_rows(label: &str, rows: &BTreeSet<String>, budget: &mut usize
     let mut emitted = 0usize;
     for row in rows.iter().take(MAX_INVENTORY) {
         let len = label.len() + 1 + row.len() + 1;
-        if len > *budget { break; }
+        if len > *budget {
+            break;
+        }
         println!("{label}={row}");
         *budget -= len;
         emitted += 1;
@@ -435,14 +456,20 @@ pub(super) fn run(command: &str, activation: &Path) -> Result<(), String> {
         println!("installed_apps_inventory=PARTIAL_REGISTRY_ONLY");
         println!("registry_names_not_executable_identities=YES");
         println!("registered_app_paths_not_authorized_routes=YES");
-        let mut budget = MAX_INVENTORY_BYTES;
+        // Reserve a bounded share for each source. A large Uninstall registry
+        // must never hide currently-running route candidates.
+        let mut program_budget = MAX_INVENTORY_BYTES / 3;
+        let mut path_budget = MAX_INVENTORY_BYTES / 3;
+        let mut process_budget = MAX_INVENTORY_BYTES / 3;
         let truncated = print_inventory_rows(
-            "registered_program_name", &installed.registered_programs, &mut budget,
+            "registered_program_name",
+            &installed.registered_programs,
+            &mut program_budget,
         ) | print_inventory_rows(
-            "registered_app_path_candidate", &installed.app_path_candidates, &mut budget,
-        ) | print_inventory_rows(
-            "running_executable", &executables, &mut budget,
-        );
+            "registered_app_path_candidate",
+            &installed.app_path_candidates,
+            &mut path_budget,
+        ) | print_inventory_rows("running_executable", &executables, &mut process_budget);
         println!("inventory_truncated={truncated}");
         println!("mutations=0");
         return Ok(());
