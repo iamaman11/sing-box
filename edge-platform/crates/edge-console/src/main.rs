@@ -3092,16 +3092,46 @@ fn classify_completed_identity_for_handoff(
     stage: &str,
 ) -> Result<Option<ExistingIdentityHandoff>, String> {
     match stage {
-        "RECEIPT_READY_TRUST_NOT_REQUESTED" => {
-            Ok(Some(ExistingIdentityHandoff::TrustNotRequested))
-        }
-        "AWAITING_GIT_AUTHORITY_OR_SYSTEM" => {
-            Ok(Some(ExistingIdentityHandoff::TrustPending))
-        }
+        "RECEIPT_READY_TRUST_NOT_REQUESTED" => Ok(Some(ExistingIdentityHandoff::TrustNotRequested)),
+        "AWAITING_GIT_AUTHORITY_OR_SYSTEM" => Ok(Some(ExistingIdentityHandoff::TrustPending)),
         "TRUST_RECORDED_UNVERIFIED" => Ok(Some(ExistingIdentityHandoff::TrustRecorded)),
         "SYSTEM_PENDING" => Ok(None),
         "NOT_STARTED" => Err("HOST_WINDOWS_FIRST_USE_IDENTITY_SLOT_INCONSISTENT".into()),
         _ => Err("HOST_WINDOWS_FIRST_USE_UPGRADE_STAGE_INVALID".into()),
+    }
+}
+
+#[cfg(all(windows, test))]
+mod existing_identity_handoff_tests {
+    use super::{ExistingIdentityHandoff as Phase, classify_completed_identity_for_handoff};
+
+    #[test]
+    fn only_completed_identity_stages_admit_preservation() {
+        assert_eq!(
+            classify_completed_identity_for_handoff("RECEIPT_READY_TRUST_NOT_REQUESTED"),
+            Ok(Some(Phase::TrustNotRequested))
+        );
+        assert_eq!(
+            classify_completed_identity_for_handoff("AWAITING_GIT_AUTHORITY_OR_SYSTEM"),
+            Ok(Some(Phase::TrustPending))
+        );
+        assert_eq!(
+            classify_completed_identity_for_handoff("TRUST_RECORDED_UNVERIFIED"),
+            Ok(Some(Phase::TrustRecorded))
+        );
+        assert_eq!(
+            classify_completed_identity_for_handoff("SYSTEM_PENDING"),
+            Ok(None)
+        );
+        for forged in [
+            "NOT_STARTED",
+            "TRUST_CONFIRMED",
+            "TRUST_RECORDED",
+            "RUNNING",
+            "",
+        ] {
+            assert!(classify_completed_identity_for_handoff(forged).is_err());
+        }
     }
 }
 
@@ -3140,15 +3170,18 @@ fn offline_bootstrap_privileged_release(
     // identity on an already-enrolled physical Windows host. Determine its
     // exact prior stage before the irreversible native BEGIN.
     let mut existing_identity_stage = None;
+    let mut registered_public_before = None;
     let pending_identity_rebind = if enroll_receipt {
         match windows_receipt_enrollment::preflight_fresh_identity_slot(install_root) {
             Ok(()) => None,
             Err(refused) if refused == "HOST_WINDOWS_RECEIPT_ENROLL_SLOT_NOT_EMPTY_NO_REKEY" => {
                 let stage = windows_receipt_enrollment::read_only_first_use_stage(install_root)?;
                 if let Some(existing) = classify_completed_identity_for_handoff(stage)? {
-                    windows_receipt_enrollment::verify_existing_receipt_identity_slot(
-                        install_root,
-                    )?;
+                    registered_public_before = Some(
+                        windows_receipt_enrollment::verify_existing_receipt_identity_slot(
+                            install_root,
+                        )?,
+                    );
                     if existing == ExistingIdentityHandoff::TrustPending {
                         windows_trust_enrollment::preflight_pending_trust_handoff(
                             install_root,
@@ -3160,8 +3193,7 @@ fn offline_bootstrap_privileged_release(
                 } else {
                     if supersession.is_none() {
                         return Err(
-                            "HOST_WINDOWS_FIRST_USE_REBIND_EXPLICIT_BEGIN_APPROVAL_REQUIRED"
-                                .into(),
+                            "HOST_WINDOWS_FIRST_USE_REBIND_EXPLICIT_BEGIN_APPROVAL_REQUIRED".into(),
                         );
                     }
                     Some(windows_receipt_enrollment::preflight_pending_rebind(
@@ -3375,13 +3407,21 @@ fn offline_bootstrap_privileged_release(
         })?;
     }
     if existing_identity_stage == Some(ExistingIdentityHandoff::TrustPending) {
-        windows_trust_enrollment::rebind_pending_trust_after_offline_handoff(
-            install_root,
-            &before,
-        )
-        .map_err(|reason| {
-            format!("OFFLINE_BOOTSTRAP_PENDING_TRUST_REBIND_UNKNOWN_NO_REPLAY: {reason}")
-        })?;
+        windows_trust_enrollment::rebind_pending_trust_after_offline_handoff(install_root, &before)
+            .map_err(|reason| {
+                format!("OFFLINE_BOOTSTRAP_PENDING_TRUST_REBIND_UNKNOWN_NO_REPLAY: {reason}")
+            })?;
+    }
+    // The offline installer must not rotate an already-created SYSTEM key.
+    if let Some(ref before_public) = registered_public_before {
+        let after_public =
+            windows_receipt_enrollment::verify_existing_receipt_identity_slot(install_root)
+                .map_err(|reason| {
+                    format!("OFFLINE_BOOTSTRAP_EXISTING_IDENTITY_POSTSTATE_UNPROVEN: {reason}")
+                })?;
+        if &after_public != before_public {
+            return Err("OFFLINE_BOOTSTRAP_EXISTING_RECEIPT_PUBLIC_CHANGED_NO_REPLAY".into());
+        }
     }
     // New main rejects legacy mutation opcodes; re-enable only after the
     // exact immutable signed-capable replacement and pending requests pass
@@ -3402,7 +3442,9 @@ fn offline_bootstrap_privileged_release(
             Some(ExistingIdentityHandoff::TrustNotRequested) => {
                 // Completed receipt is historical; request ONLY Worker trust.
                 windows_trust_enrollment::prepare(install_root).map_err(|reason| {
-                    format!("OFFLINE_BOOTSTRAP_REGISTERED_TRUST_PREPARE_UNKNOWN_NO_REPLAY: {reason}")
+                    format!(
+                        "OFFLINE_BOOTSTRAP_REGISTERED_TRUST_PREPARE_UNKNOWN_NO_REPLAY: {reason}"
+                    )
                 })?;
             }
             Some(ExistingIdentityHandoff::TrustPending)

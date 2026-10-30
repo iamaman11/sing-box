@@ -129,7 +129,11 @@ pub(super) fn preflight_pending_trust_handoff(
     for name in [DONE, TRUST_FILE] {
         if windows_receipt_enrollment::checked_regular_exists(
             &root.join(name),
-            if name == TRUST_FILE { 9 * 1024 * 1024 } else { 512 },
+            if name == TRUST_FILE {
+                9 * 1024 * 1024
+            } else {
+                512
+            },
         )? {
             return Err("HOST_WINDOWS_PENDING_TRUST_ALREADY_COMPLETED".into());
         }
@@ -139,7 +143,10 @@ pub(super) fn preflight_pending_trust_handoff(
         .map_err(str::to_owned)?;
     let bytes = windows_signed_host::bounded_regular_file(&marker, 512)?;
     verify_enrollment_marker(&bytes, predecessor).map_err(str::to_owned)?;
-    let archive = root.join(format!("{MARKER}.predecessor-{}", predecessor.release_set_sha256));
+    let archive = root.join(format!(
+        "{MARKER}.predecessor-{}",
+        predecessor.release_set_sha256
+    ));
     match fs::symlink_metadata(archive) {
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(()),
         _ => Err("HOST_WINDOWS_PENDING_TRUST_PREDECESSOR_ALREADY_RECORDED".into()),
@@ -164,7 +171,10 @@ pub(super) fn rebind_pending_trust_after_offline_handoff(
     let root = install_root.join("native-host");
     let marker = root.join(MARKER);
     let before = windows_signed_host::bounded_regular_file(&marker, 512)?;
-    let archive = root.join(format!("{MARKER}.predecessor-{}", predecessor.release_set_sha256));
+    let archive = root.join(format!(
+        "{MARKER}.predecessor-{}",
+        predecessor.release_set_sha256
+    ));
     fs::hard_link(&marker, &archive)
         .map_err(|_| "HOST_WINDOWS_PENDING_TRUST_ARCHIVE_UNKNOWN_NO_REPLAY")?;
     if windows_signed_host::bounded_regular_file(&archive, 512)? != before {
@@ -181,8 +191,7 @@ pub(super) fn rebind_pending_trust_after_offline_handoff(
     };
     let bytes = next.encode_to_vec();
     verify_enrollment_marker(&bytes, &current).map_err(str::to_owned)?;
-    fs::remove_file(&marker)
-        .map_err(|_| "HOST_WINDOWS_PENDING_TRUST_UNLINK_UNKNOWN_NO_REPLAY")?;
+    fs::remove_file(&marker).map_err(|_| "HOST_WINDOWS_PENDING_TRUST_UNLINK_UNKNOWN_NO_REPLAY")?;
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
