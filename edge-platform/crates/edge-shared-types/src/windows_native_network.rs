@@ -7,9 +7,9 @@
 //! IPv4/IPv6 routes and adapter DNS endpoints, but counting those facts does
 //! not prove their restoration, WARP health, Line1, or future TUN safety.
 use windows_sys::Win32::NetworkManagement::IpHelper::{
-    FreeMibTable, GetAdaptersAddresses, GetIfTable2, GetIpForwardTable2,
-    GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST, GAA_FLAG_SKIP_UNICAST,
-    IP_ADAPTER_ADDRESSES_LH, MIB_IF_TABLE2, MIB_IPFORWARD_TABLE2,
+    FreeMibTable, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_MULTICAST, GAA_FLAG_SKIP_UNICAST,
+    GetAdaptersAddresses, GetIfTable2, GetIpForwardTable2, IP_ADAPTER_ADDRESSES_LH, MIB_IF_TABLE2,
+    MIB_IPFORWARD_TABLE2,
 };
 use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6, AF_UNSPEC};
 
@@ -57,10 +57,7 @@ fn add_route(
     Ok(())
 }
 
-fn add_dns(
-    result: &mut NativeNetworkReadback,
-    family: u16,
-) -> Result<(), &'static str> {
+fn add_dns(result: &mut NativeNetworkReadback, family: u16) -> Result<(), &'static str> {
     match family {
         AF_INET => result.ipv4_dns_servers += 1,
         AF_INET6 => result.ipv6_dns_servers += 1,
@@ -196,7 +193,6 @@ pub fn observe_native_route_dns() -> Result<NativeNetworkReadback, &'static str>
     read_native_dns(&mut result)?;
     Ok(result)
 }
-
 
 fn is_owned_tun_alias(raw: &[u16]) -> Result<bool, &'static str> {
     let end = raw
