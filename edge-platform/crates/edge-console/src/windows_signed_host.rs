@@ -718,7 +718,9 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
     // Critical OFF transition: desired ProxyOnly does NOT prove the existing
     // live runtime is ProxyOnly. Deny before Worker POST and journal BEGIN if
     // any running/unknown owner still has TUN or an exotic/corrupt config.
-    let network_baseline = preflight_existing_windows_route_capture(install_root, mode, owner)?;
+    let network_preflight =
+        preflight_existing_windows_route_capture(install_root, mode, action, run, owner)?;
+    let network_baseline = &network_preflight.baseline;
     edge_shared_types::host_lifecycle::validate_windows_datapath_prebegin(
         mode, action, run, owner,
     )?;
