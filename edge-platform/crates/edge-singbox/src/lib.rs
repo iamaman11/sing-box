@@ -2060,6 +2060,55 @@ mod tests {
     }
 
     #[test]
+    fn stage4b_same_basename_different_paths_and_children_do_not_inherit_route() {
+        let selected = r"C:\Apps\Selected\browser.exe";
+        let unselected = r"C:\Apps\Other\browser.exe";
+        let child = r"C:\Apps\Selected\helper.exe";
+        let mut desired = canonical_production_desired_state().unwrap();
+        desired.windows_datapath_mode = WindowsDatapathMode::ManagedTun as i32;
+        desired.windows_application_routing = Some(edge_shared_types::WindowsApplicationRouting {
+            scope: edge_shared_types::WindowsApplicationScope::SelectedApplications as i32,
+            applications: vec![edge_shared_types::WindowsApplicationRoute {
+                executable_path: selected.into(),
+                route: edge_shared_types::WindowsDefaultRoute::VlessRealityWarp as i32,
+            }],
+        });
+        let config: Value = serde_json::from_slice(
+            &render_windows_config_for_desired(&stage2_runtime_state(), &desired).unwrap(),
+        )
+        .unwrap();
+        let rules = config["route"]["rules"].as_array().unwrap();
+        let selected_rules = rules
+            .iter()
+            .filter_map(|rule| rule.get("process_path"))
+            .collect::<Vec<_>>();
+        assert_eq!(selected_rules, vec![&json!([selected])]);
+        assert!(!selected_rules.iter().any(|rule| {
+            rule.as_array().unwrap().iter().any(|path| {
+                path.as_str() == Some(unselected) || path.as_str() == Some(child)
+            })
+        }));
+        let selected_index = rules
+            .iter()
+            .position(|rule| rule.get("process_path").is_some())
+            .unwrap();
+        let fallback_index = rules
+            .iter()
+            .position(|rule| {
+                rule["inbound"] == json!(["managed-tun-in"])
+                    && rule.get("process_path").is_none()
+            })
+            .unwrap();
+        assert!(selected_index < fallback_index);
+        assert_eq!(rules[fallback_index]["outbound"], "direct");
+        for tag in [DESKTOP_TRACE_INBOUND_TAG, WSL_INBOUND_TAG] {
+            assert!(rules.iter().any(|rule| {
+                rule["inbound"] == json!([tag]) && rule["outbound"] != "direct"
+            }));
+        }
+    }
+
+    #[test]
     fn stage4b_selected_apps_precede_tun_default_direct() {
         let mut desired = canonical_production_desired_state().unwrap();
         desired.windows_application_routing = Some(edge_shared_types::WindowsApplicationRouting {
