@@ -144,7 +144,7 @@ pub fn require_control_destinations_outside_tun(
                 unsafe {
                     std::ptr::copy_nonoverlapping(
                         ip.octets().as_ptr(),
-                        (&mut native.sin_addr as *mut _).cast::<u8>(),
+                        std::ptr::addr_of_mut!(native.sin_addr).cast::<u8>(),
                         4,
                     );
                 }
@@ -155,7 +155,7 @@ pub fn require_control_destinations_outside_tun(
                 unsafe {
                     std::ptr::copy_nonoverlapping(
                         ip.octets().as_ptr(),
-                        (&mut native.sin6_addr as *mut _).cast::<u8>(),
+                        std::ptr::addr_of_mut!(native.sin6_addr).cast::<u8>(),
                         16,
                     );
                 }
