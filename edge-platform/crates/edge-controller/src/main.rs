@@ -1013,6 +1013,8 @@ fn require_native_windows_runtime_launch_safety(repo_root: &Path) -> Result<(), 
     let bytes = fs::read(&path).map_err(|_| "HOST_WINDOWS_RECOVERY_EXISTING_CONFIG_UNPROVEN")?;
     edge_singbox::require_no_windows_route_capture_config(&bytes)
         .map_err(|_| "HOST_WINDOWS_RECOVERY_EXISTING_TUN_NETWORK_RESTORATION_REQUIRED")?;
+    edge_shared_types::windows_native_network::require_owned_tun_absent()
+        .map_err(str::to_owned)?;
     Ok(())
 }
 

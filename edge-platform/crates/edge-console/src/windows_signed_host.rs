@@ -282,6 +282,10 @@ fn preflight_existing_windows_route_capture(
     observed_owner: edge_shared_types::FleetNativeOwnerState,
 ) -> Result<(), &'static str> {
     use edge_shared_types::FleetNativeOwnerState as Owner;
+    // Unlike SCM status, this query sees a stale TUN adapter left behind by
+    // a crashed process. Never treat absence of a child as proof of network
+    // restoration or use a desired ProxyOnly flag to bypass this gate.
+    edge_shared_types::windows_native_network::require_owned_tun_absent()?;
     if observed_owner == Owner::Stopped {
         // No running owner means this gate makes no claim about stale physical
         // routes. ManagedTun activation is separately denied until the

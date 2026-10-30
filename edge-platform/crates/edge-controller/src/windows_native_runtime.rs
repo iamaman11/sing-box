@@ -119,6 +119,10 @@ pub(super) async fn execute(
         digest.as_ref(),
         now,
     )?;
+    // Recheck the physical OS interface in the executing Controller, not
+    // only in SYSTEM pre-BEGIN. A stale TUN must never be adopted by a
+    // signed ProxyOnly runtime effect or hidden by a new desired spec.
+    edge_shared_types::windows_native_network::require_owned_tun_absent()?;
     let state = active(root)?;
     let paths = LocalRuntimePaths {
         singbox_binary_path: PathBuf::from(&state.sing_box_path),

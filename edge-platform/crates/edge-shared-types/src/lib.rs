@@ -33,6 +33,8 @@ pub mod host_resources;
 pub mod host_signer_attestation;
 pub mod vm_bootstrap;
 pub mod windows_routing;
+#[cfg(windows)]
+pub mod windows_native_network;
 pub mod windows_runtime_effect;
 
 pub mod initial_credential_attestation;
