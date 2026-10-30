@@ -16,10 +16,10 @@ pub const MAX_HOST_RESULT_BYTES: usize = 8192;
 
 pub const MAX_NATIVE_OBSERVATION_BYTES: usize = 4096;
 
-/// The Windows mode has two Git projections: the host target controls whether
-/// the runtime may run, while the production spec controls what gets rendered.
-/// They MUST agree before an intent is emitted or admitted by LocalSystem.
-/// This is validation only; it does not authorize TUN or any native mutation.
+/// One Git authority for Windows datapath: ProductionDesiredState. The host
+/// registry owns only RUNNING/STOPPED. Its retained proto field 2 MUST be empty;
+/// a second persisted setting is rejected, not reconciled or silently adopted.
+/// This pure resolver does not authorize TUN or any native mutation.
 pub fn validate_windows_mode_target_and_spec(
     host: &FleetHost,
     desired: &crate::ProductionDesiredState,
@@ -34,16 +34,40 @@ pub fn validate_windows_mode_target_and_spec(
         .ok_or("HOST_TARGET_UNSET_OBSERVE_ONLY")?;
     let mode =
         FleetHostMode::try_from(target.windows_mode).map_err(|_| "HOST_TARGET_MODE_INVALID")?;
-    if mode == FleetHostMode::Unspecified {
-        return Err("HOST_TARGET_MODE_KIND_MISMATCH");
+    if mode != FleetHostMode::Unspecified {
+        return Err("HOST_WINDOWS_DUPLICATE_GIT_MODE_FORBIDDEN");
     }
     let datapath = Datapath::try_from(desired.windows_datapath_mode)
         .map_err(|_| "HOST_WINDOWS_DATAPATH_MODE_INVALID")?;
-    match (mode, datapath) {
-        (FleetHostMode::ProxyOnly, Datapath::ProxyOnly)
-        | (FleetHostMode::ManagedTun, Datapath::ManagedTun) => Ok(datapath),
-        _ => Err("HOST_WINDOWS_TARGET_SPEC_MODE_MISMATCH"),
+    if datapath == Datapath::Unspecified {
+        return Err("HOST_WINDOWS_DATAPATH_MODE_INVALID");
     }
+    Ok(datapath)
+}
+
+/// Create an ephemeral, typed projection for the existing pure planner.
+/// The registry signature/digest remains bound to the *original* Git bytes:
+/// the projected mode must never be stored, signed, or committed as desired.
+pub fn project_host_for_planner(
+    host: &FleetHost,
+    spec_bytes: &[u8],
+) -> Result<FleetHost, &'static str> {
+    if host.kind != FleetHostKind::Windows as i32 {
+        return Ok(host.clone());
+    }
+    let spec = crate::parse_production_desired_text(spec_bytes)?;
+    let mode = validate_windows_mode_target_and_spec(host, &spec)?;
+    let mut projected = host.clone();
+    projected
+        .target
+        .as_mut()
+        .ok_or("HOST_TARGET_UNSET_OBSERVE_ONLY")?
+        .windows_mode = match mode {
+        crate::WindowsDatapathMode::ProxyOnly => FleetHostMode::ProxyOnly as i32,
+        crate::WindowsDatapathMode::ManagedTun => FleetHostMode::ManagedTun as i32,
+        crate::WindowsDatapathMode::Unspecified => return Err("HOST_WINDOWS_DATAPATH_MODE_INVALID"),
+    };
+    Ok(projected)
 }
 
 /// Returns a local typed readback, not a signed mutation receipt. Kind and
@@ -708,34 +732,20 @@ pub fn validate_intent_against_target(
     }
     let mode =
         FleetHostMode::try_from(target.windows_mode).map_err(|_| "HOST_TARGET_MODE_INVALID")?;
-    if (host.kind == FleetHostKind::Windows as i32 && mode == FleetHostMode::Unspecified)
-        || (host.kind == FleetHostKind::Vm as i32 && mode != FleetHostMode::Unspecified)
-    {
-        return Err("HOST_TARGET_MODE_KIND_MISMATCH");
+    if mode != FleetHostMode::Unspecified {
+        return Err("HOST_WINDOWS_DUPLICATE_GIT_MODE_FORBIDDEN");
+    }
+    if action == FleetHostAction::SetMode {
+        return Err("HOST_SET_MODE_RETIRED_USE_GIT_APPLY");
     }
     if (action == FleetHostAction::Start && state != FleetHostRunState::Running)
         || (action == FleetHostAction::Stop && state != FleetHostRunState::Stopped)
-        || (action == FleetHostAction::SetMode && intent.requested_mode != target.windows_mode)
     {
         return Err("HOST_ACTION_CONFLICTS_WITH_DESIRED");
     }
-    // ManagedTun is a Git-owned setting applied by the EXISTING /host apply
-    // transaction, not a separate privileged SET_MODE subsystem. This pure
-    // validator does not authorize route capture: LocalSystem and Controller
-    // still independently enforce the native network admission before BEGIN.
-    // In particular, START/RECOVER cannot silently change the datapath.
-    if mode == FleetHostMode::ManagedTun
-        && matches!(
-            action,
-            FleetHostAction::Start
-                | FleetHostAction::Install
-                | FleetHostAction::Reinstall
-                | FleetHostAction::Recover
-                | FleetHostAction::Configure
-        )
-    {
-        return Err("HOST_TUN_NATIVE_NETWORK_ADMISSION_REQUIRED");
-    }
+    // START and APPLY are proposals only. The signed SYSTEM handler checks
+    // the exact production datapath spec and enforces native network admission
+    // before BEGIN; a pure registry lookup can never turn on route capture.
     Ok(())
 }
 

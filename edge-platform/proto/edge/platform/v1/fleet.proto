@@ -508,8 +508,9 @@ enum FleetHostRunState {
 
 message FleetHostTarget {
   FleetHostRunState run_state = 1;
-  // Windows only. VM uses UNSPECIFIED, never a Windows TUN mode.
-  FleetHostMode windows_mode = 2;
+  // Retained wire number only for Protobuf schema compatibility; MUST stay
+  // UNSPECIFIED in Git. Windows datapath is owned solely by ProductionDesiredState.
+  FleetHostMode windows_mode = 2 [deprecated = true];
 }
 
 

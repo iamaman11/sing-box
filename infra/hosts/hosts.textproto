@@ -145,6 +145,5 @@ hosts: {
   desired_spec_path: "infra/production/production.textproto"
   target: {
     run_state: FLEET_HOST_RUN_STATE_STOPPED
-    windows_mode: FLEET_HOST_MODE_PROXY_ONLY
-  }
+   }
 }

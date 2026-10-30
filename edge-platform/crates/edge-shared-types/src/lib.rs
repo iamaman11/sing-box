@@ -221,10 +221,8 @@ pub fn validate_host_registry(desired: &HostRegistry) -> Result<(), String> {
             if run_state == FleetHostRunState::Unspecified {
                 return Err("HOST_TARGET_RUN_STATE_REQUIRED".to_owned());
             }
-            if (kind == ManagedHostKind::Windows && mode == FleetHostMode::Unspecified)
-                || (kind == ManagedHostKind::Vm && mode != FleetHostMode::Unspecified)
-            {
-                return Err("HOST_TARGET_MODE_KIND_MISMATCH".to_owned());
+            if mode != FleetHostMode::Unspecified {
+                return Err("HOST_WINDOWS_DUPLICATE_GIT_MODE_FORBIDDEN".to_owned());
             }
         }
         match kind {
