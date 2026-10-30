@@ -109,7 +109,13 @@ pub fn propose_host_transition(
             );
         }
     };
-    if kind == FleetHostKind::Windows && desired_mode == FleetHostMode::ManagedTun {
+    // Never block an emergency STOP merely because the recorded target
+    // describes ManagedTun. Stopped is safe; START/INSTALL/CONFIGURE still
+    // require the independent native route-capture admission.
+    if kind == FleetHostKind::Windows
+        && desired_mode == FleetHostMode::ManagedTun
+        && desired_run != FleetHostRunState::Stopped
+    {
         return plan(
             host,
             Blocked,
@@ -118,7 +124,8 @@ pub fn propose_host_transition(
             &[],
         );
     }
-    if kind == FleetHostKind::Windows && desired_mode != FleetHostMode::ProxyOnly
+    if kind == FleetHostKind::Windows
+        && !matches!(desired_mode, FleetHostMode::ProxyOnly | FleetHostMode::ManagedTun)
         || kind == FleetHostKind::Vm && desired_mode != FleetHostMode::Unspecified
     {
         return plan(
@@ -860,6 +867,32 @@ mod tests {
             "TUN_SEPARATE_PHYSICAL_GATE_REQUIRED"
         );
     }
+    #[test]
+    fn stopped_managed_tun_target_permits_safe_stop_but_never_implicit_start() {
+        let host = host(
+            FleetHostKind::Windows,
+            FleetHostMode::ManagedTun,
+            FleetHostRunState::Stopped,
+        );
+        let running = observed(FleetHostKind::Windows, FleetNativeOwnerState::Running);
+        let stop = propose_host_transition(&host, Some(&running), &[1; 32], &[], 1000);
+        assert_eq!(stop.step, FleetHostPlannedStep::Stop as i32);
+        validate_host_transition_plan(&stop, &host).unwrap();
+
+        let stopped = observed(FleetHostKind::Windows, FleetNativeOwnerState::Stopped);
+        let noop = propose_host_transition(&host, Some(&stopped), &[1; 32], &[], 1000);
+        assert_eq!(noop.step, FleetHostPlannedStep::Noop as i32);
+        validate_host_transition_plan(&noop, &host).unwrap();
+
+        let mut starting = host.clone();
+        starting.target.as_mut().unwrap().run_state = FleetHostRunState::Running as i32;
+        let blocked = propose_host_transition(&starting, Some(&stopped), &[1; 32], &[], 1000);
+        assert_eq!(
+            blocked.reason_code,
+            "TUN_SEPARATE_PHYSICAL_GATE_REQUIRED"
+        );
+    }
+
     #[test]
     fn vm_bundle_drift_with_addressed_warp_consumer_can_propose_replace_only() {
         let vm = host(

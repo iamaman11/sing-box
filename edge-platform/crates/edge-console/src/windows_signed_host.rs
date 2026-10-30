@@ -5,8 +5,8 @@
 
 use super::*;
 use edge_shared_types::{
-    FleetHostAction, FleetHostAuthorization, FleetHostIntent, FleetHostKind,
-    FleetHostPlannedStep, FleetNativeObservation, FleetNativeTrustSnapshot,
+    FleetHostAction, FleetHostAuthorization, FleetHostIntent, FleetHostKind, FleetHostPlannedStep,
+    FleetNativeObservation, FleetNativeTrustSnapshot,
     host_journal::verify_native_journal_protection,
     host_lifecycle::{bind_native_host_artifacts, decode_host_intent},
     host_receipt::{check_native_receipt_key, sign_native_receipt},
@@ -510,9 +510,12 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
     let mode = edge_shared_types::host_lifecycle::validate_windows_mode_target_and_spec(
         &selected, &desired,
     )?;
-    // Native route-capture admission remains closed until signed TUN effects,
-    // control-plane reachability and restoration are independently accepted.
-    if mode != WindowsDatapathMode::ProxyOnly {
+    // STOP is the fail-safe for an already running tunnel: never make it
+    // depend on proving that future TUN capture can be admitted. All
+    // actions that might start or change route capture remain gated.
+    if mode != WindowsDatapathMode::ProxyOnly
+        && intent.action != FleetHostAction::Stop as i32
+    {
         return Err("HOST_WINDOWS_CONFIG_NETWORK_ADMISSION_REQUIRED".into());
     }
     // A pre-BEGIN native SCM/readback failure never creates journal state.
