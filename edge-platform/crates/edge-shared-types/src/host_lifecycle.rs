@@ -551,7 +551,6 @@ pub struct BoundNativeHostArtifacts {
     pub runtime_release_sha256: Vec<u8>,
 }
 
-
 /**
  * Read the exact, previously enrolled Windows SYSTEM trust registry without
  * changing a single signed/historical byte. The old stopped ProxyOnly target
@@ -671,11 +670,7 @@ fn bind_native_host_artifacts_inner(
         return Err("HOST_NATIVE_ARTIFACT_SIZE_INVALID");
     }
     let registry = if historical_windows_trust {
-        decode_historical_windows_trust_registry(
-            registry_pb,
-            exact_spec_bytes,
-            &intent.machine_id,
-        )?
+        decode_historical_windows_trust_registry(registry_pb, exact_spec_bytes, &intent.machine_id)?
     } else {
         crate::decode_host_registry(registry_pb).map_err(|_| "HOST_NATIVE_REGISTRY_INVALID")?
     };
@@ -1261,12 +1256,11 @@ mod tests {
             bind_native_host_artifacts(&intent, &stored, spec, &release_pb, None).unwrap_err(),
             "HOST_NATIVE_REGISTRY_INVALID"
         );
-        let historic = decode_historical_windows_trust_registry(&stored, spec, "windows-1")
-            .unwrap();
+        let historic =
+            decode_historical_windows_trust_registry(&stored, spec, "windows-1").unwrap();
         assert_eq!(historic.encode_to_vec(), stored);
         let (_, bound) =
-            bind_historical_windows_trust_artifacts(&intent, &stored, spec, &release_pb)
-                .unwrap();
+            bind_historical_windows_trust_artifacts(&intent, &stored, spec, &release_pb).unwrap();
         assert_eq!(bound.registry_sha256, sha(&stored));
         assert_eq!(bound.desired_sha256, intent.desired_sha256);
         assert_eq!(bound.release_set_sha256, sha(&release_pb));
@@ -1291,16 +1285,13 @@ mod tests {
             Err("HOST_WINDOWS_HISTORICAL_MODE_SPEC_MISMATCH")
         );
         let mut invalid = registry.clone();
-        invalid.hosts[0].target.as_mut().unwrap().windows_mode =
-            FleetHostMode::ManagedTun as i32;
+        invalid.hosts[0].target.as_mut().unwrap().windows_mode = FleetHostMode::ManagedTun as i32;
         assert_eq!(
             decode_historical_windows_trust_registry(&invalid.encode_to_vec(), spec, "windows-1"),
             Err("HOST_WINDOWS_HISTORICAL_MODE_NOT_ACCEPTED")
         );
-        invalid.hosts[0].target.as_mut().unwrap().windows_mode =
-            FleetHostMode::ProxyOnly as i32;
-        invalid.hosts[0].target.as_mut().unwrap().run_state =
-            FleetHostRunState::Running as i32;
+        invalid.hosts[0].target.as_mut().unwrap().windows_mode = FleetHostMode::ProxyOnly as i32;
+        invalid.hosts[0].target.as_mut().unwrap().run_state = FleetHostRunState::Running as i32;
         assert_eq!(
             decode_historical_windows_trust_registry(&invalid.encode_to_vec(), spec, "windows-1"),
             Err("HOST_WINDOWS_HISTORICAL_MODE_NOT_ACCEPTED")
