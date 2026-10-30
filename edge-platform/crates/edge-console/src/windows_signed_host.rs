@@ -599,6 +599,33 @@ async fn probe_pre_tun_native_control_dns() -> Result<([u8; 32], [u8; 32]), &'st
     Ok((dns, control))
 }
 
+/// Only a native Windows best-route lookup, rather than a successful HTTP
+/// request that might itself use the TUN, can prove control reachability is
+/// independent of this owned interface after route capture.
+async fn verify_control_egress_outside_native_tun(tun_luid: u64)
+    -> Result<(), &'static str>
+{
+    let mut answers = Vec::new();
+    for name in ["api.github.com", "cp.cloudflare.com"] {
+        let addresses = tokio::net::lookup_host((name, 443))
+            .await
+            .map_err(|_| "HOST_WINDOWS_CONTROL_ROUTE_DNS_UNAVAILABLE")?
+            .take(32)
+            .map(|address| address.ip())
+            .collect::<Vec<_>>();
+        if addresses.is_empty() {
+            return Err("HOST_WINDOWS_CONTROL_ROUTE_DNS_UNAVAILABLE");
+        }
+        answers.extend(addresses);
+    }
+    answers.sort_unstable();
+    answers.dedup();
+    edge_shared_types::windows_native_network::require_control_destinations_outside_tun(
+        &answers,
+        tun_luid,
+    )
+}
+
 /// TLS+HTTPS through the actual local proxy, never a direct fallback. This is
 /// runtime connectivity proof only, not full Line1/Line2/IPv6/WARP acceptance.
 async fn proxy_traffic_ready() -> bool {
@@ -1034,8 +1061,15 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
                     // Internet readiness. After route capture independently
                     // prove native resolver + DIRECT GitHub/Cloudflare TLS.
                     // Never report VERIFIED on a broken control path.
-                    let proof = tokio::runtime::Handle::current()
-                        .block_on(probe_pre_tun_native_control_dns());
+                    let proof = tokio::runtime::Handle::current().block_on(async {
+                        // Success without an independent native route is NOT
+                        // a control-plane PASS: it may be tunnelling through
+                        // the very process that is about to crash.
+                        verify_control_egress_outside_native_tun(live.owned_tun.interface_luid)
+                            .await?;
+                        probe_pre_tun_native_control_dns().await?;
+                        Ok::<(), &'static str>(())
+                    });
                     let (_, after_probes) =
                         edge_shared_types::windows_native_network::observe_native_managed_tun()?;
                     after_probes.require_foreign_network_preserved(network_baseline)?;
