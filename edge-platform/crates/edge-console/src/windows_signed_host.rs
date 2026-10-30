@@ -273,6 +273,38 @@ fn lowercase_sha(bytes: &[u8]) -> String {
     bytes.iter().map(|value| format!("{value:02x}")).collect()
 }
 
+/// Protect the EXISTING route-capturing runtime, independently of what the
+/// *new* Git desired mode requests. A ProxyOnly target may be an OFF toggle
+/// from a running TUN; that transition cannot simply STOP the service before
+/// independently restoring WARP/DNS/routes. No network edits are done here.
+fn preflight_existing_windows_route_capture(
+    install_root: &Path,
+    observed_owner: edge_shared_types::FleetNativeOwnerState,
+) -> Result<(), &'static str> {
+    use edge_shared_types::FleetNativeOwnerState as Owner;
+    if observed_owner == Owner::Stopped {
+        // No running owner means this gate makes no claim about stale physical
+        // routes. ManagedTun activation is separately denied until the
+        // independent Windows network readback and restoration exist.
+        return Ok(());
+    }
+    let config = local_singbox_config_path(install_root);
+    match fs::symlink_metadata(&config) {
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {
+            return Err("HOST_WINDOWS_EXISTING_RUNTIME_CONFIG_UNPROVEN");
+        }
+        Err(_) => return Err("HOST_WINDOWS_EXISTING_RUNTIME_CONFIG_UNPROVEN"),
+        Ok(meta) if !meta.file_type().is_file() || meta.file_type().is_symlink() => {
+            return Err("HOST_WINDOWS_EXISTING_RUNTIME_CONFIG_UNPROVEN");
+        }
+        Ok(_) => {}
+    }
+    edge_shared_types::host_journal::verify_windows_protected_path_acl(&config, true)?;
+    let bytes = bounded_regular_file(&config, 1024 * 1024)?;
+    edge_singbox::require_no_windows_route_capture_config(&bytes)
+        .map_err(|_| "HOST_WINDOWS_RUNNING_TUN_NETWORK_RESTORATION_REQUIRED")
+}
+
 /// Only the installed SYSTEM trust supplies the Git registry, exact spec,
 /// release and public signer. No runner-provided trust fields are accepted.
 /// A Windows trust snapshot uses the existing FleetNativeTrustSnapshot without
@@ -605,6 +637,10 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
         })?;
     let owner = edge_shared_types::FleetNativeOwnerState::try_from(observed.owner_state)
         .map_err(|_| "HOST_WINDOWS_NATIVE_OWNER_STATE_INVALID")?;
+    // Critical OFF transition: desired ProxyOnly does NOT prove the existing
+    // live runtime is ProxyOnly. Deny before Worker POST and journal BEGIN if
+    // any running/unknown owner still has TUN or an exotic/corrupt config.
+    preflight_existing_windows_route_capture(install_root, owner)?;
     edge_shared_types::host_lifecycle::validate_windows_datapath_prebegin(
         mode, action, run, owner,
     )?;

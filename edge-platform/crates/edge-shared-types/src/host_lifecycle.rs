@@ -61,7 +61,10 @@ pub fn validate_windows_datapath_prebegin(
     match mode {
         Datapath::ProxyOnly => Ok(()),
         Datapath::ManagedTun => match (action, desired_run, observed_owner) {
-            (FleetHostAction::Stop, Run::Stopped, _) => Ok(()),
+            // Even STOP can remove the interface that currently owns DNS and
+            // control-channel routing. A running or UNKNOWN TUN cannot be
+            // torn down until native restoration has been independently proved.
+            (FleetHostAction::Stop, Run::Stopped, Owner::Stopped) => Ok(()),
             (FleetHostAction::Apply, Run::Stopped, Owner::Stopped) => Ok(()),
             _ => Err("HOST_WINDOWS_CONFIG_NETWORK_ADMISSION_REQUIRED"),
         },
@@ -2074,7 +2077,7 @@ mod windows_mode_projection_tests {
                 Datapath::ManagedTun,
                 FleetHostAction::Stop,
                 Run::Stopped,
-                Owner::Running,
+                Owner::Stopped,
             ),
             Ok(())
         );
@@ -2082,6 +2085,8 @@ mod windows_mode_projection_tests {
             (FleetHostAction::Apply, Run::Running, Owner::Stopped),
             (FleetHostAction::Apply, Run::Stopped, Owner::Running),
             (FleetHostAction::Apply, Run::Stopped, Owner::Unproven),
+            (FleetHostAction::Stop, Run::Stopped, Owner::Running),
+            (FleetHostAction::Stop, Run::Stopped, Owner::Unproven),
             (FleetHostAction::Start, Run::Running, Owner::Stopped),
             (FleetHostAction::Start, Run::Stopped, Owner::Stopped),
             (FleetHostAction::Recover, Run::Stopped, Owner::Stopped),

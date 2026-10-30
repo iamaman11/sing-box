@@ -336,6 +336,13 @@ pub fn require_proxy_only_config(bytes: &[u8]) -> Result<(), &'static str> {
     Ok(())
 }
 
+/// Read-only classification of the ACTUAL installed Windows sing-box
+/// boundary, never the new desired Git value. Deny exotic inbounds and mixed
+/// route-capturing inputs before a native STOP/APPLY can cut live control.
+pub fn require_no_windows_route_capture_config(bytes: &[u8]) -> Result<(), &'static str> {
+    require_proxy_only_config(bytes)
+}
+
 fn render_windows_config_for_mode(
     state: &WindowsRuntimeState,
     mode: WindowsDatapathMode,
@@ -2234,6 +2241,29 @@ mod tests {
                 .get("route_exclude_address")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn signed_windows_teardown_cannot_trust_desired_proxy_mode_over_live_tun() {
+        assert_eq!(
+            require_no_windows_route_capture_config(
+                br#"{"inbounds":[{"type":"mixed"},{"type":"http"}]}"#
+            ),
+            Ok(())
+        );
+        for input in [
+            br#"{"inbounds":[{"type":"mixed"},{"type":"tun","auto_route":true}]}"#.as_slice(),
+            br#"{"inbounds":[{"type":"tun"}]}"#.as_slice(),
+            br#"{"inbounds":[{"type":"redirect"}]}"#.as_slice(),
+            br#"{"inbounds":[]}"#.as_slice(),
+            br#"{"invalid":true}"#.as_slice(),
+            b"not-json".as_slice(),
+        ] {
+            assert!(
+                require_no_windows_route_capture_config(input).is_err(),
+                "live TUN, exotic inbound, corrupt or missing proof must deny"
+            );
+        }
     }
 
     #[test]
