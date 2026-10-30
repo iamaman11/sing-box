@@ -109,11 +109,34 @@ pub fn verify(
         .ok_or("HOST_WINDOWS_EFFECT_MACHINE_UNREGISTERED")?;
     let desired = crate::parse_production_desired_text(spec)?;
     let mode = crate::host_lifecycle::validate_windows_mode_target_and_spec(host, &desired)?;
-    if !matches!(host.target.as_ref(),
-        Some(t) if t.run_state == FleetHostRunState::Running as i32)
-        || mode != crate::WindowsDatapathMode::ProxyOnly
-    {
-        return Err("HOST_WINDOWS_EFFECT_PROXY_ONLY_RUNNING_TARGET_REQUIRED");
+    if !matches!(
+        host.target.as_ref(),
+        Some(t) if t.run_state == FleetHostRunState::Running as i32
+    ) {
+        return Err("HOST_WINDOWS_EFFECT_RUNNING_TARGET_REQUIRED");
+    }
+    match mode {
+        crate::WindowsDatapathMode::ProxyOnly => {
+            if intent.network_admission.is_some() {
+                return Err("HOST_WINDOWS_EFFECT_PROXY_ONLY_ADMISSION_FORBIDDEN");
+            }
+        }
+        crate::WindowsDatapathMode::ManagedTun => {
+            // Separate SYSTEM signature on the physical pre-TUN witness,
+            // carried inside the one Worker-authorized HostIntent. Controller
+            // independently binds it to its own current kernel observation.
+            crate::host_lifecycle::verify_windows_network_admission(
+                intent,
+                &host.native_receipt_public_key,
+                &challenge.installed_release_sha256,
+                config_sha256,
+                &effect.before_network_sha256,
+                now,
+            )?;
+        }
+        crate::WindowsDatapathMode::Unspecified => {
+            return Err("HOST_WINDOWS_EFFECT_MODE_UNRECOGNIZED");
+        }
     }
     crate::host_lifecycle::verify_windows_signed_git_prerequisites(host)?;
     crate::host_lifecycle::validate_host_intent(
