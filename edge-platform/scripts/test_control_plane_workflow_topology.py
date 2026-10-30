@@ -641,7 +641,9 @@ assert 'OfflineFirstUseStatus(InstallRootArgs)' in Path("edge-platform/crates/ed
 assert "TRUST_RECORDED_UNVERIFIED" in Path("edge-platform/crates/edge-console/src/windows_trust_enrollment.rs").read_text(encoding="utf-8")
 assert "require_identity_request_for_trust(" in identity_owner
 
-assert "windows_receipt_enrollment::prepare(install_root).map_err(|reason|" in win_console
+assert "windows_receipt_enrollment::prepare(" in win_console
+assert "fresh_machine.as_deref().ok_or(" in win_console
+assert "resolve_local_windows_machine(&before).await?" in win_console
 assert "OFFLINE_BOOTSTRAP_IDENTITY_STEP_UNCERTAIN_NO_REPLAY" in win_console
 assert "HOST_WINDOWS_RECEIPT_ENROLL_SLOT_NOT_EMPTY_NO_REKEY" in identity_owner
 install_script = Path("edge-platform/scripts/install-windows-release.ps1").read_text(encoding="utf-8")

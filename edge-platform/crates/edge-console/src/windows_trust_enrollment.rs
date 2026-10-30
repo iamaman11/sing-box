@@ -802,16 +802,12 @@ pub(super) async fn fetch_exact_protected_git(
     Ok((installed_release_pb, current_release_pb, registry_pb, spec))
 }
 
-// Select a single host from the accepted Git source BEFORE first durable
-// identity BEGIN. The OS hostname is verified against the typed Windows owner.
-pub(super) async fn resolve_local_windows_machine(
-    active: &WindowsActivationState,
+// Pure, deterministic selector tested without network and independent of the
+// local machine. A second Git host claiming the same hostname is always NO-GO.
+fn select_registered_windows_machine(
+    registry: &HostRegistry,
+    hostname: &str,
 ) -> Result<String, String> {
-    let (_, _, registry_pb, _) = fetch_exact_protected_git(active).await?;
-    let registry = edge_shared_types::decode_host_registry(&registry_pb)
-        .map_err(|_| "HOST_WINDOWS_FIRST_USE_GIT_REGISTRY_INVALID")?;
-    let hostname = std::env::var("COMPUTERNAME")
-        .map_err(|_| "HOST_WINDOWS_FIRST_USE_OS_HOSTNAME_UNAVAILABLE")?;
     let hosts: Vec<_> = registry
         .hosts
         .iter()
@@ -820,7 +816,7 @@ pub(super) async fn resolve_local_windows_machine(
                 && windows_receipt_enrollment::valid_machine_id(&h.machine_id)
                 && matches!(h.owner.as_ref(),
                     Some(edge_shared_types::managed_host::Owner::WindowsRunnerName(n))
-                        if n.eq_ignore_ascii_case(&hostname))
+                        if n.eq_ignore_ascii_case(hostname))
         })
         .collect();
     if hosts.len() != 1 {
@@ -835,6 +831,19 @@ pub(super) async fn resolve_local_windows_machine(
         return Err("HOST_WINDOWS_FIRST_USE_GIT_TARGET_INVALID".into());
     }
     Ok(host.machine_id.clone())
+}
+
+// Select a single host from the accepted Git source BEFORE first durable
+// identity BEGIN. The OS hostname is verified against the typed Windows owner.
+pub(super) async fn resolve_local_windows_machine(
+    active: &WindowsActivationState,
+) -> Result<String, String> {
+    let (_, _, registry_pb, _) = fetch_exact_protected_git(active).await?;
+    let registry = edge_shared_types::decode_host_registry(&registry_pb)
+        .map_err(|_| "HOST_WINDOWS_FIRST_USE_GIT_REGISTRY_INVALID")?;
+    let hostname = std::env::var("COMPUTERNAME")
+        .map_err(|_| "HOST_WINDOWS_FIRST_USE_OS_HOSTNAME_UNAVAILABLE")?;
+    select_registered_windows_machine(&registry, &hostname)
 }
 
 /// Called ONLY from the existing periodic LocalSystem task, never a new
@@ -986,6 +995,43 @@ pub(super) async fn dispatch_if_needed(install_root: &Path) -> Result<(), String
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn protected_git_host_selection_rejects_unknown_duplicate_and_wrong_target() {
+        let host = edge_shared_types::ManagedHost {
+            machine_id: "windows-sample".into(),
+            kind: FleetHostKind::Windows as i32,
+            owner: Some(edge_shared_types::managed_host::Owner::WindowsRunnerName(
+                "WIN-SAMPLE".into(),
+            )),
+            windows_runner_label: "sing-box-windows-lab".into(),
+            desired_spec_path: SPEC.into(),
+            target: Some(edge_shared_types::FleetHostTarget {
+                run_state: FleetHostRunState::Stopped as i32,
+                ..Default::default()
+            }),
+            ..Default::default()
+        };
+        let mut registry = HostRegistry {
+            hosts: vec![host],
+            ..Default::default()
+        };
+        assert_eq!(
+            select_registered_windows_machine(&registry, "win-sample"),
+            Ok("windows-sample".into())
+        );
+        assert!(select_registered_windows_machine(&registry, "OTHER").is_err());
+        registry.hosts.push(edge_shared_types::ManagedHost {
+            machine_id: "windows-other".into(),
+            ..registry.hosts[0].clone()
+        });
+        assert!(select_registered_windows_machine(&registry, "win-sample").is_err());
+        registry.hosts.pop();
+        registry.hosts[0].target = None;
+        assert!(select_registered_windows_machine(&registry, "win-sample").is_err());
+        registry.hosts[0].machine_id = "BAD-ID".into();
+        assert!(select_registered_windows_machine(&registry, "win-sample").is_err());
+    }
+
     #[test]
     fn read_only_trust_stage_never_calls_a_recorded_snapshot_authorized() {
         let dir = std::env::temp_dir().join(format!("w4-trust-readonly-{}", std::process::id()));
