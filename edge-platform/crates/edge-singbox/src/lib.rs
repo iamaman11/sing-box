@@ -1874,7 +1874,8 @@ mod tests {
         // A legacy TUN state without the exact upstream IP must not
         // overwrite a valid configuration with a route-capture candidate.
         let previous = fs::read(&config_path).unwrap();
-        let mut missing_ip: Value = serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
+        let mut missing_ip: Value =
+            serde_json::from_slice(&fs::read(&state_path).unwrap()).unwrap();
         missing_ip.as_object_mut().unwrap().remove("ip");
         fs::write(&state_path, serde_json::to_vec(&missing_ip).unwrap()).unwrap();
         assert_eq!(
