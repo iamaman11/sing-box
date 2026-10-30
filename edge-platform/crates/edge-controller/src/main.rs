@@ -1004,7 +1004,18 @@ fn require_native_windows_runtime_launch_safety(repo_root: &Path) -> Result<(), 
     let desired = canonical_production_desired_state()?;
     let mode = WindowsDatapathMode::try_from(desired.windows_datapath_mode)
         .map_err(|_| "installed Windows datapath mode is invalid".to_owned())?;
-    require_native_windows_route_capture_safety(mode)
+    require_native_windows_route_capture_safety(mode)?;
+    // The desired mode is NOT the current routing state. A previous
+    // ManagedTun config may survive a Git switch back to ProxyOnly. Never
+    // automatically restart that exact sing-box process after an SCM child
+    // exit: it would recapture Windows routes without a fresh HostIntent.
+    let path = default_local_config_path(repo_root);
+    let bytes = fs::read(&path)
+        .map_err(|_| "HOST_WINDOWS_RECOVERY_EXISTING_CONFIG_UNPROVEN")?;
+    edge_singbox::require_no_windows_route_capture_config(&bytes).map_err(|_| {
+        "HOST_WINDOWS_RECOVERY_EXISTING_TUN_NETWORK_RESTORATION_REQUIRED"
+    })?;
+    Ok(())
 }
 
 #[cfg(any(windows, test))]

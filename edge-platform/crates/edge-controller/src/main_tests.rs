@@ -55,6 +55,25 @@ fn start_rpc_rejects_force_restart_and_accepts_ordinary_idempotent_start() {
 }
 
 #[test]
+fn windows_recovery_rejects_existing_tun_even_under_proxyonly_desired() {
+    assert!(edge_singbox::require_no_windows_route_capture_config(
+        br#"{"inbounds":[{"type":"mixed"},{"type":"socks"}]}"#
+    )
+    .is_ok());
+    for sample in [
+        br#"{"inbounds":[{"type":"tun","auto_route":true}]}"#.as_slice(),
+        br#"{"inbounds":[{"type":"mixed"},{"type":"tun"}]}"#.as_slice(),
+        br#"{"inbounds":[{"type":"redirect"}]}"#.as_slice(),
+        b"corrupt".as_slice(),
+    ] {
+        assert!(
+            edge_singbox::require_no_windows_route_capture_config(sample).is_err(),
+            "a stale route-capturing config must not be restarted by SCM recovery"
+        );
+    }
+}
+
+#[test]
 fn windows_service_startup_decision_is_mode_scoped_and_fail_closed() {
     use edge_local_runtime::ProcessObservation;
 
