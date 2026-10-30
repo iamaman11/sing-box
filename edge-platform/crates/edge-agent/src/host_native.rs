@@ -168,7 +168,14 @@ fn scan_native_journal_metadata(
 /// Full scan, including entries after pending. No permission normalization,
 /// journal clean-up, pending removal or unknown-operation replay.
 pub(super) fn protected_journal_has_pending(journal: &Path) -> Result<bool, String> {
-    let scan = scan_native_journal_metadata(journal, 0)?;
+    protected_journal_has_pending_for_uid(journal, 0)
+}
+
+pub(super) fn protected_journal_has_pending_for_uid(
+    journal: &Path,
+    expected_uid: u32,
+) -> Result<bool, String> {
+    let scan = scan_native_journal_metadata(journal, expected_uid)?;
     if scan.first_invalid.is_some() {
         return Err("HOST_NATIVE_JOURNAL_FILE_UNTRUSTED".into());
     }

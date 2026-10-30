@@ -42,6 +42,14 @@ fn durable_create(path: &Path, data: &[u8]) -> Result<(), String> {
 // resource or ADMIN BEGIN. The existing /host diagnose and signed RECOVER
 // paths remain the way to observe and reconcile an unknown mutation.
 fn independent_admin_operation_available(journal: &Path, operation_id: &str) -> Result<(), String> {
+    independent_admin_operation_available_for_uid(journal, operation_id, 0)
+}
+
+fn independent_admin_operation_available_for_uid(
+    journal: &Path,
+    operation_id: &str,
+    expected_uid: u32,
+) -> Result<(), String> {
     let key = journal_key(operation_id);
     let own = [
         format!("admin-{key}.pending.pb"),
@@ -50,7 +58,7 @@ fn independent_admin_operation_available(journal: &Path, operation_id: &str) -> 
     ];
     // Full protected scan rejects an untrusted later entry even when an
     // earlier pending operation is found. Never normalize ACLs or delete it.
-    if host_native::protected_journal_has_pending(journal)? {
+    if host_native::protected_journal_has_pending_for_uid(journal, expected_uid)? {
         return Err("HOST_ADMIN_PENDING_UNKNOWN_NO_REPLAY".into());
     }
     for name in own {
@@ -359,8 +367,9 @@ mod io_tests {
         let foreign = dir.join("resource-existing.pending.pb");
         durable_create(&foreign, b"foreign-original").unwrap();
         let current = "issue1-comment-987654321";
+        let uid = unsafe { host_native::geteuid() };
         assert_eq!(
-            independent_admin_operation_available(&dir, current),
+            independent_admin_operation_available_for_uid(&dir, current, uid),
             Err("HOST_ADMIN_PENDING_UNKNOWN_NO_REPLAY".into())
         );
         assert_eq!(std::fs::read(&foreign).unwrap(), b"foreign-original");
@@ -368,15 +377,15 @@ mod io_tests {
         let other = dir.join("admin-other.pending.pb");
         durable_create(&other, b"another operation").unwrap();
         assert_eq!(
-            independent_admin_operation_available(&dir, current),
+            independent_admin_operation_available_for_uid(&dir, current, uid),
             Err("HOST_ADMIN_PENDING_UNKNOWN_NO_REPLAY".into())
         );
         std::fs::remove_file(other).unwrap();
-        assert!(independent_admin_operation_available(&dir, current).is_ok());
+        assert!(independent_admin_operation_available_for_uid(&dir, current, uid).is_ok());
         let own = dir.join(format!("admin-{}.terminal.pb", journal_key(current)));
         durable_create(&own, b"completed").unwrap();
         assert_eq!(
-            independent_admin_operation_available(&dir, current),
+            independent_admin_operation_available_for_uid(&dir, current, uid),
             Err("HOST_ADMIN_SAME_OPERATION_EXISTS_NO_REPLAY".into())
         );
         assert_eq!(std::fs::read(&own).unwrap(), b"completed");
