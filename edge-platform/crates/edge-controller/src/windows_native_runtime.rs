@@ -150,10 +150,9 @@ pub(super) async fn execute(
     network_before.require_restored(&network_after)?;
     let supervisor_root = root.to_path_buf();
     tokio::spawn(async move {
-        if let Err(e) = supervise_windows_managed_child(
-            supervisor_root.clone(),
-            Some(network_before),
-        ).await {
+        if let Err(e) =
+            supervise_windows_managed_child(supervisor_root.clone(), Some(network_before)).await
+        {
             let _ = write_controller_service_error(&supervisor_root, "native_child_exit", &e);
         }
     });

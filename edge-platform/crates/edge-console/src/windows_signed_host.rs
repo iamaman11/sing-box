@@ -725,8 +725,8 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
                 // One interface. A matching route COUNT is not sufficient.
                 // This protects ProxyOnly and inert ManagedTun staging only;
                 // route-capturing START remains independently blocked.
-                let (_, current) = edge_shared_types::windows_native_network::
-                    observe_native_network_identity()?;
+                let (_, current) =
+                    edge_shared_types::windows_native_network::observe_native_network_identity()?;
                 network_baseline.require_restored(&current)?;
                 Ok(observed)
             },

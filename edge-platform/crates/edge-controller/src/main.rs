@@ -586,8 +586,9 @@ async fn supervise_windows_managed_child(
                     // snapshot. On any child exit, including SCM STOP, verify
                     // the OS really restored the exact routes, DNS order and
                     // Cloudflare One interface. Never repair foreign routes.
-                    let (_, after) = edge_shared_types::windows_native_network::
-                        observe_native_network_identity()
+                    let (_, after) =
+                        edge_shared_types::windows_native_network::observe_native_network_identity(
+                        )
                         .map_err(str::to_owned)?;
                     baseline.require_restored(&after).map_err(str::to_owned)?;
                 }
@@ -906,7 +907,9 @@ fn run_edge_controller_service() -> Result<(), Box<dyn std::error::Error>> {
             // The controller's own child is supervised while this SCM service runs.
             let supervisor_root = repo_root.clone();
             let supervisor = runtime.spawn(async move {
-                if let Err(err) = supervise_windows_managed_child(supervisor_root.clone(), None).await {
+                if let Err(err) =
+                    supervise_windows_managed_child(supervisor_root.clone(), None).await
+                {
                     let _ = write_controller_service_error(&supervisor_root, "child_exit", &err);
                     eprintln!("Windows managed child supervision stopped fail-closed: {err}");
                 }

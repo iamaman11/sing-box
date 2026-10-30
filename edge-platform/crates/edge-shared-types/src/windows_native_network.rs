@@ -97,9 +97,7 @@ impl NativeNetworkIdentity {
     /// Cloudflare One device is missing, down, or ambiguous. The interface
     /// alone does not attest its control/mesh transport or Line1 reachability.
     pub fn require_foreign_warp_up(&self) -> Result<(), &'static str> {
-        if self.foreign_warp_adapters.len() == 1
-            && self.foreign_warp_adapters[0].oper_status == 1
-        {
+        if self.foreign_warp_adapters.len() == 1 && self.foreign_warp_adapters[0].oper_status == 1 {
             Ok(())
         } else {
             Err("HOST_WINDOWS_CLOUDFLARE_ONE_NATIVE_IDENTITY_UNPROVEN")
@@ -297,7 +295,12 @@ fn read_native_dns(
                     let family = unsafe { (*socket).sa_family };
                     if family == AF_INET6
                         && (row.Address.iSockaddrLength < 28
-                            || !in_native_buffer(&buffer, socket.cast::<windows_sys::Win32::Networking::WinSock::SOCKADDR_IN6>()))
+                            || !in_native_buffer(
+                                &buffer,
+                                socket
+                                    .cast::<windows_sys::Win32::Networking::WinSock::SOCKADDR_IN6>(
+                                    ),
+                            ))
                     {
                         return Err("HOST_WINDOWS_NETWORK_DNS_SOCKET_INVALID");
                     }
@@ -308,12 +311,20 @@ fn read_native_dns(
                     let address = match family {
                         AF_INET => {
                             // SAFETY: at least 16 verified bytes, AF_INET.
-                            let native = unsafe { &*(socket as *const windows_sys::Win32::Networking::WinSock::SOCKADDR_IN) };
-                            unsafe { native.sin_addr.S_un.S_addr }.to_ne_bytes().to_vec()
+                            let native = unsafe {
+                                &*(socket
+                                    as *const windows_sys::Win32::Networking::WinSock::SOCKADDR_IN)
+                            };
+                            unsafe { native.sin_addr.S_un.S_addr }
+                                .to_ne_bytes()
+                                .to_vec()
                         }
                         AF_INET6 => {
                             // SAFETY: at least 28 verified bytes, AF_INET6.
-                            let native = unsafe { &*(socket as *const windows_sys::Win32::Networking::WinSock::SOCKADDR_IN6) };
+                            let native = unsafe {
+                                &*(socket
+                                    as *const windows_sys::Win32::Networking::WinSock::SOCKADDR_IN6)
+                            };
                             unsafe { native.sin6_addr.u.Byte }.to_vec()
                         }
                         _ => return Err("HOST_WINDOWS_NETWORK_DNS_FAMILY_INVALID"),
@@ -346,19 +357,22 @@ pub fn observe_native_route_dns() -> Result<NativeNetworkReadback, &'static str>
 
 /// One exact native snapshot: counts for diagnostics and canonical route/DNS
 /// identities for restoration comparison. Does not capture routes or DNS.
-pub fn observe_native_network_identity(
-) -> Result<(NativeNetworkReadback, NativeNetworkIdentity), &'static str> {
+pub fn observe_native_network_identity()
+-> Result<(NativeNetworkReadback, NativeNetworkIdentity), &'static str> {
     let mut result = NativeNetworkReadback::default();
     let mut routes = BTreeSet::new();
     let mut dns = BTreeSet::new();
     let warp = observe_owned_foreign_interfaces()?;
     read_native_routes(&mut result, &mut routes)?;
     read_native_dns(&mut result, &mut dns)?;
-    Ok((result, NativeNetworkIdentity {
-        routes: routes.into_iter().collect(),
-        dns: dns.into_iter().collect(),
-        foreign_warp_adapters: warp,
-    }))
+    Ok((
+        result,
+        NativeNetworkIdentity {
+            routes: routes.into_iter().collect(),
+            dns: dns.into_iter().collect(),
+            foreign_warp_adapters: warp,
+        },
+    ))
 }
 
 fn is_owned_tun_alias(raw: &[u16]) -> Result<bool, &'static str> {
@@ -412,15 +426,20 @@ fn observe_owned_foreign_interfaces() -> Result<Vec<ManagedAdapterIdentity>, &'s
         if is_owned_tun_alias(&row.Alias)? {
             return Err("HOST_WINDOWS_NETWORK_MANAGED_TUN_INTERFACE_STILL_PRESENT");
         }
-        let end = row.Alias.iter().position(|v| *v == 0)
+        let end = row
+            .Alias
+            .iter()
+            .position(|v| *v == 0)
             .ok_or("HOST_WINDOWS_NETWORK_INTERFACE_ALIAS_UNTERMINATED")?;
         let alias = String::from_utf16(&row.Alias[..end])
             .map_err(|_| "HOST_WINDOWS_NETWORK_INTERFACE_ALIAS_INVALID")?;
-        if warp_alias(&alias) && !foreign.insert(ManagedAdapterIdentity {
-            alias: alias.to_ascii_lowercase(),
-            interface_luid: row.InterfaceLuid.Value,
-            oper_status: row.OperStatus,
-        }) {
+        if warp_alias(&alias)
+            && !foreign.insert(ManagedAdapterIdentity {
+                alias: alias.to_ascii_lowercase(),
+                interface_luid: row.InterfaceLuid.Value,
+                oper_status: row.OperStatus,
+            })
+        {
             return Err("HOST_WINDOWS_NETWORK_DUPLICATE_FOREIGN_ADAPTER");
         }
     }
@@ -507,7 +526,9 @@ mod tests {
                 published: false,
             }],
             dns: vec![DnsIdentity {
-                interface_luid: 8, order: 0, family: AF_INET6,
+                interface_luid: 8,
+                order: 0,
+                family: AF_INET6,
                 server: vec![0; 16],
             }],
             foreign_warp_adapters: vec![ManagedAdapterIdentity {
@@ -532,10 +553,16 @@ mod tests {
         );
         changed = baseline.clone();
         changed.dns[0].order += 1;
-        assert_eq!(baseline.require_restored(&changed), Err("HOST_WINDOWS_NETWORK_DNS_NOT_RESTORED"));
+        assert_eq!(
+            baseline.require_restored(&changed),
+            Err("HOST_WINDOWS_NETWORK_DNS_NOT_RESTORED")
+        );
         changed = baseline.clone();
         changed.foreign_warp_adapters[0].oper_status = 2;
-        assert_eq!(baseline.require_restored(&changed), Err("HOST_WINDOWS_NETWORK_CLOUDFLARE_ONE_CHANGED"));
+        assert_eq!(
+            baseline.require_restored(&changed),
+            Err("HOST_WINDOWS_NETWORK_CLOUDFLARE_ONE_CHANGED")
+        );
         assert!(changed.require_foreign_warp_up().is_err());
         let mut changed = baseline.clone();
         changed.dns[0].server[0] ^= 1;
