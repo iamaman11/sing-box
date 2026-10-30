@@ -367,7 +367,7 @@ mod io_tests {
         let foreign = dir.join("resource-existing.pending.pb");
         durable_create(&foreign, b"foreign-original").unwrap();
         let current = "issue1-comment-987654321";
-        let uid = unsafe { host_native::geteuid() };
+        let uid = std::fs::metadata(&dir).unwrap().uid();
         assert_eq!(
             independent_admin_operation_available_for_uid(&dir, current, uid),
             Err("HOST_ADMIN_PENDING_UNKNOWN_NO_REPLAY".into())
