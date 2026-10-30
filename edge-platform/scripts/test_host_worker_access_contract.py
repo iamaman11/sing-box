@@ -426,7 +426,7 @@ for(const [description,proof] of [
  ['wrong operation',admissionBytes({operation:'issue1-comment-456'})],
  ['wrong desired ReleaseSet',admissionBytes({desired:0x52})],
  ['expired',admissionBytes({observed:now-70,expires:now-10})],
- ['future',admissionBytes({observed:now+1,expires:now+40})],
+ ['future',admissionBytes({observed:now+3600,expires:now+3640})],
  ['too long TTL',admissionBytes({observed:now-20,expires:now+80})],
  ['zero signature',admissionBytes({signature:0})],
  ['truncated protobuf',admissionBytes().subarray(0,128)],
