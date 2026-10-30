@@ -889,8 +889,7 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
                 // whatever interface is present later. Under the SAME SYSTEM
                 // journal effect, recheck exact LUID and foreign ownership
                 // immediately before the single native SCM STOP.
-                if step == FleetHostPlannedStep::Stop
-                    && network_preflight.prior_tun_luid.is_some()
+                if step == FleetHostPlannedStep::Stop && network_preflight.prior_tun_luid.is_some()
                 {
                     network_preflight.require_current(false)?;
                 }
