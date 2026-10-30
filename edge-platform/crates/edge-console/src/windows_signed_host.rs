@@ -288,7 +288,7 @@ impl WindowsNetworkPreflight {
             && !stop_effect_completed
         {
             let (_, live) = windows_native_network::observe_native_managed_tun()?;
-            live.require_native_dual_stack_route_capture()?;
+            live.require_foreign_network_preserved(&self.baseline)?;
             if live.owned_tun.interface_luid != luid {
                 return Err("HOST_WINDOWS_ACTIVE_TUN_LUID_CHANGED");
             }
@@ -885,6 +885,15 @@ pub(super) async fn dispatch_if_present(install_root: &Path) -> Result<bool, Str
                 _ => Err("HOST_WINDOWS_SYSTEM_NATIVE_STEP_NOT_ACCEPTED"),
             },
             |step| {
+                // A previous independent readback cannot authorize stopping
+                // whatever interface is present later. Under the SAME SYSTEM
+                // journal effect, recheck exact LUID and foreign ownership
+                // immediately before the single native SCM STOP.
+                if step == FleetHostPlannedStep::Stop
+                    && network_preflight.prior_tun_luid.is_some()
+                {
+                    network_preflight.require_current(false)?;
+                }
                 let outcome = match step {
                     FleetHostPlannedStep::ReplaceRelease => windows_update::apply(
                         install_root,
