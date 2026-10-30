@@ -357,7 +357,10 @@ pub fn require_managed_tun_config(bytes: &[u8]) -> Result<(), &'static str> {
     if tun.len() != 1
         || inbounds.len() != 3
         || inbounds.iter().any(|inbound| {
-            !matches!(inbound.get("type").and_then(Value::as_str), Some("tun" | "mixed"))
+            !matches!(
+                inbound.get("type").and_then(Value::as_str),
+                Some("tun" | "mixed")
+            )
         })
     {
         return Err("HOST_WINDOWS_TUN_CONFIG_UNEXPECTED_INBOUND");
@@ -2393,8 +2396,7 @@ mod tests {
         let bytes =
             render_windows_config_for_mode(&state, WindowsDatapathMode::ManagedTun).unwrap();
         assert_eq!(require_managed_tun_config(&bytes), Ok(()));
-        let proxy =
-            render_windows_config_for_mode(&state, WindowsDatapathMode::ProxyOnly).unwrap();
+        let proxy = render_windows_config_for_mode(&state, WindowsDatapathMode::ProxyOnly).unwrap();
         assert!(require_managed_tun_config(&proxy).is_err());
         let mut candidate: Value = serde_json::from_slice(&bytes).unwrap();
         candidate["inbounds"][2]["address"] = json!(["172.19.0.1/30"]);

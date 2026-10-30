@@ -444,8 +444,7 @@ pub fn start_native_verified_proxy(
 pub fn start_native_verified_managed_tun(
     paths: &LocalRuntimePaths,
 ) -> Result<RuntimeOperationResult, String> {
-    let bytes =
-        fs::read(&paths.config_path).map_err(|_| "HOST_WINDOWS_TUN_CONFIG_UNREADABLE")?;
+    let bytes = fs::read(&paths.config_path).map_err(|_| "HOST_WINDOWS_TUN_CONFIG_UNREADABLE")?;
     edge_singbox::require_managed_tun_config(&bytes)?;
     if !matches!(
         classify_runtime_process(&paths.config_path),
@@ -453,15 +452,13 @@ pub fn start_native_verified_managed_tun(
     ) {
         return Err("HOST_WINDOWS_TUN_CONFLICTING_CHILD_OR_OWNER".into());
     }
-    let (_, before) =
-        edge_shared_types::windows_native_network::observe_native_network_identity()?;
+    let (_, before) = edge_shared_types::windows_native_network::observe_native_network_identity()?;
     before.require_foreign_warp_up()?;
     validate_singbox_config(&paths.singbox_binary_path, &paths.config_path)?;
     let mut child = launch_singbox(paths, false)?;
     let startup = observe_startup(&mut child);
     let poststate = startup.and_then(|_| {
-        let (_, current) =
-            edge_shared_types::windows_native_network::observe_native_managed_tun()?;
+        let (_, current) = edge_shared_types::windows_native_network::observe_native_managed_tun()?;
         current.require_foreign_network_preserved(&before)?;
         Ok(())
     });
