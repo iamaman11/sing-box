@@ -507,6 +507,10 @@ pub fn start_native_verified_managed_tun(
     }
     let (_, before) = edge_shared_types::windows_native_network::observe_native_network_identity()?;
     before.require_foreign_warp_up()?;
+    // A missing process is not proof of an absent stale TUN interface.
+    // Refuse route capture if the installed native owner or OS still has
+    // any adapter with the exact managed TUN identity.
+    edge_shared_types::windows_native_network::require_owned_tun_absent()?;
     validate_singbox_config(&paths.singbox_binary_path, &paths.config_path)?;
     let mut child = launch_singbox(paths, false)?;
     // Bind the *exact* newly created PID to this Controller's kill-on-close
