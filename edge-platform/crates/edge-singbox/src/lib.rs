@@ -2357,6 +2357,38 @@ mod tests {
     }
 
     #[test]
+    fn stage4b_selected_apps_switch_off_preserves_git_routes_but_never_applies_them() {
+        use edge_shared_types::{
+            WindowsApplicationRoute, WindowsApplicationRouting, WindowsApplicationScope,
+            WindowsDefaultRoute,
+        };
+        let mut desired = canonical_production_desired_state().unwrap();
+        desired.windows_datapath_mode = WindowsDatapathMode::ManagedTun as i32;
+        let saved = WindowsApplicationRoute {
+            executable_path: r"C:\Apps\Offline\browser.exe".into(),
+            route: WindowsDefaultRoute::VlessRealityWarp as i32,
+        };
+        desired.windows_application_routing = Some(WindowsApplicationRouting {
+            scope: WindowsApplicationScope::AllApplications as i32,
+            applications: vec![saved.clone()],
+        });
+        let config = render_windows_config_for_desired(&stage2_runtime_state(), &desired).unwrap();
+        assert_eq!(verify_managed_application_routes(&config, &desired), Ok(()));
+        let rendered: Value = serde_json::from_slice(&config).unwrap();
+        assert!(rendered["route"]["rules"].as_array().unwrap()
+            .iter().all(|rule| rule.get("process_path").is_none()));
+        assert_eq!(desired.windows_application_routing.as_ref().unwrap().applications,
+            vec![saved.clone()]);
+        desired.windows_application_routing.as_mut().unwrap().scope =
+            WindowsApplicationScope::SelectedApplications as i32;
+        let selected = render_windows_config_for_desired(&stage2_runtime_state(), &desired).unwrap();
+        assert_eq!(verify_managed_application_routes(&selected, &desired), Ok(()));
+        let activated: Value = serde_json::from_slice(&selected).unwrap();
+        assert!(activated["route"]["rules"].as_array().unwrap()
+            .iter().any(|rule| rule.get("process_path") == Some(&json!([saved.executable_path]))));
+    }
+
+    #[test]
     fn stage4b_selected_apps_precede_tun_default_direct() {
         let mut desired = canonical_production_desired_state().unwrap();
         desired.windows_application_routing = Some(edge_shared_types::WindowsApplicationRouting {

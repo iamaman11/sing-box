@@ -13,7 +13,10 @@ pub fn validate(policy: Option<&WindowsApplicationRouting>) -> Result<(), &'stat
     };
     let scope = Scope::try_from(policy.scope).map_err(|_| "WINDOWS_APPLICATION_SCOPE_INVALID")?;
     match scope {
-        Scope::AllApplications if policy.applications.is_empty() => return Ok(()),
+        // The scope switch must not erase user-selected applications.
+        // Retain their typed identities while inactive, but ignore every
+        // process-specific route until SelectedApplications is re-enabled.
+        Scope::AllApplications if policy.applications.len() <= 128 => {}
         Scope::SelectedApplications
             if !policy.applications.is_empty() && policy.applications.len() <= 128 => {}
         _ => return Err("WINDOWS_APPLICATION_SCOPE_INVALID"),
@@ -60,7 +63,9 @@ pub fn verify_native_paths(
 
     validate(policy)?;
     let mut handles = Vec::new();
-    if let Some(policy) = policy {
+    if let Some(policy) = policy.filter(|policy| {
+        policy.scope == Scope::SelectedApplications as i32
+    }) {
         for app in &policy.applications {
             let path = Path::new(&app.executable_path);
             let mut chain: Vec<_> = path.ancestors().collect();
@@ -140,7 +145,10 @@ mod tests {
         p.scope = Scope::AllApplications as i32;
         assert!(validate(Some(&p)).is_ok());
         p.applications.push(app);
-        assert!(validate(Some(&p)).is_err());
+        // Switching selected-app routing OFF retains its Git settings.
+        assert_eq!(validate(Some(&p)), Ok(()));
+        p.scope = Scope::SelectedApplications as i32;
+        assert_eq!(validate(Some(&p)), Ok(()));
     }
 
     #[test]
@@ -165,6 +173,12 @@ mod tests {
         );
         // ProxyOnly continues to have no selected-app override or TUN route.
         policy.scope = Scope::AllApplications as i32;
+        // An inactive list still cannot select the protected WARP service
+        // if re-enabled; a separate mode cannot launder a bypass.
+        assert_eq!(
+            validate(Some(&policy)),
+            Err("WINDOWS_APPLICATION_FOREIGN_WARP_BYPASS_FORBIDDEN")
+        );
         policy.applications.clear();
         assert_eq!(validate(Some(&policy)), Ok(()));
     }
