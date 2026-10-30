@@ -726,12 +726,7 @@ mod tests {
 
         // Same-release behavior still requires the identical trust bytes.
         assert_eq!(
-            verify_installed_trust_release_binding(
-                old_trust,
-                &old_sha,
-                old_trust,
-                None,
-            ),
+            verify_installed_trust_release_binding(old_trust, &old_sha, old_trust, None,),
             Ok(())
         );
         // Canonical positive path: exact new release, old trust pinned to
@@ -747,12 +742,7 @@ mod tests {
         );
         // No previous.pb evidence or a foreign predecessor is NOT an upgrade.
         assert_eq!(
-            verify_installed_trust_release_binding(
-                installed,
-                &installed_sha,
-                old_trust,
-                None,
-            ),
+            verify_installed_trust_release_binding(installed, &installed_sha, old_trust, None,),
             Err("HOST_WINDOWS_TRUST_PREDECESSOR_RELEASE_MISMATCH")
         );
         assert_eq!(
