@@ -452,7 +452,7 @@ try {
         if ($env:EDGE_GITHUB_TOKEN -cne $fixtureToken) {
             throw 'NATIVE_BOOTSTRAP_DID_NOT_INHERIT_AUTH'
         }
-        $nested = @(& (Join-Path $PSHOME 'pwsh.exe') -NoProfile -NonInteractive -Command @'
+        $nested = @(& ([System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName) -NoProfile -NonInteractive -Command @'
 if ($env:EDGE_GITHUB_TOKEN -cmatch '^github_pat_Z{44}
 
 Write-Output 'windows_installer_offline_direct_github_transport=PASS'
