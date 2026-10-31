@@ -731,7 +731,8 @@ mod tests {
         };
         let machine_id = "application-acceptance-5";
         assert!(edge_shared_types::decode_host_registry(&prior.encode_to_vec()).is_err());
-        let current = previous_vm_for_code_only_refresh(&prior.encode_to_vec(), machine_id).unwrap();
+        let current =
+            previous_vm_for_code_only_refresh(&prior.encode_to_vec(), machine_id).unwrap();
         assert_eq!(current.machine_id, machine_id);
         assert_eq!(current.worker_authority_public_key, vec![7; 32]);
 
@@ -745,21 +746,31 @@ mod tests {
 
         let mut wrong_signer = prior.clone();
         wrong_signer.hosts[0].worker_authority_public_key = vec![1; 31];
-        assert!(previous_vm_for_code_only_refresh(&wrong_signer.encode_to_vec(), machine_id).is_err());
+        assert!(
+            previous_vm_for_code_only_refresh(&wrong_signer.encode_to_vec(), machine_id).is_err()
+        );
         wrong_signer.hosts[0].worker_authority_public_key = vec![0; 32];
-        assert!(previous_vm_for_code_only_refresh(&wrong_signer.encode_to_vec(), machine_id).is_err());
+        assert!(
+            previous_vm_for_code_only_refresh(&wrong_signer.encode_to_vec(), machine_id).is_err()
+        );
 
         let mut wrong_kind = prior.clone();
         wrong_kind.hosts[0].kind = FleetHostKind::Windows as i32;
-        assert!(previous_vm_for_code_only_refresh(&wrong_kind.encode_to_vec(), machine_id).is_err());
+        assert!(
+            previous_vm_for_code_only_refresh(&wrong_kind.encode_to_vec(), machine_id).is_err()
+        );
 
         let mut wrong_owner = prior.clone();
         wrong_owner.hosts[0].owner = Some(managed_host::Owner::VmMachineId("foreign-vm".into()));
-        assert!(previous_vm_for_code_only_refresh(&wrong_owner.encode_to_vec(), machine_id).is_err());
+        assert!(
+            previous_vm_for_code_only_refresh(&wrong_owner.encode_to_vec(), machine_id).is_err()
+        );
 
         let mut wrong_receipt = prior.clone();
         wrong_receipt.hosts[0].native_receipt_public_key = vec![3; 31];
-        assert!(previous_vm_for_code_only_refresh(&wrong_receipt.encode_to_vec(), machine_id).is_err());
+        assert!(
+            previous_vm_for_code_only_refresh(&wrong_receipt.encode_to_vec(), machine_id).is_err()
+        );
 
         let mut duplicate = prior.clone();
         duplicate.hosts.push(duplicate.hosts[0].clone());
@@ -767,7 +778,10 @@ mod tests {
 
         let mut unsupported_schema = prior.clone();
         unsupported_schema.schema_version = 55;
-        assert!(previous_vm_for_code_only_refresh(&unsupported_schema.encode_to_vec(), machine_id).is_err());
+        assert!(
+            previous_vm_for_code_only_refresh(&unsupported_schema.encode_to_vec(), machine_id)
+                .is_err()
+        );
         assert!(previous_vm_for_code_only_refresh(&[], machine_id).is_err());
         assert!(previous_vm_for_code_only_refresh(&[0xff], machine_id).is_err());
         assert!(previous_vm_for_code_only_refresh(&prior.encode_to_vec(), "absent-vm").is_err());
