@@ -16,6 +16,8 @@ mod windows_clean_install;
 #[cfg(windows)]
 mod windows_config;
 #[cfg(windows)]
+mod windows_handoff;
+#[cfg(windows)]
 mod windows_receipt_enrollment;
 #[cfg(windows)]
 mod windows_signed_host;
@@ -2849,54 +2851,7 @@ fn verify_offline_bootstrap_dispatcher(
     exact_console: &str,
     expected_state: &str,
 ) -> Result<(), String> {
-    // Readback after retargeting the ONE existing task is required before
-    // committing a successful offline handoff; never trust schtasks exit alone.
-    let proof = r#"
-$ErrorActionPreference = 'Stop'
-$task = Get-ScheduledTask -TaskName 'EdgePlatformPrivilegedDispatch' -ErrorAction Stop
-if ($null -eq $task) { throw 'existing SYSTEM dispatcher missing' }
-# Localized principal names (e.g. 'СИСТЕМА') are never authority:
-# resolve by Windows itself and compare only the immutable LocalSystem SID.
-$principalName = [string]$task.Principal.UserId
-try {
-    $principalSid = if ($principalName -ceq 'S-1-5-18') {
-        'S-1-5-18'
-    } else {
-        ([System.Security.Principal.NTAccount]::new($principalName)).Translate(
-            [System.Security.Principal.SecurityIdentifier]
-        ).Value
-    }
-} catch {
-    throw 'existing SYSTEM dispatcher principal SID cannot be resolved'
-}
-if ($principalSid -cne 'S-1-5-18' -or
-    [string]$task.State -cne $env:EDGE_BOOTSTRAP_EXPECTED_TASK_STATE -or
-    [string]$task.Principal.RunLevel -cne 'Highest' -or
-    [string]$task.Principal.LogonType -cne 'ServiceAccount' -or
-    @($task.Actions).Count -ne 1) {
-    throw 'existing SYSTEM dispatcher principal/state changed'
-}
-$action = @($task.Actions)[0]
-if ([string]$action.Execute.Trim('"') -cne $env:EDGE_BOOTSTRAP_EXPECTED_CONSOLE -or
-    [string]$action.Arguments -notmatch '^privileged-dispatch --install-root "?C:\\sing-box"?$') {
-    throw 'exact immutable dispatcher action/arguments changed'
-}
-"#;
-    let status = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", proof])
-        .env("EDGE_BOOTSTRAP_EXPECTED_CONSOLE", exact_console)
-        .env("EDGE_BOOTSTRAP_EXPECTED_TASK_STATE", expected_state)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: dispatcher proof unavailable: {err}"))?;
-    if !status.success() {
-        return Err(
-            "OFFLINE_BOOTSTRAP_BLOCKED: exact SYSTEM dispatcher readback failed".to_owned(),
-        );
-    }
-    Ok(())
+    windows_handoff::observe()?.validate_expected(exact_console, expected_state)
 }
 
 // Pure, testable source admission. Caller separately proves immutable doctor
@@ -2919,6 +2874,29 @@ fn require_offline_bootstrap_supported_source(doctor: &str) -> Result<(), String
         );
     }
     Ok(())
+}
+
+fn require_offline_bootstrap_exact_doctor(
+    success: bool,
+    doctor: &str,
+    release: &str,
+) -> Result<(), String> {
+    let fields = ["status", "exact_release_files", "release_set_sha256"];
+    let expected = ["PASS", "PASS", release];
+    if !success
+        || fields.iter().zip(expected).any(|(field, value)| {
+            doctor
+                .lines()
+                .filter_map(|line| line.split_once('='))
+                .filter(|(name, _)| name == field)
+                .map(|(_, value)| value)
+                .collect::<Vec<_>>()
+                != [value]
+        })
+    {
+        return Err("HOST_WINDOWS_HANDOFF_SOURCE_DOCTOR_NOT_EXACT".into());
+    }
+    require_offline_bootstrap_supported_source(doctor)
 }
 
 // A historical first-use BEGIN is a real durable transaction record.
@@ -3207,53 +3185,12 @@ fn require_offline_bootstrap_request_queue_empty(install_root: &Path) -> Result<
 
 #[cfg(windows)]
 fn change_offline_bootstrap_task_enabled(enable: bool) -> Result<(), String> {
-    let flag = if enable { "/ENABLE" } else { "/DISABLE" };
-    let status = Command::new("schtasks.exe")
-        .args(["/Change", "/TN", PRIVILEGED_TASK_NAME, flag])
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|err| {
-            format!("OFFLINE_BOOTSTRAP_UNKNOWN: task state change failed: {err}; no replay")
-        })?;
-    if !status.success() {
-        return Err(format!(
-            "OFFLINE_BOOTSTRAP_UNKNOWN: task state change exit={}; no replay",
-            status.code().unwrap_or(-1)
-        ));
-    }
-    Ok(())
+    windows_handoff::set_enabled(enable)
 }
 
 #[cfg(windows)]
 fn require_no_running_legacy_dispatcher(legacy_console: &str) -> Result<(), String> {
-    // Disabled does not terminate already-running Task Scheduler instances.
-    // A local elevated process inventory must prove the outgoing console is
-    // gone before the first installer or SCM effect. No polling or blind sleep.
-    let proof = r#"
-$ErrorActionPreference = 'Stop'
-foreach ($process in @(Get-CimInstance -ClassName Win32_Process -Filter "Name='edge-console.exe'" -ErrorAction Stop)) {
-    if (-not $process.ExecutablePath -or
-        [string]$process.ExecutablePath -ieq $env:EDGE_BOOTSTRAP_OLD_CONSOLE) {
-        throw 'legacy dispatcher active or executable identity unreadable'
-    }
-}
-"#;
-    let status = Command::new("powershell.exe")
-        .args(["-NoProfile", "-NonInteractive", "-Command", proof])
-        .env("EDGE_BOOTSTRAP_OLD_CONSOLE", legacy_console)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .map_err(|err| {
-            format!("OFFLINE_BOOTSTRAP_UNKNOWN: legacy process proof failed: {err}; no replay")
-        })?;
-    if !status.success() {
-        return Err("OFFLINE_BOOTSTRAP_UNKNOWN: legacy dispatcher quiescence unproven; task remains disabled; no replay".to_owned());
-    }
-    Ok(())
+    windows_handoff::await_quiescent(legacy_console, std::time::Duration::from_secs(30))
 }
 
 fn offline_bootstrap_identifiers_valid(revision: &str, digest: &str) -> bool {
@@ -3298,7 +3235,11 @@ fn read_only_windows_first_use_source(
         .output()
         .map_err(|err| format!("OFFLINE_BOOTSTRAP_BLOCKED: old doctor missing: {err}"))?;
     let old_readout = String::from_utf8_lossy(&old_doctor.stdout);
-    require_offline_bootstrap_supported_source(&old_readout)?;
+    require_offline_bootstrap_exact_doctor(
+        old_doctor.status.success(),
+        &old_readout,
+        &before.release_set_sha256,
+    )?;
     let previously_disabled = if let Some(approval) = approval {
         require_offline_bootstrap_other_pending_absent(install_root)?;
         let retained = inspect_retained_offline_bootstrap_intent(
@@ -3306,14 +3247,16 @@ fn read_only_windows_first_use_source(
             approval,
             &before.release_set_sha256,
         )?;
-        if verify_offline_bootstrap_dispatcher(&before.console_path, "Ready").is_ok() {
+        let task = windows_handoff::observe()?;
+        if task.enabled {
+            task.validate(&before.console_path, true)?;
             false
         } else {
             // A compensated UNKNOWN handoff can leave the exact previous
             // SYSTEM task Disabled. Accept ONLY a new, distinct canonical
             // release (never the already-attempted operation), with the same
             // exact task principal/action and pinned BEGIN readback.
-            verify_offline_bootstrap_dispatcher(&before.console_path, "Disabled")?;
+            task.validate(&before.console_path, false)?;
             require_distinct_offline_bootstrap_successor(
                 &retained,
                 &before.release_set_sha256,
@@ -3397,6 +3340,36 @@ async fn offline_bootstrap_privileged_release(
     supersession: Option<&RetainedOfflineBootstrapSupersession>,
     enroll_receipt: bool,
 ) -> Result<(String, String, Option<String>), String> {
+    let mut progress = windows_handoff::Progress::start(install_root, request)?;
+    let result = offline_bootstrap_privileged_release_inner(
+        install_root,
+        request,
+        supersession,
+        enroll_receipt,
+        &mut progress,
+    )
+    .await;
+    if let Err(evidence_error) = progress.finish(&result) {
+        return Err(format!(
+            "{evidence_error}; original_result={}",
+            result
+                .as_ref()
+                .err()
+                .map(String::as_str)
+                .unwrap_or("HANDOFF_ACTIVATED_RESULT_UNPERSISTED_NO_REPLAY")
+        ));
+    }
+    result
+}
+
+#[cfg(windows)]
+async fn offline_bootstrap_privileged_release_inner(
+    install_root: &Path,
+    request: &WindowsPrivilegedRequest,
+    supersession: Option<&RetainedOfflineBootstrapSupersession>,
+    enroll_receipt: bool,
+    progress: &mut windows_handoff::Progress,
+) -> Result<(String, String, Option<String>), String> {
     // One operator-authorized local admin invocation from the independently
     // verified NEW immutable console. The installed legacy SYSTEM dispatcher
     // never sees a wire operation it does not understand.
@@ -3424,6 +3397,7 @@ async fn offline_bootstrap_privileged_release(
     // One-shot approved offline bootstrap must NOT generate a second Ed25519
     // identity on an already-enrolled physical Windows host. Determine its
     // exact prior stage before the irreversible native BEGIN.
+    progress.enter(windows_handoff::Phase::Identity)?;
     let mut existing_identity_stage = None;
     let mut registered_public_before = None;
     let pending_identity_rebind = if enroll_receipt {
@@ -3501,6 +3475,7 @@ async fn offline_bootstrap_privileged_release(
         return Err("OFFLINE_BOOTSTRAP_BLOCKED: exact distinct legacy release required".to_owned());
     }
 
+    progress.enter(windows_handoff::Phase::Candidate)?;
     let candidate = install_root.join("releases").join(target);
     let console = candidate.join("bin").join("edge-console.exe");
     let current_exe = env::current_exe().map_err(|err| err.to_string())?;
@@ -3567,6 +3542,7 @@ async fn offline_bootstrap_privileged_release(
     // The canonical offline installer requires PowerShell 7 -NoProxy.
     // Reject an unavailable pwsh before its irreversible BEGIN, never fall
     // back to Windows PowerShell 5.1 or the broken ambient proxy path.
+    progress.enter(windows_handoff::Phase::Authority)?;
     let mut preflight = Command::new("pwsh.exe");
     preflight
         .args([
@@ -3610,6 +3586,7 @@ async fn offline_bootstrap_privileged_release(
         &stage_installer,
     )?;
 
+    progress.enter(windows_handoff::Phase::Fence)?;
     verify_offline_bootstrap_dispatcher(
         &before.console_path,
         if previously_disabled {
@@ -3619,6 +3596,7 @@ async fn offline_bootstrap_privileged_release(
         },
     )?;
     require_no_running_legacy_dispatcher(&before.console_path)?;
+    progress.enter(windows_handoff::Phase::Begin)?;
     if let Some(approval) = supersession {
         // The prior BEGIN remains UNKNOWN_NO_REPLAY. After an independent
         // explicit local Administrator decision, preserve its exact bytes
@@ -3657,11 +3635,14 @@ async fn offline_bootstrap_privileged_release(
     // request path MUST NOT remain scheduled while authority is being replaced.
     // Disable the SAME task after durable BEGIN and prove no legacy console is
     // still running. On any failure leave it disabled: UNKNOWN_NO_REPLAY.
+    progress.enter(windows_handoff::Phase::Disable)?;
     change_offline_bootstrap_task_enabled(false)?;
     verify_offline_bootstrap_dispatcher(&before.console_path, "Disabled")?;
     require_no_running_legacy_dispatcher(&before.console_path)?;
+    let handoff_owner = windows_handoff::exclusive_handoff(install_root, &before.console_path)?;
     require_offline_bootstrap_request_queue_empty(install_root)?;
 
+    progress.enter(windows_handoff::Phase::Activate)?;
     let activated = offline_activate_privileged_release_with_installer(
         install_root,
         request,
@@ -3672,6 +3653,7 @@ async fn offline_bootstrap_privileged_release(
     // the ORIGINAL SYSTEM task is Disabled, before it can observe either
     // intermediate state. A failure is UNKNOWN/NO-REPLAY, never an implicit
     // instruction to generate another key.
+    progress.enter(windows_handoff::Phase::Rebind)?;
     if let Some(ref pending) = pending_identity_rebind {
         windows_receipt_enrollment::rebind_pending_after_offline_handoff(
             install_root,
@@ -3689,6 +3671,7 @@ async fn offline_bootstrap_privileged_release(
             })?;
     }
     // The offline installer must not rotate an already-created SYSTEM key.
+    progress.enter(windows_handoff::Phase::IdentityReadback)?;
     if let Some(ref before_public) = registered_public_before {
         let after_public =
             windows_receipt_enrollment::verify_existing_receipt_identity_slot(install_root)
@@ -3702,13 +3685,12 @@ async fn offline_bootstrap_privileged_release(
     // New main rejects legacy mutation opcodes; re-enable only after the
     // exact immutable signed-capable replacement and pending requests pass
     // readback. If re-enable fails the one-shot marker remains; never replay.
-    change_offline_bootstrap_task_enabled(true)?;
-    verify_offline_bootstrap_dispatcher(&console.to_string_lossy(), "Ready")?;
+    progress.enter(windows_handoff::Phase::Prepare)?;
     if enroll_receipt && pending_identity_rebind.is_none() {
         match existing_identity_stage {
             None => {
                 // First-use: only the existing task generates the private key.
-                windows_receipt_enrollment::prepare(
+                windows_receipt_enrollment::prepare_disabled_handoff(
                     install_root,
                     fresh_machine.as_deref().ok_or(
                         "HOST_WINDOWS_FIRST_USE_GIT_HOST_BINDING_REQUIRED",
@@ -3717,17 +3699,19 @@ async fn offline_bootstrap_privileged_release(
                 .map_err(|reason| {
                     format!("OFFLINE_BOOTSTRAP_IDENTITY_STEP_UNCERTAIN_NO_REPLAY: {reason}; inspect current.pb and native identity status before any new action")
                 })?;
-                windows_trust_enrollment::prepare_pending(install_root).map_err(|reason| {
+                windows_trust_enrollment::prepare_disabled_handoff(install_root, true).map_err(|reason| {
                     format!("OFFLINE_BOOTSTRAP_TRUST_INTENT_UNKNOWN_NO_REPLAY: {reason}; preserve the same key and journal")
                 })?;
             }
             Some(ExistingIdentityHandoff::TrustNotRequested) => {
                 // Completed receipt is historical; request ONLY Worker trust.
-                windows_trust_enrollment::prepare(install_root).map_err(|reason| {
-                    format!(
-                        "OFFLINE_BOOTSTRAP_REGISTERED_TRUST_PREPARE_UNKNOWN_NO_REPLAY: {reason}"
-                    )
-                })?;
+                windows_trust_enrollment::prepare_disabled_handoff(install_root, false).map_err(
+                    |reason| {
+                        format!(
+                            "OFFLINE_BOOTSTRAP_REGISTERED_TRUST_PREPARE_UNKNOWN_NO_REPLAY: {reason}"
+                        )
+                    },
+                )?;
             }
             Some(ExistingIdentityHandoff::TrustPending)
             | Some(ExistingIdentityHandoff::TrustRecorded) => {
@@ -3736,6 +3720,13 @@ async fn offline_bootstrap_privileged_release(
             }
         }
     }
+    progress.enter(windows_handoff::Phase::Enable)?;
+    // Release the SAME owner lock only after the new binary and all markers
+    // are ready. The task stays disabled until this point.
+    drop(handoff_owner);
+    change_offline_bootstrap_task_enabled(true)?;
+    verify_offline_bootstrap_dispatcher(&console.to_string_lossy(), "Ready")?;
+    progress.enter(windows_handoff::Phase::Complete)?;
     Ok(activated)
 }
 

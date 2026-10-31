@@ -239,9 +239,29 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
         #[cfg(windows)]
         Command::OfflineFirstUseStatus(args) => {
             let root = Path::new(&args.install_root);
-            let stage = windows_receipt_enrollment::read_only_first_use_stage(root)
-                .map_err(ConsoleError::Command)?;
             let active = load_verified_activation(root)?;
+            // Keep diagnosis available even when one independent reader fails.
+            // An unavailable identity stage never suppresses task/API evidence.
+            let stage_result = windows_receipt_enrollment::read_only_first_use_stage(root);
+            let stage = stage_result.as_ref().copied().unwrap_or("UNPROVEN");
+            let task_status = match windows_handoff::observe() {
+                Ok(task) => {
+                    let identity = task.validate(&active.console_path, task.enabled);
+                    serde_json::json!({"state": task.state, "enabled": task.enabled,
+                        "instances": task.instances, "exact_identity": identity.is_ok(),
+                        "error_code": identity.err(), "system_execution_proven": false})
+                }
+                Err(code) => serde_json::json!({"state": "UNPROVEN", "error_code": code}),
+            };
+            let handoff = match windows_handoff::last_progress(root) {
+                Ok(Some(record)) => {
+                    serde_json::json!({"state": record.code, "detail": record.detail,
+                    "request_id": record.request_id, "observed_active_release": record.active_release_set_sha256,
+                    "authority": "UNSIGNED_LOCAL_ADMIN_OBSERVATION", "replay_allowed": false})
+                }
+                Ok(None) => serde_json::json!({"state": "NOT_RECORDED"}),
+                Err(code) => serde_json::json!({"state": "UNPROVEN", "error_code": code}),
+            };
             // Advisory, typed LocalSystem evidence from the SAME protected
             // native journal. Never infer a failure from Task exit=1 alone.
             let system_failure =
@@ -263,7 +283,10 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                 serde_json::json!({
                     "schema": "sing-box.windows-first-use-status/v1",
                     "system_dispatch_failure": system_failure,
+                    "system_task": task_status,
+                    "offline_handoff": handoff,
                     "stage": stage,
+                    "stage_error": stage_result.as_ref().err(),
                     "machine_id": windows_receipt_enrollment::bound_machine_id(root)
                         .map_err(ConsoleError::Command)?,
                     "installed_release_set_sha256": active.release_set_sha256,
@@ -271,6 +294,7 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     "mutations": 0
                 })
             );
+            stage_result.map_err(ConsoleError::Command)?;
             Ok(())
         }
         #[cfg(windows)]

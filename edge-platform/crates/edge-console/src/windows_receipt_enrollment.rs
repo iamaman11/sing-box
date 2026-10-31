@@ -572,11 +572,26 @@ pub(super) fn prepare_clean_before_scm(
 /// Local elevated Administrator: create ONE immutable, typed request in the
 /// existing protected root. No receipt PRIVATE key is generated here.
 pub(super) fn prepare(install_root: &Path, registered_machine: &str) -> Result<(), String> {
+    prepare_with_task_state(install_root, registered_machine, "Ready")
+}
+
+pub(super) fn prepare_disabled_handoff(
+    install_root: &Path,
+    registered_machine: &str,
+) -> Result<(), String> {
+    prepare_with_task_state(install_root, registered_machine, "Disabled")
+}
+
+fn prepare_with_task_state(
+    install_root: &Path,
+    registered_machine: &str,
+    expected_state: &str,
+) -> Result<(), String> {
     require_windows_local_administrator_first_use().map_err(str::to_owned)?;
     require_exact_immutable_activation_console(install_root)?;
     let active = load_verified_activation(install_root).map_err(|err| err.to_string())?;
     require_offline_windows_owner(install_root, &active)?;
-    verify_offline_bootstrap_dispatcher(&active.console_path, "Ready")?;
+    verify_offline_bootstrap_dispatcher(&active.console_path, expected_state)?;
     let root = native_root(install_root)?;
     // A pre-existing signing identity cannot be re-enrolled through this
     // unsigned local-first-use boundary, even if its public pin is unknown.

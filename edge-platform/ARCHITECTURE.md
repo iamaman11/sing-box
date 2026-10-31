@@ -89,4 +89,41 @@ Git desired → Rust typed graph/planner → immutable ReleaseSet → Worker sig
 
 Внутренние structured desired, intent, result и receipt используют Protobuf. JSON допустим только на границе обязательного внешнего API (GitHub REST, Actions `strategy.matrix`); для выбора одной `/host` операции JSON не применяется.
 
+## Windows offline handoff: состояние и доказательства
+
+Существующий `offline-bootstrap` в `edge-console` ведёт один последовательный
+переход: SOURCE → IDENTITY → CANDIDATE → AUTHORITY → FENCE → BEGIN → DISABLE →
+ACTIVATE → REBIND → IDENTITY_READBACK → PREPARE → ENABLE → COMPLETE. Пропуск,
+обратный переход и повтор фазы запрещены. Runner не получает административных
+прав или доступа к приватному ключу.
+
+`windows_handoff` читает Task Scheduler через COM. SID, LogonType, RunLevel,
+единственный action и точный immutable executable проверяются независимо от
+временного Ready/Queued/Running. Ошибка содержит предикат либо API и HRESULT/
+Win32-код. Перед активацией ожидаются открытые process handles с общим deadline
+30 секунд. Задача не запускается вручную, процессы не завершаются принудительно.
+После BEGIN отключается только существующая задача. Активация, сохранение
+identity и подготовка requests завершаются до включения задачи.
+
+Фаза и результат сохраняются существующим `WindowsPrivilegedResult` в
+`native-host/journal/offline-handoff-<request_id>.pb`. Это неподписанное
+наблюдение Administrator, не SYSTEM receipt и не разрешение повторить действие.
+Исходный BEGIN не изменяется. Смена фазы использует sync и атомарную замену
+WRITE_THROUGH. Незавершённый `.pb.new` и повреждение дают UNPROVEN/NO_REPLAY.
+Произвольные сообщения и секреты не сохраняются: только phase, target и
+безопасный код. Возможные эффекты консервативно отмечаются до архивации BEGIN.
+
+Одна команда `offline-first-use-status` отображает stage, task identity/state/
+API error, handoff и SYSTEM error. Отказ одного reader не скрывает остальные
+observations. Наличие trust-файла не доказывает Worker signature или receipt.
+
+| Проверка | Требуемое доказательство |
+|---|---|
+| Native Windows CI | Authority drift; нормальный Running; bounded wait без kill; failed/неоднозначный doctor; сохранение записи при interrupted write; torn write запрещает повтор; порядок фаз; существующие identity/trust/journal negative fixtures |
+| Изолированная Windows | Полный переход и остановка на каждой границе; независимый readback; неизвестный эффект не повторяется; identity/credentials/архивы сохранены; requests готовы до ENABLE |
+| Один разрешённый физический handoff | Exact ReleaseSet; штатный SYSTEM tick; Worker proof; проверенная подписанная receipt; сохранение WARP/DNS/routes/firewall |
+
+CI не заменяет две последние проверки. До них Windows P4 не принят.
+ManagedTun и VM-приёмка остаются отдельными проверками через существующий `/host`.
+
 Подробности уже удалённых RPC/Mesh/VM helper-функций сохранены в истории PR [#448](https://github.com/iamaman11/sing-box/pull/448)–[#451](https://github.com/iamaman11/sing-box/pull/451); здесь они не образуют новый план. Исполняемые пути и недостающие gates — только в [единственном плане](FINALIZATION-PLAN.md).

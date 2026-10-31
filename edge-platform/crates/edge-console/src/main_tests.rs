@@ -1318,3 +1318,32 @@ fn critical_runtime_evidence_fits_without_truncating_owner_or_tasks() {
     };
     assert!(encode_windows_privileged_result(&result).is_ok());
 }
+
+#[test]
+fn offline_handoff_doctor_requires_success_unique_exact_release_fields() {
+    let release = "a".repeat(64);
+    let exact = format!(
+        "status=PASS\nexact_release_files=PASS\nrelease_set_sha256={release}\nwindows_datapath_mode=ProxyOnly\nscm_start_type=OnDemand\n"
+    );
+    require_offline_bootstrap_exact_doctor(true, &exact, &release).unwrap();
+    for (success, report, expected) in [
+        (false, exact.clone(), release.clone()),
+        (
+            true,
+            exact.replace("status=PASS", "status=FAIL"),
+            release.clone(),
+        ),
+        (
+            true,
+            exact.replace("exact_release_files=PASS", "exact_release_files=UNPROVEN"),
+            release.clone(),
+        ),
+        (true, format!("{exact}status=PASS\n"), release.clone()),
+        (true, exact.clone(), "b".repeat(64)),
+    ] {
+        assert_eq!(
+            require_offline_bootstrap_exact_doctor(success, &report, &expected).unwrap_err(),
+            "HOST_WINDOWS_HANDOFF_SOURCE_DOCTOR_NOT_EXACT"
+        );
+    }
+}
