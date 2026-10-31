@@ -499,6 +499,28 @@ try {
 Write-Output 'windows_connect_native_child_authenticated_process_boundary=PASS'
 Write-Output 'windows_connect_native_auth_restoration_success_failure_invalid=PASS'
 
+# Offline post-BEGIN MUST never call GitHub: the staged release and its
+# accepted source were already verified by the native -StageOnly preflight.
+# Negative checks only; do NOT execute installer top-level or mutate host.
+$source = Get-Content -LiteralPath $installer -Raw
+$hasPostBegin = [regex]::Escape('if ($NativePostBegin -and $needsInstall)')
+$hasAuthority = [regex]::Escape('if (-not $NativePostBegin) {')
+$nativeGuard = [regex]::Escape('Assert-ExactNativePostBegin -AcceptedRevision')
+if ($source -cnotmatch $hasPostBegin -or $source -cnotmatch $hasAuthority -or
+    $source -cnotmatch $nativeGuard -or
+    $source -cnotmatch 'OFFLINE_NATIVE_POST_BEGIN_INTENT_MISMATCH' -or
+    $source -cnotmatch 'OFFLINE_NATIVE_POST_BEGIN_SYSTEM_TASK_NOT_DISABLED') {
+    throw 'NATIVE_POST_BEGIN_LOCAL_ONLY_AUTHORITY_GATES_NOT_WIRED'
+}
+$nativeRust = Get-Content -LiteralPath (
+    Join-Path $PSScriptRoot '..\crates\edge-console\src\main.rs'
+) -Raw
+if ($nativeRust -cnotmatch [regex]::Escape('activation.arg("-NativePostBegin")') -or
+    $nativeRust -cnotmatch [regex]::Escape('if verified_bootstrap_installer.is_some()')) {
+    throw 'NATIVE_POST_BEGIN_FLAG_NOT_BOUND_TO_FIRST_USE_NATIVE_OWNER'
+}
+Write-Output 'windows_connect_native_post_begin_network_free=PASS'
+
 Write-Output 'windows_connect_powershell_named_binding=PASS'
 
 Write-Output 'windows_installer_offline_direct_github_transport=PASS'

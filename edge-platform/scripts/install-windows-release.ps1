@@ -19,6 +19,9 @@ param(
     # Exact candidate staging only. No pointer, SCM or task mutation.
     [switch]$StageOnly,
     [switch]$BootstrapNow,
+    # Only the verified Rust native one-shot is allowed to activate a
+    # prevalidated candidate after its durable BEGIN without GitHub I/O.
+    [switch]$NativePostBegin,
     # An explicit opt-in for the SAME approved offline-bootstrap invocation.
     # The SYSTEM task (not this script) generates the private Ed25519 key.
     [switch]$EnrollReceipt,
@@ -493,6 +496,63 @@ function Invoke-AuthenticatedNativeBootstrap {
         }
     } finally {
         [Environment]::SetEnvironmentVariable('EDGE_GITHUB_TOKEN', $prior, 'Process')
+    }
+}
+
+
+function Assert-ExactNativePostBegin {
+    param(
+        [Parameter(Mandatory)] [string]$AcceptedRevision,
+        [Parameter(Mandatory)] [string]$ReleaseSetSha256,
+        [Parameter(Mandatory)] [string]$InstallRoot
+    )
+    if ($InstallRoot -cne 'C:\sing-box' -or
+        $Repository -cne 'iamaman11/sing-box' -or
+        $ConnectWindows -or $BootstrapNow -or $StageOnly -or
+        -not $Offline -or $EnrollReceipt -or $ForceRematerialize -or
+        $ArchivedAcceptanceSourceRunId -ne 0 -or $ApproveRetainedBegin -or
+        $RetainedIntentSha256 -or $ExpectedCurrentReleaseSetSha256) {
+        throw 'OFFLINE_NATIVE_POST_BEGIN_SCOPE_INVALID'
+    }
+    Assert-LowerHexRevision -Value $AcceptedRevision -Name 'AcceptedRevision'
+    Assert-HexSha256 -Value $ReleaseSetSha256 -Name 'ReleaseSetSha256'
+    $intentPath = Join-Path $InstallRoot 'offline-bootstrap-intent-v1'
+    $intent = Get-Item -LiteralPath $intentPath -Force -ErrorAction Stop
+    if ($intent.PSIsContainer -or
+        ($intent.Attributes -band [IO.FileAttributes]::ReparsePoint) -or
+        $intent.Length -lt 1 -or $intent.Length -gt 512) {
+        throw 'OFFLINE_NATIVE_POST_BEGIN_INTENT_NOT_BOUNDED'
+    }
+    $bytes = [IO.File]::ReadAllBytes($intentPath)
+    $record = [Text.UTF8Encoding]::new($false, $true).GetString($bytes)
+    $pattern = '\Aschema=sing-box\.windows-offline-bootstrap/v1\nfrom=(?<from>[0-9a-f]{64})\nto=(?<to>[0-9a-f]{64})\naccepted_revision=(?<revision>[0-9a-f]{40})\n\z'
+    $match = [regex]::Match($record, $pattern)
+    if (-not $match.Success -or $match.Groups['to'].Value -cne $ReleaseSetSha256 -or
+        $match.Groups['revision'].Value -cne $AcceptedRevision -or
+        $match.Groups['from'].Value -ceq $ReleaseSetSha256) {
+        throw 'OFFLINE_NATIVE_POST_BEGIN_INTENT_MISMATCH'
+    }
+    $task = Get-ScheduledTask -TaskName 'EdgePlatformPrivilegedDispatch' -ErrorAction Stop
+    if ([string]$task.State -cne 'Disabled') {
+        throw 'OFFLINE_NATIVE_POST_BEGIN_SYSTEM_TASK_NOT_DISABLED'
+    }
+    # Only a previously verified staged successor can be activated.
+    $stable = Join-Path $InstallRoot 'bin\edge-diagnostic.exe'
+    $current = Invoke-Diagnostic -Diagnostic $stable -State (Join-Path $InstallRoot 'current.pb')
+    if ([string]$current['release_set_sha256'] -cne $match.Groups['from'].Value) {
+        throw 'OFFLINE_NATIVE_POST_BEGIN_INSTALLED_SOURCE_DRIFT'
+    }
+    $targetDir = Join-Path $InstallRoot "releases\$ReleaseSetSha256"
+    foreach ($relative in @(
+        'release-set.pb', 'release-set.pb.sha256',
+        'edge-platform-windows.zip', 'edge-platform-windows.zip.sha256',
+        'bin\edge-release-set.exe', 'bin\edge-controller.exe',
+        'bin\edge-console.exe', 'bin\edge-diagnostic.exe',
+        'bin\sing-box.exe', 'bootstrap\install-windows-release.ps1'
+    )) {
+        if (-not (Test-Path -LiteralPath (Join-Path $targetDir $relative) -PathType Leaf)) {
+            throw 'OFFLINE_NATIVE_POST_BEGIN_STAGE_INCOMPLETE'
+        }
     }
 }
 
@@ -1067,6 +1127,9 @@ if ($hasRetained) {
     Assert-HexSha256 -Value $ExpectedCurrentReleaseSetSha256 -Name 'ExpectedCurrentReleaseSetSha256'
 }
 Assert-OfflineWindow
+if ($NativePostBegin) {
+    Assert-ExactNativePostBegin -AcceptedRevision $AcceptedRevision -ReleaseSetSha256 $ReleaseSetSha256 -InstallRoot $InstallRoot
+}
 
 $binDir = Join-Path $InstallRoot "bin"
 $releasesDir = Join-Path $InstallRoot "releases"
@@ -1074,7 +1137,9 @@ $currentPath = Join-Path $InstallRoot "current.pb"
 $previousPath = Join-Path $InstallRoot "previous.pb"
 Assert-HexSha256 -Value $ReleaseSetSha256 -Name "ReleaseSetSha256"
 $tag = "edge-release-$ReleaseSetSha256"
-Assert-AcceptedReleaseAuthority -AcceptedRevision $AcceptedRevision -Tag $tag -ArchivedAcceptanceSourceRunId $ArchivedAcceptanceSourceRunId
+if (-not $NativePostBegin) {
+    Assert-AcceptedReleaseAuthority -AcceptedRevision $AcceptedRevision -Tag $tag -ArchivedAcceptanceSourceRunId $ArchivedAcceptanceSourceRunId
+}
 # Before any downloaded verifier or installed console is executed: the root
 # must be protected. Existing unsafe roots require the explicit ConnectWindows
 # repair scope; fresh roots are protected before materializing release files.
@@ -1134,7 +1199,9 @@ $requiredInstalled = @(
     (Join-Path $releaseDir "bootstrap\install-windows-release.ps1")
 )
 $needsInstall = $ForceRematerialize -or @($requiredInstalled | Where-Object { -not (Test-Path -LiteralPath $_) }).Count -gt 0
-
+if ($NativePostBegin -and $needsInstall) {
+    throw 'OFFLINE_NATIVE_POST_BEGIN_STAGE_MISSING_NO_NETWORK'
+}
 if ($needsInstall) {
     # Never execute downloaded verifier binaries from a user-writable TEMP.
         $stage = Join-Path $InstallRoot (".release-stage-" + [guid]::NewGuid().ToString("N"))
@@ -1173,7 +1240,9 @@ if ($needsInstall) {
         )
         $verificationOutput = @(& $tool @verifyArgs)
         if ($LASTEXITCODE -ne 0) { throw "Downloaded Windows release failed ReleaseSet verification" }
-        Assert-AcceptedCandidateSource -VerificationOutput $verificationOutput -AcceptedRevision $AcceptedRevision
+        if (-not $NativePostBegin) {
+            Assert-AcceptedCandidateSource -VerificationOutput $verificationOutput -AcceptedRevision $AcceptedRevision
+        }
         $verificationOutput | Write-Output
 
         $releaseStage = "$releaseDir.new"
@@ -1211,7 +1280,9 @@ $verifyArgs = @(
 )
 $verificationOutput = @(& $tool @verifyArgs)
 if ($LASTEXITCODE -ne 0) { throw "Installed Windows release failed exact ReleaseSet verification" }
-Assert-AcceptedCandidateSource -VerificationOutput $verificationOutput -AcceptedRevision $AcceptedRevision
+if (-not $NativePostBegin) {
+            Assert-AcceptedCandidateSource -VerificationOutput $verificationOutput -AcceptedRevision $AcceptedRevision
+        }
 $verificationOutput | Write-Output
 
 if ($StageOnly -or $BootstrapNow) {
