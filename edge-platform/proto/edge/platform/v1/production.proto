@@ -172,6 +172,11 @@ message ProductionCredentialPlane {
   string windows_host_service_token_name = 14;
   string vm_host_service_token_name = 15;
   string host_service_token_duration = 16;
+  // Distinct Host Authorization scope; never grants VM credential access.
+  string host_access_application_name = 17;
+  string host_access_policy_name = 18;
+  // Exact live URL path; staging uses a non-overlapping internal path.
+  string host_access_route_pattern = 19;
 }
 
 message ProductionDns {

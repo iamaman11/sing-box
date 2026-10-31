@@ -164,6 +164,13 @@ async fn run(
                 )
                 .await
             }
+            cli::CredentialReadOnlyCommand::HostAccessObserve => {
+                cloudflare_credential_plane_command::run_delivery(
+                    cli::CredentialDeliveryCommand::HostAccessObserve,
+                    release_context,
+                )
+                .await
+            }
         },
         Command::Host {
             command,

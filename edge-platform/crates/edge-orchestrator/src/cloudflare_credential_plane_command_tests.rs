@@ -251,6 +251,24 @@ fn only_one_vm_worker_may_hold_host_signer_secrets() {
         })
         .collect::<Vec<_>>();
     assert!(require_exact_secret_bindings("sing-box-credentials-vm", "vm", &extra).is_ok());
+    // Host route Access audience may be added ONLY to the eight-binding
+    // VM signer, and it never grants Windows token access to VM credentials.
+    let mut isolated = extra.clone();
+    isolated.push(cloudflare::CloudflareWorkerSecretBinding {
+        name: "EDGE_HOST_GITHUB_APP_PKCS8_BASE64".to_owned(),
+        binding_type: "secret_text".to_owned(),
+    });
+    isolated.push(cloudflare::CloudflareWorkerSecretBinding {
+        name: "EDGE_HOST_ROUTE_ACCESS_AUD".to_owned(),
+        binding_type: "secret_text".to_owned(),
+    });
+    assert!(require_exact_secret_bindings("sing-box-credentials-vm", "vm", &isolated).is_ok());
+    assert!(
+        require_exact_secret_bindings("sing-box-credentials-windows", "windows", &isolated)
+            .is_err()
+    );
+    isolated.last_mut().unwrap().name = "UNREVIEWED_ACCESS_SECRET".to_owned();
+    assert!(require_exact_secret_bindings("sing-box-credentials-vm", "vm", &isolated).is_err());
     assert!(
         require_exact_secret_bindings("sing-box-credentials-windows", "windows", &extra).is_err()
     );
@@ -275,6 +293,8 @@ fn host_authorization_is_closed_by_default_exact_and_access_bound() {
         assert!(source.contains("EDGE_HOST_GITHUB_ACTOR_ID"));
         assert!(source.contains("EDGE_HOST_ACCESS_ISSUER"));
         assert!(source.contains("EDGE_HOST_ACCESS_AUD"));
+        assert!(source.contains("EDGE_HOST_ROUTE_ACCESS_AUD"));
+        assert!(source.contains("hostRoute"));
         assert!(source.contains("Cf-Access-Jwt-Assertion"));
         assert!(source.contains("RSASSA-PKCS1-v1_5"));
         assert!(source.contains("sing-box/native-host-authorization/v1:"));
@@ -367,6 +387,9 @@ fn desired() -> ProductionCredentialPlaneOwnership {
         worker_compatibility_date: "2026-09-28".to_owned(),
         host_service_token_duration: "forever".to_owned(),
         workers_dev_subdomain: "sing-box-6be6e4b6340822dbeb18cb6c2f09c660".to_owned(),
+        host_access_application_name: "sing-box-credentials-vm-host-access".to_owned(),
+        host_access_policy_name: "sing-box-credentials-vm-host-service-auth".to_owned(),
+        host_access_route_pattern: "/v1/host/*".to_owned(),
     }
 }
 
@@ -418,6 +441,7 @@ fn projection_observation(
 
 fn observation(desired: &ProductionCredentialPlaneOwnership) -> CredentialPlaneObservation {
     CredentialPlaneObservation {
+        host_access: None,
         control_token_identity: cloudflare::CloudflareApiTokenIdentity {
             id: "control-token-id".to_owned(),
             status: "active".to_owned(),
@@ -432,6 +456,215 @@ fn observation(desired: &ProductionCredentialPlaneOwnership) -> CredentialPlaneO
             projection_observation(desired, "windows"),
             projection_observation(desired, "vm"),
         ],
+    }
+}
+
+#[test]
+fn github_token_fingerprint_never_claims_cloudflare_access_write_authority() {
+    let token = cloudflare::CloudflareApiTokenIdentity {
+        id: "1234567890abcdef1234567890abcdef".to_owned(),
+        status: "active".to_owned(),
+    };
+    let (status, fingerprint) = github_provider_token_identity_proof(true, Some(&token));
+    assert_eq!(status, "ACTIVE_IDENTITY_ONLY");
+    assert_eq!(fingerprint, sha256_hex(token.id.as_bytes())[..16]);
+    assert_eq!(fingerprint.len(), 16);
+    assert!(!fingerprint.contains(&token.id));
+    assert_eq!(
+        github_provider_token_identity_proof(false, Some(&token)),
+        ("MISSING", "NONE".to_owned())
+    );
+    assert_eq!(
+        github_provider_token_identity_proof(true, None),
+        ("UNPROVEN", "NONE".to_owned())
+    );
+    let disabled = cloudflare::CloudflareApiTokenIdentity {
+        status: "disabled".into(),
+        ..token.clone()
+    };
+    assert_eq!(
+        github_provider_token_identity_proof(true, Some(&disabled)),
+        ("NOT_ACTIVE", "NONE".to_owned())
+    );
+    let malformed = cloudflare::CloudflareApiTokenIdentity {
+        id: "not-a-token-identity".into(),
+        ..token
+    };
+    assert_eq!(
+        github_provider_token_identity_proof(true, Some(&malformed)),
+        ("UNPROVEN", "NONE".to_owned())
+    );
+}
+
+#[test]
+fn typed_host_access_preserves_vm_and_blocks_invalid_policy_or_paths() {
+    let desired = desired();
+    let mut observed = observation(&desired);
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap(),
+        HostAccessReadback::NotProvisionedLegacyVmPreserved
+    );
+    let vm = observed
+        .projections
+        .iter()
+        .find(|p| p.projection == "vm")
+        .unwrap();
+    let vm_id = vm.host_service_token_id.clone().unwrap();
+    let windows_id = observed
+        .projections
+        .iter()
+        .find(|p| p.projection == "windows")
+        .unwrap()
+        .host_service_token_id
+        .clone()
+        .unwrap();
+    let hostname = format!(
+        "{}.{}.workers.dev",
+        desired.vm_worker_name, desired.workers_dev_subdomain
+    );
+    let vm_index = observed
+        .projections
+        .iter()
+        .position(|p| p.projection == "vm")
+        .unwrap();
+    // Existing deployed VM signer uses exactly eight bindings.
+    observed.projections[vm_index].worker_binding_count = Some(8);
+    observed.host_access = Some(HostAccessObservation {
+        app: cloudflare::CloudflareAccessApplication {
+            id: "host-access-id".to_owned(),
+            name: desired.host_access_application_name.clone(),
+            app_type: "self_hosted".to_owned(),
+            service_auth_401_redirect: Some(true),
+            destinations: vec![cloudflare::CloudflareAccessDestination {
+                destination_type: "public".to_owned(),
+                worker_id: None,
+                uri: Some(format!("{hostname}{HOST_ACCESS_STAGE_PATTERN}")),
+                has_overrides: false,
+            }],
+            policy_ids: vec!["host-policy-id".to_owned()],
+        },
+        policies: vec![cloudflare::CloudflareAccessPolicy {
+            id: "host-policy-id".to_owned(),
+            name: desired.host_access_policy_name.clone(),
+            decision: Some("non_identity".to_owned()),
+            include_service_token_ids: vec![vm_id, windows_id],
+            has_extra_rules: false,
+            precedence: Some(1),
+            reusable: Some(false),
+            app_count: None,
+        }],
+        audience: "host-access-new-audience".to_owned(),
+    });
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap(),
+        HostAccessReadback::StagedAwaitWorkerAudience
+    );
+    observed.projections[vm_index].worker_binding_count = Some(9);
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap(),
+        HostAccessReadback::StagedAwaitSignerProof
+    );
+    let app = observed.host_access.as_mut().unwrap();
+    app.app.destinations[0].uri = Some(format!("{hostname}{HOST_ACCESS_LIVE_PATTERN}"));
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap(),
+        HostAccessReadback::ActiveAwaitSignedHostProof
+    );
+
+    observed.host_access.as_mut().unwrap().policies[0]
+        .include_service_token_ids
+        .push("foreign-service-token".to_owned());
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap_err(),
+        "HOST_ACCESS_TOKEN_SCOPE_DRIFT_BLOCKED"
+    );
+    observed.host_access.as_mut().unwrap().policies[0]
+        .include_service_token_ids
+        .pop();
+
+    observed.host_access.as_mut().unwrap().app.destinations[0].uri = Some(hostname.clone());
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap_err(),
+        "HOST_ACCESS_PATH_DRIFT_BLOCKED"
+    );
+    observed.host_access.as_mut().unwrap().app.destinations[0].uri =
+        Some(format!("{hostname}{HOST_ACCESS_LIVE_PATTERN}"));
+    observed.host_access.as_mut().unwrap().policies[0].has_extra_rules = true;
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap_err(),
+        "HOST_ACCESS_APP_OR_POLICY_DRIFT_BLOCKED"
+    );
+    observed.host_access.as_mut().unwrap().policies[0].has_extra_rules = false;
+    observed.host_access.as_mut().unwrap().audience = "invalid aud with spaces".to_owned();
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap_err(),
+        "HOST_ACCESS_APP_OR_POLICY_DRIFT_BLOCKED"
+    );
+    observed.host_access.as_mut().unwrap().audience = "host-access-new-audience".to_owned();
+
+    // A VM credential policy expanded to Windows must be blocked even when
+    // the path-scoped Host Access application is otherwise exact.
+    observed.projections[vm_index].access_policies[0]
+        .include_service_token_ids
+        .push("windows-host-token-id".to_owned());
+    assert!(host_access_readback(&desired, &observed).is_err());
+    observed.projections[vm_index].access_policies[0]
+        .include_service_token_ids
+        .pop();
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap(),
+        HostAccessReadback::ActiveAwaitSignedHostProof
+    );
+    observed.projections[vm_index].worker_binding_count = Some(8);
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap_err(),
+        "HOST_ACCESS_LIVE_BEFORE_SIGNER_READY"
+    );
+    // A provider GET with policy present but not actually attached to the
+    // application must never masquerade as exact Cloudflare Service Auth.
+    observed.projections[vm_index].worker_binding_count = Some(9);
+    observed
+        .host_access
+        .as_mut()
+        .unwrap()
+        .app
+        .policy_ids
+        .clear();
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap_err(),
+        "HOST_ACCESS_APP_OR_POLICY_DRIFT_BLOCKED"
+    );
+    observed.host_access.as_mut().unwrap().app.policy_ids = vec!["host-policy-id".into()];
+    assert_eq!(
+        host_access_readback(&desired, &observed)
+            .unwrap()
+            .next_action(),
+        HostAccessNextAction::ProveWindowsAndVmSignedHostAfterCutover
+    );
+}
+
+#[test]
+fn host_access_phase_plan_only_requires_durable_provider_begin() {
+    let phases = [
+        (
+            HostAccessReadback::NotProvisionedLegacyVmPreserved,
+            "STAGE_REQUIRES_DURABLE_BEGIN",
+        ),
+        (
+            HostAccessReadback::StagedAwaitWorkerAudience,
+            "BIND_AUDIENCE_REQUIRES_DURABLE_BEGIN",
+        ),
+        (
+            HostAccessReadback::StagedAwaitSignerProof,
+            "VERIFY_SIGNER_AND_VM_CREDENTIALS_BEFORE_CUTOVER",
+        ),
+        (
+            HostAccessReadback::ActiveAwaitSignedHostProof,
+            "VERIFY_BOTH_SIGNED_HOSTS_AFTER_CUTOVER",
+        ),
+    ];
+    for (phase, expected) in phases {
+        assert_eq!(phase.next_action().as_str(), expected);
     }
 }
 

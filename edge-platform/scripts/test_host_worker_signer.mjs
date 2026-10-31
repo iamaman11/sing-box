@@ -119,6 +119,36 @@ requireTest(!(await crypto.subtle.verify("Ed25519",key.publicKey,identity.get(6)
  "challenge replay accepted");
 requireTest((await identityProof(env,identityNonce,{aud:["wrong-audience"]})).status===403,
  "foreign Cloudflare Access identity accepted");
+// Preserve active VM eight-binding signer, and reject an unstaged new app.
+const hostRouteAudience="host-authorizer-route-audience";
+const routeEnv={...env,EDGE_HOST_ROUTE_ACCESS_AUD:hostRouteAudience};
+requireTest((await identityProof(routeEnv,identityNonce,{aud:[hostRouteAudience]})).status===200,
+ "path-specific Host Access audience not accepted");
+requireTest((await identityProof(env,identityNonce,{aud:[hostRouteAudience]})).status===403,
+ "unstaged Host Access audience accepted");
+requireTest((await identityProof(routeEnv,identityNonce,{aud:["foreign-host-audience"]})).status===403,
+ "foreign Host Access audience accepted");
+requireTest((await identityProof({...env,EDGE_HOST_ROUTE_ACCESS_AUD:aud})).status===403,
+ "duplicate VM audience accepted as a new Host Access audience");
+requireTest((await call(intent,routeEnv,{aud:[hostRouteAudience]})).status===200,
+ "Host Access audience failed exact GitHub-authorized HostIntent");
+requireTest((await call(intent,routeEnv,{aud:[aud]})).status===200,
+ "existing VM HostIntent broken by optional Host Access binding");
+// A Windows/Host Access JWT MUST NOT retrieve VM credential bytes even if
+// the Access route is misconfigured. The legacy VM GET is unchanged.
+const vmCredential=combine(number(1,1),number(2,1),number(3,2));
+const credentialRoute="https://unit-test.workers.dev/v1/credentials?generation=1";
+async function credentialGet(settings, claims){
+ const jwt=await accessToken(claims);
+ return mod.default.fetch(new Request(credentialRoute,{headers:{"Cf-Access-Jwt-Assertion":jwt}}),settings);
+}
+const vmSecretEnv={...routeEnv,EDGE_CREDENTIAL_BUNDLE_A:vmCredential.toString("hex")};
+requireTest((await credentialGet(vmSecretEnv,{aud:[aud]})).status===200,
+ "VM credentials denied to existing VM Access audience");
+requireTest((await credentialGet(vmSecretEnv,{aud:[hostRouteAudience]})).status===403,
+ "Host Access audience was allowed to retrieve VM credentials");
+requireTest((await credentialGet({...env,EDGE_CREDENTIAL_BUNDLE_A:vmCredential.toString("hex")},{aud:[aud]})).status===200,
+ "legacy eight-binding VM credential GET behavior changed");
 requireTest((await identityProof({...env,EDGE_HOST_SIGNING_PKCS8_BASE64:"invalid"})).status===503,
  "identity proof accepted invalid signer");
 const missingNonce=await mod.default.fetch(

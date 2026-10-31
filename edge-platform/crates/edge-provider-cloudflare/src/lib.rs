@@ -727,6 +727,8 @@ pub enum WorkerCodeBindingScope {
     FixedAb,
     VmHostSigner,
     VmHostSignerGitHubApp,
+    /// Exact ninth binding only for the same VM Worker, never a second signer.
+    VmHostSignerRouteAccess,
 }
 
 /// Strict code-only version metadata. The caller supplies live GET-only binding
@@ -745,7 +747,9 @@ fn exact_binding_inherit_metadata(
     ];
     if matches!(
         scope,
-        WorkerCodeBindingScope::VmHostSigner | WorkerCodeBindingScope::VmHostSignerGitHubApp
+        WorkerCodeBindingScope::VmHostSigner
+            | WorkerCodeBindingScope::VmHostSignerGitHubApp
+            | WorkerCodeBindingScope::VmHostSignerRouteAccess
     ) {
         expected.extend_from_slice(&[
             ("EDGE_HOST_SIGNING_PKCS8_BASE64", "secret_text"),
@@ -755,8 +759,15 @@ fn exact_binding_inherit_metadata(
             ("EDGE_HOST_ACCESS_AUD", "secret_text"),
         ]);
     }
-    if scope == WorkerCodeBindingScope::VmHostSignerGitHubApp {
+    if matches!(
+        scope,
+        WorkerCodeBindingScope::VmHostSignerGitHubApp
+            | WorkerCodeBindingScope::VmHostSignerRouteAccess
+    ) {
         expected.push(("EDGE_HOST_GITHUB_APP_PKCS8_BASE64", "secret_text"));
+    }
+    if scope == WorkerCodeBindingScope::VmHostSignerRouteAccess {
+        expected.push(("EDGE_HOST_ROUTE_ACCESS_AUD", "secret_text"));
     }
     let mut actual = observed
         .iter()
@@ -1801,6 +1812,173 @@ pub async fn list_device_posture_rules(
     Err(format!(
         "Cloudflare device posture pagination exceeded {MAX_API_PAGES} pages"
     ))
+}
+
+/// The single existing Cloudflare credential owner may create ONE additional
+/// path-scoped Service Auth application. These payloads are pure; the caller
+/// must reserve an exact GitHub provider BEGIN before any POST/PUT, then
+/// independently read back both credential policies and the Host route.
+/// Nothing here grants permission to retry an uncertain provider ACK.
+const HOST_ACCESS_STAGE_PATH: &str = "/__singbox_host_access_stage__/*";
+const HOST_ACCESS_LIVE_PATH: &str = "/v1/host/*";
+
+fn exact_host_access_destination(worker_hostname: &str, route: &str) -> Result<String, String> {
+    if worker_hostname.is_empty()
+        || worker_hostname.len() > 253
+        || !worker_hostname.ends_with(".workers.dev")
+        || !worker_hostname
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'.' || c == b'-')
+        || worker_hostname.split('.').any(|segment| segment.is_empty())
+        || !matches!(route, HOST_ACCESS_STAGE_PATH | HOST_ACCESS_LIVE_PATH)
+    {
+        return Err("HOST_ACCESS_WRITE_DESTINATION_INVALID".into());
+    }
+    Ok(format!("{worker_hostname}{route}"))
+}
+
+fn exact_host_access_app_payload(
+    name: &str,
+    worker_hostname: &str,
+    route: &str,
+    policy_id: Option<&str>,
+) -> Result<Value, String> {
+    require_non_empty("Host Access app name", name)?;
+    let destination = exact_host_access_destination(worker_hostname, route)?;
+    if route == HOST_ACCESS_LIVE_PATH && policy_id.is_none() {
+        return Err("HOST_ACCESS_LIVE_POLICY_REQUIRED".into());
+    }
+    let policies = match policy_id {
+        Some(value) => {
+            require_non_empty("Host Access policy ID", value)?;
+            vec![serde_json::json!({"id": value})]
+        }
+        None => Vec::new(),
+    };
+    Ok(serde_json::json!({
+        "name": name,
+        "type": "self_hosted",
+        "service_auth_401_redirect": true,
+        "destinations": [{"type": "public", "uri": destination}],
+        "policies": policies,
+    }))
+}
+
+fn exact_host_access_policy_payload(
+    name: &str,
+    vm_token_id: &str,
+    windows_token_id: &str,
+) -> Result<Value, String> {
+    require_non_empty("Host Access policy name", name)?;
+    require_non_empty("VM service token ID", vm_token_id)?;
+    require_non_empty("Windows service token ID", windows_token_id)?;
+    if vm_token_id == windows_token_id {
+        return Err("HOST_ACCESS_WRITE_TOKENS_MUST_BE_DISTINCT".into());
+    }
+    Ok(serde_json::json!({
+        "name": name,
+        "decision": "non_identity",
+        "include": [
+            {"service_token": {"token_id": vm_token_id}},
+            {"service_token": {"token_id": windows_token_id}},
+        ],
+        "require": [],
+        "exclude": []
+    }))
+}
+
+/// ONE bounded POST for a non-overlapping staging path. Return only an app ID;
+/// an HTTP timeout is ambiguous and MUST NOT trigger a replay.
+pub async fn create_host_access_staged_application(
+    write_token: &str,
+    account_id: &str,
+    app_name: &str,
+    worker_hostname: &str,
+) -> Result<String, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    let body =
+        exact_host_access_app_payload(app_name, worker_hostname, HOST_ACCESS_STAGE_PATH, None)?;
+    let response = authorized_client(write_token)?
+        .post(format!("{API_ROOT}/accounts/{account_id}/access/apps"))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|_| "HOST_ACCESS_STAGE_CREATE_ACK_UNCERTAIN_NO_REPLAY")?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response)
+        .await
+        .map_err(|_| "HOST_ACCESS_STAGE_CREATE_RESULT_UNPROVEN_NO_REPLAY")?;
+    payload
+        .result
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| "HOST_ACCESS_STAGE_CREATE_ID_UNPROVEN_NO_REPLAY".to_owned())
+}
+
+/// ONE bounded POST to the exact new staging app; cannot edit the existing
+/// VM/Windows credential Access application or any service-token secret.
+pub async fn create_host_access_exact_service_auth_policy(
+    write_token: &str,
+    account_id: &str,
+    stage_app_id: &str,
+    policy_name: &str,
+    vm_token_id: &str,
+    windows_token_id: &str,
+) -> Result<String, String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Host Access staged application ID", stage_app_id)?;
+    let body = exact_host_access_policy_payload(policy_name, vm_token_id, windows_token_id)?;
+    let response = authorized_client(write_token)?
+        .post(format!(
+            "{API_ROOT}/accounts/{account_id}/access/apps/{stage_app_id}/policies"
+        ))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|_| "HOST_ACCESS_POLICY_CREATE_ACK_UNCERTAIN_NO_REPLAY")?;
+    let payload: ApiEnvelope<Value> = parse_success_json(response)
+        .await
+        .map_err(|_| "HOST_ACCESS_POLICY_CREATE_RESULT_UNPROVEN_NO_REPLAY")?;
+    payload
+        .result
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+        .ok_or_else(|| "HOST_ACCESS_POLICY_CREATE_ID_UNPROVEN_NO_REPLAY".to_owned())
+}
+
+/// ONE bounded PUT to the dedicated Host Access app only. The caller MUST
+/// prove active VM signer JWT audience and VM credential GET before this call;
+/// a failed/ambiguous ACK must never be replayed blindly.
+pub async fn activate_exact_host_access_path(
+    write_token: &str,
+    account_id: &str,
+    host_app_id: &str,
+    host_app_name: &str,
+    worker_hostname: &str,
+    policy_id: &str,
+) -> Result<(), String> {
+    require_non_empty("Cloudflare account ID", account_id)?;
+    require_non_empty("Host Access application ID", host_app_id)?;
+    let body = exact_host_access_app_payload(
+        host_app_name,
+        worker_hostname,
+        HOST_ACCESS_LIVE_PATH,
+        Some(policy_id),
+    )?;
+    let response = authorized_client(write_token)?
+        .put(format!(
+            "{API_ROOT}/accounts/{account_id}/access/apps/{host_app_id}"
+        ))
+        .json(&body)
+        .send()
+        .await
+        .map_err(|_| "HOST_ACCESS_ACTIVATE_ACK_UNCERTAIN_NO_REPLAY")?;
+    ensure_success(response)
+        .await
+        .map_err(|_| "HOST_ACCESS_ACTIVATE_RESULT_UNPROVEN_NO_REPLAY".to_owned())
 }
 
 pub async fn list_access_applications(
@@ -3497,6 +3675,66 @@ mod tests {
         assert_eq!(
             rule.traffic.as_deref(),
             Some("net.dst.ip in {100.96.0.0/12}")
+        );
+    }
+
+    #[test]
+    fn exact_host_access_write_payloads_never_broaden_vm_credential_scope() {
+        let host = "sing-box-credentials-vm.namespace.workers.dev";
+        let name = "sing-box-credentials-vm-host-access";
+        let staged =
+            exact_host_access_app_payload(name, host, HOST_ACCESS_STAGE_PATH, None).unwrap();
+        assert_eq!(staged["type"], "self_hosted");
+        assert_eq!(
+            staged["destinations"][0]["uri"],
+            format!("{host}{HOST_ACCESS_STAGE_PATH}")
+        );
+        assert!(staged["policies"].as_array().unwrap().is_empty());
+        let live =
+            exact_host_access_app_payload(name, host, HOST_ACCESS_LIVE_PATH, Some("host-policy"))
+                .unwrap();
+        assert_eq!(
+            live["destinations"][0]["uri"],
+            format!("{host}{HOST_ACCESS_LIVE_PATH}")
+        );
+        assert_eq!(live["policies"][0]["id"], "host-policy");
+        let policy = exact_host_access_policy_payload(
+            "host-service-auth",
+            "vm-token-id",
+            "windows-token-id",
+        )
+        .unwrap();
+        assert_eq!(policy["decision"], "non_identity");
+        assert_eq!(policy["include"].as_array().unwrap().len(), 2);
+        assert_eq!(
+            policy["include"][0]["service_token"]["token_id"],
+            "vm-token-id"
+        );
+        assert_eq!(
+            policy["include"][1]["service_token"]["token_id"],
+            "windows-token-id"
+        );
+        assert!(
+            exact_host_access_policy_payload("host-service-auth", "same-token", "same-token")
+                .is_err()
+        );
+        assert!(exact_host_access_app_payload(name, host, HOST_ACCESS_LIVE_PATH, None).is_err());
+        assert!(
+            exact_host_access_app_payload(name, host, "/v1/credentials/*", Some("host-policy"))
+                .is_err()
+        );
+        assert!(
+            exact_host_access_app_payload(name, "evil.example.net", HOST_ACCESS_STAGE_PATH, None)
+                .is_err()
+        );
+        assert!(
+            exact_host_access_app_payload(
+                name,
+                "vm.namespace.workers.dev/other",
+                HOST_ACCESS_STAGE_PATH,
+                None
+            )
+            .is_err()
         );
     }
 

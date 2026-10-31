@@ -851,6 +851,96 @@ jobs:
           fi
           echo 'host_vm_signer=AWAITING_PROTECTED_PUBLIC_GIT_MERGE'
 
+  host_access_boundary:
+    # Existing /host --deep only: pure Cloudflare GET, one correlated report.
+    # No third operator ingress, Worker mutation, SYSTEM/Root effect or secrets.
+    needs: [host, host_report]
+    if: >-
+      needs.host.result == 'success' &&
+      needs.host_report.result == 'success' &&
+      github.event_name == 'issue_comment' &&
+      github.run_attempt == 1 &&
+      github.event.comment.body == format('/host status {0} --deep', needs.host.outputs.machine_id) &&
+      (needs.host.outputs.kind == 'WINDOWS' || needs.host.outputs.kind == 'VM')
+    runs-on: ubuntu-24.04
+    environment:
+      name: production-vultr
+      deployment: false
+    timeout-minutes: 5
+    concurrency:
+      group: host-deep-report-${{ github.event.comment.id }}
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      issues: write
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REPORT_COMMENT_ID: ${{ needs.host_report.outputs.comment_id }}
+      CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
+      CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN: ${{ secrets.CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN }}
+      CLOUDFLARE_ACCESS_POLICY_TOKEN: ${{ secrets.CLOUDFLARE_ACCESS_POLICY_TOKEN }}
+    steps:
+      - name: Checkout exact protected Git source
+        shell: bash
+        run: |
+          set -euo pipefail
+          git init .
+          git remote add origin "https://github.com/${GITHUB_REPOSITORY}.git"
+          git fetch --no-tags --depth=1 origin "${GITHUB_SHA}"
+          git checkout --detach FETCH_HEAD
+          test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
+      - name: Observe exact typed Host Access / VM credential boundary
+        shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/host-access-readonly
+        run: |
+          set -euo pipefail
+          # Immutable accepted ReleaseSet, no local source build and no
+          # ad-hoc textproto regex parser pretending to own policy.
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          bin="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          printf '%s  %s\n' "${EDGE_ORCHESTRATOR_SHA256}" "${bin}" | sha256sum --check --status
+          chmod 0755 "${bin}"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
+          "${bin}" credentials host-access-observe > "${RUNNER_TEMP}/host-access-report.txt"
+          grep -Fxq 'host_access_schema=sing-box.host-access-boundary/v1' "${RUNNER_TEMP}/host-access-report.txt"
+          grep -Fxq 'host_access_credentials_vm=EXACT_VM_ONLY' "${RUNNER_TEMP}/host-access-report.txt"
+          grep -Fxq 'host_access_credentials_windows=EXACT_WINDOWS_ONLY' "${RUNNER_TEMP}/host-access-report.txt"
+          grep -Fxq 'host_access_provider_mutations=0' "${RUNNER_TEMP}/host-access-report.txt"
+          grep -Fxq 'host_access_native_mutations=0' "${RUNNER_TEMP}/host-access-report.txt"
+          test "$(wc -l < "${RUNNER_TEMP}/host-access-report.txt")" -eq 12
+          grep -Eq '^host_access_route=(NOT_PROVISIONED_LEGACY_VM_PRESERVED|STAGED_AWAIT_WORKER_AUDIENCE|STAGED_AWAIT_SIGNER_PROOF|ACTIVE_AWAIT_SIGNED_HOST_PROOF)$' "${RUNNER_TEMP}/host-access-report.txt"
+          grep -Eq '^host_access_next_action=(STAGE_REQUIRES_DURABLE_BEGIN|BIND_AUDIENCE_REQUIRES_DURABLE_BEGIN|VERIFY_SIGNER_AND_VM_CREDENTIALS_BEFORE_CUTOVER|VERIFY_BOTH_SIGNED_HOSTS_AFTER_CUTOVER)$' "${RUNNER_TEMP}/host-access-report.txt"
+          grep -Eq '^host_access_worker_token_identity=(MISSING|UNPROVEN|NOT_ACTIVE|ACTIVE_IDENTITY_ONLY)$' "${RUNNER_TEMP}/host-access-report.txt"
+          grep -Eq '^host_access_access_token_identity=(MISSING|UNPROVEN|NOT_ACTIVE|ACTIVE_IDENTITY_ONLY)$' "${RUNNER_TEMP}/host-access-report.txt"
+          grep -Ec '^host_access_(worker|access)_token_fingerprint=(NONE|[0-9a-f]{16})$' "${RUNNER_TEMP}/host-access-report.txt" | grep -Fxq 2
+          grep -Fxq 'host_access_provider_write_authority=UNPROVEN_REQUIRES_SCOPE_MATCH' "${RUNNER_TEMP}/host-access-report.txt"
+      - name: Attach read-only Rust verdict to the one operator report
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${REPORT_COMMENT_ID}" =~ ^[1-9][0-9]{0,19}$ ]]
+          python3 - "${RUNNER_TEMP}/host-access-report.txt" <<'PY'
+          import json,os,subprocess,sys
+          lines=open(sys.argv[1],encoding="utf-8").read().splitlines()
+          data=dict(line.split("=",1) for line in lines)
+          assert len(lines)==len(data)==12
+          assert data["host_access_schema"]=="sing-box.host-access-boundary/v1"
+          assert data["host_access_provider_mutations"]=="0"
+          assert data["host_access_native_mutations"]=="0"
+          url=f"repos/{os.environ['GITHUB_REPOSITORY']}/issues/comments/{os.environ['REPORT_COMMENT_ID']}"
+          existing=subprocess.check_output(["gh","api",url,"--jq",".body"],text=True)
+          appendix="\n\n### Host Access / credential isolation — canonical Rust provider GET, not signer proof\n\n"+json.dumps(data,sort_keys=True)
+          payload=os.path.join(os.environ["RUNNER_TEMP"],"host-access-patch.json")
+          with open(payload,"w") as out: json.dump({"body":existing+appendix},out)
+          subprocess.run(["gh","api","--method","PATCH",url,"--input",payload],
+                         stdout=subprocess.DEVNULL,check=True)
+          PY
+
   host_capabilities:
     # Not another public command or native mutation path. The same exact
     # authorized /host status --deep may observe existing protected secrets
