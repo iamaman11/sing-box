@@ -891,10 +891,14 @@ pub(super) async fn fetch_release_bound_first_use_git(
         "https://raw.githubusercontent.com/iamaman11/sing-box/{}/{}",
         active.source_revision, SPEC
     );
+    // Keep URL allocations alive across the concurrent network futures.
+    let release_url = format!("{base}/release-set.pb");
+    let registry_url = format!("{base}/fleet-registry.pb");
+    let sidecar_url = format!("{base}/fleet-registry.pb.sha256");
     let (release, registry, sidecar, spec) = tokio::try_join!(
-        fetch_bounded(&client, &format!("{base}/release-set.pb"), MAX_RELEASE),
-        fetch_bounded(&client, &format!("{base}/fleet-registry.pb"), MAX_REGISTRY),
-        fetch_bounded(&client, &format!("{base}/fleet-registry.pb.sha256"), 256),
+        fetch_bounded(&client, &release_url, MAX_RELEASE),
+        fetch_bounded(&client, &registry_url, MAX_REGISTRY),
+        fetch_bounded(&client, &sidecar_url, 256),
         fetch_bounded(&client, &spec_url, MAX_SPEC),
     )?;
     let local_release = fs::read(Path::new(&active.release_dir).join("release-set.pb"))
