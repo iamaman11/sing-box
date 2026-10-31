@@ -1178,6 +1178,11 @@ mod tests {
         run(&["/setowner", "*S-1-5-32-544", "/Q"]);
         let denied = format!("*{original_owner}:(RC)");
         run(&["/deny", &denied, "/Q"]);
+        // A file owner normally has implicit READ_CONTROL even when an
+        // ordinary user/group ACE denies it. OWNER RIGHTS (S-1-3-4)
+        // explicitly constrains that implicit owner privilege, reproducing
+        // the sealed SYSTEM-only production key's Win32 error 5.
+        run(&["/deny", "*S-1-3-4:(RC)", "/Q"]);
 
         let mut wide: Vec<u16> = private.as_os_str().encode_wide().collect();
         wide.push(0);
