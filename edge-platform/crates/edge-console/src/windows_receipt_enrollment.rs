@@ -310,11 +310,8 @@ pub(super) fn verify_existing_receipt_identity_slot(
     // and is reserved for the SYSTEM journal executor. Independently prove
     // the exact existing journal directory and its entire protected ACL
     // chain without granting Administrator authority to execute the journal.
-    edge_shared_types::host_journal::verify_windows_protected_path_acl(
-        &root.join("journal"),
-        false,
-    )
-    .map_err(str::to_owned)?;
+    edge_shared_types::host_journal::verify_windows_protected_path_acl(&root.join("journal"), false)
+        .map_err(str::to_owned)?;
     for name in [PRIVATE, PUBLIC, COMPLETED] {
         let path = root.join(name);
         edge_shared_types::host_journal::verify_windows_protected_path_acl(&path, true)
