@@ -475,7 +475,13 @@ jobs:
     # No routine hosted SSH refresh/upgrade; the installed native owner
     # independently verifies current Git receipt and signed intent.
     # Stale root trust fails closed instead of inventing an SSH fallback.
-    needs: [host, host_report, host_worker_authorizer]
+    # The hosted deep diagnostic must publish its canonical JSON before
+    # the native signed readback can merge it. Otherwise three independent
+    # publishers compete for one GitHub concurrency group (one running,
+    # one pending), cancelling an older pending job and losing evidence.
+    # always() also preserves native read-only status when this optional
+    # hosted VM diagnostic is skipped (including on Windows) or fails.
+    needs: [host, host_report, host_worker_authorizer, host_capabilities]
     if: >-
       always() && !cancelled() &&
       needs.host.result == 'success' &&
