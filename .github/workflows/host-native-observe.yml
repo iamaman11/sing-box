@@ -298,8 +298,15 @@ jobs:
             echo 'HOST_VM_LEGACY_DIRECT_MUTATION_AUTHORITY_FORBIDDEN' >&2
             exit 1
           fi
-          if [[ "${COMMAND_BODY}" == *" --deep" || "${HOST_OPERATION}" == RECOVER_PREFLIGHT ||
-                "${HOST_OPERATION}" == APPLY_PREFLIGHT ]]; then
+          if [[ "${HOST_OPERATION}" == RECOVER_PREFLIGHT ]]; then
+            # The newly bridged binary may hold a prior protected trust.pb
+            # with the retired Windows mode field. A diagnostic BEFORE the
+            # code-only trust refresh can fail on that historical registry.
+            # Preserve all root-owner/sudo/no-Docker checks above, then
+            # re-observe AFTER the independently locked host-refresh step.
+            echo 'host_pre_refresh_diagnose=DEFERRED_HISTORICAL_TRUST_COMPAT'
+          elif [[ "${COMMAND_BODY}" == *" --deep" ||
+                  "${HOST_OPERATION}" == APPLY_PREFLIGHT ]]; then
             sudo -n "${owner}" local diagnose
           else
             # Old installed sudoers may not yet grant --fast. Native deep
@@ -938,8 +945,20 @@ jobs:
               grep -Fxq "host_native_snapshot_proof=${NATIVE_SNAPSHOT_PROOF}" "${audit}"
               original_file="${RUNNER_TEMP}/host-deep-preliminary.txt"
               printf '%s' "${original}" > "${original_file}"
-              original="$(python3 edge-platform/scripts/host_diagnostic_summary.py --merge-signed \
-                "${original_file}" "${audit}" "${SOURCE_COMMENT_ID}" "${GITHUB_SHA}")"
+              if grep -Fq '### Unified deep diagnosis — read only' "${original_file}"; then
+                # An existing preliminary MUST pass every exact Rust-bound
+                # correlation/field test. Do not downgrade a malformed
+                # preliminary into a permissive fallback.
+                original="$(python3 edge-platform/scripts/host_diagnostic_summary.py --merge-signed \
+                  "${original_file}" "${audit}" "${SOURCE_COMMENT_ID}" "${GITHUB_SHA}")"
+              else
+                # Provider preliminaries are independently scheduled and may
+                # be missing/cancelled. Preserve the verified root signature
+                # and explicit source gap in the SAME issue comment instead
+                # of discarding trustworthy evidence on a presentation error.
+                # Never fabricate Git parity, provider GO or mutation proof.
+                original="${original}$(printf '\n\n### Unified deep diagnosis — provider preliminary unavailable\n\nStatus: **UNPROVEN** (`HOST_DIAG_PRELIMINARY_NOT_PUBLISHED`). Verified native evidence follows separately; current-Git readiness, resource mutation and replay remain unproven.\n')"
+              fi
             fi
             appendix="$(printf '\n\n### Native observation — same operation, independent runner\n\n%s\n' "${body}")"
             gh api -X PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${REPORT_COMMENT_ID}" \

@@ -343,7 +343,12 @@ if __name__ == "__main__":
                 raise ValueError("HOST_DIAG_SIGNED_INPUT_TOO_LARGE")
             print(merge_rust_verified_native(original, native, comment_id, expected_source))
         except (ValueError, KeyError, TypeError, UnicodeError, OSError) as error:
-            raise SystemExit("HOST_DIAG_SIGNED_MERGE_REJECTED") from error
+            # Publish only enumerated, bounded reason codes. The original
+            # exception might contain untrusted API/JSON text or credentials.
+            # A named structural rejection is actionable without exposing it.
+            reason = str(error)
+            code = reason if TOKEN.fullmatch(reason) and reason.startswith("HOST_DIAG_") else "HOST_DIAG_SIGNED_MERGE_REJECTED"
+            raise SystemExit(code) from error
         sys.exit(0)
     raw = sys.stdin.read(8193)
     if len(raw) > 8192:

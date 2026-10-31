@@ -254,17 +254,16 @@ pub(super) fn read_only_first_use_trust_stage(
     root: &Path,
     active: &WindowsActivationState,
 ) -> Result<&'static str, String> {
-    read_only_trust_stage_with_visibility(
-        root,
-        active,
-        require_windows_local_administrator_first_use().is_ok(),
-    )
+    // The caller has already verified the actual elevated Administrator
+    // primary token in read_only_first_use_stage(). NEVER re-evaluate it:
+    // a transient second check previously selected a secret-reading path.
+    // This is public metadata only, never SYSTEM trust authentication.
+    read_only_trust_stage_from_public_markers(root, active)
 }
 
-fn read_only_trust_stage_with_visibility(
+fn read_only_trust_stage_from_public_markers(
     root: &Path,
     active: &WindowsActivationState,
-    admin_metadata_only: bool,
 ) -> Result<&'static str, String> {
     let marker = root.join(MARKER);
     let done = root.join(DONE);
@@ -306,42 +305,12 @@ fn read_only_trust_stage_with_visibility(
         if !has_marker && !has_done {
             return Err("HOST_WINDOWS_FIRST_USE_ORPHAN_TRUST_SNAPSHOT".into());
         }
-        // Administrator may observe sealed trust metadata and public markers,
-        // but must not read the SYSTEM-only snapshot or its descriptor. This
-        // projection is never authority for a native operation: SYSTEM still
-        // decodes and independently verifies trust in current_authority().
-        if admin_metadata_only {
-            if !has_done || has_marker {
-                return Err("HOST_WINDOWS_FIRST_USE_TRUST_COMPLETION_UNPROVEN".into());
-            }
-            return Ok("TRUST_RECORDED_UNVERIFIED");
+        // Only inspect the *existence* and bounded type of trust.pb.
+        // The contents are SYSTEM-only even for elevated Administrator.
+        // A completed public marker is not a signer or Worker proof.
+        if !has_done || has_marker {
+            return Err("HOST_WINDOWS_FIRST_USE_TRUST_COMPLETION_UNPROVEN".into());
         }
-        let bytes = fs::read(root.join(TRUST_FILE))
-            .map_err(|_| "HOST_WINDOWS_FIRST_USE_TRUST_SNAPSHOT_UNREADABLE")?;
-        let snapshot = FleetNativeTrustSnapshot::decode(bytes.as_slice())
-            .map_err(|_| "HOST_WINDOWS_FIRST_USE_TRUST_SNAPSHOT_PROTO_INVALID")?;
-        if snapshot.encode_to_vec() != bytes
-            || snapshot.schema_version != 1
-            || !windows_receipt_enrollment::valid_machine_id(&snapshot.machine_id)
-            || snapshot.pinned_worker_public_key.len() != 32
-            || snapshot.release_set_pb.is_empty()
-        {
-            return Err("HOST_WINDOWS_FIRST_USE_TRUST_SNAPSHOT_INVALID".into());
-        }
-        let recorded = sha_hex(&snapshot.release_set_pb);
-        if recorded != active.release_set_sha256 {
-            let old = ReleaseSet::decode(snapshot.release_set_pb.as_slice())
-                .map_err(|_| "HOST_WINDOWS_FIRST_USE_TRUST_HISTORY_RELEASE_INVALID")?;
-            let install = root
-                .parent()
-                .ok_or("HOST_WINDOWS_FIRST_USE_TRUST_HISTORY_ROOT_INVALID")?;
-            windows_receipt_enrollment::historical_marker_activation(
-                install,
-                &old.source_revision,
-                &recorded,
-            )?;
-        }
-        // This read-only local projection is NOT live Worker attestation.
         return Ok("TRUST_RECORDED_UNVERIFIED");
     }
     if has_marker {
@@ -1315,7 +1284,7 @@ mod tests {
     }
 
     #[test]
-    fn read_only_trust_stage_never_calls_a_recorded_snapshot_authorized() {
+    fn read_only_trust_stage_never_opens_system_only_snapshot_or_proves_authority() {
         let dir = std::env::temp_dir().join(format!("w4-trust-readonly-{}", std::process::id()));
         std::fs::create_dir(&dir).unwrap();
         let release = b"old installed immutable bytes";
@@ -1326,7 +1295,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            read_only_trust_stage_with_visibility(&dir, &active, false),
+            read_only_trust_stage_from_public_markers(&dir, &active),
             Ok("RECEIPT_READY_TRUST_NOT_REQUESTED")
         );
         let marker = FleetWindowsTrustEnrollment {
@@ -1337,32 +1306,34 @@ mod tests {
         };
         std::fs::write(dir.join(MARKER), marker.encode_to_vec()).unwrap();
         assert_eq!(
-            read_only_trust_stage_with_visibility(&dir, &active, false),
+            read_only_trust_stage_from_public_markers(&dir, &active),
             Ok("AWAITING_GIT_AUTHORITY_OR_SYSTEM")
         );
-        let snapshot = FleetNativeTrustSnapshot {
-            schema_version: 1,
-            machine_id: HOST.into(),
-            release_set_pb: release.to_vec(),
-            pinned_worker_public_key: vec![7; 32],
-            ..Default::default()
-        };
-        std::fs::write(dir.join(TRUST_FILE), snapshot.encode_to_vec()).unwrap();
+        // Non-protobuf protected payload must NEVER be opened or decoded by
+        // the elevated public status reader. A pending marker cannot claim
+        // completed trust merely because the sealed file is present.
+        std::fs::write(dir.join(TRUST_FILE), b"unreadable to public caller").unwrap();
         assert_eq!(
-            read_only_trust_stage_with_visibility(&dir, &active, false),
-            Ok("TRUST_RECORDED_UNVERIFIED")
+            read_only_trust_stage_from_public_markers(&dir, &active),
+            Err("HOST_WINDOWS_FIRST_USE_TRUST_COMPLETION_UNPROVEN".into())
         );
-        std::fs::write(dir.join(TRUST_FILE), b"bad protobuf").unwrap();
-        assert!(read_only_trust_stage_with_visibility(&dir, &active, false).is_err());
-        assert!(read_only_trust_stage_with_visibility(&dir, &active, true).is_err());
         std::fs::rename(dir.join(MARKER), dir.join(DONE)).unwrap();
-        // Public completion metadata is observable even when the sealed
-        // payload cannot be read. It NEVER becomes a cryptographic PASS.
         assert_eq!(
-            read_only_trust_stage_with_visibility(&dir, &active, true),
+            read_only_trust_stage_from_public_markers(&dir, &active),
             Ok("TRUST_RECORDED_UNVERIFIED")
         );
-        assert!(read_only_trust_stage_with_visibility(&dir, &active, false).is_err());
+        // A completed marker with no trust snapshot is not a valid stage.
+        std::fs::remove_file(dir.join(TRUST_FILE)).unwrap();
+        assert_eq!(
+            read_only_trust_stage_from_public_markers(&dir, &active),
+            Err("HOST_WINDOWS_FIRST_USE_TRUST_DONE_WITHOUT_SNAPSHOT".into())
+        );
+        std::fs::remove_file(dir.join(DONE)).unwrap();
+        std::fs::write(dir.join(TRUST_FILE), b"orphan trust").unwrap();
+        assert_eq!(
+            read_only_trust_stage_from_public_markers(&dir, &active),
+            Err("HOST_WINDOWS_FIRST_USE_ORPHAN_TRUST_SNAPSHOT".into())
+        );
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

@@ -33,6 +33,46 @@ struct AdminOperatorPayload {
     stdin_base64: String,
     timeout_seconds: u32,
     publish_output: bool,
+    // Optional, tightly fixed legacy binary bridge. Never legal for an
+    // arbitrary Admin command or Windows.
+    #[serde(default)]
+    legacy_release_set_sha256: Option<String>,
+}
+
+const VM_LEGACY_BRIDGE_SCRIPT: &str = include_str!("../../../scripts/vm_legacy_owner_bridge.py");
+
+/// Only the exact code-only handoff may bind an old installed release.
+/// The native OLD root must STILL verify that pin against its protected
+/// trust snapshot before a Worker-authorized BEGIN. This is not general
+/// historical administration.
+fn exact_vm_legacy_binary_bridge(
+    request: &edge_shared_types::FleetNativeAdminRequest,
+    current_release_sha256: &[u8],
+) -> bool {
+    let digest_hex = |bytes: &[u8]| {
+        bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
+    };
+    if request.release_set_sha256.len() != 32
+        || request.release_set_sha256 == current_release_sha256
+        || request.argv.len() != 5
+        || request.argv[0] != "/usr/bin/python3"
+        || request.argv[1] != "-c"
+        || request.argv[2] != VM_LEGACY_BRIDGE_SCRIPT
+        || request.argv[3] != digest_hex(&request.release_set_sha256)
+        || request.argv[4] != digest_hex(current_release_sha256)
+        || request.working_directory != "/"
+        || !request.environment.is_empty()
+        || !request.stdin_bytes.is_empty()
+        || request.timeout_seconds == 0
+        || request.timeout_seconds > 180
+        || request.publish_output
+    {
+        return false;
+    }
+    true
 }
 
 const MAX_INVENTORY_BYTES: u64 = 65_536;
@@ -245,12 +285,28 @@ pub(crate) fn run(
                 .decode(operator.stdin_base64.as_bytes())
                 .map_err(|_| "HOST_ADMIN_STDIN_ENCODING_INVALID")?;
             let body = format!("/host admin {machine_id} {argv_base64}");
+            let current_release = exact_hex_sha256(&release.release().release_set_sha256)?;
+            let requested_release = match operator.legacy_release_set_sha256.as_deref() {
+                None => current_release.clone(),
+                Some(old_sha) => {
+                    let selected = desired
+                        .hosts
+                        .iter()
+                        .find(|h| h.machine_id == machine_id)
+                        .ok_or("HOST_ADMIN_GIT_MACHINE_NOT_REGISTERED")?;
+                    if selected.kind != ManagedHostKind::Vm as i32 {
+                        return Err("HOST_VM_LEGACY_BRIDGE_VM_ONLY".into());
+                    }
+                    exact_hex_sha256(old_sha)?
+                }
+            };
+            let is_legacy_bridge = operator.legacy_release_set_sha256.is_some();
             let request = edge_shared_types::FleetNativeAdminRequest {
                 schema_version: 1,
                 machine_id: machine_id.clone(),
                 source_comment_id: comment,
                 argv: operator.argv,
-                release_set_sha256: exact_hex_sha256(&release.release().release_set_sha256)?,
+                release_set_sha256: requested_release,
                 requested_at_unix: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
                     .map_err(|_| "HOST_ADMIN_CLOCK_UNAVAILABLE")?
@@ -265,6 +321,9 @@ pub(crate) fn run(
                 publish_output: operator.publish_output,
             };
             edge_shared_types::host_admin::validate(&request).map_err(str::to_owned)?;
+            if is_legacy_bridge && !exact_vm_legacy_binary_bridge(&request, &current_release) {
+                return Err("HOST_VM_LEGACY_BRIDGE_NOT_EXACT".into());
+            }
             (
                 HostCommand::Status {
                     machine_id: Some(machine_id),
@@ -1424,10 +1483,13 @@ pub(crate) fn run(
                     .map_err(|_| "HOST_ADMIN_GIT_HOST_KIND_INVALID")?,
             )
             .map_err(str::to_owned)?;
+            let current_release = exact_hex_sha256(&release.release().release_set_sha256)?;
+            let permitted_legacy_bridge = selected.kind == ManagedHostKind::Vm as i32
+                && exact_vm_legacy_binary_bridge(&request, &current_release);
             if request.machine_id != machine_id
                 || (!receipt.rejected_before_begin
-                    && request.release_set_sha256
-                        != exact_hex_sha256(&release.release().release_set_sha256)?)
+                    && request.release_set_sha256 != current_release
+                    && !permitted_legacy_bridge)
             {
                 return Err("HOST_ADMIN_GIT_IDENTITY_OR_RELEASE_MISMATCH".into());
             }
@@ -2821,6 +2883,38 @@ mod tests {
         );
         std::fs::remove_file(&path).unwrap();
         assert!(append_host_verifier_output(&path, "typed_verdict", "PASS").is_err());
+    }
+
+    #[test]
+    fn legacy_root_binary_bridge_is_vm_only_code_only_and_exact() {
+        let current = vec![0x11; 32];
+        let mut request = edge_shared_types::FleetNativeAdminRequest {
+            release_set_sha256: vec![0x22; 32],
+            argv: vec![
+                "/usr/bin/python3".into(),
+                "-c".into(),
+                VM_LEGACY_BRIDGE_SCRIPT.into(),
+                "22".repeat(32),
+                "11".repeat(32),
+            ],
+            working_directory: "/".into(),
+            timeout_seconds: 120,
+            publish_output: false,
+            ..Default::default()
+        };
+        assert!(exact_vm_legacy_binary_bridge(&request, &current));
+        request.argv[2].push_str("\n# changed");
+        assert!(!exact_vm_legacy_binary_bridge(&request, &current));
+        request.argv[2] = VM_LEGACY_BRIDGE_SCRIPT.into();
+        request.argv[4] = "33".repeat(32);
+        assert!(!exact_vm_legacy_binary_bridge(&request, &current));
+        request.argv[4] = "11".repeat(32);
+        request.environment.push("X=1".into());
+        assert!(!exact_vm_legacy_binary_bridge(&request, &current));
+        request.environment.clear();
+        request.release_set_sha256 = current.clone();
+        request.argv[3] = "11".repeat(32);
+        assert!(!exact_vm_legacy_binary_bridge(&request, &current));
     }
 
     #[test]

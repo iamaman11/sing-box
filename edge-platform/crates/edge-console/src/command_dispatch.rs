@@ -244,6 +244,10 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             // An unavailable identity stage never suppresses task/API evidence.
             let stage_result = windows_receipt_enrollment::read_only_first_use_stage(root);
             let stage = stage_result.as_ref().copied().unwrap_or("UNPROVEN");
+            // The machine binding is independent of trust visibility. Do not
+            // let its failure suppress the already read Task/SYSTEM/BEGIN
+            // report: every probe must retain its own explicit error code.
+            let machine_result = windows_receipt_enrollment::bound_machine_id(root);
             let task_status = match windows_handoff::observe() {
                 Ok(task) => {
                     let identity = task.validate(&active.console_path, task.enabled);
@@ -253,20 +257,21 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                 }
                 Err(code) => serde_json::json!({"state": "UNPROVEN", "error_code": code}),
             };
-            let handoff = match windows_handoff::last_progress(root) {
-                Ok(Some(record)) => {
-                    serde_json::json!({"state": record.code,
-                    "phase": record.handoff.as_ref().map(|h| edge_shared_types::WindowsHandoffPhase::try_from(h.phase).map(|p| p.as_str_name()).unwrap_or("UNPROVEN")),
-                    "target_release_set_sha256": record.handoff.as_ref().map(|h| &h.target_release_set_sha256),
-                    "accepted_revision": record.handoff.as_ref().map(|h| &h.accepted_revision),
-                    "effects_possible": record.handoff.as_ref().map(|h| h.effects_possible),
-                    "error_code": record.handoff.as_ref().map(|h| &h.error_code),
-                    "observed_at_unix": record.handoff.as_ref().map(|h| h.observed_at_unix),
-                    "request_id": record.request_id, "observed_active_release": record.active_release_set_sha256,
-                    "authority": "UNSIGNED_LOCAL_ADMIN_OBSERVATION", "replay_allowed": false})
+            // Report the EXISTING durable BEGIN independently from Task Scheduler.
+            // Metadata is not a signed receipt, does not establish completion
+            // and never permits replay of an interrupted handoff.
+            let begin_marker = root.join("offline-bootstrap-intent-v1");
+            let retained_begin = match fs::symlink_metadata(&begin_marker) {
+                Ok(meta) if meta.is_file() => serde_json::json!({
+                    "state": "PRESENT_UNADJUDICATED",
+                    "authority": "UNAUTHENTICATED_LOCAL_METADATA",
+                    "replay_allowed": false
+                }),
+                Ok(_) => serde_json::json!({"state": "INVALID_TYPE_NO_REPLAY"}),
+                Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+                    serde_json::json!({"state": "NOT_FOUND_READ_ONLY"})
                 }
-                Ok(None) => serde_json::json!({"state": "NOT_RECORDED"}),
-                Err(code) => serde_json::json!({"state": "UNPROVEN", "error_code": code}),
+                Err(_) => serde_json::json!({"state": "METADATA_UNPROVEN_NO_REPLAY"}),
             };
             // Advisory, typed LocalSystem evidence from the SAME protected
             // native journal. Never infer a failure from Task exit=1 alone.
@@ -290,17 +295,20 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     "schema": "sing-box.windows-first-use-status/v1",
                     "system_dispatch_failure": system_failure,
                     "system_task": task_status,
-                    "offline_handoff": handoff,
+                    "retained_begin": retained_begin,
                     "stage": stage,
                     "stage_error": stage_result.as_ref().err(),
-                    "machine_id": windows_receipt_enrollment::bound_machine_id(root)
-                        .map_err(ConsoleError::Command)?,
+                    "machine_id": machine_result.as_ref().ok(),
+                    "machine_id_error": machine_result.as_ref().err(),
                     "installed_release_set_sha256": active.release_set_sha256,
                     "trusted_remote_execution": false,
                     "mutations": 0
                 })
             );
+            // The complete bounded report has been emitted even when either
+            // independent reader fails; preserve nonzero exit for callers.
             stage_result.map_err(ConsoleError::Command)?;
+            machine_result.map_err(ConsoleError::Command)?;
             Ok(())
         }
         #[cfg(windows)]

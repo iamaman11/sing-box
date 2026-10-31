@@ -105,6 +105,38 @@ assert 'vm-credential-proof "${TARGET_MACHINE}"' in capability
 assert "host_vm_worker_live_source=GIT_PIN_EXACT_ACCESS_GET_PROVEN" in capability
 assert "host_vm_worker_live_source=BLOCKED" in capability
 assert "host_worker_mutations=0" in capability
+# GitHub job-level concurrency retains only ONE running and ONE pending
+# participant per group; a third simultaneous publisher cancels the older
+# pending report even with cancel-in-progress=false. Host Access and hosted
+# VM capability GET may run concurrently, but native signed reconciliation
+# must wait for the hosted capability JSON to be written or explicitly fail.
+host_access = router.split("  host_access_boundary:\n", 1)[1].split("\n  host_capabilities:\n", 1)[0]
+native_dispatch = router.split("  host_observe:\n", 1)[1].split("\n  host_report:\n", 1)[0]
+def require_ordered_native_report(dispatch):
+    assert "needs: [host, host_report, host_worker_authorizer, host_capabilities]" in dispatch
+    assert "always() && !cancelled()" in dispatch
+    assert "needs.host.result == 'success'" in dispatch
+    assert "needs.host_report.result == 'success'" in dispatch
+    assert "uses: ./.github/workflows/host-native-observe.yml" in dispatch
+require_ordered_native_report(native_dispatch)
+for missing in (
+    native_dispatch.replace(
+        "host_worker_authorizer, host_capabilities]", "host_worker_authorizer]", 1),
+    native_dispatch.replace("always() && !cancelled()", "true", 1),
+    native_dispatch.replace("needs.host_report.result == 'success'", "true", 1),
+):
+    try:
+        require_ordered_native_report(missing)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("UNSERIALIZED_HOST_DEEP_NATIVE_REPORT_NOT_REJECTED")
+assert "group: host-deep-report-${{ github.event.comment.id }}" in host_access
+assert "group: host-deep-report-${{ github.event.comment.id }}" in capability
+assert "group: host-deep-report-${{ inputs.source_comment_id }}" in native
+assert "cancel-in-progress: false" in host_access
+assert "cancel-in-progress: false" in capability
+assert "cancel-in-progress: false" in native
 assert "host_provider_mutations=0" in capability
 assert "host_diagnostic_summary.py" in capability
 assert "report_comment_id: ${{ needs.host_report.outputs.comment_id }}" in router
@@ -600,6 +632,151 @@ assert "grep -Fxq false" not in router, "GitHub API bool must be decoded as JSON
 assert "jq -e '(.errors == null)" in router
 assert "needs.host.outputs.operation == 'STATUS'" in router
 
+# Retain the existing full-root VM ADMIN executor independent of the
+# declarative graph effectors. It must be Worker signed and journalled,
+# not runner-side shell or an accidental resource-path allowlist.
+vm_admin = Path("edge-platform/crates/edge-agent/src/host_admin_native.rs").read_text(encoding="utf-8")
+vm_dispatch = Path("edge-platform/crates/edge-agent/src/local_dispatch.rs").read_text(encoding="utf-8")
+vm_cli = Path("edge-platform/crates/edge-agent/src/cli.rs").read_text(encoding="utf-8")
+assert "cli::LocalCommand::HostAdmin => host_admin_native::execute()" in vm_dispatch
+assert "cli::LocalCommand::HostApply => host_native::apply(&stack_dir)" in vm_dispatch
+assert "HostAdmin," in vm_cli and "HostApply," in vm_cli
+assert "fn prepared_root_child(" in vm_admin
+assert 'OsCommand::new("/usr/bin/timeout")' in vm_admin
+assert "host_admin::verify_authorization(&request, &auth" in vm_admin
+assert "durable_create(&pending, &raw)?;" in vm_admin
+assert vm_admin.index("host_admin::verify_authorization(&request, &auth") < vm_admin.index("durable_create(&pending, &raw)?;") < vm_admin.index("let mut cmd = prepared_root_child(&request)?;")
+assert "independent_admin_operation_available(&journal, &operation_id)?;" in vm_admin
+assert "fn native_full_root_command_preserves_exact_authorized_program_and_arguments()" in vm_admin
+assert "fn vm_unrestricted_root_surface_remains_worker_signed_and_byte_exact()" in Path(
+    "edge-platform/crates/edge-shared-types/src/host_admin.rs"
+).read_text(encoding="utf-8")
+# An unknown BEGIN must block arbitrary ADMIN, not grant an escape hatch.
+assert "HOST_ADMIN_PENDING_UNKNOWN_NO_REPLAY" in vm_admin
+assert "arbitrary_vm_admin_never_bypasses_unknown_resource_or_other_admin" in vm_admin
+
+# A single failed local read-only Windows probe cannot discard all
+# other SYSTEM/task/BEGIN evidence. Keep machine binding independent and
+# preserve a nonzero exit after the bounded report has already been printed.
+first_use_dispatch = Path("edge-platform/crates/edge-console/src/command_dispatch.rs").read_text(encoding="utf-8")
+first_use_code = first_use_dispatch.split("Command::OfflineFirstUseStatus(args) => {", 1)[1].split(
+    "Command::OfflineHostTrustPrepare(args)", 1
+)[0]
+assert "let machine_result = windows_receipt_enrollment::bound_machine_id(root);" in first_use_code
+assert '"machine_id": machine_result.as_ref().ok()' in first_use_code
+assert '"machine_id_error": machine_result.as_ref().err()' in first_use_code
+assert '"stage_error": stage_result.as_ref().err()' in first_use_code
+assert '"system_dispatch_failure": system_failure' in first_use_code
+assert '"system_task": task_status' in first_use_code
+assert '"retained_begin": retained_begin' in first_use_code
+assert '"trusted_remote_execution": false' in first_use_code
+assert '"mutations": 0' in first_use_code
+assert first_use_code.index('println!(') < first_use_code.index('stage_result.map_err(ConsoleError::Command)?;')
+assert first_use_code.index('stage_result.map_err(ConsoleError::Command)?;') < first_use_code.index('machine_result.map_err(ConsoleError::Command)?;')
+assert "bound_machine_id(root)\n                        .map_err(ConsoleError::Command)?" not in first_use_code
+
+# #595 S1: PREVIOUS VM identity/registry compatibility, foreign Windows mode
+# independence and negative signer/owner/receipt cases are verified by the
+# production edge-agent Rust tests (cargo test --workspace --locked). Do not
+# duplicate implementation-string checks here: renaming a Rust function must
+# not become an artificial release blocker. This test protects workflow
+# transport topology and no-replay, not Rust function spelling.
+native_bridge_workflow = Path(".github/workflows/host-native-observe.yml").read_text(encoding="utf-8")
+assert "host_pre_refresh_diagnose=DEFERRED_HISTORICAL_TRUST_COMPAT" in native_bridge_workflow
+assert 'sudo -n "${owner}" local host-refresh' in native_bridge_workflow
+assert 'sudo -n "${owner}" local diagnose' in native_bridge_workflow
+
+# Legacy VM Root Agent cannot decode CURRENT Windows signer/mode registry,
+# but its signed ADMIN protocol is release-pinned to its historical trust.
+# Permit the OLD pin ONLY for this literal, no-stdin, no-environment
+# executable replacement; do not relax generic ADMIN verifier or journal.
+legacy_host_source = Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(encoding="utf-8")
+legacy_script = Path("edge-platform/scripts/vm_legacy_owner_bridge.py").read_text(encoding="utf-8")
+assert 'legacy_release_set_sha256: Option<String>' in legacy_host_source
+assert 'exact_vm_legacy_binary_bridge(&request, &current_release)' in legacy_host_source
+assert 'HOST_VM_LEGACY_BRIDGE_VM_ONLY' in legacy_host_source
+assert 'HOST_VM_LEGACY_BRIDGE_NOT_EXACT' in legacy_host_source
+assert "legacy_root_binary_bridge_is_vm_only_code_only_and_exact" in legacy_host_source
+assert "os.replace(temporary, AGENT)" in legacy_script
+assert 'HEAD' not in legacy_script  # current remote main, not caller-controlled branch
+assert 'head = fetch_json(API + "/git/ref/heads/main")' in legacy_script
+assert 'trust_sha = sha(read_small(TRUST, 9 * 1024 * 1024))' in legacy_script
+assert "local host-refresh" not in legacy_script
+assert len(legacy_script) <= 8192
+# Run the actual fixed bridge parser with adversarial malformed old/new
+# release pins. It must fail BEFORE network, staging or root mutation.
+# This is an executable Python negative test, not a source-string guess.
+import sys
+legacy_scope = {"__name__": "sing_box_vm_legacy_bridge_test"}
+exec(compile(legacy_script, "edge-platform/scripts/vm_legacy_owner_bridge.py", "exec"),
+     legacy_scope)
+original_argv = sys.argv[:]
+try:
+    for invalid_argv in (
+        ["bridge"],
+        ["bridge", "bad", "bad"],
+        ["bridge", "a" * 64, "a" * 64],
+        ["bridge", "A" * 64, "b" * 64],
+    ):
+        sys.argv = invalid_argv
+        try:
+            legacy_scope["main"]()
+        except SystemExit as error:
+            assert str(error) == "HOST_VM_LEGACY_BRIDGE_REQUEST_INVALID"
+        else:
+            raise AssertionError("Invalid legacy bridge pins cannot execute")
+finally:
+    sys.argv = original_argv
+
+# GitHub concurrency preserves only ONE pending job. Three parallel
+# PATCH writers with the same group cancel one another even when
+# cancel-in-progress is false. Order the existing Access -> provider ->
+# signed native report as DAG dependencies; keep independent failures
+# observable rather than skipping all downstream native evidence.
+workflow_deep = Path(".github/workflows/edge-control-plane.yml").read_text(encoding="utf-8")
+access_job = workflow_deep.split("  host_access_boundary:", 1)[1].split("  host_capabilities:", 1)[0]
+capabilities_job = workflow_deep.split("  host_capabilities:", 1)[1].split("\n  host_first_use:", 1)[0]
+observe_job = workflow_deep.split("  host_observe:", 1)[1].split("  host_report:", 1)[0]
+assert "group: host-deep-report-${{ github.event.comment.id }}" in access_job
+assert "group: host-deep-report-${{ github.event.comment.id }}" in capabilities_job
+assert "needs: [host, host_report, host_access_boundary]" in capabilities_job
+assert "always() && !cancelled()" in capabilities_job
+assert "needs: [host, host_report, host_worker_authorizer, host_capabilities]" in observe_job
+assert "always() && !cancelled()" in observe_job
+
+# A canceled provider capability job cannot hide Rust-verified root
+# evidence. Only ABSENCE of the original preliminary permits a gap note;
+# a PRESENT but malformed summary must still fail the strict merge.
+host_observe_workflow = Path(".github/workflows/host-native-observe.yml").read_text(encoding="utf-8")
+native_pub = host_observe_workflow.split('original_file="${RUNNER_TEMP}/host-deep-preliminary.txt"', 1)[1].split(
+    'appendix="$(printf', 1
+)[0]
+assert "if grep -Fq '### Unified deep diagnosis — read only'" in native_pub
+assert "host_diagnostic_summary.py --merge-signed" in native_pub
+assert "HOST_DIAG_PRELIMINARY_NOT_PUBLISHED" in native_pub
+assert native_pub.index("if grep -Fq") < native_pub.index("host_diagnostic_summary.py --merge-signed")
+assert "VERIFIED_ROOT_SIGNED_STALE_RELEASE_READ_ONLY" in host_observe_workflow
+host_diag_py = Path("edge-platform/scripts/host_diagnostic_summary.py").read_text(encoding="utf-8")
+assert 'reason.startswith("HOST_DIAG_")' in host_diag_py
+assert "TOKEN.fullmatch(reason)" in host_diag_py
+assert 'raise SystemExit(code) from error' in host_diag_py
+assert 'raise ValueError("HOST_DIAG_REPORT_MARKER_INVALID")' in host_diag_py
+
+# Elevated Administrator FIRST_USE_STATUS must never open sealed
+# SYSTEM-only trust.pb. The receipt reader already checks caller identity.
+# A second privilege check was selecting the forbidden secret-read fallback.
+trust_source = Path("edge-platform/crates/edge-console/src/windows_trust_enrollment.rs").read_text(encoding="utf-8")
+receipt_source = Path("edge-platform/crates/edge-console/src/windows_receipt_enrollment.rs").read_text(encoding="utf-8")
+assert "require_windows_local_administrator_first_use().map_err(str::to_owned)?;" in receipt_source
+public_trust = trust_source.split("pub(super) fn read_only_first_use_trust_stage(", 1)[1].split("fn complete_trust_marker(", 1)[0]
+assert "read_only_trust_stage_from_public_markers(root, active)" in public_trust
+assert "require_windows_local_administrator_first_use()" not in public_trust
+assert "fs::read(root.join(TRUST_FILE))" not in public_trust
+assert "FleetNativeTrustSnapshot::decode" not in public_trust
+assert "TRUST_RECORDED_UNVERIFIED" in public_trust
+assert "HOST_WINDOWS_FIRST_USE_TRUST_COMPLETION_UNPROVEN" in public_trust
+assert "read_only_trust_stage_never_opens_system_only_snapshot_or_proves_authority" in trust_source
+
 # Native Windows first-use is a single local Administrator transaction.
 # It must never reactivate the old NetworkService-writable unsigned mutation
 # inlet while replacing the EXACT existing LocalSystem task.
@@ -873,6 +1050,24 @@ candidate_reader = identity_owner[candidate_start:candidate_end]
 for forbidden in ("change_offline_bootstrap_task_enabled(", "rebind_pending_trust_after_offline_handoff(",
                   "fs::remove_file(", ".create_new(", "promote_candidate(", "discard_candidate("):
     assert forbidden not in candidate_reader, forbidden
+
+# No secondary mandatory writer: the existing durable offline BEGIN is the
+# sole replay fence. Its metadata is advisory in the independent status reader;
+# SYSTEM trust/receipt remains separately authenticated.
+win_handoff = Path("edge-platform/crates/edge-console/src/windows_handoff.rs").read_text(encoding="utf-8")
+assert "struct Progress" not in win_handoff
+assert "offline-handoff-" not in win_handoff
+assert "fn durable_replace(" not in win_handoff
+assert "Progress::start(" not in win_console
+assert "progress.enter(" not in win_console
+assert "offline-bootstrap-intent-v1" in win_console
+actual_begin = win_console.split('let intent = install_root.join("offline-bootstrap-intent-v1")', 1)[1].split("change_offline_bootstrap_task_enabled(false)?;", 1)[0]
+assert ".create_new(true)" in actual_begin
+assert ".sync_all()" in actual_begin
+assert "PRESENT_UNADJUDICATED" in win_dispatch
+assert "METADATA_UNPROVEN_NO_REPLAY" in win_dispatch
+assert '"retained_begin": retained_begin' in win_dispatch
+assert '"offline_handoff": handoff' not in win_dispatch
 
 # The real W4 failure occurred BEFORE native owner handoff: the offline
 # PowerShell StageOnly gate still required Ready, while Rust admitted exact
