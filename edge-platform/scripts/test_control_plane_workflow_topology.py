@@ -768,9 +768,10 @@ trust_pre_begin = trust_owner.split(
 )[1].split("/// Archive exact predecessor", 1)[0]
 for pre_begin in (identity_pre_begin, trust_pre_begin):
     assert "require_windows_local_administrator_first_use()" in pre_begin
-    assert 'verify_windows_protected_path_acl(' in pre_begin
-    assert '&root.join("journal")' in pre_begin
-    assert 'false,' in pre_begin
+    assert re.search(
+        r'verify_windows_protected_path_acl\(\s*&root\.join\("journal"\),\s*false,?\s*\)',
+        pre_begin,
+    )
     assert 'verify_native_journal_protection(' not in pre_begin
     assert 'fs::read(root.join(PRIVATE))' not in pre_begin
 assert 'if install_root != Path::new(r"C:\\sing-box")' in trust_pre_begin
