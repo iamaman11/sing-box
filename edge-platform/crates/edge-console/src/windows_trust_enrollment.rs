@@ -133,8 +133,11 @@ pub(super) fn preflight_pending_trust_handoff(
     // LocalSystem journal executor. Verify the protected journal directory
     // ACL and all ancestors; keep the SYSTEM token gate solely in the
     // dispatcher's verify_native_journal_protection path.
-    edge_shared_types::host_journal::verify_windows_protected_path_acl(&root.join("journal"), false)
-        .map_err(str::to_owned)?;
+    edge_shared_types::host_journal::verify_windows_protected_path_acl(
+        &root.join("journal"),
+        false,
+    )
+    .map_err(str::to_owned)?;
     for name in [DONE, TRUST_FILE] {
         if windows_receipt_enrollment::checked_regular_exists(
             &root.join(name),
