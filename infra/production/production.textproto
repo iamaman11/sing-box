@@ -60,6 +60,10 @@ cloudflare {
     windows_host_service_token_name: "sing-box-credentials-windows-host"
     vm_host_service_token_name: "sing-box-credentials-vm-host"
     host_service_token_duration: "forever"
+    host_access_application_name: "sing-box-credentials-vm-host-access"
+    host_access_control_identity_sha256: "37ff41b262aafe53568c29b3cd20ddc035d6bde7568458e371eef4326976c941"
+    host_access_policy_name: "sing-box-credentials-vm-host-service-auth"
+    host_access_route_pattern: "/v1/host/*"
   }
 
   target_plane {

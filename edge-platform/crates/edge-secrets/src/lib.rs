@@ -5,9 +5,10 @@ pub use credential_delivery::{
     fetch_canonical_credential_bundle, fetch_canonical_credential_bundle_with_service_identity,
     observe_canonical_credential_bundle, prove_canonical_host_signer,
     prove_canonical_host_signer_with_service_identity, read_access_service_identity,
-    request_canonical_host_authorization, request_canonical_native_admin_authorization,
-    verify_canonical_dummy_ab_slots, verify_initial_selected_dummy_slot,
-    write_access_service_identity,
+    request_canonical_host_authorization,
+    request_canonical_host_authorization_with_service_identity,
+    request_canonical_native_admin_authorization, verify_canonical_dummy_ab_slots,
+    verify_initial_selected_dummy_slot, write_access_service_identity,
 };
 
 mod credential_store;

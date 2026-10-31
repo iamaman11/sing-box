@@ -886,6 +886,26 @@ pub async fn request_canonical_host_authorization(
     intent_bytes: &[u8],
     identity_path: &Path,
 ) -> Result<edge_shared_types::FleetHostAuthorization, String> {
+    let identity = read_access_service_identity(identity_path)?;
+    request_host_authorization_with_identity(intent_bytes, &identity).await
+}
+
+/// Same single non-replayed request using the existing protected job identity.
+pub async fn request_canonical_host_authorization_with_service_identity(
+    intent_bytes: &[u8],
+    client_id: &str,
+    client_secret: &str,
+) -> Result<edge_shared_types::FleetHostAuthorization, String> {
+    let identity = AccessServiceIdentity::parse_env(&format!(
+        "CF_ACCESS_CLIENT_ID={client_id}\nCF_ACCESS_CLIENT_SECRET={client_secret}"
+    ))?;
+    request_host_authorization_with_identity(intent_bytes, &identity).await
+}
+
+async fn request_host_authorization_with_identity(
+    intent_bytes: &[u8],
+    identity: &AccessServiceIdentity,
+) -> Result<edge_shared_types::FleetHostAuthorization, String> {
     use edge_shared_types::host_lifecycle::{
         MAX_HOST_AUTHORIZATION_BYTES, decode_host_authorization, decode_host_intent,
     };
@@ -893,7 +913,6 @@ pub async fn request_canonical_host_authorization(
     if intent.operation_id.is_empty() {
         return Err("HOST_AUTHORIZATION_EMPTY_OPERATION".to_owned());
     }
-    let identity = read_access_service_identity(identity_path)?;
     let mut url = reqwest::Url::parse(&canonical_credential_worker_url(
         CredentialProjectionKind::Vm,
         1,
@@ -901,7 +920,7 @@ pub async fn request_canonical_host_authorization(
     .map_err(|_| "HOST_WORKER_CANONICAL_URL_INVALID".to_owned())?;
     url.set_path("/v1/host/authorize");
     url.set_query(None);
-    let client = credential_worker_client(&identity)?;
+    let client = credential_worker_client(identity)?;
     let response = client
         .post(url)
         .header(CONTENT_TYPE, "application/x-protobuf")

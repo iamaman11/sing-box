@@ -76,6 +76,9 @@ impl Command {
 #[derive(Debug, Subcommand)]
 pub(crate) enum CredentialReadOnlyCommand {
     ContractVerify,
+    /// Bounded canonical Rust/Protobuf readback for the existing /host --deep.
+    #[command(hide = true)]
+    HostAccessObserve,
 }
 
 #[derive(Debug, Clone, Subcommand)]
@@ -390,6 +393,7 @@ impl CredentialDeliverySlotArg {
 #[derive(Debug, Clone, Subcommand)]
 pub(crate) enum CredentialDeliveryCommand {
     ContractVerify,
+    HostAccessObserve,
     // Native read-only plan/readback for ONE durable existing-ACTIVE -> B
     // join. Never accepts credentials or grants mutation authority.
     ExistingJoinBeginPlan {
