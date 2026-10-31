@@ -734,11 +734,18 @@ pub(super) fn read_only_first_use_stage_for_offline_bootstrap(
     if !meta.file_type().is_dir() || meta.file_type().is_symlink() {
         return Err("HOST_WINDOWS_FIRST_USE_CANDIDATE_DIRECTORY_NOT_EXACT".into());
     }
+    edge_shared_types::host_journal::verify_windows_protected_path_acl(
+        &candidate_dir,
+        true,
+    )
+    .map_err(str::to_owned)?;
     let expected = candidate_dir
         .join("bin")
         .join("edge-console.exe")
         .canonicalize()
         .map_err(|_| "HOST_WINDOWS_FIRST_USE_CANDIDATE_CONSOLE_UNPROVEN")?;
+    edge_shared_types::host_journal::verify_windows_protected_path_acl(&expected, true)
+        .map_err(str::to_owned)?;
     if !expected.starts_with(&candidate_dir) {
         return Err("HOST_WINDOWS_FIRST_USE_CANDIDATE_CONSOLE_ESCAPED_ROOT".into());
     }
@@ -855,6 +862,36 @@ pub(super) fn observe(install_root: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offline_bootstrap_candidate_reader_requires_exact_distinct_target() {
+        let installed = "a".repeat(64);
+        let target = "b".repeat(64);
+        let candidate = Path::new("C:/sing-box/releases/candidate/bin/edge-console.exe");
+        let active = Path::new("C:/sing-box/releases/installed/bin/edge-console.exe");
+        assert_eq!(
+            require_exact_offline_bootstrap_reader_identity(
+                &installed, &target, candidate, candidate
+            ),
+            Ok(())
+        );
+        for (installed_case, target_case, invoking_case) in [
+            (installed.as_str(), target.as_str(), active),
+            (installed.as_str(), installed.as_str(), candidate),
+            (installed.as_str(), "short", candidate),
+            (installed.as_str(), "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", candidate),
+        ] {
+            assert_eq!(
+                require_exact_offline_bootstrap_reader_identity(
+                    installed_case,
+                    target_case,
+                    invoking_case,
+                    candidate,
+                ),
+                Err("HOST_WINDOWS_FIRST_USE_CANDIDATE_READER_NOT_EXACT")
+            );
+        }
+    }
     #[test]
     fn completed_identity_history_requires_exact_original_release() {
         let original = edge_shared_types::ReleaseSet {
