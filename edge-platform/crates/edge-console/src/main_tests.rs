@@ -357,6 +357,69 @@ fn retained_historical_begin_requires_exact_two_pins_and_never_claims_terminal()
 }
 
 #[test]
+fn disabled_retained_begin_admits_both_historical_endpoints_but_never_replays() {
+    let old_from = "a".repeat(64);
+    let old_to = "b".repeat(64);
+    let old_revision = "c".repeat(40);
+    let new_revision = "d".repeat(40);
+    let new_release = "e".repeat(64);
+    let retained = VerifiedRetainedOfflineBootstrap {
+        original_bytes: Vec::new(),
+        sha256: "f".repeat(64),
+        from: old_from.clone(),
+        to: old_to.clone(),
+        accepted_revision: old_revision.clone(),
+    };
+    // Compensated UNKNOWN may leave its old source installed.
+    assert!(
+        require_distinct_offline_bootstrap_successor(
+            &retained,
+            &old_from,
+            &new_revision,
+            &new_release
+        )
+        .is_ok()
+    );
+    // Physical October handoff: old to=... is already active. This is NOT
+    // proof of old terminal SUCCESS, only permission for a distinct successor.
+    assert!(
+        require_distinct_offline_bootstrap_successor(
+            &retained,
+            &old_to,
+            &new_revision,
+            &new_release
+        )
+        .is_ok()
+    );
+    for (installed, revision, next) in [
+        ("f".repeat(64), new_revision.clone(), new_release.clone()),
+        (old_from.clone(), old_revision.clone(), new_release.clone()),
+        (old_to.clone(), old_revision.clone(), new_release.clone()),
+        (old_from.clone(), new_revision.clone(), old_to.clone()),
+        (old_to.clone(), new_revision.clone(), old_from.clone()),
+        (old_to.clone(), new_revision.clone(), old_to.clone()),
+        (old_to.clone(), new_revision.clone(), "bad".into()),
+    ] {
+        let result =
+            require_distinct_offline_bootstrap_successor(&retained, &installed, &revision, &next);
+        assert!(
+            result.unwrap_err().contains("NOT_DISTINCT_NO_REPLAY"),
+            "retained operation admitted an unrelated/replayed successor"
+        );
+    }
+    let forged = VerifiedRetainedOfflineBootstrap {
+        from: old_to.clone(),
+        ..retained
+    };
+    assert!(require_distinct_offline_bootstrap_successor(
+        &forged,
+        &old_to,
+        &new_revision,
+        &new_release,
+    ).is_err());
+}
+
+#[test]
 fn historical_begin_supersession_preserves_exact_bytes_and_replay_is_blocked() {
     let root = offline_test_root("historical-supersede");
     let (bytes, digest, installed) = offline_legacy_intent_fixture();

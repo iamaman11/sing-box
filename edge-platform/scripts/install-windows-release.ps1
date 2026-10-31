@@ -723,6 +723,30 @@ function Activate-ReleaseAuthority {
     }
 }
 
+# The retained BEGIN records a historical from -> to transaction, not
+# necessarily the current installed predecessor. After a compensated UNKNOWN,
+# the installed release may be either endpoint. The old operation stays
+# UNKNOWN; only an explicitly approved THIRD release/revision is admissible.
+function Assert-DisabledOfflineSuccessorIdentity {
+    param(
+        [Parameter(Mandatory)] [string]$RetainedFrom,
+        [Parameter(Mandatory)] [string]$RetainedTo,
+        [Parameter(Mandatory)] [string]$RetainedRevision,
+        [Parameter(Mandatory)] [string]$InstalledRelease,
+        [Parameter(Mandatory)] [string]$NextRelease,
+        [Parameter(Mandatory)] [string]$NextRevision
+    )
+    if ($RetainedFrom -ceq $RetainedTo -or
+        ($RetainedFrom -cne $InstalledRelease -and
+         $RetainedTo -cne $InstalledRelease) -or
+        $NextRelease -ceq $RetainedFrom -or
+        $NextRelease -ceq $RetainedTo -or
+        $NextRelease -ceq $InstalledRelease -or
+        $NextRevision -ceq $RetainedRevision) {
+        throw 'OFFLINE_BOOTSTRAP_DISABLED_PREDECESSOR_NOT_DISTINCT_NO_REPLAY'
+    }
+}
+
 # Resolve current published authority BEFORE any creation, SCM, task or marker.
 # This branch reuses this same immutable verified installer, not a new agent.
 if ($ConnectWindows) {
@@ -1138,12 +1162,16 @@ if ($StageOnly -or $BootstrapNow) {
             $retainedText,
             '\Aschema=sing-box\.windows-offline-bootstrap/v1\nfrom=(?<from>[0-9a-f]{64})\nto=(?<to>[0-9a-f]{64})\naccepted_revision=(?<revision>[0-9a-f]{40})\n\z'
         )
-        if (-not $retainedMatch.Success -or
-            $retainedMatch.Groups['from'].Value -cne [string]$old['release_set_sha256'] -or
-            $retainedMatch.Groups['to'].Value -ceq $ReleaseSetSha256 -or
-            $retainedMatch.Groups['revision'].Value -ceq $AcceptedRevision) {
+        if (-not $retainedMatch.Success) {
             throw 'OFFLINE_BOOTSTRAP_DISABLED_PREDECESSOR_NOT_DISTINCT_NO_REPLAY'
         }
+        Assert-DisabledOfflineSuccessorIdentity `
+            -RetainedFrom $retainedMatch.Groups['from'].Value `
+            -RetainedTo $retainedMatch.Groups['to'].Value `
+            -RetainedRevision $retainedMatch.Groups['revision'].Value `
+            -InstalledRelease ([string]$old['release_set_sha256']) `
+            -NextRelease $ReleaseSetSha256 `
+            -NextRevision $AcceptedRevision
         $disabledSuccessorProven = $true
     }
     if ($principalSid -cne 'S-1-5-18' -or

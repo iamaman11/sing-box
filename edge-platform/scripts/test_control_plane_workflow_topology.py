@@ -788,9 +788,23 @@ assert '(-not $BootstrapNow -and -not $StageOnly)' in installer
 assert "$disabledSuccessorProven = $false" in installer
 assert "$hasRetained -and [string]$dispatch.State -ceq 'Disabled'" in installer
 assert "(Get-FileHash -LiteralPath $retainedPath -Algorithm SHA256)" in installer
-assert "$retainedMatch.Groups['from'].Value -cne [string]$old['release_set_sha256']" in installer
-assert "$retainedMatch.Groups['to'].Value -ceq $ReleaseSetSha256" in installer
-assert "$retainedMatch.Groups['revision'].Value -ceq $AcceptedRevision" in installer
+# A historical BEGIN is from -> to; installed can equal either endpoint
+# after a compensated UNKNOWN, but a distinct new target must be neither.
+assert "function Assert-DisabledOfflineSuccessorIdentity {" in installer
+assert "($RetainedFrom -cne $InstalledRelease -and" in installer
+assert "$RetainedTo -cne $InstalledRelease)" in installer
+assert "$NextRelease -ceq $RetainedFrom" in installer
+assert "$NextRelease -ceq $RetainedTo" in installer
+assert "$NextRevision -ceq $RetainedRevision" in installer
+assert "Assert-DisabledOfflineSuccessorIdentity `" in installer
+assert "-RetainedFrom $retainedMatch.Groups['from'].Value" in installer
+assert "-RetainedTo $retainedMatch.Groups['to'].Value" in installer
+assert "-InstalledRelease ([string]$old['release_set_sha256'])" in installer
+assert "-NextRelease $ReleaseSetSha256" in installer
+assert "-NextRevision $AcceptedRevision" in installer
+assert "(retained.from != installed_release && retained.to != installed_release)" in win_console
+assert "|| retained.from == next_target" in win_console
+assert "|| retained.to == next_target" in win_console
 assert "([string]$dispatch.State -cne 'Ready' -and -not $disabledSuccessorProven)" in installer
 assert 'if let Some(approval) = supersession {' in win_console
 assert '.arg("-RetainedIntentSha256")' in win_console

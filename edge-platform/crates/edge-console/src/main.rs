@@ -2773,17 +2773,22 @@ fn inspect_retained_offline_bootstrap_intent(
 }
 
 // A new, separately approved release can supersede a previously compensated
-// UNKNOWN. It must never be the release/revision already named by the pending
-// BEGIN, and the BEGIN must originate from the still-installed old owner.
-// The existing task must independently prove its exact Disabled state.
+// UNKNOWN. The retained BEGIN is a historical from -> to transition: after
+// compensation its still-installed release can be EITHER endpoint. Never
+// claim the prior operation succeeded; disallow BOTH old endpoints and the
+// original revision as the next transaction. The exact existing LocalSystem
+// task must independently prove its Disabled state.
 fn require_distinct_offline_bootstrap_successor(
     retained: &VerifiedRetainedOfflineBootstrap,
     installed_release: &str,
     next_revision: &str,
     next_target: &str,
 ) -> Result<(), String> {
-    if retained.from != installed_release
+    if (retained.from != installed_release && retained.to != installed_release)
+        || retained.from == retained.to
+        || retained.from == next_target
         || retained.to == next_target
+        || installed_release == next_target
         || retained.accepted_revision == next_revision
         || !offline_bootstrap_identifiers_valid(next_revision, next_target)
     {
@@ -5110,8 +5115,14 @@ mod offline_disabled_successor_tests {
             require_distinct_offline_bootstrap_successor(&p, INSTALLED, OLD_REVISION, NEXT),
             Err("OFFLINE_BOOTSTRAP_DISABLED_SUCCESSOR_NOT_DISTINCT_NO_REPLAY".to_owned())
         );
+        // The prior target may already be installed after a compensated
+        // UNKNOWN; this does not claim a signed old terminal success.
+        assert!(
+            require_distinct_offline_bootstrap_successor(&p, INTERRUPTED, NEXT_REVISION, NEXT)
+                .is_ok()
+        );
         assert_eq!(
-            require_distinct_offline_bootstrap_successor(&p, INTERRUPTED, NEXT_REVISION, NEXT),
+            require_distinct_offline_bootstrap_successor(&p, NEXT, NEXT_REVISION, NEXT),
             Err("OFFLINE_BOOTSTRAP_DISABLED_SUCCESSOR_NOT_DISTINCT_NO_REPLAY".to_owned())
         );
         assert!(
