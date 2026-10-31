@@ -586,14 +586,22 @@ fn typed_host_access_preserves_vm_and_blocks_invalid_policy_or_paths() {
     // A provider GET with policy present but not actually attached to the
     // application must never masquerade as exact Cloudflare Service Auth.
     observed.projections[vm_index].worker_binding_count = Some(9);
-    observed.host_access.as_mut().unwrap().app.policy_ids.clear();
+    observed
+        .host_access
+        .as_mut()
+        .unwrap()
+        .app
+        .policy_ids
+        .clear();
     assert_eq!(
         host_access_readback(&desired, &observed).unwrap_err(),
         "HOST_ACCESS_APP_OR_POLICY_DRIFT_BLOCKED"
     );
     observed.host_access.as_mut().unwrap().app.policy_ids = vec!["host-policy-id".into()];
     assert_eq!(
-        host_access_readback(&desired, &observed).unwrap().next_action(),
+        host_access_readback(&desired, &observed)
+            .unwrap()
+            .next_action(),
         HostAccessNextAction::ProveWindowsAndVmSignedHostAfterCutover
     );
 }
@@ -601,10 +609,22 @@ fn typed_host_access_preserves_vm_and_blocks_invalid_policy_or_paths() {
 #[test]
 fn host_access_phase_plan_only_requires_durable_provider_begin() {
     let phases = [
-        (HostAccessReadback::NotProvisionedLegacyVmPreserved, "STAGE_REQUIRES_DURABLE_BEGIN"),
-        (HostAccessReadback::StagedAwaitWorkerAudience, "BIND_AUDIENCE_REQUIRES_DURABLE_BEGIN"),
-        (HostAccessReadback::StagedAwaitSignerProof, "VERIFY_SIGNER_AND_VM_CREDENTIALS_BEFORE_CUTOVER"),
-        (HostAccessReadback::ActiveAwaitSignedHostProof, "VERIFY_BOTH_SIGNED_HOSTS_AFTER_CUTOVER"),
+        (
+            HostAccessReadback::NotProvisionedLegacyVmPreserved,
+            "STAGE_REQUIRES_DURABLE_BEGIN",
+        ),
+        (
+            HostAccessReadback::StagedAwaitWorkerAudience,
+            "BIND_AUDIENCE_REQUIRES_DURABLE_BEGIN",
+        ),
+        (
+            HostAccessReadback::StagedAwaitSignerProof,
+            "VERIFY_SIGNER_AND_VM_CREDENTIALS_BEFORE_CUTOVER",
+        ),
+        (
+            HostAccessReadback::ActiveAwaitSignedHostProof,
+            "VERIFY_BOTH_SIGNED_HOSTS_AFTER_CUTOVER",
+        ),
     ];
     for (phase, expected) in phases {
         assert_eq!(phase.next_action().as_str(), expected);

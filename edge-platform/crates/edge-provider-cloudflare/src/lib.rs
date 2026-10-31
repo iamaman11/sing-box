@@ -1822,16 +1822,13 @@ pub async fn list_device_posture_rules(
 const HOST_ACCESS_STAGE_PATH: &str = "/__singbox_host_access_stage__/*";
 const HOST_ACCESS_LIVE_PATH: &str = "/v1/host/*";
 
-fn exact_host_access_destination(
-    worker_hostname: &str,
-    route: &str,
-) -> Result<String, String> {
+fn exact_host_access_destination(worker_hostname: &str, route: &str) -> Result<String, String> {
     if worker_hostname.is_empty()
         || worker_hostname.len() > 253
         || !worker_hostname.ends_with(".workers.dev")
-        || !worker_hostname.bytes().all(|c| {
-            c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'.' || c == b'-'
-        })
+        || !worker_hostname
+            .bytes()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == b'.' || c == b'-')
         || worker_hostname.split('.').any(|segment| segment.is_empty())
         || !matches!(route, HOST_ACCESS_STAGE_PATH | HOST_ACCESS_LIVE_PATH)
     {
@@ -1899,18 +1896,21 @@ pub async fn create_host_access_staged_application(
     worker_hostname: &str,
 ) -> Result<String, String> {
     require_non_empty("Cloudflare account ID", account_id)?;
-    let body = exact_host_access_app_payload(
-        app_name, worker_hostname, HOST_ACCESS_STAGE_PATH, None,
-    )?;
+    let body =
+        exact_host_access_app_payload(app_name, worker_hostname, HOST_ACCESS_STAGE_PATH, None)?;
     let response = authorized_client(write_token)?
         .post(format!("{API_ROOT}/accounts/{account_id}/access/apps"))
         .json(&body)
         .send()
         .await
         .map_err(|_| "HOST_ACCESS_STAGE_CREATE_ACK_UNCERTAIN_NO_REPLAY")?;
-    let payload: ApiEnvelope<Value> = parse_success_json(response).await
+    let payload: ApiEnvelope<Value> = parse_success_json(response)
+        .await
         .map_err(|_| "HOST_ACCESS_STAGE_CREATE_RESULT_UNPROVEN_NO_REPLAY")?;
-    payload.result.get("id").and_then(Value::as_str)
+    payload
+        .result
+        .get("id")
+        .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .ok_or_else(|| "HOST_ACCESS_STAGE_CREATE_ID_UNPROVEN_NO_REPLAY".to_owned())
@@ -1928,18 +1928,22 @@ pub async fn create_host_access_exact_service_auth_policy(
 ) -> Result<String, String> {
     require_non_empty("Cloudflare account ID", account_id)?;
     require_non_empty("Host Access staged application ID", stage_app_id)?;
-    let body = exact_host_access_policy_payload(
-        policy_name, vm_token_id, windows_token_id,
-    )?;
+    let body = exact_host_access_policy_payload(policy_name, vm_token_id, windows_token_id)?;
     let response = authorized_client(write_token)?
-        .post(format!("{API_ROOT}/accounts/{account_id}/access/apps/{stage_app_id}/policies"))
+        .post(format!(
+            "{API_ROOT}/accounts/{account_id}/access/apps/{stage_app_id}/policies"
+        ))
         .json(&body)
         .send()
         .await
         .map_err(|_| "HOST_ACCESS_POLICY_CREATE_ACK_UNCERTAIN_NO_REPLAY")?;
-    let payload: ApiEnvelope<Value> = parse_success_json(response).await
+    let payload: ApiEnvelope<Value> = parse_success_json(response)
+        .await
         .map_err(|_| "HOST_ACCESS_POLICY_CREATE_RESULT_UNPROVEN_NO_REPLAY")?;
-    payload.result.get("id").and_then(Value::as_str)
+    payload
+        .result
+        .get("id")
+        .and_then(Value::as_str)
         .filter(|value| !value.is_empty())
         .map(ToOwned::to_owned)
         .ok_or_else(|| "HOST_ACCESS_POLICY_CREATE_ID_UNPROVEN_NO_REPLAY".to_owned())
@@ -1959,15 +1963,21 @@ pub async fn activate_exact_host_access_path(
     require_non_empty("Cloudflare account ID", account_id)?;
     require_non_empty("Host Access application ID", host_app_id)?;
     let body = exact_host_access_app_payload(
-        host_app_name, worker_hostname, HOST_ACCESS_LIVE_PATH, Some(policy_id),
+        host_app_name,
+        worker_hostname,
+        HOST_ACCESS_LIVE_PATH,
+        Some(policy_id),
     )?;
     let response = authorized_client(write_token)?
-        .put(format!("{API_ROOT}/accounts/{account_id}/access/apps/{host_app_id}"))
+        .put(format!(
+            "{API_ROOT}/accounts/{account_id}/access/apps/{host_app_id}"
+        ))
         .json(&body)
         .send()
         .await
         .map_err(|_| "HOST_ACCESS_ACTIVATE_ACK_UNCERTAIN_NO_REPLAY")?;
-    ensure_success(response).await
+    ensure_success(response)
+        .await
         .map_err(|_| "HOST_ACCESS_ACTIVATE_RESULT_UNPROVEN_NO_REPLAY")
 }
 
@@ -3672,41 +3682,60 @@ mod tests {
     fn exact_host_access_write_payloads_never_broaden_vm_credential_scope() {
         let host = "sing-box-credentials-vm.namespace.workers.dev";
         let name = "sing-box-credentials-vm-host-access";
-        let staged = exact_host_access_app_payload(
-            name, host, HOST_ACCESS_STAGE_PATH, None
-        ).unwrap();
+        let staged =
+            exact_host_access_app_payload(name, host, HOST_ACCESS_STAGE_PATH, None).unwrap();
         assert_eq!(staged["type"], "self_hosted");
-        assert_eq!(staged["destinations"][0]["uri"],
-            format!("{host}{HOST_ACCESS_STAGE_PATH}"));
+        assert_eq!(
+            staged["destinations"][0]["uri"],
+            format!("{host}{HOST_ACCESS_STAGE_PATH}")
+        );
         assert!(staged["policies"].as_array().unwrap().is_empty());
-        let live = exact_host_access_app_payload(
-            name, host, HOST_ACCESS_LIVE_PATH, Some("host-policy")
-        ).unwrap();
-        assert_eq!(live["destinations"][0]["uri"],
-            format!("{host}{HOST_ACCESS_LIVE_PATH}"));
+        let live =
+            exact_host_access_app_payload(name, host, HOST_ACCESS_LIVE_PATH, Some("host-policy"))
+                .unwrap();
+        assert_eq!(
+            live["destinations"][0]["uri"],
+            format!("{host}{HOST_ACCESS_LIVE_PATH}")
+        );
         assert_eq!(live["policies"][0]["id"], "host-policy");
         let policy = exact_host_access_policy_payload(
-            "host-service-auth", "vm-token-id", "windows-token-id"
-        ).unwrap();
+            "host-service-auth",
+            "vm-token-id",
+            "windows-token-id",
+        )
+        .unwrap();
         assert_eq!(policy["decision"], "non_identity");
         assert_eq!(policy["include"].as_array().unwrap().len(), 2);
-        assert_eq!(policy["include"][0]["service_token"]["token_id"], "vm-token-id");
-        assert_eq!(policy["include"][1]["service_token"]["token_id"], "windows-token-id");
-        assert!(exact_host_access_policy_payload(
-            "host-service-auth", "same-token", "same-token"
-        ).is_err());
-        assert!(exact_host_access_app_payload(
-            name, host, HOST_ACCESS_LIVE_PATH, None
-        ).is_err());
-        assert!(exact_host_access_app_payload(
-            name, host, "/v1/credentials/*", Some("host-policy")
-        ).is_err());
-        assert!(exact_host_access_app_payload(
-            name, "evil.example.net", HOST_ACCESS_STAGE_PATH, None
-        ).is_err());
-        assert!(exact_host_access_app_payload(
-            name, "vm.namespace.workers.dev/other", HOST_ACCESS_STAGE_PATH, None
-        ).is_err());
+        assert_eq!(
+            policy["include"][0]["service_token"]["token_id"],
+            "vm-token-id"
+        );
+        assert_eq!(
+            policy["include"][1]["service_token"]["token_id"],
+            "windows-token-id"
+        );
+        assert!(
+            exact_host_access_policy_payload("host-service-auth", "same-token", "same-token")
+                .is_err()
+        );
+        assert!(exact_host_access_app_payload(name, host, HOST_ACCESS_LIVE_PATH, None).is_err());
+        assert!(
+            exact_host_access_app_payload(name, host, "/v1/credentials/*", Some("host-policy"))
+                .is_err()
+        );
+        assert!(
+            exact_host_access_app_payload(name, "evil.example.net", HOST_ACCESS_STAGE_PATH, None)
+                .is_err()
+        );
+        assert!(
+            exact_host_access_app_payload(
+                name,
+                "vm.namespace.workers.dev/other",
+                HOST_ACCESS_STAGE_PATH,
+                None
+            )
+            .is_err()
+        );
     }
 
     #[test]

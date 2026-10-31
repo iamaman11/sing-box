@@ -3788,8 +3788,12 @@ impl HostAccessNextAction {
         match self {
             Self::StageOnlyAfterAuthorizedBegin => "STAGE_REQUIRES_DURABLE_BEGIN",
             Self::BindExactAudienceOnlyAfterSignedBegin => "BIND_AUDIENCE_REQUIRES_DURABLE_BEGIN",
-            Self::ProveSignerAndVmCredentialsBeforeCutover => "VERIFY_SIGNER_AND_VM_CREDENTIALS_BEFORE_CUTOVER",
-            Self::ProveWindowsAndVmSignedHostAfterCutover => "VERIFY_BOTH_SIGNED_HOSTS_AFTER_CUTOVER",
+            Self::ProveSignerAndVmCredentialsBeforeCutover => {
+                "VERIFY_SIGNER_AND_VM_CREDENTIALS_BEFORE_CUTOVER"
+            }
+            Self::ProveWindowsAndVmSignedHostAfterCutover => {
+                "VERIFY_BOTH_SIGNED_HOSTS_AFTER_CUTOVER"
+            }
         }
     }
 }
@@ -3797,14 +3801,18 @@ impl HostAccessNextAction {
 impl HostAccessReadback {
     fn next_action(self) -> HostAccessNextAction {
         match self {
-            Self::NotProvisionedLegacyVmPreserved =>
-                HostAccessNextAction::StageOnlyAfterAuthorizedBegin,
-            Self::StagedAwaitWorkerAudience =>
-                HostAccessNextAction::BindExactAudienceOnlyAfterSignedBegin,
-            Self::StagedAwaitSignerProof =>
-                HostAccessNextAction::ProveSignerAndVmCredentialsBeforeCutover,
-            Self::ActiveAwaitSignedHostProof =>
-                HostAccessNextAction::ProveWindowsAndVmSignedHostAfterCutover,
+            Self::NotProvisionedLegacyVmPreserved => {
+                HostAccessNextAction::StageOnlyAfterAuthorizedBegin
+            }
+            Self::StagedAwaitWorkerAudience => {
+                HostAccessNextAction::BindExactAudienceOnlyAfterSignedBegin
+            }
+            Self::StagedAwaitSignerProof => {
+                HostAccessNextAction::ProveSignerAndVmCredentialsBeforeCutover
+            }
+            Self::ActiveAwaitSignedHostProof => {
+                HostAccessNextAction::ProveWindowsAndVmSignedHostAfterCutover
+            }
         }
     }
 }
