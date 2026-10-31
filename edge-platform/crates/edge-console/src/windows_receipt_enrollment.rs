@@ -728,25 +728,30 @@ pub(super) fn read_only_first_use_stage_for_offline_bootstrap(
         .join("releases")
         .canonicalize()
         .map_err(|_| "HOST_WINDOWS_FIRST_USE_RELEASES_ROOT_UNPROVEN")?;
-    let candidate_dir = releases.join(target_release);
+    // ACL verification uses the literal C:\\sing-box path; Windows
+    // canonicalize() may return a \\\\?\\ prefix which is not the expected
+    // absolute ownership root. Canonical paths are only for comparison.
+    let candidate_dir = install_root.join("releases").join(target_release);
     let meta = fs::symlink_metadata(&candidate_dir)
         .map_err(|_| "HOST_WINDOWS_FIRST_USE_CANDIDATE_DIRECTORY_UNPROVEN")?;
     if !meta.file_type().is_dir() || meta.file_type().is_symlink() {
         return Err("HOST_WINDOWS_FIRST_USE_CANDIDATE_DIRECTORY_NOT_EXACT".into());
     }
-    edge_shared_types::host_journal::verify_windows_protected_path_acl(
-        &candidate_dir,
-        true,
-    )
-    .map_err(str::to_owned)?;
-    let expected = candidate_dir
-        .join("bin")
-        .join("edge-console.exe")
+    edge_shared_types::host_journal::verify_windows_protected_path_acl(&candidate_dir, false)
+        .map_err(str::to_owned)?;
+    let canonical_candidate = candidate_dir
+        .canonicalize()
+        .map_err(|_| "HOST_WINDOWS_FIRST_USE_CANDIDATE_DIRECTORY_UNPROVEN")?;
+    if !canonical_candidate.starts_with(&releases) {
+        return Err("HOST_WINDOWS_FIRST_USE_CANDIDATE_DIRECTORY_ESCAPED_ROOT".into());
+    }
+    let candidate_console = candidate_dir.join("bin").join("edge-console.exe");
+    edge_shared_types::host_journal::verify_windows_protected_path_acl(&candidate_console, true)
+        .map_err(str::to_owned)?;
+    let expected = candidate_console
         .canonicalize()
         .map_err(|_| "HOST_WINDOWS_FIRST_USE_CANDIDATE_CONSOLE_UNPROVEN")?;
-    edge_shared_types::host_journal::verify_windows_protected_path_acl(&expected, true)
-        .map_err(str::to_owned)?;
-    if !expected.starts_with(&candidate_dir) {
+    if !expected.starts_with(&canonical_candidate) {
         return Err("HOST_WINDOWS_FIRST_USE_CANDIDATE_CONSOLE_ESCAPED_ROOT".into());
     }
     let invoking = std::env::current_exe()
