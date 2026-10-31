@@ -675,6 +675,24 @@ assert first_use_code.index('println!(') < first_use_code.index('stage_result.ma
 assert first_use_code.index('stage_result.map_err(ConsoleError::Command)?;') < first_use_code.index('machine_result.map_err(ConsoleError::Command)?;')
 assert "bound_machine_id(root)\n                        .map_err(ConsoleError::Command)?" not in first_use_code
 
+# A canceled provider capability job cannot hide Rust-verified root
+# evidence. Only ABSENCE of the original preliminary permits a gap note;
+# a PRESENT but malformed summary must still fail the strict merge.
+host_observe_workflow = Path(".github/workflows/host-native-observe.yml").read_text(encoding="utf-8")
+native_pub = host_observe_workflow.split('original_file="${RUNNER_TEMP}/host-deep-preliminary.txt"', 1)[1].split(
+    'appendix="$(printf', 1
+)[0]
+assert "if grep -Fq '### Unified deep diagnosis — read only' "\"" in native_pub
+assert "host_diagnostic_summary.py --merge-signed" in native_pub
+assert "HOST_DIAG_PRELIMINARY_NOT_PUBLISHED" in native_pub
+assert native_pub.index("if grep -Fq") < native_pub.index("host_diagnostic_summary.py --merge-signed")
+assert "VERIFIED_ROOT_SIGNED_STALE_RELEASE_READ_ONLY" in host_observe_workflow
+host_diag_py = Path("edge-platform/scripts/host_diagnostic_summary.py").read_text(encoding="utf-8")
+assert 'reason.startswith("HOST_DIAG_")' in host_diag_py
+assert "TOKEN.fullmatch(reason)" in host_diag_py
+assert 'raise SystemExit(code) from error' in host_diag_py
+assert 'raise ValueError("HOST_DIAG_REPORT_MARKER_INVALID")' in host_diag_py
+
 # Elevated Administrator FIRST_USE_STATUS must never open sealed
 # SYSTEM-only trust.pb. The receipt reader already checks caller identity.
 # A second privilege check was selecting the forbidden secret-read fallback.
