@@ -251,6 +251,24 @@ fn only_one_vm_worker_may_hold_host_signer_secrets() {
         })
         .collect::<Vec<_>>();
     assert!(require_exact_secret_bindings("sing-box-credentials-vm", "vm", &extra).is_ok());
+    // Host route Access audience may be added ONLY to the eight-binding
+    // VM signer, and it never grants Windows token access to VM credentials.
+    let mut isolated = extra.clone();
+    isolated.push(cloudflare::CloudflareWorkerSecretBinding {
+        name: "EDGE_HOST_GITHUB_APP_PKCS8_BASE64".to_owned(),
+        binding_type: "secret_text".to_owned(),
+    });
+    isolated.push(cloudflare::CloudflareWorkerSecretBinding {
+        name: "EDGE_HOST_ROUTE_ACCESS_AUD".to_owned(),
+        binding_type: "secret_text".to_owned(),
+    });
+    assert!(require_exact_secret_bindings("sing-box-credentials-vm", "vm", &isolated).is_ok());
+    assert!(
+        require_exact_secret_bindings("sing-box-credentials-windows", "windows", &isolated)
+            .is_err()
+    );
+    isolated.last_mut().unwrap().name = "UNREVIEWED_ACCESS_SECRET".to_owned();
+    assert!(require_exact_secret_bindings("sing-box-credentials-vm", "vm", &isolated).is_err());
     assert!(
         require_exact_secret_bindings("sing-box-credentials-windows", "windows", &extra).is_err()
     );
@@ -275,6 +293,8 @@ fn host_authorization_is_closed_by_default_exact_and_access_bound() {
         assert!(source.contains("EDGE_HOST_GITHUB_ACTOR_ID"));
         assert!(source.contains("EDGE_HOST_ACCESS_ISSUER"));
         assert!(source.contains("EDGE_HOST_ACCESS_AUD"));
+        assert!(source.contains("EDGE_HOST_ROUTE_ACCESS_AUD"));
+        assert!(source.contains("hostRoute"));
         assert!(source.contains("Cf-Access-Jwt-Assertion"));
         assert!(source.contains("RSASSA-PKCS1-v1_5"));
         assert!(source.contains("sing-box/native-host-authorization/v1:"));

@@ -1372,8 +1372,8 @@ fn verify_vm_worker_reconcilable_current(
         || current.worker_active_version_ids.as_slice()
             != [current.worker_latest_version_id.as_deref().unwrap_or("")]
         || current.worker_active_deployment_id.is_none()
-        || current.worker_binding_count != Some(8)
-        || current.worker_secret_bindings.len() != 8
+        || !matches!(current.worker_binding_count, Some(8 | 9))
+        || current.worker_secret_bindings.len() != current.worker_binding_count.unwrap_or_default()
     {
         return Err("HOST_VM_WORKER_CURRENT_OWNER_OR_DEPLOYMENT_UNPROVEN".to_owned());
     }
@@ -1470,7 +1470,7 @@ fn verify_pending_vm_worker_exact_modules(
         || before.worker_active_version_ids.len() != 1
         || active_id == latest_id
         || before.worker_active_deployment_id.is_none()
-        || before.worker_binding_count != Some(8)
+        || !matches!(before.worker_binding_count, Some(8 | 9))
         || active.id != *active_id
         || pending.id != latest_id
         || pending.version_tag != material.version_tag
@@ -1639,7 +1639,10 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
                     .is_err()
                 || projection_delivery_state(desired, &vm, &after)?
                     != ProjectionDeliveryState::FixedAb
-                || projection_observation(&after, "vm")?.worker_binding_count != Some(8)
+                || !matches!(
+                    projection_observation(&after, "vm")?.worker_binding_count,
+                    Some(8 | 9)
+                )
             {
                 return Err("HOST_VM_WORKER_PENDING_DEPLOY_POSTSTATE_UNPROVEN_NO_REPLAY".into());
             }
@@ -1743,7 +1746,7 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
     // from the current latest version (including the pending secret patch).
     let code_original = projection_observation(&code_baseline, "vm")?;
     require_exact_secret_bindings(&vm.worker_name, "vm", &code_original.worker_secret_bindings)?;
-    if code_original.worker_binding_count != Some(8) {
+    if !matches!(code_original.worker_binding_count, Some(8 | 9)) {
         return Err("HOST_VM_GITHUB_APP_BINDINGS_NOT_READY".to_owned());
     }
     let source = material;
@@ -1783,7 +1786,10 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
         || verify_exact_active_worker_version(projection_observation(&after, "vm")?, &version_id)
             .is_err()
         || projection_delivery_state(desired, &vm, &after)? != ProjectionDeliveryState::FixedAb
-        || projection_observation(&after, "vm")?.worker_binding_count != Some(8)
+        || !matches!(
+            projection_observation(&after, "vm")?.worker_binding_count,
+            Some(8 | 9)
+        )
     {
         return Err("HOST_VM_WORKER_DEPLOYMENT_NOT_PROVEN_STOP_NO_REPLAY".to_owned());
     }
@@ -1900,8 +1906,8 @@ fn verify_exact_vm_signer_source(
     let vm = projection_desired(desired, "vm")?;
     let source = projection_observation(before, "vm")?;
     if projection_delivery_state(desired, &vm, before)? != ProjectionDeliveryState::FixedAb
-        || source.worker_secret_bindings.len() != 8
-        || source.worker_binding_count != Some(8)
+        || !matches!(source.worker_binding_count, Some(8 | 9))
+        || source.worker_secret_bindings.len() != source.worker_binding_count.unwrap_or_default()
         || source.worker_latest_version_id.as_deref()
             != source.worker_active_version_ids.first().map(String::as_str)
         || source.worker_active_version_ids.len() != 1
@@ -2093,8 +2099,9 @@ pub(crate) async fn host_vm_signer_commit(
     if projection_observation(&before, "windows")?
         != projection_observation(&after_patch, "windows")?
         || vm_after.worker_latest_version_id.as_deref() != Some(version.as_str())
-        || vm_after.worker_secret_bindings.len() != 8
-        || vm_after.worker_binding_count != Some(8)
+        || !matches!(vm_after.worker_binding_count, Some(8 | 9))
+        || vm_after.worker_secret_bindings.len()
+            != vm_after.worker_binding_count.unwrap_or_default()
     {
         return Err("HOST_SIGNER_POST_WRITE_DRIFT_NO_REPLAY".to_owned());
     }
@@ -2121,7 +2128,7 @@ pub(crate) async fn host_vm_signer_commit(
         != projection_observation(&final_read, "windows")?
         || final_vm.worker_latest_version_id.as_deref() != Some(version.as_str())
         || final_vm.worker_active_version_ids != vec![version.clone()]
-        || final_vm.worker_binding_count != Some(8)
+        || !matches!(final_vm.worker_binding_count, Some(8 | 9))
         || projection_delivery_state(desired, &projection_desired(desired, "vm")?, &final_read)?
             != ProjectionDeliveryState::FixedAb
     {
@@ -2269,6 +2276,7 @@ async fn initial_worker_proof_upgrade(
         ) {
             ("vm", 7) => cloudflare::WorkerCodeBindingScope::VmHostSigner,
             ("vm", 8) => cloudflare::WorkerCodeBindingScope::VmHostSignerGitHubApp,
+            ("vm", 9) => cloudflare::WorkerCodeBindingScope::VmHostSignerRouteAccess,
             ("vm" | "windows", 2) => cloudflare::WorkerCodeBindingScope::FixedAb,
             _ => return Err("WORKER_CODE_BINDINGS_NOT_EXACT_PROJECTION_SCOPE".to_owned()),
         };
@@ -3243,7 +3251,7 @@ fn projection_delivery_state(
     // may additionally carry five independent Host signer guard secrets, with
     // no second worker or duplicate issuer. Windows never permits signer keys.
     let guarded_host_signer =
-        projection.projection == "vm" && matches!(current.worker_binding_count, Some(7 | 8));
+        projection.projection == "vm" && matches!(current.worker_binding_count, Some(7 | 8 | 9));
     if current.worker_binding_count == Some(2) || guarded_host_signer {
         require_exact_secret_bindings(
             &projection.worker_name,
@@ -3800,7 +3808,7 @@ fn require_exact_secret_bindings(
         .collect::<Vec<_>>();
     observed.sort_unstable();
     let mut expected = vec![(SLOT_A, "secret_text"), (SLOT_B, "secret_text")];
-    if projection == "vm" && matches!(observed.len(), 7 | 8) {
+    if projection == "vm" && matches!(observed.len(), 7 | 8 | 9) {
         // Exactly one Worker may carry the host signing secret. No extra
         // implicit credentials, fallback secrets or caller-provided key.
         expected.extend_from_slice(&[
@@ -3811,8 +3819,11 @@ fn require_exact_secret_bindings(
             ("EDGE_HOST_ACCESS_AUD", "secret_text"),
         ]);
     }
-    if projection == "vm" && observed.len() == 8 {
+    if projection == "vm" && matches!(observed.len(), 8 | 9) {
         expected.push(("EDGE_HOST_GITHUB_APP_PKCS8_BASE64", "secret_text"));
+    }
+    if projection == "vm" && observed.len() == 9 {
+        expected.push(("EDGE_HOST_ROUTE_ACCESS_AUD", "secret_text"));
     }
     expected.sort_unstable();
     if observed != expected {
@@ -4191,6 +4202,19 @@ async function GITHUB(info,e,now){
 }
 async function ACCESS_REASON(q,e){
 const iss=e.EDGE_HOST_ACCESS_ISSUER,aud=e.EDGE_HOST_ACCESS_AUD;
+// Optional second Access app audience: only /v1/host/* has this scope.
+// With the installed eight-binding VM Worker it is absent: no behavior drift.
+const routeAud=e.EDGE_HOST_ROUTE_ACCESS_AUD;
+// Production requests have an absolute URL. The pure ACCESS() contract
+// fixture also calls this helper with headers only; that is never a Host
+// route and must preserve the original VM JWT admission semantics.
+let hostRoute=false;
+if(typeof q.url==="string"){
+ try{hostRoute=new URL(q.url).pathname.startsWith("/v1/host/")}
+ catch{return "WORKER_CONFIG_UNPROVEN"}
+}
+if(routeAud!==undefined&&(typeof routeAud!=="string"||
+    routeAud.length<8||routeAud.length>256||routeAud===aud))return "WORKER_CONFIG_UNPROVEN";
 if(typeof iss!=="string"||!/^https:\/\/[a-z0-9-]+\.cloudflareaccess\.com$/.test(iss)||typeof aud!=="string"||aud.length<8||aud.length>256)return "WORKER_CONFIG_UNPROVEN";
 const t=q.headers.get("Cf-Access-Jwt-Assertion");
 if(!t)return "JWT_MISSING";
@@ -4199,7 +4223,10 @@ const parts=t.split(".");if(parts.length!==3)return "JWT_MALFORMED";
 let h,c;try{h=JSON.parse(TD.decode(B64(parts[0])));c=JSON.parse(TD.decode(B64(parts[1])))}catch{return "JWT_MALFORMED"}
 if(!h||h.alg!=="RS256"||typeof h.kid!=="string"||!c)return "JWT_MALFORMED";
 if(c.iss!==iss)return "JWT_ISSUER_MISMATCH";
-if(!(typeof c.aud==="string"?c.aud===aud:Array.isArray(c.aud)&&c.aud.length>0&&c.aud.every(x=>typeof x==="string")&&c.aud.includes(aud)))return "JWT_AUDIENCE_MISMATCH";
+const allowed=hostRoute&&routeAud!==undefined?[aud,routeAud]:[aud];
+if(!(typeof c.aud==="string"?allowed.includes(c.aud):Array.isArray(c.aud)&&
+     c.aud.length>0&&c.aud.every(x=>typeof x==="string")&&
+     c.aud.some(x=>allowed.includes(x))))return "JWT_AUDIENCE_MISMATCH";
 const now=Math.floor(Date.now()/1000);
 if(!Number.isInteger(c.exp))return "JWT_MALFORMED";
 if(c.exp<=now)return "JWT_EXPIRED";
@@ -4435,7 +4462,16 @@ if(signed.reason)return new Response(null,{status:503,headers:{...NO,"X-Host-Aut
 const signature=signed.signature;
 const out=CAT(FNUM(1,1),FLD(2,kid),FLD(3,oid),FNUM(4,issued),FNUM(5,expires),FLD(6,signature));
 return new Response(out,{status:200,headers:{"Content-Type":"application/x-protobuf","Cache-Control":"no-store","X-Content-Type-Options":"nosniff"}})}
-export default{async fetch(q,e){const u=new URL(q.url);if(u.pathname==="/v1/host/admin/authorize")return ADMIN_AUTHORIZE(q,e,u);if(u.pathname==="/v1/host/identity")return HOST_SIGNER_IDENTITY(q,e,u);if(u.pathname==="/v1/host/authorize")return q.method==="GET"?HOST_AUTH_DIAGNOSTIC(q,e,u):AUTHORIZE(q,e,u);const x=u.searchParams.get("generation");
+export default{async fetch(q,e){const u=new URL(q.url);if(u.pathname==="/v1/host/admin/authorize")return ADMIN_AUTHORIZE(q,e,u);if(u.pathname==="/v1/host/identity")return HOST_SIGNER_IDENTITY(q,e,u);if(u.pathname==="/v1/host/authorize")return q.method==="GET"?HOST_AUTH_DIAGNOSTIC(q,e,u):AUTHORIZE(q,e,u);// When a second Host Access audience is configured, defend VM credential
+// isolation at the signed Worker boundary too. The original 8-binding VM
+// Worker remains byte-for-byte equivalent on credential requests.
+if(q.method==="GET"&&u.pathname==="/v1/credentials"&&
+   e.EDGE_HOST_ROUTE_ACCESS_AUD!==undefined){
+ const reason=await ACCESS_REASON(q,e);
+ if(reason!=="OK")return new Response(null,{status:403,headers:{...NO,
+   "X-Host-Authorization-Reason":reason}});
+}
+const x=u.searchParams.get("generation");
 if(q.method==="GET"&&u.pathname==="/v1/proof-slot"){const k=u.searchParams.get("slot"),i=k==="a"?0:k==="b"?1:-1;if(u.searchParams.size!==2||i<0||x!==Q[i])return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}});const b=H(e[S[i]]);if(b===null)return new Response(null,{status:409,headers:{"Cache-Control":"no-store"}});const h=Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256",b))).map(x=>x.toString(16).padStart(2,"0")).join("");return new Response(null,{status:h===D[i]?204:409,headers:{"Cache-Control":"no-store"}})}
 if(q.method!=="GET"||u.pathname!=="/v1/credentials"||u.searchParams.size!==1||x===null||!/^(0|[1-9][0-9]*)$/.test(x))return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}});let n;try{n=BigInt(x)}catch{return new Response(null,{status:404,headers:{"Cache-Control":"no-store"}})}const m=[];for(const s of S){const b=H(e[s]);if(b!==null&&G(b)===n)m.push(b)}if(m.length!==1)return new Response(null,{status:m.length?409:404,headers:{"Cache-Control":"no-store"}});return new Response(m[0],{status:200,headers:{"Content-Type":"application/x-protobuf","Cache-Control":"no-store"}})}};"#
         .replace("__PROJECTION__", &(projection_kind as i32).to_string())

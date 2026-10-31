@@ -727,6 +727,8 @@ pub enum WorkerCodeBindingScope {
     FixedAb,
     VmHostSigner,
     VmHostSignerGitHubApp,
+    /// Exact ninth binding only for the same VM Worker, never a second signer.
+    VmHostSignerRouteAccess,
 }
 
 /// Strict code-only version metadata. The caller supplies live GET-only binding
@@ -745,7 +747,9 @@ fn exact_binding_inherit_metadata(
     ];
     if matches!(
         scope,
-        WorkerCodeBindingScope::VmHostSigner | WorkerCodeBindingScope::VmHostSignerGitHubApp
+        WorkerCodeBindingScope::VmHostSigner
+            | WorkerCodeBindingScope::VmHostSignerGitHubApp
+            | WorkerCodeBindingScope::VmHostSignerRouteAccess
     ) {
         expected.extend_from_slice(&[
             ("EDGE_HOST_SIGNING_PKCS8_BASE64", "secret_text"),
@@ -755,8 +759,15 @@ fn exact_binding_inherit_metadata(
             ("EDGE_HOST_ACCESS_AUD", "secret_text"),
         ]);
     }
-    if scope == WorkerCodeBindingScope::VmHostSignerGitHubApp {
+    if matches!(
+        scope,
+        WorkerCodeBindingScope::VmHostSignerGitHubApp
+            | WorkerCodeBindingScope::VmHostSignerRouteAccess
+    ) {
         expected.push(("EDGE_HOST_GITHUB_APP_PKCS8_BASE64", "secret_text"));
+    }
+    if scope == WorkerCodeBindingScope::VmHostSignerRouteAccess {
+        expected.push(("EDGE_HOST_ROUTE_ACCESS_AUD", "secret_text"));
     }
     let mut actual = observed
         .iter()

@@ -65,6 +65,10 @@ jobs:
         shell: bash
         run: python3 edge-platform/scripts/test_runtime_input_digest.py
 
+      - name: Test Host Access isolation and VM credential boundary (no network)
+        shell: bash
+        run: python3 edge-platform/scripts/test_host_access_boundary_probe.py
+
       - name: Test Windows candidate input identity
         shell: bash
         run: python3 edge-platform/scripts/test_windows_input_digest.py
