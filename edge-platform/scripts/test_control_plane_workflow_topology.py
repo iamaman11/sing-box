@@ -675,6 +675,22 @@ assert first_use_code.index('println!(') < first_use_code.index('stage_result.ma
 assert first_use_code.index('stage_result.map_err(ConsoleError::Command)?;') < first_use_code.index('machine_result.map_err(ConsoleError::Command)?;')
 assert "bound_machine_id(root)\n                        .map_err(ConsoleError::Command)?" not in first_use_code
 
+# GitHub concurrency preserves only ONE pending job. Three parallel
+# PATCH writers with the same group cancel one another even when
+# cancel-in-progress is false. Order the existing Access -> provider ->
+# signed native report as DAG dependencies; keep independent failures
+# observable rather than skipping all downstream native evidence.
+workflow_deep = Path(".github/workflows/edge-control-plane.yml").read_text(encoding="utf-8")
+access_job = workflow_deep.split("  host_access_boundary:", 1)[1].split("  host_capabilities:", 1)[0]
+capabilities_job = workflow_deep.split("  host_capabilities:", 1)[1].split("\n  ", 1)[0]
+observe_job = workflow_deep.split("  host_observe:", 1)[1].split("  host_report:", 1)[0]
+assert "group: host-deep-report-${{ github.event.comment.id }}" in access_job
+assert "group: host-deep-report-${{ github.event.comment.id }}" in capabilities_job
+assert "needs: [host, host_report, host_access_boundary]" in capabilities_job
+assert "always() && !cancelled()" in capabilities_job
+assert "needs: [host, host_report, host_worker_authorizer, host_capabilities]" in observe_job
+assert "always() && !cancelled()" in observe_job
+
 # A canceled provider capability job cannot hide Rust-verified root
 # evidence. Only ABSENCE of the original preliminary permits a gap note;
 # a PRESENT but malformed summary must still fail the strict merge.

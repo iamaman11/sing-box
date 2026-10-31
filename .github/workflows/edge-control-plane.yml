@@ -476,9 +476,10 @@ jobs:
     # independently verifies current Git receipt and signed intent.
     # Stale root trust fails closed instead of inventing an SSH fallback.
     # The hosted deep diagnostic must publish its canonical JSON before
-    # the native signed readback can merge it. Otherwise three independent
-    # publishers compete for one GitHub concurrency group (one running,
-    # one pending), cancelling an older pending job and losing evidence.
+    # the native signed readback can merge it. The three report PATCH jobs
+    # run strictly in order: Access GET -> VM capability GET -> native report.
+    # Merely sharing a GitHub concurrency group is NOT serialization:
+    # GitHub retains only one pending job and cancels an older pending one.
     # always() also preserves native read-only status when this optional
     # hosted VM diagnostic is skipped (including on Windows) or fails.
     needs: [host, host_report, host_worker_authorizer, host_capabilities]
@@ -956,8 +957,12 @@ jobs:
     # Not another public command or native mutation path. The same exact
     # authorized /host status --deep may observe existing protected secrets
     # and provider GET endpoints without reading or printing their values.
-    needs: [host, host_report]
+    # Wait for the independent Host Access publisher BEFORE entering the
+    # same one-pending GitHub concurrency group. If its read-only GET fails,
+    # still collect VM capability diagnostics; no false native authority.
+    needs: [host, host_report, host_access_boundary]
     if: >-
+      always() && !cancelled() &&
       needs.host.result == 'success' &&
       needs.host_report.result == 'success' &&
       github.event_name == 'issue_comment' &&
