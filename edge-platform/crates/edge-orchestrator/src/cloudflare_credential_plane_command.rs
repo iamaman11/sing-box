@@ -30,6 +30,10 @@ use std::{env, fs};
 const SLOT_A: &str = "EDGE_CREDENTIAL_BUNDLE_A";
 const SLOT_B: &str = "EDGE_CREDENTIAL_BUNDLE_B";
 
+#[path = "host_access_cutover.rs"]
+mod host_access_cutover;
+use host_access_cutover::apply as host_access_cutover;
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct ProjectionDesired {
     projection: String,
@@ -1581,6 +1585,14 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
     let write_token = required_env("CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN")?;
     let before = observe(&read_token, desired).await?;
     validate_access_boundary(desired, &before)?;
+    require_host_access_control_identity(desired, &before.control_token_identity)?;
+    if !matches!(
+        host_access_readback(desired, &before)?,
+        HostAccessReadback::NotProvisionedLegacyVmPreserved
+            | HostAccessReadback::ActiveAwaitSignedHostProof
+    ) {
+        return Err("HOST_ACCESS_EXISTING_TRANSITION_REQUIRES_RECONCILIATION_NO_REPLAY".into());
+    }
     let write_identity = cloudflare::verify_api_token(&write_token).await?;
     if write_identity.status != "active" || write_identity.id == before.control_token_identity.id {
         return Err("HOST_VM_WORKER_DISTINCT_ACTIVE_WRITE_IDENTITY_REQUIRED".to_owned());
@@ -1754,8 +1766,21 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
     }
     let decision = VmWorkerUpgradeDecision::from_verified_state(state).map_err(str::to_owned)?;
     if state == ProjectionDeliveryState::FixedAb {
+        let access_required = host_access_readback(desired, &before)?
+            != HostAccessReadback::ActiveAwaitSignedHostProof;
         if plan_only {
-            emit_vm_worker_plan_required(decision)?;
+            crate::vm_worker_begin_reconciliation::verify_prior_vm_worker_begins(machine_id)
+                .await?;
+            emit_vm_worker_plan_required(if access_required {
+                VmWorkerUpgradeDecision::UpgradeRequired
+            } else {
+                decision
+            })?;
+        } else if access_required {
+            crate::vm_worker_begin_reconciliation::verify_current_vm_worker_begin(machine_id)
+                .await?;
+            return host_access_cutover(machine_id, release, desired, &read_token, &write_token)
+                .await;
         }
         println!("host_vm_worker_authorizer=SOURCE_ALREADY_ACCEPTED");
         println!("worker_mutations=0");
@@ -1779,6 +1804,7 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
     }
     // All eight existing opaque bindings are inherited strictly. An
     // incompletely enrolled Worker is not silently repaired or rekeyed.
+    crate::vm_worker_begin_reconciliation::verify_current_vm_worker_begin(machine_id).await?;
     let code_baseline = before.clone();
     // Code upload STRICTLY inherits all eight verified Worker secret names
     // from the current latest version (including the pending secret patch).
@@ -1794,7 +1820,7 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
         &vm.worker_name,
         &source.version_tag,
         &source.source,
-        cloudflare::WorkerCodeBindingScope::VmHostSignerGitHubApp,
+        host_access_worker_binding_scope(&code_original.worker_secret_bindings)?,
         &code_original.worker_secret_bindings,
     )
     .await
@@ -1862,7 +1888,7 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
     println!("worker_secret_mutations=0");
     println!("windows_worker_mutations=0");
     println!("host_signed_install=NOT_AUTHORIZED");
-    Ok(())
+    host_access_cutover(machine_id, release, desired, &read_token, &write_token).await
 }
 
 /// A historical journal is a candidate selector, NEVER proof of active
@@ -3892,6 +3918,36 @@ impl HostAccessReadback {
 // matters: /v1/host by itself does not cover /v1/host/identity or /admin.
 const HOST_ACCESS_STAGE_PATTERN: &str = "/__singbox_host_access_stage__/*";
 const HOST_ACCESS_LIVE_PATTERN: &str = "/v1/host/*";
+
+fn require_host_access_control_identity(
+    desired: &ProductionCredentialPlaneOwnership,
+    identity: &cloudflare::CloudflareApiTokenIdentity,
+) -> Result<(), String> {
+    let pin = &desired.host_access_control_identity_sha256;
+    if pin.len() != 64
+        || !pin
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        || identity.status != "active"
+        || identity.id.len() != 32
+        || !identity.id.bytes().all(|b| b.is_ascii_hexdigit())
+        || sha256_hex(identity.id.as_bytes()) != *pin
+    {
+        return Err("HOST_ACCESS_CONTROL_IDENTITY_MISMATCH".into());
+    }
+    Ok(())
+}
+
+fn host_access_worker_binding_scope(
+    bindings: &[cloudflare::CloudflareWorkerSecretBinding],
+) -> Result<cloudflare::WorkerCodeBindingScope, String> {
+    // Exact names/types are checked by the shared provider before upload.
+    match bindings.len() {
+        8 => Ok(cloudflare::WorkerCodeBindingScope::VmHostSignerGitHubApp),
+        9 => Ok(cloudflare::WorkerCodeBindingScope::VmHostSignerRouteAccess),
+        _ => Err("HOST_ACCESS_VM_SIGNER_BINDINGS_UNPROVEN".into()),
+    }
+}
 
 fn host_access_readback(
     desired: &ProductionCredentialPlaneOwnership,

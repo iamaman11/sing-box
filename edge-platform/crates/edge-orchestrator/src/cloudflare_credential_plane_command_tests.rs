@@ -371,7 +371,7 @@ fn first_use_begin_file_create_new_has_no_overwrite_path() {
     assert!(write_new_initial_record(&path, "INVALID").is_err());
 }
 
-fn desired() -> ProductionCredentialPlaneOwnership {
+pub(super) fn desired() -> ProductionCredentialPlaneOwnership {
     ProductionCredentialPlaneOwnership {
         target_account_id: "6be6e4b6340822dbeb18cb6c2f09c660".to_owned(),
         access_organization_name: "sing-box".to_owned(),
@@ -390,6 +390,8 @@ fn desired() -> ProductionCredentialPlaneOwnership {
         host_access_application_name: "sing-box-credentials-vm-host-access".to_owned(),
         host_access_policy_name: "sing-box-credentials-vm-host-service-auth".to_owned(),
         host_access_route_pattern: "/v1/host/*".to_owned(),
+        host_access_control_identity_sha256:
+            "37ff41b262aafe53568c29b3cd20ddc035d6bde7568458e371eef4326976c941".to_owned(),
     }
 }
 
@@ -439,7 +441,9 @@ fn projection_observation(
     }
 }
 
-fn observation(desired: &ProductionCredentialPlaneOwnership) -> CredentialPlaneObservation {
+pub(super) fn observation(
+    desired: &ProductionCredentialPlaneOwnership,
+) -> CredentialPlaneObservation {
     CredentialPlaneObservation {
         host_access: None,
         control_token_identity: cloudflare::CloudflareApiTokenIdentity {

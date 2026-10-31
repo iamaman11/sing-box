@@ -38,6 +38,7 @@ pub struct ProductionCredentialPlaneOwnership {
     pub host_access_application_name: String,
     pub host_access_policy_name: String,
     pub host_access_route_pattern: String,
+    pub host_access_control_identity_sha256: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -451,6 +452,9 @@ impl ProductionComposition {
                 host_access_application_name: credential_plane.host_access_application_name.clone(),
                 host_access_policy_name: credential_plane.host_access_policy_name.clone(),
                 host_access_route_pattern: credential_plane.host_access_route_pattern.clone(),
+                host_access_control_identity_sha256: credential_plane
+                    .host_access_control_identity_sha256
+                    .clone(),
             },
             target_plane: ProductionTargetPlaneOwnership {
                 target_account_id: application_cloudflare_account_id,

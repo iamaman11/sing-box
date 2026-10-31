@@ -645,6 +645,8 @@ jobs:
         env:
           CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
           CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN: ${{ secrets.CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN }}
+          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID }}
+          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET }}
         run: |
           set -euo pipefail
           test -n "${CLOUDFLARE_CONTROL_TOKEN}" && test -n "${CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN}"
@@ -697,6 +699,8 @@ jobs:
         env:
           CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
           CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN: ${{ secrets.CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN }}
+          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_ID: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_ID }}
+          EDGE_VM_CREDENTIAL_ACCESS_CLIENT_SECRET: ${{ secrets.CLOUDFLARE_VM_ACCESS_CLIENT_SECRET }}
           # Protected Environment secret, consumed ONLY in the existing native
           # mutation owner AFTER the typed plan and durable GitHub BEGIN.
           # No local Vault, runner agent or extra service in the runtime path.
