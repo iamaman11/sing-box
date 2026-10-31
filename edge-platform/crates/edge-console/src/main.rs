@@ -25,8 +25,6 @@ mod windows_trust_enrollment;
 mod windows_update;
 
 use clap::Parser;
-#[cfg(windows)]
-use prost::Message;
 use command_dispatch::run;
 use edge_controller_core::{
     local_singbox_config_path, windows_credential_store_path, windows_runtime_state_path,
@@ -43,6 +41,8 @@ use edge_secrets::{
 };
 use edge_singbox::{STAGE2_CLASH_API_PORT, STAGE2_DESKTOP_PROXY_PORT, STAGE2_WSL_PROXY_PORT};
 use error::ConsoleError;
+#[cfg(windows)]
+use prost::Message;
 use rusqlite::Connection;
 use std::env;
 #[cfg(windows)]
@@ -55,9 +55,9 @@ use std::process::{Command, ExitCode, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-use edge_shared_types::controller_service_client::ControllerServiceClient;
 #[cfg(windows)]
 use edge_shared_types::WindowsSystemDispatchFailure;
+use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::{
     ControllerStatus, CredentialTransitionAction, DoctorRequest, DoctorResponse, Empty,
     GetOperationRequest, GetSecretRefRequest, GetSelectorStateRequest, GetTraceRequest,
@@ -221,7 +221,9 @@ fn system_dispatch_failure_path(root: &Path, release: &str) -> PathBuf {
 
 #[cfg(windows)]
 fn system_dispatch_failure_stage_and_code(message: &str) -> (String, String) {
-    let (phase, detail) = message.split_once(": ").unwrap_or(("SYSTEM_ENTRYPOINT", message));
+    let (phase, detail) = message
+        .split_once(": ")
+        .unwrap_or(("SYSTEM_ENTRYPOINT", message));
     let phase = match phase {
         "SYSTEM_OWNER_LOCK" | "SYSTEM_RECEIPT" | "SYSTEM_TRUST" | "SYSTEM_ADMIN"
         | "SYSTEM_SIGNED_HOST" => phase,
@@ -246,7 +248,10 @@ fn system_dispatch_failure_record(
     message: &str,
     observed_at_unix: u64,
 ) -> Result<WindowsSystemDispatchFailure, &'static str> {
-    if release.len() != 64 || !release.bytes().all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+    if release.len() != 64
+        || !release
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
         || observed_at_unix == 0
     {
         return Err("HOST_WINDOWS_SYSTEM_FAILURE_RELEASE_OR_CLOCK_INVALID");
@@ -339,12 +344,21 @@ fn read_system_dispatch_failure(
         || result.release_set_sha256 != release
         || result.observed_at_unix == 0
         || result.error_sha256.len() != 32
-        || !matches!(result.phase.as_str(),
-            "SYSTEM_OWNER_LOCK" | "SYSTEM_RECEIPT" | "SYSTEM_TRUST"
-            | "SYSTEM_ADMIN" | "SYSTEM_SIGNED_HOST" | "SYSTEM_ENTRYPOINT")
+        || !matches!(
+            result.phase.as_str(),
+            "SYSTEM_OWNER_LOCK"
+                | "SYSTEM_RECEIPT"
+                | "SYSTEM_TRUST"
+                | "SYSTEM_ADMIN"
+                | "SYSTEM_SIGNED_HOST"
+                | "SYSTEM_ENTRYPOINT"
+        )
         || result.error_code.is_empty()
         || result.error_code.len() > 128
-        || !result.error_code.bytes().all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+        || !result
+            .error_code
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
         || result.encode_to_vec() != bytes
     {
         return Err("HOST_WINDOWS_SYSTEM_FAILURE_PROOF_INVALID");
@@ -359,15 +373,22 @@ mod windows_system_dispatch_failure_tests {
     #[test]
     fn windows_system_dispatch_failure_protobuf_is_bounded_redacted_and_typed() {
         let release = "a".repeat(64);
-        let sensitive = "SYSTEM_TRUST: HOST_WINDOWS_TRUST_PRIVATE_IDENTITY_UNREADABLE; token=do-not-store";
+        let sensitive =
+            "SYSTEM_TRUST: HOST_WINDOWS_TRUST_PRIVATE_IDENTITY_UNREADABLE; token=do-not-store";
         let record = system_dispatch_failure_record(&release, sensitive, 12345).unwrap();
         assert_eq!(record.phase, "SYSTEM_TRUST");
-        assert_eq!(record.error_code, "HOST_WINDOWS_TRUST_PRIVATE_IDENTITY_UNREADABLE");
+        assert_eq!(
+            record.error_code,
+            "HOST_WINDOWS_TRUST_PRIVATE_IDENTITY_UNREADABLE"
+        );
         assert_eq!(record.error_sha256.len(), 32);
         let bytes = record.encode_to_vec();
         assert!(bytes.len() < 512);
         assert!(!String::from_utf8_lossy(&bytes).contains("do-not-store"));
-        assert_eq!(WindowsSystemDispatchFailure::decode(bytes.as_slice()).unwrap(), record);
+        assert_eq!(
+            WindowsSystemDispatchFailure::decode(bytes.as_slice()).unwrap(),
+            record
+        );
     }
 
     #[test]
@@ -375,8 +396,11 @@ mod windows_system_dispatch_failure_tests {
         assert!(system_dispatch_failure_record("a", "SYSTEM_TRUST: HOST_OK", 1).is_err());
         assert!(system_dispatch_failure_record(&"a".repeat(64), "error", 0).is_err());
         let record = system_dispatch_failure_record(
-            &"b".repeat(64), "SYSTEM_OWNER_LOCK: access denied secret", 42,
-        ).unwrap();
+            &"b".repeat(64),
+            "SYSTEM_OWNER_LOCK: access denied secret",
+            42,
+        )
+        .unwrap();
         assert_eq!(record.phase, "SYSTEM_OWNER_LOCK");
         assert_eq!(record.error_code, "SYSTEM_ERROR_CODE_UNCLASSIFIED");
         assert_eq!(
@@ -765,25 +789,31 @@ async fn dispatch_privileged_request(
     // No runner writes to native-host; key material is generated by SYSTEM.
     #[cfg(windows)]
     if windows_receipt_enrollment::dispatch_if_present(install_root)
-        .map_err(|reason| format!("SYSTEM_RECEIPT: {reason}"))? {
+        .map_err(|reason| format!("SYSTEM_RECEIPT: {reason}"))?
+    {
         return Ok(());
     }
     // Git is the only trusted source. This optional first-use stage runs in
     // the same SYSTEM dispatcher and creates trust.pb once, without a runner
     // supplied key, alternate task, or network resource effect.
     #[cfg(windows)]
-    windows_trust_enrollment::dispatch_if_needed(install_root).await
+    windows_trust_enrollment::dispatch_if_needed(install_root)
+        .await
         .map_err(|reason| format!("SYSTEM_TRUST: {reason}"))?;
     #[cfg(windows)]
-    if windows_admin::dispatch_if_present(install_root).await
-        .map_err(|reason| format!("SYSTEM_ADMIN: {reason}"))? {
+    if windows_admin::dispatch_if_present(install_root)
+        .await
+        .map_err(|reason| format!("SYSTEM_ADMIN: {reason}"))?
+    {
         return Ok(());
     }
     // The SAME installed SYSTEM Task accepts bounded Worker-signed native
     // HostIntent, never a runner's legacy mutation code or arbitrary PowerShell.
     #[cfg(windows)]
-    if windows_signed_host::dispatch_if_present(install_root).await
-        .map_err(|reason| format!("SYSTEM_SIGNED_HOST: {reason}"))? {
+    if windows_signed_host::dispatch_if_present(install_root)
+        .await
+        .map_err(|reason| format!("SYSTEM_SIGNED_HOST: {reason}"))?
+    {
         return Ok(());
     }
     let request_path = privileged_request_path(install_root);

@@ -244,19 +244,20 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             let active = load_verified_activation(root)?;
             // Advisory, typed LocalSystem evidence from the SAME protected
             // native journal. Never infer a failure from Task exit=1 alone.
-            let system_failure = match read_system_dispatch_failure(root, &active.release_set_sha256) {
-                Ok(Some(failure)) => serde_json::json!({
-                    "state": "RECORDED_SYSTEM_ERROR",
-                    "phase": failure.phase,
-                    "error_code": failure.error_code,
-                    "observed_at_unix": failure.observed_at_unix,
-                }),
-                Ok(None) => serde_json::json!({"state": "NOT_RECORDED"}),
-                Err(reason) => serde_json::json!({
-                    "state": "UNPROVEN",
-                    "reason": reason,
-                }),
-            };
+            let system_failure =
+                match read_system_dispatch_failure(root, &active.release_set_sha256) {
+                    Ok(Some(failure)) => serde_json::json!({
+                        "state": "RECORDED_SYSTEM_ERROR",
+                        "phase": failure.phase,
+                        "error_code": failure.error_code,
+                        "observed_at_unix": failure.observed_at_unix,
+                    }),
+                    Ok(None) => serde_json::json!({"state": "NOT_RECORDED"}),
+                    Err(reason) => serde_json::json!({
+                        "state": "UNPROVEN",
+                        "reason": reason,
+                    }),
+                };
             println!(
                 "{}",
                 serde_json::json!({
