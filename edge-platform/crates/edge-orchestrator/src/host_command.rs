@@ -50,7 +50,10 @@ fn exact_vm_legacy_binary_bridge(
     current_release_sha256: &[u8],
 ) -> bool {
     let digest_hex = |bytes: &[u8]| {
-        bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+        bytes
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>()
     };
     if request.release_set_sha256.len() != 32
         || request.release_set_sha256 == current_release_sha256
@@ -286,7 +289,10 @@ pub(crate) fn run(
             let requested_release = match operator.legacy_release_set_sha256.as_deref() {
                 None => current_release.clone(),
                 Some(old_sha) => {
-                    let selected = desired.hosts.iter().find(|h| h.machine_id == machine_id)
+                    let selected = desired
+                        .hosts
+                        .iter()
+                        .find(|h| h.machine_id == machine_id)
                         .ok_or("HOST_ADMIN_GIT_MACHINE_NOT_REGISTERED")?;
                     if selected.kind != ManagedHostKind::Vm as i32 {
                         return Err("HOST_VM_LEGACY_BRIDGE_VM_ONLY".into());
@@ -2885,9 +2891,11 @@ mod tests {
         let mut request = edge_shared_types::FleetNativeAdminRequest {
             release_set_sha256: vec![0x22; 32],
             argv: vec![
-                "/usr/bin/python3".into(), "-c".into(),
+                "/usr/bin/python3".into(),
+                "-c".into(),
                 VM_LEGACY_BRIDGE_SCRIPT.into(),
-                "22".repeat(32), "11".repeat(32),
+                "22".repeat(32),
+                "11".repeat(32),
             ],
             working_directory: "/".into(),
             timeout_seconds: 120,
