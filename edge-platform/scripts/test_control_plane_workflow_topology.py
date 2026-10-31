@@ -906,6 +906,24 @@ for forbidden in ("change_offline_bootstrap_task_enabled(", "rebind_pending_trus
                   "fs::remove_file(", ".create_new(", "promote_candidate(", "discard_candidate("):
     assert forbidden not in candidate_reader, forbidden
 
+# No secondary mandatory writer: the existing durable offline BEGIN is the
+# sole replay fence. Its metadata is advisory in the independent status reader;
+# SYSTEM trust/receipt remains separately authenticated.
+win_handoff = Path("edge-platform/crates/edge-console/src/windows_handoff.rs").read_text(encoding="utf-8")
+assert "struct Progress" not in win_handoff
+assert "offline-handoff-" not in win_handoff
+assert "fn durable_replace(" not in win_handoff
+assert "Progress::start(" not in win_console
+assert "progress.enter(" not in win_console
+assert "offline-bootstrap-intent-v1" in win_console
+actual_begin = win_console.split('let intent = install_root.join("offline-bootstrap-intent-v1")', 1)[1].split("change_offline_bootstrap_task_enabled(false)?;", 1)[0]
+assert ".create_new(true)" in actual_begin
+assert ".sync_all()" in actual_begin
+assert "PRESENT_UNADJUDICATED" in win_dispatch
+assert "METADATA_UNPROVEN_NO_REPLAY" in win_dispatch
+assert '"retained_begin": retained_begin' in win_dispatch
+assert '"offline_handoff": handoff' not in win_dispatch
+
 # The real W4 failure occurred BEFORE native owner handoff: the offline
 # PowerShell StageOnly gate still required Ready, while Rust admitted exact
 # Disabled+retained-BEGIN recovery. Both StageOnly and BootstrapNow must

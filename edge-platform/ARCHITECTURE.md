@@ -89,41 +89,37 @@ Git desired → Rust typed graph/planner → immutable ReleaseSet → Worker sig
 
 Внутренние structured desired, intent, result и receipt используют Protobuf. JSON допустим только на границе обязательного внешнего API (GitHub REST, Actions `strategy.matrix`); для выбора одной `/host` операции JSON не применяется.
 
-## Windows offline handoff: состояние и доказательства
+## Windows offline handoff: один BEGIN и независимые доказательства
 
-Существующий `offline-bootstrap` в `edge-console` ведёт один последовательный
-переход: SOURCE → IDENTITY → CANDIDATE → AUTHORITY → FENCE → BEGIN → DISABLE →
-ACTIVATE → REBIND → IDENTITY_READBACK → PREPARE → ENABLE → COMPLETE. Пропуск,
-обратный переход и повтор фазы запрещены. Runner не получает административных
-прав или доступа к приватному ключу.
+Существующий `offline-bootstrap` выполняет упорядоченную цепочку SOURCE →
+IDENTITY → CANDIDATE → AUTHORITY → FENCE → BEGIN → DISABLE → ACTIVATE →
+REBIND → IDENTITY_READBACK → PREPARE → ENABLE → COMPLETE. Это порядок реальных
+операций, а не отдельный сохраняемый state machine. Единственный обязательный
+неповторяемый локальный BEGIN — `offline-bootstrap-intent-v1`: он создаётся
+`create_new`, синхронизируется до первого изменения SCM/Task и остаётся
+неизменным. Восстановление прежней версии не разрешает автоматический повтор.
 
-`windows_handoff` читает Task Scheduler через COM. SID, LogonType, RunLevel,
-единственный action и точный immutable executable проверяются независимо от
-временного Ready/Queued/Running. Ошибка содержит предикат либо API и HRESULT/
-Win32-код. Перед активацией ожидаются открытые process handles с общим deadline
-30 секунд. Задача не запускается вручную, процессы не завершаются принудительно.
-После BEGIN отключается только существующая задача. Активация, сохранение
-identity и подготовка requests завершаются до включения задачи.
+`windows_handoff` читает существующий Task Scheduler напрямую через COM,
+проверяет SID, LogonType, RunLevel, action и immutable executable. Отдельный
+30-секундный deadline привязан к реальным process handles. Вручную запускать
+задачу, убивать процессы или создавать второго исполнителя запрещено.
+Существующий native journal хранит действительные SYSTEM-ошибки и результаты;
+дополнительного обязательного writer `offline-handoff-*.pb` больше нет.
 
-Фаза и результат сохраняются существующим `WindowsPrivilegedResult` в
-`native-host/journal/offline-handoff-<request_id>.pb`. Это неподписанное
-наблюдение Administrator, не SYSTEM receipt и не разрешение повторить действие.
-Исходный BEGIN не изменяется. Смена фазы использует sync и атомарную замену
-WRITE_THROUGH. Незавершённый `.pb.new` и повреждение дают UNPROVEN/NO_REPLAY.
-Произвольные сообщения и секреты не сохраняются: только phase, target и
-безопасный код. Возможные эффекты консервативно отмечаются до архивации BEGIN.
-
-Одна команда `offline-first-use-status` отображает stage, task identity/state/
-API error, handoff и SYSTEM error. Отказ одного reader не скрывает остальные
-observations. Наличие trust-файла не доказывает Worker signature или receipt.
+`offline-first-use-status` независимо показывает этап identity, точную
+SCM/Task identity, SYSTEM failure и **метаданные наличия** retained BEGIN.
+`PRESENT_UNADJUDICATED` не значит успешное выполнение, а `NOT_FOUND_READ_ONLY`
+не доказывает отсутствие других pending операций. Неудача одной проверки не
+скрывает остальные. Наличие trust-файла не доказывает подпись Worker; runner
+или Administrator не подменяют подписанный SYSTEM receipt.
 
 | Проверка | Требуемое доказательство |
 |---|---|
-| Native Windows CI | Authority drift; нормальный Running; bounded wait без kill; failed/неоднозначный doctor; сохранение записи при interrupted write; torn write запрещает повтор; порядок фаз; существующие identity/trust/journal negative fixtures |
-| Изолированная Windows | Полный переход и остановка на каждой границе; независимый readback; неизвестный эффект не повторяется; identity/credentials/архивы сохранены; requests готовы до ENABLE |
-| Один разрешённый физический handoff | Exact ReleaseSet; штатный SYSTEM tick; Worker proof; проверенная подписанная receipt; сохранение WARP/DNS/routes/firewall |
+| Native Windows CI | Task COM owner/Running/drift; bounded wait без kill; точный doctor; durable BEGIN до эффектов; негативные ACL и identity; отсутствие второго writer |
+| Изолированная Windows | Один разрешённый handoff; readback каждой критической границы; no replay при UNKNOWN; identity/credentials сохранены |
+| Физическая Windows | Exact ReleaseSet; штатный SYSTEM tick; подпись Worker, SYSTEM receipt; без непредусмотренных изменений WARP/DNS/routes/firewall |
 
-CI не заменяет две последние проверки. До них Windows P4 не принят.
-ManagedTun и VM-приёмка остаются отдельными проверками через существующий `/host`.
+CI не заменяет физическую проверку. До неё Windows P4 не принят.
+ManagedTun и VM-приёмка остаются отдельными сценариями через `/host`.
 
 Подробности уже удалённых RPC/Mesh/VM helper-функций сохранены в истории PR [#448](https://github.com/iamaman11/sing-box/pull/448)–[#451](https://github.com/iamaman11/sing-box/pull/451); здесь они не образуют новый план. Исполняемые пути и недостающие gates — только в [единственном плане](FINALIZATION-PLAN.md).
