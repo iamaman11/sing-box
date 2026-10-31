@@ -1413,6 +1413,7 @@ mod tests {
         assert!(missing.contains("privileged_exchange_state=EVIDENCE_NOT_RECORDED"));
         assert!(missing.contains("privileged_exchange_error_class=UNPROVEN"));
         let result = edge_shared_types::WindowsPrivilegedResult {
+            handoff: None,
             schema_version: 1,
             request_id: "12345-77".to_owned(),
             success: false,

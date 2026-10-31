@@ -607,7 +607,7 @@ win_installer = Path("edge-platform/scripts/install-windows-release.ps1").read_t
 win_console = Path("edge-platform/crates/edge-console/src/main.rs").read_text(encoding="utf-8")
 assert "[string]$old['windows_datapath_mode'] -notin @('ManagedTun', 'ProxyOnly')" in win_installer
 assert "[string]$old['scm_start_type'] -cne 'OnDemand'" in win_installer
-assert "require_offline_bootstrap_supported_source(&old_readout)?;" in win_console
+assert "require_offline_bootstrap_exact_doctor(" in win_console
 assert "require_offline_bootstrap_quiescent(install_root)?;" in win_console
 assert "change_offline_bootstrap_task_enabled(false)?;" in win_console
 assert 'verify_offline_bootstrap_dispatcher(&before.console_path, "Disabled")?;' in win_console
@@ -680,14 +680,14 @@ assert "create_only(&root.join(MARKER), &new_receipt.encode_to_vec())?" in ident
 assert '        &root.join("trust-enrollment.pb"),' in identity_owner
 assert "        &new_trust.encode_to_vec()," in identity_owner
 assert "HOST_WINDOWS_FIRST_USE_REBIND_TRUST_READBACK_UNAVAILABLE" in identity_owner
-assert 'windows_trust_enrollment::prepare_pending(install_root)' in win_console
+assert 'windows_trust_enrollment::prepare_disabled_handoff(install_root, true)' in win_console
 assert 'windows_trust_enrollment::prepare_pending(root)' in Path("edge-platform/crates/edge-console/src/command_dispatch.rs").read_text(encoding="utf-8")
 assert 'Command::OfflineFirstUseStatus(args)' in Path("edge-platform/crates/edge-console/src/command_dispatch.rs").read_text(encoding="utf-8")
 assert 'OfflineFirstUseStatus(InstallRootArgs)' in Path("edge-platform/crates/edge-console/src/cli.rs").read_text(encoding="utf-8")
 assert "TRUST_RECORDED_UNVERIFIED" in Path("edge-platform/crates/edge-console/src/windows_trust_enrollment.rs").read_text(encoding="utf-8")
 assert "require_identity_request_for_trust(" in identity_owner
 
-assert "windows_receipt_enrollment::prepare(" in win_console
+assert "windows_receipt_enrollment::prepare_disabled_handoff(" in win_console
 assert "fresh_machine.as_deref().ok_or(" in win_console
 assert "resolve_local_windows_machine(&before).await?" in win_console
 assert "OFFLINE_BOOTSTRAP_IDENTITY_STEP_UNCERTAIN_NO_REPLAY" in win_console
@@ -924,7 +924,7 @@ for gate in (
     "require_explicit_local_administrator_first_use()?;",
     "load_verified_activation(install_root)",
     "require_offline_windows_owner(install_root, &before)?;",
-    "require_offline_bootstrap_supported_source(&old_readout)?;",
+    "require_offline_bootstrap_exact_doctor(",
     'verify_offline_bootstrap_dispatcher(&before.console_path, "Ready")?;',
     "require_offline_bootstrap_quiescent(install_root)?;",
     "require_no_running_legacy_dispatcher(&before.console_path)?;",
@@ -937,7 +937,7 @@ for mutation in ("write_atomic(", "create_new(", "offline_activate_privileged_re
 assert "let (before, previously_disabled) =" in win_console
 assert "read_only_windows_first_use_source(install_root, supersession, revision, target)?;" in win_console
 assert "require_distinct_offline_bootstrap_successor(" in helper
-assert 'verify_offline_bootstrap_dispatcher(&before.console_path, "Disabled")?;' in helper
+assert 'task.validate(&before.console_path, false)?;' in helper
 assert "archive_retained_offline_bootstrap_intent(" in win_console
 assert "retained_intent_sha256: Option<String>" in win_cli
 assert "expected_current_release_set_sha256: Option<String>" in win_cli

@@ -1766,6 +1766,70 @@ pub fn validate_windows_privileged_result(result: &WindowsPrivilegedResult) -> R
             64,
         )?;
     }
+    match (&result.handoff, result.code.starts_with("HANDOFF_")) {
+        (None, false) => {}
+        (Some(observation), true) => {
+            let phase = WindowsHandoffPhase::try_from(observation.phase)
+                .map_err(|_| "Windows handoff phase is unknown")?;
+            if observation.schema_version != 1
+                || phase == WindowsHandoffPhase::Unspecified
+                || observation.observed_at_unix == 0
+                || observation.replay_authorized
+            {
+                return Err("Windows handoff observation is invalid or authorizes replay".into());
+            }
+            validate_lower_hex(
+                "Windows handoff target",
+                &observation.target_release_set_sha256,
+                64,
+            )?;
+            validate_lower_hex(
+                "Windows handoff revision",
+                &observation.accepted_revision,
+                40,
+            )?;
+            validate_safe_runtime_token("Windows handoff error", &observation.error_code, 128)?;
+            if !observation
+                .error_code
+                .bytes()
+                .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+                || !(observation.error_code == "NONE"
+                    || observation.error_code.starts_with("HOST_")
+                    || observation.error_code.starts_with("OFFLINE_")
+                    || observation.error_code.starts_with("SYSTEM_"))
+            {
+                return Err("Windows handoff error is not a safe diagnostic code".into());
+            }
+            if observation.effects_possible
+                != (observation.phase >= WindowsHandoffPhase::Begin as i32)
+            {
+                return Err("Windows handoff effects boundary is inconsistent".into());
+            }
+            let valid = match result.code.as_str() {
+                "HANDOFF_IN_PROGRESS" => !result.success && observation.error_code == "NONE",
+                "HANDOFF_ACTIVATED_TRUST_NOT_ATTESTED" => {
+                    result.success
+                        && phase == WindowsHandoffPhase::Complete
+                        && observation.error_code == "NONE"
+                }
+                "HANDOFF_BLOCKED_BEFORE_BEGIN" => {
+                    !result.success
+                        && !observation.effects_possible
+                        && observation.error_code != "NONE"
+                }
+                "HANDOFF_UNKNOWN_NO_REPLAY" => {
+                    !result.success
+                        && observation.effects_possible
+                        && observation.error_code != "NONE"
+                }
+                _ => false,
+            };
+            if !valid {
+                return Err("Windows handoff outcome is inconsistent".into());
+            }
+        }
+        _ => return Err("Windows handoff result requires its typed observation".into()),
+    }
     Ok(())
 }
 
@@ -4119,5 +4183,86 @@ mod tests {
             app_readiness_phase: AppReadinessPhase::DeploymentAbsent as i32,
         };
         assert!(!status.encode_to_vec().is_empty());
+    }
+}
+
+#[cfg(test)]
+mod windows_handoff_contract_tests {
+    use super::*;
+    fn record() -> WindowsPrivilegedResult {
+        WindowsPrivilegedResult {
+            schema_version: 1,
+            request_id: "1-1".into(),
+            success: false,
+            code: "HANDOFF_UNKNOWN_NO_REPLAY".into(),
+            detail: String::new(),
+            active_release_set_sha256: Some("a".repeat(64)),
+            handoff: Some(WindowsOfflineHandoffObservation {
+                schema_version: 1,
+                phase: WindowsHandoffPhase::Activate as i32,
+                target_release_set_sha256: "b".repeat(64),
+                accepted_revision: "c".repeat(40),
+                effects_possible: true,
+                observed_at_unix: 1,
+                error_code: "HOST_TEST_API_WIN32_5".into(),
+                replay_authorized: false,
+            }),
+        }
+    }
+    #[test]
+    fn typed_handoff_observation_never_promotes_unknown_or_replay_to_success() {
+        let exact = record();
+        assert_eq!(
+            decode_windows_privileged_result(&encode_windows_privileged_result(&exact).unwrap())
+                .unwrap(),
+            exact
+        );
+        let mut invalid = Vec::new();
+        let mut r = exact.clone();
+        r.success = true;
+        invalid.push(r);
+        let mut r = exact.clone();
+        r.handoff.as_mut().unwrap().replay_authorized = true;
+        invalid.push(r);
+        let mut r = exact.clone();
+        r.handoff.as_mut().unwrap().phase = 999;
+        invalid.push(r);
+        let mut r = exact.clone();
+        r.handoff.as_mut().unwrap().effects_possible = false;
+        invalid.push(r);
+        let mut r = exact.clone();
+        r.handoff.as_mut().unwrap().error_code = "secret=not-allowed".into();
+        invalid.push(r);
+        let mut r = exact.clone();
+        r.handoff.as_mut().unwrap().observed_at_unix = 0;
+        invalid.push(r);
+        let mut r = exact.clone();
+        r.handoff = None;
+        invalid.push(r);
+        let mut r = exact.clone();
+        r.code = "ORDINARY_RESULT".into();
+        invalid.push(r);
+        let mut r = exact.clone();
+        r.handoff.as_mut().unwrap().target_release_set_sha256 = "wrong".into();
+        invalid.push(r);
+        let mut r = exact.clone();
+        r.code = "HANDOFF_ACTIVATED_TRUST_NOT_ATTESTED".into();
+        r.success = true;
+        r.handoff.as_mut().unwrap().error_code = "NONE".into();
+        invalid.push(r);
+        for r in invalid {
+            assert!(encode_windows_privileged_result(&r).is_err(), "{r:?}");
+        }
+    }
+    #[test]
+    fn handoff_install_completion_is_distinct_from_signed_system_trust() {
+        let mut r = record();
+        r.code = "HANDOFF_ACTIVATED_TRUST_NOT_ATTESTED".into();
+        r.success = true;
+        let h = r.handoff.as_mut().unwrap();
+        h.phase = WindowsHandoffPhase::Complete as i32;
+        h.error_code = "NONE".into();
+        validate_windows_privileged_result(&r).unwrap();
+        assert!(!r.handoff.unwrap().replay_authorized);
     }
 }

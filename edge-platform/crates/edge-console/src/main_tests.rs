@@ -1074,6 +1074,7 @@ fn privileged_child_failure_evidence_is_bounded_and_secret_safe() {
     assert!(!detail.contains("abcdef0123456789abcdef0123456789"));
 
     let result = WindowsPrivilegedResult {
+        handoff: None,
         schema_version: PRIVILEGED_RESULT_SCHEMA_VERSION,
         request_id: "installer-evidence-test".to_owned(),
         success: false,
@@ -1209,6 +1210,7 @@ fn first_use_recovery_proof_and_full_task_hashes_fit_bounded_result() {
     );
     assert!(critical.len() <= RUNTIME_EVIDENCE_RESULT_MAX_BYTES);
     let result = WindowsPrivilegedResult {
+        handoff: None,
         schema_version: PRIVILEGED_RESULT_SCHEMA_VERSION,
         request_id: "exact-first-use-recovery-evidence".to_owned(),
         success: true,
@@ -1309,6 +1311,7 @@ fn critical_runtime_evidence_fits_without_truncating_owner_or_tasks() {
     assert!(!detail.contains("[truncated]"));
 
     let result = WindowsPrivilegedResult {
+        handoff: None,
         schema_version: PRIVILEGED_RESULT_SCHEMA_VERSION,
         request_id: "runtime-evidence-test".to_owned(),
         success: true,
@@ -1317,4 +1320,33 @@ fn critical_runtime_evidence_fits_without_truncating_owner_or_tasks() {
         active_release_set_sha256: None,
     };
     assert!(encode_windows_privileged_result(&result).is_ok());
+}
+
+#[test]
+fn offline_handoff_doctor_requires_success_unique_exact_release_fields() {
+    let release = "a".repeat(64);
+    let exact = format!(
+        "status=PASS\nexact_release_files=PASS\nrelease_set_sha256={release}\nwindows_datapath_mode=ProxyOnly\nscm_start_type=OnDemand\n"
+    );
+    require_offline_bootstrap_exact_doctor(true, &exact, &release).unwrap();
+    for (success, report, expected) in [
+        (false, exact.clone(), release.clone()),
+        (
+            true,
+            exact.replace("status=PASS", "status=FAIL"),
+            release.clone(),
+        ),
+        (
+            true,
+            exact.replace("exact_release_files=PASS", "exact_release_files=UNPROVEN"),
+            release.clone(),
+        ),
+        (true, format!("{exact}status=PASS\n"), release.clone()),
+        (true, exact.clone(), "b".repeat(64)),
+    ] {
+        assert_eq!(
+            require_offline_bootstrap_exact_doctor(success, &report, &expected).unwrap_err(),
+            "HOST_WINDOWS_HANDOFF_SOURCE_DOCTOR_NOT_EXACT"
+        );
+    }
 }

@@ -56,22 +56,33 @@ pub(super) fn verify_enrollment_marker(
 /// Keys, registry and signer identity cannot be passed by the caller.
 /// Only the existing SYSTEM dispatcher is permitted to construct trust.pb.
 pub(super) fn prepare(install_root: &Path) -> Result<(), String> {
-    prepare_exact(install_root, false)
+    prepare_exact(install_root, false, "Ready")
 }
 
 /// Authorize future Git trust in the SAME local operation as receipt identity.
 /// Only the already installed SYSTEM owner performs Git verification and
 /// creates trust.pb once its own Ed25519 identity exists.
 pub(super) fn prepare_pending(install_root: &Path) -> Result<(), String> {
-    prepare_exact(install_root, true)
+    prepare_exact(install_root, true, "Ready")
 }
 
-fn prepare_exact(install_root: &Path, allow_pending_identity: bool) -> Result<(), String> {
+pub(super) fn prepare_disabled_handoff(
+    install_root: &Path,
+    allow_pending_identity: bool,
+) -> Result<(), String> {
+    prepare_exact(install_root, allow_pending_identity, "Disabled")
+}
+
+fn prepare_exact(
+    install_root: &Path,
+    allow_pending_identity: bool,
+    expected_state: &str,
+) -> Result<(), String> {
     require_windows_local_administrator_first_use().map_err(str::to_owned)?;
     require_exact_immutable_activation_console(install_root)?;
     let active = load_verified_activation(install_root).map_err(|e| e.to_string())?;
     require_offline_windows_owner(install_root, &active)?;
-    verify_offline_bootstrap_dispatcher(&active.console_path, "Ready")?;
+    verify_offline_bootstrap_dispatcher(&active.console_path, expected_state)?;
     let root = install_root.join("native-host");
     if allow_pending_identity {
         windows_receipt_enrollment::require_identity_request_for_trust(install_root, &active)?;
