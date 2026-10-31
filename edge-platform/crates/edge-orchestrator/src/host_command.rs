@@ -49,14 +49,17 @@ fn exact_vm_legacy_binary_bridge(
     request: &edge_shared_types::FleetNativeAdminRequest,
     current_release_sha256: &[u8],
 ) -> bool {
+    let digest_hex = |bytes: &[u8]| {
+        bytes.iter().map(|byte| format!("{byte:02x}")).collect::<String>()
+    };
     if request.release_set_sha256.len() != 32
         || request.release_set_sha256 == current_release_sha256
         || request.argv.len() != 5
         || request.argv[0] != "/usr/bin/python3"
         || request.argv[1] != "-c"
         || request.argv[2] != VM_LEGACY_BRIDGE_SCRIPT
-        || request.argv[3] != hex::encode(&request.release_set_sha256)
-        || request.argv[4] != hex::encode(current_release_sha256)
+        || request.argv[3] != digest_hex(&request.release_set_sha256)
+        || request.argv[4] != digest_hex(current_release_sha256)
         || request.working_directory != "/"
         || !request.environment.is_empty()
         || !request.stdin_bytes.is_empty()
