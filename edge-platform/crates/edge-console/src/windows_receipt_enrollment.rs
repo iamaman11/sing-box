@@ -305,27 +305,51 @@ pub(super) fn verify_existing_receipt_identity_slot(
 ) -> Result<Vec<u8>, String> {
     require_windows_local_administrator_first_use().map_err(str::to_owned)?;
     let root = native_root(install_root)?;
-    // This is an elevated-Administrator READ-ONLY pre-BEGIN observation.
-    // verify_native_journal_protection requires the caller to be LocalSystem
-    // and is reserved for the SYSTEM journal executor. Independently prove
-    // the exact existing journal directory and its entire protected ACL
-    // chain without granting Administrator authority to execute the journal.
+    // Administrator may READ the public identity and typed completion
+    // marker, but must never request READ_CONTROL, READ_DATA, or ownership
+    // changes on the sealed SYSTEM private key. The native SYSTEM dispatcher
+    // independently attests its ACL and PKCS8/public pair when signing.
     edge_shared_types::host_journal::verify_windows_protected_path_acl(
         &root.join("journal"),
         false,
     )
     .map_err(str::to_owned)?;
-    for name in [PRIVATE, PUBLIC, COMPLETED] {
+    verify_existing_receipt_identity_public_files(&root, |path| {
+        edge_shared_types::host_journal::verify_windows_protected_path_acl(path, true)
+            .map_err(str::to_owned)
+    })
+}
+
+/// The only permitted Administrator check on the SYSTEM private key is
+/// bounded, non-following filesystem metadata (the same Win32 attributes
+/// available without the key's READ_CONTROL). ACL inspection and contents
+/// are exclusively the SYSTEM dispatcher's responsibility.
+fn verify_sealed_private_metadata(path: &Path) -> Result<(), String> {
+    use std::os::windows::fs::MetadataExt;
+    let meta = fs::symlink_metadata(path)
+        .map_err(|_| "HOST_WINDOWS_RECEIPT_PRIVATE_ATTRIBUTES_UNAVAILABLE")?;
+    if !meta.file_type().is_file()
+        || meta.file_type().is_symlink()
+        || meta.file_attributes() & 0x400 != 0
+        || meta.len() == 0
+        || meta.len() > 4096
+    {
+        return Err("HOST_WINDOWS_RECEIPT_PRIVATE_ATTRIBUTES_INVALID".into());
+    }
+    Ok(())
+}
+
+/// Shared BOTH before and after activation. The injected ACL reader is
+/// limited to public files, allowing native Windows tests to make any
+/// accidental private-key READ_CONTROL request a hard failure.
+fn verify_existing_receipt_identity_public_files(
+    root: &Path,
+    mut verify_public_acl: impl FnMut(&Path) -> Result<(), String>,
+) -> Result<Vec<u8>, String> {
+    verify_sealed_private_metadata(&root.join(PRIVATE))?;
+    for (name, max) in [(PUBLIC, 32), (COMPLETED, 512)] {
         let path = root.join(name);
-        edge_shared_types::host_journal::verify_windows_protected_path_acl(&path, true)
-            .map_err(str::to_owned)?;
-        let max = if name == PRIVATE {
-            4096
-        } else if name == PUBLIC {
-            32
-        } else {
-            512
-        };
+        verify_public_acl(&path)?;
         if !checked_regular_exists(&path, max)? {
             return Err("HOST_WINDOWS_RECEIPT_COMPLETED_IDENTITY_MISSING".into());
         }
@@ -1073,6 +1097,126 @@ mod tests {
         assert!(completed.exists());
         assert!(create_only(&completed, b"replacement").is_err());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn windows_p4_administrator_public_identity_never_reads_sealed_private_acl() {
+        let root = std::env::temp_dir().join(format!(
+            "windows-p4-sealed-private-boundary-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        // The Administrator is allowed only to STAT this key, not READ or
+        // READ_CONTROL it. A callback that is asked to inspect the private
+        // key's ACL fails as the real Windows API did (ACCESS_DENIED=5).
+        std::fs::write(root.join(PRIVATE), b"sealed-system-private-fixture").unwrap();
+        let public = [7u8; 32];
+        std::fs::write(root.join(PUBLIC), public).unwrap();
+        std::fs::write(root.join(COMPLETED), b"typed-enrollment-completed").unwrap();
+        let mut inspected = Vec::new();
+        let observed = verify_existing_receipt_identity_public_files(&root, |path| {
+            assert_ne!(
+                path.file_name().and_then(|name| name.to_str()),
+                Some(PRIVATE)
+            );
+            inspected.push(path.file_name().unwrap().to_string_lossy().into_owned());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(observed.as_slice(), public);
+        assert_eq!(inspected, [PUBLIC, COMPLETED]);
+        assert!(fs::read(root.join(MARKER)).is_err());
+        assert!(!root.join(MARKER).exists());
+
+        // The POST-activation call is the same function, so this negative
+        // private-ACL test protects both readbacks.
+        std::fs::write(root.join(MARKER), b"unexpected re-enrollment").unwrap();
+        assert_eq!(
+            verify_existing_receipt_identity_public_files(&root, |_| Ok(())),
+            Err("HOST_WINDOWS_RECEIPT_COMPLETED_WITH_PENDING_MARKER".into())
+        );
+        std::fs::remove_file(root.join(MARKER)).unwrap();
+        std::fs::remove_file(root.join(PRIVATE)).unwrap();
+        assert_eq!(
+            verify_existing_receipt_identity_public_files(&root, |_| Ok(())),
+            Err("HOST_WINDOWS_RECEIPT_PRIVATE_ATTRIBUTES_UNAVAILABLE".into())
+        );
+        std::fs::remove_dir_all(&root).unwrap();
+    }
+
+    #[test]
+    fn windows_p4_sealed_private_denies_acl_query_but_allows_public_preflight() {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
+        use windows_sys::Win32::Security::{
+            ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+        };
+
+        // A disposable native Windows fixture: the caller loses READ_CONTROL
+        // for ONLY the private file. Never change a real installation.
+        let root =
+            std::env::temp_dir().join(format!("windows-p4-real-sealed-acl-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let private = root.join(PRIVATE);
+        std::fs::write(&private, b"nonsecret-placeholder-not-a-real-key").unwrap();
+        let original_owner =
+            edge_shared_types::host_journal::windows_native_acl_owner_sid(&private).unwrap();
+
+        let run = |args: &[&str]| {
+            let result = std::process::Command::new("icacls.exe")
+                .arg(&private)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "Windows ACL fixture command failed: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        };
+        run(&["/setowner", "*S-1-5-32-544", "/Q"]);
+        let denied = format!("*{original_owner}:(RC)");
+        run(&["/deny", &denied, "/Q"]);
+        // A file owner normally has implicit READ_CONTROL even when an
+        // ordinary user/group ACE denies it. OWNER RIGHTS (S-1-3-4)
+        // explicitly constrains that implicit owner privilege, reproducing
+        // the sealed SYSTEM-only production key's Win32 error 5.
+        run(&["/deny", "*S-1-3-4:(RC)", "/Q"]);
+
+        let mut wide: Vec<u16> = private.as_os_str().encode_wide().collect();
+        wide.push(0);
+        let mut owner = std::ptr::null_mut();
+        let mut dacl: *mut ACL = std::ptr::null_mut();
+        let mut descriptor = std::ptr::null_mut();
+        let result = unsafe {
+            GetNamedSecurityInfoW(
+                wide.as_mut_ptr(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                &mut owner,
+                std::ptr::null_mut(),
+                &mut dacl,
+                std::ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        if !descriptor.is_null() {
+            unsafe { LocalFree(descriptor) };
+        }
+        assert_eq!(result, 5, "fixture must reproduce Win32 ACCESS_DENIED");
+
+        // Actual production metadata-only private-key verifier MUST succeed.
+        assert_eq!(verify_sealed_private_metadata(&private), Ok(()));
+        std::fs::write(root.join(PUBLIC), [9u8; 32]).unwrap();
+        std::fs::write(root.join(COMPLETED), b"exact-typed-completion").unwrap();
+        let output = verify_existing_receipt_identity_public_files(&root, |path| {
+            assert_ne!(path, private.as_path());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(output, [9u8; 32]);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

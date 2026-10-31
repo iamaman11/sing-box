@@ -775,7 +775,25 @@ for pre_begin in (identity_pre_begin, trust_pre_begin):
     assert 'verify_native_journal_protection(' not in pre_begin
     assert 'fs::read(root.join(PRIVATE))' not in pre_begin
 assert 'if install_root != Path::new(r"C:\\sing-box")' in trust_pre_begin
-assert 'verify_windows_protected_path_acl(&path, true)' in identity_pre_begin
+# The host's exact Win32 probe proved receipt-key.pk8 returns ACCESS_DENIED
+# (5) for elevated Administrator, while public/COMPLETED/journal ACL GETs
+# succeed. Only LocalSystem can attest PKCS8 and its DACL. Both P4 pre-BEGIN
+# and post-activation call the SAME public-only verifier.
+assert 'verify_existing_receipt_identity_public_files(&root, |path|' in identity_pre_begin
+assert 'verify_sealed_private_metadata(&root.join(PRIVATE))?' in identity_pre_begin
+assert 'for (name, max) in [(PUBLIC, 32), (COMPLETED, 512)]' in identity_pre_begin
+assert 'verify_public_acl(&path)?;' in identity_pre_begin
+assert 'fs::read(root.join(PUBLIC))' in identity_pre_begin
+assert 'verify_windows_protected_path_acl(path, true)' in identity_pre_begin
+assert 'verify_windows_protected_path_acl(&path, true)' not in identity_pre_begin
+assert 'for name in [PRIVATE, PUBLIC, COMPLETED]' not in identity_pre_begin
+assert 'fs::read(root.join(PRIVATE))' not in identity_pre_begin
+assert 'GetNamedSecurityInfoW' not in identity_pre_begin
+assert 'windows_p4_administrator_public_identity_never_reads_sealed_private_acl' in identity_owner
+assert 'windows_p4_sealed_private_denies_acl_query_but_allows_public_preflight' in identity_owner
+assert 'verify_native_journal_protection(&root.join("journal"))' in identity_owner
+assert 'seal_system_private(&root)?' in identity_owner
+assert 'existing_private_public(&root)?' in identity_owner
 assert 'read_only_first_use_stage_for_offline_bootstrap(' in win_console
 assert 'verify_existing_receipt_identity_slot(' in win_console
 assert 'preflight_pending_trust_handoff(' in win_console

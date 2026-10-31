@@ -1042,6 +1042,12 @@ jobs:
           cargo test --locked -p edge-local-runtime -p edge-controller -p edge-console -p edge-diagnostic
           if ($LASTEXITCODE -ne 0) { throw "Stage 4B Windows-only ownership/rollback/diagnostic tests failed" }
 
+          # Run the real Windows ACCESS_DENIED=5 sealed-PKCS8 fixture by name.
+          # The Administrator path may stat, but never read key bytes/DACL;
+          # both pre-BEGIN and post-activation observations share this proof.
+          cargo test --locked -p edge-console windows_p4_ -- --nocapture
+          if ($LASTEXITCODE -ne 0) { throw "P4 sealed private identity Administrator/SYSTEM role separation failed" }
+
           # This Windows-only Win32 token API regression must run on Windows,
           # not merely compile transitively in the Windows candidate binary.
           cargo test --locked -p edge-shared-types --lib windows_administrator_membership_queries_exact_process_primary_token -- --nocapture
