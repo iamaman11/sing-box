@@ -305,27 +305,51 @@ pub(super) fn verify_existing_receipt_identity_slot(
 ) -> Result<Vec<u8>, String> {
     require_windows_local_administrator_first_use().map_err(str::to_owned)?;
     let root = native_root(install_root)?;
-    // This is an elevated-Administrator READ-ONLY pre-BEGIN observation.
-    // verify_native_journal_protection requires the caller to be LocalSystem
-    // and is reserved for the SYSTEM journal executor. Independently prove
-    // the exact existing journal directory and its entire protected ACL
-    // chain without granting Administrator authority to execute the journal.
+    // Administrator may READ the public identity and typed completion
+    // marker, but must never request READ_CONTROL, READ_DATA, or ownership
+    // changes on the sealed SYSTEM private key. The native SYSTEM dispatcher
+    // independently attests its ACL and PKCS8/public pair when signing.
     edge_shared_types::host_journal::verify_windows_protected_path_acl(
         &root.join("journal"),
         false,
     )
     .map_err(str::to_owned)?;
-    for name in [PRIVATE, PUBLIC, COMPLETED] {
+    verify_existing_receipt_identity_public_files(&root, |path| {
+        edge_shared_types::host_journal::verify_windows_protected_path_acl(path, true)
+            .map_err(str::to_owned)
+    })
+}
+
+/// The only permitted Administrator check on the SYSTEM private key is
+/// bounded, non-following filesystem metadata (the same Win32 attributes
+/// available without the key's READ_CONTROL). ACL inspection and contents
+/// are exclusively the SYSTEM dispatcher's responsibility.
+fn verify_sealed_private_metadata(path: &Path) -> Result<(), String> {
+    use std::os::windows::fs::MetadataExt;
+    let meta = fs::symlink_metadata(path)
+        .map_err(|_| "HOST_WINDOWS_RECEIPT_PRIVATE_ATTRIBUTES_UNAVAILABLE")?;
+    if !meta.file_type().is_file()
+        || meta.file_type().is_symlink()
+        || meta.file_attributes() & 0x400 != 0
+        || meta.len() == 0
+        || meta.len() > 4096
+    {
+        return Err("HOST_WINDOWS_RECEIPT_PRIVATE_ATTRIBUTES_INVALID".into());
+    }
+    Ok(())
+}
+
+/// Shared BOTH before and after activation. The injected ACL reader is
+/// limited to public files, allowing native Windows tests to make any
+/// accidental private-key READ_CONTROL request a hard failure.
+fn verify_existing_receipt_identity_public_files(
+    root: &Path,
+    mut verify_public_acl: impl FnMut(&Path) -> Result<(), String>,
+) -> Result<Vec<u8>, String> {
+    verify_sealed_private_metadata(&root.join(PRIVATE))?;
+    for (name, max) in [(PUBLIC, 32), (COMPLETED, 512)] {
         let path = root.join(name);
-        edge_shared_types::host_journal::verify_windows_protected_path_acl(&path, true)
-            .map_err(str::to_owned)?;
-        let max = if name == PRIVATE {
-            4096
-        } else if name == PUBLIC {
-            32
-        } else {
-            512
-        };
+        verify_public_acl(&path)?;
         if !checked_regular_exists(&path, max)? {
             return Err("HOST_WINDOWS_RECEIPT_COMPLETED_IDENTITY_MISSING".into());
         }
@@ -1073,6 +1097,48 @@ mod tests {
         assert!(completed.exists());
         assert!(create_only(&completed, b"replacement").is_err());
         std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn windows_p4_administrator_public_identity_never_reads_sealed_private_acl() {
+        let root = std::env::temp_dir().join(format!(
+            "windows-p4-sealed-private-boundary-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        // The Administrator is allowed only to STAT this key, not READ or
+        // READ_CONTROL it. A callback that is asked to inspect the private
+        // key's ACL fails as the real Windows API did (ACCESS_DENIED=5).
+        std::fs::write(root.join(PRIVATE), b"sealed-system-private-fixture").unwrap();
+        let public = [7u8; 32];
+        std::fs::write(root.join(PUBLIC), public).unwrap();
+        std::fs::write(root.join(COMPLETED), b"typed-enrollment-completed").unwrap();
+        let mut inspected = Vec::new();
+        let observed = verify_existing_receipt_identity_public_files(&root, |path| {
+            assert_ne!(path.file_name().and_then(|name| name.to_str()), Some(PRIVATE));
+            inspected.push(path.file_name().unwrap().to_string_lossy().into_owned());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(observed.as_slice(), public);
+        assert_eq!(inspected, [PUBLIC, COMPLETED]);
+        assert!(fs::read(root.join(MARKER)).is_err());
+        assert!(!root.join(MARKER).exists());
+
+        // The POST-activation call is the same function, so this negative
+        // private-ACL test protects both readbacks.
+        std::fs::write(root.join(MARKER), b"unexpected re-enrollment").unwrap();
+        assert_eq!(
+            verify_existing_receipt_identity_public_files(&root, |_| Ok(())),
+            Err("HOST_WINDOWS_RECEIPT_COMPLETED_WITH_PENDING_MARKER".into())
+        );
+        std::fs::remove_file(root.join(MARKER)).unwrap();
+        std::fs::remove_file(root.join(PRIVATE)).unwrap();
+        assert_eq!(
+            verify_existing_receipt_identity_public_files(&root, |_| Ok(())),
+            Err("HOST_WINDOWS_RECEIPT_PRIVATE_ATTRIBUTES_UNAVAILABLE".into())
+        );
+        std::fs::remove_dir_all(&root).unwrap();
     }
 
     #[test]
