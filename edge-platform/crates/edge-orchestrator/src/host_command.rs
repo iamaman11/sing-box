@@ -41,6 +41,33 @@ struct AdminOperatorPayload {
 
 const VM_LEGACY_BRIDGE_SCRIPT: &str = include_str!("../../../scripts/vm_legacy_owner_bridge.py");
 
+/// A tiny GitHub operator payload refers to the exact bridge already built
+/// into this signed release. Never paste a full root script into an issue
+/// comment or create a second updater; the existing Admin request retains
+/// exact Worker-signature, old native pin and one-shot journal admission.
+fn expand_vm_legacy_bridge_argv(
+    argv: Vec<String>,
+    historical_release: Option<&str>,
+    current_release: &[u8],
+) -> Vec<String> {
+    if let Some(old) = historical_release {
+        if argv.is_empty() {
+            let current = current_release
+                .iter()
+                .map(|byte| format!("{byte:02x}"))
+                .collect::<String>();
+            return vec![
+                "/usr/bin/python3".into(),
+                "-c".into(),
+                VM_LEGACY_BRIDGE_SCRIPT.into(),
+                old.into(),
+                current,
+            ];
+        }
+    }
+    argv
+}
+
 /// Only the exact code-only handoff may bind an old installed release.
 /// The native OLD root must STILL verify that pin against its protected
 /// trust snapshot before a Worker-authorized BEGIN. This is not general
@@ -301,11 +328,19 @@ pub(crate) fn run(
                 }
             };
             let is_legacy_bridge = operator.legacy_release_set_sha256.is_some();
+            // Legacy VM handoff is an explicit SHORT operator request.
+            // Construct the exact approved script only in the current Rust
+            // coordinator, after source/release/VM checks; no new transport.
+            let argv = expand_vm_legacy_bridge_argv(
+                operator.argv,
+                operator.legacy_release_set_sha256.as_deref(),
+                &current_release,
+            );
             let request = edge_shared_types::FleetNativeAdminRequest {
                 schema_version: 1,
                 machine_id: machine_id.clone(),
                 source_comment_id: comment,
-                argv: operator.argv,
+                argv,
                 release_set_sha256: requested_release,
                 requested_at_unix: SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -2883,6 +2918,49 @@ mod tests {
         );
         std::fs::remove_file(&path).unwrap();
         assert!(append_host_verifier_output(&path, "typed_verdict", "PASS").is_err());
+    }
+
+    #[test]
+    fn short_legacy_vm_operator_payload_reuses_existing_exact_signed_admin_bridge() {
+        let old = "22".repeat(32);
+        let new = vec![0x11; 32];
+        let short = serde_json::json!({
+            "argv": [],
+            "cwd": "/",
+            "environment": [],
+            "stdin_base64": "",
+            "timeout_seconds": 180,
+            "publish_output": false,
+            "legacy_release_set_sha256": old,
+        });
+        let raw = serde_json::to_vec(&short).unwrap();
+        assert!(raw.len() < 512);
+        let payload: AdminOperatorPayload = serde_json::from_slice(&raw).unwrap();
+        let argv = expand_vm_legacy_bridge_argv(
+            payload.argv,
+            payload.legacy_release_set_sha256.as_deref(),
+            &new,
+        );
+        let mut request = edge_shared_types::FleetNativeAdminRequest {
+            argv: argv.clone(),
+            release_set_sha256: vec![0x22; 32],
+            working_directory: payload.cwd,
+            timeout_seconds: payload.timeout_seconds,
+            publish_output: payload.publish_output,
+            ..Default::default()
+        };
+        assert!(exact_vm_legacy_binary_bridge(&request, &new));
+        assert_eq!(argv.len(), 5);
+        assert_eq!(argv[2], VM_LEGACY_BRIDGE_SCRIPT);
+
+        // Ordinary Admin does not expand, and foreign commands cannot gain
+        // the historical release bypass by setting the legacy field.
+        assert!(expand_vm_legacy_bridge_argv(vec![], None, &new).is_empty());
+        request.argv[2].push_str("\n# untrusted");
+        assert!(!exact_vm_legacy_binary_bridge(&request, &new));
+        request.argv =
+            expand_vm_legacy_bridge_argv(vec!["/bin/true".into()], Some(&"22".repeat(32)), &new);
+        assert!(!exact_vm_legacy_binary_bridge(&request, &new));
     }
 
     #[test]
