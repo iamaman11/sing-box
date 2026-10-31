@@ -294,14 +294,14 @@ fn persist_system_dispatch_failure(root: &Path, message: &str) -> Result<(), &'s
     if bytes.is_empty() || bytes.len() > 512 {
         return Err("HOST_WINDOWS_SYSTEM_FAILURE_SIZE_INVALID");
     }
+    // A concurrent first writer is never overwritten. It must be read back
+    // and adjudicated rather than retried with a different operation ID.
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .open(&path)
-        .map_err(|_| "HOST_WINDOWS_SYSTEM_FAILURE_CREATE_UNAVAILABLE");
-    // A concurrent first writer is never overwritten. It must be read back
-    // and adjudicated rather than retried with a different operation ID.
-    let mut file = file?;
+        .map_err(|_| "HOST_WINDOWS_SYSTEM_FAILURE_CREATE_UNAVAILABLE")?;
+    edge_shared_types::host_journal::verify_windows_protected_path_acl(&path, true)?;
     file.write_all(&bytes)
         .and_then(|_| file.sync_all())
         .map_err(|_| "HOST_WINDOWS_SYSTEM_FAILURE_SYNC_UNCERTAIN")?;
@@ -379,9 +379,13 @@ mod windows_system_dispatch_failure_tests {
         ).unwrap();
         assert_eq!(record.phase, "SYSTEM_OWNER_LOCK");
         assert_eq!(record.error_code, "SYSTEM_ERROR_CODE_UNCLASSIFIED");
-        assert_eq!(system_dispatch_failure_stage_and_code(
-            "SYSTEM_RECEIPT: HOST_WINDOWS_RECEIPT_ENROLL_MARKER_UNREADABLE".into()
-        ).0, "SYSTEM_RECEIPT");
+        assert_eq!(
+            system_dispatch_failure_stage_and_code(
+                "SYSTEM_RECEIPT: HOST_WINDOWS_RECEIPT_ENROLL_MARKER_UNREADABLE"
+            )
+            .0,
+            "SYSTEM_RECEIPT"
+        );
     }
 }
 

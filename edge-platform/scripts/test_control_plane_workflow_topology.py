@@ -608,6 +608,18 @@ assert "require_no_running_legacy_dispatcher(&before.console_path)?;" in win_con
 assert "require_offline_bootstrap_request_queue_empty(install_root)?;" in win_console
 assert 'verify_offline_bootstrap_dispatcher(&post.console_path, "Disabled")?;' in win_console
 assert "change_offline_bootstrap_task_enabled(true)?;" in win_console
+# Exact LocalSystem failure evidence is advisory, create-only, and recorded in
+# the EXISTING native journal, never a new executor or authorization source.
+assert "verify_native_journal_protection(&journal)?;" in win_console
+assert 'format!("system-dispatch-failure-{release}.pb")' in win_console
+assert 'system_dispatch_failure_record(&installed.release_set_sha256, message, when)?' in win_console
+assert 'create_new(true)' in win_console
+assert '"system_dispatch_failure": system_failure' in Path(
+    "edge-platform/crates/edge-console/src/command_dispatch.rs"
+).read_text(encoding="utf-8")
+assert 'message WindowsSystemDispatchFailure' in Path(
+    "edge-platform/proto/edge/platform/v1/diagnostics.proto"
+).read_text(encoding="utf-8")
 assert 'verify_offline_bootstrap_dispatcher(&console.to_string_lossy(), "Ready")?;' in win_console
 
 # The existing native first-use must actually be reachable from the
@@ -622,7 +634,8 @@ assert "Command::OfflineBootstrap(_)" in win_console
 assert "Command::OfflineBootstrapPreflight(_)" in win_console
 assert "Command::OfflineReceiptIdentityPrepare(_)" in win_console
 assert "Command::OfflineReceiptIdentityObserve(_)" in win_console
-assert "windows_receipt_enrollment::dispatch_if_present(install_root)?" in win_console
+assert "windows_receipt_enrollment::dispatch_if_present(install_root)" in win_console
+assert '.map_err(|reason| format!("SYSTEM_RECEIPT: {reason}"))?' in win_console
 # W4 clean physical bootstrap must work with STOPPED / ProxyOnly and
 # missing native-host from the old W6 install. The one authorized offline
 # transaction itself prepares the protected SYSTEM journal before re-enabling
@@ -730,7 +743,8 @@ assert "OfflineHostTrustPrepare(InstallRootArgs)" in Path("edge-platform/crates/
 assert "active.source_revision.clone()" in identity_owner
 assert "active.release_set_sha256.clone()" in identity_owner
 trust_owner = Path("edge-platform/crates/edge-console/src/windows_trust_enrollment.rs").read_text(encoding="utf-8")
-assert "windows_trust_enrollment::dispatch_if_needed(install_root).await?" in win_console
+assert "windows_trust_enrollment::dispatch_if_needed(install_root).await" in win_console
+assert '.map_err(|reason| format!("SYSTEM_TRUST: {reason}"))?' in win_console
 assert "verify_native_journal_protection(&root.join(\"journal\"))" in trust_owner
 assert 'pub(super) async fn dispatch_if_needed(install_root: &Path)' in trust_owner
 assert 'verify_windows_signed_git_prerequisites(host)' in trust_owner

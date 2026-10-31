@@ -13,15 +13,3 @@ message WindowsHostRegistration {
   string id = 1;
   string runner_name = 2;
 }
-
-// Diagnostic evidence only, not a signed receipt or an admission journal BEGIN.
-// LocalSystem creates at most one immutable record per exact installed release.
-// No secrets, command output, private key bytes, or raw error text are stored.
-message WindowsSystemDispatchFailure {
-  uint32 schema_version = 1;
-  string release_set_sha256 = 2;
-  string phase = 3;
-  string error_code = 4;
-  uint64 observed_at_unix = 5;
-  bytes error_sha256 = 6;
-}
