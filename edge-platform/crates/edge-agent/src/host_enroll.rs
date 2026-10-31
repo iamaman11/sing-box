@@ -686,14 +686,18 @@ mod tests {
         let vm = FleetHost {
             machine_id: "application-acceptance-5".into(),
             kind: FleetHostKind::Vm as i32,
-            owner: Some(managed_host::Owner::VmMachineId("application-acceptance-5".into())),
+            owner: Some(managed_host::Owner::VmMachineId(
+                "application-acceptance-5".into(),
+            )),
             desired_spec_path: "infra/production/production.textproto".into(),
             ..Default::default()
         };
         let windows = FleetHost {
             machine_id: "sing-box-windows-lab".into(),
             kind: FleetHostKind::Windows as i32,
-            owner: Some(managed_host::Owner::WindowsRunnerName("DESKTOP-0E1F6UQ".into())),
+            owner: Some(managed_host::Owner::WindowsRunnerName(
+                "DESKTOP-0E1F6UQ".into(),
+            )),
             windows_runner_label: "sing-box-windows-lab".into(),
             desired_spec_path: "infra/production/production.textproto".into(),
             target: Some(FleetHostTarget {
