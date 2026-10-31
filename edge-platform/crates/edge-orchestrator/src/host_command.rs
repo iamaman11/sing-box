@@ -1433,6 +1433,12 @@ pub(crate) fn run(
             }
             host_admin::verify_receipt(&request, &receipt, &selected.native_receipt_public_key)
                 .map_err(str::to_owned)?;
+            host_admin::verify_receipt_worker_authority(
+                &request,
+                &receipt,
+                &selected.worker_authority_public_key,
+            )
+            .map_err(str::to_owned)?;
             let outcome = if receipt.rejected_before_begin {
                 "VERIFIED_REJECTED_BEFORE_BEGIN"
             } else if !receipt.process_exited {
@@ -1454,6 +1460,10 @@ pub(crate) fn run(
             }
             println!("host_admin_receipt_origin=GIT_PINNED_ED25519_NATIVE_OWNER");
             println!("host_admin_receipt_verified=true");
+            println!(
+                "host_admin_worker_authorization_verified={}",
+                !receipt.rejected_before_begin
+            );
             println!("host_admin_execution_outcome={outcome}");
             println!("host_admin_rejection_code={}", receipt.rejection_code);
             println!("host_admin_physical_poststate=UNPROVEN");

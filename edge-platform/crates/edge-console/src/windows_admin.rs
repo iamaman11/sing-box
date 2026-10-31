@@ -179,7 +179,7 @@ pub(super) async fn dispatch_if_present(root: &Path) -> Result<bool, String> {
         );
     }
     request_available(&journal, &operation, true, false)?;
-    let prepared: Result<(), String> = async {
+    let prepared: Result<edge_shared_types::FleetNativeAdminAuthorization, String> = async {
         let (trust, _, _) = windows_signed_host::current_authority(
             root,
             &request.machine_id,
@@ -199,16 +199,19 @@ pub(super) async fn dispatch_if_present(root: &Path) -> Result<bool, String> {
             .map_err(|_| "HOST_ADMIN_CLOCK_INVALID")?
             .as_secs();
         host_admin::verify_authorization(&request, &auth, &trust.pinned_worker_public_key, now)?;
-        Ok(())
+        Ok(auth)
     }
     .await;
-    if let Err(reason) = prepared {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .map_err(|_| "HOST_ADMIN_CLOCK_INVALID")?
-            .as_secs();
-        return deny_before_begin(root, transport, &request, &private, now, &reason);
-    }
+    let auth = match prepared {
+        Ok(auth) => auth,
+        Err(reason) => {
+            let now = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| "HOST_ADMIN_CLOCK_INVALID")?
+                .as_secs();
+            return deny_before_begin(root, transport, &request, &private, now, &reason);
+        }
+    };
     let id: String = process::sha(operation.as_bytes())
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -243,6 +246,7 @@ pub(super) async fn dispatch_if_present(root: &Path) -> Result<bool, String> {
     receipt.machine_id = request.machine_id.clone();
     receipt.operation_id = operation;
     receipt.request_sha256 = process::sha(&raw);
+    receipt.worker_authorization = Some(auth);
     receipt.observed_at_unix = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| "HOST_ADMIN_CLOCK_INVALID")?

@@ -623,6 +623,7 @@ pub(super) async fn execute() -> Result<(), String> {
         stderr_stream_eof: stderr_eof.load(Ordering::Acquire),
         stdin_bytes_written,
         stdin_input_complete,
+        worker_authorization: Some(auth),
         ..Default::default()
     };
     host_admin::sign_receipt(&request, &mut receipt, &key_bytes).map_err(str::to_owned)?;

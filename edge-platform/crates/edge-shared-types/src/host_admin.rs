@@ -178,6 +178,7 @@ fn preview_valid(request: &Request, result: &ResultReceipt) -> bool {
     if result.rejected_before_begin {
         let empty = ring::digest::digest(&ring::digest::SHA256, b"");
         return rejection_code_valid(&result.rejection_code)
+            && result.worker_authorization.is_none()
             && (result.rejection_code != "HOST_ADMIN_REQUEST_EXPIRED_BEFORE_BEGIN"
                 || expired_before_begin(request, result.observed_at_unix))
             && !result.process_exited
@@ -339,6 +340,30 @@ pub fn verify_receipt(
     UnparsedPublicKey::new(&ED25519, pinned_owner_public_key)
         .verify(&receipt_payload(request, receipt), &receipt.root_signature)
         .map_err(|_| "HOST_ADMIN_RECEIPT_SIGNATURE_REJECTED")
+}
+
+pub fn verify_receipt_worker_authority(
+    request: &Request,
+    receipt: &ResultReceipt,
+    worker_public_key: &[u8],
+) -> Result<(), &'static str> {
+    if receipt.rejected_before_begin {
+        return if receipt.worker_authorization.is_none() {
+            Ok(())
+        } else {
+            Err("HOST_ADMIN_REJECTION_CANNOT_CLAIM_AUTHORIZATION")
+        };
+    }
+    let auth = receipt
+        .worker_authorization
+        .as_ref()
+        .ok_or("HOST_ADMIN_RECEIPT_WORKER_AUTHORIZATION_MISSING")?;
+    if receipt.observed_at_unix < auth.issued_at_unix {
+        return Err("HOST_ADMIN_RECEIPT_PRECEDES_AUTHORIZATION");
+    }
+    // Historical receipts remain verifiable after grant expiry; the exact
+    // SYSTEM/root executor verified freshness immediately before BEGIN.
+    verify_authorization(request, auth, worker_public_key, auth.issued_at_unix)
 }
 #[cfg(test)]
 mod tests {
@@ -507,6 +532,44 @@ mod tests {
         };
         sign_receipt(&req, &mut receipt, owner_key.as_ref()).unwrap();
         verify_receipt(&req, &receipt, owner.public_key().as_ref()).unwrap();
+        assert!(
+            verify_receipt_worker_authority(&req, &receipt, owner.public_key().as_ref()).is_err()
+        );
+        let worker_key = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+        let worker = Ed25519KeyPair::from_pkcs8(worker_key.as_ref()).unwrap();
+        let mut grant = Authorization {
+            schema_version: 1,
+            key_id: "worker".into(),
+            operation_id: operation_id(&req),
+            issued_at_unix: 100,
+            expires_at_unix: 200,
+            ..Default::default()
+        };
+        grant.ed25519_signature = worker
+            .sign(&authorization_payload(&req, &grant))
+            .as_ref()
+            .to_vec();
+        receipt.worker_authorization = Some(grant);
+        sign_receipt(&req, &mut receipt, owner_key.as_ref()).unwrap();
+        verify_receipt(&req, &receipt, owner.public_key().as_ref()).unwrap();
+        verify_receipt_worker_authority(&req, &receipt, worker.public_key().as_ref()).unwrap();
+        let mut forged = receipt.clone();
+        forged
+            .worker_authorization
+            .as_mut()
+            .unwrap()
+            .ed25519_signature[0] ^= 1;
+        sign_receipt(&req, &mut forged, owner_key.as_ref()).unwrap();
+        verify_receipt(&req, &forged, owner.public_key().as_ref()).unwrap();
+        assert!(
+            verify_receipt_worker_authority(&req, &forged, worker.public_key().as_ref()).is_err()
+        );
+        let mut backwards = receipt.clone();
+        backwards.observed_at_unix = 99;
+        assert!(
+            verify_receipt_worker_authority(&req, &backwards, worker.public_key().as_ref())
+                .is_err()
+        );
         let mut edited = receipt.clone();
         edited.stdout_stream_eof = false;
         assert!(verify_receipt(&req, &edited, owner.public_key().as_ref()).is_err());
