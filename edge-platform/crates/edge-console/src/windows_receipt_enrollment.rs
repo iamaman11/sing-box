@@ -673,11 +673,95 @@ pub(super) fn dispatch_if_present(install_root: &Path) -> Result<bool, String> {
 
 /// Local read-only first-use projection: classify canonical typed markers,
 /// never read PKCS8 or interpret old diagnostic stdout as authority.
+/// Ordinary local first-use commands MUST run from the currently installed
+/// immutable console. Offline-bootstrap is the only separately pinned reader
+/// allowed to run from its distinct, already staged candidate executable.
 pub(super) fn read_only_first_use_stage(install_root: &Path) -> Result<&'static str, String> {
     require_windows_local_administrator_first_use().map_err(str::to_owned)?;
     require_exact_immutable_activation_console(install_root)?;
     let active = load_verified_activation(install_root).map_err(|e| e.to_string())?;
     require_offline_windows_owner(install_root, &active)?;
+    read_only_first_use_stage_from_installed(install_root, &active)
+}
+
+/// Exact caller identity policy for the read-only pre-BEGIN exception only.
+/// This never authorizes any state transition, credential replay or trust write.
+fn require_exact_offline_bootstrap_reader_identity(
+    installed_release: &str,
+    target_release: &str,
+    invoking_console: &Path,
+    expected_candidate_console: &Path,
+) -> Result<(), &'static str> {
+    if target_release.len() != 64
+        || !target_release
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        || installed_release == target_release
+        || invoking_console != expected_candidate_console
+    {
+        return Err("HOST_WINDOWS_FIRST_USE_CANDIDATE_READER_NOT_EXACT");
+    }
+    Ok(())
+}
+
+/// A verified, distinct release candidate is already executing this
+/// offline-bootstrap command. Read the PREDECESSOR's markers without
+/// requiring the candidate process to equal the installed console. The
+/// installed activation/SCM and candidate path are independently pinned.
+/// The normal reader and every mutating command retain the strict active
+/// immutable-console requirement.
+pub(super) fn read_only_first_use_stage_for_offline_bootstrap(
+    install_root: &Path,
+    predecessor: &WindowsActivationState,
+    target_release: &str,
+) -> Result<&'static str, String> {
+    require_windows_local_administrator_first_use().map_err(str::to_owned)?;
+    if install_root != Path::new(r"C:\sing-box") {
+        return Err("HOST_WINDOWS_FIRST_USE_CANDIDATE_ROOT_INVALID".into());
+    }
+    let active = load_verified_activation(install_root).map_err(|e| e.to_string())?;
+    if &active != predecessor {
+        return Err("HOST_WINDOWS_FIRST_USE_PREDECESSOR_CHANGED_NO_REPLAY".into());
+    }
+    require_offline_windows_owner(install_root, &active)?;
+    let releases = install_root
+        .join("releases")
+        .canonicalize()
+        .map_err(|_| "HOST_WINDOWS_FIRST_USE_RELEASES_ROOT_UNPROVEN")?;
+    let candidate_dir = releases.join(target_release);
+    let meta = fs::symlink_metadata(&candidate_dir)
+        .map_err(|_| "HOST_WINDOWS_FIRST_USE_CANDIDATE_DIRECTORY_UNPROVEN")?;
+    if !meta.file_type().is_dir() || meta.file_type().is_symlink() {
+        return Err("HOST_WINDOWS_FIRST_USE_CANDIDATE_DIRECTORY_NOT_EXACT".into());
+    }
+    let expected = candidate_dir
+        .join("bin")
+        .join("edge-console.exe")
+        .canonicalize()
+        .map_err(|_| "HOST_WINDOWS_FIRST_USE_CANDIDATE_CONSOLE_UNPROVEN")?;
+    if !expected.starts_with(&candidate_dir) {
+        return Err("HOST_WINDOWS_FIRST_USE_CANDIDATE_CONSOLE_ESCAPED_ROOT".into());
+    }
+    let invoking = std::env::current_exe()
+        .and_then(|path| path.canonicalize())
+        .map_err(|_| "HOST_WINDOWS_FIRST_USE_CANDIDATE_CALLER_UNPROVEN")?;
+    require_exact_offline_bootstrap_reader_identity(
+        &active.release_set_sha256,
+        target_release,
+        &invoking,
+        &expected,
+    )
+    .map_err(str::to_owned)?;
+    read_only_first_use_stage_from_installed(install_root, &active)
+}
+
+/// Single owner for the read-only marker classification shared by both
+/// correctly authorized call paths. Never inspect a new-release marker using
+/// an unverified candidate activation.
+fn read_only_first_use_stage_from_installed(
+    install_root: &Path,
+    active: &WindowsActivationState,
+) -> Result<&'static str, String> {
     let root = native_root(install_root)?;
     let marker = root.join(MARKER);
     let completed = root.join(COMPLETED);
@@ -714,7 +798,7 @@ pub(super) fn read_only_first_use_stage(install_root: &Path) -> Result<&'static 
     if !has_public {
         return Err("HOST_WINDOWS_FIRST_USE_COMPLETED_WITHOUT_PUBLIC_NO_REPLAY".into());
     }
-    windows_trust_enrollment::read_only_first_use_trust_stage(&root, &active)
+    windows_trust_enrollment::read_only_first_use_trust_stage(&root, active)
 }
 
 pub(super) fn checked_regular_exists(path: &Path, max_size: u64) -> Result<bool, String> {
