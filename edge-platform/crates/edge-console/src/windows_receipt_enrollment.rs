@@ -884,7 +884,11 @@ mod tests {
             (installed.as_str(), target.as_str(), active),
             (installed.as_str(), installed.as_str(), candidate),
             (installed.as_str(), "short", candidate),
-            (installed.as_str(), "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB", candidate),
+            (
+                installed.as_str(),
+                "BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB",
+                candidate,
+            ),
         ] {
             assert_eq!(
                 require_exact_offline_bootstrap_reader_identity(
