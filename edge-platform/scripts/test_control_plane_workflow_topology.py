@@ -675,6 +675,24 @@ assert first_use_code.index('println!(') < first_use_code.index('stage_result.ma
 assert first_use_code.index('stage_result.map_err(ConsoleError::Command)?;') < first_use_code.index('machine_result.map_err(ConsoleError::Command)?;')
 assert "bound_machine_id(root)\n                        .map_err(ConsoleError::Command)?" not in first_use_code
 
+# Legacy VM Root Agent cannot decode CURRENT Windows signer/mode registry,
+# but its signed ADMIN protocol is release-pinned to its historical trust.
+# Permit the OLD pin ONLY for this literal, no-stdin, no-environment
+# executable replacement; do not relax generic ADMIN verifier or journal.
+legacy_host_source = Path("edge-platform/crates/edge-orchestrator/src/host_command.rs").read_text(encoding="utf-8")
+legacy_script = Path("edge-platform/scripts/vm_legacy_owner_bridge.py").read_text(encoding="utf-8")
+assert 'legacy_release_set_sha256: Option<String>' in legacy_host_source
+assert 'exact_vm_legacy_binary_bridge(&request, &current_release)' in legacy_host_source
+assert 'HOST_VM_LEGACY_BRIDGE_VM_ONLY' in legacy_host_source
+assert 'HOST_VM_LEGACY_BRIDGE_NOT_EXACT' in legacy_host_source
+assert "legacy_root_binary_bridge_is_vm_only_code_only_and_exact" in legacy_host_source
+assert "os.replace(temporary, AGENT)" in legacy_script
+assert 'HEAD' not in legacy_script  # current remote main, not caller-controlled branch
+assert 'head = fetch_json(API + "/git/ref/heads/main")' in legacy_script
+assert 'trust_sha = sha(read_small(TRUST, 9 * 1024 * 1024))' in legacy_script
+assert "local host-refresh" not in legacy_script
+assert len(legacy_script) <= 8192
+
 # GitHub concurrency preserves only ONE pending job. Three parallel
 # PATCH writers with the same group cancel one another even when
 # cancel-in-progress is false. Order the existing Access -> provider ->
