@@ -402,6 +402,71 @@ function Assert-ShaSidecar {
     return $sidecarDigest
 }
 
+
+# One authenticated read session per ConnectWindows, including the existing
+# nested installer call. No new service, journal, or persistent token.
+function Resolve-ConnectWindowsGitHubToken {
+    param([string]$Supplied)
+    if (-not [string]::IsNullOrWhiteSpace($Supplied)) {
+        $token = $Supplied.Trim()
+    } else {
+        # Never execute gh.exe from a user-writable PATH as Administrator.
+        $gh = if ([string]::IsNullOrWhiteSpace($env:ProgramFiles)) {
+            ''
+        } else { Join-Path $env:ProgramFiles 'GitHub CLI\gh.exe' }
+        if (-not $gh -or -not (Test-Path -LiteralPath $gh -PathType Leaf)) {
+            throw 'WINDOWS_CONNECT_GITHUB_AUTH_REQUIRED'
+        }
+        $meta = Get-Item -LiteralPath $gh -Force -ErrorAction Stop
+        if ($meta.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+            throw 'WINDOWS_CONNECT_GITHUB_CLI_REPARSE_FORBIDDEN'
+        }
+        try {
+            $values = @(& $gh auth token --hostname github.com 2>$null)
+            if ($LASTEXITCODE -ne 0 -or $values.Count -ne 1) {
+                throw 'GitHub CLI authentication unavailable'
+            }
+            $token = [string]$values[0]
+        } catch { throw 'WINDOWS_CONNECT_GITHUB_AUTH_REQUIRED' }
+    }
+    if ($token.Length -lt 16 -or $token.Length -gt 512 -or
+        $token -cnotmatch '^[A-Za-z0-9_-]+$') {
+        throw 'WINDOWS_CONNECT_GITHUB_AUTH_INVALID'
+    }
+    return $token
+}
+function Assert-ConnectWindowsGitHubBudget {
+    $rate = Invoke-GitHubJsonGet -Uri 'https://api.github.com/rate_limit'
+    try { $remaining = [long]$rate.resources.core.remaining }
+    catch { throw 'WINDOWS_CONNECT_GITHUB_RATE_BUDGET_UNPROVEN' }
+    if ($remaining -lt 0) { throw 'WINDOWS_CONNECT_GITHUB_RATE_BUDGET_UNPROVEN' }
+    if ($remaining -lt 24) { throw 'WINDOWS_CONNECT_GITHUB_RATE_LIMIT_EXCEEDED_BEFORE_BEGIN' }
+}
+function Get-ConnectWindowsGitHubHttpCode {
+    param([Parameter(Mandatory)] [System.Management.Automation.ErrorRecord]$ErrorRecord)
+    $property = $ErrorRecord.Exception.PSObject.Properties['Response']
+    if ($null -eq $property -or $null -eq $property.Value) { return '' }
+    try { $status = [int]$property.Value.StatusCode } catch { return '' }
+    $message = [string]$ErrorRecord.Exception.Message
+    if ($null -ne $ErrorRecord.ErrorDetails) {
+        $message += ' ' + [string]$ErrorRecord.ErrorDetails.Message
+    }
+    $remainingZero = $false
+    try {
+        $values = $null
+        if ($property.Value.Headers.TryGetValues('X-RateLimit-Remaining', [ref]$values)) {
+            $remainingZero = @($values) -contains '0'
+        }
+    } catch {}
+    if ($status -eq 429 -or ($status -eq 403 -and
+        ($remainingZero -or $message -match '(?i)rate.?limit|abuse.?detection'))) {
+        return 'WINDOWS_CONNECT_GITHUB_RATE_LIMIT_EXCEEDED_BEFORE_BEGIN'
+    }
+    if ($status -eq 401) { return 'WINDOWS_CONNECT_GITHUB_AUTH_REJECTED' }
+    if ($status -eq 403) { return 'WINDOWS_CONNECT_GITHUB_PERMISSION_DENIED' }
+    return ''
+}
+
 function Get-GitHubHeaders {
     param([string]$Accept = "application/vnd.github+json")
     $headers = @{
@@ -460,18 +525,25 @@ function Get-GitHubTransportOptions {
 function Invoke-GitHubJsonGet {
     param([Parameter(Mandatory)] [string]$Uri)
     $transport = Get-GitHubTransportOptions -Uri $Uri
-
+    # Global *memory* only because & $PSCommandPath nests in the same pwsh.
+    # ConnectWindows resets it before the first authenticated GitHub GET.
+    $v = Get-Variable -Name 'SingBoxConnectReadCache' -Scope Global -ErrorAction SilentlyContinue
+    $cache = if ($null -ne $v -and $v.Value -is [hashtable]) { $v.Value } else { $null }
+    if ($null -ne $cache -and $cache.ContainsKey($Uri)) { return $cache[$Uri] }
     for ($attempt = 1; $attempt -le $GitHubReadAttempts; $attempt++) {
         try {
-            return Invoke-RestMethod @transport -Method Get -Uri $Uri -Headers (Get-GitHubHeaders) -TimeoutSec $GitHubReadTimeoutSec
+            $result = Invoke-RestMethod @transport -Method Get -Uri $Uri -Headers (Get-GitHubHeaders) -TimeoutSec $GitHubReadTimeoutSec
+            if ($null -ne $cache) { $cache[$Uri] = $result }
+            return $result
         } catch {
+            $code = Get-ConnectWindowsGitHubHttpCode -ErrorRecord $_
+            if ($code) { throw $code }
             $transient = Test-TransientGitHubReadFailure -ErrorRecord $_
             if (-not $transient -or $attempt -ge $GitHubReadAttempts) { throw }
             Write-Warning "Transient GitHub metadata read failure; retrying attempt $($attempt + 1)/$GitHubReadAttempts"
             Start-Sleep -Seconds $GitHubRetryDelaySec
         }
     }
-
     throw "GitHub metadata read exhausted without a terminal result"
 }
 
@@ -489,6 +561,8 @@ function Invoke-GitHubAssetGet {
             return
         } catch {
             Remove-Item -LiteralPath $Destination -Force -ErrorAction SilentlyContinue
+            $code = Get-ConnectWindowsGitHubHttpCode -ErrorRecord $_
+            if ($code) { throw $code }
             $transient = Test-TransientGitHubReadFailure -ErrorRecord $_
             if (-not $transient -or $attempt -ge $GitHubReadAttempts) { throw }
             Write-Warning "Transient GitHub asset read failure; retrying attempt $($attempt + 1)/$GitHubReadAttempts"
@@ -761,6 +835,10 @@ if ($ConnectWindows) {
     # Reuse the already proven direct HTTPS GitHub policy of offline W4:
     # never silently select a different ambient Windows proxy path.
     $Offline = $true
+    # GitHub authorization/budget are PREPARE: no local stage or native BEGIN.
+    $GitHubToken = Resolve-ConnectWindowsGitHubToken -Supplied $GitHubToken
+    $global:SingBoxConnectReadCache = @{}
+    Assert-ConnectWindowsGitHubBudget
     $currentPath = Join-Path $InstallRoot 'current.pb'
     $stableDiagnostic = Join-Path $InstallRoot 'bin\edge-diagnostic.exe'
     $hasCurrent = Test-Path -LiteralPath $currentPath -PathType Leaf
@@ -781,6 +859,13 @@ if ($ConnectWindows) {
         throw 'WINDOWS_CONNECT_AWAITING_EXACT_PROTECTED_MAIN_RELEASE: no eligible published ReleaseSet'
     }
     $selectedDigest = $tagName.Substring('edge-release-'.Length)
+    # Exact Git merge and candidate tree are reused by nested verification.
+    $mergeCommit = Invoke-GitHubJsonGet -Uri ("https://api.github.com/repos/iamaman11/sing-box/git/commits/" + [string]$branch.commit.sha)
+    $parents = @($mergeCommit.parents)
+    if ($parents.Count -ne 2 -or [string]$parents[1].sha -cnotmatch '^[0-9a-f]{40}$') {
+        throw 'WINDOWS_CONNECT_GITHUB_CANDIDATE_SOURCE_UNPROVEN'
+    }
+    $null = Invoke-GitHubJsonGet -Uri ("https://api.github.com/repos/iamaman11/sing-box/git/commits/" + [string]$parents[1].sha)
     # The ordinary installer independently re-verifies the exact immutable
     # release tag, candidate source/tree, ZIP and files before native BEGIN.
     Assert-AcceptedReleaseAuthority -AcceptedRevision ([string]$branch.commit.sha) -Tag $tagName
@@ -797,6 +882,7 @@ if ($ConnectWindows) {
             ReleaseSetSha256 = $selectedDigest
             InstallRoot = $InstallRoot
             Offline = $true
+            GitHubToken = $GitHubToken
         }
         $global:LASTEXITCODE = 0
         & $PSCommandPath @argsInitial
@@ -892,6 +978,7 @@ if ($ConnectWindows) {
         Offline = $true
         BootstrapNow = $true
         EnrollReceipt = $true
+        GitHubToken = $GitHubToken
     }
     $oldBegin = Join-Path $InstallRoot 'offline-bootstrap-intent-v1'
     if (Test-Path -LiteralPath $oldBegin) {
