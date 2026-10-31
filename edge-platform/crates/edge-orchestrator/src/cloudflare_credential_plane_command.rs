@@ -197,7 +197,7 @@ pub async fn run_delivery(
             println!("host_access_provider_mutations=0");
             println!("host_access_native_mutations=0");
             Ok(())
-        },
+        }
         CredentialDeliveryCommand::ExistingJoinBeginPlan { .. }
         | CredentialDeliveryCommand::ExistingJoinBeginReadback { .. }
         | CredentialDeliveryCommand::ExistingJoinPlan { .. }
@@ -3721,7 +3721,8 @@ async fn observe(
 
     // Only one exact Host Access app may exist. GET-only audience and policy
     // readback never infer signer trust or permission to mutate Cloudflare.
-    let host_access_matches = access_applications.iter()
+    let host_access_matches = access_applications
+        .iter()
         .filter(|app| app.name == desired.host_access_application_name)
         .collect::<Vec<_>>();
     if host_access_matches.len() > 1 {
@@ -3731,11 +3732,17 @@ async fn observe(
         Some(HostAccessObservation {
             app: (**app).clone(),
             policies: cloudflare::list_access_application_policies(
-                api_token, &desired.target_account_id, &app.id,
-            ).await?,
+                api_token,
+                &desired.target_account_id,
+                &app.id,
+            )
+            .await?,
             audience: cloudflare::get_access_application_audience(
-                api_token, &desired.target_account_id, &app.id,
-            ).await?,
+                api_token,
+                &desired.target_account_id,
+                &app.id,
+            )
+            .await?,
         })
     } else {
         None
@@ -3799,17 +3806,27 @@ fn host_access_readback(
     }
     let vm = projection_observation(observed, "vm")?;
     let win = projection_observation(observed, "windows")?;
-    let vm_id = vm.host_service_token_id.as_deref().ok_or("HOST_ACCESS_VM_TOKEN_UNPROVEN")?;
-    let win_id = win.host_service_token_id.as_deref().ok_or("HOST_ACCESS_WINDOWS_TOKEN_UNPROVEN")?;
-    if vm_id == win_id { return Err("HOST_ACCESS_TOKEN_NOT_ISOLATED".into()); }
+    let vm_id = vm
+        .host_service_token_id
+        .as_deref()
+        .ok_or("HOST_ACCESS_VM_TOKEN_UNPROVEN")?;
+    let win_id = win
+        .host_service_token_id
+        .as_deref()
+        .ok_or("HOST_ACCESS_WINDOWS_TOKEN_UNPROVEN")?;
+    if vm_id == win_id {
+        return Err("HOST_ACCESS_TOKEN_NOT_ISOLATED".into());
+    }
     let Some(route) = observed.host_access.as_ref() else {
         if vm.worker_binding_count == Some(9) {
             return Err("HOST_ACCESS_AUDIENCE_WITHOUT_APPLICATION".into());
         }
         return Ok(HostAccessReadback::NotProvisionedLegacyVmPreserved);
     };
-    let host = format!("{}.{}.workers.dev",
-        desired.vm_worker_name, desired.workers_dev_subdomain);
+    let host = format!(
+        "{}.{}.workers.dev",
+        desired.vm_worker_name, desired.workers_dev_subdomain
+    );
     let staged = format!("{host}{HOST_ACCESS_STAGE_PATTERN}");
     let active = format!("{host}{HOST_ACCESS_LIVE_PATTERN}");
     let destinations = route.app.destinations.as_slice();
@@ -3828,7 +3845,10 @@ fn host_access_readback(
         || (!route.app.policy_ids.is_empty()
             && route.app.policy_ids != vec![route.policies[0].id.clone()])
         || !(8..=64).contains(&route.audience.len())
-        || !route.audience.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+        || !route
+            .audience
+            .bytes()
+            .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
     {
         return Err("HOST_ACCESS_APP_OR_POLICY_DRIFT_BLOCKED".into());
     }
@@ -3840,13 +3860,11 @@ fn host_access_readback(
         return Err("HOST_ACCESS_TOKEN_SCOPE_DRIFT_BLOCKED".into());
     }
     match destinations[0].uri.as_deref() {
-        Some(uri) if uri == staged => {
-            match vm.worker_binding_count {
-                Some(8) => Ok(HostAccessReadback::StagedAwaitWorkerAudience),
-                Some(9) => Ok(HostAccessReadback::StagedAwaitSignerProof),
-                _ => Err("HOST_ACCESS_VM_SIGNER_BINDINGS_UNPROVEN".into()),
-            }
-        }
+        Some(uri) if uri == staged => match vm.worker_binding_count {
+            Some(8) => Ok(HostAccessReadback::StagedAwaitWorkerAudience),
+            Some(9) => Ok(HostAccessReadback::StagedAwaitSignerProof),
+            _ => Err("HOST_ACCESS_VM_SIGNER_BINDINGS_UNPROVEN".into()),
+        },
         Some(uri) if uri == active => {
             if vm.worker_binding_count != Some(9) {
                 return Err("HOST_ACCESS_LIVE_BEFORE_SIGNER_READY".into());

@@ -463,15 +463,26 @@ fn observation(desired: &ProductionCredentialPlaneOwnership) -> CredentialPlaneO
 fn typed_host_access_preserves_vm_and_blocks_invalid_policy_or_paths() {
     let desired = desired();
     let mut observed = observation(&desired);
-    assert_eq!(host_access_readback(&desired, &observed).unwrap(),
-        HostAccessReadback::NotProvisionedLegacyVmPreserved);
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap(),
+        HostAccessReadback::NotProvisionedLegacyVmPreserved
+    );
     let vm = projection_observation(&observed, "vm").unwrap();
     let vm_id = vm.host_service_token_id.clone().unwrap();
     let windows_id = projection_observation(&observed, "windows")
-        .unwrap().host_service_token_id.clone().unwrap();
-    let hostname = format!("{}.{}.workers.dev",
-        desired.vm_worker_name, desired.workers_dev_subdomain);
-    let vm_index = observed.projections.iter().position(|p| p.projection == "vm").unwrap();
+        .unwrap()
+        .host_service_token_id
+        .clone()
+        .unwrap();
+    let hostname = format!(
+        "{}.{}.workers.dev",
+        desired.vm_worker_name, desired.workers_dev_subdomain
+    );
+    let vm_index = observed
+        .projections
+        .iter()
+        .position(|p| p.projection == "vm")
+        .unwrap();
     // Existing deployed VM signer uses exactly eight bindings.
     observed.projections[vm_index].worker_binding_count = Some(8);
     observed.host_access = Some(HostAccessObservation {
@@ -500,47 +511,71 @@ fn typed_host_access_preserves_vm_and_blocks_invalid_policy_or_paths() {
         }],
         audience: "host-access-new-audience".to_owned(),
     });
-    assert_eq!(host_access_readback(&desired, &observed).unwrap(),
-        HostAccessReadback::StagedAwaitWorkerAudience);
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap(),
+        HostAccessReadback::StagedAwaitWorkerAudience
+    );
     observed.projections[vm_index].worker_binding_count = Some(9);
-    assert_eq!(host_access_readback(&desired, &observed).unwrap(),
-        HostAccessReadback::StagedAwaitSignerProof);
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap(),
+        HostAccessReadback::StagedAwaitSignerProof
+    );
     let app = observed.host_access.as_mut().unwrap();
     app.app.destinations[0].uri = Some(format!("{hostname}{HOST_ACCESS_LIVE_PATTERN}"));
-    assert_eq!(host_access_readback(&desired, &observed).unwrap(),
-        HostAccessReadback::ActiveAwaitSignedHostProof);
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap(),
+        HostAccessReadback::ActiveAwaitSignedHostProof
+    );
 
-    observed.host_access.as_mut().unwrap().policies[0].include_service_token_ids
+    observed.host_access.as_mut().unwrap().policies[0]
+        .include_service_token_ids
         .push("foreign-service-token".to_owned());
-    assert_eq!(host_access_readback(&desired, &observed).unwrap_err(),
-        "HOST_ACCESS_TOKEN_SCOPE_DRIFT_BLOCKED");
-    observed.host_access.as_mut().unwrap().policies[0].include_service_token_ids.pop();
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap_err(),
+        "HOST_ACCESS_TOKEN_SCOPE_DRIFT_BLOCKED"
+    );
+    observed.host_access.as_mut().unwrap().policies[0]
+        .include_service_token_ids
+        .pop();
 
     observed.host_access.as_mut().unwrap().app.destinations[0].uri = Some(hostname.clone());
-    assert_eq!(host_access_readback(&desired, &observed).unwrap_err(),
-        "HOST_ACCESS_PATH_DRIFT_BLOCKED");
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap_err(),
+        "HOST_ACCESS_PATH_DRIFT_BLOCKED"
+    );
     observed.host_access.as_mut().unwrap().app.destinations[0].uri =
         Some(format!("{hostname}{HOST_ACCESS_LIVE_PATTERN}"));
     observed.host_access.as_mut().unwrap().policies[0].has_extra_rules = true;
-    assert_eq!(host_access_readback(&desired, &observed).unwrap_err(),
-        "HOST_ACCESS_APP_OR_POLICY_DRIFT_BLOCKED");
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap_err(),
+        "HOST_ACCESS_APP_OR_POLICY_DRIFT_BLOCKED"
+    );
     observed.host_access.as_mut().unwrap().policies[0].has_extra_rules = false;
     observed.host_access.as_mut().unwrap().audience = "invalid aud with spaces".to_owned();
-    assert_eq!(host_access_readback(&desired, &observed).unwrap_err(),
-        "HOST_ACCESS_APP_OR_POLICY_DRIFT_BLOCKED");
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap_err(),
+        "HOST_ACCESS_APP_OR_POLICY_DRIFT_BLOCKED"
+    );
     observed.host_access.as_mut().unwrap().audience = "host-access-new-audience".to_owned();
 
     // A VM credential policy expanded to Windows must be blocked even when
     // the path-scoped Host Access application is otherwise exact.
-    observed.projections[vm_index].access_policies[0].include_service_token_ids
+    observed.projections[vm_index].access_policies[0]
+        .include_service_token_ids
         .push("windows-host-token-id".to_owned());
     assert!(host_access_readback(&desired, &observed).is_err());
-    observed.projections[vm_index].access_policies[0].include_service_token_ids.pop();
-    assert_eq!(host_access_readback(&desired, &observed).unwrap(),
-        HostAccessReadback::ActiveAwaitSignedHostProof);
+    observed.projections[vm_index].access_policies[0]
+        .include_service_token_ids
+        .pop();
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap(),
+        HostAccessReadback::ActiveAwaitSignedHostProof
+    );
     observed.projections[vm_index].worker_binding_count = Some(8);
-    assert_eq!(host_access_readback(&desired, &observed).unwrap_err(),
-        "HOST_ACCESS_LIVE_BEFORE_SIGNER_READY");
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap_err(),
+        "HOST_ACCESS_LIVE_BEFORE_SIGNER_READY"
+    );
 }
 
 #[test]
