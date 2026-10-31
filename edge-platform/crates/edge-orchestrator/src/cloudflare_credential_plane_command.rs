@@ -3759,7 +3759,7 @@ async fn observe(
 
 // Shared Host Authorization is independent of either credential projection.
 // The signer remains in the ONE existing VM Worker; no new Worker/key/agent.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct HostAccessObservation {
     app: cloudflare::CloudflareAccessApplication,
     policies: Vec<cloudflare::CloudflareAccessPolicy>,

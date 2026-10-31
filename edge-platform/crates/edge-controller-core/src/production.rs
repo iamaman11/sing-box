@@ -35,6 +35,9 @@ pub struct ProductionCredentialPlaneOwnership {
     pub worker_compatibility_date: String,
     pub host_service_token_duration: String,
     pub workers_dev_subdomain: String,
+    pub host_access_application_name: String,
+    pub host_access_policy_name: String,
+    pub host_access_route_pattern: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -312,6 +315,14 @@ impl ProductionComposition {
                 "vm_host_service_token_name",
                 credential_plane.vm_host_service_token_name.as_str(),
             ),
+            (
+                "host_access_application_name",
+                credential_plane.host_access_application_name.as_str(),
+            ),
+            (
+                "host_access_policy_name",
+                credential_plane.host_access_policy_name.as_str(),
+            ),
         ] {
             validate_identifier(&format!("cloudflare.credential_plane.{label}"), value)?;
         }
@@ -324,6 +335,20 @@ impl ProductionComposition {
         {
             return Err(validation(
                 "credential-plane Windows and VM identities must be physically distinct",
+            ));
+        }
+        if credential_plane.host_access_application_name
+            == credential_plane.vm_access_application_name
+            || credential_plane.host_access_application_name
+                == credential_plane.windows_access_application_name
+            || credential_plane.host_access_policy_name
+                == credential_plane.vm_access_policy_name
+            || credential_plane.host_access_policy_name
+                == credential_plane.windows_access_policy_name
+            || credential_plane.host_access_route_pattern != "/v1/host/*"
+        {
+            return Err(validation(
+                "Host Authorization must have a distinct Access app/policy and exact /v1/host/* scope",
             ));
         }
         let compatibility_date = credential_plane.worker_compatibility_date.as_bytes();
@@ -424,6 +449,9 @@ impl ProductionComposition {
                 worker_compatibility_date: credential_plane.worker_compatibility_date.clone(),
                 host_service_token_duration: credential_plane.host_service_token_duration.clone(),
                 workers_dev_subdomain: credential_plane.workers_dev_subdomain.clone(),
+                host_access_application_name: credential_plane.host_access_application_name.clone(),
+                host_access_policy_name: credential_plane.host_access_policy_name.clone(),
+                host_access_route_pattern: credential_plane.host_access_route_pattern.clone(),
             },
             target_plane: ProductionTargetPlaneOwnership {
                 target_account_id: application_cloudflare_account_id,

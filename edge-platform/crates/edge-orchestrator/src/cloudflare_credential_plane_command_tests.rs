@@ -467,9 +467,9 @@ fn typed_host_access_preserves_vm_and_blocks_invalid_policy_or_paths() {
         host_access_readback(&desired, &observed).unwrap(),
         HostAccessReadback::NotProvisionedLegacyVmPreserved
     );
-    let vm = projection_observation(&observed, "vm").unwrap();
+    let vm = observed.projections.iter().find(|p| p.projection == "vm").unwrap();
     let vm_id = vm.host_service_token_id.clone().unwrap();
-    let windows_id = projection_observation(&observed, "windows")
+    let windows_id = observed.projections.iter().find(|p| p.projection == "windows")
         .unwrap()
         .host_service_token_id
         .clone()
