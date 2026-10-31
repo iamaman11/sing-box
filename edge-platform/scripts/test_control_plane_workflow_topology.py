@@ -743,7 +743,7 @@ assert "OfflineHostTrustPrepare(InstallRootArgs)" in Path("edge-platform/crates/
 assert "active.source_revision.clone()" in identity_owner
 assert "active.release_set_sha256.clone()" in identity_owner
 trust_owner = Path("edge-platform/crates/edge-console/src/windows_trust_enrollment.rs").read_text(encoding="utf-8")
-assert "windows_trust_enrollment::dispatch_if_needed(install_root).await" in win_console
+assert "windows_trust_enrollment::dispatch_if_needed(install_root)" in win_console
 assert '.map_err(|reason| format!("SYSTEM_TRUST: {reason}"))?' in win_console
 assert "verify_native_journal_protection(&root.join(\"journal\"))" in trust_owner
 assert 'pub(super) async fn dispatch_if_needed(install_root: &Path)' in trust_owner
