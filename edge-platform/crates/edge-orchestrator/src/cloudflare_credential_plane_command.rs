@@ -195,6 +195,27 @@ pub async fn run_delivery(
             println!("host_access_credentials_windows=EXACT_WINDOWS_ONLY");
             println!("host_access_route={}", phase.as_str());
             println!("host_access_next_action={}", phase.next_action().as_str());
+            // GitHub Actions is the only owner that can prove the identity
+            // of its encrypted secret. Cloudflare /verify returns no scopes.
+            // A token fingerprint is NOT authorization for any provider PUT.
+            for (label, variable) in [
+                ("worker", "CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN"),
+                ("access", "CLOUDFLARE_ACCESS_POLICY_TOKEN"),
+            ] {
+                let value = env::var(variable).unwrap_or_default();
+                let evidence = if value.is_empty() {
+                    None
+                } else {
+                    cloudflare::verify_api_token(&value).await.ok()
+                };
+                let (status, fingerprint) = github_provider_token_identity_proof(
+                    !value.is_empty(),
+                    evidence.as_ref(),
+                );
+                println!("host_access_{label}_token_identity={status}");
+                println!("host_access_{label}_token_fingerprint={fingerprint}");
+            }
+            println!("host_access_provider_write_authority=UNPROVEN_REQUIRES_SCOPE_MATCH");
             println!("host_access_provider_mutations=0");
             println!("host_access_native_mutations=0");
             Ok(())
@@ -3756,6 +3777,29 @@ async fn observe(
         workers_dev_subdomain,
         projections: projections_observed,
     })
+}
+
+// Cloudflare Token /verify returns a random token ID and active status, NOT
+// any permissions or account resource scope. Emit only a truncated hash of the
+// ID, so a Vault owner can independently correlate the encrypted Actions value.
+// No token text, token ID or bearer header is ever included in the report.
+fn github_provider_token_identity_proof(
+    configured: bool,
+    observed: Option<&cloudflare::CloudflareApiTokenIdentity>,
+) -> (&'static str, String) {
+    if !configured {
+        return ("MISSING", "NONE".to_owned());
+    }
+    let Some(observed) = observed else {
+        return ("UNPROVEN", "NONE".to_owned());
+    };
+    if observed.id.len() != 32 || !observed.id.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return ("UNPROVEN", "NONE".to_owned());
+    }
+    if observed.status != "active" {
+        return ("NOT_ACTIVE", "NONE".to_owned());
+    }
+    ("ACTIVE_IDENTITY_ONLY", sha256_hex(observed.id.as_bytes())[..16].to_owned())
 }
 
 // Shared Host Authorization is independent of either credential projection.

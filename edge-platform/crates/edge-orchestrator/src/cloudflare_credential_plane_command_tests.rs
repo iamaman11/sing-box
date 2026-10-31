@@ -460,6 +460,43 @@ fn observation(desired: &ProductionCredentialPlaneOwnership) -> CredentialPlaneO
 }
 
 #[test]
+fn github_token_fingerprint_never_claims_cloudflare_access_write_authority() {
+    let token = cloudflare::CloudflareApiTokenIdentity {
+        id: "1234567890abcdef1234567890abcdef".to_owned(),
+        status: "active".to_owned(),
+    };
+    let (status, fingerprint) = github_provider_token_identity_proof(true, Some(&token));
+    assert_eq!(status, "ACTIVE_IDENTITY_ONLY");
+    assert_eq!(fingerprint, sha256_hex(token.id.as_bytes())[..16]);
+    assert_eq!(fingerprint.len(), 16);
+    assert!(!fingerprint.contains(&token.id));
+    assert_eq!(
+        github_provider_token_identity_proof(false, Some(&token)),
+        ("MISSING", "NONE".to_owned())
+    );
+    assert_eq!(
+        github_provider_token_identity_proof(true, None),
+        ("UNPROVEN", "NONE".to_owned())
+    );
+    let disabled = cloudflare::CloudflareApiTokenIdentity {
+        status: "disabled".into(),
+        ..token.clone()
+    };
+    assert_eq!(
+        github_provider_token_identity_proof(true, Some(&disabled)),
+        ("NOT_ACTIVE", "NONE".to_owned())
+    );
+    let malformed = cloudflare::CloudflareApiTokenIdentity {
+        id: "not-a-token-identity".into(),
+        ..token
+    };
+    assert_eq!(
+        github_provider_token_identity_proof(true, Some(&malformed)),
+        ("UNPROVEN", "NONE".to_owned())
+    );
+}
+
+#[test]
 fn typed_host_access_preserves_vm_and_blocks_invalid_policy_or_paths() {
     let desired = desired();
     let mut observed = observation(&desired);

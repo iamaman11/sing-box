@@ -877,6 +877,9 @@ jobs:
       GH_TOKEN: ${{ github.token }}
       REPORT_COMMENT_ID: ${{ needs.host_report.outputs.comment_id }}
       CLOUDFLARE_CONTROL_TOKEN: ${{ secrets.CLOUDFLARE_CONTROL_TOKEN }}
+      CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN: ${{ secrets.CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN }}
+      # Dedicated least-privilege token: optional until explicitly provisioned.
+      CLOUDFLARE_ACCESS_POLICY_TOKEN: ${{ secrets.CLOUDFLARE_ACCESS_POLICY_TOKEN }}
     steps:
       - name: Checkout exact protected Git source
         shell: bash
@@ -910,9 +913,9 @@ jobs:
           grep -Fxq 'host_access_credentials_windows=EXACT_WINDOWS_ONLY' "${RUNNER_TEMP}/host-access-report.txt"
           grep -Fxq 'host_access_provider_mutations=0' "${RUNNER_TEMP}/host-access-report.txt"
           grep -Fxq 'host_access_native_mutations=0' "${RUNNER_TEMP}/host-access-report.txt"
-          test "$(wc -l < "${RUNNER_TEMP}/host-access-report.txt")" -eq 7
+          test "$(wc -l < "${RUNNER_TEMP}/host-access-report.txt")" -eq 12
           grep -Eq '^host_access_route=(NOT_PROVISIONED_LEGACY_VM_PRESERVED|STAGED_AWAIT_WORKER_AUDIENCE|STAGED_AWAIT_SIGNER_PROOF|ACTIVE_AWAIT_SIGNED_HOST_PROOF)$' "${RUNNER_TEMP}/host-access-report.txt"
-          grep -Eq '^host_access_next_action=(STAGE_REQUIRES_DURABLE_BEGIN|BIND_AUDIENCE_REQUIRES_DURABLE_BEGIN|VERIFY_SIGNER_AND_VM_CREDENTIALS_BEFORE_CUTOVER|VERIFY_BOTH_SIGNED_HOSTS_AFTER_CUTOVER)$' "${RUNNER_TEMP}/host-access-report.txt"
+          grep -Eq '^host_access_next_action=(STAGE_REQUIRES_DURABLE_BEGIN|BIND_AUDIENCE_REQUIRES_DURABLE_BEGIN|VERIFY_SIGNER_AND_VM_CREDENTIALS_BEFORE_CUTOVER|VERIFY_BOTH_SIGNED_HOSTS_AFTER_CUTOVER)
       - name: Attach read-only Rust verdict to the one operator report
         shell: bash
         run: |
@@ -922,7 +925,99 @@ jobs:
           import json,os,subprocess,sys
           lines=open(sys.argv[1],encoding="utf-8").read().splitlines()
           data=dict(line.split("=",1) for line in lines)
-          assert len(lines)==len(data)==7
+          assert len(lines)==len(data)==12
+          assert data["host_access_schema"]=="sing-box.host-access-boundary/v1"
+          assert data["host_access_provider_mutations"]=="0"
+          assert data["host_access_native_mutations"]=="0"
+          url=f"repos/{os.environ['GITHUB_REPOSITORY']}/issues/comments/{os.environ['REPORT_COMMENT_ID']}"
+          existing=subprocess.check_output(["gh","api",url,"--jq",".body"],text=True)
+          appendix="\n\n### Host Access / credential isolation — canonical Rust provider GET, not signer proof\n\n"+json.dumps(data,sort_keys=True)
+          payload=os.path.join(os.environ["RUNNER_TEMP"],"host-access-patch.json")
+          with open(payload,"w") as out: json.dump({"body":existing+appendix},out)
+          subprocess.run(["gh","api","--method","PATCH",url,"--input",payload],
+                         stdout=subprocess.DEVNULL,check=True)
+          PY
+ "${RUNNER_TEMP}/host-access-report.txt"
+          grep -Eq '^host_access_worker_token_identity=(MISSING|UNPROVEN|NOT_ACTIVE|ACTIVE_IDENTITY_ONLY)
+      - name: Attach read-only Rust verdict to the one operator report
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${REPORT_COMMENT_ID}" =~ ^[1-9][0-9]{0,19}$ ]]
+          python3 - "${RUNNER_TEMP}/host-access-report.txt" <<'PY'
+          import json,os,subprocess,sys
+          lines=open(sys.argv[1],encoding="utf-8").read().splitlines()
+          data=dict(line.split("=",1) for line in lines)
+          assert len(lines)==len(data)==12
+          assert data["host_access_schema"]=="sing-box.host-access-boundary/v1"
+          assert data["host_access_provider_mutations"]=="0"
+          assert data["host_access_native_mutations"]=="0"
+          url=f"repos/{os.environ['GITHUB_REPOSITORY']}/issues/comments/{os.environ['REPORT_COMMENT_ID']}"
+          existing=subprocess.check_output(["gh","api",url,"--jq",".body"],text=True)
+          appendix="\n\n### Host Access / credential isolation — canonical Rust provider GET, not signer proof\n\n"+json.dumps(data,sort_keys=True)
+          payload=os.path.join(os.environ["RUNNER_TEMP"],"host-access-patch.json")
+          with open(payload,"w") as out: json.dump({"body":existing+appendix},out)
+          subprocess.run(["gh","api","--method","PATCH",url,"--input",payload],
+                         stdout=subprocess.DEVNULL,check=True)
+          PY
+ "${RUNNER_TEMP}/host-access-report.txt"
+          grep -Eq '^host_access_access_token_identity=(MISSING|UNPROVEN|NOT_ACTIVE|ACTIVE_IDENTITY_ONLY)
+      - name: Attach read-only Rust verdict to the one operator report
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${REPORT_COMMENT_ID}" =~ ^[1-9][0-9]{0,19}$ ]]
+          python3 - "${RUNNER_TEMP}/host-access-report.txt" <<'PY'
+          import json,os,subprocess,sys
+          lines=open(sys.argv[1],encoding="utf-8").read().splitlines()
+          data=dict(line.split("=",1) for line in lines)
+          assert len(lines)==len(data)==12
+          assert data["host_access_schema"]=="sing-box.host-access-boundary/v1"
+          assert data["host_access_provider_mutations"]=="0"
+          assert data["host_access_native_mutations"]=="0"
+          url=f"repos/{os.environ['GITHUB_REPOSITORY']}/issues/comments/{os.environ['REPORT_COMMENT_ID']}"
+          existing=subprocess.check_output(["gh","api",url,"--jq",".body"],text=True)
+          appendix="\n\n### Host Access / credential isolation — canonical Rust provider GET, not signer proof\n\n"+json.dumps(data,sort_keys=True)
+          payload=os.path.join(os.environ["RUNNER_TEMP"],"host-access-patch.json")
+          with open(payload,"w") as out: json.dump({"body":existing+appendix},out)
+          subprocess.run(["gh","api","--method","PATCH",url,"--input",payload],
+                         stdout=subprocess.DEVNULL,check=True)
+          PY
+ "${RUNNER_TEMP}/host-access-report.txt"
+          grep -Eq '^host_access_(worker|access)_token_fingerprint=(NONE|[0-9a-f]{16})
+      - name: Attach read-only Rust verdict to the one operator report
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${REPORT_COMMENT_ID}" =~ ^[1-9][0-9]{0,19}$ ]]
+          python3 - "${RUNNER_TEMP}/host-access-report.txt" <<'PY'
+          import json,os,subprocess,sys
+          lines=open(sys.argv[1],encoding="utf-8").read().splitlines()
+          data=dict(line.split("=",1) for line in lines)
+          assert len(lines)==len(data)==12
+          assert data["host_access_schema"]=="sing-box.host-access-boundary/v1"
+          assert data["host_access_provider_mutations"]=="0"
+          assert data["host_access_native_mutations"]=="0"
+          url=f"repos/{os.environ['GITHUB_REPOSITORY']}/issues/comments/{os.environ['REPORT_COMMENT_ID']}"
+          existing=subprocess.check_output(["gh","api",url,"--jq",".body"],text=True)
+          appendix="\n\n### Host Access / credential isolation — canonical Rust provider GET, not signer proof\n\n"+json.dumps(data,sort_keys=True)
+          payload=os.path.join(os.environ["RUNNER_TEMP"],"host-access-patch.json")
+          with open(payload,"w") as out: json.dump({"body":existing+appendix},out)
+          subprocess.run(["gh","api","--method","PATCH",url,"--input",payload],
+                         stdout=subprocess.DEVNULL,check=True)
+          PY
+ "${RUNNER_TEMP}/host-access-report.txt"
+          grep -Fxq 'host_access_provider_write_authority=UNPROVEN_REQUIRES_SCOPE_MATCH' "${RUNNER_TEMP}/host-access-report.txt"
+      - name: Attach read-only Rust verdict to the one operator report
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "${REPORT_COMMENT_ID}" =~ ^[1-9][0-9]{0,19}$ ]]
+          python3 - "${RUNNER_TEMP}/host-access-report.txt" <<'PY'
+          import json,os,subprocess,sys
+          lines=open(sys.argv[1],encoding="utf-8").read().splitlines()
+          data=dict(line.split("=",1) for line in lines)
+          assert len(lines)==len(data)==12
           assert data["host_access_schema"]=="sing-box.host-access-boundary/v1"
           assert data["host_access_provider_mutations"]=="0"
           assert data["host_access_native_mutations"]=="0"
