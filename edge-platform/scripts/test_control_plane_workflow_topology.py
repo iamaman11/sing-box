@@ -692,6 +692,30 @@ assert 'head = fetch_json(API + "/git/ref/heads/main")' in legacy_script
 assert 'trust_sha = sha(read_small(TRUST, 9 * 1024 * 1024))' in legacy_script
 assert "local host-refresh" not in legacy_script
 assert len(legacy_script) <= 8192
+# Run the actual fixed bridge parser with adversarial malformed old/new
+# release pins. It must fail BEFORE network, staging or root mutation.
+# This is an executable Python negative test, not a source-string guess.
+import sys
+legacy_scope = {"__name__": "sing_box_vm_legacy_bridge_test"}
+exec(compile(legacy_script, "edge-platform/scripts/vm_legacy_owner_bridge.py", "exec"),
+     legacy_scope)
+original_argv = sys.argv[:]
+try:
+    for invalid_argv in (
+        ["bridge"],
+        ["bridge", "bad", "bad"],
+        ["bridge", "a" * 64, "a" * 64],
+        ["bridge", "A" * 64, "b" * 64],
+    ):
+        sys.argv = invalid_argv
+        try:
+            legacy_scope["main"]()
+        except SystemExit as error:
+            assert str(error) == "HOST_VM_LEGACY_BRIDGE_REQUEST_INVALID"
+        else:
+            raise AssertionError("Invalid legacy bridge pins cannot execute")
+finally:
+    sys.argv = original_argv
 
 # GitHub concurrency preserves only ONE pending job. Three parallel
 # PATCH writers with the same group cancel one another even when
