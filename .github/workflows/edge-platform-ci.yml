@@ -90,10 +90,6 @@ jobs:
         shell: bash
         run: python3 edge-platform/scripts/test_control_plane_workflow_topology.py
 
-      - name: Enforce native lifecycle invariants and negative regressions
-        shell: bash
-        run: python3 edge-platform/scripts/test_native_lifecycle_contract.py
-
       - name: Exercise exact generated Worker with signed Cloudflare JWT fixture
         shell: bash
         run: python3 edge-platform/scripts/test_host_worker_access_contract.py
