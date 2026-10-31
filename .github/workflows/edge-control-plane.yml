@@ -887,33 +887,49 @@ jobs:
           git fetch --no-tags --depth=1 origin "${GITHUB_SHA}"
           git checkout --detach FETCH_HEAD
           test "$(git rev-parse HEAD)" = "${GITHUB_SHA}"
-      - name: Observe typed Host Access / VM credential policy boundary
+      - name: Observe exact typed Host Access / VM credential boundary
         shell: bash
+        env:
+          REPOSITORY: ${{ github.repository }}
+          ACCEPTED_REVISION: ${{ github.sha }}
+          OUTPUT_DIR: ${{ runner.temp }}/host-access-readonly
         run: |
           set -euo pipefail
-          python3 edge-platform/scripts/test_host_access_boundary_probe.py
-          python3 edge-platform/scripts/host_access_boundary_probe.py > "${RUNNER_TEMP}/host-access-report.json"
-          python3 - "${RUNNER_TEMP}/host-access-report.json" <<'PY'
-          import json,sys
-          item=json.load(open(sys.argv[1]))
-          assert item["schema"]=="sing-box.host-access-boundary/v1"
-          assert item["mutations"]==0
-          assert isinstance(item["host_route"],str) and len(item["host_route"])<100
-          PY
-      - name: Attach read-only isolation verdict to the existing operator report
+          # Immutable accepted ReleaseSet, no local source build and no
+          # ad-hoc textproto regex parser pretending to own policy.
+          bash edge-platform/scripts/resolve_durable_release.sh
+          source "${OUTPUT_DIR}/resolved.env"
+          test "${EDGE_ACCEPTED_REVISION}" = "${GITHUB_SHA}"
+          bin="${OUTPUT_DIR}/edge-orchestrator-linux-amd64"
+          printf '%s  %s\n' "${EDGE_ORCHESTRATOR_SHA256}" "${bin}" | sha256sum --check --status
+          chmod 0755 "${bin}"
+          export EDGE_RELEASE_CONTEXT_PATH="${OUTPUT_DIR}/resolved.env"
+          "${bin}" credentials host-access-observe > "${RUNNER_TEMP}/host-access-report.txt"
+          grep -Fxq 'host_access_schema=sing-box.host-access-boundary/v1' "${RUNNER_TEMP}/host-access-report.txt"
+          grep -Fxq 'host_access_credentials_vm=EXACT_VM_ONLY' "${RUNNER_TEMP}/host-access-report.txt"
+          grep -Fxq 'host_access_credentials_windows=EXACT_WINDOWS_ONLY' "${RUNNER_TEMP}/host-access-report.txt"
+          grep -Fxq 'host_access_provider_mutations=0' "${RUNNER_TEMP}/host-access-report.txt"
+          grep -Fxq 'host_access_native_mutations=0' "${RUNNER_TEMP}/host-access-report.txt"
+          test "$(wc -l < "${RUNNER_TEMP}/host-access-report.txt")" -eq 6
+          grep -Eq '^host_access_route=(NOT_PROVISIONED_LEGACY_VM_PRESERVED|STAGED_AWAIT_WORKER_AUDIENCE|STAGED_AWAIT_SIGNER_PROOF|ACTIVE_AWAIT_SIGNED_HOST_PROOF)$' "${RUNNER_TEMP}/host-access-report.txt"
+      - name: Attach read-only Rust verdict to the one operator report
         shell: bash
         run: |
           set -euo pipefail
           [[ "${REPORT_COMMENT_ID}" =~ ^[1-9][0-9]{0,19}$ ]]
-          python3 - "${RUNNER_TEMP}/host-access-report.json" <<'PY'
+          python3 - "${RUNNER_TEMP}/host-access-report.txt" <<'PY'
           import json,os,subprocess,sys
-          data=json.load(open(sys.argv[1]))
+          lines=open(sys.argv[1],encoding="utf-8").read().splitlines()
+          data=dict(line.split("=",1) for line in lines)
+          assert len(lines)==len(data)==6
+          assert data["host_access_schema"]=="sing-box.host-access-boundary/v1"
+          assert data["host_access_provider_mutations"]=="0"
+          assert data["host_access_native_mutations"]=="0"
           url=f"repos/{os.environ['GITHUB_REPOSITORY']}/issues/comments/{os.environ['REPORT_COMMENT_ID']}"
           existing=subprocess.check_output(["gh","api",url,"--jq",".body"],text=True)
-          # All values are closed result codes. No Cloudflare IDs, tokens or JWTs.
-          appendix="\n\n### Host Access / credential isolation — provider GET, no signer proof\n\n" + json.dumps(data,sort_keys=True)
+          appendix="\n\n### Host Access / credential isolation — canonical Rust provider GET, not signer proof\n\n"+json.dumps(data,sort_keys=True)
           payload=os.path.join(os.environ["RUNNER_TEMP"],"host-access-patch.json")
-          with open(payload,"w") as f: json.dump({"body":existing+appendix},f)
+          with open(payload,"w") as out: json.dump({"body":existing+appendix},out)
           subprocess.run(["gh","api","--method","PATCH",url,"--input",payload],
                          stdout=subprocess.DEVNULL,check=True)
           PY

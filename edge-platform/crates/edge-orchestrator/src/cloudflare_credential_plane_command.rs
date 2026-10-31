@@ -73,6 +73,7 @@ struct ProjectionObservation {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 struct CredentialPlaneObservation {
     control_token_identity: cloudflare::CloudflareApiTokenIdentity,
+    host_access: Option<HostAccessObservation>,
     access_organization: Option<cloudflare::CloudflareAccessOrganization>,
     workers_dev_subdomain: Option<String>,
     projections: Vec<ProjectionObservation>,
@@ -186,6 +187,17 @@ pub async fn run_delivery(
 
     match command {
         CredentialDeliveryCommand::ContractVerify => verify(&control_token, &desired).await,
+        CredentialDeliveryCommand::HostAccessObserve => {
+            let observed = observe(&control_token, &desired).await?;
+            let phase = host_access_readback(&desired, &observed)?;
+            println!("host_access_schema=sing-box.host-access-boundary/v1");
+            println!("host_access_credentials_vm=EXACT_VM_ONLY");
+            println!("host_access_credentials_windows=EXACT_WINDOWS_ONLY");
+            println!("host_access_route={}", phase.as_str());
+            println!("host_access_provider_mutations=0");
+            println!("host_access_native_mutations=0");
+            Ok(())
+        },
         CredentialDeliveryCommand::ExistingJoinBeginPlan { .. }
         | CredentialDeliveryCommand::ExistingJoinBeginReadback { .. }
         | CredentialDeliveryCommand::ExistingJoinPlan { .. }
@@ -3707,12 +3719,142 @@ async fn observe(
         });
     }
 
+    // Only one exact Host Access app may exist. GET-only audience and policy
+    // readback never infer signer trust or permission to mutate Cloudflare.
+    let host_access_matches = access_applications.iter()
+        .filter(|app| app.name == desired.host_access_application_name)
+        .collect::<Vec<_>>();
+    if host_access_matches.len() > 1 {
+        return Err("HOST_ACCESS_APP_DUPLICATED_BLOCKED".into());
+    }
+    let host_access = if let Some(app) = host_access_matches.first() {
+        Some(HostAccessObservation {
+            app: (**app).clone(),
+            policies: cloudflare::list_access_application_policies(
+                api_token, &desired.target_account_id, &app.id,
+            ).await?,
+            audience: cloudflare::get_access_application_audience(
+                api_token, &desired.target_account_id, &app.id,
+            ).await?,
+        })
+    } else {
+        None
+    };
+
     Ok(CredentialPlaneObservation {
         control_token_identity,
+        host_access,
         access_organization,
         workers_dev_subdomain,
         projections: projections_observed,
     })
+}
+
+// Shared Host Authorization is independent of either credential projection.
+// The signer remains in the ONE existing VM Worker; no new Worker/key/agent.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct HostAccessObservation {
+    app: cloudflare::CloudflareAccessApplication,
+    policies: Vec<cloudflare::CloudflareAccessPolicy>,
+    audience: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostAccessReadback {
+    NotProvisionedLegacyVmPreserved,
+    StagedAwaitWorkerAudience,
+    StagedAwaitSignerProof,
+    ActiveAwaitSignedHostProof,
+}
+
+impl HostAccessReadback {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::NotProvisionedLegacyVmPreserved => "NOT_PROVISIONED_LEGACY_VM_PRESERVED",
+            Self::StagedAwaitWorkerAudience => "STAGED_AWAIT_WORKER_AUDIENCE",
+            Self::StagedAwaitSignerProof => "STAGED_AWAIT_SIGNER_PROOF",
+            Self::ActiveAwaitSignedHostProof => "ACTIVE_AWAIT_SIGNED_HOST_PROOF",
+        }
+    }
+}
+
+// Staging cannot intercept VM's production Host Authorization. The wildcard
+// matters: /v1/host by itself does not cover /v1/host/identity or /admin.
+const HOST_ACCESS_STAGE_PATTERN: &str = "/__singbox_host_access_stage__/*";
+const HOST_ACCESS_LIVE_PATTERN: &str = "/v1/host/*";
+
+fn host_access_readback(
+    desired: &ProductionCredentialPlaneOwnership,
+    observed: &CredentialPlaneObservation,
+) -> Result<HostAccessReadback, String> {
+    // Preserve original VM/Windows exclusive credential policy first.
+    validate_access_boundary(desired, observed)?;
+    if desired.host_access_application_name.is_empty()
+        || desired.host_access_policy_name.is_empty()
+        || desired.host_access_application_name == desired.vm_access_application_name
+        || desired.host_access_application_name == desired.windows_access_application_name
+        || desired.host_access_route_pattern != HOST_ACCESS_LIVE_PATTERN
+    {
+        return Err("HOST_ACCESS_TYPED_GIT_CONTRACT_INVALID".into());
+    }
+    let vm = projection_observation(observed, "vm")?;
+    let win = projection_observation(observed, "windows")?;
+    let vm_id = vm.host_service_token_id.as_deref().ok_or("HOST_ACCESS_VM_TOKEN_UNPROVEN")?;
+    let win_id = win.host_service_token_id.as_deref().ok_or("HOST_ACCESS_WINDOWS_TOKEN_UNPROVEN")?;
+    if vm_id == win_id { return Err("HOST_ACCESS_TOKEN_NOT_ISOLATED".into()); }
+    let Some(route) = observed.host_access.as_ref() else {
+        if vm.worker_binding_count == Some(9) {
+            return Err("HOST_ACCESS_AUDIENCE_WITHOUT_APPLICATION".into());
+        }
+        return Ok(HostAccessReadback::NotProvisionedLegacyVmPreserved);
+    };
+    let host = format!("{}.{}.workers.dev",
+        desired.vm_worker_name, desired.workers_dev_subdomain);
+    let staged = format!("{host}{HOST_ACCESS_STAGE_PATTERN}");
+    let active = format!("{host}{HOST_ACCESS_LIVE_PATTERN}");
+    let destinations = route.app.destinations.as_slice();
+    if route.app.name != desired.host_access_application_name
+        || route.app.app_type != "self_hosted"
+        || route.app.service_auth_401_redirect != Some(true)
+        || destinations.len() != 1
+        || destinations[0].destination_type != "public"
+        || destinations[0].worker_id.is_some()
+        || destinations[0].has_overrides
+        || route.policies.len() != 1
+        || route.policies[0].name != desired.host_access_policy_name
+        || route.policies[0].decision.as_deref() != Some("non_identity")
+        || route.policies[0].has_extra_rules
+        || route.policies[0].id.is_empty()
+        || (!route.app.policy_ids.is_empty()
+            && route.app.policy_ids != vec![route.policies[0].id.clone()])
+        || !(8..=64).contains(&route.audience.len())
+        || !route.audience.bytes().all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+    {
+        return Err("HOST_ACCESS_APP_OR_POLICY_DRIFT_BLOCKED".into());
+    }
+    let mut actual = route.policies[0].include_service_token_ids.clone();
+    actual.sort_unstable();
+    let mut expected = vec![vm_id.to_owned(), win_id.to_owned()];
+    expected.sort_unstable();
+    if actual.len() != 2 || actual != expected {
+        return Err("HOST_ACCESS_TOKEN_SCOPE_DRIFT_BLOCKED".into());
+    }
+    match destinations[0].uri.as_deref() {
+        Some(uri) if uri == staged => {
+            match vm.worker_binding_count {
+                Some(8) => Ok(HostAccessReadback::StagedAwaitWorkerAudience),
+                Some(9) => Ok(HostAccessReadback::StagedAwaitSignerProof),
+                _ => Err("HOST_ACCESS_VM_SIGNER_BINDINGS_UNPROVEN".into()),
+            }
+        }
+        Some(uri) if uri == active => {
+            if vm.worker_binding_count != Some(9) {
+                return Err("HOST_ACCESS_LIVE_BEFORE_SIGNER_READY".into());
+            }
+            Ok(HostAccessReadback::ActiveAwaitSignedHostProof)
+        }
+        _ => Err("HOST_ACCESS_PATH_DRIFT_BLOCKED".into()),
+    }
 }
 
 fn projections(desired: &ProductionCredentialPlaneOwnership) -> [ProjectionDesired; 2] {
