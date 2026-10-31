@@ -1142,6 +1142,78 @@ mod tests {
     }
 
     #[test]
+    fn windows_p4_sealed_private_denies_acl_query_but_allows_public_preflight() {
+        use std::os::windows::ffi::OsStrExt;
+        use windows_sys::Win32::Foundation::LocalFree;
+        use windows_sys::Win32::Security::Authorization::{GetNamedSecurityInfoW, SE_FILE_OBJECT};
+        use windows_sys::Win32::Security::{
+            ACL, DACL_SECURITY_INFORMATION, OWNER_SECURITY_INFORMATION,
+        };
+
+        // A disposable native Windows fixture: the caller loses READ_CONTROL
+        // for ONLY the private file. Never change a real installation.
+        let root = std::env::temp_dir().join(format!(
+            "windows-p4-real-sealed-acl-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&root).unwrap();
+        let private = root.join(PRIVATE);
+        std::fs::write(&private, b"nonsecret-placeholder-not-a-real-key").unwrap();
+        let original_owner =
+            edge_shared_types::host_journal::windows_native_acl_owner_sid(&private).unwrap();
+
+        let run = |args: &[&str]| {
+            let result = std::process::Command::new("icacls.exe")
+                .arg(&private)
+                .args(args)
+                .output()
+                .unwrap();
+            assert!(
+                result.status.success(),
+                "Windows ACL fixture command failed: {}",
+                String::from_utf8_lossy(&result.stderr)
+            );
+        };
+        run(&["/setowner", "*S-1-5-32-544", "/Q"]);
+        let denied = format!("*{original_owner}:(RC)");
+        run(&["/deny", &denied, "/Q"]);
+
+        let mut wide: Vec<u16> = private.as_os_str().encode_wide().collect();
+        wide.push(0);
+        let mut owner = std::ptr::null_mut();
+        let mut dacl: *mut ACL = std::ptr::null_mut();
+        let mut descriptor = std::ptr::null_mut();
+        let result = unsafe {
+            GetNamedSecurityInfoW(
+                wide.as_mut_ptr(),
+                SE_FILE_OBJECT,
+                OWNER_SECURITY_INFORMATION | DACL_SECURITY_INFORMATION,
+                &mut owner,
+                std::ptr::null_mut(),
+                &mut dacl,
+                std::ptr::null_mut(),
+                &mut descriptor,
+            )
+        };
+        if !descriptor.is_null() {
+            unsafe { LocalFree(descriptor) };
+        }
+        assert_eq!(result, 5, "fixture must reproduce Win32 ACCESS_DENIED");
+
+        // Actual production metadata-only private-key verifier MUST succeed.
+        assert_eq!(verify_sealed_private_metadata(&private), Ok(()));
+        std::fs::write(root.join(PUBLIC), [9u8; 32]).unwrap();
+        std::fs::write(root.join(COMPLETED), b"exact-typed-completion").unwrap();
+        let output = verify_existing_receipt_identity_public_files(&root, |path| {
+            assert_ne!(path, private.as_path());
+            Ok(())
+        })
+        .unwrap();
+        assert_eq!(output, [9u8; 32]);
+        std::fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
     fn protected_identity_never_replaces_existing_private_key() {
         let test_dir =
             std::env::temp_dir().join(format!("w4-receipt-identity-{}", std::process::id()));
