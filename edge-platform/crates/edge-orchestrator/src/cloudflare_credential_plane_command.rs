@@ -3926,6 +3926,28 @@ fn host_access_readback(
         }
         return Ok(HostAccessReadback::NotProvisionedLegacyVmPreserved);
     };
+    // A binding count alone is NOT proof of the immutable Worker identity.
+    // Every VM secret name/type and the active deployment must be exact.
+    // A latest-only secret PATCH is pending, never ready for path cutover.
+    if !matches!(vm.worker_binding_count, Some(8 | 9)) {
+        return Err("HOST_ACCESS_VM_SIGNER_BINDINGS_UNPROVEN".into());
+    }
+    require_exact_secret_bindings(
+        &desired.vm_worker_name,
+        "vm",
+        &vm.worker_secret_bindings,
+    )
+    .map_err(|_| "HOST_ACCESS_VM_SIGNER_BINDINGS_UNPROVEN".to_owned())?;
+    if vm.worker_secret_bindings.len() != vm.worker_binding_count.unwrap_or_default() {
+        return Err("HOST_ACCESS_VM_SIGNER_BINDINGS_UNPROVEN".into());
+    }
+    let active_version = vm.worker_active_version_ids.as_slice();
+    if active_version.len() != 1
+        || vm.worker_latest_version_id.as_deref() != Some(active_version[0].as_str())
+        || vm.worker_active_deployment_id.is_none()
+    {
+        return Err("HOST_ACCESS_VM_ACTIVE_VERSION_UNPROVEN".into());
+    }
     let host = format!(
         "{}.{}.workers.dev",
         desired.vm_worker_name, desired.workers_dev_subdomain

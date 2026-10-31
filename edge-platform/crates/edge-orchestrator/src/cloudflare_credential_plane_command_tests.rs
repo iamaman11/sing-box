@@ -496,6 +496,36 @@ fn github_token_fingerprint_never_claims_cloudflare_access_write_authority() {
     );
 }
 
+
+fn host_access_vm_bindings(state: &mut CredentialPlaneObservation, count: usize) {
+    let vm = state
+        .projections
+        .iter_mut()
+        .find(|projection| projection.projection == "vm")
+        .unwrap();
+    let mut names = vec![
+        SLOT_A,
+        SLOT_B,
+        "EDGE_HOST_SIGNING_PKCS8_BASE64",
+        "EDGE_HOST_SIGNING_KEY_ID",
+        "EDGE_HOST_GITHUB_ACTOR_ID",
+        "EDGE_HOST_ACCESS_ISSUER",
+        "EDGE_HOST_ACCESS_AUD",
+        "EDGE_HOST_GITHUB_APP_PKCS8_BASE64",
+    ];
+    if count == 9 {
+        names.push("EDGE_HOST_ROUTE_ACCESS_AUD");
+    }
+    vm.worker_secret_bindings = names
+        .into_iter()
+        .map(|name| cloudflare::CloudflareWorkerSecretBinding {
+            name: name.to_owned(),
+            binding_type: "secret_text".to_owned(),
+        })
+        .collect();
+    vm.worker_binding_count = Some(count);
+}
+
 #[test]
 fn typed_host_access_preserves_vm_and_blocks_invalid_policy_or_paths() {
     let desired = desired();
@@ -528,7 +558,7 @@ fn typed_host_access_preserves_vm_and_blocks_invalid_policy_or_paths() {
         .position(|p| p.projection == "vm")
         .unwrap();
     // Existing deployed VM signer uses exactly eight bindings.
-    observed.projections[vm_index].worker_binding_count = Some(8);
+    host_access_vm_bindings(&mut observed, 8);
     observed.host_access = Some(HostAccessObservation {
         app: cloudflare::CloudflareAccessApplication {
             id: "host-access-id".to_owned(),
@@ -578,12 +608,12 @@ fn typed_host_access_preserves_vm_and_blocks_invalid_policy_or_paths() {
     );
     observed.host_access.as_mut().unwrap().app.destinations[0].uri =
         Some(format!("{hostname}{HOST_ACCESS_STAGE_PATTERN}"));
-    observed.projections[vm_index].worker_binding_count = Some(9);
+    host_access_vm_bindings(&mut observed, 9);
     assert_eq!(
         host_access_readback(&desired, &observed).unwrap_err(),
         "HOST_ACCESS_UNPOLICIED_WORKER_DRIFT_BLOCKED"
     );
-    observed.projections[vm_index].worker_binding_count = Some(8);
+    host_access_vm_bindings(&mut observed, 8);
     observed.host_access.as_mut().unwrap().app.policy_ids = vec!["foreign-policy".into()];
     assert_eq!(
         host_access_readback(&desired, &observed).unwrap_err(),
@@ -595,7 +625,7 @@ fn typed_host_access_preserves_vm_and_blocks_invalid_policy_or_paths() {
         host_access_readback(&desired, &observed).unwrap(),
         HostAccessReadback::StagedAwaitWorkerAudience
     );
-    observed.projections[vm_index].worker_binding_count = Some(9);
+    host_access_vm_bindings(&mut observed, 9);
     assert_eq!(
         host_access_readback(&desired, &observed).unwrap(),
         HostAccessReadback::StagedAwaitSignerProof
@@ -651,14 +681,14 @@ fn typed_host_access_preserves_vm_and_blocks_invalid_policy_or_paths() {
         host_access_readback(&desired, &observed).unwrap(),
         HostAccessReadback::ActiveAwaitSignedHostProof
     );
-    observed.projections[vm_index].worker_binding_count = Some(8);
+    host_access_vm_bindings(&mut observed, 8);
     assert_eq!(
         host_access_readback(&desired, &observed).unwrap_err(),
         "HOST_ACCESS_LIVE_BEFORE_SIGNER_READY"
     );
     // A provider GET with policy present but not actually attached to the
     // application must never masquerade as exact Cloudflare Service Auth.
-    observed.projections[vm_index].worker_binding_count = Some(9);
+    host_access_vm_bindings(&mut observed, 9);
     observed
         .host_access
         .as_mut()
@@ -676,6 +706,31 @@ fn typed_host_access_preserves_vm_and_blocks_invalid_policy_or_paths() {
             .unwrap()
             .next_action(),
         HostAccessNextAction::ProveWindowsAndVmSignedHostAfterCutover
+    );
+    // Correct binding COUNT is insufficient: a foreign binding, wrong type,
+    // or uploaded-but-not-deployed latest version blocks the transition.
+    observed.projections[vm_index].worker_secret_bindings[0].name = "UNEXPECTED".into();
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap_err(),
+        "HOST_ACCESS_VM_SIGNER_BINDINGS_UNPROVEN"
+    );
+    host_access_vm_bindings(&mut observed, 9);
+    observed.projections[vm_index].worker_secret_bindings[0].binding_type = "plain_text".into();
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap_err(),
+        "HOST_ACCESS_VM_SIGNER_BINDINGS_UNPROVEN"
+    );
+    host_access_vm_bindings(&mut observed, 9);
+    observed.projections[vm_index].worker_latest_version_id = Some("pending-ninth-version".into());
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap_err(),
+        "HOST_ACCESS_VM_ACTIVE_VERSION_UNPROVEN"
+    );
+    observed.projections[vm_index].worker_latest_version_id = Some("vm-version-id".into());
+    observed.projections[vm_index].worker_active_version_ids.clear();
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap_err(),
+        "HOST_ACCESS_VM_ACTIVE_VERSION_UNPROVEN"
     );
 }
 
