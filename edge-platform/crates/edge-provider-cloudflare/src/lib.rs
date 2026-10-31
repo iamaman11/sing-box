@@ -1978,7 +1978,7 @@ pub async fn activate_exact_host_access_path(
         .map_err(|_| "HOST_ACCESS_ACTIVATE_ACK_UNCERTAIN_NO_REPLAY")?;
     ensure_success(response)
         .await
-        .map_err(|_| "HOST_ACCESS_ACTIVATE_RESULT_UNPROVEN_NO_REPLAY")
+        .map_err(|_| "HOST_ACCESS_ACTIVATE_RESULT_UNPROVEN_NO_REPLAY".to_owned())
 }
 
 pub async fn list_access_applications(
