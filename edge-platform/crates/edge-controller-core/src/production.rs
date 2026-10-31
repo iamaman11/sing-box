@@ -341,8 +341,7 @@ impl ProductionComposition {
             == credential_plane.vm_access_application_name
             || credential_plane.host_access_application_name
                 == credential_plane.windows_access_application_name
-            || credential_plane.host_access_policy_name
-                == credential_plane.vm_access_policy_name
+            || credential_plane.host_access_policy_name == credential_plane.vm_access_policy_name
             || credential_plane.host_access_policy_name
                 == credential_plane.windows_access_policy_name
             || credential_plane.host_access_route_pattern != "/v1/host/*"
