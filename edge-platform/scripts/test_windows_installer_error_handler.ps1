@@ -18,6 +18,7 @@ $functionNames = @(
     'Get-ConnectWindowsGitHubHttpCode',
     'Resolve-ConnectWindowsGitHubToken',
     'Assert-ConnectWindowsGitHubBudget',
+    'Invoke-AuthenticatedNativeBootstrap',
     'Get-GitHubHeaders',
     'Get-GitHubTransportOptions',
     'Invoke-GitHubJsonGet',
@@ -438,6 +439,87 @@ if ($source -cnotmatch [regex]::Escape('$global:SingBoxConnectReadCache = @{}') 
 $global:SingBoxConnectReadCache = $null
 Write-Output 'windows_connect_authenticated_snapshot=PASS'
 Write-Output 'windows_connect_github_rate_and_auth_negative_matrix=PASS'
+
+
+# Regression for the missing Administrator -> Rust -> NEW PowerShell
+# authorization boundary. No real token, GitHub, SCM or Windows mutation.
+$oldNativeToken = [Environment]::GetEnvironmentVariable('EDGE_GITHUB_TOKEN', 'Process')
+try {
+    [Environment]::SetEnvironmentVariable('EDGE_GITHUB_TOKEN', 'fixture-existing', 'Process')
+    $fixtureToken = 'github_pat_' + ('Z' * 44)
+    function Invoke-MockedNativeBootstrap {
+        param([string]$Mode)
+        if ($env:EDGE_GITHUB_TOKEN -cne $fixtureToken) {
+            throw 'NATIVE_BOOTSTRAP_DID_NOT_INHERIT_AUTH'
+        }
+        # Base64 UTF-16-LE avoids Command argument quoting/host differences.
+        # Do not transmit even the synthetic token as a command-line argument.
+        $nestedCode = 'if ($env:EDGE_GITHUB_TOKEN.Length -eq 55) { exit 0 }; exit 17'
+        $encoded = [Convert]::ToBase64String(
+            [Text.Encoding]::Unicode.GetBytes($nestedCode)
+        )
+        $exe = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+        $null = & $exe -NoProfile -NonInteractive -EncodedCommand $encoded
+        if ($LASTEXITCODE -ne 0) {
+            throw 'FRESH_PWSH_CHILD_DID_NOT_INHERIT_AUTH'
+        }
+        if ($Mode -ceq 'fail') { $global:LASTEXITCODE = 1 }
+        else { $global:LASTEXITCODE = 0 }
+    }
+    Invoke-AuthenticatedNativeBootstrap -Console 'Invoke-MockedNativeBootstrap' -Arguments @('success') -GitHubAuthToken $fixtureToken
+    if ($env:EDGE_GITHUB_TOKEN -cne 'fixture-existing') {
+        throw 'AUTH_ENV_NOT_RESTORED_AFTER_NATIVE_SUCCESS'
+    }
+    $failure = 'NONE'
+    try {
+        Invoke-AuthenticatedNativeBootstrap -Console 'Invoke-MockedNativeBootstrap' -Arguments @('fail') -GitHubAuthToken $fixtureToken
+    } catch {
+        $failure = $_.Exception.Message
+    }
+    if ($failure -cne 'OFFLINE_BOOTSTRAP_UNKNOWN: native result uncertain, DO NOT REPLAY') {
+        throw "NATIVE_EXIT_NOT_REJECTED: $failure"
+    }
+    if ($env:EDGE_GITHUB_TOKEN -cne 'fixture-existing') {
+        throw 'AUTH_ENV_NOT_RESTORED_AFTER_NATIVE_FAILURE'
+    }
+    $invalid = 'NONE'
+    try {
+        Invoke-AuthenticatedNativeBootstrap -Console 'Invoke-MockedNativeBootstrap' -Arguments @('success') -GitHubAuthToken 'bad'
+    } catch { $invalid = $_.Exception.Message }
+    if ($invalid -cne 'OFFLINE_BOOTSTRAP_GITHUB_AUTH_REQUIRED_BEFORE_NATIVE_BEGIN' -or
+        $env:EDGE_GITHUB_TOKEN -cne 'fixture-existing') {
+        throw 'INVALID_NATIVE_GITHUB_AUTH_ADMITTED'
+    }
+    if ($source -cnotmatch [regex]::Escape('Invoke-AuthenticatedNativeBootstrap -Console $console -Arguments $bootstrapArgs -GitHubAuthToken $GitHubToken')) {
+        throw 'NATIVE_AUTH_SCOPE_NOT_CONNECTED_TO_CANONICAL_INSTALLER'
+    }
+} finally {
+    [Environment]::SetEnvironmentVariable('EDGE_GITHUB_TOKEN', $oldNativeToken, 'Process')
+}
+Write-Output 'windows_connect_native_child_authenticated_process_boundary=PASS'
+Write-Output 'windows_connect_native_auth_restoration_success_failure_invalid=PASS'
+
+# Offline post-BEGIN MUST never call GitHub: the staged release and its
+# accepted source were already verified by the native -StageOnly preflight.
+# Negative checks only; do NOT execute installer top-level or mutate host.
+$source = Get-Content -LiteralPath $installer -Raw
+$hasPostBegin = [regex]::Escape('if ($NativePostBegin -and $needsInstall)')
+$hasAuthority = [regex]::Escape('if (-not $NativePostBegin) {')
+$nativeGuard = [regex]::Escape('Assert-ExactNativePostBegin -AcceptedRevision')
+if ($source -cnotmatch $hasPostBegin -or $source -cnotmatch $hasAuthority -or
+    $source -cnotmatch $nativeGuard -or
+    $source -cnotmatch 'OFFLINE_NATIVE_POST_BEGIN_INTENT_MISMATCH' -or
+    $source -cnotmatch 'OFFLINE_NATIVE_POST_BEGIN_SYSTEM_TASK_NOT_DISABLED') {
+    throw 'NATIVE_POST_BEGIN_LOCAL_ONLY_AUTHORITY_GATES_NOT_WIRED'
+}
+$nativeRust = Get-Content -LiteralPath (
+    Join-Path $PSScriptRoot '..\crates\edge-console\src\main.rs'
+) -Raw
+if ($nativeRust -cnotmatch [regex]::Escape('activation.arg("-NativePostBegin")') -or
+    $nativeRust -cnotmatch [regex]::Escape('if verified_bootstrap_installer.is_some()')) {
+    throw 'NATIVE_POST_BEGIN_FLAG_NOT_BOUND_TO_FIRST_USE_NATIVE_OWNER'
+}
+Write-Output 'windows_connect_native_post_begin_network_free=PASS'
 
 Write-Output 'windows_connect_powershell_named_binding=PASS'
 

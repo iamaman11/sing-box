@@ -813,6 +813,100 @@ pub(super) async fn fetch_exact_protected_git(
     Ok((installed_release_pb, current_release_pb, registry_pb, spec))
 }
 
+/// First-use trust is bound to the *installed* immutable ReleaseSet whose
+/// canonical Git ancestry was verified by the one-shot Administrator BEFORE
+/// native BEGIN. The LocalSystem task MUST NOT call rate-limited anonymous
+/// GitHub REST endpoints or inherit the Administrator's GitHub credential.
+///
+/// The release bytes are authenticated by their installed SHA-256 and exact
+/// local equality; the registry is the published asset with its exact SHA256
+/// sidecar, and production spec is fetched from the immutable accepted source
+/// commit in that same ReleaseSet. Nothing is supplied by the Administrator,
+/// GitHub runner or any alternate local configuration.
+fn verify_first_use_published_bytes(
+    active: &WindowsActivationState,
+    published_release: &[u8],
+    local_release: &[u8],
+    registry: &[u8],
+    registry_sha_sidecar: &[u8],
+    spec: &[u8],
+) -> Result<(), String> {
+    if published_release.is_empty()
+        || published_release.len() > MAX_RELEASE
+        || published_release != local_release
+        || sha_hex(published_release) != active.release_set_sha256
+    {
+        return Err("HOST_WINDOWS_TRUST_PUBLISHED_RELEASE_NOT_INSTALLED".into());
+    }
+    let release = ReleaseSet::decode(published_release)
+        .map_err(|_| "HOST_WINDOWS_TRUST_PUBLISHED_RELEASE_PROTO_INVALID")?;
+    if release.encode_to_vec() != published_release
+        || release.source_revision != active.source_revision
+        || !exact_git_revision(&release.source_revision)
+    {
+        return Err("HOST_WINDOWS_TRUST_PUBLISHED_RELEASE_SOURCE_MISMATCH".into());
+    }
+    if registry.is_empty()
+        || registry.len() > MAX_REGISTRY
+        || spec.is_empty()
+        || spec.len() > MAX_SPEC
+    {
+        return Err("HOST_WINDOWS_TRUST_PUBLISHED_INPUT_SIZE_INVALID".into());
+    }
+    let expected = format!("{}  fleet-registry.pb\n", sha_hex(registry));
+    if registry_sha_sidecar != expected.as_bytes() {
+        return Err("HOST_WINDOWS_TRUST_PUBLISHED_REGISTRY_DIGEST_MISMATCH".into());
+    }
+    edge_shared_types::decode_host_registry(registry)
+        .map_err(|_| "HOST_WINDOWS_TRUST_PUBLISHED_REGISTRY_PROTO_INVALID")?;
+    edge_shared_types::parse_production_desired_text(spec)
+        .map_err(|_| "HOST_WINDOWS_TRUST_PUBLISHED_SPEC_INVALID")?;
+    Ok(())
+}
+
+/// Direct immutable release downloads and raw pinned-Git source: NO GitHub
+/// REST API, token, local cache, mutable "latest", or additional SYSTEM owner.
+/// The authenticated ConnectWindows preflight already proved that this exact
+/// ReleaseSet came from protected main before its native BEGIN.
+pub(super) async fn fetch_release_bound_first_use_git(
+    active: &WindowsActivationState,
+) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), String> {
+    if !exact_git_revision(&active.source_revision)
+        || active.release_set_sha256.len() != 64
+        || !active
+            .release_set_sha256
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+    {
+        return Err("HOST_WINDOWS_TRUST_INSTALLED_GIT_PIN_INVALID".into());
+    }
+    let client = reqwest::Client::builder()
+        .no_proxy()
+        .timeout(Duration::from_secs(25))
+        .build()
+        .map_err(|_| "HOST_WINDOWS_TRUST_TLS_CLIENT_UNAVAILABLE")?;
+    let tag = format!("edge-release-{}", active.release_set_sha256);
+    let base = format!("https://github.com/iamaman11/sing-box/releases/download/{tag}");
+    let spec_url = format!(
+        "https://raw.githubusercontent.com/iamaman11/sing-box/{}/{}",
+        active.source_revision, SPEC
+    );
+    // Keep URL allocations alive across the concurrent network futures.
+    let release_url = format!("{base}/release-set.pb");
+    let registry_url = format!("{base}/fleet-registry.pb");
+    let sidecar_url = format!("{base}/fleet-registry.pb.sha256");
+    let (release, registry, sidecar, spec) = tokio::try_join!(
+        fetch_bounded(&client, &release_url, MAX_RELEASE),
+        fetch_bounded(&client, &registry_url, MAX_REGISTRY),
+        fetch_bounded(&client, &sidecar_url, 256),
+        fetch_bounded(&client, &spec_url, MAX_SPEC),
+    )?;
+    let local_release = fs::read(Path::new(&active.release_dir).join("release-set.pb"))
+        .map_err(|_| "HOST_WINDOWS_TRUST_LOCAL_RELEASE_UNREADABLE")?;
+    verify_first_use_published_bytes(active, &release, &local_release, &registry, &sidecar, &spec)?;
+    Ok((release, registry, spec))
+}
+
 // Pure, deterministic selector tested without network and independent of the
 // local machine. A second Git host claiming the same hostname is always NO-GO.
 fn select_registered_windows_machine(
@@ -849,7 +943,7 @@ fn select_registered_windows_machine(
 pub(super) async fn resolve_local_windows_machine(
     active: &WindowsActivationState,
 ) -> Result<String, String> {
-    let (_, _, registry_pb, _) = fetch_exact_protected_git(active).await?;
+    let (_, registry_pb, _) = fetch_release_bound_first_use_git(active).await?;
     let registry = edge_shared_types::decode_host_registry(&registry_pb)
         .map_err(|_| "HOST_WINDOWS_FIRST_USE_GIT_REGISTRY_INVALID")?;
     let hostname = std::env::var("COMPUTERNAME")
@@ -912,8 +1006,7 @@ pub(super) async fn dispatch_if_needed(install_root: &Path) -> Result<(), String
     }
     let private =
         fs::read(&key_path).map_err(|_| "HOST_WINDOWS_TRUST_PRIVATE_IDENTITY_UNREADABLE")?;
-    let (release_pb, _current_release_pb, registry_pb, spec) =
-        fetch_exact_protected_git(&active).await?;
+    let (release_pb, registry_pb, spec) = fetch_release_bound_first_use_git(&active).await?;
     let machine_id = windows_receipt_enrollment::bound_machine_id(install_root)?;
     let trust = match exact_windows_registration(
         &machine_id,
@@ -1006,6 +1099,50 @@ pub(super) async fn dispatch_if_needed(install_root: &Path) -> Result<(), String
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn first_use_published_release_proof_rejects_drift_and_registry_tamper() {
+        let source = "a".repeat(40);
+        let release = ReleaseSet {
+            schema_version: 7,
+            source_revision: source.clone(),
+            ..Default::default()
+        };
+        let bytes = release.encode_to_vec();
+        let active = WindowsActivationState {
+            release_set_sha256: sha_hex(&bytes),
+            source_revision: source,
+            ..Default::default()
+        };
+        // Synthetic registry/spec are not live Git inputs: this negative
+        // test exits before parsing whenever release digest is wrong.
+        let wrong = vec![0u8; bytes.len()];
+        assert_eq!(
+            verify_first_use_published_bytes(&active, &wrong, &bytes, b"registry", b"", b"spec"),
+            Err("HOST_WINDOWS_TRUST_PUBLISHED_RELEASE_NOT_INSTALLED".into())
+        );
+        assert_eq!(
+            verify_first_use_published_bytes(&active, &bytes, &wrong, b"registry", b"", b"spec"),
+            Err("HOST_WINDOWS_TRUST_PUBLISHED_RELEASE_NOT_INSTALLED".into())
+        );
+        let mut changed = active.clone();
+        changed.source_revision = "b".repeat(40);
+        assert_eq!(
+            verify_first_use_published_bytes(&changed, &bytes, &bytes, b"registry", b"", b"spec"),
+            Err("HOST_WINDOWS_TRUST_PUBLISHED_RELEASE_SOURCE_MISMATCH".into())
+        );
+        assert_eq!(
+            verify_first_use_published_bytes(
+                &active,
+                &bytes,
+                &bytes,
+                b"registry",
+                b"wrong",
+                b"spec"
+            ),
+            Err("HOST_WINDOWS_TRUST_PUBLISHED_REGISTRY_DIGEST_MISMATCH".into())
+        );
+    }
+
     #[test]
     fn protected_git_host_selection_rejects_unknown_duplicate_and_wrong_target() {
         let host = edge_shared_types::ManagedHost {

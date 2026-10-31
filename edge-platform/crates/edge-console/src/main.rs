@@ -2659,7 +2659,8 @@ fn offline_activate_privileged_release_with_installer(
     }
     // Revalidation after the offline handoff must use the same direct
     // GitHub policy; Windows PowerShell 5.1 lacks -NoProxy.
-    let output = Command::new("pwsh.exe")
+    let mut activation = Command::new("pwsh.exe");
+    activation
         .args([
             "-NoProfile",
             "-NonInteractive",
@@ -2676,7 +2677,15 @@ fn offline_activate_privileged_release_with_installer(
             "-InstallRoot",
         ])
         .arg(install_root)
-        .arg("-Offline")
+        .arg("-Offline");
+    if verified_bootstrap_installer.is_some() {
+        // The exact same Rust owner already verified protected Git and every
+        // staged EXE using -StageOnly BEFORE the durable BEGIN. A repeated
+        // GitHub API read after BEGIN cannot add authority, only strand the
+        // handoff on anonymous API rate limits or a transient outage.
+        activation.arg("-NativePostBegin");
+    }
+    let output = activation
         .stdin(Stdio::null())
         .output()
         .map_err(|err| format!("offline protected installer invocation failed: {err}"))?;
