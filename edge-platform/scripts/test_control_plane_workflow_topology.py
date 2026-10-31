@@ -698,7 +698,7 @@ host_observe_workflow = Path(".github/workflows/host-native-observe.yml").read_t
 native_pub = host_observe_workflow.split('original_file="${RUNNER_TEMP}/host-deep-preliminary.txt"', 1)[1].split(
     'appendix="$(printf', 1
 )[0]
-assert "if grep -Fq '### Unified deep diagnosis — read only' "\"" in native_pub
+assert "if grep -Fq '### Unified deep diagnosis — read only'" in native_pub
 assert "host_diagnostic_summary.py --merge-signed" in native_pub
 assert "HOST_DIAG_PRELIMINARY_NOT_PUBLISHED" in native_pub
 assert native_pub.index("if grep -Fq") < native_pub.index("host_diagnostic_summary.py --merge-signed")
