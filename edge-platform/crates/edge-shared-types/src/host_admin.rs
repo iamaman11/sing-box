@@ -498,24 +498,36 @@ mod tests {
                 expires_at_unix: 200,
                 ed25519_signature: Vec::new(),
             };
-            auth.ed25519_signature = signer.sign(&authorization_payload(&req, &auth))
-                .as_ref().to_vec();
+            auth.ed25519_signature = signer
+                .sign(&authorization_payload(&req, &auth))
+                .as_ref()
+                .to_vec();
             verify_authorization(&req, &auth, signer.public_key().as_ref(), 150).unwrap();
             let mut tampered = req.clone();
             tampered.argv.push("extra".into());
-            assert!(verify_authorization(&tampered, &auth, signer.public_key().as_ref(), 150).is_err());
+            assert!(
+                verify_authorization(&tampered, &auth, signer.public_key().as_ref(), 150).is_err()
+            );
             tampered = req.clone();
             tampered.working_directory = "/etc".into();
-            assert!(verify_authorization(&tampered, &auth, signer.public_key().as_ref(), 150).is_err());
+            assert!(
+                verify_authorization(&tampered, &auth, signer.public_key().as_ref(), 150).is_err()
+            );
             tampered = req.clone();
             tampered.environment.push("OTHER=1".into());
-            assert!(verify_authorization(&tampered, &auth, signer.public_key().as_ref(), 150).is_err());
+            assert!(
+                verify_authorization(&tampered, &auth, signer.public_key().as_ref(), 150).is_err()
+            );
             tampered = req.clone();
             tampered.stdin_bytes.push(4);
-            assert!(verify_authorization(&tampered, &auth, signer.public_key().as_ref(), 150).is_err());
+            assert!(
+                verify_authorization(&tampered, &auth, signer.public_key().as_ref(), 150).is_err()
+            );
             tampered = req.clone();
             tampered.publish_output = false;
-            assert!(verify_authorization(&tampered, &auth, signer.public_key().as_ref(), 150).is_err());
+            assert!(
+                verify_authorization(&tampered, &auth, signer.public_key().as_ref(), 150).is_err()
+            );
         }
     }
 

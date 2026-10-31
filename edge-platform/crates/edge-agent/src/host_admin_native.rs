@@ -425,18 +425,28 @@ mod io_tests {
                 publish_output: false,
             };
             edge_shared_types::host_admin::validate_for_kind(
-                &request, edge_shared_types::FleetHostKind::Vm
-            ).unwrap();
+                &request,
+                edge_shared_types::FleetHostKind::Vm,
+            )
+            .unwrap();
             let program = prepared_root_child(&request).unwrap();
-            assert_eq!(program.get_program(), std::ffi::OsStr::new("/usr/bin/timeout"));
-            let actual = program.get_args().map(|s| s.to_string_lossy().into_owned())
+            assert_eq!(
+                program.get_program(),
+                std::ffi::OsStr::new("/usr/bin/timeout")
+            );
+            let actual = program
+                .get_args()
+                .map(|s| s.to_string_lossy().into_owned())
                 .collect::<Vec<_>>();
             let mut expected = vec!["--kill-after=5s".to_owned(), "60s".to_owned()];
             expected.extend(request.argv.clone());
             assert_eq!(actual, expected);
             assert_eq!(program.get_current_dir(), Some(std::path::Path::new("/")));
             assert_eq!(
-                program.get_envs().find(|(key, _)| *key == "LC_ALL".as_ref()).and_then(|(_, value)| value),
+                program
+                    .get_envs()
+                    .find(|(key, _)| *key == std::ffi::OsStr::new("LC_ALL"))
+                    .and_then(|(_, value)| value),
                 Some(std::ffi::OsStr::new("C"))
             );
         }
