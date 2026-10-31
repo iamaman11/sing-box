@@ -655,6 +655,26 @@ assert "fn vm_unrestricted_root_surface_remains_worker_signed_and_byte_exact()" 
 assert "HOST_ADMIN_PENDING_UNKNOWN_NO_REPLAY" in vm_admin
 assert "arbitrary_vm_admin_never_bypasses_unknown_resource_or_other_admin" in vm_admin
 
+# A single failed local read-only Windows probe cannot discard all
+# other SYSTEM/task/BEGIN evidence. Keep machine binding independent and
+# preserve a nonzero exit after the bounded report has already been printed.
+first_use_dispatch = Path("edge-platform/crates/edge-console/src/command_dispatch.rs").read_text(encoding="utf-8")
+first_use_code = first_use_dispatch.split("Command::OfflineFirstUseStatus(args) => {", 1)[1].split(
+    "Command::OfflineHostTrustPrepare(args)", 1
+)[0]
+assert "let machine_result = windows_receipt_enrollment::bound_machine_id(root);" in first_use_code
+assert '"machine_id": machine_result.as_ref().ok()' in first_use_code
+assert '"machine_id_error": machine_result.as_ref().err()' in first_use_code
+assert '"stage_error": stage_result.as_ref().err()' in first_use_code
+assert '"system_dispatch_failure": system_failure' in first_use_code
+assert '"system_task": task_status' in first_use_code
+assert '"retained_begin": retained_begin' in first_use_code
+assert '"trusted_remote_execution": false' in first_use_code
+assert '"mutations": 0' in first_use_code
+assert first_use_code.index('println!(') < first_use_code.index('stage_result.map_err(ConsoleError::Command)?;')
+assert first_use_code.index('stage_result.map_err(ConsoleError::Command)?;') < first_use_code.index('machine_result.map_err(ConsoleError::Command)?;')
+assert "bound_machine_id(root)\n                        .map_err(ConsoleError::Command)?" not in first_use_code
+
 # Elevated Administrator FIRST_USE_STATUS must never open sealed
 # SYSTEM-only trust.pb. The receipt reader already checks caller identity.
 # A second privilege check was selecting the forbidden secret-read fallback.

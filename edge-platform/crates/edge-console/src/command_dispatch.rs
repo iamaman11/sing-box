@@ -244,6 +244,10 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             // An unavailable identity stage never suppresses task/API evidence.
             let stage_result = windows_receipt_enrollment::read_only_first_use_stage(root);
             let stage = stage_result.as_ref().copied().unwrap_or("UNPROVEN");
+            // The machine binding is independent of trust visibility. Do not
+            // let its failure suppress the already read Task/SYSTEM/BEGIN
+            // report: every probe must retain its own explicit error code.
+            let machine_result = windows_receipt_enrollment::bound_machine_id(root);
             let task_status = match windows_handoff::observe() {
                 Ok(task) => {
                     let identity = task.validate(&active.console_path, task.enabled);
@@ -294,14 +298,17 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
                     "retained_begin": retained_begin,
                     "stage": stage,
                     "stage_error": stage_result.as_ref().err(),
-                    "machine_id": windows_receipt_enrollment::bound_machine_id(root)
-                        .map_err(ConsoleError::Command)?,
+                    "machine_id": machine_result.as_ref().ok(),
+                    "machine_id_error": machine_result.as_ref().err(),
                     "installed_release_set_sha256": active.release_set_sha256,
                     "trusted_remote_execution": false,
                     "mutations": 0
                 })
             );
+            // The complete bounded report has been emitted even when either
+            // independent reader fails; preserve nonzero exit for callers.
             stage_result.map_err(ConsoleError::Command)?;
+            machine_result.map_err(ConsoleError::Command)?;
             Ok(())
         }
         #[cfg(windows)]
