@@ -242,10 +242,26 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             let stage = windows_receipt_enrollment::read_only_first_use_stage(root)
                 .map_err(ConsoleError::Command)?;
             let active = load_verified_activation(root)?;
+            // Advisory, typed LocalSystem evidence from the SAME protected
+            // native journal. Never infer a failure from Task exit=1 alone.
+            let system_failure = match read_system_dispatch_failure(root, &active.release_set_sha256) {
+                Ok(Some(failure)) => serde_json::json!({
+                    "state": "RECORDED_SYSTEM_ERROR",
+                    "phase": failure.phase,
+                    "error_code": failure.error_code,
+                    "observed_at_unix": failure.observed_at_unix,
+                }),
+                Ok(None) => serde_json::json!({"state": "NOT_RECORDED"}),
+                Err(reason) => serde_json::json!({
+                    "state": "UNPROVEN",
+                    "reason": reason,
+                }),
+            };
             println!(
                 "{}",
                 serde_json::json!({
                     "schema": "sing-box.windows-first-use-status/v1",
+                    "system_dispatch_failure": system_failure,
                     "stage": stage,
                     "machine_id": windows_receipt_enrollment::bound_machine_id(root)
                         .map_err(ConsoleError::Command)?,
