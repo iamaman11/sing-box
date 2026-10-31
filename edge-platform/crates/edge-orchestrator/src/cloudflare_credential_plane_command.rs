@@ -198,8 +198,13 @@ pub async fn run_delivery(
             // GitHub Actions is the only owner that can prove the identity
             // of its encrypted secret. Cloudflare /verify returns no scopes.
             // A token fingerprint is NOT authorization for any provider PUT.
+            // The same canonical observe() already verified CONTROL once.
+            // Reuse its identity; do not introduce a second HTTP owner.
+            let (status, fingerprint) =
+                github_provider_token_identity_proof(true, Some(&observed.control_token_identity));
+            println!("host_access_control_token_identity={status}");
+            println!("host_access_control_token_fingerprint={fingerprint}");
             for (label, variable) in [
-                ("control", "CLOUDFLARE_CONTROL_TOKEN"),
                 ("worker", "CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN"),
                 ("access", "CLOUDFLARE_ACCESS_POLICY_TOKEN"),
             ] {
@@ -3816,6 +3821,7 @@ struct HostAccessObservation {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HostAccessReadback {
     NotProvisionedLegacyVmPreserved,
+    StagedAwaitExactPolicy,
     StagedAwaitWorkerAudience,
     StagedAwaitSignerProof,
     ActiveAwaitSignedHostProof,
@@ -3824,6 +3830,7 @@ enum HostAccessReadback {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum HostAccessNextAction {
     StageOnlyAfterAuthorizedBegin,
+    AttachExactPolicyOnlyAfterAuthorizedBegin,
     BindExactAudienceOnlyAfterSignedBegin,
     ProveSignerAndVmCredentialsBeforeCutover,
     ProveWindowsAndVmSignedHostAfterCutover,
@@ -3833,6 +3840,9 @@ impl HostAccessNextAction {
     fn as_str(self) -> &'static str {
         match self {
             Self::StageOnlyAfterAuthorizedBegin => "STAGE_REQUIRES_DURABLE_BEGIN",
+            Self::AttachExactPolicyOnlyAfterAuthorizedBegin => {
+                "ATTACH_POLICY_REQUIRES_DURABLE_BEGIN"
+            }
             Self::BindExactAudienceOnlyAfterSignedBegin => "BIND_AUDIENCE_REQUIRES_DURABLE_BEGIN",
             Self::ProveSignerAndVmCredentialsBeforeCutover => {
                 "VERIFY_SIGNER_AND_VM_CREDENTIALS_BEFORE_CUTOVER"
@@ -3849,6 +3859,9 @@ impl HostAccessReadback {
         match self {
             Self::NotProvisionedLegacyVmPreserved => {
                 HostAccessNextAction::StageOnlyAfterAuthorizedBegin
+            }
+            Self::StagedAwaitExactPolicy => {
+                HostAccessNextAction::AttachExactPolicyOnlyAfterAuthorizedBegin
             }
             Self::StagedAwaitWorkerAudience => {
                 HostAccessNextAction::BindExactAudienceOnlyAfterSignedBegin
@@ -3867,6 +3880,7 @@ impl HostAccessReadback {
     fn as_str(self) -> &'static str {
         match self {
             Self::NotProvisionedLegacyVmPreserved => "NOT_PROVISIONED_LEGACY_VM_PRESERVED",
+            Self::StagedAwaitExactPolicy => "STAGED_AWAIT_EXACT_POLICY",
             Self::StagedAwaitWorkerAudience => "STAGED_AWAIT_WORKER_AUDIENCE",
             Self::StagedAwaitSignerProof => "STAGED_AWAIT_SIGNER_PROOF",
             Self::ActiveAwaitSignedHostProof => "ACTIVE_AWAIT_SIGNED_HOST_PROOF",
@@ -3926,17 +3940,32 @@ fn host_access_readback(
         || destinations[0].destination_type != "public"
         || destinations[0].worker_id.is_some()
         || destinations[0].has_overrides
-        || route.policies.len() != 1
-        || route.policies[0].name != desired.host_access_policy_name
-        || route.policies[0].decision.as_deref() != Some("non_identity")
-        || route.policies[0].has_extra_rules
-        || route.policies[0].id.is_empty()
-        || route.app.policy_ids != vec![route.policies[0].id.clone()]
         || !(8..=64).contains(&route.audience.len())
         || !route
             .audience
             .bytes()
             .all(|c| c.is_ascii_alphanumeric() || c == b'-' || c == b'_')
+    {
+        return Err("HOST_ACCESS_APP_OR_POLICY_DRIFT_BLOCKED".into());
+    }
+    // A freshly created staging application has no policy until the next
+    // separately journaled operation. This is only a readback of an inert
+    // non-overlapping route; it cannot authorize any provider write.
+    if route.policies.is_empty() && route.app.policy_ids.is_empty() {
+        if destinations[0].uri.as_deref() != Some(staged.as_str()) {
+            return Err("HOST_ACCESS_UNPOLICIED_ROUTE_NOT_STAGING".into());
+        }
+        if vm.worker_binding_count != Some(8) {
+            return Err("HOST_ACCESS_UNPOLICIED_WORKER_DRIFT_BLOCKED".into());
+        }
+        return Ok(HostAccessReadback::StagedAwaitExactPolicy);
+    }
+    if route.policies.len() != 1
+        || route.policies[0].name != desired.host_access_policy_name
+        || route.policies[0].decision.as_deref() != Some("non_identity")
+        || route.policies[0].has_extra_rules
+        || route.policies[0].id.is_empty()
+        || route.app.policy_ids != vec![route.policies[0].id.clone()]
     {
         return Err("HOST_ACCESS_APP_OR_POLICY_DRIFT_BLOCKED".into());
     }

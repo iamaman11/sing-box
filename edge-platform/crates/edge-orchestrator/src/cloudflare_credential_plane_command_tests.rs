@@ -555,6 +555,42 @@ fn typed_host_access_preserves_vm_and_blocks_invalid_policy_or_paths() {
         }],
         audience: "host-access-new-audience".to_owned(),
     });
+    // One provider POST creates the non-overlapping staging application
+    // before its separate, journaled Service Auth policy POST.
+    let policy = observed.host_access.as_mut().unwrap().policies.remove(0);
+    observed
+        .host_access
+        .as_mut()
+        .unwrap()
+        .app
+        .policy_ids
+        .clear();
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap(),
+        HostAccessReadback::StagedAwaitExactPolicy
+    );
+    // An unprotected LIVE route is never an intermediate acceptable state.
+    observed.host_access.as_mut().unwrap().app.destinations[0].uri =
+        Some(format!("{hostname}{HOST_ACCESS_LIVE_PATTERN}"));
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap_err(),
+        "HOST_ACCESS_UNPOLICIED_ROUTE_NOT_STAGING"
+    );
+    observed.host_access.as_mut().unwrap().app.destinations[0].uri =
+        Some(format!("{hostname}{HOST_ACCESS_STAGE_PATTERN}"));
+    observed.projections[vm_index].worker_binding_count = Some(9);
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap_err(),
+        "HOST_ACCESS_UNPOLICIED_WORKER_DRIFT_BLOCKED"
+    );
+    observed.projections[vm_index].worker_binding_count = Some(8);
+    observed.host_access.as_mut().unwrap().app.policy_ids = vec!["foreign-policy".into()];
+    assert_eq!(
+        host_access_readback(&desired, &observed).unwrap_err(),
+        "HOST_ACCESS_APP_OR_POLICY_DRIFT_BLOCKED"
+    );
+    observed.host_access.as_mut().unwrap().app.policy_ids = vec![policy.id.clone()];
+    observed.host_access.as_mut().unwrap().policies.push(policy);
     assert_eq!(
         host_access_readback(&desired, &observed).unwrap(),
         HostAccessReadback::StagedAwaitWorkerAudience
@@ -649,6 +685,10 @@ fn host_access_phase_plan_only_requires_durable_provider_begin() {
         (
             HostAccessReadback::NotProvisionedLegacyVmPreserved,
             "STAGE_REQUIRES_DURABLE_BEGIN",
+        ),
+        (
+            HostAccessReadback::StagedAwaitExactPolicy,
+            "ATTACH_POLICY_REQUIRES_DURABLE_BEGIN",
         ),
         (
             HostAccessReadback::StagedAwaitWorkerAudience,
