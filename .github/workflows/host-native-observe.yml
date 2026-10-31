@@ -837,6 +837,9 @@ jobs:
             if [[ "${TYPED_OUTCOME}" = success && "${ADMIN_RECEIPT_PROOF}" = VERIFIED_EXIT_ZERO ]]; then
               result=ADMIN_SIGNED_EXIT_ZERO
               native_note='Ed25519 native receipt verified against exact Git request; physical poststate requires independent observation.'
+            elif [[ "${TYPED_OUTCOME}" = success && "${ADMIN_RECEIPT_PROOF}" = VERIFIED_REJECTED_BEFORE_BEGIN ]]; then
+              result=ADMIN_SIGNED_REJECTED_BEFORE_BEGIN
+              native_note='Ed25519 native denial verifies the request was rejected before native BEGIN; no program execution, no replay.'
             elif [[ "${TYPED_OUTCOME}" = success && "${ADMIN_RECEIPT_PROOF}" = VERIFIED_EXIT_NONZERO ]]; then
               result=ADMIN_SIGNED_EXIT_NONZERO
               native_note='Ed25519 native receipt verified; program returned a nonzero exit status.'

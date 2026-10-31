@@ -3044,6 +3044,8 @@ fn require_distinct_offline_bootstrap_successor(
 }
 
 fn require_offline_bootstrap_other_pending_absent(install_root: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    windows_admin::preflight_expired_transport_handoff(install_root)?;
     for relative in [
         "exchange/requests/request.pb",
         "exchange/requests/host-intent.pb",
@@ -3180,6 +3182,8 @@ fn archive_retained_offline_bootstrap_intent(
 // After BEGIN a native HostIntent and any old mutation are forbidden until
 // the SAME SYSTEM task has been retargeted to the new signed-capable owner.
 fn require_offline_bootstrap_request_queue_empty(install_root: &Path) -> Result<(), String> {
+    #[cfg(windows)]
+    windows_admin::preflight_expired_transport_handoff(install_root)?;
     for relative in [
         "exchange/requests/request.pb",
         "exchange/requests/host-intent.pb",

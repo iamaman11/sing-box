@@ -154,25 +154,61 @@ pub(super) async fn dispatch_if_present(root: &Path) -> Result<bool, String> {
     edge_shared_types::host_journal::verify_windows_protected_path_acl(&private_path, true)?;
     let private = windows_signed_host::bounded_regular_file(&private_path, 4096)?;
     let operation = host_admin::operation_id(&request);
-    request_available(&journal, &operation, true, false)?;
-    let (trust, _, _) = windows_signed_host::current_authority(
-        root,
-        &request.machine_id,
-        &operation,
-        request.requested_at_unix,
-        &private,
-    )
-    .await?;
-    if process::sha(&trust.release_set_pb) != request.release_set_sha256 {
-        return Err("HOST_ADMIN_RELEASE_MISMATCH".into());
-    }
-    let identity = root.join("state/secrets").join(ACCESS_IDENTITY_FILE_NAME);
-    let auth = edge_secrets::request_canonical_native_admin_authorization(&raw, &identity).await?;
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map_err(|_| "HOST_ADMIN_CLOCK_INVALID")?
         .as_secs();
-    host_admin::verify_authorization(&request, &auth, &trust.pinned_worker_public_key, now)?;
+    let id: String = process::sha(operation.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let terminal_exists =
+        match fs::symlink_metadata(journal.join(format!("admin-{id}.terminal.pb"))) {
+            Ok(_) => true,
+            Err(e) if e.kind() == io::ErrorKind::NotFound => false,
+            Err(_) => return Err("HOST_ADMIN_TERMINAL_METADATA_UNAVAILABLE_NO_REPLAY".into()),
+        };
+    if host_admin::expired_before_begin(&request, now) || terminal_exists {
+        return deny_before_begin(
+            root,
+            transport,
+            &request,
+            &private,
+            now,
+            "HOST_ADMIN_REQUEST_EXPIRED_BEFORE_BEGIN",
+        );
+    }
+    request_available(&journal, &operation, true, false)?;
+    let prepared: Result<(), String> = async {
+        let (trust, _, _) = windows_signed_host::current_authority(
+            root,
+            &request.machine_id,
+            &operation,
+            request.requested_at_unix,
+            &private,
+        )
+        .await?;
+        if process::sha(&trust.release_set_pb) != request.release_set_sha256 {
+            return Err("HOST_ADMIN_RELEASE_MISMATCH".into());
+        }
+        let identity = root.join("state/secrets").join(ACCESS_IDENTITY_FILE_NAME);
+        let auth =
+            edge_secrets::request_canonical_native_admin_authorization(&raw, &identity).await?;
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| "HOST_ADMIN_CLOCK_INVALID")?
+            .as_secs();
+        host_admin::verify_authorization(&request, &auth, &trust.pinned_worker_public_key, now)?;
+        Ok(())
+    }
+    .await;
+    if let Err(reason) = prepared {
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| "HOST_ADMIN_CLOCK_INVALID")?
+            .as_secs();
+        return deny_before_begin(root, transport, &request, &private, now, &reason);
+    }
     let id: String = process::sha(operation.as_bytes())
         .iter()
         .map(|b| format!("{b:02x}"))
@@ -230,6 +266,99 @@ pub(super) async fn dispatch_if_present(root: &Path) -> Result<bool, String> {
         return Err("HOST_ADMIN_COMPLETION_INCOMPLETE_NO_REPLAY".into());
     }
     println!("native_system_admin=SIGNED_TERMINAL");
+    Ok(true)
+}
+
+/// Code handoff may preserve an expired untrusted transport request ONLY
+/// when the protected journal proves it never reached native BEGIN. The new
+/// SYSTEM owner signs a denial and consumes it; Administrator never deletes it.
+pub(super) fn preflight_expired_transport_handoff(root: &Path) -> Result<(), String> {
+    let path = root.join("exchange/requests/admin-request.pb");
+    match fs::symlink_metadata(&path) {
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(_) => return Err("HOST_ADMIN_HANDOFF_REQUEST_METADATA_UNPROVEN".into()),
+        Ok(_) => {}
+    }
+    let transport =
+        windows_signed_host::TransportRequest::open(&path, host_admin::MAX_BYTES as u64)?;
+    let request = host_admin::decode(&transport.bytes)?;
+    host_admin::validate_for_kind(&request, FleetHostKind::Windows)?;
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "HOST_ADMIN_CLOCK_INVALID")?
+        .as_secs();
+    if request.machine_id != windows_receipt_enrollment::bound_machine_id(root)?
+        || !host_admin::expired_before_begin(&request, now)
+    {
+        return Err("HOST_ADMIN_HANDOFF_REQUIRES_EXPIRED_UNSTARTED_REQUEST".into());
+    }
+    request_available(
+        &root.join("native-host/journal"),
+        &host_admin::operation_id(&request),
+        true,
+        false,
+    )?;
+    Ok(())
+}
+
+fn deny_before_begin(
+    root: &Path,
+    transport: windows_signed_host::TransportRequest,
+    request: &edge_shared_types::FleetNativeAdminRequest,
+    private: &[u8],
+    now: u64,
+    reason: &str,
+) -> Result<bool, String> {
+    let journal = root.join("native-host/journal");
+    let operation = host_admin::operation_id(request);
+    if request.machine_id != windows_receipt_enrollment::bound_machine_id(root)? {
+        return Err("HOST_ADMIN_EXPIRED_MACHINE_MISMATCH".into());
+    }
+    let id: String = process::sha(operation.as_bytes())
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect();
+    let terminal = journal.join(format!("admin-{id}.terminal.pb"));
+    let bytes = match fs::symlink_metadata(&terminal) {
+        Ok(_) => {
+            // A crash after a durable denial can replay only delivery,
+            // never authorization, BEGIN, process or journal creation.
+            for entry in fs::read_dir(&journal).map_err(|_| "HOST_WINDOWS_JOURNAL_UNAVAILABLE")? {
+                let entry = entry.map_err(|_| "HOST_WINDOWS_JOURNAL_UNAVAILABLE")?;
+                edge_shared_types::host_journal::verify_windows_protected_path_acl(
+                    &entry.path(),
+                    true,
+                )?;
+                if entry.path() != terminal {
+                    check_journal_entry(&entry.file_name().to_string_lossy(), &id, true, false)?;
+                }
+            }
+            let bytes = windows_signed_host::bounded_regular_file(&terminal, 140000)?;
+            let receipt = edge_shared_types::FleetNativeAdminResult::decode(bytes.as_slice())
+                .map_err(|_| "HOST_ADMIN_DENIAL_PROTO_INVALID")?;
+            let key = ring::signature::Ed25519KeyPair::from_pkcs8(private)
+                .map_err(|_| "HOST_ADMIN_DENIAL_SIGNER_INVALID")?;
+            use ring::signature::KeyPair;
+            host_admin::verify_receipt(request, &receipt, key.public_key().as_ref())?;
+            if !receipt.rejected_before_begin || receipt.encode_to_vec() != bytes {
+                return Err("HOST_ADMIN_DENIAL_REPLAY_UNPROVEN".into());
+            }
+            bytes
+        }
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {
+            request_available(&journal, &operation, true, false)?;
+            let mut receipt = host_admin::prebegin_rejection(request, now, reason)?;
+            host_admin::sign_receipt(request, &mut receipt, private)?;
+            let bytes = receipt.encode_to_vec();
+            create(&terminal, &bytes)?;
+            bytes
+        }
+        Err(_) => return Err("HOST_ADMIN_DENIAL_METADATA_UNAVAILABLE_NO_REPLAY".into()),
+    };
+    write_atomic(&root.join("exchange/results/admin-result.pb"), &bytes)
+        .map_err(|_| "HOST_ADMIN_DENIAL_DELIVERY_UNKNOWN_NO_REPLAY")?;
+    transport.consume()?;
+    println!("native_system_admin=REJECTED_BEFORE_BEGIN");
     Ok(true)
 }
 
