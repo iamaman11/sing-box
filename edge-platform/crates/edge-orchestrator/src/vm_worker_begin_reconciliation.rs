@@ -429,6 +429,26 @@ fn code_committed_access_preflight_log(logs: &str, active_version: &str) -> bool
             Some(message)
         })
         .collect();
+    if messages
+        .iter()
+        .any(|m| m.starts_with("host_access_") || m.contains("UNKNOWN_NO_REPLAY"))
+    {
+        return false;
+    }
+    // The job contains both the GET-only plan and the apply invocation.
+    // Advisory no-install/no-mutation scalars legitimately occur in both.
+    // Scope terminal evidence to the single confirmed code-deploy block;
+    // duplicate evidence inside that block is still rejected.
+    let anchors: Vec<_> = messages
+        .iter()
+        .enumerate()
+        .filter(|(_, m)| **m == "host_vm_worker_source_readback=EXACT_ACCEPTED_BYTES")
+        .map(|(i, _)| i)
+        .collect();
+    if anchors.len() != 1 {
+        return false;
+    }
+    let messages = &messages[anchors[0]..];
     let expected = [
         "host_vm_worker_source_readback=EXACT_ACCEPTED_BYTES".to_owned(),
         "host_vm_worker_authorizer=CANONICAL_VM_CODE_ACTIVE".into(),
@@ -701,6 +721,36 @@ pub(crate) async fn verify_current_vm_worker_begin(machine_id: &str) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn production_job_plan_and_apply_are_distinct_evidence_scopes() {
+        let actual = include_str!("../tests/fixtures/worker-code-committed-access-preflight.log");
+        assert!(code_committed_access_preflight_log(
+            actual,
+            "cb7b9b0b-844d-4d6a-a9dd-167aa88d2dce"
+        ));
+        assert!(!code_committed_access_preflight_log(
+            actual,
+            "foreign-version"
+        ));
+        let duplicated =
+            format!("{actual}\n2026-10-31T17:45:49Z host_signed_install=NOT_AUTHORIZED\n");
+        assert!(!code_committed_access_preflight_log(
+            &duplicated,
+            "cb7b9b0b-844d-4d6a-a9dd-167aa88d2dce"
+        ));
+        let ambiguous = format!(
+            "{actual}\n2026-10-31T17:45:49Z host_vm_worker_source_readback=EXACT_ACCEPTED_BYTES\n"
+        );
+        assert!(!code_committed_access_preflight_log(
+            &ambiguous,
+            "cb7b9b0b-844d-4d6a-a9dd-167aa88d2dce"
+        ));
+        let unknown_before = format!("2026-10-31T17:44:49Z UNKNOWN_NO_REPLAY\n{actual}");
+        assert!(!code_committed_access_preflight_log(
+            &unknown_before,
+            "cb7b9b0b-844d-4d6a-a9dd-167aa88d2dce"
+        ));
+    }
     #[test]
     fn deployed_code_with_readonly_access_preflight_rejection_requires_complete_evidence() {
         let machine = "application-acceptance-5";
