@@ -755,6 +755,35 @@ assert "worker_trust=NOT_ENROLLED" in identity_owner
 assert "require_explicit_local_administrator_first_use()?;" in win_console
 assert "require_windows_local_administrator_first_use()" in win_console
 native_journal = Path("edge-platform/crates/edge-shared-types/src/host_journal.rs").read_text(encoding="utf-8")
+# Historical P4 failure: a local elevated Administrator passed the explicit
+# offline-bootstrap gate but two READ-ONLY pre-BEGIN observations accidentally
+# demanded the SYSTEM token. The caller is not SYSTEM; prove the immutable
+# journal path/ancestor ACL instead. This must NEVER weaken the SYSTEM-only
+# journal executor, signed host owner, or protected identity files.
+identity_pre_begin = identity_owner.split(
+    "pub(super) fn verify_existing_receipt_identity_slot(", 1
+)[1].split("// An explicit retained-BEGIN", 1)[0]
+trust_pre_begin = trust_owner.split(
+    "pub(super) fn preflight_pending_trust_handoff(", 1
+)[1].split("/// Archive exact predecessor", 1)[0]
+for pre_begin in (identity_pre_begin, trust_pre_begin):
+    assert "require_windows_local_administrator_first_use()" in pre_begin
+    assert re.search(
+        r'verify_windows_protected_path_acl\(\s*&root\.join\("journal"\),\s*false,?\s*\)',
+        pre_begin,
+    )
+    assert 'verify_native_journal_protection(' not in pre_begin
+    assert 'fs::read(root.join(PRIVATE))' not in pre_begin
+assert 'if install_root != Path::new(r"C:\\sing-box")' in trust_pre_begin
+assert 'verify_windows_protected_path_acl(&path, true)' in identity_pre_begin
+assert 'read_only_first_use_stage_for_offline_bootstrap(' in win_console
+assert 'verify_existing_receipt_identity_slot(' in win_console
+assert 'preflight_pending_trust_handoff(' in win_console
+assert 'preflight_pending_trust_handoff(install_root, predecessor)?' in trust_owner
+assert 'verify_native_journal_protection(&root.join("journal"))' in identity_owner
+assert 'verify_native_journal_protection(&root.join("journal"))' in trust_owner
+assert 'verify_native_journal_protection(&journal)' in win_system
+assert 'HOST_WINDOWS_LOCALSYSTEM_REQUIRED' in native_journal
 assert "pub fn require_windows_local_administrator_first_use()" in native_journal
 # Win32 CheckTokenMembership requires an impersonation token, NOT the
 # primary token returned by OpenProcessToken. Keep the exact process-user

@@ -125,8 +125,19 @@ pub(super) fn preflight_pending_trust_handoff(
     predecessor: &WindowsActivationState,
 ) -> Result<(), String> {
     require_windows_local_administrator_first_use().map_err(str::to_owned)?;
+    if install_root != Path::new(r"C:\sing-box") {
+        return Err("HOST_WINDOWS_PENDING_TRUST_ROOT_INVALID".into());
+    }
     let root = install_root.join("native-host");
-    verify_native_journal_protection(&root.join("journal")).map_err(str::to_owned)?;
+    // The pre-BEGIN caller is an elevated local Administrator, NOT the
+    // LocalSystem journal executor. Verify the protected journal directory
+    // ACL and all ancestors; keep the SYSTEM token gate solely in the
+    // dispatcher's verify_native_journal_protection path.
+    edge_shared_types::host_journal::verify_windows_protected_path_acl(
+        &root.join("journal"),
+        false,
+    )
+    .map_err(str::to_owned)?;
     for name in [DONE, TRUST_FILE] {
         if windows_receipt_enrollment::checked_regular_exists(
             &root.join(name),
