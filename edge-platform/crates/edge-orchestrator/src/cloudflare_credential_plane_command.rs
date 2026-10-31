@@ -3932,12 +3932,8 @@ fn host_access_readback(
     if !matches!(vm.worker_binding_count, Some(8 | 9)) {
         return Err("HOST_ACCESS_VM_SIGNER_BINDINGS_UNPROVEN".into());
     }
-    require_exact_secret_bindings(
-        &desired.vm_worker_name,
-        "vm",
-        &vm.worker_secret_bindings,
-    )
-    .map_err(|_| "HOST_ACCESS_VM_SIGNER_BINDINGS_UNPROVEN".to_owned())?;
+    require_exact_secret_bindings(&desired.vm_worker_name, "vm", &vm.worker_secret_bindings)
+        .map_err(|_| "HOST_ACCESS_VM_SIGNER_BINDINGS_UNPROVEN".to_owned())?;
     if vm.worker_secret_bindings.len() != vm.worker_binding_count.unwrap_or_default() {
         return Err("HOST_ACCESS_VM_SIGNER_BINDINGS_UNPROVEN".into());
     }

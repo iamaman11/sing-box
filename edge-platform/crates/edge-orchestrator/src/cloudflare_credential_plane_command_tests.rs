@@ -496,7 +496,6 @@ fn github_token_fingerprint_never_claims_cloudflare_access_write_authority() {
     );
 }
 
-
 fn host_access_vm_bindings(state: &mut CredentialPlaneObservation, count: usize) {
     let vm = state
         .projections
@@ -727,7 +726,9 @@ fn typed_host_access_preserves_vm_and_blocks_invalid_policy_or_paths() {
         "HOST_ACCESS_VM_ACTIVE_VERSION_UNPROVEN"
     );
     observed.projections[vm_index].worker_latest_version_id = Some("vm-version-id".into());
-    observed.projections[vm_index].worker_active_version_ids.clear();
+    observed.projections[vm_index]
+        .worker_active_version_ids
+        .clear();
     assert_eq!(
         host_access_readback(&desired, &observed).unwrap_err(),
         "HOST_ACCESS_VM_ACTIVE_VERSION_UNPROVEN"
