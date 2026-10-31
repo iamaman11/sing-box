@@ -282,6 +282,20 @@ pub(super) async fn apply(
 mod tests {
     use super::*;
     #[test]
+    fn initial_signer_enrollment_remains_a_separate_existing_owner() {
+        let phase = HostAccessReadback::NotProvisionedLegacyVmPreserved;
+        assert_eq!(requires_host_access_transition(&[], phase), Ok(false));
+        assert_eq!(requires_host_access_transition(&[7; 32], phase), Ok(true));
+        assert!(requires_host_access_transition(&[7; 31], phase).is_err());
+        assert_eq!(
+            requires_host_access_transition(
+                &[7; 32],
+                HostAccessReadback::ActiveAwaitSignedHostProof
+            ),
+            Ok(false)
+        );
+    }
+    #[test]
     fn control_identity_is_git_pinned_and_active() {
         let mut desired = super::super::tests::desired();
         let identity = cloudflare::CloudflareApiTokenIdentity {

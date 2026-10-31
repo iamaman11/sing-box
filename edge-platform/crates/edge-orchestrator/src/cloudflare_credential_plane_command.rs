@@ -1766,8 +1766,10 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
     }
     let decision = VmWorkerUpgradeDecision::from_verified_state(state).map_err(str::to_owned)?;
     if state == ProjectionDeliveryState::FixedAb {
-        let access_required = host_access_readback(desired, &before)?
-            != HostAccessReadback::ActiveAwaitSignedHostProof;
+        let access_required = requires_host_access_transition(
+            &host.worker_authority_public_key,
+            host_access_readback(desired, &before)?,
+        )?;
         if plan_only {
             crate::vm_worker_begin_reconciliation::verify_prior_vm_worker_begins(machine_id)
                 .await?;
@@ -1888,6 +1890,11 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
     println!("worker_secret_mutations=0");
     println!("windows_worker_mutations=0");
     println!("host_signed_install=NOT_AUTHORIZED");
+    if host.worker_authority_public_key.is_empty() {
+        // Preserve the existing first signer enrollment path. Host Access
+        // cannot attest a key which has not yet been pinned in protected Git.
+        return Ok(());
+    }
     host_access_cutover(machine_id, release, desired, &read_token, &write_token).await
 }
 
@@ -3918,6 +3925,14 @@ impl HostAccessReadback {
 // matters: /v1/host by itself does not cover /v1/host/identity or /admin.
 const HOST_ACCESS_STAGE_PATTERN: &str = "/__singbox_host_access_stage__/*";
 const HOST_ACCESS_LIVE_PATTERN: &str = "/v1/host/*";
+
+fn requires_host_access_transition(key: &[u8], phase: HostAccessReadback) -> Result<bool, String> {
+    match key.len() {
+        0 => Ok(false),
+        32 => Ok(phase != HostAccessReadback::ActiveAwaitSignedHostProof),
+        _ => Err("HOST_ACCESS_SIGNER_GIT_PIN_INVALID".into()),
+    }
+}
 
 fn require_host_access_control_identity(
     desired: &ProductionCredentialPlaneOwnership,
