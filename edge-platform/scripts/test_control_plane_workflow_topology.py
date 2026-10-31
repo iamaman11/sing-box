@@ -655,6 +655,21 @@ assert "fn vm_unrestricted_root_surface_remains_worker_signed_and_byte_exact()" 
 assert "HOST_ADMIN_PENDING_UNKNOWN_NO_REPLAY" in vm_admin
 assert "arbitrary_vm_admin_never_bypasses_unknown_resource_or_other_admin" in vm_admin
 
+# Elevated Administrator FIRST_USE_STATUS must never open sealed
+# SYSTEM-only trust.pb. The receipt reader already checks caller identity.
+# A second privilege check was selecting the forbidden secret-read fallback.
+trust_source = Path("edge-platform/crates/edge-console/src/windows_trust_enrollment.rs").read_text(encoding="utf-8")
+receipt_source = Path("edge-platform/crates/edge-console/src/windows_receipt_enrollment.rs").read_text(encoding="utf-8")
+assert "require_windows_local_administrator_first_use().map_err(str::to_owned)?;" in receipt_source
+public_trust = trust_source.split("pub(super) fn read_only_first_use_trust_stage(", 1)[1].split("fn complete_trust_marker(", 1)[0]
+assert "read_only_trust_stage_from_public_markers(root, active)" in public_trust
+assert "require_windows_local_administrator_first_use()" not in public_trust
+assert "fs::read(root.join(TRUST_FILE))" not in public_trust
+assert "FleetNativeTrustSnapshot::decode" not in public_trust
+assert "TRUST_RECORDED_UNVERIFIED" in public_trust
+assert "HOST_WINDOWS_FIRST_USE_TRUST_COMPLETION_UNPROVEN" in public_trust
+assert "read_only_trust_stage_never_opens_system_only_snapshot_or_proves_authority" in trust_source
+
 # Native Windows first-use is a single local Administrator transaction.
 # It must never reactivate the old NetworkService-writable unsigned mutation
 # inlet while replacing the EXACT existing LocalSystem task.
