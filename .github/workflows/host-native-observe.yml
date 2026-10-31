@@ -298,8 +298,15 @@ jobs:
             echo 'HOST_VM_LEGACY_DIRECT_MUTATION_AUTHORITY_FORBIDDEN' >&2
             exit 1
           fi
-          if [[ "${COMMAND_BODY}" == *" --deep" || "${HOST_OPERATION}" == RECOVER_PREFLIGHT ||
-                "${HOST_OPERATION}" == APPLY_PREFLIGHT ]]; then
+          if [[ "${HOST_OPERATION}" == RECOVER_PREFLIGHT ]]; then
+            # The newly bridged binary may hold a prior protected trust.pb
+            # with the retired Windows mode field. A diagnostic BEFORE the
+            # code-only trust refresh can fail on that historical registry.
+            # Preserve all root-owner/sudo/no-Docker checks above, then
+            # re-observe AFTER the independently locked host-refresh step.
+            echo 'host_pre_refresh_diagnose=DEFERRED_HISTORICAL_TRUST_COMPAT'
+          elif [[ "${COMMAND_BODY}" == *" --deep" ||
+                  "${HOST_OPERATION}" == APPLY_PREFLIGHT ]]; then
             sudo -n "${owner}" local diagnose
           else
             # Old installed sudoers may not yet grant --fast. Native deep

@@ -483,6 +483,44 @@ async fn enroll_locked(machine_id: &str, release_digest: &str) -> Result<(), Str
     Ok(())
 }
 
+/// Read the PREVIOUS root-protected registry only for code/trust refresh.
+/// Historical accepted releases placed Windows mode in the fleet target.
+/// Today's Git prohibits that duplicate, so NEVER pass this adapter into a
+/// signed native resource admission or a desired state writer. Normalize
+/// only that one retired field, then revalidate every other typed invariant.
+fn previous_registry_for_code_only_refresh(
+    bytes: &[u8],
+) -> Result<edge_shared_types::HostRegistry, String> {
+    if let Ok(registry) = edge_shared_types::decode_host_registry(bytes) {
+        return Ok(registry);
+    }
+    let mut previous = edge_shared_types::HostRegistry::decode(bytes)
+        .map_err(|_| "HOST_REFRESH_PREVIOUS_REGISTRY_INVALID")?;
+    let mut normalized = 0u32;
+    for host in &mut previous.hosts {
+        if host.kind != FleetHostKind::Windows as i32 {
+            continue;
+        }
+        if let Some(target) = host.target.as_mut() {
+            use edge_shared_types::FleetHostMode;
+            match FleetHostMode::try_from(target.windows_mode) {
+                Ok(FleetHostMode::ProxyOnly | FleetHostMode::ManagedTun) => {
+                    target.windows_mode = FleetHostMode::Unspecified as i32;
+                    normalized += 1;
+                }
+                Ok(FleetHostMode::Unspecified) => {}
+                _ => return Err("HOST_REFRESH_PREVIOUS_WINDOWS_MODE_INVALID".into()),
+            }
+        }
+    }
+    if normalized == 0 {
+        return Err("HOST_REFRESH_PREVIOUS_REGISTRY_INVALID".into());
+    }
+    edge_shared_types::validate_host_registry(&previous)
+        .map_err(|_| "HOST_REFRESH_PREVIOUS_REGISTRY_INVALID")?;
+    Ok(previous)
+}
+
 /// Refresh the CURRENT protected main release using the EXISTING native root
 /// owner, with NO SSH, no caller-supplied path, release SHA or trust bytes.
 /// Only this binary can update its root-owned trust and binary. It never
@@ -495,8 +533,7 @@ pub(crate) async fn refresh_current() -> Result<(), String> {
     // A pre-enrollment runner cannot create trust. Only completed root
     // receipt enrollment is eligible for native release refresh.
     let identity = read_existing_receipt_identity(trusted)?;
-    let registry = edge_shared_types::decode_host_registry(&previous.registry_pb)
-        .map_err(|_| "HOST_REFRESH_PREVIOUS_REGISTRY_INVALID")?;
+    let registry = previous_registry_for_code_only_refresh(&previous.registry_pb)?;
     let host = registry
         .hosts
         .iter()
@@ -641,6 +678,53 @@ fn current_published_release_digest(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn previous_trust_adapter_accepts_only_historical_windows_mode() {
+        use edge_shared_types::{
+            FleetHost, FleetHostMode, FleetHostRunState, FleetHostTarget, HostRegistry,
+        };
+        let vm = FleetHost {
+            machine_id: "application-acceptance-5".into(),
+            kind: FleetHostKind::Vm as i32,
+            owner: Some(managed_host::Owner::VmMachineId("application-acceptance-5".into())),
+            desired_spec_path: "infra/production/production.textproto".into(),
+            ..Default::default()
+        };
+        let windows = FleetHost {
+            machine_id: "sing-box-windows-lab".into(),
+            kind: FleetHostKind::Windows as i32,
+            owner: Some(managed_host::Owner::WindowsRunnerName("DESKTOP-0E1F6UQ".into())),
+            windows_runner_label: "sing-box-windows-lab".into(),
+            desired_spec_path: "infra/production/production.textproto".into(),
+            target: Some(FleetHostTarget {
+                run_state: FleetHostRunState::Stopped as i32,
+                windows_mode: FleetHostMode::ProxyOnly as i32,
+            }),
+            ..Default::default()
+        };
+        let prior = HostRegistry {
+            schema_version: 1,
+            hosts: vec![vm, windows],
+            ..Default::default()
+        };
+        assert!(edge_shared_types::decode_host_registry(&prior.encode_to_vec()).is_err());
+        let accepted = previous_registry_for_code_only_refresh(&prior.encode_to_vec()).unwrap();
+        assert_eq!(
+            accepted.hosts[1].target.as_ref().unwrap().windows_mode,
+            FleetHostMode::Unspecified as i32
+        );
+        assert!(edge_shared_types::validate_host_registry(&accepted).is_ok());
+        let mut bad_signer = prior.clone();
+        bad_signer.hosts[0].worker_authority_public_key = vec![1; 31];
+        assert!(previous_registry_for_code_only_refresh(&bad_signer.encode_to_vec()).is_err());
+        let mut invalid_kind = prior.clone();
+        invalid_kind.hosts[1].kind = 999;
+        assert!(previous_registry_for_code_only_refresh(&invalid_kind.encode_to_vec()).is_err());
+        let mut invalid_mode = prior;
+        invalid_mode.hosts[1].target.as_mut().unwrap().windows_mode = 999;
+        assert!(previous_registry_for_code_only_refresh(&invalid_mode.encode_to_vec()).is_err());
+    }
+
     #[test]
     fn refreshed_owner_still_requires_private_root_owned_journal_directory() {
         assert!(private_journal_directory_metadata(true, 0, 0o40700));

@@ -675,6 +675,19 @@ assert first_use_code.index('println!(') < first_use_code.index('stage_result.ma
 assert first_use_code.index('stage_result.map_err(ConsoleError::Command)?;') < first_use_code.index('machine_result.map_err(ConsoleError::Command)?;')
 assert "bound_machine_id(root)\n                        .map_err(ConsoleError::Command)?" not in first_use_code
 
+# PREVIOUS protected VM trust may carry an old Windows mode. Only
+# code/trust refresh can normalize this retired field in memory. Normal
+# native mutation must keep the strict canonical full registry validator.
+host_enroll = Path("edge-platform/crates/edge-agent/src/host_enroll.rs").read_text(encoding="utf-8")
+assert "fn previous_registry_for_code_only_refresh(" in host_enroll
+assert "previous_registry_for_code_only_refresh(&previous.registry_pb)?" in host_enroll
+assert "edge_shared_types::validate_host_registry(&previous)" in host_enroll
+assert "previous_trust_adapter_accepts_only_historical_windows_mode" in host_enroll
+native_bridge_workflow = Path(".github/workflows/host-native-observe.yml").read_text(encoding="utf-8")
+assert "host_pre_refresh_diagnose=DEFERRED_HISTORICAL_TRUST_COMPAT" in native_bridge_workflow
+assert 'sudo -n "${owner}" local host-refresh' in native_bridge_workflow
+assert 'sudo -n "${owner}" local diagnose' in native_bridge_workflow
+
 # Legacy VM Root Agent cannot decode CURRENT Windows signer/mode registry,
 # but its signed ADMIN protocol is release-pinned to its historical trust.
 # Permit the OLD pin ONLY for this literal, no-stdin, no-environment
