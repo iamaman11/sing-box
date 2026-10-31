@@ -558,9 +558,11 @@ fn exact_worker_module_from_value(
         .get("bindings")
         .and_then(Value::as_array)
         .ok_or(error)?;
-    if bindings.len() != 8 {
-        return Err(error.into());
-    }
+    let scope = match bindings.len() {
+        8 => WorkerCodeBindingScope::VmHostSignerGitHubApp,
+        9 => WorkerCodeBindingScope::VmHostSignerRouteAccess,
+        _ => return Err(error.into()),
+    };
     let mut secret_bindings = bindings
         .iter()
         .cloned()
@@ -574,10 +576,7 @@ fn exact_worker_module_from_value(
         return Err(error.into());
     }
     secret_bindings.sort_by(|a, b| a.name.cmp(&b.name));
-    secret_bindings.dedup_by(|a, b| a.name == b.name);
-    if secret_bindings.len() != 8 {
-        return Err(error.into());
-    }
+    exact_binding_inherit_metadata(tag, scope, &secret_bindings).map_err(|_| error.to_owned())?;
     Ok(CloudflareWorkerExactModule {
         id: worker_version_id.to_owned(),
         created_on: created_on.to_owned(),
@@ -3983,11 +3982,22 @@ mod tests {
         assert!(access_application_from_value(serde_json::json!({"id": "app-1"})).is_err());
     }
     #[test]
-    fn exact_version_module_requires_version_bound_script_and_eight_secrets() {
-        let bindings: Vec<Value> = (0..8)
-            .map(|i| {
+    fn exact_version_module_requires_version_bound_script_and_exact_secrets() {
+        let names = [
+            "EDGE_CREDENTIAL_BUNDLE_A",
+            "EDGE_CREDENTIAL_BUNDLE_B",
+            "EDGE_HOST_SIGNING_PKCS8_BASE64",
+            "EDGE_HOST_SIGNING_KEY_ID",
+            "EDGE_HOST_GITHUB_ACTOR_ID",
+            "EDGE_HOST_ACCESS_ISSUER",
+            "EDGE_HOST_ACCESS_AUD",
+            "EDGE_HOST_GITHUB_APP_PKCS8_BASE64",
+        ];
+        let bindings: Vec<Value> = names
+            .into_iter()
+            .map(|name| {
                 serde_json::json!({
-                    "name": format!("SECRET_{i}"), "type": "secret_text"
+                    "name": name, "type": "secret_text"
                 })
             })
             .collect();
@@ -4003,6 +4013,25 @@ mod tests {
         let parsed = exact_worker_module_from_value(original.clone(), "exact-version").unwrap();
         assert_eq!(parsed.id, "exact-version");
         assert_eq!(parsed.secret_bindings.len(), 8);
+        let mut seven = original.clone();
+        seven["bindings"].as_array_mut().unwrap().pop();
+        assert!(exact_worker_module_from_value(seven, "exact-version").is_err());
+        let mut nine = original.clone();
+        nine["bindings"]
+            .as_array_mut()
+            .unwrap()
+            .push(serde_json::json!({
+                "name": "EDGE_HOST_ROUTE_ACCESS_AUD", "type": "secret_text"
+            }));
+        assert_eq!(
+            exact_worker_module_from_value(nine.clone(), "exact-version")
+                .unwrap()
+                .secret_bindings
+                .len(),
+            9
+        );
+        nine["bindings"][8]["name"] = serde_json::json!("UNEXPECTED_SECRET");
+        assert!(exact_worker_module_from_value(nine, "exact-version").is_err());
         for (pointer, replacement) in [
             ("/id", serde_json::json!("foreign")),
             ("/main_module", serde_json::json!("foreign.js")),
@@ -4010,7 +4039,10 @@ mod tests {
             ("/modules/0/name", serde_json::json!("foreign.js")),
             ("/modules/0/content_base64", serde_json::json!("")),
             ("/bindings/0/type", serde_json::json!("plain_text")),
-            ("/bindings/0/name", serde_json::json!("SECRET_1")),
+            (
+                "/bindings/0/name",
+                serde_json::json!("EDGE_CREDENTIAL_BUNDLE_B"),
+            ),
         ] {
             let mut altered = original.clone();
             *altered.pointer_mut(pointer).unwrap() = replacement;

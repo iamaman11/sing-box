@@ -199,6 +199,7 @@ pub async fn run_delivery(
             // of its encrypted secret. Cloudflare /verify returns no scopes.
             // A token fingerprint is NOT authorization for any provider PUT.
             for (label, variable) in [
+                ("control", "CLOUDFLARE_CONTROL_TOKEN"),
                 ("worker", "CLOUDFLARE_CREDENTIAL_ROTATION_TOKEN"),
                 ("access", "CLOUDFLARE_ACCESS_POLICY_TOKEN"),
             ] {
