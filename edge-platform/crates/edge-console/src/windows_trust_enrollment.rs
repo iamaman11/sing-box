@@ -846,8 +846,10 @@ fn verify_first_use_published_bytes(
     {
         return Err("HOST_WINDOWS_TRUST_PUBLISHED_RELEASE_SOURCE_MISMATCH".into());
     }
-    if registry.is_empty() || registry.len() > MAX_REGISTRY
-        || spec.is_empty() || spec.len() > MAX_SPEC
+    if registry.is_empty()
+        || registry.len() > MAX_REGISTRY
+        || spec.is_empty()
+        || spec.len() > MAX_SPEC
     {
         return Err("HOST_WINDOWS_TRUST_PUBLISHED_INPUT_SIZE_INVALID".into());
     }
@@ -871,8 +873,10 @@ pub(super) async fn fetch_release_bound_first_use_git(
 ) -> Result<(Vec<u8>, Vec<u8>, Vec<u8>), String> {
     if !exact_git_revision(&active.source_revision)
         || active.release_set_sha256.len() != 64
-        || !active.release_set_sha256.bytes().all(|b|
-            b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
+        || !active
+            .release_set_sha256
+            .bytes()
+            .all(|b| b.is_ascii_digit() || (b'a'..=b'f').contains(&b))
     {
         return Err("HOST_WINDOWS_TRUST_INSTALLED_GIT_PIN_INVALID".into());
     }
@@ -895,9 +899,7 @@ pub(super) async fn fetch_release_bound_first_use_git(
     )?;
     let local_release = fs::read(Path::new(&active.release_dir).join("release-set.pb"))
         .map_err(|_| "HOST_WINDOWS_TRUST_LOCAL_RELEASE_UNREADABLE")?;
-    verify_first_use_published_bytes(
-        active, &release, &local_release, &registry, &sidecar, &spec
-    )?;
+    verify_first_use_published_bytes(active, &release, &local_release, &registry, &sidecar, &spec)?;
     Ok((release, registry, spec))
 }
 
@@ -1000,8 +1002,7 @@ pub(super) async fn dispatch_if_needed(install_root: &Path) -> Result<(), String
     }
     let private =
         fs::read(&key_path).map_err(|_| "HOST_WINDOWS_TRUST_PRIVATE_IDENTITY_UNREADABLE")?;
-    let (release_pb, registry_pb, spec) =
-        fetch_release_bound_first_use_git(&active).await?;
+    let (release_pb, registry_pb, spec) = fetch_release_bound_first_use_git(&active).await?;
     let machine_id = windows_receipt_enrollment::bound_machine_id(install_root)?;
     let trust = match exact_windows_registration(
         &machine_id,
@@ -1097,7 +1098,11 @@ mod tests {
     #[test]
     fn first_use_published_release_proof_rejects_drift_and_registry_tamper() {
         let source = "a".repeat(40);
-        let release = ReleaseSet { schema_version: 7, source_revision: source.clone(), ..Default::default() };
+        let release = ReleaseSet {
+            schema_version: 7,
+            source_revision: source.clone(),
+            ..Default::default()
+        };
         let bytes = release.encode_to_vec();
         let active = WindowsActivationState {
             release_set_sha256: sha_hex(&bytes),
@@ -1122,7 +1127,14 @@ mod tests {
             Err("HOST_WINDOWS_TRUST_PUBLISHED_RELEASE_SOURCE_MISMATCH".into())
         );
         assert_eq!(
-            verify_first_use_published_bytes(&active, &bytes, &bytes, b"registry", b"wrong", b"spec"),
+            verify_first_use_published_bytes(
+                &active,
+                &bytes,
+                &bytes,
+                b"registry",
+                b"wrong",
+                b"spec"
+            ),
             Err("HOST_WINDOWS_TRUST_PUBLISHED_REGISTRY_DIGEST_MISMATCH".into())
         );
     }
