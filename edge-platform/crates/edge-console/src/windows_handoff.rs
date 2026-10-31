@@ -674,13 +674,13 @@ mod tests {
     }
     #[test]
     fn windows_handoff_waits_for_real_process_without_killing_it() {
-        let mut child = Command::new("powershell.exe")
-            .args([
-                "-NoProfile",
-                "-NonInteractive",
-                "-Command",
-                "Start-Sleep -Milliseconds 800",
-            ])
+        // A native child stays alive until the parent supplies stdin. No CLR
+        // startup or sleep duration can race the timeout assertion on CI.
+        let mut child = Command::new("cmd.exe")
+            .args(["/D", "/C", "set /p fixture= & exit /b 0"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
             .spawn()
             .unwrap();
         let handle = Handle(unsafe { OpenProcess(PROCESS_SYNCHRONIZE, 0, child.id()) });
@@ -690,6 +690,7 @@ mod tests {
             "HOST_WINDOWS_TASK_QUIESCENCE_TIMEOUT_NO_REPLAY"
         );
         assert!(child.try_wait().unwrap().is_none());
+        child.stdin.take().unwrap().write_all(b"\r\n").unwrap();
         wait_handle(&handle, Instant::now() + Duration::from_secs(10)).unwrap();
         assert!(child.wait().unwrap().success());
     }
