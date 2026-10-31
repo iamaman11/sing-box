@@ -41,6 +41,8 @@ use edge_secrets::{
 };
 use edge_singbox::{STAGE2_CLASH_API_PORT, STAGE2_DESKTOP_PROXY_PORT, STAGE2_WSL_PROXY_PORT};
 use error::ConsoleError;
+#[cfg(windows)]
+use prost::Message;
 use rusqlite::Connection;
 use std::env;
 #[cfg(windows)]
@@ -53,6 +55,8 @@ use std::process::{Command, ExitCode, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+#[cfg(windows)]
+use edge_shared_types::WindowsSystemDispatchFailure;
 use edge_shared_types::controller_service_client::ControllerServiceClient;
 use edge_shared_types::{
     ControllerStatus, CredentialTransitionAction, DoctorRequest, DoctorResponse, Empty,
@@ -153,6 +157,13 @@ async fn main() -> ExitCode {
         }
     };
     let command = parsed.command_name();
+    // The existing Task Scheduler executable has no captured stderr. Preserve
+    // an error code in the SAME protected native journal, only under SYSTEM.
+    #[cfg(windows)]
+    let system_dispatch_root = match &parsed.command {
+        Some(cli::Command::PrivilegedDispatch(args)) => Some(PathBuf::from(&args.install_root)),
+        _ => None,
+    };
     tracing::info!(
         component = "edge-console",
         correlation_id = %telemetry.id(),
@@ -173,6 +184,17 @@ async fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Err(err) => {
+            #[cfg(windows)]
+            if let Some(root) = system_dispatch_root.as_deref() {
+                if let Err(reason) = persist_system_dispatch_failure(root, &err.to_string()) {
+                    tracing::warn!(
+                        component = "edge-console",
+                        event = "system.dispatch_failure_evidence_unavailable",
+                        reason,
+                        "SYSTEM error not durably recorded; do not infer cause from task exit code"
+                    );
+                }
+            }
             tracing::error!(
                 component = "edge-console",
                 correlation_id = %telemetry.id(),
@@ -184,6 +206,210 @@ async fn main() -> ExitCode {
             eprintln!("{err}");
             ExitCode::from(1)
         }
+    }
+}
+
+// Evidence-only Windows first-use diagnosis. This is NOT a second journal,
+// an authorization receipt, or a retry token. It is immutable and lives in
+// the existing protected native-host/journal under the sole SYSTEM owner.
+#[cfg(windows)]
+fn system_dispatch_failure_path(root: &Path, release: &str) -> PathBuf {
+    root.join("native-host")
+        .join("journal")
+        .join(format!("system-dispatch-failure-{release}.pb"))
+}
+
+#[cfg(windows)]
+fn system_dispatch_failure_stage_and_code(message: &str) -> (String, String) {
+    let (phase, detail) = message
+        .split_once(": ")
+        .unwrap_or(("SYSTEM_ENTRYPOINT", message));
+    let phase = match phase {
+        "SYSTEM_OWNER_LOCK" | "SYSTEM_RECEIPT" | "SYSTEM_TRUST" | "SYSTEM_ADMIN"
+        | "SYSTEM_SIGNED_HOST" => phase,
+        _ => "SYSTEM_ENTRYPOINT",
+    };
+    let code = detail
+        .split(|c: char| !(c.is_ascii_uppercase() || c.is_ascii_digit() || c == '_'))
+        .find(|part| {
+            part.len() <= 128
+                && (part.starts_with("HOST_")
+                    || part.starts_with("WINDOWS_")
+                    || part.starts_with("OFFLINE_")
+                    || part.starts_with("SYSTEM_"))
+        })
+        .unwrap_or("SYSTEM_ERROR_CODE_UNCLASSIFIED");
+    (phase.to_owned(), code.to_owned())
+}
+
+#[cfg(windows)]
+fn system_dispatch_failure_record(
+    release: &str,
+    message: &str,
+    observed_at_unix: u64,
+) -> Result<WindowsSystemDispatchFailure, &'static str> {
+    if release.len() != 64
+        || !release
+            .bytes()
+            .all(|b| b.is_ascii_hexdigit() && !b.is_ascii_uppercase())
+        || observed_at_unix == 0
+    {
+        return Err("HOST_WINDOWS_SYSTEM_FAILURE_RELEASE_OR_CLOCK_INVALID");
+    }
+    let (phase, error_code) = system_dispatch_failure_stage_and_code(message);
+    Ok(WindowsSystemDispatchFailure {
+        schema_version: 1,
+        release_set_sha256: release.to_owned(),
+        phase,
+        error_code,
+        observed_at_unix,
+        error_sha256: ring::digest::digest(&ring::digest::SHA256, message.as_bytes())
+            .as_ref()
+            .to_vec(),
+    })
+}
+
+#[cfg(windows)]
+fn persist_system_dispatch_failure(root: &Path, message: &str) -> Result<(), &'static str> {
+    if root != Path::new(r"C:\sing-box") {
+        return Err("HOST_WINDOWS_SYSTEM_FAILURE_ROOT_INVALID");
+    }
+    let journal = root.join("native-host").join("journal");
+    // Token+ACL verification must happen BEFORE even attempting to create
+    // diagnostic evidence. Administrator and NetworkService cannot write it.
+    edge_shared_types::host_journal::verify_native_journal_protection(&journal)?;
+    let installed = load_verified_activation(root)
+        .map_err(|_| "HOST_WINDOWS_SYSTEM_FAILURE_ACTIVATION_UNPROVEN")?;
+    let path = system_dispatch_failure_path(root, &installed.release_set_sha256);
+    match fs::symlink_metadata(&path) {
+        Ok(_) => {
+            // First error wins. Never overwrite or erase historical evidence.
+            edge_shared_types::host_journal::verify_windows_protected_path_acl(&path, true)?;
+            return Ok(());
+        }
+        Err(err) if err.kind() == io::ErrorKind::NotFound => {}
+        Err(_) => return Err("HOST_WINDOWS_SYSTEM_FAILURE_METADATA_UNAVAILABLE"),
+    }
+    let when = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|_| "HOST_WINDOWS_SYSTEM_FAILURE_CLOCK_UNAVAILABLE")?
+        .as_secs();
+    let record = system_dispatch_failure_record(&installed.release_set_sha256, message, when)?;
+    let bytes = record.encode_to_vec();
+    if bytes.is_empty() || bytes.len() > 512 {
+        return Err("HOST_WINDOWS_SYSTEM_FAILURE_SIZE_INVALID");
+    }
+    // A concurrent first writer is never overwritten. It must be read back
+    // and adjudicated rather than retried with a different operation ID.
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|_| "HOST_WINDOWS_SYSTEM_FAILURE_CREATE_UNAVAILABLE")?;
+    edge_shared_types::host_journal::verify_windows_protected_path_acl(&path, true)?;
+    file.write_all(&bytes)
+        .and_then(|_| file.sync_all())
+        .map_err(|_| "HOST_WINDOWS_SYSTEM_FAILURE_SYNC_UNCERTAIN")?;
+    edge_shared_types::host_journal::verify_windows_protected_path_acl(&path, true)?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn read_system_dispatch_failure(
+    root: &Path,
+    release: &str,
+) -> Result<Option<WindowsSystemDispatchFailure>, &'static str> {
+    if root != Path::new(r"C:\sing-box") {
+        return Err("HOST_WINDOWS_SYSTEM_FAILURE_ROOT_INVALID");
+    }
+    let journal = root.join("native-host").join("journal");
+    edge_shared_types::host_journal::verify_windows_protected_path_acl(&journal, false)?;
+    let path = system_dispatch_failure_path(root, release);
+    let meta = match fs::symlink_metadata(&path) {
+        Ok(meta) => meta,
+        Err(err) if err.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(_) => return Err("HOST_WINDOWS_SYSTEM_FAILURE_METADATA_UNAVAILABLE"),
+    };
+    edge_shared_types::host_journal::verify_windows_protected_path_acl(&path, true)?;
+    if !meta.file_type().is_file() || meta.len() == 0 || meta.len() > 512 {
+        return Err("HOST_WINDOWS_SYSTEM_FAILURE_FILE_INVALID");
+    }
+    let bytes = fs::read(&path).map_err(|_| "HOST_WINDOWS_SYSTEM_FAILURE_READ_UNAVAILABLE")?;
+    if bytes.len() as u64 != meta.len() {
+        return Err("HOST_WINDOWS_SYSTEM_FAILURE_SIZE_CHANGED");
+    }
+    let result = WindowsSystemDispatchFailure::decode(bytes.as_slice())
+        .map_err(|_| "HOST_WINDOWS_SYSTEM_FAILURE_PROTO_INVALID")?;
+    if result.schema_version != 1
+        || result.release_set_sha256 != release
+        || result.observed_at_unix == 0
+        || result.error_sha256.len() != 32
+        || !matches!(
+            result.phase.as_str(),
+            "SYSTEM_OWNER_LOCK"
+                | "SYSTEM_RECEIPT"
+                | "SYSTEM_TRUST"
+                | "SYSTEM_ADMIN"
+                | "SYSTEM_SIGNED_HOST"
+                | "SYSTEM_ENTRYPOINT"
+        )
+        || result.error_code.is_empty()
+        || result.error_code.len() > 128
+        || !result
+            .error_code
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+        || result.encode_to_vec() != bytes
+    {
+        return Err("HOST_WINDOWS_SYSTEM_FAILURE_PROOF_INVALID");
+    }
+    Ok(Some(result))
+}
+
+#[cfg(all(test, windows))]
+mod windows_system_dispatch_failure_tests {
+    use super::*;
+
+    #[test]
+    fn windows_system_dispatch_failure_protobuf_is_bounded_redacted_and_typed() {
+        let release = "a".repeat(64);
+        let sensitive =
+            "SYSTEM_TRUST: HOST_WINDOWS_TRUST_PRIVATE_IDENTITY_UNREADABLE; token=do-not-store";
+        let record = system_dispatch_failure_record(&release, sensitive, 12345).unwrap();
+        assert_eq!(record.phase, "SYSTEM_TRUST");
+        assert_eq!(
+            record.error_code,
+            "HOST_WINDOWS_TRUST_PRIVATE_IDENTITY_UNREADABLE"
+        );
+        assert_eq!(record.error_sha256.len(), 32);
+        let bytes = record.encode_to_vec();
+        assert!(bytes.len() < 512);
+        assert!(!String::from_utf8_lossy(&bytes).contains("do-not-store"));
+        assert_eq!(
+            WindowsSystemDispatchFailure::decode(bytes.as_slice()).unwrap(),
+            record
+        );
+    }
+
+    #[test]
+    fn windows_system_dispatch_failure_denies_unpinned_and_unclassified_error_detail() {
+        assert!(system_dispatch_failure_record("a", "SYSTEM_TRUST: HOST_OK", 1).is_err());
+        assert!(system_dispatch_failure_record(&"a".repeat(64), "error", 0).is_err());
+        let record = system_dispatch_failure_record(
+            &"b".repeat(64),
+            "SYSTEM_OWNER_LOCK: access denied secret",
+            42,
+        )
+        .unwrap();
+        assert_eq!(record.phase, "SYSTEM_OWNER_LOCK");
+        assert_eq!(record.error_code, "SYSTEM_ERROR_CODE_UNCLASSIFIED");
+        assert_eq!(
+            system_dispatch_failure_stage_and_code(
+                "SYSTEM_RECEIPT: HOST_WINDOWS_RECEIPT_ENROLL_MARKER_UNREADABLE"
+            )
+            .0,
+            "SYSTEM_RECEIPT"
+        );
     }
 }
 
@@ -556,27 +782,38 @@ async fn dispatch_privileged_request(
     // One process-wide owner for the existing scheduled task. A second task
     // instance must never race enrollment, signed host or admin admission.
     #[cfg(windows)]
-    let _owner_lock = windows_admin::owner_lock(install_root)?;
+    let _owner_lock = windows_admin::owner_lock(install_root)
+        .map_err(|reason| format!("SYSTEM_OWNER_LOCK: {reason}"))?;
     // The same periodic LocalSystem task first handles an explicit protected
     // local-Administrator first-use IDENTITY marker, never SCM/network actions.
     // No runner writes to native-host; key material is generated by SYSTEM.
     #[cfg(windows)]
-    if windows_receipt_enrollment::dispatch_if_present(install_root)? {
+    if windows_receipt_enrollment::dispatch_if_present(install_root)
+        .map_err(|reason| format!("SYSTEM_RECEIPT: {reason}"))?
+    {
         return Ok(());
     }
     // Git is the only trusted source. This optional first-use stage runs in
     // the same SYSTEM dispatcher and creates trust.pb once, without a runner
     // supplied key, alternate task, or network resource effect.
     #[cfg(windows)]
-    windows_trust_enrollment::dispatch_if_needed(install_root).await?;
+    windows_trust_enrollment::dispatch_if_needed(install_root)
+        .await
+        .map_err(|reason| format!("SYSTEM_TRUST: {reason}"))?;
     #[cfg(windows)]
-    if windows_admin::dispatch_if_present(install_root).await? {
+    if windows_admin::dispatch_if_present(install_root)
+        .await
+        .map_err(|reason| format!("SYSTEM_ADMIN: {reason}"))?
+    {
         return Ok(());
     }
     // The SAME installed SYSTEM Task accepts bounded Worker-signed native
     // HostIntent, never a runner's legacy mutation code or arbitrary PowerShell.
     #[cfg(windows)]
-    if windows_signed_host::dispatch_if_present(install_root).await? {
+    if windows_signed_host::dispatch_if_present(install_root)
+        .await
+        .map_err(|reason| format!("SYSTEM_SIGNED_HOST: {reason}"))?
+    {
         return Ok(());
     }
     let request_path = privileged_request_path(install_root);
