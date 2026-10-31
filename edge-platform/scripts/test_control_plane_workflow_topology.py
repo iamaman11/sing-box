@@ -105,6 +105,38 @@ assert 'vm-credential-proof "${TARGET_MACHINE}"' in capability
 assert "host_vm_worker_live_source=GIT_PIN_EXACT_ACCESS_GET_PROVEN" in capability
 assert "host_vm_worker_live_source=BLOCKED" in capability
 assert "host_worker_mutations=0" in capability
+# GitHub job-level concurrency retains only ONE running and ONE pending
+# participant per group; a third simultaneous publisher cancels the older
+# pending report even with cancel-in-progress=false. Host Access and hosted
+# VM capability GET may run concurrently, but native signed reconciliation
+# must wait for the hosted capability JSON to be written or explicitly fail.
+host_access = router.split("  host_access_boundary:\n", 1)[1].split("\n  host_capabilities:\n", 1)[0]
+native_dispatch = router.split("  host_observe:\n", 1)[1].split("\n  host_report:\n", 1)[0]
+def require_ordered_native_report(dispatch):
+    assert "needs: [host, host_report, host_worker_authorizer, host_capabilities]" in dispatch
+    assert "always() && !cancelled()" in dispatch
+    assert "needs.host.result == 'success'" in dispatch
+    assert "needs.host_report.result == 'success'" in dispatch
+    assert "uses: ./.github/workflows/host-native-observe.yml" in dispatch
+require_ordered_native_report(native_dispatch)
+for missing in (
+    native_dispatch.replace(
+        "host_worker_authorizer, host_capabilities]", "host_worker_authorizer]", 1),
+    native_dispatch.replace("always() && !cancelled()", "true", 1),
+    native_dispatch.replace("needs.host_report.result == 'success'", "true", 1),
+):
+    try:
+        require_ordered_native_report(missing)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("UNSERIALIZED_HOST_DEEP_NATIVE_REPORT_NOT_REJECTED")
+assert "group: host-deep-report-${{ github.event.comment.id }}" in host_access
+assert "group: host-deep-report-${{ github.event.comment.id }}" in capability
+assert "group: host-deep-report-${{ inputs.source_comment_id }}" in native
+assert "cancel-in-progress: false" in host_access
+assert "cancel-in-progress: false" in capability
+assert "cancel-in-progress: false" in native
 assert "host_provider_mutations=0" in capability
 assert "host_diagnostic_summary.py" in capability
 assert "report_comment_id: ${{ needs.host_report.outputs.comment_id }}" in router
