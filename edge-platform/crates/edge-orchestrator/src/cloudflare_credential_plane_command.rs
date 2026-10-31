@@ -208,10 +208,8 @@ pub async fn run_delivery(
                 } else {
                     cloudflare::verify_api_token(&value).await.ok()
                 };
-                let (status, fingerprint) = github_provider_token_identity_proof(
-                    !value.is_empty(),
-                    evidence.as_ref(),
-                );
+                let (status, fingerprint) =
+                    github_provider_token_identity_proof(!value.is_empty(), evidence.as_ref());
                 println!("host_access_{label}_token_identity={status}");
                 println!("host_access_{label}_token_fingerprint={fingerprint}");
             }
@@ -3799,7 +3797,10 @@ fn github_provider_token_identity_proof(
     if observed.status != "active" {
         return ("NOT_ACTIVE", "NONE".to_owned());
     }
-    ("ACTIVE_IDENTITY_ONLY", sha256_hex(observed.id.as_bytes())[..16].to_owned())
+    (
+        "ACTIVE_IDENTITY_ONLY",
+        sha256_hex(observed.id.as_bytes())[..16].to_owned(),
+    )
 }
 
 // Shared Host Authorization is independent of either credential projection.
