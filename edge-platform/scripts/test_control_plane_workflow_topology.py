@@ -682,7 +682,7 @@ assert "bound_machine_id(root)\n                        .map_err(ConsoleError::C
 # observable rather than skipping all downstream native evidence.
 workflow_deep = Path(".github/workflows/edge-control-plane.yml").read_text(encoding="utf-8")
 access_job = workflow_deep.split("  host_access_boundary:", 1)[1].split("  host_capabilities:", 1)[0]
-capabilities_job = workflow_deep.split("  host_capabilities:", 1)[1].split("\n  ", 1)[0]
+capabilities_job = workflow_deep.split("  host_capabilities:", 1)[1].split("\n  host_first_use:", 1)[0]
 observe_job = workflow_deep.split("  host_observe:", 1)[1].split("  host_report:", 1)[0]
 assert "group: host-deep-report-${{ github.event.comment.id }}" in access_job
 assert "group: host-deep-report-${{ github.event.comment.id }}" in capabilities_job
