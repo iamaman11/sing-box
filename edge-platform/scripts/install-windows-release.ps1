@@ -467,6 +467,35 @@ function Get-ConnectWindowsGitHubHttpCode {
     return ''
 }
 
+
+# Only the existing local one-shot native bootstrap may inherit this temporary
+# GitHub authentication. edge-console.exe starts a NEW pwsh -StageOnly before
+# BEGIN, and another pwsh release activation after BEGIN. A PowerShell
+# variable/cache alone cannot cross those process boundaries.
+function Invoke-AuthenticatedNativeBootstrap {
+    param(
+        [Parameter(Mandatory)] [string]$Console,
+        [Parameter(Mandatory)] [string[]]$Arguments,
+        [Parameter(Mandatory)] [string]$GitHubAuthToken
+    )
+    if ([string]::IsNullOrWhiteSpace($GitHubAuthToken) -or
+        $GitHubAuthToken.Length -lt 16 -or $GitHubAuthToken.Length -gt 512 -or
+        $GitHubAuthToken -cnotmatch '^[A-Za-z0-9_-]+$') {
+        throw 'OFFLINE_BOOTSTRAP_GITHUB_AUTH_REQUIRED_BEFORE_NATIVE_BEGIN'
+    }
+    $prior = [Environment]::GetEnvironmentVariable('EDGE_GITHUB_TOKEN', 'Process')
+    try {
+        [Environment]::SetEnvironmentVariable('EDGE_GITHUB_TOKEN', $GitHubAuthToken, 'Process')
+        $global:LASTEXITCODE = 0
+        & $Console @Arguments
+        if ($LASTEXITCODE -ne 0) {
+            throw 'OFFLINE_BOOTSTRAP_UNKNOWN: native result uncertain, DO NOT REPLAY'
+        }
+    } finally {
+        [Environment]::SetEnvironmentVariable('EDGE_GITHUB_TOKEN', $prior, 'Process')
+    }
+}
+
 function Get-GitHubHeaders {
     param([string]$Accept = "application/vnd.github+json")
     $headers = @{
@@ -1282,8 +1311,7 @@ if ($StageOnly -or $BootstrapNow) {
                 "--expected-current-release-set-sha256", $ExpectedCurrentReleaseSetSha256
             )
         }
-        & $console @bootstrapArgs
-        if ($LASTEXITCODE -ne 0) { throw 'OFFLINE_BOOTSTRAP_UNKNOWN: native result uncertain, DO NOT REPLAY' }
+        Invoke-AuthenticatedNativeBootstrap -Console $console -Arguments $bootstrapArgs -GitHubAuthToken $GitHubToken
         Write-Output 'offline_bootstrap=RETURNED_FROM_NATIVE_OWNER'
         if ($EnrollReceipt) {
             Write-Output 'w4_receipt_identity=LOCAL_ADMIN_REQUEST_DURABLE'

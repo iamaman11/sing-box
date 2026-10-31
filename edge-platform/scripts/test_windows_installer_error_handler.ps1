@@ -18,6 +18,7 @@ $functionNames = @(
     'Get-ConnectWindowsGitHubHttpCode',
     'Resolve-ConnectWindowsGitHubToken',
     'Assert-ConnectWindowsGitHubBudget',
+    'Invoke-AuthenticatedNativeBootstrap',
     'Get-GitHubHeaders',
     'Get-GitHubTransportOptions',
     'Invoke-GitHubJsonGet',
@@ -438,6 +439,72 @@ if ($source -cnotmatch [regex]::Escape('$global:SingBoxConnectReadCache = @{}') 
 $global:SingBoxConnectReadCache = $null
 Write-Output 'windows_connect_authenticated_snapshot=PASS'
 Write-Output 'windows_connect_github_rate_and_auth_negative_matrix=PASS'
+
+
+# Full missed process boundary: the native console starts a NEW pwsh process.
+# Only synthetic credential values; no GitHub, SCM, key, journal or network.
+$previousProcessToken = [Environment]::GetEnvironmentVariable('EDGE_GITHUB_TOKEN','Process')
+try {
+    [Environment]::SetEnvironmentVariable('EDGE_GITHUB_TOKEN', 'fixture-existing', 'Process')
+    $fixtureToken = 'github_pat_' + ('Z' * 44)
+    function Invoke-MockedNativeBootstrap {
+        param([string]$Mode)
+        if ($env:EDGE_GITHUB_TOKEN -cne $fixtureToken) {
+            throw 'NATIVE_BOOTSTRAP_DID_NOT_INHERIT_AUTH'
+        }
+        $nested = @(& (Join-Path $PSHOME 'pwsh.exe') -NoProfile -NonInteractive -Command @'
+if ($env:EDGE_GITHUB_TOKEN -cmatch '^github_pat_Z{44}
+
+Write-Output 'windows_installer_offline_direct_github_transport=PASS'
+Write-Output 'windows_installer_missing_response=PASS'
+Write-Output 'windows_installer_http_status_classification=PASS'
+Write-Output 'windows_installer_original_transport_error=PASS'
+Write-Output 'windows_installer_no_network_mutation=PASS'
+) {
+    Write-Output 'NESTED_AUTH_PASS'
+} else {
+    exit 17
+}
+'@)
+        if ($LASTEXITCODE -ne 0 -or $nested.Count -ne 1 -or
+            [string]$nested[0] -cne 'NESTED_AUTH_PASS') {
+            throw 'FRESH_PWSH_CHILD_DID_NOT_INHERIT_AUTH'
+        }
+        if ($Mode -ceq 'fail') { $global:LASTEXITCODE = 1 }
+        else { $global:LASTEXITCODE = 0 }
+    }
+    Invoke-AuthenticatedNativeBootstrap -Console 'Invoke-MockedNativeBootstrap' -Arguments @('success') -GitHubAuthToken $fixtureToken
+    if ($env:EDGE_GITHUB_TOKEN -cne 'fixture-existing') {
+        throw 'AUTH_ENV_NOT_RESTORED_AFTER_NATIVE_SUCCESS'
+    }
+    $failure = 'NONE'
+    try {
+        Invoke-AuthenticatedNativeBootstrap -Console 'Invoke-MockedNativeBootstrap' -Arguments @('fail') -GitHubAuthToken $fixtureToken
+    } catch {
+        $failure = $_.Exception.Message
+    }
+    if ($failure -cne 'OFFLINE_BOOTSTRAP_UNKNOWN: native result uncertain, DO NOT REPLAY') {
+        throw "NATIVE_EXIT_NOT_REJECTED: $failure"
+    }
+    if ($env:EDGE_GITHUB_TOKEN -cne 'fixture-existing') {
+        throw 'AUTH_ENV_NOT_RESTORED_AFTER_NATIVE_FAILURE'
+    }
+    $invalid = 'NONE'
+    try {
+        Invoke-AuthenticatedNativeBootstrap -Console 'Invoke-MockedNativeBootstrap' -Arguments @('success') -GitHubAuthToken 'bad'
+    } catch { $invalid = $_.Exception.Message }
+    if ($invalid -cne 'OFFLINE_BOOTSTRAP_GITHUB_AUTH_REQUIRED_BEFORE_NATIVE_BEGIN' -or
+        $env:EDGE_GITHUB_TOKEN -cne 'fixture-existing') {
+        throw 'INVALID_NATIVE_GITHUB_AUTH_ADMITTED'
+    }
+    if ($source -cnotmatch [regex]::Escape('Invoke-AuthenticatedNativeBootstrap -Console $console -Arguments $bootstrapArgs -GitHubAuthToken $GitHubToken')) {
+        throw 'NATIVE_AUTH_SCOPE_NOT_CONNECTED_TO_CANONICAL_INSTALLER'
+    }
+} finally {
+    [Environment]::SetEnvironmentVariable('EDGE_GITHUB_TOKEN', $previousProcessToken, 'Process')
+}
+Write-Output 'windows_connect_native_child_authenticated_process_boundary=PASS'
+Write-Output 'windows_connect_native_auth_restoration_success_failure_invalid=PASS'
 
 Write-Output 'windows_connect_powershell_named_binding=PASS'
 
