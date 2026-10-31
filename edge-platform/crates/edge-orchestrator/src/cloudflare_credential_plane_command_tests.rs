@@ -1630,7 +1630,6 @@ fn pending_vm_worker_reconciliation_refuses_unbound_or_drifted_code() {
     );
 }
 
-
 #[test]
 fn vm_worker_short_legacy_admin_executes_real_worker_authorization_contract() {
     // Use the actual rendered production Worker in Node's crypto runtime.
