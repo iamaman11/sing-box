@@ -305,7 +305,16 @@ pub(super) fn verify_existing_receipt_identity_slot(
 ) -> Result<Vec<u8>, String> {
     require_windows_local_administrator_first_use().map_err(str::to_owned)?;
     let root = native_root(install_root)?;
-    verify_native_journal_protection(&root.join("journal")).map_err(str::to_owned)?;
+    // This is an elevated-Administrator READ-ONLY pre-BEGIN observation.
+    // verify_native_journal_protection requires the caller to be LocalSystem
+    // and is reserved for the SYSTEM journal executor. Independently prove
+    // the exact existing journal directory and its entire protected ACL
+    // chain without granting Administrator authority to execute the journal.
+    edge_shared_types::host_journal::verify_windows_protected_path_acl(
+        &root.join("journal"),
+        false,
+    )
+    .map_err(str::to_owned)?;
     for name in [PRIVATE, PUBLIC, COMPLETED] {
         let path = root.join(name);
         edge_shared_types::host_journal::verify_windows_protected_path_acl(&path, true)
