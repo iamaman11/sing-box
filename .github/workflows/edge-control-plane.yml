@@ -910,8 +910,9 @@ jobs:
           grep -Fxq 'host_access_credentials_windows=EXACT_WINDOWS_ONLY' "${RUNNER_TEMP}/host-access-report.txt"
           grep -Fxq 'host_access_provider_mutations=0' "${RUNNER_TEMP}/host-access-report.txt"
           grep -Fxq 'host_access_native_mutations=0' "${RUNNER_TEMP}/host-access-report.txt"
-          test "$(wc -l < "${RUNNER_TEMP}/host-access-report.txt")" -eq 6
+          test "$(wc -l < "${RUNNER_TEMP}/host-access-report.txt")" -eq 7
           grep -Eq '^host_access_route=(NOT_PROVISIONED_LEGACY_VM_PRESERVED|STAGED_AWAIT_WORKER_AUDIENCE|STAGED_AWAIT_SIGNER_PROOF|ACTIVE_AWAIT_SIGNED_HOST_PROOF)$' "${RUNNER_TEMP}/host-access-report.txt"
+          grep -Eq '^host_access_next_action=(STAGE_REQUIRES_DURABLE_BEGIN|BIND_AUDIENCE_REQUIRES_DURABLE_BEGIN|VERIFY_SIGNER_AND_VM_CREDENTIALS_BEFORE_CUTOVER|VERIFY_BOTH_SIGNED_HOSTS_AFTER_CUTOVER)$' "${RUNNER_TEMP}/host-access-report.txt"
       - name: Attach read-only Rust verdict to the one operator report
         shell: bash
         run: |
@@ -921,7 +922,7 @@ jobs:
           import json,os,subprocess,sys
           lines=open(sys.argv[1],encoding="utf-8").read().splitlines()
           data=dict(line.split("=",1) for line in lines)
-          assert len(lines)==len(data)==6
+          assert len(lines)==len(data)==7
           assert data["host_access_schema"]=="sing-box.host-access-boundary/v1"
           assert data["host_access_provider_mutations"]=="0"
           assert data["host_access_native_mutations"]=="0"

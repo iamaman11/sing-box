@@ -194,6 +194,7 @@ pub async fn run_delivery(
             println!("host_access_credentials_vm=EXACT_VM_ONLY");
             println!("host_access_credentials_windows=EXACT_WINDOWS_ONLY");
             println!("host_access_route={}", phase.as_str());
+            println!("host_access_next_action={}", phase.next_action().as_str());
             println!("host_access_provider_mutations=0");
             println!("host_access_native_mutations=0");
             Ok(())
@@ -3774,6 +3775,40 @@ enum HostAccessReadback {
     ActiveAwaitSignedHostProof,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HostAccessNextAction {
+    StageOnlyAfterAuthorizedBegin,
+    BindExactAudienceOnlyAfterSignedBegin,
+    ProveSignerAndVmCredentialsBeforeCutover,
+    ProveWindowsAndVmSignedHostAfterCutover,
+}
+
+impl HostAccessNextAction {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::StageOnlyAfterAuthorizedBegin => "STAGE_REQUIRES_DURABLE_BEGIN",
+            Self::BindExactAudienceOnlyAfterSignedBegin => "BIND_AUDIENCE_REQUIRES_DURABLE_BEGIN",
+            Self::ProveSignerAndVmCredentialsBeforeCutover => "VERIFY_SIGNER_AND_VM_CREDENTIALS_BEFORE_CUTOVER",
+            Self::ProveWindowsAndVmSignedHostAfterCutover => "VERIFY_BOTH_SIGNED_HOSTS_AFTER_CUTOVER",
+        }
+    }
+}
+
+impl HostAccessReadback {
+    fn next_action(self) -> HostAccessNextAction {
+        match self {
+            Self::NotProvisionedLegacyVmPreserved =>
+                HostAccessNextAction::StageOnlyAfterAuthorizedBegin,
+            Self::StagedAwaitWorkerAudience =>
+                HostAccessNextAction::BindExactAudienceOnlyAfterSignedBegin,
+            Self::StagedAwaitSignerProof =>
+                HostAccessNextAction::ProveSignerAndVmCredentialsBeforeCutover,
+            Self::ActiveAwaitSignedHostProof =>
+                HostAccessNextAction::ProveWindowsAndVmSignedHostAfterCutover,
+        }
+    }
+}
+
 impl HostAccessReadback {
     fn as_str(self) -> &'static str {
         match self {
@@ -3842,8 +3877,7 @@ fn host_access_readback(
         || route.policies[0].decision.as_deref() != Some("non_identity")
         || route.policies[0].has_extra_rules
         || route.policies[0].id.is_empty()
-        || (!route.app.policy_ids.is_empty()
-            && route.app.policy_ids != vec![route.policies[0].id.clone()])
+        || route.app.policy_ids != vec![route.policies[0].id.clone()]
         || !(8..=64).contains(&route.audience.len())
         || !route
             .audience
