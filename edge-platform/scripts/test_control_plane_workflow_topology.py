@@ -778,6 +778,34 @@ assert "fn legacy_console_mutation_ingress_is_unparseable()" in win_cli
 assert "HOST_WINDOWS_LEGACY_PRIVILEGED_MUTATION_DISABLED" in win_console
 assert "require_offline_bootstrap_quiescent(install_root)?;" in win_console
 
+# The previously deployed P4 executed the EXACT candidate console, but its
+# read-only existing-identity classification still required the INSTALLED
+# console. Preserve strict active binding for every ordinary command and
+# every mutating trust/enrollment path; create one candidate-bound read-only
+# pre-BEGIN exception, NOT an unrestricted relaxed identity checker.
+assert "read_only_first_use_stage_for_offline_bootstrap(" in win_console
+identity_read_start = identity_owner.index("pub(super) fn read_only_first_use_stage(")
+identity_read_end = identity_owner.index("pub(super) fn checked_regular_exists(", identity_read_start)
+identity_readers = identity_owner[identity_read_start:identity_read_end]
+assert "require_exact_immutable_activation_console(install_root)?;" in identity_readers
+assert "pub(super) fn read_only_first_use_stage_for_offline_bootstrap(" in identity_readers
+assert "if &active != predecessor" in identity_readers
+assert "require_offline_windows_owner(install_root, &active)?;" in identity_readers
+assert "verify_windows_protected_path_acl(" in identity_readers
+assert "require_exact_offline_bootstrap_reader_identity(" in identity_readers
+assert "read_only_first_use_stage_from_installed(install_root, &active)" in identity_readers
+assert "read_only_first_use_stage_from_installed(install_root, &active)" in identity_readers
+assert "require_exact_immutable_activation_console(install_root)?;" in trust_owner
+assert "require_exact_immutable_activation_console(install_root)?;" in identity_owner
+# Only installed-to-candidate read observation, never command execution,
+# pointer promotion, private-key read, task reenable or credential commit.
+candidate_start = identity_owner.index("pub(super) fn read_only_first_use_stage_for_offline_bootstrap(")
+candidate_end = identity_owner.index("fn read_only_first_use_stage_from_installed(", candidate_start)
+candidate_reader = identity_owner[candidate_start:candidate_end]
+for forbidden in ("change_offline_bootstrap_task_enabled(", "rebind_pending_trust_after_offline_handoff(",
+                  "fs::remove_file(", ".create_new(", "promote_candidate(", "discard_candidate("):
+    assert forbidden not in candidate_reader, forbidden
+
 # The real W4 failure occurred BEFORE native owner handoff: the offline
 # PowerShell StageOnly gate still required Ready, while Rust admitted exact
 # Disabled+retained-BEGIN recovery. Both StageOnly and BootstrapNow must
