@@ -1,8 +1,28 @@
 # sing-box — нормативная архитектура
 
-Единый архитектурный контракт. [План](FINALIZATION-PLAN.md); [Issue #26](https://github.com/iamaman11/sing-box/issues/26) — только архив/курсор. Канон — защищённый GitHub `main`.
+Единый архитектурный контракт. [Единственный рабочий курсор #595](https://github.com/iamaman11/sing-box/issues/595); [Issue #26](https://github.com/iamaman11/sing-box/issues/26) — только архив доказательств. Канон — защищённый GitHub `main`.
 
 **Запрещены:** историческая A/B, старые credential workflows, дубли команд, reserve secrets, migration fallback, replay и новые агенты/службы/реестры.
+
+## Жёсткие инварианты жизненного цикла (Issue #595 / S1, S3, S4)
+
+**L01 — внешний owner:** Git/Protobuf `main` + точный immutable ReleaseSet — единственный desired; Worker подписывает точные intent; VM Root Agent исполняет, GitHub runner только передаёт. Потеря гостя/runner не уполномочивает CREATE/DELETE; provider inventory и план относятся к отдельному внешнему Vultr owner.
+
+**L02 — две операции, не один «reinstall»:** `UPDATE/REINSTALL_APPLICATION` при сохранённой ОС/диске оставляет тот же provider instance, локальный root receipt key, protected trust/journal, Docker/network ownership и user data. `RECREATE` после подтверждённого удаления VM или стирания диска создаёт новую physical incarnation с новым root-generated Ed25519 receipt key и новой регистрацией в Git; старый ключ/секреты/журнал запрещено копировать. Старый signer/instance не может получить native mutation authorization новой VM.
+
+**L03 — узкое чтение старого доверия:** старый `host-refresh` проверяет только защищённые *свои* machine_id, VM kind/owner, Worker signer, native receipt, старый/новый ReleaseSet и SHA asset, но не требует распознавать будущие поля Windows/чужих хостов. Полный НОВЫЙ fleet registry валидирует новая версия до любых resource effects. Старый trust не является разрешением на новый Git desired.
+
+**L04 — обновление исключительно прежним исполнителем:** один root `edge-agent` + один protected lock/journal. Подписанный code-only refresh, проверка SHA/owner, private staged binary + atomic publish; ключ и journal не стираются. UNKNOWN/отмена runner не разрешает replay или автоматический fallback, а кодовое обновление никогда не очищает старый pending.
+
+**L05 — first-use:** только точный внешний CREATE по отдельно авторизованному плану → secret-free SSH-free Cloud-init с закреплённым SHA Root Agent → root-generated public receipt → защищённая регистрация в Git → один encrypted Root-only Access handoff → только затем signed apply. Runner не становится root/secret owner. Ни bootstrap VM, ни нормальная установка приложения не добавляют второй control service.
+
+**L06 — диагностика и завершение:** `CI=PASS` подтверждает только тесты исходников, не физическое состояние. `PHYSICAL_ACCEPTED` требует exact installed release + signed root terminal + независимый provider/SCM/Docker/network readback; новая VM/сетевая приёмка — отдельные внешние witness.
+
+**L07 — постоянный release gate:** на каждой будущей версии N−1→N без нового bridge с реальным предыдущим опубликованным бинарником, проверкой changed Git/Protobuf, журналом и no-replay. Неподтверждённый N−1→N = `RELEASE_BLOCKED`, не выдавать текстовый/unit guard за полный binary upgrade test.
+
+**L08 — fail closed:** offline runner != destroyed VM, missing receipt != safe retry; отказ provider/Cloudflare/GitHub или неизвестный прошлый BEGIN требует `BLOCKED/UNPROVEN/UNKNOWN_NO_REPLAY`. Никаких SSH/дополнительных демонов/автопереустановки ради зелёного статуса.
+
+Инварианты L01–L08 проверяются существующим `Source checks`, Rust workspace tests и (для release/physical) обязательными acceptance gates #595. **Тесты исходников не закрывают физические S1/S4 без signed evidence.**
 
 ## Единственная цепочка ответственности
 

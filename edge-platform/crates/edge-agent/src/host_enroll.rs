@@ -306,13 +306,22 @@ async fn enroll_locked(machine_id: &str, release_digest: &str) -> Result<(), Str
     if release_set.encode_to_vec() != release_pb {
         return Err("HOST_ENROLL_RELEASE_NONCANONICAL".into());
     }
-    let registry = edge_shared_types::decode_host_registry(&registry_pb)
-        .map_err(|_| "HOST_ENROLL_REGISTRY_INVALID")?;
-    let host = registry
-        .hosts
-        .iter()
-        .find(|host| host.machine_id == machine_id && host.kind == FleetHostKind::Vm as i32)
-        .ok_or("HOST_ENROLL_MACHINE_NOT_IN_ACCEPTED_REGISTRY")?;
+    // An already enrolled VM must not require the OLD binary to understand
+    // NEW Windows modes or unrelated fleet resource fields. Its immutable
+    // signed release/Git provenance is attested below; this is code-only.
+    // Fresh enrollment and later native resource admission still validate
+    // the complete CURRENT fleet using the accepted code.
+    let host = if refreshing {
+        previous_vm_for_code_only_refresh(&registry_pb, machine_id)?
+    } else {
+        let registry = edge_shared_types::decode_host_registry(&registry_pb)
+            .map_err(|_| "HOST_ENROLL_REGISTRY_INVALID")?;
+        registry
+            .hosts
+            .into_iter()
+            .find(|host| host.machine_id == machine_id && host.kind == FleetHostKind::Vm as i32)
+            .ok_or("HOST_ENROLL_MACHINE_NOT_IN_ACCEPTED_REGISTRY")?
+    };
     if !matches!(
         host.owner.as_ref(),
         Some(managed_host::Owner::VmMachineId(owner)) if owner == machine_id
@@ -322,7 +331,7 @@ async fn enroll_locked(machine_id: &str, release_digest: &str) -> Result<(), Str
     // A missing Git signer is an explicit first-use blocker, never an
     // invitation to take a key from the caller or a Worker HTTP response.
     let public_key = host.worker_authority_public_key.clone();
-    edge_shared_types::host_lifecycle::verify_git_worker_signer_pin(host, &public_key)
+    edge_shared_types::host_lifecycle::verify_git_worker_signer_pin(&host, &public_key)
         .map_err(str::to_owned)?;
     let source_revision = &release_set.source_revision;
     let spec_path = &host.desired_spec_path;
@@ -483,42 +492,55 @@ async fn enroll_locked(machine_id: &str, release_digest: &str) -> Result<(), Str
     Ok(())
 }
 
-/// Read the PREVIOUS root-protected registry only for code/trust refresh.
-/// Historical accepted releases placed Windows mode in the fleet target.
-/// Today's Git prohibits that duplicate, so NEVER pass this adapter into a
-/// signed native resource admission or a desired state writer. Normalize
-/// only that one retired field, then revalidate every other typed invariant.
-fn previous_registry_for_code_only_refresh(
+/// A root owner refresh reads only its own PREVIOUS root-protected identity.
+/// Git-accepted CURRENT full fleet semantics are checked by enroll_locked()
+/// after the target release is obtained. New Windows/other-host fields must
+/// never make an already enrolled VM unable to update its own code.
+/// This narrow read is NOT an admission to apply resources or migrate trust.
+fn previous_vm_for_code_only_refresh(
     bytes: &[u8],
-) -> Result<edge_shared_types::HostRegistry, String> {
-    if let Ok(registry) = edge_shared_types::decode_host_registry(bytes) {
-        return Ok(registry);
-    }
-    let mut previous = edge_shared_types::HostRegistry::decode(bytes)
-        .map_err(|_| "HOST_REFRESH_PREVIOUS_REGISTRY_INVALID")?;
-    let mut normalized = 0u32;
-    for host in &mut previous.hosts {
-        if host.kind != FleetHostKind::Windows as i32 {
-            continue;
-        }
-        if let Some(target) = host.target.as_mut() {
-            use edge_shared_types::FleetHostMode;
-            match FleetHostMode::try_from(target.windows_mode) {
-                Ok(FleetHostMode::ProxyOnly | FleetHostMode::ManagedTun) => {
-                    target.windows_mode = FleetHostMode::Unspecified as i32;
-                    normalized += 1;
-                }
-                Ok(FleetHostMode::Unspecified) => {}
-                _ => return Err("HOST_REFRESH_PREVIOUS_WINDOWS_MODE_INVALID".into()),
-            }
-        }
-    }
-    if normalized == 0 {
+    machine_id: &str,
+) -> Result<edge_shared_types::FleetHost, String> {
+    if bytes.is_empty() || bytes.len() > MAX_REGISTRY {
         return Err("HOST_REFRESH_PREVIOUS_REGISTRY_INVALID".into());
     }
-    edge_shared_types::validate_host_registry(&previous)
+    let registry = edge_shared_types::HostRegistry::decode(bytes)
         .map_err(|_| "HOST_REFRESH_PREVIOUS_REGISTRY_INVALID")?;
-    Ok(previous)
+    if registry.schema_version != 1 || registry.hosts.is_empty() {
+        return Err("HOST_REFRESH_PREVIOUS_REGISTRY_INVALID".into());
+    }
+    // Duplicate machine selectors could silently select another VM identity.
+    // Never infer ownership from order or from unrelated host fields.
+    let mut machine_ids = std::collections::BTreeSet::new();
+    if registry
+        .hosts
+        .iter()
+        .any(|host| !machine_ids.insert(host.machine_id.as_str()))
+    {
+        return Err("HOST_REFRESH_PREVIOUS_REGISTRY_DUPLICATE_IDENTITY".into());
+    }
+    let vm = registry
+        .hosts
+        .iter()
+        .find(|host| host.machine_id == machine_id)
+        .ok_or("HOST_REFRESH_PREVIOUS_OWNER_ABSENT")?;
+    if vm.kind != FleetHostKind::Vm as i32
+        || !matches!(
+            vm.owner.as_ref(),
+            Some(managed_host::Owner::VmMachineId(owner)) if owner == machine_id
+        )
+    {
+        return Err("HOST_REFRESH_PREVIOUS_OWNER_MISMATCH".into());
+    }
+    if vm.worker_authority_public_key.len() != 32
+        || vm.worker_authority_public_key.iter().all(|byte| *byte == 0)
+        || (!vm.native_receipt_public_key.is_empty()
+            && (vm.native_receipt_public_key.len() != 32
+                || vm.native_receipt_public_key.iter().all(|byte| *byte == 0)))
+    {
+        return Err("HOST_REFRESH_PREVIOUS_IDENTITY_INVALID".into());
+    }
+    Ok(vm.clone())
 }
 
 /// Refresh the CURRENT protected main release using the EXISTING native root
@@ -533,12 +555,7 @@ pub(crate) async fn refresh_current() -> Result<(), String> {
     // A pre-enrollment runner cannot create trust. Only completed root
     // receipt enrollment is eligible for native release refresh.
     let identity = read_existing_receipt_identity(trusted)?;
-    let registry = previous_registry_for_code_only_refresh(&previous.registry_pb)?;
-    let host = registry
-        .hosts
-        .iter()
-        .find(|h| h.machine_id == previous.machine_id && h.kind == FleetHostKind::Vm as i32)
-        .ok_or("HOST_REFRESH_PREVIOUS_OWNER_ABSENT")?;
+    let host = previous_vm_for_code_only_refresh(&previous.registry_pb, &previous.machine_id)?;
     // First-use root trust precedes public receipt registration. The
     // protected merge is allowed to advance that EMPTY prior pin to the
     // exact existing local key, but may never substitute another key.
@@ -679,7 +696,7 @@ fn current_published_release_digest(
 mod tests {
     use super::*;
     #[test]
-    fn previous_trust_adapter_accepts_only_historical_windows_mode() {
+    fn previous_release_refresh_only_requires_exact_vm_identity_not_new_windows_semantics() {
         use edge_shared_types::{
             FleetHost, FleetHostMode, FleetHostRunState, FleetHostTarget, HostRegistry,
         };
@@ -689,6 +706,7 @@ mod tests {
             owner: Some(managed_host::Owner::VmMachineId(
                 "application-acceptance-5".into(),
             )),
+            worker_authority_public_key: vec![7; 32],
             desired_spec_path: "infra/production/production.textproto".into(),
             ..Default::default()
         };
@@ -711,22 +729,48 @@ mod tests {
             hosts: vec![vm, windows],
             ..Default::default()
         };
+        let machine_id = "application-acceptance-5";
         assert!(edge_shared_types::decode_host_registry(&prior.encode_to_vec()).is_err());
-        let accepted = previous_registry_for_code_only_refresh(&prior.encode_to_vec()).unwrap();
-        assert_eq!(
-            accepted.hosts[1].target.as_ref().unwrap().windows_mode,
-            FleetHostMode::Unspecified as i32
-        );
-        assert!(edge_shared_types::validate_host_registry(&accepted).is_ok());
-        let mut bad_signer = prior.clone();
-        bad_signer.hosts[0].worker_authority_public_key = vec![1; 31];
-        assert!(previous_registry_for_code_only_refresh(&bad_signer.encode_to_vec()).is_err());
-        let mut invalid_kind = prior.clone();
-        invalid_kind.hosts[1].kind = 999;
-        assert!(previous_registry_for_code_only_refresh(&invalid_kind.encode_to_vec()).is_err());
-        let mut invalid_mode = prior;
-        invalid_mode.hosts[1].target.as_mut().unwrap().windows_mode = 999;
-        assert!(previous_registry_for_code_only_refresh(&invalid_mode.encode_to_vec()).is_err());
+        let current = previous_vm_for_code_only_refresh(&prior.encode_to_vec(), machine_id).unwrap();
+        assert_eq!(current.machine_id, machine_id);
+        assert_eq!(current.worker_authority_public_key, vec![7; 32]);
+
+        // A future Windows protobuf mode/kind/target cannot prevent VM code
+        // refresh. Current desired validation remains strict in enroll_locked.
+        let mut foreign = prior.clone();
+        foreign.hosts[1].target.as_mut().unwrap().windows_mode = 999;
+        foreign.hosts[1].kind = 999;
+        foreign.hosts[1].desired_spec_path = "../unrecognized-new-field".into();
+        assert!(previous_vm_for_code_only_refresh(&foreign.encode_to_vec(), machine_id).is_ok());
+
+        let mut wrong_signer = prior.clone();
+        wrong_signer.hosts[0].worker_authority_public_key = vec![1; 31];
+        assert!(previous_vm_for_code_only_refresh(&wrong_signer.encode_to_vec(), machine_id).is_err());
+        wrong_signer.hosts[0].worker_authority_public_key = vec![0; 32];
+        assert!(previous_vm_for_code_only_refresh(&wrong_signer.encode_to_vec(), machine_id).is_err());
+
+        let mut wrong_kind = prior.clone();
+        wrong_kind.hosts[0].kind = FleetHostKind::Windows as i32;
+        assert!(previous_vm_for_code_only_refresh(&wrong_kind.encode_to_vec(), machine_id).is_err());
+
+        let mut wrong_owner = prior.clone();
+        wrong_owner.hosts[0].owner = Some(managed_host::Owner::VmMachineId("foreign-vm".into()));
+        assert!(previous_vm_for_code_only_refresh(&wrong_owner.encode_to_vec(), machine_id).is_err());
+
+        let mut wrong_receipt = prior.clone();
+        wrong_receipt.hosts[0].native_receipt_public_key = vec![3; 31];
+        assert!(previous_vm_for_code_only_refresh(&wrong_receipt.encode_to_vec(), machine_id).is_err());
+
+        let mut duplicate = prior.clone();
+        duplicate.hosts.push(duplicate.hosts[0].clone());
+        assert!(previous_vm_for_code_only_refresh(&duplicate.encode_to_vec(), machine_id).is_err());
+
+        let mut unsupported_schema = prior.clone();
+        unsupported_schema.schema_version = 55;
+        assert!(previous_vm_for_code_only_refresh(&unsupported_schema.encode_to_vec(), machine_id).is_err());
+        assert!(previous_vm_for_code_only_refresh(&[], machine_id).is_err());
+        assert!(previous_vm_for_code_only_refresh(&[0xff], machine_id).is_err());
+        assert!(previous_vm_for_code_only_refresh(&prior.encode_to_vec(), "absent-vm").is_err());
     }
 
     #[test]
