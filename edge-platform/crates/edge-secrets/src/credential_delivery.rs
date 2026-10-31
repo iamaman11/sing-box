@@ -993,9 +993,23 @@ pub async fn request_canonical_native_admin_authorization(
         .await
         .map_err(|_| "HOST_ADMIN_AUTH_POST_UNKNOWN_NO_REPLAY")?;
     if result.status() != StatusCode::OK {
+        // A bounded Worker reason is diagnostic only, never authorization.
+        // A Cloudflare gateway response without one stays unattributed.
+        let reason = result
+            .headers()
+            .get("X-Host-Authorization-Reason")
+            .and_then(|v| v.to_str().ok())
+            .filter(|v| {
+                !v.is_empty()
+                    && v.len() <= 96
+                    && v.bytes()
+                        .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+            })
+            .unwrap_or("REASON_UNAVAILABLE");
         return Err(format!(
-            "HOST_ADMIN_AUTH_REJECTED_HTTP_{}",
-            result.status().as_u16()
+            "HOST_ADMIN_AUTH_REJECTED_HTTP_{}_{}",
+            result.status().as_u16(),
+            reason
         ));
     }
     if result
