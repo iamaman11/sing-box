@@ -441,9 +441,9 @@ Write-Output 'windows_connect_authenticated_snapshot=PASS'
 Write-Output 'windows_connect_github_rate_and_auth_negative_matrix=PASS'
 
 
-# Full missed process boundary: the native console starts a NEW pwsh process.
-# Only synthetic credential values; no GitHub, SCM, key, journal or network.
-$previousProcessToken = [Environment]::GetEnvironmentVariable('EDGE_GITHUB_TOKEN','Process')
+# Regression for the missing Administrator -> Rust -> NEW PowerShell
+# authorization boundary. No real token, GitHub, SCM or Windows mutation.
+$oldNativeToken = [Environment]::GetEnvironmentVariable('EDGE_GITHUB_TOKEN', 'Process')
 try {
     [Environment]::SetEnvironmentVariable('EDGE_GITHUB_TOKEN', 'fixture-existing', 'Process')
     $fixtureToken = 'github_pat_' + ('Z' * 44)
@@ -452,22 +452,15 @@ try {
         if ($env:EDGE_GITHUB_TOKEN -cne $fixtureToken) {
             throw 'NATIVE_BOOTSTRAP_DID_NOT_INHERIT_AUTH'
         }
-        $nested = @(& ([System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName) -NoProfile -NonInteractive -Command @'
-if ($env:EDGE_GITHUB_TOKEN -cmatch '^github_pat_Z{44}
-
-Write-Output 'windows_installer_offline_direct_github_transport=PASS'
-Write-Output 'windows_installer_missing_response=PASS'
-Write-Output 'windows_installer_http_status_classification=PASS'
-Write-Output 'windows_installer_original_transport_error=PASS'
-Write-Output 'windows_installer_no_network_mutation=PASS'
-) {
-    Write-Output 'NESTED_AUTH_PASS'
-} else {
-    exit 17
-}
-'@)
-        if ($LASTEXITCODE -ne 0 -or $nested.Count -ne 1 -or
-            [string]$nested[0] -cne 'NESTED_AUTH_PASS') {
+        # Base64 UTF-16-LE avoids Command argument quoting/host differences.
+        # Do not transmit even the synthetic token as a command-line argument.
+        $nestedCode = 'if ($env:EDGE_GITHUB_TOKEN.Length -eq 55) { exit 0 }; exit 17'
+        $encoded = [Convert]::ToBase64String(
+            [Text.Encoding]::Unicode.GetBytes($nestedCode)
+        )
+        $exe = [System.Diagnostics.Process]::GetCurrentProcess().MainModule.FileName
+        $null = & $exe -NoProfile -NonInteractive -EncodedCommand $encoded
+        if ($LASTEXITCODE -ne 0) {
             throw 'FRESH_PWSH_CHILD_DID_NOT_INHERIT_AUTH'
         }
         if ($Mode -ceq 'fail') { $global:LASTEXITCODE = 1 }
@@ -501,7 +494,7 @@ Write-Output 'windows_installer_no_network_mutation=PASS'
         throw 'NATIVE_AUTH_SCOPE_NOT_CONNECTED_TO_CANONICAL_INSTALLER'
     }
 } finally {
-    [Environment]::SetEnvironmentVariable('EDGE_GITHUB_TOKEN', $previousProcessToken, 'Process')
+    [Environment]::SetEnvironmentVariable('EDGE_GITHUB_TOKEN', $oldNativeToken, 'Process')
 }
 Write-Output 'windows_connect_native_child_authenticated_process_boundary=PASS'
 Write-Output 'windows_connect_native_auth_restoration_success_failure_invalid=PASS'
