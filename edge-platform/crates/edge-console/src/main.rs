@@ -3180,7 +3180,18 @@ async fn offline_bootstrap_privileged_release(
         match windows_receipt_enrollment::preflight_fresh_identity_slot(install_root) {
             Ok(()) => None,
             Err(refused) if refused == "HOST_WINDOWS_RECEIPT_ENROLL_SLOT_NOT_EMPTY_NO_REKEY" => {
-                let stage = windows_receipt_enrollment::read_only_first_use_stage(install_root)?;
+                // We are executing the exact immutable TARGET console.
+                // The ordinary first-use reader requires the currently
+                // installed console and would deadlock this handoff. Admit
+                // only this read-only predecessor observation under the
+                // pinned candidate identity; no bootstrap mutation is
+                // authorized by the observation itself.
+                let stage =
+                    windows_receipt_enrollment::read_only_first_use_stage_for_offline_bootstrap(
+                        install_root,
+                        &before,
+                        target,
+                    )?;
                 if let Some(existing) = classify_completed_identity_for_handoff(stage)? {
                     registered_public_before = Some(
                         windows_receipt_enrollment::verify_existing_receipt_identity_slot(
