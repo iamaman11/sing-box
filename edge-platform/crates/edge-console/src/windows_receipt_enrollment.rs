@@ -1115,7 +1115,10 @@ mod tests {
         std::fs::write(root.join(COMPLETED), b"typed-enrollment-completed").unwrap();
         let mut inspected = Vec::new();
         let observed = verify_existing_receipt_identity_public_files(&root, |path| {
-            assert_ne!(path.file_name().and_then(|name| name.to_str()), Some(PRIVATE));
+            assert_ne!(
+                path.file_name().and_then(|name| name.to_str()),
+                Some(PRIVATE)
+            );
             inspected.push(path.file_name().unwrap().to_string_lossy().into_owned());
             Ok(())
         })
@@ -1152,10 +1155,8 @@ mod tests {
 
         // A disposable native Windows fixture: the caller loses READ_CONTROL
         // for ONLY the private file. Never change a real installation.
-        let root = std::env::temp_dir().join(format!(
-            "windows-p4-real-sealed-acl-{}",
-            std::process::id()
-        ));
+        let root =
+            std::env::temp_dir().join(format!("windows-p4-real-sealed-acl-{}", std::process::id()));
         std::fs::create_dir(&root).unwrap();
         let private = root.join(PRIVATE);
         std::fs::write(&private, b"nonsecret-placeholder-not-a-real-key").unwrap();
