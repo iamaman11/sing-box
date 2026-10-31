@@ -1771,8 +1771,14 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
             host_access_readback(desired, &before)?,
         )?;
         if plan_only {
-            crate::vm_worker_begin_reconciliation::verify_prior_vm_worker_begins(machine_id)
-                .await?;
+            crate::vm_worker_begin_reconciliation::verify_prior_vm_worker_begins(
+                machine_id,
+                &exact_active,
+                &read_token,
+                &desired.target_account_id,
+                &vm.worker_name,
+            )
+            .await?;
             emit_vm_worker_plan_required(if access_required {
                 VmWorkerUpgradeDecision::UpgradeRequired
             } else {
@@ -1797,7 +1803,14 @@ pub(crate) async fn host_vm_worker_authorizer_upgrade(
         // issue command and a terminal successful Worker owner run. The
         // Cloudflare predecessor source and exact active/latest version were
         // independently proven above; an unknown ACK remains NO_REPLAY.
-        crate::vm_worker_begin_reconciliation::verify_prior_vm_worker_begins(machine_id).await?;
+        crate::vm_worker_begin_reconciliation::verify_prior_vm_worker_begins(
+            machine_id,
+            &exact_active,
+            &read_token,
+            &desired.target_account_id,
+            &vm.worker_name,
+        )
+        .await?;
         emit_vm_worker_plan_required(decision)?;
         println!("host_vm_worker_authorizer=EXACT_VM_CODE_ONLY_PLAN");
         println!("worker_mutations=0");

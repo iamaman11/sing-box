@@ -592,18 +592,7 @@ pub async fn get_worker_exact_version_module(
     worker_id: &str,
     version_id: &str,
 ) -> Result<CloudflareWorkerExactModule, String> {
-    for (label, value) in [
-        ("account", account_id),
-        ("worker", worker_id),
-        ("version", version_id),
-    ] {
-        if value.is_empty()
-            || value.len() > 64
-            || !value.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-')
-        {
-            return Err(format!("WORKER_EXACT_VERSION_{label}_INVALID"));
-        }
-    }
+    validate_exact_worker_version_path(account_id, worker_id, version_id)?;
     let client = authorized_client(api_token)?;
     let response = client
         .get(format!(
@@ -629,6 +618,33 @@ pub async fn get_worker_exact_version_module(
     let body: ApiEnvelope<Value> =
         serde_json::from_slice(&bytes).map_err(|_| "WORKER_EXACT_VERSION_JSON_INVALID")?;
     exact_worker_module_from_value(body.result, version_id)
+}
+
+fn validate_exact_worker_version_path(
+    account_id: &str,
+    worker_id: &str,
+    version_id: &str,
+) -> Result<(), String> {
+    // Cloudflare accepts a Worker UUID OR script name. Account and immutable
+    // version identifiers remain hex-only; names must never introduce a path,
+    // query, fragment, escape sequence or the mutable `latest` selector.
+    for (label, value) in [("account", account_id), ("version", version_id)] {
+        if value.is_empty()
+            || value.len() > 64
+            || !value.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-')
+        {
+            return Err(format!("WORKER_EXACT_VERSION_{label}_INVALID"));
+        }
+    }
+    if worker_id.is_empty()
+        || worker_id.len() > 63
+        || !worker_id
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_')
+    {
+        return Err("WORKER_EXACT_VERSION_worker_INVALID".into());
+    }
+    Ok(())
 }
 
 pub async fn get_worker_version_tag(
@@ -3981,6 +3997,43 @@ mod tests {
         assert!(gateway_rule_from_value(serde_json::json!({"id": "rule-1"})).is_err());
         assert!(access_application_from_value(serde_json::json!({"id": "app-1"})).is_err());
     }
+    #[test]
+    fn exact_version_accepts_worker_names_without_accepting_path_injection() {
+        let account = "6be6e4b6340822dbeb18cb6c2f09c660";
+        let version = "cb7b9b0b-844d-4d6a-a9dd-167aa88d2dce";
+        for worker in [
+            "sing-box-credentials-vm",
+            "sing-box-credentials-windows",
+            "0b8dbf6619c942b6ec5c74a5a34eb578d",
+        ] {
+            assert!(validate_exact_worker_version_path(account, worker, version).is_ok());
+        }
+        for worker in [
+            "",
+            "../vm",
+            "vm?include=secrets",
+            "vm#fragment",
+            "vm%2fother",
+            "vm/versions",
+            "vm\\other",
+            "vm\r\nInjected: true",
+            "worker name",
+        ] {
+            assert!(validate_exact_worker_version_path(account, worker, version).is_err());
+        }
+        assert!(validate_exact_worker_version_path(account, &"a".repeat(64), version).is_err());
+        for version in ["latest", "x?include=modules", "../latest", ""] {
+            assert!(
+                validate_exact_worker_version_path(account, "sing-box-credentials-vm", version)
+                    .is_err()
+            );
+        }
+        assert!(
+            validate_exact_worker_version_path("other/account", "sing-box-credentials-vm", version)
+                .is_err()
+        );
+    }
+
     #[test]
     fn exact_version_module_requires_version_bound_script_and_exact_secrets() {
         let names = [
