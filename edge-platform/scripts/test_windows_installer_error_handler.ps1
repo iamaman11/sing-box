@@ -15,6 +15,9 @@ if ($parseErrors.Count -ne 0) { throw 'Canonical installer has PowerShell parse 
 
 $functionNames = @(
     'Test-TransientGitHubReadFailure',
+    'Get-ConnectWindowsGitHubHttpCode',
+    'Resolve-ConnectWindowsGitHubToken',
+    'Assert-ConnectWindowsGitHubBudget',
     'Get-GitHubHeaders',
     'Get-GitHubTransportOptions',
     'Invoke-GitHubJsonGet',
@@ -78,6 +81,7 @@ $GitHubAssetTimeoutSec = 1
 $GitHubRetryDelaySec = 0
 $GitHubToken = ''
 $Offline = $false
+$global:SingBoxConnectReadCache = $null
 $script:metadataCalls = 0
 $script:assetCalls = 0
 $script:metadataNoProxy = $null
@@ -159,6 +163,7 @@ $probe = {
         [string]$ReleaseSetSha256,
         [string]$InstallRoot,
         [switch]$Offline,
+        [string]$GitHubToken,
         [switch]$BootstrapNow,
         [switch]$EnrollReceipt,
         [string]$RetainedIntentSha256,
@@ -170,6 +175,7 @@ $probe = {
         digest = $ReleaseSetSha256
         root = $InstallRoot
         offline = [bool]$Offline
+        auth = $GitHubToken
         bootstrap = [bool]$BootstrapNow
         enroll = [bool]$EnrollReceipt
         old = $RetainedIntentSha256
@@ -177,6 +183,7 @@ $probe = {
         archive_id = $ArchivedAcceptanceSourceRunId
     }
 }
+$GitHubToken = 'github_pat_' + ('A' * 44)
 $branch = [pscustomobject]@{ commit = [pscustomobject]@{ sha = ('a' * 40) } }
 $selectedDigest = 'b' * 64
 $InstallRoot = 'C:\sing-box'
@@ -207,7 +214,8 @@ foreach ($kind in @('argsInitial', 'argsExact')) {
     }
     $actual = & $probe @bound
     if ($actual.revision -cne $branch.commit.sha -or $actual.digest -cne $selectedDigest -or
-        $actual.root -cne $InstallRoot -or -not $actual.offline -or $actual.archive_id -ne 0) {
+        $actual.root -cne $InstallRoot -or -not $actual.offline -or
+        $actual.auth -cne $GitHubToken -or $actual.archive_id -ne 0) {
         throw "$kind PowerShell named binding mismatch"
     }
     if ($kind -eq 'argsExact') {
@@ -347,6 +355,89 @@ if ($source -cnotmatch [regex]::Escape('Assert-DisabledOfflineSuccessorIdentity 
 }
 Write-Output 'windows_installer_retained_begin_installed_to_successor=PASS'
 Write-Output 'windows_installer_retained_begin_distinct_negative_matrix=PASS'
+
+
+# ConnectWindows must authenticate before any native BEGIN. These tests use
+# only imported function ASTs and mocked web calls (NO network or host effect).
+if ((Resolve-ConnectWindowsGitHubToken -Supplied $GitHubToken) -cne $GitHubToken) {
+    throw 'Explicit ConnectWindows token not passed through unchanged'
+}
+$invalidToken = 'NOT_REJECTED'
+try { $null = Resolve-ConnectWindowsGitHubToken -Supplied 'bad' }
+catch { $invalidToken = $_.Exception.Message }
+if ($invalidToken -cne 'WINDOWS_CONNECT_GITHUB_AUTH_INVALID') {
+    throw "Invalid GitHub token was admitted: $invalidToken"
+}
+$global:SingBoxConnectReadCache = @{}
+$GitHubReadAttempts = 1
+$script:metadataCalls = 0
+function Invoke-RestMethod {
+    param($Method, $Uri, $Headers, $TimeoutSec, [switch]$NoProxy)
+    $script:metadataCalls++
+    if ($Headers['Authorization'] -cne "Bearer $GitHubToken") {
+        throw 'INSTALLER_AUTH_HEADER_MISSING'
+    }
+    if ($Uri -ceq 'https://api.github.com/rate_limit') {
+        return [pscustomobject]@{
+            resources = [pscustomobject]@{ core = [pscustomobject]@{ remaining = 250 } }
+        }
+    }
+    return [pscustomobject]@{ sha = 'a' * 40 }
+}
+Assert-ConnectWindowsGitHubBudget
+$uri = 'https://api.github.com/repos/iamaman11/sing-box/branches/main'
+$first = Invoke-GitHubJsonGet -Uri $uri
+$second = Invoke-GitHubJsonGet -Uri $uri
+if ($script:metadataCalls -ne 2 -or $first.sha -cne $second.sha) {
+    throw 'Nested ConnectWindows repeatedly fetched the same GitHub metadata'
+}
+$global:SingBoxConnectReadCache = @{}
+function Invoke-RestMethod {
+    param($Method, $Uri, $Headers, $TimeoutSec, [switch]$NoProxy)
+    if ($Uri -ceq 'https://api.github.com/rate_limit') {
+        return [pscustomobject]@{
+            resources = [pscustomobject]@{ core = [pscustomobject]@{ remaining = 0 } }
+        }
+    }
+    throw 'UNEXPECTED_NETWORK_CALL'
+}
+$rateError = 'NO_ERROR'
+try { Assert-ConnectWindowsGitHubBudget } catch { $rateError = $_.Exception.Message }
+if ($rateError -cne 'WINDOWS_CONNECT_GITHUB_RATE_LIMIT_EXCEEDED_BEFORE_BEGIN') {
+    throw "Rate-limited GitHub budget was not rejected before BEGIN: $rateError"
+}
+foreach ($status in @(401,403,429)) {
+    $exception = [System.Exception]::new("HTTP_$status")
+    $exception | Add-Member -NotePropertyName Response -NotePropertyValue (
+        [pscustomobject]@{ StatusCode = $status }
+    )
+    $code = Get-ConnectWindowsGitHubHttpCode -ErrorRecord (New-ProbeError -Exception $exception)
+    $expected = switch ($status) {
+        401 { 'WINDOWS_CONNECT_GITHUB_AUTH_REJECTED' }
+        403 { 'WINDOWS_CONNECT_GITHUB_PERMISSION_DENIED' }
+        429 { 'WINDOWS_CONNECT_GITHUB_RATE_LIMIT_EXCEEDED_BEFORE_BEGIN' }
+    }
+    if ($code -cne $expected) { throw "HTTP $status classified as $code, expected $expected" }
+}
+$rate403 = [System.Exception]::new('API rate limit exceeded')
+$rate403 | Add-Member -NotePropertyName Response -NotePropertyValue (
+    [pscustomobject]@{ StatusCode = 403 }
+)
+if ((Get-ConnectWindowsGitHubHttpCode -ErrorRecord (New-ProbeError -Exception $rate403)) -cne
+    'WINDOWS_CONNECT_GITHUB_RATE_LIMIT_EXCEEDED_BEFORE_BEGIN') {
+    throw 'GitHub HTTP 403 rate limit not classified'
+}
+if ((Get-ConnectWindowsGitHubHttpCode -ErrorRecord $noResponse) -ne '') {
+    throw 'Response-less error must retain original diagnostic'
+}
+if ($source -cnotmatch [regex]::Escape('$global:SingBoxConnectReadCache = @{}') -or
+    $source -cnotmatch [regex]::Escape('Assert-ConnectWindowsGitHubBudget') -or
+    @($source -split [regex]::Escape('GitHubToken = $GitHubToken')).Count -ne 3) {
+    throw 'ConnectWindows does not propagate authenticated context to both nested paths'
+}
+$global:SingBoxConnectReadCache = $null
+Write-Output 'windows_connect_authenticated_snapshot=PASS'
+Write-Output 'windows_connect_github_rate_and_auth_negative_matrix=PASS'
 
 Write-Output 'windows_connect_powershell_named_binding=PASS'
 
