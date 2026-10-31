@@ -252,6 +252,37 @@ message WindowsPrivilegedResult {
   string code = 4;
   string detail = 5;
   optional string active_release_set_sha256 = 6;
+  // Unsigned local-Administrator observation in the existing native journal.
+  // Never authorization, signed SYSTEM execution, or permission to replay.
+  WindowsOfflineHandoffObservation handoff = 7;
+}
+
+message WindowsOfflineHandoffObservation {
+  uint32 schema_version = 1;
+  WindowsHandoffPhase phase = 2;
+  string target_release_set_sha256 = 3;
+  string accepted_revision = 4;
+  bool effects_possible = 5;
+  uint64 observed_at_unix = 6;
+  string error_code = 7;
+  bool replay_authorized = 8;
+}
+
+enum WindowsHandoffPhase {
+  WINDOWS_HANDOFF_PHASE_UNSPECIFIED = 0;
+  WINDOWS_HANDOFF_PHASE_SOURCE = 1;
+  WINDOWS_HANDOFF_PHASE_IDENTITY = 2;
+  WINDOWS_HANDOFF_PHASE_CANDIDATE = 3;
+  WINDOWS_HANDOFF_PHASE_AUTHORITY = 4;
+  WINDOWS_HANDOFF_PHASE_FENCE = 5;
+  WINDOWS_HANDOFF_PHASE_BEGIN = 6;
+  WINDOWS_HANDOFF_PHASE_DISABLE = 7;
+  WINDOWS_HANDOFF_PHASE_ACTIVATE = 8;
+  WINDOWS_HANDOFF_PHASE_REBIND = 9;
+  WINDOWS_HANDOFF_PHASE_IDENTITY_READBACK = 10;
+  WINDOWS_HANDOFF_PHASE_PREPARE = 11;
+  WINDOWS_HANDOFF_PHASE_ENABLE = 12;
+  WINDOWS_HANDOFF_PHASE_COMPLETE = 13;
 }
 
 message StartLocalRuntimeRequest {

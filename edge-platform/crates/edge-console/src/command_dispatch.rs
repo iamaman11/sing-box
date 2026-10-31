@@ -255,7 +255,13 @@ pub(super) async fn run(parsed: cli::Cli) -> Result<(), ConsoleError> {
             };
             let handoff = match windows_handoff::last_progress(root) {
                 Ok(Some(record)) => {
-                    serde_json::json!({"state": record.code, "detail": record.detail,
+                    serde_json::json!({"state": record.code,
+                    "phase": record.handoff.as_ref().map(|h| edge_shared_types::WindowsHandoffPhase::try_from(h.phase).map(|p| p.as_str_name()).unwrap_or("UNPROVEN")),
+                    "target_release_set_sha256": record.handoff.as_ref().map(|h| &h.target_release_set_sha256),
+                    "accepted_revision": record.handoff.as_ref().map(|h| &h.accepted_revision),
+                    "effects_possible": record.handoff.as_ref().map(|h| h.effects_possible),
+                    "error_code": record.handoff.as_ref().map(|h| &h.error_code),
+                    "observed_at_unix": record.handoff.as_ref().map(|h| h.observed_at_unix),
                     "request_id": record.request_id, "observed_active_release": record.active_release_set_sha256,
                     "authority": "UNSIGNED_LOCAL_ADMIN_OBSERVATION", "replay_allowed": false})
                 }

@@ -762,6 +762,7 @@ fn submit_privileged_request(
     if let Some(activation) = activation_matches_request(install_root, &request) {
         reconcile_completed_privileged_exchange(install_root)?;
         return Ok(WindowsPrivilegedResult {
+            handoff: None,
             schema_version: PRIVILEGED_RESULT_SCHEMA_VERSION,
             request_id: request.request_id,
             success: true,
@@ -848,6 +849,7 @@ async fn process_privileged_request(
     // new native one-shot authorization. No cleanup/retry mutation occurs.
     if !legacy_privileged_read_only(request.operation) {
         return WindowsPrivilegedResult {
+            handoff: None,
             schema_version: PRIVILEGED_RESULT_SCHEMA_VERSION,
             request_id: request.request_id.clone(),
             success: false,
@@ -932,6 +934,7 @@ async fn process_privileged_request(
 
     match outcome {
         Ok((code, detail, active)) => WindowsPrivilegedResult {
+            handoff: None,
             schema_version: PRIVILEGED_RESULT_SCHEMA_VERSION,
             request_id: request.request_id.clone(),
             success: true,
@@ -940,6 +943,7 @@ async fn process_privileged_request(
             active_release_set_sha256: active,
         },
         Err(detail) => WindowsPrivilegedResult {
+            handoff: None,
             schema_version: PRIVILEGED_RESULT_SCHEMA_VERSION,
             request_id: request.request_id.clone(),
             success: false,

@@ -240,23 +240,14 @@ pub(super) fn exclusive_handoff(root: &Path, console: &str) -> Result<File, Stri
     Ok(lock)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Phase {
-    Source,
-    Identity,
-    Candidate,
-    Authority,
-    Fence,
-    Begin,
-    Disable,
-    Activate,
-    Rebind,
-    IdentityReadback,
-    Prepare,
-    Enable,
-    Complete,
+pub(super) use edge_shared_types::WindowsHandoffPhase as Phase;
+trait PhasePolicy {
+    fn next(self) -> Option<Self>
+    where
+        Self: Sized;
+    fn may_have_effects(self) -> bool;
 }
-impl Phase {
+impl PhasePolicy for Phase {
     fn next(self) -> Option<Self> {
         Some(match self {
             Self::Source => Self::Identity,
@@ -271,25 +262,8 @@ impl Phase {
             Self::IdentityReadback => Self::Prepare,
             Self::Prepare => Self::Enable,
             Self::Enable => Self::Complete,
-            Self::Complete => return None,
+            Self::Complete | Self::Unspecified => return None,
         })
-    }
-    pub fn name(self) -> &'static str {
-        match self {
-            Self::Source => "SOURCE",
-            Self::Identity => "IDENTITY",
-            Self::Candidate => "CANDIDATE",
-            Self::Authority => "AUTHORITY",
-            Self::Fence => "FENCE",
-            Self::Begin => "BEGIN",
-            Self::Disable => "DISABLE",
-            Self::Activate => "ACTIVATE",
-            Self::Rebind => "REBIND",
-            Self::IdentityReadback => "IDENTITY_READBACK",
-            Self::Prepare => "PREPARE",
-            Self::Enable => "ENABLE",
-            Self::Complete => "COMPLETE",
-        }
     }
     fn may_have_effects(self) -> bool {
         matches!(
@@ -314,6 +288,7 @@ pub(super) struct Progress {
     path: PathBuf,
     request_id: String,
     target: String,
+    accepted_revision: String,
     phase: Phase,
     effects_possible: bool,
 }
@@ -353,6 +328,7 @@ impl Progress {
             path,
             request_id: request.request_id.clone(),
             target: target.into(),
+            accepted_revision: request.accepted_revision.clone().unwrap_or_default(),
             phase: Phase::Source,
             effects_possible: false,
         };
@@ -394,17 +370,17 @@ impl Progress {
     }
     fn store(&self, success: bool, code: &str, error: &str) -> Result<(), String> {
         let record = WindowsPrivilegedResult {
+            handoff: Some(edge_shared_types::WindowsOfflineHandoffObservation {
+                schema_version: 1, phase: self.phase as i32, target_release_set_sha256: self.target.clone(),
+                accepted_revision: self.accepted_revision.clone(), effects_possible: self.effects_possible,
+                observed_at_unix: SystemTime::now().duration_since(UNIX_EPOCH).map_err(|_| "HOST_WINDOWS_HANDOFF_CLOCK_INVALID")?.as_secs(),
+                error_code: error.into(), replay_authorized: false,
+            }),
             schema_version: 1,
             request_id: self.request_id.clone(),
             success,
             code: code.into(),
-            detail: format!(
-                "phase={};effects_possible={};target={};error={};replay_allowed=false;authority=UNSIGNED_LOCAL_ADMIN_OBSERVATION",
-                self.phase.name(),
-                self.effects_possible,
-                self.target,
-                error
-            ),
+            detail: "Unsigned local Administrator observation; not a SYSTEM receipt or replay permission".into(),
             active_release_set_sha256: load_verified_activation(&self.root)
                 .ok()
                 .map(|a| a.release_set_sha256),
@@ -796,6 +772,16 @@ mod tests {
         fs::create_dir(&dir).unwrap();
         let path = dir.join("handoff.pb");
         let record = WindowsPrivilegedResult {
+            handoff: Some(edge_shared_types::WindowsOfflineHandoffObservation {
+                schema_version: 1,
+                phase: Phase::Begin as i32,
+                target_release_set_sha256: "a".repeat(64),
+                accepted_revision: "b".repeat(40),
+                effects_possible: true,
+                observed_at_unix: 1,
+                error_code: "NONE".into(),
+                replay_authorized: false,
+            }),
             schema_version: 1,
             request_id: "1-1".into(),
             success: false,
