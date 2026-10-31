@@ -394,6 +394,55 @@ mod io_tests {
     }
 
     #[test]
+    fn native_full_root_command_preserves_exact_authorized_program_and_arguments() {
+        // A dry-run construction only: no privileged executable is spawned.
+        // Separate capabilities must not become a hard-coded Docker whitelist.
+        let commands = [
+            vec!["/usr/bin/docker", "container", "restart", "owned"],
+            vec!["/usr/bin/docker", "volume", "inspect", "owned"],
+            vec!["/usr/bin/docker", "network", "inspect", "owned"],
+            vec!["/usr/sbin/ip", "-6", "route", "show", "table", "all"],
+            vec!["/usr/sbin/nft", "list", "ruleset"],
+            vec!["/usr/bin/resolvectl", "status"],
+            vec!["/usr/bin/systemctl", "status", "docker"],
+            vec!["/usr/bin/install", "-m", "0600", "source", "target"],
+            vec!["/usr/bin/ps", "-ef"],
+            vec!["/usr/bin/env", "sh", "-c", "printf ok"],
+        ];
+        for argv in commands {
+            let request = edge_shared_types::FleetNativeAdminRequest {
+                schema_version: 1,
+                machine_id: "application-acceptance-5".into(),
+                source_comment_id: 42,
+                release_set_sha256: vec![1; 32],
+                comment_sha256: vec![2; 32],
+                requested_at_unix: 100,
+                argv: argv.iter().map(|s| (*s).to_owned()).collect(),
+                working_directory: "/".into(),
+                environment: vec!["LC_ALL=C".into()],
+                stdin_bytes: b"exact-bytes".to_vec(),
+                timeout_seconds: 60,
+                publish_output: false,
+            };
+            edge_shared_types::host_admin::validate_for_kind(
+                &request, edge_shared_types::FleetHostKind::Vm
+            ).unwrap();
+            let program = prepared_root_child(&request).unwrap();
+            assert_eq!(program.get_program(), std::ffi::OsStr::new("/usr/bin/timeout"));
+            let actual = program.get_args().map(|s| s.to_string_lossy().into_owned())
+                .collect::<Vec<_>>();
+            let mut expected = vec!["--kill-after=5s".to_owned(), "60s".to_owned()];
+            expected.extend(request.argv.clone());
+            assert_eq!(actual, expected);
+            assert_eq!(program.get_current_dir(), Some(std::path::Path::new("/")));
+            assert_eq!(
+                program.get_envs().find(|(key, _)| *key == "LC_ALL".as_ref()).and_then(|(_, value)| value),
+                Some(std::ffi::OsStr::new("C"))
+            );
+        }
+    }
+
+    #[test]
     fn fsynced_begin_cannot_be_replayed_after_lost_ack() {
         let dir = std::env::temp_dir().join(format!("sing-box-admin-proof-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
@@ -407,6 +456,39 @@ mod io_tests {
         std::fs::remove_file(marker).unwrap();
         std::fs::remove_dir(dir).unwrap();
     }
+}
+
+/// An arbitrary Linux administrative program is a capability, not a
+/// Git-desired resource change. This builder has no functional allowlist and
+/// MUST only be called after Worker verification and the durable admin BEGIN.
+fn prepared_root_child(
+    request: &edge_shared_types::FleetNativeAdminRequest,
+) -> Result<OsCommand, String> {
+    // FULL native root capability: no executable/interpreter/argv/cwd allowlist.
+    // A script interpreter may be selected by the authenticated request.
+    let mut cmd = OsCommand::new("/usr/bin/timeout");
+    cmd.args(["--kill-after=5s", &format!("{}s", request.timeout_seconds)])
+        .arg(&request.argv[0])
+        .args(&request.argv[1..])
+        .env_clear()
+        .env(
+            "PATH",
+            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
+        )
+        .env("LANG", "C")
+        .current_dir(if request.working_directory.is_empty() {
+            "/"
+        } else {
+            request.working_directory.as_str()
+        })
+        .stdin(OsStdio::piped())
+        .stdout(OsStdio::piped())
+        .stderr(OsStdio::piped());
+    for item in &request.environment {
+        let (name, value) = item.split_once('=').ok_or("HOST_ADMIN_ENV_ENTRY_INVALID")?;
+        cmd.env(name, value);
+    }
+    Ok(cmd)
 }
 
 pub(super) async fn execute() -> Result<(), String> {
@@ -503,30 +585,7 @@ pub(super) async fn execute() -> Result<(), String> {
     let stdout_spool = open_capture(&stdout_capture)?;
     let stderr_spool = open_capture(&stderr_capture)?;
 
-    // FULL native root capability: no executable/interpreter/argv/cwd allowlist.
-    // A script interpreter may be selected by the authenticated request.
-    let mut cmd = OsCommand::new("/usr/bin/timeout");
-    cmd.args(["--kill-after=5s", &format!("{}s", request.timeout_seconds)])
-        .arg(&request.argv[0])
-        .args(&request.argv[1..])
-        .env_clear()
-        .env(
-            "PATH",
-            "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin",
-        )
-        .env("LANG", "C")
-        .current_dir(if request.working_directory.is_empty() {
-            "/"
-        } else {
-            request.working_directory.as_str()
-        })
-        .stdin(OsStdio::piped())
-        .stdout(OsStdio::piped())
-        .stderr(OsStdio::piped());
-    for item in &request.environment {
-        let (name, value) = item.split_once('=').ok_or("HOST_ADMIN_ENV_ENTRY_INVALID")?;
-        cmd.env(name, value);
-    }
+    let mut cmd = prepared_root_child(&request)?;
     let mut child = cmd
         .spawn()
         .map_err(|_| "HOST_ADMIN_PROCESS_START_UNKNOWN_NO_REPLAY")?;

@@ -461,6 +461,65 @@ mod tests {
         }
     }
     #[test]
+    fn vm_unrestricted_root_surface_remains_worker_signed_and_byte_exact() {
+        // These are admissible administrative domains, NOT a set of allowed
+        // paths: there is deliberately no executable, container or interface
+        // allowlist. No host command is run by this contract test.
+        let examples = [
+            ("/usr/bin/docker", vec!["container", "inspect", "owned"]),
+            ("/usr/bin/docker", vec!["volume", "inspect", "owned"]),
+            ("/usr/bin/docker", vec!["network", "inspect", "owned"]),
+            ("/usr/sbin/ip", vec!["-6", "route", "show"]),
+            ("/usr/sbin/nft", vec!["list", "ruleset"]),
+            ("/usr/bin/resolvectl", vec!["status"]),
+            ("/usr/bin/systemctl", vec!["status", "docker"]),
+            ("/usr/bin/install", vec!["--help"]),
+            ("/usr/bin/ps", vec!["-ef"]),
+            ("/usr/bin/env", vec!["sh", "-c", "printf ok"]),
+        ];
+        let key = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+        let signer = Ed25519KeyPair::from_pkcs8(key.as_ref()).unwrap();
+        for (index, (program, args)) in examples.iter().enumerate() {
+            let mut req = request();
+            req.source_comment_id = 600 + index as u64;
+            req.argv = std::iter::once((*program).to_owned())
+                .chain(args.iter().map(|arg| (*arg).to_owned()))
+                .collect();
+            req.stdin_bytes = vec![0, 1, 2, 3];
+            req.working_directory = "/var/lib".into();
+            req.environment = vec!["LANG=C".into(), "OWNER=typed".into()];
+            req.publish_output = true;
+            validate_for_kind(&req, crate::FleetHostKind::Vm).unwrap();
+            let mut auth = Authorization {
+                schema_version: 1,
+                key_id: "worker".into(),
+                operation_id: operation_id(&req),
+                issued_at_unix: 100,
+                expires_at_unix: 200,
+                ed25519_signature: Vec::new(),
+            };
+            auth.ed25519_signature = signer.sign(&authorization_payload(&req, &auth))
+                .as_ref().to_vec();
+            verify_authorization(&req, &auth, signer.public_key().as_ref(), 150).unwrap();
+            let mut tampered = req.clone();
+            tampered.argv.push("extra".into());
+            assert!(verify_authorization(&tampered, &auth, signer.public_key().as_ref(), 150).is_err());
+            tampered = req.clone();
+            tampered.working_directory = "/etc".into();
+            assert!(verify_authorization(&tampered, &auth, signer.public_key().as_ref(), 150).is_err());
+            tampered = req.clone();
+            tampered.environment.push("OTHER=1".into());
+            assert!(verify_authorization(&tampered, &auth, signer.public_key().as_ref(), 150).is_err());
+            tampered = req.clone();
+            tampered.stdin_bytes.push(4);
+            assert!(verify_authorization(&tampered, &auth, signer.public_key().as_ref(), 150).is_err());
+            tampered = req.clone();
+            tampered.publish_output = false;
+            assert!(verify_authorization(&tampered, &auth, signer.public_key().as_ref(), 150).is_err());
+        }
+    }
+
+    #[test]
     fn arbitrary_program_is_allowed_but_modified_payload_is_rejected() {
         let pkcs8 = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
         let signer = Ed25519KeyPair::from_pkcs8(pkcs8.as_ref()).unwrap();

@@ -632,6 +632,29 @@ assert "grep -Fxq false" not in router, "GitHub API bool must be decoded as JSON
 assert "jq -e '(.errors == null)" in router
 assert "needs.host.outputs.operation == 'STATUS'" in router
 
+# Retain the existing full-root VM ADMIN executor independent of the
+# declarative graph effectors. It must be Worker signed and journalled,
+# not runner-side shell or an accidental resource-path allowlist.
+vm_admin = Path("edge-platform/crates/edge-agent/src/host_admin_native.rs").read_text(encoding="utf-8")
+vm_dispatch = Path("edge-platform/crates/edge-agent/src/local_dispatch.rs").read_text(encoding="utf-8")
+vm_cli = Path("edge-platform/crates/edge-agent/src/cli.rs").read_text(encoding="utf-8")
+assert "cli::LocalCommand::HostAdmin => host_admin_native::execute()" in vm_dispatch
+assert "cli::LocalCommand::HostApply => host_native::apply(&stack_dir)" in vm_dispatch
+assert "HostAdmin," in vm_cli and "HostApply," in vm_cli
+assert "fn prepared_root_child(" in vm_admin
+assert 'OsCommand::new("/usr/bin/timeout")' in vm_admin
+assert "host_admin::verify_authorization(&request, &auth" in vm_admin
+assert "durable_create(&pending, &raw)?;" in vm_admin
+assert vm_admin.index("host_admin::verify_authorization(&request, &auth") < vm_admin.index("durable_create(&pending, &raw)?;") < vm_admin.index("let mut cmd = prepared_root_child(&request)?;")
+assert "independent_admin_operation_available(&journal, &operation_id)?;" in vm_admin
+assert "fn native_full_root_command_preserves_exact_authorized_program_and_arguments()" in vm_admin
+assert "fn vm_unrestricted_root_surface_remains_worker_signed_and_byte_exact()" in Path(
+    "edge-platform/crates/edge-shared-types/src/host_admin.rs"
+).read_text(encoding="utf-8")
+# An unknown BEGIN must block arbitrary ADMIN, not grant an escape hatch.
+assert "HOST_ADMIN_PENDING_UNKNOWN_NO_REPLAY" in vm_admin
+assert "arbitrary_vm_admin_never_bypasses_unknown_resource_or_other_admin" in vm_admin
+
 # Native Windows first-use is a single local Administrator transaction.
 # It must never reactivate the old NetworkService-writable unsigned mutation
 # inlet while replacing the EXACT existing LocalSystem task.

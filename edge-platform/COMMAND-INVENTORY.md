@@ -5,7 +5,7 @@
 | Синтаксис | Поддерживаемый смысл и предел |
 | --- | --- |
 | `/host diagnose <machine-id> <read-only argv>` | VM only. Protobuf-validated, bounded unprivileged native `ip/ss/ps/uname/uptime/resolvectl/systemctl` observations via exact existing self-hosted runner and installed Root Agent. Examples: `/host diagnose application-acceptance-4 ip -6 route show table all` or a single 3-probe job `/host diagnose application-acceptance-4 ip -4 address show --next ip -6 route show table all --next ss -tln`. The literal `--next` separates up to six independently validated read-only commands, not shell syntax; all commands must be valid *before* the first executes. Each has bounded output and a separate exit/result. Never a shell/mutation; `RUNNER_COPIED_UNAUTHENTICATED` is NOT signed physical receipt. |
-| `/host admin <machine-id> <base64url-json>` — **единственный универсальный root-интерфейс для диагностики и администрирования** | **Полный root**: универсальные авторизованные argv/cwd/env/stdin; отдельный Worker Ed25519 intent, точный ReleaseSet, собственный root-журнал, root-signed receipt. Чужой pending BEGIN не мешает НОВОЙ операции. Тот же operation ID не повторяется. По умолчанию вывод не публикуется: только hashes/counts; `publish_output: true` явно разрешает ограниченный preview (не для секретов). Payload fields: `argv,cwd,environment,stdin_base64,timeout_seconds,publish_output`. |
+| `/host admin <machine-id> <base64url-json>` — **единственный универсальный root-интерфейс для диагностики и администрирования** | **Полный root**: универсальные авторизованные argv/cwd/env/stdin; отдельный Worker Ed25519 intent, точный ReleaseSet, собственный root-журнал, root-signed receipt. Незавершённый/неизвестный BEGIN любой операции блокирует новый ADMIN до независимой безопасной оценки; тот же operation ID не повторяется. Права root не означают обход журнала. По умолчанию вывод не публикуется: только hashes/counts; `publish_output: true` явно разрешает ограниченный preview (не для секретов). Payload fields: `argv,cwd,environment,stdin_base64,timeout_seconds,publish_output`. |
 | `/host witness-line2 <machine-id>` | Independent GitHub-hosted read-only acceptance of the six project-owned Line2 public proxies. Exact Git-selected VM, Vultr NOOP/firewall readback, canonical hostname/SNI, protected Access identity and credential generation required. Fresh Ed25519 Worker challenge, bounded system-resolver A/AAAA observation (NOT an authoritative DNS absence proof), good/bad auth, authenticated HTTPS CONNECT/204, DNS-over-HTTPS positive A and exact NXDOMAIN RCODE through each of the six proxy paths, SOCKS5h negative-host no-origin check and two independent DIRECT/WARP public egress witnesses (including Cloudflare trace) are tested; this is **not** a blanket G5 authoritative DNS/DNS-leak/IPv6/UDP PASS. The current Git Line2 `warp-local` outbound declares `network: tcp`; both public SOCKS ports are published over TCP only. Line2 UDP remains unproven/unsupported by this manifest, not silently passed. The independent hosted result correlates to the original comment; installed VM release still requires a native signed readback. No VM/container/Worker mutation. |
 | `/host status [machine-id] [--deep]` | Только read-only: Git/ReleaseSet, runner, native owner и bounded ресурсы, DNS/network readback, reason/owner/scope; `UNPROVEN` не означает healthy |
 | `/host apply <machine-id>` | Единственный типизированный однократный маршрут Git/ReleaseSet → owner-gated Worker/signature → VM root Agent / Windows SYSTEM Controller, журнал и signed native receipt. Может завершиться только кодовым Worker upgrade/first-use или `BLOCKED`: не утверждать, что VM установлена, пока это не доказано |
@@ -17,6 +17,31 @@
 | `/host recover <machine-id>` | **VM: однократное code-only обновление действующего Root Agent/trust из exact protected Git ReleaseSet через штатный `host-refresh`, затем read-only диагностика.** Кодовое обновление меняет бинарник/trust, но не контейнеры, DNS, firewall, credentials и не снимает pending. Любой resource recovery, replay, reinstall и rollback остаётся **BLOCKED/UNSUPPORTED** без отдельного подписанного native handler. Windows пока typed preflight без SYSTEM effect |
 
 Нет других пользовательских `/vm`, `/windows`, `/vultr`, `/production`, `/credentials` команд. Внутренние Rust build/read-only/first-use verbs и typed `HostWorkflowOperation → GitHub Actions operation` не создают новых операторских ingress. `HostIntent`, desired, result и receipt — Protobuf; JSON допускается на необходимых внешних API/renderer границах, не как второй dispatcher.
+
+## Полная административная власть и граница декларативного применения
+
+`/host admin` сохраняет **универсальную функциональность настоящего Linux root**:
+процессы/systemd, файлы и каталоги, Docker containers/images/volumes/networks,
+IPv4/IPv6 links/routes/rules, DNS, nftables/firewall, WARP, sing-box и
+остальные программы доступны по явно подписанным `argv/cwd/env/stdin`.
+Нет ограничительного списка команд или отдельных владельцев для Docker,
+сети и системы. Исполнитель — тот же установленный `edge-agent` под root;
+runner не получает sudo, Docker socket и право менять эффект.
+
+При этом **полномочие root ≠ успешная операция**: Git actor, Worker signature,
+exact immutable ReleaseSet и root identity должны совпасть; перед любым
+эффектом обязательно fsync BEGIN в существующем root journal. Неизвестный
+результат запрещает повтор и дальнейшие произвольные ADMIN до независимого
+`/host recover`/read-only reconciliation. `/host admin` не является
+запасным механизмом обхода типизированного `/host apply`.
+
+`/host apply` пока реализует только поддерживаемые безопасные native
+effectors: START/STOP/INSTALL, config-only, paired pinned gateway image,
+один root-owned managed Docker/file/route/firewall/DNS resource. Изменения
+сразу нескольких конфигураций вместе с image и замена существующего сетевого
+графа остаются `BLOCKED/UNSUPPORTED` **до отдельного типизированного native
+handler**, но это не урезает универсальное root admin. CI проверяет границы,
+физическая приёмка Root Agent и всей сети отдельна.
 
 ## Владелец и безопасность
 
