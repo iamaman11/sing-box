@@ -175,6 +175,36 @@ pub fn verify_authorization(
         .map_err(|_| "HOST_ADMIN_SIGNATURE_REJECTED")
 }
 fn preview_valid(request: &Request, result: &ResultReceipt) -> bool {
+    if result.rejected_before_begin {
+        let empty = ring::digest::digest(&ring::digest::SHA256, b"");
+        return rejection_code_valid(&result.rejection_code)
+            && result.worker_authorization.is_none()
+            && (result.rejection_code != "HOST_ADMIN_REQUEST_EXPIRED_BEFORE_BEGIN"
+                || expired_before_begin(request, result.observed_at_unix))
+            && !result.process_exited
+            && result.exit_code == 0
+            && result.stdout_sha256 == empty.as_ref()
+            && result.stderr_sha256 == empty.as_ref()
+            && result.stdout_preview.is_empty()
+            && result.stderr_preview.is_empty()
+            && result.stdout_total_bytes == 0
+            && result.stderr_total_bytes == 0
+            && result.stdout_capture_path.is_empty()
+            && result.stderr_capture_path.is_empty()
+            && result.stdout_capture_bytes == 0
+            && result.stderr_capture_bytes == 0
+            && !result.stdout_capture_complete
+            && !result.stderr_capture_complete
+            && !result.stdout_stream_eof
+            && !result.stderr_stream_eof
+            && result.stdin_bytes_written == 0
+            && !result.stdin_input_complete
+            && !result.stdout_truncated
+            && !result.stderr_truncated;
+    }
+    if !result.rejection_code.is_empty() {
+        return false;
+    }
     let max = 64 * 1024;
     let a = result.stdout_preview.len();
     let b = result.stderr_preview.len();
@@ -201,6 +231,59 @@ fn preview_valid(request: &Request, result: &ResultReceipt) -> bool {
         && (!request.publish_output
             || (a as u64 == result.stdout_total_bytes.min(max as u64)
                 && b as u64 == result.stderr_total_bytes.min(max as u64)))
+}
+
+pub fn expired_before_begin(request: &Request, now: u64) -> bool {
+    now > request.requested_at_unix.saturating_add(300)
+}
+
+pub fn expired_rejection(request: &Request, now: u64) -> Result<ResultReceipt, &'static str> {
+    validate(request)?;
+    if !expired_before_begin(request, now) {
+        return Err("HOST_ADMIN_REQUEST_NOT_EXPIRED");
+    }
+    prebegin_rejection(request, now, "HOST_ADMIN_REQUEST_EXPIRED_BEFORE_BEGIN")
+}
+
+fn rejection_code_valid(code: &str) -> bool {
+    code.starts_with("HOST_")
+        && code.len() <= 128
+        && code
+            .bytes()
+            .all(|b| b.is_ascii_uppercase() || b.is_ascii_digit() || b == b'_')
+}
+
+pub fn prebegin_rejection(
+    request: &Request,
+    now: u64,
+    reason: &str,
+) -> Result<ResultReceipt, &'static str> {
+    validate(request)?;
+    let code = if rejection_code_valid(reason) {
+        reason
+    } else {
+        "HOST_ADMIN_PREBEGIN_UNCLASSIFIED"
+    };
+    if code == "HOST_ADMIN_REQUEST_EXPIRED_BEFORE_BEGIN" && !expired_before_begin(request, now) {
+        return Err("HOST_ADMIN_REQUEST_NOT_EXPIRED");
+    }
+    let empty = ring::digest::digest(&ring::digest::SHA256, b"")
+        .as_ref()
+        .to_vec();
+    Ok(ResultReceipt {
+        schema_version: 1,
+        machine_id: request.machine_id.clone(),
+        operation_id: operation_id(request),
+        request_sha256: ring::digest::digest(&ring::digest::SHA256, &request.encode_to_vec())
+            .as_ref()
+            .to_vec(),
+        observed_at_unix: now,
+        stdout_sha256: empty.clone(),
+        stderr_sha256: empty,
+        rejected_before_begin: true,
+        rejection_code: code.into(),
+        ..Default::default()
+    })
 }
 fn receipt_payload(request: &Request, result: &ResultReceipt) -> Vec<u8> {
     let mut unsigned = result.clone();
@@ -258,10 +341,81 @@ pub fn verify_receipt(
         .verify(&receipt_payload(request, receipt), &receipt.root_signature)
         .map_err(|_| "HOST_ADMIN_RECEIPT_SIGNATURE_REJECTED")
 }
+
+pub fn verify_receipt_worker_authority(
+    request: &Request,
+    receipt: &ResultReceipt,
+    worker_public_key: &[u8],
+) -> Result<(), &'static str> {
+    if receipt.rejected_before_begin {
+        return if receipt.worker_authorization.is_none() {
+            Ok(())
+        } else {
+            Err("HOST_ADMIN_REJECTION_CANNOT_CLAIM_AUTHORIZATION")
+        };
+    }
+    let auth = receipt
+        .worker_authorization
+        .as_ref()
+        .ok_or("HOST_ADMIN_RECEIPT_WORKER_AUTHORIZATION_MISSING")?;
+    if receipt.observed_at_unix < auth.issued_at_unix {
+        return Err("HOST_ADMIN_RECEIPT_PRECEDES_AUTHORIZATION");
+    }
+    // Historical receipts remain verifiable after grant expiry; the exact
+    // SYSTEM/root executor verified freshness immediately before BEGIN.
+    verify_authorization(request, auth, worker_public_key, auth.issued_at_unix)
+}
 #[cfg(test)]
 mod tests {
     use super::*;
     use ring::{rand::SystemRandom, signature::KeyPair};
+    #[test]
+    fn signed_prebegin_denial_never_proves_execution_or_replays_a_fresh_request() {
+        let req = request();
+        assert!(!expired_before_begin(&req, req.requested_at_unix + 300));
+        assert!(expired_rejection(&req, req.requested_at_unix + 300).is_err());
+        let key = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+        let owner = Ed25519KeyPair::from_pkcs8(key.as_ref()).unwrap();
+        let mut denied = expired_rejection(&req, req.requested_at_unix + 301).unwrap();
+        sign_receipt(&req, &mut denied, key.as_ref()).unwrap();
+        verify_receipt(&req, &denied, owner.public_key().as_ref()).unwrap();
+        assert!(denied.rejected_before_begin && !denied.process_exited);
+        for field in 0..5 {
+            let mut bad = denied.clone();
+            match field {
+                0 => bad.process_exited = true,
+                1 => bad.stdout_stream_eof = true,
+                2 => bad.stdout_preview = vec![1],
+                3 => bad.stdin_bytes_written = 1,
+                _ => bad.rejected_before_begin = false,
+            }
+            assert!(sign_receipt(&req, &mut bad, key.as_ref()).is_err());
+            assert!(verify_receipt(&req, &bad, owner.public_key().as_ref()).is_err());
+        }
+        let mut foreign = req.clone();
+        foreign.source_comment_id += 1;
+        assert!(verify_receipt(&foreign, &denied, owner.public_key().as_ref()).is_err());
+        let mut bad = denied.clone();
+        bad.rejection_code = "HOST_WINDOWS_OTHER_FAILURE".into();
+        assert!(verify_receipt(&req, &bad, owner.public_key().as_ref()).is_err());
+        let redacted = prebegin_rejection(
+            &req,
+            req.requested_at_unix + 1,
+            "HOST_ERROR: token=do-not-store",
+        )
+        .unwrap();
+        assert_eq!(redacted.rejection_code, "HOST_ADMIN_PREBEGIN_UNCLASSIFIED");
+        let precise = prebegin_rejection(
+            &req,
+            req.requested_at_unix + 1,
+            "HOST_WINDOWS_TRUST_ACCEPTED_CANDIDATE_UNPROVEN",
+        )
+        .unwrap();
+        assert_eq!(
+            precise.rejection_code,
+            "HOST_WINDOWS_TRUST_ACCEPTED_CANDIDATE_UNPROVEN"
+        );
+    }
     #[test]
     fn admin_cwd_matches_git_host_kind() {
         let mut r = request();
@@ -374,9 +528,48 @@ mod tests {
             stderr_stream_eof: true,
             stdin_bytes_written: req.stdin_bytes.len() as u64,
             stdin_input_complete: true,
+            ..Default::default()
         };
         sign_receipt(&req, &mut receipt, owner_key.as_ref()).unwrap();
         verify_receipt(&req, &receipt, owner.public_key().as_ref()).unwrap();
+        assert!(
+            verify_receipt_worker_authority(&req, &receipt, owner.public_key().as_ref()).is_err()
+        );
+        let worker_key = Ed25519KeyPair::generate_pkcs8(&SystemRandom::new()).unwrap();
+        let worker = Ed25519KeyPair::from_pkcs8(worker_key.as_ref()).unwrap();
+        let mut grant = Authorization {
+            schema_version: 1,
+            key_id: "worker".into(),
+            operation_id: operation_id(&req),
+            issued_at_unix: 100,
+            expires_at_unix: 200,
+            ..Default::default()
+        };
+        grant.ed25519_signature = worker
+            .sign(&authorization_payload(&req, &grant))
+            .as_ref()
+            .to_vec();
+        receipt.worker_authorization = Some(grant);
+        sign_receipt(&req, &mut receipt, owner_key.as_ref()).unwrap();
+        verify_receipt(&req, &receipt, owner.public_key().as_ref()).unwrap();
+        verify_receipt_worker_authority(&req, &receipt, worker.public_key().as_ref()).unwrap();
+        let mut forged = receipt.clone();
+        forged
+            .worker_authorization
+            .as_mut()
+            .unwrap()
+            .ed25519_signature[0] ^= 1;
+        sign_receipt(&req, &mut forged, owner_key.as_ref()).unwrap();
+        verify_receipt(&req, &forged, owner.public_key().as_ref()).unwrap();
+        assert!(
+            verify_receipt_worker_authority(&req, &forged, worker.public_key().as_ref()).is_err()
+        );
+        let mut backwards = receipt.clone();
+        backwards.observed_at_unix = 99;
+        assert!(
+            verify_receipt_worker_authority(&req, &backwards, worker.public_key().as_ref())
+                .is_err()
+        );
         let mut edited = receipt.clone();
         edited.stdout_stream_eof = false;
         assert!(verify_receipt(&req, &edited, owner.public_key().as_ref()).is_err());

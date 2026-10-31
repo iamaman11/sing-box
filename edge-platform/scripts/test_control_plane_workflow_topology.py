@@ -569,13 +569,20 @@ assert "HOST_WINDOWS_ADMIN_RECOVERY_SCOPE_INVALID" in admin_system
 assert "HOST_WINDOWS_PENDING_GATE_NO_REPLAY" in admin_system
 assert "HOST_WINDOWS_OPERATION_EXISTS_NO_REPLAY" in admin_system
 assert "check_journal_entry(&name, &id, admin, recovery)?" in admin_system
-assert admin_system.count("request_available(&journal, &operation, true, false)?;") == 2
-assert admin_system.index(
+admin_dispatch = admin_system.split("pub(super) async fn dispatch_if_present", 1)[1].split(
+    "pub(super) fn preflight_expired_transport_handoff", 1
+)[0]
+assert admin_dispatch.count("request_available(&journal, &operation, true, false)?;") == 2
+assert admin_dispatch.index(
     "host_admin::verify_authorization"
-) < admin_system.rindex(
+) < admin_dispatch.rindex(
     "request_available(&journal, &operation, true, false)?;"
-) < admin_system.index("create(&pending, &raw)?;")
-assert admin_system.index("request_available(&journal") < admin_system.index("request_canonical_native_admin_authorization")
+) < admin_dispatch.index("create(&pending, &raw)?;")
+assert admin_dispatch.index("request_available(&journal") < admin_dispatch.index("request_canonical_native_admin_authorization")
+denial = admin_system.split("fn deny_before_begin", 1)[1].split("#[cfg(test)]", 1)[0]
+assert denial.index("request_available(&journal") < denial.index("host_admin::prebegin_rejection")
+assert "receipt.rejected_before_begin" in denial
+assert "transport.consume()?" in denial
 assert "windows_native_runtime::execute" in Path("edge-platform/crates/edge-controller/src/controller_rpc.rs").read_text(encoding="utf-8")
 effect_contract=Path("edge-platform/crates/edge-shared-types/src/windows_runtime_effect.rs").read_text(encoding="utf-8")
 assert "verify_host_authorization" in effect_contract

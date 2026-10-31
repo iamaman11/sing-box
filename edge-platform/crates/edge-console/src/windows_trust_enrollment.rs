@@ -243,6 +243,18 @@ pub(super) fn read_only_first_use_trust_stage(
     root: &Path,
     active: &WindowsActivationState,
 ) -> Result<&'static str, String> {
+    read_only_trust_stage_with_visibility(
+        root,
+        active,
+        require_windows_local_administrator_first_use().is_ok(),
+    )
+}
+
+fn read_only_trust_stage_with_visibility(
+    root: &Path,
+    active: &WindowsActivationState,
+    admin_metadata_only: bool,
+) -> Result<&'static str, String> {
     let marker = root.join(MARKER);
     let done = root.join(DONE);
     let has_marker = windows_receipt_enrollment::checked_regular_exists(&marker, 512)?;
@@ -282,6 +294,16 @@ pub(super) fn read_only_first_use_trust_stage(
     if has_trust {
         if !has_marker && !has_done {
             return Err("HOST_WINDOWS_FIRST_USE_ORPHAN_TRUST_SNAPSHOT".into());
+        }
+        // Administrator may observe sealed trust metadata and public markers,
+        // but must not read the SYSTEM-only snapshot or its descriptor. This
+        // projection is never authority for a native operation: SYSTEM still
+        // decodes and independently verifies trust in current_authority().
+        if admin_metadata_only {
+            if !has_done || has_marker {
+                return Err("HOST_WINDOWS_FIRST_USE_TRUST_COMPLETION_UNPROVEN".into());
+            }
+            return Ok("TRUST_RECORDED_UNVERIFIED");
         }
         let bytes = fs::read(root.join(TRUST_FILE))
             .map_err(|_| "HOST_WINDOWS_FIRST_USE_TRUST_SNAPSHOT_UNREADABLE")?;
@@ -799,10 +821,40 @@ pub(super) async fn fetch_exact_protected_git(
     }
     let current_provenance = ReleaseSet::decode(current_release_pb.as_slice())
         .map_err(|_| "HOST_WINDOWS_TRUST_CURRENT_RELEASE_PROTO_INVALID")?;
-    if current_provenance.encode_to_vec() != current_release_pb
-        || current_provenance.source_revision != current_main
-    {
+    if current_provenance.encode_to_vec() != current_release_pb {
         return Err("HOST_WINDOWS_TRUST_CURRENT_RELEASE_SOURCE_MISMATCH".into());
+    }
+    if current_provenance.source_revision != current_main {
+        // The existing publisher promotes an accepted candidate without
+        // rebuilding its binaries. Reuse its canonical acceptance/tree proof,
+        // rather than confusing the candidate source with the merge commit.
+        let candidate = &current_provenance.source_revision;
+        if !exact_git_revision(candidate) {
+            return Err("HOST_WINDOWS_TRUST_CANDIDATE_REVISION_INVALID".into());
+        }
+        let accepted_commit_url = format!("{base}/git/commits/{current_main}");
+        let candidate_commit_url = format!("{base}/git/commits/{candidate}");
+        let (acceptance, accepted_commit, candidate_commit) = tokio::try_join!(
+            accepted_asset(
+                &client,
+                &current_release,
+                current_tag,
+                "acceptance.json",
+                16_384
+            ),
+            fetch_json(&client, &accepted_commit_url),
+            fetch_json(&client, &candidate_commit_url),
+        )?;
+        let acceptance = serde_json::from_slice(&acceptance)
+            .map_err(|_| "HOST_WINDOWS_TRUST_ACCEPTANCE_JSON_INVALID")?;
+        verify_accepted_candidate(
+            current_main,
+            candidate,
+            &acceptance,
+            &accepted_commit,
+            &candidate_commit,
+        )
+        .map_err(str::to_owned)?;
     }
     // Fail closed if protected main moved during the multi-source fetch.
     // A later SYSTEM tick can evaluate the new state; no bytes are committed.
@@ -811,6 +863,38 @@ pub(super) async fn fetch_exact_protected_git(
         return Err("HOST_WINDOWS_TRUST_GIT_CHANGED_DURING_FETCH".into());
     }
     Ok((installed_release_pb, current_release_pb, registry_pb, spec))
+}
+
+fn verify_accepted_candidate(
+    accepted: &str,
+    candidate: &str,
+    acceptance: &serde_json::Value,
+    accepted_commit: &serde_json::Value,
+    candidate_commit: &serde_json::Value,
+) -> Result<(), &'static str> {
+    let tree = acceptance["source_tree"].as_str();
+    if !exact_git_revision(accepted)
+        || !exact_git_revision(candidate)
+        || acceptance["schema"].as_u64() != Some(1)
+        || acceptance["accepted_revision"].as_str() != Some(accepted)
+        || acceptance["candidate_revision"].as_str() != Some(candidate)
+        || !acceptance["candidate_run_id"]
+            .as_str()
+            .and_then(|s| {
+                s.parse::<u64>()
+                    .ok()
+                    .filter(|n| *n > 0 && n.to_string() == s)
+            })
+            .is_some()
+        || !tree.is_some_and(exact_git_revision)
+        || accepted_commit["sha"].as_str() != Some(accepted)
+        || candidate_commit["sha"].as_str() != Some(candidate)
+        || accepted_commit["tree"]["sha"].as_str() != tree
+        || candidate_commit["tree"]["sha"].as_str() != tree
+    {
+        return Err("HOST_WINDOWS_TRUST_ACCEPTED_CANDIDATE_UNPROVEN");
+    }
+    Ok(())
 }
 
 /// First-use trust is bound to the *installed* immutable ReleaseSet whose
@@ -1100,6 +1184,45 @@ pub(super) async fn dispatch_if_needed(install_root: &Path) -> Result<(), String
 mod tests {
     use super::*;
     #[test]
+    fn accepted_candidate_requires_published_identity_and_equal_commit_trees() {
+        let accepted = "a".repeat(40);
+        let candidate = "b".repeat(40);
+        let tree = "c".repeat(40);
+        let proof = serde_json::json!({"schema":1,"accepted_revision":accepted,
+            "candidate_revision":candidate,"source_tree":tree,"candidate_run_id":"41228624547"});
+        let merge = serde_json::json!({"sha":accepted,"tree":{"sha":tree}});
+        let head = serde_json::json!({"sha":candidate,"tree":{"sha":tree}});
+        assert_eq!(
+            verify_accepted_candidate(&accepted, &candidate, &proof, &merge, &head),
+            Ok(())
+        );
+        for field in [
+            "accepted_revision",
+            "candidate_revision",
+            "source_tree",
+            "candidate_run_id",
+        ] {
+            let mut bad = proof.clone();
+            bad[field] = serde_json::json!("foreign");
+            assert!(verify_accepted_candidate(&accepted, &candidate, &bad, &merge, &head).is_err());
+        }
+        for field in ["sha", "tree"] {
+            let mut bad = head.clone();
+            bad[field] = serde_json::json!("foreign");
+            assert!(
+                verify_accepted_candidate(&accepted, &candidate, &proof, &merge, &bad).is_err()
+            );
+            let mut bad = merge.clone();
+            bad[field] = serde_json::json!("foreign");
+            assert!(verify_accepted_candidate(&accepted, &candidate, &proof, &bad, &head).is_err());
+        }
+        for run in ["0", "-1", "0001", "", "1e3"] {
+            let mut bad = proof.clone();
+            bad["candidate_run_id"] = serde_json::json!(run);
+            assert!(verify_accepted_candidate(&accepted, &candidate, &bad, &merge, &head).is_err());
+        }
+    }
+    #[test]
     fn first_use_published_release_proof_rejects_drift_and_registry_tamper() {
         let source = "a".repeat(40);
         let release = ReleaseSet {
@@ -1192,7 +1315,7 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(
-            read_only_first_use_trust_stage(&dir, &active),
+            read_only_trust_stage_with_visibility(&dir, &active, false),
             Ok("RECEIPT_READY_TRUST_NOT_REQUESTED")
         );
         let marker = FleetWindowsTrustEnrollment {
@@ -1203,7 +1326,7 @@ mod tests {
         };
         std::fs::write(dir.join(MARKER), marker.encode_to_vec()).unwrap();
         assert_eq!(
-            read_only_first_use_trust_stage(&dir, &active),
+            read_only_trust_stage_with_visibility(&dir, &active, false),
             Ok("AWAITING_GIT_AUTHORITY_OR_SYSTEM")
         );
         let snapshot = FleetNativeTrustSnapshot {
@@ -1215,11 +1338,20 @@ mod tests {
         };
         std::fs::write(dir.join(TRUST_FILE), snapshot.encode_to_vec()).unwrap();
         assert_eq!(
-            read_only_first_use_trust_stage(&dir, &active),
+            read_only_trust_stage_with_visibility(&dir, &active, false),
             Ok("TRUST_RECORDED_UNVERIFIED")
         );
         std::fs::write(dir.join(TRUST_FILE), b"bad protobuf").unwrap();
-        assert!(read_only_first_use_trust_stage(&dir, &active).is_err());
+        assert!(read_only_trust_stage_with_visibility(&dir, &active, false).is_err());
+        assert!(read_only_trust_stage_with_visibility(&dir, &active, true).is_err());
+        std::fs::rename(dir.join(MARKER), dir.join(DONE)).unwrap();
+        // Public completion metadata is observable even when the sealed
+        // payload cannot be read. It NEVER becomes a cryptographic PASS.
+        assert_eq!(
+            read_only_trust_stage_with_visibility(&dir, &active, true),
+            Ok("TRUST_RECORDED_UNVERIFIED")
+        );
+        assert!(read_only_trust_stage_with_visibility(&dir, &active, false).is_err());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 

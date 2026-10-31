@@ -656,6 +656,13 @@ message FleetNativeAdminResult {
   // Partial stdin must never be mistaken for an entirely executed request.
   uint64 stdin_bytes_written = 25;
   bool stdin_input_complete = 26;
+  // A signed denial consumes a never-started transport request.
+  // It is NOT an execution receipt and can never claim process/stream effects.
+  bool rejected_before_begin = 27;
+  string rejection_code = 28;
+  // Public detached grant, bound by both Worker and native signatures.
+  // Absent only for a signed rejection before native BEGIN.
+  FleetNativeAdminAuthorization worker_authorization = 29;
 }
 
 message FleetHostIntent {

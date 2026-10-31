@@ -1417,13 +1417,7 @@ pub(crate) fn run(
             if receipt.encode_to_vec() != receipt_bytes {
                 return Err("HOST_ADMIN_RECEIPT_NONCANONICAL".into());
             }
-            let selected = desired
-                .hosts
-                .iter()
-                .find(|host| {
-                    host.machine_id == machine_id && host.kind == ManagedHostKind::Vm as i32
-                })
-                .ok_or("HOST_ADMIN_GIT_MACHINE_NOT_REGISTERED")?;
+            let selected = admin_receipt_host(&desired, &machine_id)?;
             host_admin::validate_for_kind(
                 &request,
                 ManagedHostKind::try_from(selected.kind)
@@ -1431,14 +1425,23 @@ pub(crate) fn run(
             )
             .map_err(str::to_owned)?;
             if request.machine_id != machine_id
-                || request.release_set_sha256
-                    != exact_hex_sha256(&release.release().release_set_sha256)?
+                || (!receipt.rejected_before_begin
+                    && request.release_set_sha256
+                        != exact_hex_sha256(&release.release().release_set_sha256)?)
             {
                 return Err("HOST_ADMIN_GIT_IDENTITY_OR_RELEASE_MISMATCH".into());
             }
             host_admin::verify_receipt(&request, &receipt, &selected.native_receipt_public_key)
                 .map_err(str::to_owned)?;
-            let outcome = if !receipt.process_exited {
+            host_admin::verify_receipt_worker_authority(
+                &request,
+                &receipt,
+                &selected.worker_authority_public_key,
+            )
+            .map_err(str::to_owned)?;
+            let outcome = if receipt.rejected_before_begin {
+                "VERIFIED_REJECTED_BEFORE_BEGIN"
+            } else if !receipt.process_exited {
                 "VERIFIED_NO_EXIT"
             } else if !receipt.stdin_input_complete {
                 "VERIFIED_STDIN_INCOMPLETE_NO_REPLAY"
@@ -1457,7 +1460,12 @@ pub(crate) fn run(
             }
             println!("host_admin_receipt_origin=GIT_PINNED_ED25519_NATIVE_OWNER");
             println!("host_admin_receipt_verified=true");
+            println!(
+                "host_admin_worker_authorization_verified={}",
+                !receipt.rejected_before_begin
+            );
             println!("host_admin_execution_outcome={outcome}");
+            println!("host_admin_rejection_code={}", receipt.rejection_code);
             println!("host_admin_physical_poststate=UNPROVEN");
             println!("host_admin_exit_code={}", receipt.exit_code);
             println!(
@@ -1877,6 +1885,25 @@ pub(crate) fn run(
 
 /// GitHub outputs are only derived from verified typed protobuf. Diagnostic
 /// stdout can never authorize a transition or masquerade as native proof.
+fn admin_receipt_host<'a>(
+    registry: &'a HostRegistry,
+    machine_id: &str,
+) -> Result<&'a edge_shared_types::FleetHost, &'static str> {
+    let mut matches = registry.hosts.iter().filter(|h| h.machine_id == machine_id);
+    let host = matches
+        .next()
+        .ok_or("HOST_ADMIN_GIT_MACHINE_NOT_REGISTERED")?;
+    if matches.next().is_some()
+        || !matches!(
+            ManagedHostKind::try_from(host.kind),
+            Ok(ManagedHostKind::Vm | ManagedHostKind::Windows)
+        )
+    {
+        return Err("HOST_ADMIN_GIT_HOST_KIND_INVALID");
+    }
+    Ok(host)
+}
+
 fn append_host_verifier_output(path: &Path, key: &str, value: &str) -> Result<(), String> {
     if !matches!(
         key,
@@ -2732,6 +2759,26 @@ fn append_control_outputs(
 mod tests {
     use super::*;
     use edge_shared_types::ManagedHost;
+    #[test]
+    fn admin_receipt_verifier_selects_exact_windows_or_vm_git_identity() {
+        let mut registry = HostRegistry {
+            hosts: vec![ManagedHost {
+                machine_id: "windows".into(),
+                kind: ManagedHostKind::Windows as i32,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        assert!(admin_receipt_host(&registry, "windows").is_ok());
+        assert!(admin_receipt_host(&registry, "vm").is_err());
+        registry.hosts[0].kind = ManagedHostKind::Vm as i32;
+        assert!(admin_receipt_host(&registry, "windows").is_ok());
+        registry.hosts[0].kind = ManagedHostKind::Unspecified as i32;
+        assert!(admin_receipt_host(&registry, "windows").is_err());
+        registry.hosts[0].kind = ManagedHostKind::Windows as i32;
+        registry.hosts.push(registry.hosts[0].clone());
+        assert!(admin_receipt_host(&registry, "windows").is_err());
+    }
 
     #[test]
     fn verified_host_workflow_output_is_closed_and_never_parses_diagnostic_text() {
