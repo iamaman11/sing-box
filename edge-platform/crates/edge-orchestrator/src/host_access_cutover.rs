@@ -143,6 +143,9 @@ pub(super) async fn apply(
     )
     .await?;
     prove_vm_host(&host).await?;
+    // All prerequisite crypto/credential/authority failures must occur before
+    // creating the staged application. Repeat after binding and after cutover.
+    prove_vm_authorization(&host, release).await?;
     crate::vm_worker_begin_reconciliation::verify_current_vm_worker_begin(machine_id).await?;
     if observe(control, desired).await? != baseline {
         return Err("HOST_ACCESS_PREFLIGHT_CHANGED_NO_REPLAY".into());
@@ -272,6 +275,7 @@ pub(super) async fn apply(
         return Err("HOST_ACCESS_FINAL_AUTHORITY_DRIFT_NO_REPLAY".into());
     }
     prove_vm_host(&host).await?;
+    prove_vm_authorization(&host, release).await?;
     println!("host_access_cutover=ACTIVE_AWAIT_SIGNED_HOST_PROOF");
     println!("host_access_credentials=EXACT_ISOLATED");
     println!("host_access_windows_acceptance=PENDING_SYSTEM_SIGNED_READBACK");

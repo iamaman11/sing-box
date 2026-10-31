@@ -252,7 +252,13 @@ async fn github_get_json(client: &Client, token: &str, path: &str) -> Result<Val
 /// Called ONLY by the immutable Rust Worker plan after Cloudflare has proven
 /// the exact predecessor digest and that there is no pending/split version.
 /// Must finish before the GitHub workflow may append a new durable BEGIN.
-pub(crate) async fn verify_prior_vm_worker_begins(machine_id: &str) -> Result<(), String> {
+pub(crate) async fn verify_prior_vm_worker_begins(
+    machine_id: &str,
+    active: &edge_provider_cloudflare::CloudflareWorkerExactModule,
+    cloudflare_read_token: &str,
+    account: &str,
+    worker: &str,
+) -> Result<(), String> {
     let history_path = env::var_os("HOST_VM_WORKER_BEGIN_HISTORY_PATH")
         .ok_or("HOST_VM_WORKER_HISTORY_PATH_REQUIRED")?;
     let path = Path::new(&history_path);
@@ -306,11 +312,194 @@ pub(crate) async fn verify_prior_vm_worker_begins(machine_id: &str) -> Result<()
             println!("host_vm_worker_prior_partial=CODE_COMMITTED_SIGNER_PREPARE_FAILED");
             continue;
         }
+        // A deployed code version followed by a deterministic, read-only
+        // Host Access preflight failure is a known partial result, not an
+        // unknown provider ACK. Authenticate the original job and its logs,
+        // and bind that result to the exact active/latest module independently
+        // measured by the caller. Never replay its upload or deployment.
+        let matches = matching_worker_jobs(&jobs, prior);
+        if matches.len() == 1
+            && prior_run_matches_owner(prior, machine_id, &operator, &run)
+            && run["conclusion"] == "failure"
+        {
+            let job = matches[0]["id"]
+                .as_u64()
+                .ok_or("HOST_VM_WORKER_PRIOR_JOB_ID_INVALID")?;
+            let logs = github_job_logs(&client, &token, job).await?;
+            let logged_versions: Vec<_> = logs
+                .lines()
+                .filter_map(|line| {
+                    let (_, message) = line.trim_end_matches('\r').split_once(' ')?;
+                    message.strip_prefix("host_vm_worker_active_version_id=")
+                })
+                .collect();
+            if logged_versions.len() == 1
+                && code_committed_access_preflight_log(&logs, logged_versions[0])
+            {
+                // Keep the historical proof usable after a later legitimate
+                // version deploy. Read the original immutable version; never
+                // upload or redeploy it and never rewrite its failed BEGIN.
+                let historical = if logged_versions[0] == active.id {
+                    active.clone()
+                } else {
+                    edge_provider_cloudflare::get_worker_exact_version_module(
+                        cloudflare_read_token,
+                        account,
+                        worker,
+                        logged_versions[0],
+                    )
+                    .await?
+                };
+                if code_committed_access_preflight_job(
+                    prior,
+                    machine_id,
+                    &operator,
+                    &run,
+                    &jobs,
+                    &historical.created_on,
+                ) != Some(job)
+                {
+                    return Err("HOST_VM_WORKER_PRIOR_VERSION_WINDOW_UNPROVEN_NO_REPLAY".into());
+                }
+                println!("host_vm_worker_prior_partial=CODE_COMMITTED_ACCESS_PREFLIGHT_REJECTED");
+                continue;
+            }
+        }
         return Err("HOST_VM_WORKER_PRIOR_BEGIN_UNRECONCILED_NO_REPLAY".into());
     }
     println!("host_vm_worker_prior_begin=PROVEN_SUCCESS_OR_CODE_ONLY_PARTIAL_RECONCILED");
     println!("host_vm_worker_prior_begin_count={}", beginnings.len());
     Ok(())
+}
+
+fn code_committed_access_preflight_job(
+    prior: &PriorBegin,
+    machine_id: &str,
+    operator: &Value,
+    run: &Value,
+    jobs: &Value,
+    active_created_on: &str,
+) -> Option<u64> {
+    if !prior_run_matches_owner(prior, machine_id, operator, run)
+        || run.get("conclusion")?.as_str()? != "failure"
+    {
+        return None;
+    }
+    let matches = matching_worker_jobs(jobs, prior);
+    if matches.len() != 1 || matches[0].get("conclusion")?.as_str()? != "failure" {
+        return None;
+    }
+    let steps = matches[0].get("steps")?.as_array()?;
+    let failed: Vec<_> = steps
+        .iter()
+        .filter(|s| s["conclusion"] == "failure")
+        .collect();
+    if failed.len() != 1
+        || failed[0]["name"]
+            != "Apply exact VM Worker code once and verify immutable active version"
+        || !steps.iter().any(|s| {
+            s["name"] == "Reserve one durable VM Worker version transaction before mutation"
+                && s["conclusion"] == "success"
+        })
+        || steps.iter().any(|s| {
+            s["name"] == "Install exactly five Host signer secret bindings once"
+                && s["conclusion"] != "skipped"
+        })
+    {
+        return None;
+    }
+    let parse =
+        |s| time::OffsetDateTime::parse(s, &time::format_description::well_known::Rfc3339).ok();
+    let created = parse(active_created_on)?;
+    if !(parse(failed[0]["started_at"].as_str()?)? < created
+        && created < parse(failed[0]["completed_at"].as_str()?)?)
+    {
+        return None;
+    }
+    matches[0]["id"].as_u64().filter(|id| *id > 0)
+}
+
+fn code_committed_access_preflight_log(logs: &str, active_version: &str) -> bool {
+    let messages: Vec<_> = logs
+        .lines()
+        .filter_map(|line| {
+            let (stamp, message) = line.trim_end_matches('\r').split_once(' ')?;
+            time::OffsetDateTime::parse(stamp, &time::format_description::well_known::Rfc3339)
+                .ok()?;
+            Some(message)
+        })
+        .collect();
+    let expected = [
+        "host_vm_worker_source_readback=EXACT_ACCEPTED_BYTES".to_owned(),
+        "host_vm_worker_authorizer=CANONICAL_VM_CODE_ACTIVE".into(),
+        format!("host_vm_worker_active_version_id={active_version}"),
+        "worker_mutations=2".into(),
+        "worker_secret_mutations=0".into(),
+        "windows_worker_mutations=0".into(),
+        "host_signed_install=NOT_AUTHORIZED".into(),
+        // This error is raised by the path validator before the first
+        // Host Access provider GET, hence before any Host Access mutation.
+        "WORKER_EXACT_VERSION_worker_INVALID".into(),
+    ];
+    let mut previous = None;
+    for item in expected {
+        let positions: Vec<_> = messages
+            .iter()
+            .enumerate()
+            .filter(|(_, m)| **m == item)
+            .map(|(i, _)| i)
+            .collect();
+        if positions.len() != 1 || previous.is_some_and(|p| positions[0] <= p) {
+            return false;
+        }
+        previous = Some(positions[0]);
+    }
+    !messages
+        .iter()
+        .any(|m| m.starts_with("host_access_") || m.contains("UNKNOWN_NO_REPLAY"))
+}
+
+async fn github_job_logs(client: &Client, token: &str, job: u64) -> Result<String, String> {
+    const ERROR: &str = "HOST_VM_WORKER_PRIOR_JOB_LOG_UNPROVEN_NO_REPLAY";
+    let response = client
+        .get(format!("{API}/actions/jobs/{job}/logs"))
+        .bearer_auth(token)
+        .send()
+        .await
+        .map_err(|_| ERROR)?;
+    let response = if response.status() == StatusCode::FOUND {
+        let location = response
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|h| h.to_str().ok())
+            .ok_or(ERROR)?;
+        let url = reqwest::Url::parse(location).map_err(|_| ERROR)?;
+        if url.scheme() != "https"
+            || !url.username().is_empty()
+            || url.password().is_some()
+            || url.port().is_some_and(|p| p != 443)
+            || !url.host_str().is_some_and(|h| {
+                h.ends_with(".blob.core.windows.net")
+                    || h.ends_with(".actions.githubusercontent.com")
+            })
+        {
+            return Err(ERROR.into());
+        }
+        // Signed download URL only; never forward the GitHub bearer.
+        client.get(url).send().await.map_err(|_| ERROR)?
+    } else {
+        response
+    };
+    if response.status() != StatusCode::OK
+        || response.content_length().is_some_and(|n| n > 8_388_608)
+    {
+        return Err(ERROR.into());
+    }
+    let bytes = response.bytes().await.map_err(|_| ERROR)?;
+    if bytes.is_empty() || bytes.len() > 8_388_608 {
+        return Err(ERROR.into());
+    }
+    String::from_utf8(bytes.to_vec()).map_err(|_| ERROR.into())
 }
 
 /// The only admissible exception to a successful prior Worker authorizer run:
@@ -512,6 +701,103 @@ pub(crate) async fn verify_current_vm_worker_begin(machine_id: &str) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn deployed_code_with_readonly_access_preflight_rejection_requires_complete_evidence() {
+        let machine = "application-acceptance-5";
+        let prior = PriorBegin {
+            operator_comment_id: 12,
+            source_revision: revision(),
+            github_run_id: 23,
+        };
+        let operator = serde_json::json!({"id":12,"user":{"id":ACTOR_ID},"issue_url":ISSUE1,
+            "body":format!("/host apply {machine}"),"created_at":"today","updated_at":"today"});
+        let run = serde_json::json!({"id":23,"head_sha":revision(),"status":"completed",
+            "conclusion":"failure","event":"issue_comment","run_attempt":1,
+            "actor":{"id":ACTOR_ID},"triggering_actor":{"id":ACTOR_ID},
+            "path":".github/workflows/edge-control-plane.yml"});
+        let jobs = serde_json::json!({"total_count":1,"jobs":[{"id":24,"name":"host_worker_authorizer",
+        "run_id":23,"status":"completed","conclusion":"failure","steps":[
+            {"name":"Reserve one durable VM Worker version transaction before mutation","conclusion":"success"},
+            {"name":"Apply exact VM Worker code once and verify immutable active version","conclusion":"failure",
+                "started_at":"2026-10-31T17:45:07Z","completed_at":"2026-10-31T17:45:47Z"},
+            {"name":"Install exactly five Host signer secret bindings once","conclusion":"skipped"}
+        ]}]});
+        let created = "2026-10-31T17:45:23.638891Z";
+        assert_eq!(
+            code_committed_access_preflight_job(&prior, machine, &operator, &run, &jobs, created),
+            Some(24)
+        );
+        for created in ["bad-date", "2026-10-31T17:45:00Z", "2026-10-31T17:45:48Z"] {
+            assert_eq!(
+                code_committed_access_preflight_job(
+                    &prior, machine, &operator, &run, &jobs, created
+                ),
+                None
+            );
+        }
+        let mut replay = run.clone();
+        replay["run_attempt"] = Value::from(2);
+        assert_eq!(
+            code_committed_access_preflight_job(
+                &prior, machine, &operator, &replay, &jobs, created
+            ),
+            None
+        );
+        let mut foreign = operator.clone();
+        foreign["user"]["id"] = Value::from(BOT_ID);
+        assert_eq!(
+            code_committed_access_preflight_job(&prior, machine, &foreign, &run, &jobs, created),
+            None
+        );
+        let mut mutated = jobs.clone();
+        mutated["jobs"][0]["steps"][2]["conclusion"] = Value::String("success".into());
+        assert_eq!(
+            code_committed_access_preflight_job(
+                &prior, machine, &operator, &run, &mutated, created
+            ),
+            None
+        );
+        let messages = [
+            "host_vm_worker_source_readback=EXACT_ACCEPTED_BYTES",
+            "host_vm_worker_authorizer=CANONICAL_VM_CODE_ACTIVE",
+            "host_vm_worker_active_version_id=exact-version",
+            "worker_mutations=2",
+            "worker_secret_mutations=0",
+            "windows_worker_mutations=0",
+            "host_signed_install=NOT_AUTHORIZED",
+            "WORKER_EXACT_VERSION_worker_INVALID",
+        ];
+        let logs = messages
+            .iter()
+            .map(|m| format!("2026-10-31T17:45:47.8828232Z {m}\r\n"))
+            .collect::<String>();
+        assert!(code_committed_access_preflight_log(&logs, "exact-version"));
+        assert!(!code_committed_access_preflight_log(
+            &logs,
+            "foreign-version"
+        ));
+        for message in messages {
+            assert!(!code_committed_access_preflight_log(
+                &logs.replace(message, "omitted"),
+                "exact-version"
+            ));
+        }
+        for extra in [
+            "host_access_cutover=UNKNOWN_NO_REPLAY",
+            "host_access_stage=CREATED",
+            "WORKER_EXACT_VERSION_worker_INVALID",
+        ] {
+            assert!(!code_committed_access_preflight_log(
+                &format!("{logs}2026-10-31T17:45:48Z {extra}\n"),
+                "exact-version"
+            ));
+        }
+        assert!(!code_committed_access_preflight_log(
+            &messages.join("\n"),
+            "exact-version"
+        ));
+    }
+
     fn revision() -> String {
         "eae7bd8f89bf37bbe4eb61683d6bf59bad4a261b".into()
     }
