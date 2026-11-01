@@ -1629,3 +1629,32 @@ fn pending_vm_worker_reconciliation_refuses_unbound_or_drifted_code() {
         .is_err()
     );
 }
+
+#[test]
+fn vm_worker_short_legacy_admin_executes_real_worker_authorization_contract() {
+    // Use the actual rendered production Worker in Node's crypto runtime.
+    // No live GitHub/Cloudflare call; the HTTP boundary returns fixed fixtures.
+    let source = delivery_worker_material("vm").unwrap().source;
+    let file = std::env::temp_dir().join(format!(
+        "sing-box-worker-s1-{}-{}.mjs",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::write(&file, source).expect("write ephemeral Worker fixture");
+    let repository = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../..");
+    let outcome = std::process::Command::new("node")
+        .arg(repository.join("edge-platform/scripts/test_host_worker_signer.mjs"))
+        .arg(&file)
+        .current_dir(&repository)
+        .output();
+    let _ = std::fs::remove_file(&file);
+    let outcome = outcome.expect("Node is required for existing Worker contract tests");
+    assert!(
+        outcome.status.success(),
+        "Worker behavioral test failed: {}",
+        String::from_utf8_lossy(&outcome.stderr)
+    );
+}

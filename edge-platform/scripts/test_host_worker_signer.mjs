@@ -35,6 +35,12 @@ async function accessToken(claims={}){
 }
 const key=await crypto.subtle.generateKey({name:"Ed25519"},true,["sign","verify"]);
 const pkcs8=await crypto.subtle.exportKey("pkcs8",key.privateKey);
+// Production Worker uses a fresh GitHub installation credential per intent.
+// The test substitutes only the GitHub HTTP response, never the signer path.
+const appKey=await crypto.subtle.generateKey(
+ {name:"RSASSA-PKCS1-v1_5",modulusLength:2048,publicExponent:new Uint8Array([1,0,1]),hash:"SHA-256"},
+ true,["sign","verify"]);
+const appPkcs8=await crypto.subtle.exportKey("pkcs8",appKey.privateKey);
 const intent=combine(
  number(1,1),field(2,TE.encode("vm-test-1")),number(3,2),
  field(4,TE.encode("sing-box")),field(5,TE.encode("issue1-comment-123")),
@@ -43,6 +49,7 @@ const intent=combine(
 );
 const env={
  EDGE_HOST_SIGNING_PKCS8_BASE64:encode64(pkcs8),
+ EDGE_HOST_GITHUB_APP_PKCS8_BASE64:encode64(appPkcs8),
  EDGE_HOST_SIGNING_KEY_ID:"vm-worker-key-v1",
  EDGE_HOST_GITHUB_ACTOR_ID:"44100369",
  EDGE_HOST_ACCESS_ISSUER:issuer,
@@ -53,7 +60,19 @@ let publishedRelease=true;
 let approvedResource="sing-box",operatorComment="/host apply vm-test-1";
 let commentCreated=now-2, receiptMerged=true, receiptBranchValid=true, mainMatched=true, receiptMergedAgo=20;
 const testReleaseTag="edge-release-"+Buffer.alloc(32,3).toString("hex");
+let adminOperatorComment="";
+const oldAdminRelease="7f8d9e53f4635836db2da8e13a3c119a8b1ee28953719a278259a53d4e63bf37";
+const newAdminRelease="6d47f03673144b58a3f52f795a0907fbb71f17e139104f59f05f98c0600f8ad8";
+const adminBridgeScript=readFileSync("edge-platform/scripts/vm_legacy_owner_bridge.py","utf8");
 globalThis.fetch=async u=>{
+  if(String(u)==="https://api.github.com/app/installations/174880562/access_tokens")
+    return Response.json({
+      token:"ghs_unit_test_installation_token",
+      expires_at:new Date((now+1800)*1000).toISOString(),
+      repository_selection:"selected",
+      repositories:[{full_name:"iamaman11/sing-box",id:1221750822}],
+      permissions:{contents:"read",issues:"read",pull_requests:"read",metadata:"read"},
+    });
   if(String(u)===expectedCertUrl) return Response.json({keys:[jwk]});
   if(String(u)==="https://api.github.com/repos/iamaman11/sing-box/issues/comments/123")
     return Response.json({
@@ -64,6 +83,24 @@ globalThis.fetch=async u=>{
       body:operatorComment+
         (approvedResource==="sing-box"?"":" "+approvedResource),
     });
+  if(String(u)==="https://api.github.com/repos/iamaman11/sing-box/issues/comments/456")
+    return Response.json({
+      user:{id:44100369},
+      issue_url:"https://api.github.com/repos/iamaman11/sing-box/issues/1",
+      created_at:new Date((now-2)*1000).toISOString(),
+      updated_at:new Date((now-2)*1000).toISOString(),
+      body:adminOperatorComment,
+    });
+  if(String(u)==="https://api.github.com/repos/iamaman11/sing-box/releases/tags/edge-release-"+oldAdminRelease)
+    return Response.json({tag_name:"edge-release-"+oldAdminRelease,
+      draft:false,prerelease:false,target_commitish:"b".repeat(40)});
+  if(String(u)==="https://api.github.com/repos/iamaman11/sing-box/releases/tags/edge-release-"+newAdminRelease)
+    return Response.json({tag_name:"edge-release-"+newAdminRelease,
+      draft:false,prerelease:false,target_commitish:"a".repeat(40)});
+  if(String(u)==="https://api.github.com/repos/iamaman11/sing-box/contents/edge-platform/scripts/vm_legacy_owner_bridge.py?ref="+"a".repeat(40))
+    return Response.json({type:"file",encoding:"base64",
+      size:Buffer.byteLength(adminBridgeScript),
+      content:Buffer.from(adminBridgeScript).toString("base64")});
   if(String(u)==="https://api.github.com/repos/iamaman11/sing-box/git/ref/heads/main")
     return Response.json({object:{type:"commit",sha:mainMatched?"a".repeat(40):"b".repeat(40)}});
   if(String(u)==="https://api.github.com/repos/iamaman11/sing-box/commits/"+"a".repeat(40)+"/pulls?per_page=20")
@@ -280,6 +317,50 @@ requireTest((await call(recoverIntent)).status===403,
  "VM adjudication authorized by different APPLY command");
 requireTest((await call(intent)).status===200,
  "normal APPLY no longer authorized after adjudication contract");
+// Real Worker code path: a short GitHub command must authorize ONLY the
+// exact currently published VM bridge script. These are behavior tests, not
+// grep checks; no actual Cloudflare or host mutation occurs.
+const adminInput={argv:[],cwd:"/",environment:[],stdin_base64:"",
+  timeout_seconds:180,publish_output:false,legacy_release_set_sha256:oldAdminRelease};
+adminOperatorComment="/host admin application-acceptance-5 "+
+  Buffer.from(JSON.stringify(adminInput)).toString("base64url");
+async function adminRequest({machine="application-acceptance-5",
+  script=adminBridgeScript,old=oldAdminRelease}={}){
+  const words=["/usr/bin/python3","-c",script,old,newAdminRelease];
+  const commentHash=Buffer.from(await crypto.subtle.digest("SHA-256",
+    TE.encode(adminOperatorComment)));
+  return combine(number(1,1),field(2,TE.encode(machine)),number(3,456),
+    ...words.map(w=>field(4,TE.encode(w))),
+    field(5,Buffer.from(old,"hex")),number(6,now),
+    field(7,commentHash),field(8,TE.encode("/")),number(11,180));
+}
+async function adminCall(bytes,claims={}){
+  const token=await accessToken(claims);
+  return mod.default.fetch(new Request(
+    "https://unit-test.workers.dev/v1/host/admin/authorize",{
+      method:"POST",headers:{"Content-Type":"application/x-protobuf",
+        "Cf-Access-Jwt-Assertion":token},body:bytes,
+    }),env);
+}
+const legacyAdmin=await adminRequest();
+const bridgeReply=await adminCall(legacyAdmin);
+requireTest(bridgeReply.status===200,
+  "canonical short VM bridge denied: "+bridgeReply.status+" "+
+   bridgeReply.headers.get("X-Host-Authorization-Reason"));
+const bridgeFields=fields(Buffer.from(await bridgeReply.arrayBuffer()));
+requireTest(Buffer.from(bridgeFields.get(3)).toString()==="issue1-comment-456",
+  "bridge authorization is not pinned to exact operator comment");
+const wrongScript=await adminCall(await adminRequest({script:adminBridgeScript+"\\n"}));
+requireTest(wrongScript.status===403 &&
+  wrongScript.headers.get("X-Host-Authorization-Reason")==="GITHUB_APPROVAL_DENIED",
+  "foreign old-release root script was authorized or diagnostic reason missing");
+requireTest((await adminCall(await adminRequest({machine:"foreign-vm"}))).status===403,
+  "short VM bridge authorized a foreign machine");
+requireTest((await adminCall(legacyAdmin,{aud:["foreign-audience"]})).status===403,
+  "VM bridge bypassed Cloudflare Access");
+adminOperatorComment="/host admin application-acceptance-5 forged";
+requireTest((await adminCall(legacyAdmin)).status===403,
+  "tampered GitHub operator comment authorized bridge");
 const windowsSource=readFileSync(process.argv[2],"utf8").replace("const P=2;","const P=1;");
 const tmpUrl="data:text/javascript;base64,"+Buffer.from(windowsSource).toString("base64");
 const windows=await import(tmpUrl);

@@ -4713,7 +4713,21 @@ async function ADMIN_GITHUB(info,e,now){
  const c=res.value,stamp=Date.parse(c?.created_at)/1000;
  const stdin=info.input===null?"":btoa(Array.from(info.input,x=>String.fromCharCode(x)).join(""))
     .replace(/\+/g,"-").replace(/\//g,"_").replace(/=+$/,"");
- const payload={argv:info.argv,cwd:info.cwd,environment:info.env,stdin_base64:stdin,
+ // One historical VM-only handoff: reconstruct the ORIGINAL short
+ // operator comment. Arbitrary code is never approved: below we match the
+ // exact script from protected main. Ordinary admin remains unchanged.
+ const legacy=info.m==="application-acceptance-5"&&
+   info.release==="7f8d9e53f4635836db2da8e13a3c119a8b1ee28953719a278259a53d4e63bf37"&&
+   info.argv.length===5&&info.argv[0]==="/usr/bin/python3"&&
+   info.argv[1]==="-c"&&info.argv[3]===info.release&&
+   /^[0-9a-f]{64}$/.test(info.argv[4])&&info.argv[4]!==info.release&&
+   info.cwd==="/"&&info.env.length===0&&
+   (info.input===null||info.input.length===0)&&
+   info.timeout===180&&!info.publish;
+ const payload=legacy?
+   {argv:[],cwd:info.cwd,environment:[],stdin_base64:"",timeout_seconds:info.timeout,
+    publish_output:false,legacy_release_set_sha256:info.release}:
+   {argv:info.argv,cwd:info.cwd,environment:info.env,stdin_base64:stdin,
     timeout_seconds:info.timeout,publish_output:info.publish};
  const body="/host admin "+info.m+" "+ADMIN_ARGS_B64(payload);
  if(!c||String(c.user?.id)!==actor||c.issue_url!==base+"/issues/1"||
@@ -4730,7 +4744,27 @@ async function ADMIN_GITHUB(info,e,now){
    v.prerelease!==false||!/^[0-9a-f]{40}$/.test(v.target_commitish||""))return "DENIED";
  const main=await get("/git/ref/heads/main","ADMIN_MAIN");
  if(main.error)return main.error;
- if(main.value?.object?.type!=="commit"||main.value.object.sha!==v.target_commitish)return "DENIED";
+ if(main.value?.object?.type!=="commit"||
+    !/^[0-9a-f]{40}$/.test(main.value.object.sha||""))return "DENIED";
+ if(legacy){
+  const target=await get("/releases/tags/edge-release-"+info.argv[4],
+    "ADMIN_BRIDGE_TARGET_RELEASE");
+  if(target.error)return target.error;
+  if(target.value?.tag_name!=="edge-release-"+info.argv[4]||
+     target.value?.draft!==false||target.value?.prerelease!==false||
+     target.value?.target_commitish!==main.value.object.sha)return "DENIED";
+  const script=await get("/contents/edge-platform/scripts/vm_legacy_owner_bridge.py?ref="+
+    main.value.object.sha,"ADMIN_BRIDGE_CANONICAL_SCRIPT");
+  if(script.error)return script.error;
+  const file=script.value;
+  if(file?.type!=="file"||file.encoding!=="base64"||
+     !Number.isInteger(file.size)||file.size<4000||file.size>12000||
+     typeof file.content!=="string"||file.content.length>20000)return "DENIED";
+  let code;
+  try{code=atob(file.content.replace(/\s/g,""))}catch{return "DENIED"}
+  return code.length===file.size&&code===info.argv[2]?"APPROVED":"DENIED";
+ }
+ if(main.value.object.sha!==v.target_commitish)return "DENIED";
  return "APPROVED";
 }
 async function ADMIN_AUTHORIZE(q,e,u){
